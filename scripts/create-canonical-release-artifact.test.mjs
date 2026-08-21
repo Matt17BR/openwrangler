@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -16,7 +16,8 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
@@ -719,6 +720,55 @@ test("rejects dirty tracked source and a tag that does not bind EXPECTED_SHA", a
     /RELEASE_TAG must resolve to the exact EXPECTED_SHA/u
   );
   assert.equal(existsSync(mistagged.outputDirectory), false);
+});
+
+posixTest("uses the pinned sanitized Git authority for canonical source binding", async (context) => {
+  const fixture = await createFixture(context);
+  const hostileRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-canonical-hostile-git-")));
+  context.after(() => rmSync(hostileRoot, { force: true, recursive: true }));
+  const firstHostile = join(hostileRoot, "first");
+  const secondHostile = join(hostileRoot, "second");
+  const marker = join(hostileRoot, "hostile-git-ran");
+  mkdirSync(firstHostile);
+  mkdirSync(secondHostile);
+  for (const directory of [firstHostile, secondHostile]) {
+    const executable = join(directory, "git");
+    writeFileSync(executable, `#!/bin/sh\n: > '${marker}'\nexit 91\n`, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+  }
+  const moduleUrl = pathToFileURL(resolve(import.meta.dirname, "create-canonical-release-artifact.mjs")).href;
+  const program = `
+    const { readCanonicalReleaseSourceBinding } = await import(${JSON.stringify(moduleUrl)});
+    const input = ${JSON.stringify({
+      expectedCommit: fixture.expectedCommit,
+      releaseTag: fixture.releaseTag,
+      root: fixture.root
+    })};
+    const first = readCanonicalReleaseSourceBinding(input);
+    process.env.PATH = ${JSON.stringify(secondHostile)};
+    process.env.GIT_DIR = ${JSON.stringify(join(hostileRoot, "missing-git-dir"))};
+    process.env.GIT_OBJECT_DIRECTORY = ${JSON.stringify(join(hostileRoot, "missing-objects"))};
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "core.fsmonitor";
+    process.env.GIT_CONFIG_VALUE_0 = "!sleep 30";
+    const second = readCanonicalReleaseSourceBinding(input);
+    if (first.commit !== input.expectedCommit || second.commit !== first.commit) process.exit(97);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_DIR: join(hostileRoot, "initial-missing-git-dir"),
+      GIT_OBJECT_DIRECTORY: join(hostileRoot, "initial-missing-objects"),
+      GIT_REPLACE_REF_BASE: "refs/hostile/",
+      PATH: firstHostile
+    },
+    timeout: 10_000,
+    windowsHide: true
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.equal(existsSync(marker), false, "hostile initial and post-resolution Git executables must not run");
 });
 
 test("removes private staging when source drifts immediately before publication", async (context) => {

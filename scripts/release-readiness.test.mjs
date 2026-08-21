@@ -1230,6 +1230,8 @@ test("constrains historical and current Performance summaries to exact evidence-
     "Open Wrangler needs a smaller memory footprint.",
     "Notebook previews finish sooner with Open Wrangler.",
     "Open Wrangler completes the same workload with fewer allocations.",
+    "Open Wrangler uses fewer resources for the same workload.",
+    "Open Wrangler has lower resource consumption than Data Wrangler.",
     "Open Wrangler processed 10,000 rows per second.",
     "The workbench is lightweight and responsive.",
     "The latest timing evidence is favorable.",
@@ -1261,7 +1263,19 @@ test("constrains historical and current Performance summaries to exact evidence-
     "Open Wrangler reduced la<!-- split -->tency.",
     "Open Wrangler is [faster][speed] than Data Wrangler.\n\n[speed]: https://example.invalid/speed",
     "<p>Open Wrangler is <strong>faster</strong> than Data Wrangler.</p>",
-    "> Open Wrangler is twice as fast as Data Wrangler."
+    "> Open Wrangler is twice as fast as Data Wrangler.",
+    "<button>Open Wrangler uses less memory than Data Wrangler.</button>",
+    '<input type="button" value="Open Wrangler beats Data Wrangler.">',
+    '<span aria-label="Open Wrangler outperforms Data Wrangler."></span>',
+    'Open Wrangler is <strong title="formatted emphasis">fa</strong>ster than Data Wrangler.',
+    "<figure><figcaption>Open Wrangler beats Data Wrangler.</figcaption></figure>",
+    "![Open Wrangler uses fewer resources than Data Wrangler.](https://example.invalid/chart.png)",
+    '<img alt="Open Wrangler takes half the time of Data Wrangler." src="https://example.invalid/chart.png">',
+    "Open Wrangler is ｆａｓｔｅｒ than Data Wrangler.",
+    "Open Wrangler is fаster than Data Wrangler.",
+    "Open Wrangler is faѕter than Data Wrangler.",
+    "Open Wrangler is fαster than Data Wrangler.",
+    "Open Wrangler uses less memоry than Data Wrangler."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${renderedClaim}`)),
@@ -1275,7 +1289,9 @@ test("constrains historical and current Performance summaries to exact evidence-
     "The report compares the products without making a current result claim.",
     "Time zones remain part of datetime values during profiling.",
     "The current section explains installation. Performance evidence remains historical.",
-    "Open Wrangler is documented below. The parser accepts fast syntax."
+    "Open Wrangler is documented below. The parser accepts fast syntax.",
+    "Resource comparisons require a dated report and do not assert a current result.",
+    "The image alternative identifies the performance study chart."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${truthfulProse}`)),

@@ -246,6 +246,87 @@ const PERFORMANCE_MARKDOWN = new MarkdownIt({ html: true, linkify: false, typogr
 const MAX_PERFORMANCE_MARKDOWN_TOKENS = 100_000;
 const MAX_PERFORMANCE_RENDERED_BYTES = 8 * 1024 * 1024;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+const PERFORMANCE_CONFUSABLES = new Map([
+  ["\u0430", "a"],
+  ["\u0432", "b"],
+  ["\u0435", "e"],
+  ["\u043a", "k"],
+  ["\u043c", "m"],
+  ["\u043d", "h"],
+  ["\u043e", "o"],
+  ["\u0440", "p"],
+  ["\u0441", "c"],
+  ["\u0442", "t"],
+  ["\u0443", "y"],
+  ["\u0445", "x"],
+  ["\u0455", "s"],
+  ["\u0456", "i"],
+  ["\u0458", "j"],
+  ["\u0475", "v"],
+  ["\u04bb", "h"],
+  ["\u04cf", "l"],
+  ["\u0501", "d"],
+  ["\u051b", "q"],
+  ["\u051d", "w"],
+  ["\u03b1", "a"],
+  ["\u03b2", "b"],
+  ["\u03b5", "e"],
+  ["\u03b9", "i"],
+  ["\u03ba", "k"],
+  ["\u03bf", "o"],
+  ["\u03c1", "p"],
+  ["\u03c4", "t"],
+  ["\u03c5", "y"],
+  ["\u03c7", "x"],
+  ["\u03bd", "v"],
+  ["\u03f2", "c"]
+]);
+const PERFORMANCE_TEXT_BOUNDARIES = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "BR",
+  "BUTTON",
+  "CAPTION",
+  "DD",
+  "DETAILS",
+  "DIALOG",
+  "DIV",
+  "DL",
+  "DT",
+  "FIELDSET",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "FORM",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "HR",
+  "LABEL",
+  "LEGEND",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "OPTION",
+  "P",
+  "SECTION",
+  "SUMMARY",
+  "TABLE",
+  "TBODY",
+  "TD",
+  "TFOOT",
+  "TH",
+  "THEAD",
+  "TR",
+  "UL"
+]);
 const PERFORMANCE_REPORT_URL =
   /^https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)$/u;
 
@@ -288,6 +369,20 @@ function normalizedRenderedText(node) {
   return normalizedPerformanceCopy(node?.textContent ?? "");
 }
 
+function performanceClaimSkeleton(value) {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\S\r\n]+/gu, " ")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/ *\n+ */gu, "\n")
+    .trim()
+    .replace(
+      /[\u0430\u0432\u0435\u043a\u043c\u043d\u043e\u0440\u0441\u0442\u0443\u0445\u0455\u0456\u0458\u0475\u04bb\u04cf\u0501\u051b\u051d\u03b1\u03b2\u03b5\u03b9\u03ba\u03bd\u03bf\u03c1\u03c4\u03c5\u03c7\u03f2]/gu,
+      (character) => PERFORMANCE_CONFUSABLES.get(character) ?? character
+    );
+}
+
 function semanticLinks(node) {
   return [...(node?.querySelectorAll?.("a") ?? [])].map((anchor) => ({
     href: anchor.href,
@@ -305,7 +400,7 @@ function isInsidePerformanceSection(node, heading, followingHeading) {
 }
 
 function sentenceScopedPerformanceClaim(text) {
-  const scopes = normalizedPerformanceCopy(text)
+  const scopes = performanceClaimSkeleton(text)
     .split(/(?<=[.!?;:])\s+|\s+[—–]\s+|\n+/u)
     .map((scope) => scope.trim().toLowerCase())
     .filter(Boolean);
@@ -319,7 +414,7 @@ function sentenceScopedPerformanceClaim(text) {
         claimText
       );
     const comparativeMetric =
-      /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|the))?\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|ram|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|ram|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
+      /\b(?:cut\w*|double|fewer|fraction|greater|half|higher|improv\w*|less|lower|reduc\w*|shorter|smaller|twice|twofold|worse|\d+(?:\.\d+)?\s*(?:%|x))\b(?:\s+(?:as|many|the)){0,2}\s+(?:allocation\w*|cpu|duration|elapsed\s+time|fast|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|speed|startup\s+time|throughput|time|timing|wait|working\s+set)\b|\b(?:allocation\w*|cpu|duration|footprint|latency|memory|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b\s+(?:is|was|were|became|becomes|remains)\s+(?:greater|higher|less|lower|shorter|smaller|worse)\b/u.test(
         claimText
       );
     const inherentlyComparative =
@@ -337,11 +432,55 @@ function sentenceScopedPerformanceClaim(text) {
   });
 }
 
+function outsidePerformanceVisibleText(document, heading, followingHeading) {
+  const fragments = [];
+  const supplementalFragments = [];
+  let byteLength = 0;
+  const append = (value, target = fragments) => {
+    if (value === "") return true;
+    byteLength += Buffer.byteLength(value, "utf8");
+    if (byteLength > MAX_PERFORMANCE_RENDERED_BYTES) return false;
+    target.push(value);
+    return true;
+  };
+  const appendAttribute = (node, name) => {
+    const value = node.getAttribute(name);
+    return value === null || value === "" || append(` ${value} `);
+  };
+  const appendSupplementalAttribute = (node, name) => {
+    const value = node.getAttribute(name);
+    return value === null || value === "" || append(`${value}\n`, supplementalFragments);
+  };
+  const visit = (node) => {
+    if (node === heading || isInsidePerformanceSection(node, heading, followingHeading)) return true;
+    if (node.nodeType === node.TEXT_NODE) return append(node.nodeValue ?? "");
+    if (node.nodeType !== node.ELEMENT_NODE || node.tagName === "PRE") return true;
+    for (const attribute of ["aria-label", "title"]) {
+      if (!appendSupplementalAttribute(node, attribute)) return false;
+    }
+    if (["AREA", "IMG"].includes(node.tagName) && !appendAttribute(node, "alt")) return false;
+    if (node.tagName === "INPUT") {
+      const type = node.getAttribute("type")?.toLowerCase() ?? "text";
+      if (type === "image" && !appendAttribute(node, "alt")) return false;
+      if (type !== "hidden" && !appendAttribute(node, "value")) return false;
+      if (!appendAttribute(node, "placeholder")) return false;
+    }
+    if (["OPTGROUP", "OPTION"].includes(node.tagName)) {
+      if (!appendAttribute(node, "label")) return false;
+    }
+    for (const child of node.childNodes) {
+      if (!visit(child)) return false;
+    }
+    return !PERFORMANCE_TEXT_BOUNDARIES.has(node.tagName) || append("\n");
+  };
+  return visit(document.body) ? `${fragments.join("")}\n${supplementalFragments.join("")}` : undefined;
+}
+
 function performanceSection(readme) {
   const document = renderedMarkdownDocument(readme);
   if (document === undefined) return undefined;
   const performanceHeadings = [...document.body.querySelectorAll("h2")].filter(
-    (heading) => normalizedRenderedText(heading).toLowerCase() === "performance"
+    (heading) => performanceClaimSkeleton(normalizedRenderedText(heading)) === "performance"
   );
   if (performanceHeadings.length !== 1) return undefined;
   const heading = performanceHeadings[0];
@@ -355,22 +494,18 @@ function performanceSection(readme) {
   const section = document.createElement("section");
   section.append(range.cloneContents());
 
-  const outsideBlocks = [...document.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,div")].filter(
-    (node) =>
-      node !== heading &&
-      !isInsidePerformanceSection(node, heading, followingHeading) &&
-      node.closest("pre") === null &&
-      ![...node.children].some((child) =>
-        ["H1", "H2", "H3", "H4", "H5", "H6", "P", "LI", "TD", "TH", "DIV"].includes(child.tagName)
-      )
-  );
-  const linkedEvidence = outsideBlocks.some((block) =>
-    semanticLinks(block).some((link) => PERFORMANCE_REPORT_URL.test(link.href))
+  const outsideText = outsidePerformanceVisibleText(document, heading, followingHeading);
+  if (outsideText === undefined || DEFAULT_IGNORABLE.test(outsideText)) return undefined;
+  const linkedEvidence = [...document.body.querySelectorAll("a")].some(
+    (anchor) =>
+      anchor !== heading &&
+      !isInsidePerformanceSection(anchor, heading, followingHeading) &&
+      anchor.closest("pre") === null &&
+      PERFORMANCE_REPORT_URL.test(anchor.href)
   );
   return {
     hasCodeContent: [...section.querySelectorAll("pre")].some((node) => normalizedRenderedText(node) !== ""),
-    hasOutsideClaim:
-      linkedEvidence || outsideBlocks.some((block) => sentenceScopedPerformanceClaim(normalizedRenderedText(block))),
+    hasOutsideClaim: linkedEvidence || sentenceScopedPerformanceClaim(outsideText),
     links: semanticLinks(section),
     text: normalizedRenderedText(section)
   };
@@ -1257,6 +1392,27 @@ function runGit(root, args, options = {}) {
   } finally {
     revalidateTrustedGitExecutable(PINNED_GIT_EXECUTABLE);
   }
+}
+
+export function readCanonicalGitPublicationState(root, { releaseTag } = {}) {
+  if (releaseTag !== undefined && (typeof releaseTag !== "string" || containsAsciiControl(releaseTag))) {
+    throw new Error("A canonical release tag must be one safe Git revision name.");
+  }
+  return Object.freeze({
+    root: runGit(root, ["rev-parse", "--show-toplevel"], { encoding: "utf8", maxBuffer: 4096 }).trim(),
+    trackedStatus: runGit(root, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024
+    }),
+    ...(releaseTag === undefined
+      ? {}
+      : {
+          tagCommit: runGit(root, ["rev-parse", "--verify", "--end-of-options", `${releaseTag}^{commit}`], {
+            encoding: "utf8",
+            maxBuffer: 4096
+          }).trim()
+        })
+  });
 }
 
 function decodeUtf8(contents, label) {
