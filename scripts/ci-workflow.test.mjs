@@ -67,6 +67,7 @@ const WORKFLOW_YAML_ALIAS_LIMIT = 0;
 const WORKFLOW_YAML_MERGE_KEY_LIMIT = 0;
 const REQUIRED_CHECK_EXPRESSION_LIMIT = 64;
 const REQUIRED_CHECK_MATCH_WORK_LIMIT = 16 * 1024;
+const REQUIRED_CHECK_EXPRESSION_PATTERN = /\$\{\{[^{}]{1,1024}\}\}/gu;
 const WORKFLOW_YAML_SCHEMA = CORE_SCHEMA.withTags(mergeTag);
 const WORKFLOW_YAML_LOAD_OPTIONS = Object.freeze({
   maxAliases: WORKFLOW_YAML_ALIAS_LIMIT,
@@ -859,6 +860,44 @@ function fixedCheckNamePartsMayEqual(required, parts, fixedTextLength) {
   return cursor <= suffixStart;
 }
 
+function parseDynamicCheckNameParts(name, suppliedMatches) {
+  if (name.length > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+  const parts = [];
+  let cursor = 0;
+  let expressionCount = 0;
+  let fixedTextLength = 0;
+  let work = 0;
+  const matches = suppliedMatches ?? name.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN);
+  for (const match of matches) {
+    expressionCount += 1;
+    if (expressionCount > REQUIRED_CHECK_EXPRESSION_LIMIT) return undefined;
+    const text = match?.[0];
+    const index = match?.index;
+    if (
+      typeof text !== "string" ||
+      text.length === 0 ||
+      !Number.isSafeInteger(index) ||
+      index < cursor ||
+      index + text.length > name.length
+    ) {
+      return undefined;
+    }
+    const literalLength = index - cursor;
+    const nextWork = work + literalLength + text.length;
+    if (nextWork > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+    parts.push(name.slice(cursor, index));
+    fixedTextLength += literalLength;
+    work = nextWork;
+    cursor = index + text.length;
+  }
+  const trailingLength = name.length - cursor;
+  if (expressionCount === 0 || work + trailingLength > REQUIRED_CHECK_MATCH_WORK_LIMIT) return undefined;
+  parts.push(name.slice(cursor));
+  fixedTextLength += trailingLength;
+  if (parts.some((part) => part.includes("${{") || part.includes("}}"))) return undefined;
+  return Object.freeze({ fixedTextLength, parts: Object.freeze(parts) });
+}
+
 function requiredCheckName(jobId, job) {
   const multiplicityIsUnevaluable = strategyMultiplicityIsUnevaluable(job);
   const name = job?.name;
@@ -876,27 +915,11 @@ function requiredCheckName(jobId, job) {
       mayEqual: (required) => required === name
     });
   }
-  const expression = /\$\{\{[^{}]{1,1024}\}\}/gu;
-  const matches = [...name.matchAll(expression)];
-  const parts = [];
-  let cursor = 0;
-  for (const match of matches) {
-    parts.push(name.slice(cursor, match.index));
-    cursor = match.index + match[0].length;
-  }
-  parts.push(name.slice(cursor));
-  const fixedTextLength = parts.reduce((total, part) => total + part.length, 0);
-  if (
-    matches.length === 0 ||
-    matches.length > REQUIRED_CHECK_EXPRESSION_LIMIT ||
-    name.length + parts.length > REQUIRED_CHECK_MATCH_WORK_LIMIT ||
-    parts.some((part) => part.includes("${{") || part.includes("}}"))
-  ) {
-    return Object.freeze({ exact: undefined, mayEqual: () => true });
-  }
+  const parsed = parseDynamicCheckNameParts(name);
+  if (parsed === undefined) return Object.freeze({ exact: undefined, mayEqual: () => true });
   return Object.freeze({
     exact: undefined,
-    mayEqual: (required) => fixedCheckNamePartsMayEqual(required, parts, fixedTextLength)
+    mayEqual: (required) => fixedCheckNamePartsMayEqual(required, parsed.parts, parsed.fixedTextLength)
   });
 }
 
@@ -1882,10 +1905,38 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
       /unevaluable possible check-name collision/u
     );
   }
-  for (const name of [
-    Array.from({ length: REQUIRED_CHECK_EXPRESSION_LIMIT + 1 }, () => "${{ matrix.value }}").join("-"),
-    "x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT + 1) + "${{ matrix.value }}"
-  ]) {
+  const expression = "${{ matrix.value }}";
+  const dense64 = Array.from({ length: REQUIRED_CHECK_EXPRESSION_LIMIT }, () => expression).join("-");
+  const dense65 = dense64 + "-" + expression;
+  assert.equal(requiredCheckName("fixture", { name: dense64 }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: dense65 }).mayEqual("validate"), true);
+  let yieldedMatches = 0;
+  function* countedDenseMatches() {
+    for (const match of dense65.matchAll(REQUIRED_CHECK_EXPRESSION_PATTERN)) {
+      yieldedMatches += 1;
+      yield match;
+    }
+  }
+  assert.equal(parseDynamicCheckNameParts(dense65, countedDenseMatches()), undefined);
+  assert.equal(yieldedMatches, REQUIRED_CHECK_EXPRESSION_LIMIT + 1);
+
+  const exactWorkName = "x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT - expression.length) + expression;
+  const overWorkName = exactWorkName + "x";
+  assert.equal(exactWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT);
+  assert.equal(overWorkName.length, REQUIRED_CHECK_MATCH_WORK_LIMIT + 1);
+  assert.equal(requiredCheckName("fixture", { name: exactWorkName }).mayEqual("validate"), false);
+  assert.equal(requiredCheckName("fixture", { name: overWorkName }).mayEqual("validate"), true);
+  let openedOverWorkIterator = 0;
+  const overWorkMatches = {
+    [Symbol.iterator]() {
+      openedOverWorkIterator += 1;
+      return [][Symbol.iterator]();
+    }
+  };
+  assert.equal(parseDynamicCheckNameParts(overWorkName, overWorkMatches), undefined);
+  assert.equal(openedOverWorkIterator, 0);
+
+  for (const name of [dense65, overWorkName]) {
     const overBudgetNameOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
     overBudgetNameOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.overBudget = {
       name,
@@ -1902,6 +1953,11 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   assert.equal(fixedPartCandidate.mayEqual("validate"), true);
   assert.equal(fixedPartCandidate.mayEqual("valixate"), false);
   assert.equal(fixedPartCandidate.mayEqual("x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT + 1)), true);
+  const orderedPartsCandidate = requiredCheckName("fixture", {
+    name: "${{ matrix.first }}alpha${{ matrix.second }}beta${{ matrix.third }}"
+  });
+  assert.equal(orderedPartsCandidate.mayEqual("prefix-alpha-middle-beta-suffix"), true);
+  assert.equal(orderedPartsCandidate.mayEqual("prefix-beta-middle-alpha-suffix"), false);
 
   const missingStackTrigger = structuredClone(capabilityGraph);
   missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
