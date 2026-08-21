@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
+  createPosixProcessTracker,
   createRContractPhases,
   orderRContractPhases,
   parseRContractSelection,
@@ -138,6 +139,21 @@ test("the kernel agent exposes independently selectable named operation owners",
   );
   assert.match(source, /kernel_agent_case_run_count,\s*1L,/su);
   assert.match(source, /Sys\.unsetenv\("OPEN_WRANGLER_R_KERNEL_CASE"\)/u);
+});
+
+test("the direct full kernel-agent alias runs every named owner in a fresh strict process", () => {
+  const source = readFileSync(new URL("../r/tests/run_kernel_agent_case.R", import.meta.url), "utf8");
+  const declared = /kernel_agent_cases <- c\(([\s\S]*?)\)\ncase_file/u.exec(source)?.[1];
+  assert.ok(declared);
+  assert.deepEqual(
+    [...declared.matchAll(/"([a-z][a-z0-9-]+)"/gu)].map(([, caseId]) => caseId),
+    R_KERNEL_AGENT_CASES
+  );
+  assert.match(source, /if \(identical\(case_name, "full"\)\) \{/u);
+  assert.match(source, /vapply\(kernel_agent_cases, function\(kernel_case\) \{/u);
+  assert.match(source, /OPEN_WRANGLER_R_CONTRACT_TEST=r\/tests\/kernel_agent\.R/u);
+  assert.match(source, /OPEN_WRANGLER_R_KERNEL_CASE=%s/u);
+  assert.doesNotMatch(source, /identical\(case_name, "full"\)[\s\S]{0,120}source\(case_file/u);
 });
 
 test("native R contracts fail unexpected warnings without treating messages as warnings", () => {
@@ -360,11 +376,28 @@ test("an external termination observed between phases prevents the next phase fr
 function fixtureChild(pid, { code, error, signal = null } = {}) {
   const child = new EventEmitter();
   child.pid = pid;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
   queueMicrotask(() => {
     if (error) child.emit("error", error);
     if (code !== undefined || signal !== null || error) child.emit("close", code ?? null, signal);
   });
   return child;
+}
+
+function fixtureProcessTracker({ onSignal, settled = false } = {}) {
+  let live = !settled;
+  return {
+    failure: new Promise(() => {}),
+    assertHealthy: () => {},
+    observe: () => (live ? 1 : 0),
+    isSettled: (observer) => !live && observer.isSettled(),
+    signal: (signal) => {
+      onSignal?.(signal);
+      live = false;
+    },
+    stop: () => {}
+  };
 }
 
 test("native R phase receipts identify success, timeout, and ordinary failure exactly", async () => {
@@ -377,7 +410,7 @@ test("native R phase receipts identify success, timeout, and ordinary failure ex
       return clock;
     },
     spawnProcess: () => fixtureChild(41001, { code: 0 }),
-    isGroupRunning: () => false,
+    createProcessTracker: () => fixtureProcessTracker({ settled: true }),
     writeLine: (line) => lines.push(line)
   });
   assert.deepEqual(lines, [
@@ -385,8 +418,8 @@ test("native R phase receipts identify success, timeout, and ordinary failure ex
     "[r-contract] PASS native frame contract: decimal-ordering in 1.3s"
   ]);
 
-  let live = true;
   let timeoutChild;
+  let timeoutTracker;
   await assert.rejects(
     runRContractPhase(
       { ...phase, timeoutMs: 2 },
@@ -394,15 +427,14 @@ test("native R phase receipts identify success, timeout, and ordinary failure ex
         now: () => 5_000,
         spawnProcess: () => {
           timeoutChild = fixtureChild(41002);
+          timeoutTracker = fixtureProcessTracker({
+            onSignal: (signal) => {
+              if (signal === "SIGTERM") timeoutChild.emit("close", null, signal);
+            }
+          });
           return timeoutChild;
         },
-        isGroupRunning: () => live,
-        signalProcess: (_pid, signal) => {
-          if (signal === "SIGTERM") {
-            live = false;
-            timeoutChild.emit("close", null, "SIGTERM");
-          }
-        },
+        createProcessTracker: () => timeoutTracker,
         terminationGraceMs: 25,
         killGraceMs: 25,
         writeLine: () => {}
@@ -414,7 +446,7 @@ test("native R phase receipts identify success, timeout, and ordinary failure ex
     runRContractPhase(phase, {
       now: () => 5_000,
       spawnProcess: () => fixtureChild(41003, { code: 17 }),
-      isGroupRunning: () => false,
+      createProcessTracker: () => fixtureProcessTracker({ settled: true }),
       writeLine: () => {}
     }),
     /FAIL native frame contract: decimal-ordering after 0\.0s with exit 17/u
@@ -434,6 +466,7 @@ test("Windows R contract phases launch through the existing Job Object superviso
         spawnReceipt = { command, args, options };
         const child = new EventEmitter();
         child.stdin = new PassThrough();
+        child.stdout = new PassThrough();
         child.stderr = new PassThrough();
         child.stdin.setEncoding("utf8");
         child.stdin.on("data", (frame) => {
@@ -454,7 +487,7 @@ test("Windows R contract phases launch through the existing Job Object superviso
     new URL("./windows-job-supervisor.ps1", import.meta.url).pathname
   ]);
   assert.equal(spawnReceipt.options.detached, false);
-  assert.deepEqual(spawnReceipt.options.stdio, ["pipe", "inherit", "pipe"]);
+  assert.deepEqual(spawnReceipt.options.stdio, ["pipe", "pipe", "pipe"]);
   assert.equal(launches.length, 1);
   assert.equal(launches[0].command, "launch");
   assert.equal(launches[0].executable, phase.command);
@@ -496,6 +529,108 @@ test("a Windows post-spawn control failure terminates and latches before a later
   assert.match(failure.errors[0].errors[1].message, /did not provide one exact empty-tree attestation/u);
 });
 
+function processIdentity(pid, parentPid, startIdentity, ownerMarked = false) {
+  return { pid, parentPid, groupId: pid, state: "S", startIdentity, ownerMarked };
+}
+
+test("POSIX ownership follows marker-free descendants and binds every signal to a stable identity", () => {
+  const processes = new Map([
+    [61_001, processIdentity(61_001, 1, "root")],
+    [61_002, processIdentity(61_002, 61_001, "child", false)]
+  ]);
+  const signals = [];
+  const tracker = createPosixProcessTracker(61_001, "owner", {
+    readProcessIdentity: (pid) => processes.get(pid),
+    listProcessIdentities: () => [...processes.values()],
+    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    observationIntervalMs: 60_000
+  });
+  tracker.signal("SIGTERM");
+  tracker.stop();
+  assert.deepEqual(signals, [
+    [61_001, "SIGTERM"],
+    [61_002, "SIGTERM"]
+  ]);
+});
+
+test("POSIX ownership never signals a PID reused after an observed descendant exits", () => {
+  const processes = new Map([
+    [62_001, processIdentity(62_001, 1, "root")],
+    [62_002, processIdentity(62_002, 62_001, "owned-child")]
+  ]);
+  const signals = [];
+  const tracker = createPosixProcessTracker(62_001, "owner", {
+    readProcessIdentity: (pid) => processes.get(pid),
+    listProcessIdentities: () => [...processes.values()],
+    signalProcess: (pid, signal) => signals.push([pid, signal]),
+    observationIntervalMs: 60_000
+  });
+  processes.set(62_002, processIdentity(62_002, 62_001, "foreign-reuse"));
+  tracker.signal("SIGKILL");
+  tracker.stop();
+  assert.deepEqual(signals, [[62_001, "SIGKILL"]]);
+});
+
+test("POSIX ownership fails closed when an observed descendant becomes unverifiable", async () => {
+  const processes = new Map([
+    [63_001, processIdentity(63_001, 1, "root")],
+    [63_002, processIdentity(63_002, 63_001, "child")]
+  ]);
+  let unreadable = false;
+  const tracker = createPosixProcessTracker(63_001, "owner", {
+    readProcessIdentity: (pid) => {
+      if (pid === 63_002 && unreadable) {
+        const error = new Error("permission denied");
+        error.code = "EACCES";
+        throw error;
+      }
+      return processes.get(pid);
+    },
+    listProcessIdentities: () => [...processes.values()],
+    observationIntervalMs: 60_000
+  });
+  unreadable = true;
+  assert.throws(() => tracker.observe(), /process tree became unverifiable.*permission denied/u);
+  assert.equal((await tracker.failure).processTreeUnsettled, true);
+  tracker.stop();
+});
+
+test("phase output is byte-bounded and settles before suppressing every later phase", async () => {
+  const first = { ...phases()[0], timeoutMs: 5_000 };
+  const second = phases()[1];
+  let child;
+  let starts = 0;
+  let tracker;
+  let failure;
+  let forwardedBytes = 0;
+  try {
+    await runRContractPhases([first, second], {
+      maximumOutputBytes: 32,
+      spawnProcess: () => {
+        starts += 1;
+        child = fixtureChild(64_001);
+        tracker = fixtureProcessTracker({ onSignal: (signal) => child.emit("close", null, signal) });
+        queueMicrotask(() => child.stdout.write(Buffer.alloc(33, 0x78)));
+        return child;
+      },
+      createProcessTracker: () => tracker,
+      terminationGraceMs: 50,
+      killGraceMs: 50,
+      writeLine: () => {},
+      writeOutput: (chunk) => {
+        forwardedBytes += chunk.length;
+      }
+    });
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof AggregateError);
+  assert.equal(starts, 1);
+  assert.equal(forwardedBytes, 0);
+  assert.match(failure.message, /stopped after frame:decimal-ordering/u);
+  assert.match(failure.errors[0].message, /exceeded its 32-byte stdout\/stderr bound/u);
+});
+
 test(
   "a timed-out SIGTERM-ignoring phase and descendant settle before the next phase starts",
   { skip: process.platform === "win32" },
@@ -508,7 +643,9 @@ test(
         "-e",
         [
           'const { spawn } = require("node:child_process");',
-          'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });',
+          "const descendantEnvironment = { ...process.env };",
+          "delete descendantEnvironment.OPEN_WRANGLER_R_CONTRACT_OWNER;",
+          'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { detached: true, env: descendantEnvironment, stdio: "ignore" });',
           "process.stdout.write(`DETACHED:${descendant.pid}\\n`);",
           "descendant.unref();",
           'process.on("SIGTERM", () => {});',
@@ -675,8 +812,7 @@ test("timeout diagnostics preserve primary then cleanup failure and stop later p
         phaseStarts += 1;
         return fixtureChild(41999);
       },
-      isGroupRunning: () => true,
-      signalProcess: () => {},
+      createProcessTracker: () => fixtureProcessTracker(),
       sleepFor: async () => {},
       terminationGraceMs: 1,
       killGraceMs: 1,

@@ -16,6 +16,8 @@ const DEFAULT_R_CONTRACT_SEED = 20_260_820;
 const POSIX_OWNER_ENVIRONMENT_KEY = "OPEN_WRANGLER_R_CONTRACT_OWNER";
 const PROCESS_TERMINATION_GRACE_MS = 2_000;
 const PROCESS_KILL_GRACE_MS = 5_000;
+const POSIX_PROCESS_OBSERVATION_INTERVAL_MS = 10;
+const R_CONTRACT_PHASE_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
@@ -361,7 +363,7 @@ function deadlineResult(promise, timeoutMs) {
   });
 }
 
-function phaseDeadlineResult(promise, timeoutMs, terminationSignal) {
+function phaseDeadlineResult(promise, timeoutMs, terminationSignal, failurePromise) {
   return new Promise((resolveDeadline) => {
     let settled = false;
     const finish = (value) => {
@@ -374,26 +376,90 @@ function phaseDeadlineResult(promise, timeoutMs, terminationSignal) {
     const onAbort = () => finish({ kind: "signal", signal: terminationSignal.reason });
     const timer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
     promise.then((value) => finish({ kind: "exit", value }));
+    failurePromise?.then((error) => finish({ kind: "failure", error }));
     if (terminationSignal?.aborted) onAbort();
     else terminationSignal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
-function processGroupRunning(pid, signalProcess = process.kill) {
+function parseLinuxProcessIdentity(pid, contents) {
+  const close = contents.lastIndexOf(")");
+  if (close < 0) throw new Error(`The Linux process identity for PID ${pid} was malformed.`);
+  const fields = contents
+    .slice(close + 2)
+    .trim()
+    .split(/\s+/u);
+  if (fields.length < 20 || !/^[0-9]+$/u.test(fields[1]) || !/^[0-9]+$/u.test(fields[19])) {
+    throw new Error(`The Linux process identity for PID ${pid} was incomplete.`);
+  }
+  return Object.freeze({
+    pid,
+    parentPid: Number(fields[1]),
+    groupId: Number(fields[2]),
+    state: fields[0],
+    startIdentity: fields[19]
+  });
+}
+
+function readLinuxProcessIdentity(pid) {
   try {
-    signalProcess(-pid, 0);
-    return true;
+    return parseLinuxProcessIdentity(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
   } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    if (error?.code === "EPERM") return true;
+    if (["ENOENT", "ESRCH"].includes(error?.code)) return undefined;
+    throw new Error(`The observed Linux process ${pid} could not be verified: ${error.message}`, { cause: error });
+  }
+}
+
+function linuxProcessHasOwner(pid, ownerToken) {
+  const expected = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
+  try {
+    return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(expected);
+  } catch (error) {
+    if (["EACCES", "ENOENT", "EPERM", "ESRCH"].includes(error?.code)) return false;
     throw error;
   }
 }
 
-function listPosixOwnerProcesses(ownerToken) {
-  const expected = Buffer.from(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`, "utf8");
+function parsePsProcessIdentity(line) {
+  const match =
+    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
+      line
+    );
+  if (!match) return undefined;
+  return Object.freeze({
+    pid: Number(match[1]),
+    parentPid: Number(match[2]),
+    groupId: Number(match[3]),
+    state: "?",
+    startIdentity: match[4],
+    command: match[5]
+  });
+}
+
+function readPsProcessIdentity(pid) {
+  let output;
+  try {
+    output = execFileSync("ps", ["-ww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+  } catch (error) {
+    if (error?.status === 1) return undefined;
+    throw new Error(`The observed POSIX process ${pid} could not be verified: ${error.message}`, { cause: error });
+  }
+  const identity = parsePsProcessIdentity(output.trimEnd());
+  if (!identity) throw new Error(`The observed POSIX process identity for PID ${pid} was malformed.`);
+  return identity;
+}
+
+function readPosixProcessIdentity(pid) {
+  return process.platform === "linux" ? readLinuxProcessIdentity(pid) : readPsProcessIdentity(pid);
+}
+
+function listPosixProcessIdentities(ownerToken) {
   if (process.platform !== "linux") {
-    const output = execFileSync("ps", ["eww", "-axo", "pid=,command="], {
+    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"]
@@ -401,53 +467,169 @@ function listPosixOwnerProcesses(ownerToken) {
     const marker = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
     return output
       .split("\n")
-      .filter((line) => line.includes(marker))
-      .map((line) => Number(/^\s*([1-9][0-9]*)\s/u.exec(line)?.[1]))
-      .filter(Number.isSafeInteger);
+      .map(parsePsProcessIdentity)
+      .filter(Boolean)
+      .map((identity) => Object.freeze({ ...identity, ownerMarked: identity.command.includes(marker) }));
   }
-  const owned = [];
+  const identities = [];
   for (const entry of readdirSync("/proc", { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[1-9][0-9]*$/u.test(entry.name)) continue;
     const pid = Number(entry.name);
     try {
-      const environment = readFileSync(`/proc/${entry.name}/environ`);
-      const values = environment.toString("utf8").split("\0");
-      if (values.some((value) => Buffer.from(value, "utf8").equals(expected))) owned.push(pid);
+      const identity = readLinuxProcessIdentity(pid);
+      if (identity) identities.push(Object.freeze({ ...identity, ownerMarked: linuxProcessHasOwner(pid, ownerToken) }));
     } catch (error) {
-      if (!["EACCES", "ENOENT", "EPERM", "ESRCH"].includes(error?.code)) throw error;
+      if (!/could not be verified/u.test(error.message)) throw error;
     }
   }
-  return owned;
+  return identities;
 }
 
-function posixTreeRunning(pid, ownerToken, { isGroupRunning, listOwnedProcesses }) {
-  return isGroupRunning(pid) || listOwnedProcesses(ownerToken).length > 0;
+function sameProcessIdentity(left, right) {
+  return left?.pid === right?.pid && left?.startIdentity === right?.startIdentity;
 }
 
-function processRunning(pid, signalProcess) {
-  try {
-    signalProcess(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    if (error?.code === "EPERM") return true;
-    throw error;
-  }
-}
-
-async function waitForPosixSettlement(
-  pid,
+export function createPosixProcessTracker(
+  rootPid,
   ownerToken,
-  observer,
-  timeoutMs,
-  { isGroupRunning, listOwnedProcesses, signalProcess, sleepFor, knownOwnedProcesses }
+  {
+    readProcessIdentity = readPosixProcessIdentity,
+    listProcessIdentities = listPosixProcessIdentities,
+    signalProcess = process.kill,
+    observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
+  } = {}
 ) {
+  if (!Number.isSafeInteger(rootPid) || rootPid <= 0) {
+    throw new Error("The R contract phase did not expose an owned POSIX process.");
+  }
+  const observed = new Map();
+  const retiredPids = new Set();
+  let failure;
+  let resolveFailure;
+  const failurePromise = new Promise((resolveValue) => {
+    resolveFailure = resolveValue;
+  });
+  const latch = (error) => {
+    if (failure) return;
+    failure = new Error(`The R contract process tree became unverifiable: ${error.message}`, { cause: error });
+    failure.processTreeUnsettled = true;
+    resolveFailure(failure);
+  };
+  const verifiedIdentity = (expected) => {
+    let current;
+    try {
+      current = readProcessIdentity(expected.pid);
+    } catch (error) {
+      latch(error);
+      throw failure;
+    }
+    if (!current || current.state === "Z") return undefined;
+    if (!sameProcessIdentity(expected, current)) return undefined;
+    return current;
+  };
+  const observe = () => {
+    if (failure) throw failure;
+    for (const [pid, expected] of observed) {
+      if (!verifiedIdentity(expected)) {
+        observed.delete(pid);
+        retiredPids.add(pid);
+      }
+    }
+    let snapshot;
+    try {
+      snapshot = listProcessIdentities(ownerToken);
+    } catch (error) {
+      latch(error);
+      throw failure;
+    }
+    const pending = new Map(snapshot.map((identity) => [identity.pid, identity]));
+    let root;
+    try {
+      root = readProcessIdentity(rootPid);
+    } catch (error) {
+      latch(error);
+      throw failure;
+    }
+    if (root && root.state !== "Z") pending.set(rootPid, root);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const identity of pending.values()) {
+        if (observed.has(identity.pid) || retiredPids.has(identity.pid)) continue;
+        const belongs = identity.pid === rootPid || identity.ownerMarked === true || observed.has(identity.parentPid);
+        if (!belongs) continue;
+        let verified;
+        try {
+          verified = readProcessIdentity(identity.pid);
+        } catch (error) {
+          latch(error);
+          throw failure;
+        }
+        if (!verified || verified.state === "Z" || !sameProcessIdentity(identity, verified)) continue;
+        observed.set(identity.pid, verified);
+        changed = true;
+      }
+    }
+    return observed.size;
+  };
+  try {
+    const root = readProcessIdentity(rootPid);
+    if (!root || root.state === "Z") {
+      throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
+    }
+    observed.set(rootPid, root);
+    observe();
+  } catch (error) {
+    latch(error);
+    // The latched failure is surfaced through the phase and settlement paths.
+  }
+  const interval = setInterval(() => {
+    try {
+      observe();
+    } catch {
+      clearInterval(interval);
+    }
+  }, observationIntervalMs);
+  interval.unref?.();
+  return Object.freeze({
+    failure: failurePromise,
+    assertHealthy: () => {
+      if (failure) throw failure;
+    },
+    observe,
+    isSettled: (observer) => {
+      observe();
+      return observed.size === 0 && observer.isSettled();
+    },
+    signal: (signal) => {
+      observe();
+      for (const expected of [...observed.values()].sort((left, right) => left.pid - right.pid)) {
+        if (!verifiedIdentity(expected)) {
+          observed.delete(expected.pid);
+          retiredPids.add(expected.pid);
+          continue;
+        }
+        try {
+          signalProcess(expected.pid, signal);
+        } catch (error) {
+          if (error?.code !== "ESRCH") {
+            latch(error);
+            throw failure;
+          }
+          observed.delete(expected.pid);
+          retiredPids.add(expected.pid);
+        }
+      }
+    },
+    stop: () => clearInterval(interval)
+  });
+}
+
+async function waitForPosixSettlement(tracker, observer, timeoutMs, { sleepFor }) {
   const deadline = performance.now() + timeoutMs;
   let quietObservations = 0;
   do {
-    for (const ownedPid of listOwnedProcesses(ownerToken)) knownOwnedProcesses.add(ownedPid);
-    const knownRunning = [...knownOwnedProcesses].some((ownedPid) => processRunning(ownedPid, signalProcess));
-    if (!isGroupRunning(pid) && !knownRunning && observer.isSettled()) {
+    if (tracker.isSettled(observer)) {
       quietObservations += 1;
       if (quietObservations >= 2) return true;
     } else {
@@ -460,54 +642,82 @@ async function waitForPosixSettlement(
 
 async function settlePosixProcessTree(
   child,
-  ownerToken,
   observer,
+  tracker,
   {
-    signalProcess = process.kill,
-    isGroupRunning = (pid) => processGroupRunning(pid, signalProcess),
-    listOwnedProcesses = listPosixOwnerProcesses,
     sleepFor = sleep,
     terminationGraceMs = PROCESS_TERMINATION_GRACE_MS,
     killGraceMs = PROCESS_KILL_GRACE_MS,
     firstSignal = "SIGTERM"
   } = {}
 ) {
-  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
-    throw new Error("The R contract phase did not expose an owned POSIX process group.");
-  }
-  const knownOwnedProcesses = new Set();
-  const signalOwnedTree = (signal) => {
-    try {
-      signalProcess(-child.pid, signal);
-    } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
-    }
-    for (const pid of listOwnedProcesses(ownerToken)) knownOwnedProcesses.add(pid);
-    for (const pid of knownOwnedProcesses) {
-      if (pid === child.pid) continue;
-      try {
-        signalProcess(pid, signal);
-      } catch (error) {
-        if (error?.code !== "ESRCH") throw error;
-      }
-    }
-  };
-  const settlementOptions = {
-    isGroupRunning,
-    knownOwnedProcesses,
-    listOwnedProcesses,
-    signalProcess,
-    sleepFor
-  };
-  if (await waitForPosixSettlement(child.pid, ownerToken, observer, 1, settlementOptions)) return;
-  signalOwnedTree(firstSignal);
-  if (await waitForPosixSettlement(child.pid, ownerToken, observer, terminationGraceMs, settlementOptions)) return;
-  signalOwnedTree("SIGKILL");
-  if (await waitForPosixSettlement(child.pid, ownerToken, observer, killGraceMs, settlementOptions)) return;
+  tracker.assertHealthy();
+  if (await waitForPosixSettlement(tracker, observer, 1, { sleepFor })) return;
+  tracker.signal(firstSignal);
+  if (await waitForPosixSettlement(tracker, observer, terminationGraceMs, { sleepFor })) return;
+  tracker.signal("SIGKILL");
+  if (await waitForPosixSettlement(tracker, observer, killGraceMs, { sleepFor })) return;
   throw new Error(`The R contract process tree ${child.pid} remained live after bounded ${firstSignal} and SIGKILL.`);
 }
 
-function createWindowsJobStderrProtocol(stream, token, writeError) {
+function createPhaseOutputBudget(maximumBytes) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0 || maximumBytes > R_CONTRACT_PHASE_OUTPUT_MAX_BYTES) {
+    throw new RangeError(
+      `The R contract phase output bound must be between 1 and ${R_CONTRACT_PHASE_OUTPUT_MAX_BYTES} bytes.`
+    );
+  }
+  let bytes = 0;
+  let failure;
+  let resolveFailure;
+  const failurePromise = new Promise((resolveValue) => {
+    resolveFailure = resolveValue;
+  });
+  const reserve = (chunk, channel) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (failure) return undefined;
+    if (bytes + buffer.length > maximumBytes) {
+      failure = new Error(
+        `The R contract phase exceeded its ${maximumBytes}-byte stdout/stderr bound while reading ${channel}.`
+      );
+      failure.stopAfterPhase = true;
+      resolveFailure(failure);
+      return undefined;
+    }
+    bytes += buffer.length;
+    return buffer;
+  };
+  const consume = (chunk, channel, writer) => {
+    const buffer = reserve(chunk, channel);
+    if (!buffer) return;
+    try {
+      writer(buffer);
+    } catch (error) {
+      if (!failure) {
+        failure = new Error(`The R contract ${channel} sink failed: ${error.message}`, { cause: error });
+        failure.stopAfterPhase = true;
+        resolveFailure(failure);
+      }
+    }
+  };
+  return Object.freeze({
+    failure: failurePromise,
+    reserve,
+    consume,
+    attach: (stream, channel, writer) => {
+      if (!stream || typeof stream.on !== "function") return;
+      stream.on("data", (chunk) => consume(chunk, channel, writer));
+      stream.once("error", (error) => {
+        if (!failure) {
+          failure = new Error(`The R contract ${channel} stream failed: ${error.message}`, { cause: error });
+          failure.stopAfterPhase = true;
+          resolveFailure(failure);
+        }
+      });
+    }
+  });
+}
+
+function createWindowsJobStderrProtocol(stream, token, writeError, outputBudget) {
   const marker = Buffer.from(`${WINDOWS_JOB_ATTESTATION_PREFIX}${token}\n`, "ascii");
   let pending = Buffer.alloc(0);
   let markerCount = 0;
@@ -518,6 +728,10 @@ function createWindowsJobStderrProtocol(stream, token, writeError) {
   const output = new Transform({
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (!outputBudget.reserve(buffer, "stderr")) {
+        callback();
+        return;
+      }
       const combined = pending.length === 0 ? buffer : Buffer.concat([pending, buffer]);
       let offset = 0;
       while (true) {
@@ -547,7 +761,7 @@ function createWindowsJobStderrProtocol(stream, token, writeError) {
   return attestation;
 }
 
-function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError }) {
+function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError, writeOutput, outputBudget }) {
   const token = randomToken();
   const launchFrame = `${JSON.stringify({
     protocol: 1,
@@ -573,7 +787,7 @@ function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError }) 
       detached: false,
       env: phase.environment,
       windowsHide: true,
-      stdio: ["pipe", "inherit", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     }
   );
   let launchError;
@@ -583,6 +797,8 @@ function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError }) 
     !child.stdin ||
     typeof child.stdin.on !== "function" ||
     typeof child.stdin.write !== "function" ||
+    !child.stdout ||
+    typeof child.stdout.on !== "function" ||
     !child.stderr ||
     typeof child.stderr.pipe !== "function"
   ) {
@@ -592,7 +808,8 @@ function spawnWindowsJobPhase(phase, { spawnProcess, randomToken, writeError }) 
       child.stdin.on("error", (error) => {
         controlError ??= error;
       });
-      attestation = createWindowsJobStderrProtocol(child.stderr, token, writeError);
+      outputBudget.attach(child.stdout, "stdout", writeOutput);
+      attestation = createWindowsJobStderrProtocol(child.stderr, token, writeError, outputBudget);
       child.stdin.write(launchFrame, "utf8", (error) => {
         controlError ??= error;
       });
@@ -671,7 +888,9 @@ async function runRContractPhaseAsync(
     platform = process.platform,
     randomToken = randomUUID,
     terminationSignal,
+    maximumOutputBytes = R_CONTRACT_PHASE_OUTPUT_MAX_BYTES,
     writeError = (chunk) => process.stderr.write(chunk),
+    writeOutput = (chunk) => process.stdout.write(chunk),
     writeLine = (line) => process.stdout.write(`${line}\n`),
     ...settlementOptions
   } = {}
@@ -679,111 +898,134 @@ async function runRContractPhaseAsync(
   const started = now();
   writeLine(`[r-contract] START ${phase.label}; timeout ${formattedSeconds(phase.timeoutMs)}`);
   const ownerToken = randomToken();
+  const outputBudget = createPhaseOutputBudget(maximumOutputBytes);
   const launch =
     platform === "win32"
-      ? spawnWindowsJobPhase(phase, { spawnProcess, randomToken: () => ownerToken, writeError })
+      ? spawnWindowsJobPhase(phase, {
+          spawnProcess,
+          randomToken: () => ownerToken,
+          writeError,
+          writeOutput,
+          outputBudget
+        })
       : Object.freeze({
           child: spawnProcess(phase.command, phase.args, {
             cwd: root,
             detached: true,
             env: { ...phase.environment, [POSIX_OWNER_ENVIRONMENT_KEY]: ownerToken },
-            stdio: "inherit",
+            stdio: ["ignore", "pipe", "pipe"],
             windowsHide: true
           })
         });
-  const observer = observeChild(launch.child);
-  if (launch.launchError) {
-    const primary = new Error(`[r-contract] ERROR ${phase.label}: ${launch.launchError.message}`, {
-      cause: launch.launchError
-    });
-    try {
-      await launch.terminate();
-      await requireWindowsSettlement(
-        launch,
-        observer,
-        settlementOptions.windowsSettlementMs ?? WINDOWS_JOB_SETTLEMENT_MS
-      );
-    } catch (cleanup) {
-      throw combinePhaseAndCleanupFailure(primary, cleanup);
-    }
-    throw primary;
+  if (platform !== "win32") {
+    outputBudget.attach(launch.child.stdout, "stdout", writeOutput);
+    outputBudget.attach(launch.child.stderr, "stderr", writeError);
   }
-  const deadline = await phaseDeadlineResult(observer.promise, phase.timeoutMs, terminationSignal);
-  const elapsed = Math.max(0, now() - started);
-  if (deadline.kind !== "exit") {
-    const interruptedSignal = deadline.kind === "signal" ? deadline.signal : undefined;
-    const primary =
-      deadline.kind === "timeout"
-        ? new Error(
-            `[r-contract] TIMEOUT ${phase.label} after ${formattedSeconds(elapsed)}; phase limit ${formattedSeconds(phase.timeoutMs)}.`
-          )
-        : new Error(`[r-contract] INTERRUPTED ${phase.label} by ${interruptedSignal}.`);
-    if (interruptedSignal !== undefined) primary.stopAfterPhase = true;
-    try {
-      if (platform === "win32") {
+  const observer = observeChild(launch.child);
+  const createProcessTracker = settlementOptions.createProcessTracker ?? createPosixProcessTracker;
+  const tracker =
+    platform === "win32"
+      ? undefined
+      : createProcessTracker(launch.child.pid, ownerToken, {
+          readProcessIdentity: settlementOptions.readProcessIdentity,
+          listProcessIdentities: settlementOptions.listProcessIdentities,
+          signalProcess: settlementOptions.signalProcess,
+          observationIntervalMs: settlementOptions.observationIntervalMs
+        });
+  const failurePromise = tracker ? Promise.race([outputBudget.failure, tracker.failure]) : outputBudget.failure;
+  try {
+    if (launch.launchError) {
+      const primary = new Error(`[r-contract] ERROR ${phase.label}: ${launch.launchError.message}`, {
+        cause: launch.launchError
+      });
+      try {
         await launch.terminate();
         await requireWindowsSettlement(
           launch,
           observer,
           settlementOptions.windowsSettlementMs ?? WINDOWS_JOB_SETTLEMENT_MS
         );
-      } else {
-        await settlePosixProcessTree(launch.child, ownerToken, observer, {
-          ...settlementOptions,
-          ...(interruptedSignal === undefined ? {} : { firstSignal: interruptedSignal })
-        });
+      } catch (cleanup) {
+        throw combinePhaseAndCleanupFailure(primary, cleanup);
+      }
+      throw primary;
+    }
+    const deadline = await phaseDeadlineResult(observer.promise, phase.timeoutMs, terminationSignal, failurePromise);
+    const elapsed = Math.max(0, now() - started);
+    if (deadline.kind !== "exit") {
+      const interruptedSignal = deadline.kind === "signal" ? deadline.signal : undefined;
+      const primary =
+        deadline.kind === "timeout"
+          ? new Error(
+              `[r-contract] TIMEOUT ${phase.label} after ${formattedSeconds(elapsed)}; phase limit ${formattedSeconds(phase.timeoutMs)}.`
+            )
+          : deadline.kind === "signal"
+            ? new Error(`[r-contract] INTERRUPTED ${phase.label} by ${interruptedSignal}.`)
+            : deadline.error;
+      if (interruptedSignal !== undefined) primary.stopAfterPhase = true;
+      try {
+        if (platform === "win32") {
+          await launch.terminate();
+          await requireWindowsSettlement(
+            launch,
+            observer,
+            settlementOptions.windowsSettlementMs ?? WINDOWS_JOB_SETTLEMENT_MS
+          );
+        } else {
+          await settlePosixProcessTree(launch.child, observer, tracker, {
+            ...settlementOptions,
+            ...(interruptedSignal === undefined ? {} : { firstSignal: interruptedSignal })
+          });
+        }
+      } catch (cleanup) {
+        throw combinePhaseAndCleanupFailure(primary, cleanup);
+      }
+      throw primary;
+    }
+
+    const result = deadline.value;
+    let primary;
+    if (result.error) {
+      primary = new Error(
+        `[r-contract] ERROR ${phase.label} after ${formattedSeconds(elapsed)}: ${result.error.message}`,
+        {
+          cause: result.error
+        }
+      );
+    } else if (result.code !== 0) {
+      const outcome = result.code === null ? `signal ${result.signal ?? "unknown"}` : `exit ${result.code}`;
+      primary = new Error(`[r-contract] FAIL ${phase.label} after ${formattedSeconds(elapsed)} with ${outcome}.`);
+    }
+    if (platform === "win32" && launch.controlError()) {
+      primary ??= new Error(`[r-contract] ERROR ${phase.label}: ${launch.controlError().message}`, {
+        cause: launch.controlError()
+      });
+    }
+
+    try {
+      if (platform === "win32") {
+        await requireWindowsSettlement(launch, observer, 250);
+      } else if (!Number.isSafeInteger(launch.child.pid) || launch.child.pid <= 0) {
+        if (!primary) {
+          const ownership = new Error(`[r-contract] ERROR ${phase.label}: the phase exposed no owned process group.`);
+          ownership.processTreeUnsettled = true;
+          throw ownership;
+        }
+      } else if (!tracker.isSettled(observer)) {
+        primary ??= new Error(`[r-contract] ERROR ${phase.label}: the phase exited with live descendants.`);
+        await settlePosixProcessTree(launch.child, observer, tracker, settlementOptions);
       }
     } catch (cleanup) {
-      throw combinePhaseAndCleanupFailure(primary, cleanup);
+      throw combinePhaseAndCleanupFailure(
+        primary ?? new Error(`[r-contract] ERROR ${phase.label}: process-tree settlement failed.`),
+        cleanup
+      );
     }
-    throw primary;
+    if (primary) throw primary;
+    writeLine(`[r-contract] PASS ${phase.label} in ${formattedSeconds(elapsed)}`);
+  } finally {
+    tracker?.stop();
   }
-
-  const result = deadline.value;
-  let primary;
-  if (result.error) {
-    primary = new Error(
-      `[r-contract] ERROR ${phase.label} after ${formattedSeconds(elapsed)}: ${result.error.message}`,
-      {
-        cause: result.error
-      }
-    );
-  } else if (result.code !== 0) {
-    const outcome = result.code === null ? `signal ${result.signal ?? "unknown"}` : `exit ${result.code}`;
-    primary = new Error(`[r-contract] FAIL ${phase.label} after ${formattedSeconds(elapsed)} with ${outcome}.`);
-  }
-  if (platform === "win32" && launch.controlError()) {
-    primary ??= new Error(`[r-contract] ERROR ${phase.label}: ${launch.controlError().message}`, {
-      cause: launch.controlError()
-    });
-  }
-
-  try {
-    if (platform === "win32") {
-      await requireWindowsSettlement(launch, observer, 250);
-    } else if (!Number.isSafeInteger(launch.child.pid) || launch.child.pid <= 0) {
-      if (!primary) {
-        const ownership = new Error(`[r-contract] ERROR ${phase.label}: the phase exposed no owned process group.`);
-        ownership.processTreeUnsettled = true;
-        throw ownership;
-      }
-    } else if (
-      posixTreeRunning(launch.child.pid, ownerToken, {
-        isGroupRunning: settlementOptions.isGroupRunning ?? processGroupRunning,
-        listOwnedProcesses: settlementOptions.listOwnedProcesses ?? listPosixOwnerProcesses
-      })
-    ) {
-      primary ??= new Error(`[r-contract] ERROR ${phase.label}: the phase exited with live descendants.`);
-      await settlePosixProcessTree(launch.child, ownerToken, observer, settlementOptions);
-    }
-  } catch (cleanup) {
-    throw combinePhaseAndCleanupFailure(
-      primary ?? new Error(`[r-contract] ERROR ${phase.label}: process-tree settlement failed.`),
-      cleanup
-    );
-  }
-  if (primary) throw primary;
-  writeLine(`[r-contract] PASS ${phase.label} in ${formattedSeconds(elapsed)}`);
 }
 
 export async function runRContractPhases(
