@@ -17,8 +17,20 @@ export interface PackagedGridRangeCopyJourneyOptions {
 const expectedRangeText = "2400001\tBenelux\n2400002\tNordics";
 const clipboardWaitMs = 10_000;
 const maximumPriorClipboardBytes = 4 * 1024 * 1024;
-const maximumFailureDiagnosticBytes = 2 * 1024;
-const maximumFailureDiagnosticLeaves = 4;
+
+export class PackagedGridRangeCopyFailure extends Error {
+  readonly cleanupFailed: boolean;
+  readonly productFailed: boolean;
+
+  constructor(productFailed: boolean, cleanupFailed: boolean) {
+    super(
+      `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`
+    );
+    this.name = "PackagedGridRangeCopyFailure";
+    this.productFailed = productFailed;
+    this.cleanupFailed = cleanupFailed;
+  }
+}
 
 export function packagedGridCopyShortcut(platform: NodeJS.Platform): "Meta+c" | "Control+c" {
   return platform === "darwin" ? "Meta+c" : "Control+c";
@@ -28,43 +40,23 @@ export async function runPackagedGridRangeCopyLifecycle(
   exercise: () => Promise<void>,
   cleanup: () => Promise<void>
 ): Promise<void> {
-  let exerciseFailed = false;
-  let exerciseFailure: unknown;
+  let productFailed = false;
   let cleanupFailed = false;
-  let cleanupFailure: unknown;
   try {
     try {
       await exercise();
-    } catch (error) {
-      exerciseFailed = true;
-      exerciseFailure = error;
+    } catch {
+      productFailed = true;
     }
   } finally {
     try {
       await cleanup();
-    } catch (error) {
+    } catch {
       cleanupFailed = true;
-      cleanupFailure = error;
     }
   }
 
-  if (exerciseFailed) {
-    if (cleanupFailed) {
-      throw new AggregateError(
-        [exerciseFailure, cleanupFailure],
-        boundedPackagedGridRangeCopyFailure(exerciseFailure, cleanupFailure)
-      );
-    }
-    throw exerciseFailure;
-  }
-  if (cleanupFailed) throw cleanupFailure;
-}
-
-export function boundedPackagedGridRangeCopyFailure(productFailure: unknown, cleanupFailure: unknown): string {
-  const prefix = "The packaged grid range-copy journey and its bounded cleanup failed.";
-  const product = packagedGridRangeCopyFailureDiagnostic(productFailure);
-  const cleanup = packagedGridRangeCopyFailureDiagnostic(cleanupFailure);
-  return truncateUtf8(`${prefix} Product: ${product} Cleanup: ${cleanup}`, maximumFailureDiagnosticBytes);
+  if (productFailed || cleanupFailed) throw new PackagedGridRangeCopyFailure(productFailed, cleanupFailed);
 }
 
 export async function runWithPackagedGridClipboardRestoration(
@@ -88,39 +80,6 @@ export function validatePriorPackagedClipboard(value: unknown): string {
   return value;
 }
 
-function packagedGridRangeCopyFailureDiagnostic(error: unknown): string {
-  const leaves: string[] = [];
-  collectFailureDiagnosticLeaves(error, leaves, new Set<unknown>());
-  return leaves.length === 0 ? "Unknown failure." : leaves.join(" | ");
-}
-
-function collectFailureDiagnosticLeaves(error: unknown, leaves: string[], seen: Set<unknown>): void {
-  if (leaves.length >= maximumFailureDiagnosticLeaves || seen.has(error)) return;
-  if (typeof error === "object" && error !== null) seen.add(error);
-  if (error instanceof AggregateError) {
-    for (const child of error.errors) collectFailureDiagnosticLeaves(child, leaves, seen);
-    if (leaves.length > 0) return;
-  }
-  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "Non-Error failure.";
-  const normalized = raw.replace(/\s+/gu, " ").trim() || "Unnamed failure.";
-  leaves.push(truncateUtf8(normalized, 384));
-}
-
-function truncateUtf8(value: string, maximumBytes: number): string {
-  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
-  const suffix = "…";
-  const targetBytes = maximumBytes - Buffer.byteLength(suffix, "utf8");
-  let result = "";
-  let resultBytes = 0;
-  for (const character of value) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (resultBytes + characterBytes > targetBytes) break;
-    result += character;
-    resultBytes += characterBytes;
-  }
-  return `${result}${suffix}`;
-}
-
 function normalizeClipboardText(value: string): string {
   return value.replaceAll("\r\n", "\n");
 }
@@ -130,13 +89,11 @@ async function waitForHostClipboard(
   expected: string
 ): Promise<void> {
   const deadline = Date.now() + clipboardWaitMs;
-  let latest = "";
   do {
-    latest = normalizeClipboardText(await hostClipboard.readText());
-    if (latest === expected) return;
+    if (normalizeClipboardText(await hostClipboard.readText()) === expected) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   } while (Date.now() < deadline);
-  assert.equal(latest, expected, "The packaged webview did not publish its exact range through the host clipboard.");
+  throw new PackagedGridRangeCopyFailure(true, false);
 }
 
 export async function exercisePackagedGridRangeCopyJourney({

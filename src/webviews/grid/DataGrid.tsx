@@ -1530,6 +1530,7 @@ export function DataGrid({
                           return;
                         }
                         if (event.button !== 0 || gridCellControlTarget(event.target, event.currentTarget)) return;
+                        dismissCellActionMenu();
                         finishPointerSelection(undefined, false);
                         pointerSelectionFocusRequest.current = undefined;
                         const start = { row: row.rowNumber, column: column.position };

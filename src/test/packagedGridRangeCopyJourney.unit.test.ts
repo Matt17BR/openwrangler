@@ -12,12 +12,61 @@ describe("packaged grid range-copy journey", () => {
     expect(packagedGridCopyShortcut("win32")).toBe("Control+c");
   });
 
-  it("always performs bounded cleanup and preserves the original journey failure", async () => {
+  it.each([
+    { cleanupFailed: false, productFailed: true },
+    { cleanupFailed: true, productFailed: false },
+    { cleanupFailed: true, productFailed: true }
+  ])(
+    "uses one privacy-safe structural envelope when product=$productFailed cleanup=$cleanupFailed",
+    async ({ cleanupFailed, productFailed }) => {
+      const productSecret = "private-product-clipboard-sentinel";
+      const expectedSecret = "private-expected-clipboard-sentinel";
+      const cleanupSecret = "private-cleanup-clipboard-sentinel";
+      const productFailure = Object.assign(new Error("clipboard mismatch"), {
+        actual: productSecret,
+        expected: expectedSecret
+      });
+      let failure: unknown;
+      try {
+        await runPackagedGridRangeCopyLifecycle(
+          async () => {
+            if (productFailed) throw productFailure;
+          },
+          async () => {
+            if (cleanupFailed) throw new Error(cleanupSecret);
+          }
+        );
+      } catch (error) {
+        failure = error;
+      }
+
+      const record = failure as Error & { cleanupFailed?: boolean; productFailed?: boolean };
+      const expectedMessage = `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`;
+      expect({
+        cleanupFailed: record?.cleanupFailed,
+        isAggregate: failure instanceof AggregateError,
+        messageMatches: record?.message === expectedMessage,
+        name: record?.name,
+        productFailed: record?.productFailed,
+        retainsClipboardText: diagnosticRetainsAny(failure, [productSecret, expectedSecret, cleanupSecret])
+      }).toEqual({
+        cleanupFailed,
+        isAggregate: false,
+        messageMatches: true,
+        name: "PackagedGridRangeCopyFailure",
+        productFailed,
+        retainsClipboardText: false
+      });
+    }
+  );
+
+  it("always performs bounded cleanup and reports a structural product failure", async () => {
     const journeyFailure = new Error("pointer assertion failed");
     const calls: string[] = [];
 
-    await expect(
-      runPackagedGridRangeCopyLifecycle(
+    let failure: unknown;
+    try {
+      await runPackagedGridRangeCopyLifecycle(
         async () => {
           calls.push("exercise");
           throw journeyFailure;
@@ -25,15 +74,18 @@ describe("packaged grid range-copy journey", () => {
         async () => {
           calls.push("cleanup");
         }
-      )
-    ).rejects.toBe(journeyFailure);
+      );
+    } catch (error) {
+      failure = error;
+    }
     expect(calls).toEqual(["exercise", "cleanup"]);
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
   });
 
-  it("retains both failures without letting cleanup mask the journey failure", async () => {
+  it("reports combined product and cleanup failure without retaining either child", async () => {
     const journeyFailure = new Error("clipboard assertion failed");
     const cleanupFailure = new Error("session cleanup failed");
-
+    let failure: unknown;
     try {
       await runPackagedGridRangeCopyLifecycle(
         async () => {
@@ -45,12 +97,12 @@ describe("packaged grid range-copy journey", () => {
       );
       expect.unreachable("The lifecycle must report both failures.");
     } catch (error) {
-      expect(error).toBeInstanceOf(AggregateError);
-      expect((error as AggregateError).errors).toEqual([journeyFailure, cleanupFailure]);
+      failure = error;
     }
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, true));
   });
 
-  it("retains bounded product and cleanup children in the actual packaged result error field", async () => {
+  it("publishes the fixed structural envelope in the actual packaged result error field", async () => {
     const productFailure = new Error(`pointer assertion failed ${"p".repeat(2_048)}`);
     const cleanupFailure = new Error(`session cleanup failed ${"c".repeat(2_048)}`);
 
@@ -74,27 +126,31 @@ describe("packaged grid range-copy journey", () => {
       };
       const decoded = JSON.parse(JSON.stringify(resultEnvelope)) as typeof resultEnvelope;
 
-      expect(decoded.error).toContain("Product: pointer assertion failed");
-      expect(decoded.error).toContain("Cleanup: session cleanup failed");
-      expect(new TextEncoder().encode(decoded.error).byteLength).toBeLessThanOrEqual(2 * 1024);
-      expect(decoded.error).not.toContain("p".repeat(512));
-      expect(decoded.error).not.toContain("c".repeat(512));
+      expect({
+        bounded: new TextEncoder().encode(decoded.error).byteLength <= 2 * 1024,
+        messageMatches: decoded.error === packagedFailureMessage(true, true),
+        retainsChildText: decoded.error.includes("p".repeat(512)) || decoded.error.includes("c".repeat(512))
+      }).toEqual({ bounded: true, messageMatches: true, retainsChildText: false });
     }
   });
 
   it("reports a cleanup-only failure after a successful journey", async () => {
     const cleanupFailure = new Error("cleanup failed");
-    await expect(
-      runPackagedGridRangeCopyLifecycle(
+    let failure: unknown;
+    try {
+      await runPackagedGridRangeCopyLifecycle(
         async () => undefined,
         async () => {
           throw cleanupFailure;
         }
-      )
-    ).rejects.toBe(cleanupFailure);
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true));
   });
 
-  it("preserves both the product failure and clipboard restoration failure", async () => {
+  it("reports product and clipboard restoration failures without retaining either child", async () => {
     const productFailure = new Error("context-menu payload assertion failed");
     const restorationFailure = new Error("host clipboard restoration failed");
     const hostClipboard = {
@@ -104,15 +160,16 @@ describe("packaged grid range-copy journey", () => {
       })
     };
 
+    let failure: unknown;
     try {
       await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
         throw productFailure;
       });
       expect.unreachable("The production clipboard-restoration helper must report both failures.");
     } catch (error) {
-      expect(error).toBeInstanceOf(AggregateError);
-      expect((error as AggregateError).errors).toEqual([productFailure, restorationFailure]);
+      failure = error;
     }
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, true));
     expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
     expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
   });
@@ -162,3 +219,50 @@ describe("packaged grid range-copy journey", () => {
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 });
+
+function diagnosticRetainsAny(value: unknown, needles: readonly string[]): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (typeof current === "string") {
+      if (needles.some((needle) => current.includes(needle))) return true;
+      continue;
+    }
+    if (!(current instanceof Error)) continue;
+    const assertionLike = current as Error & { actual?: unknown; expected?: unknown };
+    pending.push(current.name, current.message, current.cause, assertionLike.actual, assertionLike.expected);
+    if (current instanceof AggregateError) pending.push(...current.errors);
+  }
+  return false;
+}
+
+function packagedFailureMessage(productFailed: boolean, cleanupFailed: boolean): string {
+  return `The packaged grid range-copy journey failed. Product stage: ${productFailed ? "failed" : "passed"}; cleanup stage: ${cleanupFailed ? "failed" : "passed"}; clipboard text retained: no.`;
+}
+
+function packagedFailureShape(value: unknown) {
+  const record = value as Error & { cleanupFailed?: boolean; productFailed?: boolean };
+  return {
+    cleanupFailed: record?.cleanupFailed,
+    isAggregate: value instanceof AggregateError,
+    messageMatches:
+      typeof record?.productFailed === "boolean" &&
+      typeof record.cleanupFailed === "boolean" &&
+      record.message === packagedFailureMessage(record.productFailed, record.cleanupFailed),
+    name: record?.name,
+    productFailed: record?.productFailed
+  };
+}
+
+function expectedPackagedFailureShape(productFailed: boolean, cleanupFailed: boolean) {
+  return {
+    cleanupFailed,
+    isAggregate: false,
+    messageMatches: true,
+    name: "PackagedGridRangeCopyFailure",
+    productFailed
+  };
+}

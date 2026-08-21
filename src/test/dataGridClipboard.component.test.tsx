@@ -182,6 +182,36 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
   });
 
+  it("does not restore obsolete focus or selection after fallback loses ownership inside execCommand", async () => {
+    writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
+    const rendered = renderGrid("view-a", page, metadata, 0);
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 55);
+    let fallbackInput: HTMLElement | undefined;
+    let fallbackRetainedFocusThroughRestore = false;
+    const execCommand = vi.fn(() => {
+      fallbackInput = document.querySelector("textarea") ?? undefined;
+      fallbackInput?.focus();
+      rendered.rerender(grid("view-a", page, metadata, 1));
+      fallbackRetainedFocusThroughRestore = document.activeElement === fallbackInput;
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy"));
+    expect({
+      fallbackInputWasTextarea: fallbackInput?.tagName === "TEXTAREA",
+      fallbackRetainedFocusThroughRestore
+    }).toEqual({ fallbackInputWasTextarea: true, fallbackRetainedFocusThroughRestore: true });
+    expect(fallbackInput?.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(emptySales);
+    expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
+    expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
+  });
+
   it("preserves a pointer-selected rectangle in its context menu and restores the drag endpoint", async () => {
     const contextPage: GridPage = {
       ...page,
@@ -215,6 +245,27 @@ describe("DataGrid clipboard interactions", () => {
     await waitFor(() => expect(document.activeElement).toBe(emptySales));
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("invalidates an owning range menu before left pointerdown collapses its exact selection", async () => {
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 56);
+    openClipboardMenu(milan, 57);
+
+    fireEvent.pointerDown(milan, pointerEvent(58));
+    fireEvent.pointerUp(milan, pointerEvent(58, { buttons: 0 }));
+    expect(screen.getByText("1 cell selected, row 1, column 1")).toBeTruthy();
+    const staleMenu = screen.queryByRole("menu", { name: "Cell and range actions for city" });
+    if (staleMenu) {
+      fireEvent.click(within(staleMenu).getByRole("menuitem", { name: "Copy selection" }));
+      await act(async () => Promise.resolve());
+    }
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText(/Copied|Could not write/u)).toBeNull();
   });
 
   it("leaves a newer menu and its focus untouched when an older clipboard write finishes", async () => {

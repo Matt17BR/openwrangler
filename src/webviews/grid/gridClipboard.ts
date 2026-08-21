@@ -286,11 +286,13 @@ export async function writeGridClipboardText(text: string, ownsAttempt: () => bo
   document.body.append(input);
   try {
     input.select();
-    if (!document.execCommand("copy")) throw new Error("Clipboard access is unavailable in this editor.");
+    const copied = document.execCommand("copy");
+    if (!ownsAttempt()) throw new Error("Clipboard ownership changed during the fallback attempt.");
+    if (!copied) throw new Error("Clipboard access is unavailable in this editor.");
   } finally {
     const inputRetainsFocus = document.activeElement === input;
     input.remove();
-    if (inputRetainsFocus) activeElement?.focus({ preventScroll: true });
+    if (inputRetainsFocus && ownsAttempt()) activeElement?.focus({ preventScroll: true });
   }
 }
 
