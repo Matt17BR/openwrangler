@@ -131,6 +131,7 @@ const owners = vi.hoisted(() => ({
   coordinatorShutdown: vi.fn(),
   customEditorResolved: vi.fn(),
   nativeRegistered: vi.fn(),
+  nativeWebviewResolved: vi.fn(),
   notebookVariablesDisposed: vi.fn(),
   notebookSnapshot: vi.fn(),
   notebookRefresh: vi.fn(),
@@ -281,6 +282,24 @@ vi.mock("../extension/nativeViews", () => ({
       nativeVariables.notebook = notebook;
       nativeVariables.r = r;
       owners.nativeRegistered();
+      const treeProviders = new Map(
+        ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"].map(
+          (id) => {
+            const provider = {
+              getTreeItem: (item: unknown) => item,
+              getChildren: vi.fn(async () => [{ label: `realized:${id}` }])
+            };
+            context.subscriptions.push(host.registerTreeDataProvider(id, provider));
+            return [id, provider] as const;
+          }
+        )
+      );
+      const webviewProvider = {
+        resolveWebviewView: vi.fn((view: unknown, resolveContext: unknown, token: unknown) => {
+          owners.nativeWebviewResolved(view, resolveContext, token);
+        })
+      };
+      context.subscriptions.push(host.registerWebviewViewProvider("openWrangler.codePreview", webviewProvider));
       registerMockCommands(context, [
         "openWrangler.clearViewFilterColumn",
         "openWrangler.openViewSort",
@@ -316,6 +335,8 @@ vi.mock("../extension/nativeViews", () => ({
         })
       );
       return {
+        treeProvider: (id: string) => treeProviders.get(id),
+        codePreviewProvider: () => webviewProvider,
         setCodeForExport: vi.fn(),
         exportCodeTo: vi.fn(),
         notebookInsertionStatus: vi.fn(),
@@ -436,12 +457,30 @@ describe("lazy activation owners", () => {
     active.startBeforeFirstYield();
     const provider = host.treeProviders.get("openWrangler.summary") as { getChildren(): Promise<unknown[]> };
 
-    await provider.getChildren();
+    await expect(provider.getChildren()).resolves.toEqual([{ label: "realized:openWrangler.summary" }]);
 
     expect(owners.nativeRegistered).toHaveBeenCalledOnce();
     expect(owners.notebookRegistered).not.toHaveBeenCalled();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
+  });
+
+  it("delegates the first Code Preview reveal with its exact VS Code arguments", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    const provider = host.webviewProviders.get("openWrangler.codePreview") as {
+      resolveWebviewView(view: unknown, context: unknown, token: unknown): Promise<void>;
+    };
+    const view = { id: "first-reveal-view" };
+    const resolveContext = { state: { receipt: "first-reveal" } };
+    const token = { isCancellationRequested: false };
+
+    await provider.resolveWebviewView(view, resolveContext, token);
+
+    expect(owners.nativeWebviewResolved).toHaveBeenCalledOnce();
+    expect(owners.nativeWebviewResolved).toHaveBeenCalledWith(view, resolveContext, token);
+    expect(owners.notebookRegistered).not.toHaveBeenCalled();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
   });
 
   it.each([

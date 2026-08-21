@@ -19,6 +19,40 @@ import {
 describe("native state and presentation commands", () => {
   beforeEach(resetNativeViewMocks);
 
+  it("reverse-disposes every retained native registration after a late command failure", () => {
+    nativeMocks.registrationFailure = "command:openWrangler.reportIssue";
+
+    expect(() => register(noDraftSnapshot())).toThrow("native registration failed: command:openWrangler.reportIssue");
+
+    expect(nativeMocks.commands.size).toBe(0);
+    expect(nativeMocks.treeDataProviders.size).toBe(0);
+    expect(nativeMocks.webviewViewProviders.size).toBe(0);
+    expect(nativeMocks.activeRegistrations.size).toBe(0);
+    expect(nativeMocks.coordinatorListeners.size).toBe(0);
+    expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
+    expect(nativeMocks.registrationDisposals.at(-1)).toBe("tree:openWrangler.operations");
+  });
+
+  it("rolls back coordinator side effects when a native provider constructor fails", () => {
+    const failingProvider = {
+      onDidChangeVariables: () => {
+        throw new Error("notebook provider listener failed");
+      },
+      snapshot: () => undefined,
+      refreshFromCommand: async () => undefined,
+      dispose: () => undefined
+    } as NotebookLiveVariableProvider;
+
+    expect(() => register(noDraftSnapshot(), undefined, undefined, failingProvider)).toThrow(
+      "notebook provider listener failed"
+    );
+
+    expect(nativeMocks.commands.size).toBe(0);
+    expect(nativeMocks.treeDataProviders.size).toBe(0);
+    expect(nativeMocks.webviewViewProviders.size).toBe(0);
+    expect(nativeMocks.coordinatorListeners.size).toBe(0);
+  });
+
   it("forwards startOperation without a kind to the generic webview operation picker", async () => {
     register(noDraftSnapshot());
 

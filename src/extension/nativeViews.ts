@@ -55,11 +55,12 @@ export type NotebookInsertionDiagnosticStatus =
 
 class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
+  private readonly subscriptions: vscode.Disposable[] = [this.changeEmitter];
   private snapshot: ActiveSessionSnapshot | undefined;
-  private readonly subscription: vscode.Disposable;
   private sortRegistryContext: string;
   private readonly sortTargets = new Map<string, ViewSortTarget>();
   private readonly sortTokens = new Map<string, string>();
+  private disposed = false;
 
   readonly onDidChangeTreeData = this.changeEmitter.event;
 
@@ -71,29 +72,34 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   ) {
     this.snapshot = coordinator.activeSession();
     this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
-    this.subscription = coordinator.onDidChangeActiveSession((snapshot) => {
-      this.snapshot = snapshot;
-      const nextContext = viewSortRegistryContext(snapshot);
-      if (this.kind === "filters") {
-        if (nextContext === this.sortRegistryContext) return;
-        this.sortRegistryContext = nextContext;
-        this.sortTargets.clear();
-        this.sortTokens.clear();
+    try {
+      this.subscriptions.push(
+        coordinator.onDidChangeActiveSession((snapshot) => {
+          this.snapshot = snapshot;
+          const nextContext = viewSortRegistryContext(snapshot);
+          if (this.kind === "filters") {
+            if (nextContext === this.sortRegistryContext) return;
+            this.sortRegistryContext = nextContext;
+            this.sortTargets.clear();
+            this.sortTokens.clear();
+          }
+          this.changeEmitter.fire(undefined);
+        })
+      );
+      if (this.kind === "operations" && this.notebookVariables) {
+        this.subscriptions.push(this.notebookVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined)));
       }
-      this.changeEmitter.fire(undefined);
-    });
-    if (this.kind === "operations" && this.notebookVariables) {
-      this.notebookVariableSubscription = this.notebookVariables.onDidChangeVariables(() =>
-        this.changeEmitter.fire(undefined)
+      if (this.kind === "operations" && this.rVariables) {
+        this.subscriptions.push(this.rVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined)));
+      }
+    } catch (error) {
+      throw withNativeCleanupFailures(
+        error,
+        disposeNativeDisposables(this.subscriptions.splice(0)),
+        "Open Wrangler could not roll back a partial native tree provider."
       );
     }
-    if (this.kind === "operations" && this.rVariables) {
-      this.rVariableSubscription = this.rVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined));
-    }
   }
-
-  private notebookVariableSubscription: vscode.Disposable | undefined;
-  private rVariableSubscription: vscode.Disposable | undefined;
 
   getTreeItem(element: ViewNode): vscode.TreeItem {
     return element;
@@ -119,12 +125,14 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.sortTargets.clear();
     this.sortTokens.clear();
-    this.subscription.dispose();
-    this.notebookVariableSubscription?.dispose();
-    this.rVariableSubscription?.dispose();
-    this.changeEmitter.dispose();
+    const failures = disposeNativeDisposables(this.subscriptions.splice(0));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Open Wrangler native tree provider cleanup failed.");
+    }
   }
 
   private registerViewSortTarget(target: ViewSortTarget): ViewSortHandle {
@@ -332,12 +340,79 @@ export interface NativeViewsTestController {
   viewSortDispatchStatus(): ViewSortDispatchStatus | undefined;
 }
 
+export type NativeTreeViewId =
+  "openWrangler.operations" | "openWrangler.summary" | "openWrangler.filters" | "openWrangler.cleaningSteps";
+
+export interface NativeViewsOwner extends NativeViewsTestController {
+  treeProvider(id: NativeTreeViewId): vscode.TreeDataProvider<vscode.TreeItem>;
+  codePreviewProvider(): vscode.WebviewViewProvider;
+}
+
+type RetainNativeDisposable = <T extends vscode.Disposable>(disposable: T) => T;
+type RegisterNativeCommand = <T extends unknown[]>(
+  command: string,
+  callback: (...args: T) => unknown,
+  thisArg?: unknown
+) => vscode.Disposable;
+
 export function registerNativeViews(
-  context: vscode.ExtensionContext,
+  extensionContext: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   notebookVariables?: NotebookLiveVariableProvider,
   rVariables?: RLiveVariableProvider
-): NativeViewsTestController {
+): NativeViewsOwner {
+  const registrations: vscode.Disposable[] = [];
+  const retained = new Set<vscode.Disposable>();
+  const retain = <T extends vscode.Disposable>(disposable: T): T => {
+    if (!retained.has(disposable)) {
+      retained.add(disposable);
+      registrations.push(disposable);
+    }
+    return disposable;
+  };
+  const transactionalSubscriptions = {
+    push: (...disposables: vscode.Disposable[]): number => {
+      for (const disposable of disposables) retain(disposable);
+      return registrations.length;
+    }
+  } as vscode.Disposable[];
+  const context = new Proxy(extensionContext, {
+    get: (target, property, receiver) =>
+      property === "subscriptions" ? transactionalSubscriptions : Reflect.get(target, property, receiver)
+  });
+  const registerCommand = <T extends unknown[]>(
+    command: string,
+    callback: (...args: T) => unknown,
+    thisArg?: unknown
+  ): vscode.Disposable => retain(vscode.commands.registerCommand(command, callback, thisArg));
+  try {
+    const owner = registerNativeViewsTransactional(
+      context,
+      coordinator,
+      notebookVariables,
+      rVariables,
+      retain,
+      registerCommand
+    );
+    extensionContext.subscriptions.push(...registrations);
+    return owner;
+  } catch (error) {
+    throw withNativeCleanupFailures(
+      error,
+      disposeNativeDisposables(registrations),
+      "Open Wrangler could not roll back partial native view registration."
+    );
+  }
+}
+
+function registerNativeViewsTransactional(
+  context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator,
+  notebookVariables: NotebookLiveVariableProvider | undefined,
+  rVariables: RLiveVariableProvider | undefined,
+  retain: RetainNativeDisposable,
+  registerCommand: RegisterNativeCommand
+): NativeViewsOwner {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
     const hasDraft = Boolean(snapshot?.metadata.draftStep);
     const canChangePlan = canEditLatestStep(snapshot?.metadata);
@@ -355,19 +430,21 @@ export function registerNativeViews(
     );
   };
   updatePlanContexts(coordinator.activeSession());
-  const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
-  const filterProvider = new OpenWranglerTreeProvider("filters", coordinator);
+  const contextSubscription = retain(coordinator.onDidChangeActiveSession(updatePlanContexts));
+  const filterProvider = retain(new OpenWranglerTreeProvider("filters", coordinator));
   const providers = {
-    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, notebookVariables, rVariables),
-    "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
+    "openWrangler.operations": retain(
+      new OpenWranglerTreeProvider("operations", coordinator, notebookVariables, rVariables)
+    ),
+    "openWrangler.summary": retain(new OpenWranglerTreeProvider("summary", coordinator)),
     "openWrangler.filters": filterProvider,
-    "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
+    "openWrangler.cleaningSteps": retain(new OpenWranglerTreeProvider("steps", coordinator))
   };
   for (const [id, provider] of Object.entries(providers)) {
-    context.subscriptions.push(provider, vscode.window.registerTreeDataProvider(id, provider));
+    retain(vscode.window.registerTreeDataProvider(id, provider));
   }
   context.subscriptions.push(
-    vscode.commands.registerCommand("openWrangler.refreshLiveDataframes", async () => {
+    registerCommand("openWrangler.refreshLiveDataframes", async () => {
       if (notebookVariables?.snapshot()) {
         await notebookVariables.refreshFromCommand();
         return;
@@ -379,7 +456,7 @@ export function registerNativeViews(
       void vscode.window.showInformationMessage("Focus a notebook or R session before refreshing live dataframes.");
     })
   );
-  const codePreview = new CodePreviewViewProvider(context, coordinator);
+  const codePreview = retain(new CodePreviewViewProvider(context, coordinator));
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   let lastViewSortDispatchStatus: ViewSortDispatchStatus | undefined;
   const exportPinnedData = createNativeViewsDataExport(coordinator, {
@@ -447,7 +524,7 @@ export function registerNativeViews(
   };
   context.subscriptions.push(
     contextSubscription,
-    vscode.commands.registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
+    registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (
         typeof column !== "string" ||
@@ -464,7 +541,7 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Open the active dataframe editor before removing a viewing filter.");
       }
     }),
-    vscode.commands.registerCommand("openWrangler.openViewSort", async (column?: unknown) => {
+    registerCommand("openWrangler.openViewSort", async (column?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot || isStepInspectionActive(snapshot)) {
         void vscode.window.showInformationMessage(
@@ -489,16 +566,10 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Open the active dataframe editor before editing viewing sorts.");
       }
     }),
-    vscode.commands.registerCommand("openWrangler.moveViewSortUp", (node?: unknown) =>
-      runViewSortAction(node, "moveUp")
-    ),
-    vscode.commands.registerCommand("openWrangler.moveViewSortDown", (node?: unknown) =>
-      runViewSortAction(node, "moveDown")
-    ),
-    vscode.commands.registerCommand("openWrangler.removeViewSort", (node?: unknown) =>
-      runViewSortAction(node, "remove")
-    ),
-    vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
+    registerCommand("openWrangler.moveViewSortUp", (node?: unknown) => runViewSortAction(node, "moveUp")),
+    registerCommand("openWrangler.moveViewSortDown", (node?: unknown) => runViewSortAction(node, "moveDown")),
+    registerCommand("openWrangler.removeViewSort", (node?: unknown) => runViewSortAction(node, "remove")),
+    registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
@@ -526,13 +597,9 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
       }
     }),
-    vscode.commands.registerCommand("openWrangler.applyStep", () =>
-      OpenWranglerPanel.sendEditorAction({ action: "applyDraft" })
-    ),
-    vscode.commands.registerCommand("openWrangler.discardStep", () =>
-      OpenWranglerPanel.sendEditorAction({ action: "discardDraft" })
-    ),
-    vscode.commands.registerCommand("openWrangler.editLatestStep", async () => {
+    registerCommand("openWrangler.applyStep", () => OpenWranglerPanel.sendEditorAction({ action: "applyDraft" })),
+    registerCommand("openWrangler.discardStep", () => OpenWranglerPanel.sendEditorAction({ action: "discardDraft" })),
+    registerCommand("openWrangler.editLatestStep", async () => {
       const snapshot = coordinator.activeSession();
       if (!snapshot || !canEditLatestStep(snapshot.metadata)) {
         void vscode.window.showInformationMessage(
@@ -554,7 +621,7 @@ export function registerNativeViews(
         );
       }
     }),
-    vscode.commands.registerCommand("openWrangler.editSelectedStep", async (target?: unknown) => {
+    registerCommand("openWrangler.editSelectedStep", async (target?: unknown) => {
       const snapshot = coordinator.activeSession();
       const handle = selectedCleaningStepHandle(target);
       const step =
@@ -582,7 +649,7 @@ export function registerNativeViews(
         );
       }
     }),
-    vscode.commands.registerCommand("openWrangler.deleteSelectedStep", async (target?: unknown) => {
+    registerCommand("openWrangler.deleteSelectedStep", async (target?: unknown) => {
       const snapshot = coordinator.activeSession();
       const handle = selectedCleaningStepHandle(target);
       const step =
@@ -617,7 +684,7 @@ export function registerNativeViews(
         );
       }
     }),
-    vscode.commands.registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
+    registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
         void vscode.window.showInformationMessage(
@@ -644,10 +711,8 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
       }
     }),
-    vscode.commands.registerCommand("openWrangler.undoStep", () =>
-      OpenWranglerPanel.sendEditorAction({ action: "undoStep" })
-    ),
-    vscode.commands.registerCommand("openWrangler.copyCode", async () => {
+    registerCommand("openWrangler.undoStep", () => OpenWranglerPanel.sendEditorAction({ action: "undoStep" })),
+    registerCommand("openWrangler.copyCode", async () => {
       const code = codePreview.codeForExport();
       if (!code) {
         void vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
@@ -657,7 +722,7 @@ export function registerNativeViews(
       void vscode.window.showInformationMessage("Open Wrangler code copied to the clipboard.");
       return code;
     }),
-    vscode.commands.registerCommand("openWrangler.exportCode", async () => {
+    registerCommand("openWrangler.exportCode", async () => {
       if (!(await requireTrustedWorkspace("export code"))) return;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
@@ -680,7 +745,7 @@ export function registerNativeViews(
         return false;
       }
     }),
-    vscode.commands.registerCommand("openWrangler.insertRDocumentCode", async () => {
+    registerCommand("openWrangler.insertRDocumentCode", async () => {
       lastNotebookInsertionStatus = undefined;
       if (!(await requireTrustedWorkspace("insert generated code into an R document"))) {
         lastNotebookInsertionStatus = "untrusted";
@@ -735,7 +800,7 @@ export function registerNativeViews(
       );
       return true;
     }),
-    vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
+    registerCommand("openWrangler.insertNotebookCode", async () => {
       lastNotebookInsertionStatus = undefined;
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) {
         lastNotebookInsertionStatus = "untrusted";
@@ -790,7 +855,7 @@ export function registerNativeViews(
       void vscode.window.showInformationMessage("Inserted the generated cleaning code into its notebook.");
       return true;
     }),
-    vscode.commands.registerCommand("openWrangler.exportData", async () => {
+    registerCommand("openWrangler.exportData", async () => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
         if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
@@ -799,7 +864,7 @@ export function registerNativeViews(
       }
       return exportPinnedData(snapshot.sessionId, snapshot.metadata.revision);
     }),
-    vscode.commands.registerCommand(SESSION_BOUND_EXPORT_DATA_COMMAND, async (sessionId: unknown, revision: unknown) =>
+    registerCommand(SESSION_BOUND_EXPORT_DATA_COMMAND, async (sessionId: unknown, revision: unknown) =>
       typeof sessionId === "string" &&
       sessionId.length > 0 &&
       typeof revision === "number" &&
@@ -809,13 +874,15 @@ export function registerNativeViews(
         : false
     ),
     codePreview,
-    vscode.window.registerWebviewViewProvider("openWrangler.codePreview", codePreview, {
-      webviewOptions: { retainContextWhenHidden: true }
-    })
+    retain(
+      vscode.window.registerWebviewViewProvider("openWrangler.codePreview", codePreview, {
+        webviewOptions: { retainContextWhenHidden: true }
+      })
+    )
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("openWrangler.openSourceFile", async () => {
+    registerCommand("openWrangler.openSourceFile", async () => {
       const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
@@ -824,13 +891,13 @@ export function registerNativeViews(
       }
       await vscode.commands.executeCommand("vscode.open", source);
     }),
-    vscode.commands.registerCommand("openWrangler.openWalkthrough", () =>
+    registerCommand("openWrangler.openWalkthrough", () =>
       vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.openwrangler#gettingStarted", false)
     ),
-    vscode.commands.registerCommand("openWrangler.openSettings", () =>
+    registerCommand("openWrangler.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.openwrangler")
     ),
-    vscode.commands.registerCommand("openWrangler.reportIssue", () =>
+    registerCommand("openWrangler.reportIssue", () =>
       vscode.env.openExternal(
         vscode.Uri.parse(
           `https://github.com/Matt17BR/openwrangler/issues/new?title=${encodeURIComponent("Open Wrangler issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
@@ -839,10 +906,12 @@ export function registerNativeViews(
     )
   );
 
-  return {
+  const owner: NativeViewsOwner = {
     setCodeForExport: (code) => codePreview.setCodeForExportForTests(code),
     notebookInsertionStatus: () => lastNotebookInsertionStatus,
     viewSortDispatchStatus: () => lastViewSortDispatchStatus,
+    treeProvider: (id) => providers[id] as vscode.TreeDataProvider<vscode.TreeItem>,
+    codePreviewProvider: () => codePreview,
     exportCodeTo: async (destination) => {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
       const snapshot = coordinator.activeSession();
@@ -851,6 +920,28 @@ export function registerNativeViews(
       await exportGeneratedCode(snapshot, code, destination);
     }
   };
+  return owner;
+}
+
+function disposeNativeDisposables(disposables: readonly vscode.Disposable[]): unknown[] {
+  const failures: unknown[] = [];
+  for (const disposable of [...disposables].reverse()) {
+    try {
+      disposable.dispose();
+    } catch (error) {
+      failures.push(...nativeFailures(error));
+    }
+  }
+  return failures;
+}
+
+function withNativeCleanupFailures(primary: unknown, cleanupFailures: readonly unknown[], message: string): unknown {
+  const failures = [...nativeFailures(primary), ...cleanupFailures.flatMap(nativeFailures)];
+  return failures.length === 1 ? failures[0] : new AggregateError(failures, message);
+}
+
+function nativeFailures(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors.flatMap(nativeFailures) : [error];
 }
 
 async function waitForActiveSession(
