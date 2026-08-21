@@ -547,7 +547,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   }
 
   private async loadFileOwner(): Promise<FileOwner> {
-    const [module, coordinatedBridge] = await Promise.all([
+    const [fileOpenModule, coordinatedBridge] = await Promise.all([
       this.moduleLoaders.fileOpen(),
       this.ensureCoordinatedPythonBridge()
     ]);
@@ -555,9 +555,9 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.replaceCommandGroup("file");
     this.customEditorRegistration?.dispose();
     this.customEditorRegistration = undefined;
-    this.captureOwnerRegistration("file", () => module.registerFileCommands(this.context, coordinatedBridge));
+    this.captureOwnerRegistration("file", () => fileOpenModule.registerFileCommands(this.context, coordinatedBridge));
     this.constructedOwners.push("custom-editor");
-    return { module };
+    return { module: fileOpenModule };
   }
 
   private ensurePickleOwner(): Promise<TrustedPickleWorkerLifecycle> {
