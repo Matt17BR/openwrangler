@@ -30,7 +30,8 @@ async function webviewStyleFixture(t) {
       writeFile(resolve(styleRoot, file), file === "foundations.css" ? ".used { display: block; }\n" : "", "utf8")
     )
   );
-  await writeFile(resolve(webviewRoot, "App.tsx"), 'export const appClassName = "used";\n', "utf8");
+  await writeFile(resolve(webviewRoot, "App.tsx"), 'export const app = <div className="used" />;\n', "utf8");
+  await writeFile(resolve(webviewRoot, "main.tsx"), 'import "./App";\nimport "./styles.css";\n', "utf8");
   return { root, styleRoot, webviewRoot };
 }
 
@@ -213,6 +214,163 @@ test("the webview style parser rejects unrelated TypeScript strings as selector 
   await assert.rejects(checkWebviewStyles(root), /orphan \(application\.css\)/u);
 });
 
+test("selector liveness is limited to the workbench main.tsx bundle closure", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(resolve(styleRoot, "application.css"), ".separateBundleOnly { display: block; }\n", "utf8");
+  await writeFile(
+    resolve(webviewRoot, "SeparateBundle.tsx"),
+    'export type SeparateProps = {};\nexport const separate = <div className="separateBundleOnly" />;\n',
+    "utf8"
+  );
+  await writeFile(
+    resolve(webviewRoot, "TypeBridge.ts"),
+    'export { type SeparateProps } from "./SeparateBundle";\n',
+    "utf8"
+  );
+  await writeFile(
+    resolve(webviewRoot, "main.tsx"),
+    'import "./App";\nimport "./TypeBridge";\nimport "./styles.css";\n',
+    "utf8"
+  );
+
+  await assert.rejects(checkWebviewStyles(root), /separateBundleOnly \(application\.css\)/u);
+
+  await writeFile(
+    resolve(webviewRoot, "main.tsx"),
+    'import "./App";\nimport "./SeparateBundle";\nimport "./styles.css";\n',
+    "utf8"
+  );
+  await assert.doesNotReject(checkWebviewStyles(root));
+});
+
+test("only rendering sinks, additive DOM class calls, and new replace operands prove liveness", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    [
+      "const fake = {",
+      '  className: "",',
+      "  classList: { add() {}, remove() {}, replace() {} },",
+      "  setAttribute() {}",
+      "};",
+      'fake.className = "fakeAssignment";',
+      'fake.classList.add("fakeSink");',
+      'fake.setAttribute("class", "fakeAttribute");',
+      'const element = document.createElement("div");',
+      'element.classList.remove("removedOnly");',
+      'element.classList.replace("oldReplace", "newReplace");',
+      "const DiscardingComponent = (_props: { className: string }) => <span />;",
+      "export const app = (",
+      "  <>",
+      '    <DiscardingComponent className="customComponentSink" />',
+      '    <div className="used" />',
+      "  </>",
+      ");",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(resolve(styleRoot, "application.css"), ".newReplace { display: block; }\n", "utf8");
+  await assert.doesNotReject(checkWebviewStyles(root));
+
+  await writeFile(
+    resolve(styleRoot, "application.css"),
+    [
+      ".newReplace,",
+      ".fakeAssignment,",
+      ".fakeSink,",
+      ".fakeAttribute,",
+      ".removedOnly,",
+      ".oldReplace,",
+      ".customComponentSink { display: block; }",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await assert.rejects(checkWebviewStyles(root), (error) => {
+    for (const className of [
+      "customComponentSink",
+      "fakeAssignment",
+      "fakeAttribute",
+      "fakeSink",
+      "oldReplace",
+      "removedOnly"
+    ]) {
+      assert.match(error.message, new RegExp(`${className} \\(application\\.css\\)`, "u"));
+    }
+    assert.doesNotMatch(error.message, /newReplace/u);
+    return true;
+  });
+});
+
+test("a module-local document lookalike cannot prove selector liveness", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(resolve(styleRoot, "application.css"), ".shadowedDocumentSink { display: block; }\n", "utf8");
+  await writeFile(
+    resolve(webviewRoot, "ShadowedDocument.tsx"),
+    [
+      "const fake = { classList: { add() {} } };",
+      "const document = { createElement: () => fake };",
+      'document.createElement("div").classList.add("shadowedDocumentSink");',
+      "export const shadowed = true;",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    resolve(webviewRoot, "main.tsx"),
+    'import "./App";\nimport "./ShadowedDocument";\nimport "./styles.css";\n',
+    "utf8"
+  );
+
+  await assert.rejects(checkWebviewStyles(root), /shadowedDocumentSink \(application\.css\)/u);
+});
+
+test("the CSS parser inventories @scope and native nested selectors without declaration false positives", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(
+    resolve(styleRoot, "foundations.css"),
+    [
+      "@scope (.scopeRoot) to (.scopeLimit) {",
+      "  .parent {",
+      '    --not-a-selector: ".customPropertyOnly";',
+      '    background: url("https://example.invalid/.urlOnly");',
+      "    &.ampersandNested { color: inherit; }",
+      "    .nativeNested { color: inherit; }",
+      "    @media (min-width: 1px) {",
+      "      .mediaNested { color: inherit; }",
+      "    }",
+      "  }",
+      "}",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    'export const app = <div className="scopeRoot scopeLimit parent ampersandNested nativeNested mediaNested" />;\n',
+    "utf8"
+  );
+
+  const receipt = await checkWebviewStyles(root);
+  assert.equal(receipt.selectorClasses, 6);
+
+  await writeFile(
+    resolve(styleRoot, "foundations.css"),
+    ".parent { button .nativeNested { color: inherit; } }\n",
+    "utf8"
+  );
+  await assert.rejects(checkWebviewStyles(root), /nested type selectors must use an explicit & prefix/u);
+});
+
+test("the CSS parser rejects group nesting beyond its explicit recursion cap", async (t) => {
+  const { root, styleRoot } = await webviewStyleFixture(t);
+  const depth = WEBVIEW_STYLE_LIMITS.nestingDepth + 1;
+  const source = `${"@media all {".repeat(depth)}.used { display: block; }${"}".repeat(depth)}\n`;
+  await writeFile(resolve(styleRoot, "application.css"), source, "utf8");
+  await assert.rejects(checkWebviewStyles(root), /exceeds the 32-level CSS nesting limit/u);
+});
+
 test("the webview style parser recognizes escaped and case-insensitive forbidden grammar", async (t) => {
   const { root, styleRoot } = await webviewStyleFixture(t);
   await writeFile(resolve(styleRoot, "application.css"), '@\\69MPORT "./unexpected.css";\n', "utf8");
@@ -309,6 +467,11 @@ test("the webview style check enforces one explicit total-work budget", async (t
   const largeComment = `/*${"x".repeat(450_000)}*/\n`;
   await Promise.all(
     Array.from({ length: 5 }, (_, index) => writeFile(resolve(webviewRoot, `Large${index}.ts`), largeComment, "utf8"))
+  );
+  await writeFile(
+    resolve(webviewRoot, "main.tsx"),
+    `${Array.from({ length: 5 }, (_, index) => `import "./Large${index}";`).join("\n")}\nimport "./App";\n`,
+    "utf8"
   );
   await assert.rejects(checkWebviewStyles(root), /total-work budget/u);
 });
