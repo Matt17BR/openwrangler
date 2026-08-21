@@ -182,9 +182,9 @@ describe("native state and presentation commands", () => {
 
     provider.resolveWebviewView({ description: undefined, webview });
 
-    const script = webview.html.match(/<script nonce="([0-9a-f]{32})" src="([^"]+)"><\/script>/u);
+    const script = webview.html.match(/<script type="module" nonce="([0-9a-f]{32})" src="([^"]+)"><\/script>/u);
     expect(script).not.toBeNull();
-    expect(webview.html).toContain(`font-src test-csp; script-src 'nonce-${script?.[1]}'`);
+    expect(webview.html).toContain(`font-src test-csp; script-src 'nonce-${script?.[1]}' test-csp`);
     expect(script?.[2]).toBe("file:///tmp/openwrangler/media/codePreview.js");
   });
 

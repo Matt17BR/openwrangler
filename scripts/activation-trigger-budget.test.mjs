@@ -333,6 +333,37 @@ test("the syntax authority recognizes namespace and CommonJS createRequire loade
   );
 });
 
+test("the syntax authority rejects TypeScript import-equals createRequire aliases", async () => {
+  const aliases = [
+    `
+      import moduleApi = require("node:module");
+      const importedRequire = moduleApi.createRequire(import.meta.url);
+      importedRequire("./import-equals-owner.js");
+    `,
+    `
+      import * as moduleApi from "node:module";
+      import moduleAlias = moduleApi;
+      const aliasedRequire = moduleAlias.createRequire(import.meta.url);
+      aliasedRequire("./namespace-alias-owner.js");
+    `,
+    `
+      import * as moduleApi from "node:module";
+      import createRequireAlias = moduleApi.createRequire;
+      const memberRequire = createRequireAlias(import.meta.url);
+      memberRequire("./member-alias-owner.js");
+    `
+  ];
+  for (const source of aliases) {
+    await withInventoryFixture(
+      source,
+      { activationEvents: [], contributes: { commands: [] } },
+      async () => assert.fail("TypeScript import-equals loaders must not escape the closed dynamic-edge model"),
+      {},
+      /rejects TypeScript import-equals loader aliases/u
+    );
+  }
+});
+
 test("loader alias propagation is linear and cycle-safe across forward chains", async () => {
   const aliases = Array.from({ length: 2_048 }, (_, index) =>
     index === 2_047 ? `const loader${index} = require;` : `const loader${index} = loader${index + 1};`
