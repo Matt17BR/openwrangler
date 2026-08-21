@@ -65,6 +65,8 @@ const WORKFLOW_YAML_NODE_LIMIT = 20_000;
 const WORKFLOW_YAML_DEPTH_LIMIT = 64;
 const WORKFLOW_YAML_ALIAS_LIMIT = 0;
 const WORKFLOW_YAML_MERGE_KEY_LIMIT = 0;
+const REQUIRED_CHECK_EXPRESSION_LIMIT = 64;
+const REQUIRED_CHECK_MATCH_WORK_LIMIT = 16 * 1024;
 const WORKFLOW_YAML_SCHEMA = CORE_SCHEMA.withTags(mergeTag);
 const WORKFLOW_YAML_LOAD_OPTIONS = Object.freeze({
   maxAliases: WORKFLOW_YAML_ALIAS_LIMIT,
@@ -822,10 +824,6 @@ function dependencyClosure(document, terminalJob) {
   return visited;
 }
 
-function escapeRegularExpression(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
 function strategyMultiplicityIsUnevaluable(job) {
   if (!Object.hasOwn(job ?? {}, "strategy")) return false;
   const strategy = job.strategy;
@@ -837,6 +835,28 @@ function strategyMultiplicityIsUnevaluable(job) {
     if (key === "max-parallel") return !Number.isSafeInteger(value) || value <= 0;
     return true;
   });
+}
+
+function fixedCheckNamePartsMayEqual(required, parts, fixedTextLength) {
+  if (
+    typeof required !== "string" ||
+    required.length + fixedTextLength + parts.length > REQUIRED_CHECK_MATCH_WORK_LIMIT
+  ) {
+    return true;
+  }
+  const first = parts[0];
+  const last = parts.at(-1);
+  if (!required.startsWith(first) || !required.endsWith(last)) return false;
+  let cursor = first.length;
+  const suffixStart = required.length - last.length;
+  if (cursor > suffixStart) return false;
+  for (let index = 1; index < parts.length - 1; index += 1) {
+    const part = parts[index];
+    const next = required.indexOf(part, cursor);
+    if (next === -1 || next + part.length > suffixStart) return false;
+    cursor = next + part.length;
+  }
+  return cursor <= suffixStart;
 }
 
 function requiredCheckName(jobId, job) {
@@ -865,11 +885,19 @@ function requiredCheckName(jobId, job) {
     cursor = match.index + match[0].length;
   }
   parts.push(name.slice(cursor));
-  if (matches.length === 0 || parts.some((part) => part.includes("${{") || part.includes("}}"))) {
+  const fixedTextLength = parts.reduce((total, part) => total + part.length, 0);
+  if (
+    matches.length === 0 ||
+    matches.length > REQUIRED_CHECK_EXPRESSION_LIMIT ||
+    name.length + parts.length > REQUIRED_CHECK_MATCH_WORK_LIMIT ||
+    parts.some((part) => part.includes("${{") || part.includes("}}"))
+  ) {
     return Object.freeze({ exact: undefined, mayEqual: () => true });
   }
-  const pattern = new RegExp(`^${parts.map(escapeRegularExpression).join(".*")}$`, "u");
-  return Object.freeze({ exact: undefined, mayEqual: (required) => pattern.test(required) });
+  return Object.freeze({
+    exact: undefined,
+    mayEqual: (required) => fixedCheckNamePartsMayEqual(required, parts, fixedTextLength)
+  });
 }
 
 function expectedCapabilityJobCondition(workflowId, jobId) {
@@ -1839,7 +1867,11 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
     () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, ambiguousOutsideCapabilities),
     /unevaluable possible check-name collision/u
   );
-  for (const name of ["${{ format('{0}', matrix.required_check) }}", "${{ " + "x".repeat(1025) + " }}"]) {
+  for (const name of [
+    "${{ format('{0}', matrix.required_check) }}",
+    "${{ " + "x".repeat(1025) + " }}",
+    "prefix ${{ matrix.os }} ${{ format('{0}', matrix.required_check) }}"
+  ]) {
     const unparsedExpressionOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
     unparsedExpressionOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.unparsed = {
       name,
@@ -1850,6 +1882,26 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
       /unevaluable possible check-name collision/u
     );
   }
+  for (const name of [
+    Array.from({ length: REQUIRED_CHECK_EXPRESSION_LIMIT + 1 }, () => "${{ matrix.value }}").join("-"),
+    "x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT + 1) + "${{ matrix.value }}"
+  ]) {
+    const overBudgetNameOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+    overBudgetNameOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.overBudget = {
+      name,
+      "runs-on": "ubuntu-latest"
+    };
+    assert.throws(
+      () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, overBudgetNameOutsideCapabilities),
+      /unevaluable possible check-name collision/u
+    );
+  }
+  const fixedPartCandidate = requiredCheckName("fixture", {
+    name: "val${{ matrix.first }}id${{ matrix.second }}ate"
+  });
+  assert.equal(fixedPartCandidate.mayEqual("validate"), true);
+  assert.equal(fixedPartCandidate.mayEqual("valixate"), false);
+  assert.equal(fixedPartCandidate.mayEqual("x".repeat(REQUIRED_CHECK_MATCH_WORK_LIMIT + 1)), true);
 
   const missingStackTrigger = structuredClone(capabilityGraph);
   missingStackTrigger.workflows.codeql.activityTypes = missingStackTrigger.workflows.codeql.activityTypes.filter(
