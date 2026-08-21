@@ -314,7 +314,7 @@ export class SessionResponseCommitter {
       }
     };
     if (stateChanged) {
-      const state = persistedSessionState(response.metadata, gridState(nextViewState), session.draftBaseFilterModel);
+      const state = persistedSessionState(response.metadata, gridState(nextViewState), nextDraftBaseFilterModel);
       const previous = sessionPublication(session);
       let published: SessionPublication | undefined;
       const commitPublication = (): (() => boolean) => {
