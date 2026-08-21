@@ -186,7 +186,7 @@ def serve_once():
         offset = 0
         while offset < expected_size:
             if snapshot() != artifact_identity:
-                raise RuntimeError("Released-Jupyter PySpark pip source lost its detached artifact identity.")
+                raise RuntimeError("Released-Jupyter PySpark pip source lost its descriptor-bound, single-link artifact identity.")
             chunk = os.pread(descriptor, min(65536, expected_size - offset), offset)
             if not chunk:
                 raise RuntimeError("Released-Jupyter PySpark pip source reached an early artifact boundary.")

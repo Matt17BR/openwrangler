@@ -2080,7 +2080,7 @@ test(
         (error) =>
           error?.code === "EDITOR_COMMAND_RESOURCE_RELEASE_FAILED" &&
           acceptanceErrorTree(error).some((candidate) =>
-            /active pip pathname was recreated during consumption/u.test(String(candidate))
+            /active pip pathname was recreated or changed during consumption/u.test(String(candidate))
           )
       );
       assert.equal(spawnCalls, 1);
