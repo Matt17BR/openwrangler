@@ -1979,11 +1979,12 @@ function windowsSupervisorBuildElapsedMs(startedAt, buildNow) {
   return Math.max(0, windowsSupervisorBuildClockValue(buildNow) - startedAt);
 }
 
-function windowsSupervisorBuildCallerFailure(reason, limitMs, elapsedMs, buildStillOwned = false) {
+function windowsSupervisorBuildCallerFailure(reason, limitMs, elapsedMs, buildStillOwned = false, cause) {
   const failure = new Error(
     reason === "deadline"
       ? `The Windows editor Job Object supervisor compilation caller exceeded ${limitMs} ms.`
-      : "The Windows editor Job Object supervisor compilation caller was cancelled."
+      : "The Windows editor Job Object supervisor compilation caller was cancelled.",
+    cause === undefined ? undefined : { cause }
   );
   failure.code = reason === "deadline" ? "EDITOR_ACCEPTANCE_STAGE_DEADLINE" : "EDITOR_ACCEPTANCE_STAGE_ABORTED";
   failure.details = {
@@ -2141,10 +2142,16 @@ async function compileWindowsEditorProcessSupervisor(
       };
       throw failure;
     }
+    const settlementCause =
+      settlement.errors.length > 1
+        ? new AggregateError(settlement.errors, "The Windows supervisor compiler settlement retained failures.")
+        : settlement.errors[0];
     const failure = windowsSupervisorBuildCallerFailure(
       reason,
       effectiveBuildTimeoutMs,
-      Math.max(0, performance.now() - compileStartedAt)
+      Math.max(0, performance.now() - compileStartedAt),
+      false,
+      settlementCause
     );
     failure.message = stageMessage;
     failure.details = {
@@ -2218,22 +2225,45 @@ async function settleWindowsCompilerProcessTree(
   }
 ) {
   const errors = [];
+  const retainedErrors = new Set();
+  const verificationErrors = new Set();
+  const retainError = (error, { affectsVerification = true } = {}) => {
+    if (error === undefined) return;
+    if (!retainedErrors.has(error)) {
+      retainedErrors.add(error);
+      errors.push(error);
+    }
+    if (affectsVerification) verificationErrors.add(error);
+  };
   let compilerTreeTerminated = false;
   let compilerClosed = false;
   let deadline;
+  let deadlineError;
   const settlementStartedAt = performance.now();
   const settlementController = new AbortController();
+  const abortSettlementReleases = new Set();
   let observedTermination;
+  let observedClosure;
   const termination = Promise.resolve()
-    .then(() =>
-      terminateBuildProcessTree(child, {
+    .then(() => {
+      const terminationOptions = {
         buildRoot,
         systemRoot,
         timeoutMs: buildSettlementTimeoutMs,
         abortSignal: settlementController.signal,
         spawnTaskkillProcess
-      })
-    )
+      };
+      if (terminateBuildProcessTree === terminateWindowsCompilerProcessTree) {
+        terminationOptions.registerAbortSettlementRelease = (release) => {
+          if (typeof release !== "function") {
+            throw new Error("The Windows supervisor compiler terminator registered an invalid release callback.");
+          }
+          abortSettlementReleases.add(release);
+          return () => abortSettlementReleases.delete(release);
+        };
+      }
+      return terminateBuildProcessTree(child, terminationOptions);
+    })
     .then(
       (result) => ({ kind: "result", result }),
       (error) => ({ kind: "error", error })
@@ -2242,10 +2272,15 @@ async function settleWindowsCompilerProcessTree(
       observedTermination = observation;
       return observation;
     });
-  const closure = closeObserver.promise.then(
-    (state) => ({ kind: "close", state }),
-    (error) => ({ kind: "error", error })
-  );
+  const closure = closeObserver.promise
+    .then(
+      (state) => ({ kind: "close", state }),
+      (error) => ({ kind: "error", error })
+    )
+    .then((observation) => {
+      observedClosure = observation;
+      return observation;
+    });
   const completeSettlement = Promise.all([termination, closure]).then(
     ([terminationObservation, closureObservation]) => ({
       kind: "settled",
@@ -2274,13 +2309,7 @@ async function settleWindowsCompilerProcessTree(
     clearTimeout(settlementTimer);
   }
   if (observation.kind === "deadline") {
-    // An abort-aware terminator can finish through a short, fixed native
-    // promise chain after the deadline abort fires. Observe only those already
-    // triggered reactions; never await the terminator or another timer.
-    for (let turn = 0; turn < 8 && observedTermination === undefined; turn += 1) {
-      await Promise.resolve();
-    }
-    const deadlineError = new Error(
+    deadlineError = new Error(
       `Windows editor Job Object supervisor compiler settlement exceeded ${buildSettlementTimeoutMs} ms.`
     );
     deadlineError.code = "EDITOR_ACCEPTANCE_DEADLINE";
@@ -2291,67 +2320,118 @@ async function settleWindowsCompilerProcessTree(
       limitMs: buildSettlementTimeoutMs,
       treeVerifiedStopped: false
     };
-    deadline = Object.freeze({ ...deadlineError.details, code: deadlineError.code });
-    errors.push(deadlineError);
-    if (observedTermination?.kind === "error") {
-      errors.push(observedTermination.error);
-    } else if (observedTermination?.kind === "result") {
-      compilerTreeTerminated = observedTermination.result?.treeVerifiedStopped === true;
-      if (!compilerTreeTerminated) {
-        errors.push(new Error("The Windows supervisor compiler tree terminator did not attest complete termination."));
-      }
+    retainError(deadlineError, { affectsVerification: false });
+
+    let abortSettlementTimer;
+    let releasedTerminationOwners = 0;
+    const abortSettlementDeadline = new Promise((resolveDeadline) => {
+      abortSettlementTimer = setTimeout(() => {
+        for (const release of [...abortSettlementReleases]) {
+          try {
+            release();
+            releasedTerminationOwners += 1;
+          } catch (error) {
+            retainError(error);
+          }
+        }
+        resolveDeadline({
+          kind: "abort-settlement-deadline",
+          elapsedMs: Math.max(0, performance.now() - settlementStartedAt)
+        });
+      }, buildSettlementTimeoutMs);
+    });
+    let abortObservation;
+    try {
+      abortObservation = await Promise.race([completeSettlement, abortSettlementDeadline]);
+    } finally {
+      clearTimeout(abortSettlementTimer);
     }
-    const closeError = closeObserver.release();
-    if (closeError) errors.push(closeError);
-    // The mapped promises never reject, but retain an explicit observer so a
-    // late custom terminator or native close cannot become unhandled work.
-    void completeSettlement.then(
-      () => undefined,
-      () => undefined
-    );
-  } else if (observation.kind === "error") {
-    errors.push(observation.error);
-  } else {
+    if (abortObservation.kind === "abort-settlement-deadline") {
+      if (releasedTerminationOwners > 0) observedTermination = await termination;
+      deadlineError.details = {
+        ...deadlineError.details,
+        abortSettlementElapsedMs: abortObservation.elapsedMs - observation.elapsedMs,
+        abortSettlementLimitMs: buildSettlementTimeoutMs
+      };
+      if (observedTermination?.kind === "error") {
+        retainError(observedTermination.error);
+      } else if (observedTermination?.kind === "result") {
+        compilerTreeTerminated = observedTermination.result?.treeVerifiedStopped === true;
+        if (!compilerTreeTerminated) {
+          retainError(
+            new Error("The Windows supervisor compiler tree terminator did not attest complete termination.")
+          );
+        }
+      }
+      if (observedClosure?.kind === "close" && observedClosure.state.released !== true) {
+        compilerClosed = true;
+        retainError(observedClosure.state.error, { affectsVerification: false });
+      } else if (observedClosure?.kind === "error") {
+        retainError(observedClosure.error);
+      } else {
+        retainError(closeObserver.release(), { affectsVerification: false });
+      }
+      // The mapped promises never reject, but retain an explicit observer so a
+      // late custom terminator or native close cannot become unhandled work.
+      void completeSettlement.then(
+        () => undefined,
+        () => undefined
+      );
+      observation = undefined;
+    } else {
+      observation = abortObservation;
+    }
+  }
+  if (observation?.kind === "error") {
+    retainError(observation.error);
+  } else if (observation?.kind === "settled") {
     const { terminationObservation, closureObservation } = observation;
-    compilerClosed = closureObservation.kind === "close";
-    if (closureObservation.kind === "error") errors.push(closureObservation.error);
-    else if (closureObservation.state.error) errors.push(closureObservation.state.error);
+    compilerClosed = closureObservation.kind === "close" && closureObservation.state.released !== true;
+    if (closureObservation.kind === "error") retainError(closureObservation.error);
+    else if (closureObservation.state.error) {
+      retainError(closureObservation.state.error, { affectsVerification: false });
+    }
     if (terminationObservation.kind === "error") {
-      errors.push(terminationObservation.error);
+      retainError(terminationObservation.error);
     } else {
       compilerTreeTerminated = terminationObservation.result?.treeVerifiedStopped === true;
       if (!compilerTreeTerminated) {
-        errors.push(new Error("The Windows supervisor compiler tree terminator did not attest complete termination."));
+        retainError(new Error("The Windows supervisor compiler tree terminator did not attest complete termination."));
       }
     }
   }
   try {
     releaseCompilerOutputListeners();
   } catch (error) {
-    errors.push(error);
+    retainError(error);
   }
   try {
     destroyCapturedCommandStdio(child);
   } catch (error) {
-    errors.push(error);
+    retainError(error);
   }
   try {
     child.unref?.();
   } catch (error) {
-    errors.push(error);
+    retainError(error);
+  }
+  const treeVerifiedStopped = compilerClosed && compilerTreeTerminated && verificationErrors.size === 0;
+  if (deadlineError) {
+    deadlineError.details = { ...deadlineError.details, treeVerifiedStopped };
+    deadline = Object.freeze({ ...deadlineError.details, code: deadlineError.code });
   }
   return {
     compilerClosed,
     compilerTreeTerminated,
     deadline,
     errors,
-    treeVerifiedStopped: compilerClosed && compilerTreeTerminated && errors.length === 0
+    treeVerifiedStopped
   };
 }
 
 async function terminateWindowsCompilerProcessTree(
   child,
-  { systemRoot, timeoutMs, abortSignal, spawnTaskkillProcess = spawn }
+  { systemRoot, timeoutMs, abortSignal, spawnTaskkillProcess = spawn, registerAbortSettlementRelease }
 ) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
     throw new Error("The Windows supervisor compiler did not expose a valid process identifier.");
@@ -2362,19 +2442,27 @@ async function terminateWindowsCompilerProcessTree(
   if (typeof spawnTaskkillProcess !== "function") {
     throw new Error("The Windows supervisor compiler tree terminator requires a taskkill launcher.");
   }
-  const errors = [];
+  if (typeof registerAbortSettlementRelease !== "function") {
+    throw new Error("The Windows supervisor compiler tree terminator requires bounded abort-settlement ownership.");
+  }
+  const taskkillErrors = [];
+  const compilerErrors = [];
+  const unrefErrors = [];
   let taskkillState;
   let taskkill;
   let compilerKillAttempted = false;
   let settlementExpired = abortSignal.aborted;
   let onAbort;
+  let unregisterAbortSettlementRelease;
   const killCompilerOnce = () => {
     if (compilerKillAttempted) return;
     compilerKillAttempted = true;
     try {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode === null && child.kill("SIGKILL") === false) {
+        compilerErrors.push(new Error("The Windows supervisor compiler rejected forced termination."));
+      }
     } catch (error) {
-      errors.push(error);
+      compilerErrors.push(error);
     }
   };
   try {
@@ -2394,17 +2482,21 @@ async function terminateWindowsCompilerProcessTree(
       const taskkillAbort = new Promise((resolve) => {
         resolveAbort = resolve;
       });
+      unregisterAbortSettlementRelease = registerAbortSettlementRelease(() => {
+        const taskkillCloseError = taskkillCloseObserver.release();
+        if (taskkillCloseError) taskkillErrors.push(taskkillCloseError);
+        resolveAbort({ kind: "released" });
+      });
       onAbort = () => {
         settlementExpired = true;
-        const taskkillCloseError = taskkillCloseObserver.release();
-        if (taskkillCloseError) errors.push(taskkillCloseError);
         try {
-          taskkill?.kill("SIGKILL");
+          if (taskkill?.kill("SIGKILL") === false) {
+            taskkillErrors.push(new Error("The Windows taskkill process rejected forced termination."));
+          }
         } catch (error) {
-          errors.push(error);
+          taskkillErrors.push(error);
         }
         killCompilerOnce();
-        resolveAbort({ kind: "aborted" });
       };
       abortSignal.addEventListener("abort", onAbort, { once: true });
       if (abortSignal.aborted) onAbort();
@@ -2414,25 +2506,28 @@ async function terminateWindowsCompilerProcessTree(
       ]);
       if (taskkillObservation.kind === "close") taskkillState = taskkillObservation.state;
     }
-    if (!settlementExpired && (taskkillState?.error || taskkillState?.code !== 0 || taskkillState?.signal !== null)) {
-      errors.push(
-        taskkillState?.error ??
-          new Error(
-            `Windows supervisor compiler tree termination failed with code ${String(taskkillState?.code ?? "unknown")} and signal ${String(taskkillState?.signal ?? "none")}.`
-          )
+    if (taskkillState?.error) {
+      taskkillErrors.push(taskkillState.error);
+    } else if (!settlementExpired && (taskkillState?.code !== 0 || taskkillState?.signal !== null)) {
+      taskkillErrors.push(
+        new Error(
+          `Windows supervisor compiler tree termination failed with code ${String(taskkillState?.code ?? "unknown")} and signal ${String(taskkillState?.signal ?? "none")}.`
+        )
       );
     }
   } catch (error) {
-    errors.push(error);
+    taskkillErrors.push(error);
   } finally {
+    unregisterAbortSettlementRelease?.();
     if (onAbort) abortSignal.removeEventListener("abort", onAbort);
     try {
       taskkill?.unref?.();
     } catch (error) {
-      errors.push(error);
+      unrefErrors.push(error);
     }
   }
   killCompilerOnce();
+  const errors = [...taskkillErrors, ...compilerErrors, ...unrefErrors];
   if (settlementExpired && errors.length === 0) {
     return { treeVerifiedStopped: false, settlementTimeoutMs: timeoutMs };
   }
