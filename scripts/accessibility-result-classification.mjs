@@ -21,7 +21,8 @@ export const AXE_RESULT_LIMITS = Object.freeze({
   targetDepth: 4,
   failureSummaryCodePoints: 512,
   rawImpactCodePoints: 32,
-  machineResultUtf8Bytes: 2 * 1024 * 1024
+  machineResultUtf8Bytes: 2 * 1024 * 1024,
+  machineResultGraphNodes: 100_000
 });
 
 const IMPACT_ORDER = Object.freeze(["critical", "serious", "moderate", "minor", "unknown"]);
@@ -32,6 +33,7 @@ const CLASSIFICATION_ERROR_CODES = new Set([
   "invalid_harness",
   "invalid_machine_result",
   "machine_result_too_large",
+  "too_many_machine_result_nodes",
   "too_many_finding_nodes",
   "too_many_run_findings",
   "too_many_run_nodes",
@@ -61,21 +63,22 @@ export function createAxeResultCollector() {
       if (scans.size >= AXE_RESULT_LIMITS.scans) {
         throw classificationLimitError("too_many_scans", "Axe scan count", scans.size + 1, AXE_RESULT_LIMITS.scans);
       }
-      const prepared = prepareAxeScanInput(input, nodeCount);
-      if (scans.has(prepared.harness)) {
+      const envelope = captureAxeScanEnvelope(input);
+      if (scans.has(envelope.harness)) {
         throw new AxeResultClassificationError(
           "duplicate_harness",
-          `Axe scan results repeated the harness ${JSON.stringify(prepared.harness)}.`
+          `Axe scan results repeated the harness ${JSON.stringify(envelope.harness)}.`
         );
       }
-      if (findingCount + prepared.findingCount > AXE_RESULT_LIMITS.findingsPerRun) {
+      if (findingCount + envelope.findingCount > AXE_RESULT_LIMITS.findingsPerRun) {
         throw classificationLimitError(
           "too_many_run_findings",
           "Axe run finding count",
-          findingCount + prepared.findingCount,
+          findingCount + envelope.findingCount,
           AXE_RESULT_LIMITS.findingsPerRun
         );
       }
+      const prepared = prepareAxeScanInput(envelope, nodeCount);
       const scan = classifyPreparedAxeScan(prepared);
       scans.set(scan.harness, scan);
       findingCount += scan.findingCount;
@@ -98,10 +101,10 @@ export function createAxeResultCollector() {
 }
 
 export function classifyAxeScanResult(input) {
-  return classifyPreparedAxeScan(prepareAxeScanInput(input, 0));
+  return classifyPreparedAxeScan(prepareAxeScanInput(captureAxeScanEnvelope(input), 0));
 }
 
-function prepareAxeScanInput(input, existingRunNodeCount) {
+function captureAxeScanEnvelope(input) {
   const envelope = requirePlainRecord(input, "invalid_findings", "Axe scan results must be plain objects.");
   const harness = readOwnDataProperty(
     envelope,
@@ -132,11 +135,19 @@ function prepareAxeScanInput(input, existingRunNodeCount) {
     );
   }
 
+  return Object.freeze({
+    harness: normalizedHarness.value,
+    violations,
+    findingCount: violationCount
+  });
+}
+
+function prepareAxeScanInput(envelope, existingRunNodeCount) {
   const preflightFindings = [];
   let nodeCount = 0;
-  for (let index = 0; index < violationCount; index += 1) {
+  for (let index = 0; index < envelope.findingCount; index += 1) {
     const findingEntry = readOwnArrayEntry(
-      violations,
+      envelope.violations,
       index,
       "invalid_findings",
       "Axe violation entries must be own data properties."
@@ -173,7 +184,7 @@ function prepareAxeScanInput(input, existingRunNodeCount) {
       if (nodeCount + findingNodeCount > AXE_RESULT_LIMITS.nodesPerScan) {
         throw classificationLimitError(
           "too_many_scan_nodes",
-          `Axe affected-node count for ${normalizedHarness.value}`,
+          `Axe affected-node count for ${envelope.harness}`,
           nodeCount + findingNodeCount,
           AXE_RESULT_LIMITS.nodesPerScan
         );
@@ -197,8 +208,8 @@ function prepareAxeScanInput(input, existingRunNodeCount) {
   }
 
   return Object.freeze({
-    harness: normalizedHarness.value,
-    findingCount: violationCount,
+    harness: envelope.harness,
+    findingCount: envelope.findingCount,
     nodeCount,
     sourceFindings: Object.freeze(sourceFindings),
     sourceNodes: Object.freeze(sourceNodes)
@@ -306,7 +317,7 @@ function boundedTarget(target) {
         stopped = true;
         return;
       }
-      text += codePoint;
+      text += visibleDiagnosticCodePoint(codePoint);
       codePointCount += 1;
     }
   };
@@ -388,7 +399,7 @@ function boundedText(value, fallback, maxCodePoints) {
       truncated = true;
       break;
     }
-    text += codePoint;
+    text += visibleDiagnosticCodePoint(codePoint);
     count += 1;
   }
   text = text.replace(/\s+/gu, " ").trim();
@@ -416,6 +427,7 @@ function compareText(left, right) {
 
 function createMachineResultBudget() {
   let size = 0;
+  let graphNodes = 0;
   return Object.freeze({
     chargeAscii(bytes) {
       const nextSize = size + bytes;
@@ -439,6 +451,18 @@ function createMachineResultBudget() {
     },
     remainingAscii() {
       return AXE_RESULT_LIMITS.machineResultUtf8Bytes - size;
+    },
+    chargeGraphNode() {
+      const nextGraphNodes = graphNodes + 1;
+      if (nextGraphNodes > AXE_RESULT_LIMITS.machineResultGraphNodes) {
+        throw classificationLimitError(
+          "too_many_machine_result_nodes",
+          "Axe machine result graph-node count",
+          nextGraphNodes,
+          AXE_RESULT_LIMITS.machineResultGraphNodes
+        );
+      }
+      graphNodes = nextGraphNodes;
     }
   });
 }
@@ -481,6 +505,7 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
   if (ancestors.has(value)) {
     throw new AxeResultClassificationError("invalid_machine_result", "Axe machine result cycles are forbidden.");
   }
+  budget.chargeGraphNode();
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
@@ -497,12 +522,6 @@ function snapshotJsonValue(value, budget, ancestors, depth) {
           "Axe machine result array entries must be own data properties."
         );
         if (!entry.present) {
-          if (String(index) in value) {
-            throw new AxeResultClassificationError(
-              "invalid_machine_result",
-              "Axe machine result arrays may not inherit indexed values."
-            );
-          }
           budget.chargeAscii(index > 0 ? 5 : 4);
           snapshot.push(null);
         } else {
@@ -567,6 +586,12 @@ function chargeJsonString(value, budget) {
 
 function isShortJsonEscape(codeUnit) {
   return codeUnit === 0x08 || codeUnit === 0x09 || codeUnit === 0x0a || codeUnit === 0x0c || codeUnit === 0x0d;
+}
+
+function visibleDiagnosticCodePoint(codePoint) {
+  if (!/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(codePoint)) return codePoint;
+  const value = codePoint.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+  return `\\u{${value}}`;
 }
 
 function classificationErrorResult(error) {

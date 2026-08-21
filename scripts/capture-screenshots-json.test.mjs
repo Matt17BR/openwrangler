@@ -292,6 +292,44 @@ test("Axe aggregate node budgets preflight 512 maximum-node findings and rejecte
   }
 });
 
+test("Axe run finding limits reject 512 plus 5 findings before inspecting 50,000 nodes", () => {
+  const collector = createAxeResultCollector();
+  for (const scanIndex of [0, 1]) {
+    collector.record({
+      harness: `finding-limit-${scanIndex}.html`,
+      violations: Array.from({ length: AXE_RESULT_LIMITS.findingsPerScan }, (_, findingIndex) =>
+        axeViolation({ id: `finding-${scanIndex}-${findingIndex}`, impact: "minor" })
+      )
+    });
+  }
+
+  let rejectedNodeReads = 0;
+  const rejectedNode = { failureSummary: "must not be inspected" };
+  Object.defineProperty(rejectedNode, "target", {
+    get() {
+      rejectedNodeReads += 1;
+      throw new Error("Run finding overflow inspected rejected nodes.");
+    }
+  });
+  const rejectedFindings = Array.from({ length: 5 }, (_, index) =>
+    axeViolation({
+      id: `rejected-${index}`,
+      impact: "minor",
+      nodes: Array(AXE_RESULT_LIMITS.nodesPerFinding).fill(rejectedNode)
+    })
+  );
+  assert.throws(
+    () => collector.record({ harness: "finding-limit-overflow.html", violations: rejectedFindings }),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "too_many_run_findings" &&
+      error.actual === AXE_RESULT_LIMITS.findingsPerRun + rejectedFindings.length &&
+      error.limit === AXE_RESULT_LIMITS.findingsPerRun
+  );
+  assert.equal(rejectedNodeReads, 0);
+  assert.equal(collector.report().findingCount, AXE_RESULT_LIMITS.findingsPerRun);
+});
+
 test("Axe input snapshots reject proxies and array accessors before invoking hostile code", () => {
   let proxyTrapCalls = 0;
   const hostileHandler = {
@@ -469,6 +507,42 @@ test("Axe machine-result sparse arrays pass at the exact byte boundary and fail 
   );
 });
 
+test("Axe sparse serialization never walks an Array.prototype Proxy", () => {
+  const originalPrototypeParent = Object.getPrototypeOf(Array.prototype);
+  let prototypeTrapCalls = 0;
+  const proxyPrototypeParent = new Proxy(originalPrototypeParent, {
+    has() {
+      prototypeTrapCalls += 1;
+      throw new Error("Sparse serialization walked the Array prototype chain.");
+    }
+  });
+  const sparse = Array(3);
+  let serialized;
+  Object.setPrototypeOf(Array.prototype, proxyPrototypeParent);
+  try {
+    serialized = serializeAxeMachineResult({ sparse });
+  } finally {
+    Object.setPrototypeOf(Array.prototype, originalPrototypeParent);
+  }
+
+  assert.equal(prototypeTrapCalls, 0);
+  assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    sparse: [null, null, null]
+  });
+});
+
+test("Axe machine results reject 100,000 empty child arrays at the aggregate graph-node bound", () => {
+  const graph = Array.from({ length: AXE_RESULT_LIMITS.machineResultGraphNodes }, () => []);
+  assert.throws(
+    () => serializeAxeMachineResult(graph),
+    (error) =>
+      error instanceof AxeResultClassificationError &&
+      error.code === "too_many_machine_result_nodes" &&
+      error.actual === AXE_RESULT_LIMITS.machineResultGraphNodes + 1 &&
+      error.limit === AXE_RESULT_LIMITS.machineResultGraphNodes
+  );
+});
+
 test("Axe machine-result charging rejects toJSON and accessors without invoking them", () => {
   let toJSONCalls = 0;
   const hooked = {
@@ -570,6 +644,45 @@ test("Axe classification errors emit only allowlisted bounded codes through the 
     code: "classification_failed"
   });
   assert.equal(codeAccessorCalls, 0);
+});
+
+test("Axe human diagnostics visibly escape unsafe control and bidi code points", () => {
+  const unsafe = "\u001b\u0007\u007f\u0085\u2028\u202e\u2066\u200f\ufeff";
+  const scan = classifyAxeScanResult({
+    harness: `control${unsafe}.html`,
+    violations: [
+      axeViolation({
+        id: `rule${unsafe}`,
+        impact: `future${unsafe}`,
+        help: `help${unsafe}`,
+        nodes: [{ target: [`.target${unsafe}`], failureSummary: `failure${unsafe}` }]
+      })
+    ]
+  });
+  const finding = scan.findings[0];
+  const detail = formatAxeFailureDetail({ scans: [scan] });
+  const visibleEscapes = [
+    "\\u{001B}",
+    "\\u{0007}",
+    "\\u{007F}",
+    "\\u{0085}",
+    "\\u{2028}",
+    "\\u{202E}",
+    "\\u{2066}",
+    "\\u{200F}",
+    "\\u{FEFF}"
+  ];
+
+  for (const escape of visibleEscapes) {
+    assert.ok(scan.harness.includes(escape));
+    assert.ok(finding.id.includes(escape));
+    assert.ok(finding.rawImpact.includes(escape));
+    assert.ok(finding.help.includes(escape));
+    assert.ok(finding.nodes[0].target.includes(escape));
+    assert.ok(finding.nodes[0].failureSummary.includes(escape));
+    assert.ok(detail.includes(escape));
+  }
+  for (const control of unsafe) assert.equal(detail.includes(control), false);
 });
 
 function readinessScope({
