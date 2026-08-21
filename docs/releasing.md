@@ -40,9 +40,9 @@ Compatibility claims use one ordered evidence vocabulary from `fixtures/compatib
 - **Focused release seam:** The exact candidate artifact passes a named release-blocking seam without claiming the complete product or platform matrix.
 - **Fully qualified:** The exact candidate artifact passes every required source, installed, platform, security, and release owner for the claim.
 
-The current release targets are VS Code 1.130.0 on Linux, macOS, Windows at the **Fully qualified** tier and Cursor 3.13.10 on Linux at the **Focused release seam** tier. Native R records R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows at the **Focused release seam** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.
+VS Code is **Fully qualified** on Linux, macOS, Windows through distinct evidence lanes: exact 1.130.0 installed-performance evidence from `performance`; moving stable candidate evidence from `platform`, `r_platform`, `linux`, `jupyter`, `r_local`; and source/final fan-in from `contract`, `acceptance`. The exact pin is not attributed to the moving stable jobs. Cursor 3.13.10 on Linux remains a **Focused release seam**. Native R records R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows at the **Focused release seam** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.
 
-Separately, Open Wrangler 1.2.0 retains one **Smoke-tested** Antigravity 1.107.0 Linux x64 record through Open VSX. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.
+Separately, Open Wrangler 1.2.0 retains one **Smoke-tested** Antigravity 1.107.0 Linux x64 record through Open VSX. It verifies installation, activation through `openWrangler.openFile`, one semicolon CSV through native Polars open, source digest unchanged, and zero sessions, runtime, and editor processes; archive and private roots removed. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.
 
 Native R remains **Partial**. Promotion to fully qualified support is tracked by [issue #87](https://github.com/Matt17BR/openwrangler/issues/87); local implementation evidence cannot replace installed or cross-platform release qualification.
 <!-- open-wrangler-compatibility-tiers:end -->

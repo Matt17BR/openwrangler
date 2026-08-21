@@ -69,14 +69,14 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-compatibility-evidence:start -->
 
-| Target                      | Current version evidence                           | Platforms             | Evidence tier        | Support        |
-| --------------------------- | -------------------------------------------------- | --------------------- | -------------------- | -------------- |
-| VS Code                     | API `^1.106.0`; pinned release target `1.130.0`    | Linux, macOS, Windows | Fully qualified      | Release-tested |
-| Cursor                      | API `^1.106.0`; pinned release target `3.13.10`    | Linux                 | Focused release seam | Release-tested |
-| Other VS Code desktop forks | API `^1.106.0`; no release target                  | Distribution-specific | API-compatible       | Experimental   |
-| Browser-hosted `vscode.dev` | None                                               | Browser               | —                    | Unsupported    |
-| Antigravity smoke           | Open Wrangler `1.2.0`; editor `1.107.0`            | Linux x64             | Smoke-tested         | Experimental   |
-| Native R preview            | R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows | Linux, macOS, Windows | Focused release seam | Partial        |
+| Target                      | Current version evidence                                                    | Platforms             | Evidence tier        | Support        |
+| --------------------------- | --------------------------------------------------------------------------- | --------------------- | -------------------- | -------------- |
+| VS Code                     | API `^1.106.0`; pinned performance `1.130.0`; moving stable candidate lanes | Linux, macOS, Windows | Fully qualified      | Release-tested |
+| Cursor                      | API `^1.106.0`; pinned release target `3.13.10`                             | Linux                 | Focused release seam | Release-tested |
+| Other VS Code desktop forks | API `^1.106.0`; no release target                                           | Distribution-specific | API-compatible       | Experimental   |
+| Browser-hosted `vscode.dev` | None                                                                        | Browser               | —                    | Unsupported    |
+| Antigravity smoke           | Open Wrangler `1.2.0`; editor `1.107.0`                                     | Linux x64             | Smoke-tested         | Experimental   |
+| Native R preview            | R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows                          | Linux, macOS, Windows | Focused release seam | Partial        |
 
 <!-- open-wrangler-compatibility-evidence:end -->
 

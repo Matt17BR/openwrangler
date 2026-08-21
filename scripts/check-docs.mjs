@@ -152,7 +152,8 @@ const compatibilityEvidenceProblems = inspectCompatibilityEvidence({
   releasingSource: readFileSync(resolve(root, "docs/releasing.md"), "utf8"),
   architectureSource: readFileSync(resolve(root, "docs/architecture.md"), "utf8"),
   featureParitySource: featureParity,
-  testingSource: readFileSync(resolve(root, "docs/testing.md"), "utf8")
+  testingSource: readFileSync(resolve(root, "docs/testing.md"), "utf8"),
+  ciDocumentationSource: readFileSync(resolve(root, "docs/ci.md"), "utf8")
 });
 if (compatibilityEvidenceProblems.length > 0) {
   throw new Error(`Compatibility evidence is stale:\n- ${compatibilityEvidenceProblems.join("\n- ")}`);

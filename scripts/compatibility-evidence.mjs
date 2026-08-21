@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { parseStrictJson } from "./strict-json.mjs";
 
 export const COMPATIBILITY_EVIDENCE_MAX_BYTES = 64 * 1024;
+export const COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTICS = 64;
+export const COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTIC_BYTES = 16 * 1024;
 const MAX_NODES = 256;
 const MAX_DEPTH = 8;
 const MAX_STRING_CHARACTERS = 512;
@@ -40,6 +42,20 @@ const EXPECTED_EDITOR_OWNERS = new Map([
   ["other-vscode-desktop-forks", [".github/workflows/ci.yml#canonical-editor"]],
   ["vscode-dev", []]
 ]);
+const EXPECTED_VSCODE_EVIDENCE = Object.freeze({
+  movingStableWorkflowOwners: [
+    ".github/workflows/candidate-acceptance.yml#platform",
+    ".github/workflows/candidate-acceptance.yml#r_platform",
+    ".github/workflows/candidate-acceptance.yml#linux",
+    ".github/workflows/candidate-acceptance.yml#jupyter",
+    ".github/workflows/candidate-acceptance.yml#r_local"
+  ],
+  pinnedWorkflowOwners: [".github/workflows/candidate-acceptance.yml#performance"],
+  fanInWorkflowOwners: [
+    ".github/workflows/candidate-acceptance.yml#contract",
+    ".github/workflows/candidate-acceptance.yml#acceptance"
+  ]
+});
 const EXPECTED_EDITOR_FIELDS = new Map([
   [
     "vscode",
@@ -93,7 +109,13 @@ const EXPECTED_FORK_SMOKE = Object.freeze({
   editorVersion: "1.107.0",
   editorCommit: "15487b3041e65228cae24980a3f796c905ef582c",
   platform: "linux-x64",
+  architecture: "x64",
   registry: "Open VSX",
+  installedExtension: "Matt17BR.openwrangler@1.2.0",
+  activationCommand: "openWrangler.openFile",
+  openedFormat: "semicolon CSV through native Polars",
+  sourceImmutability: "source digest unchanged",
+  cleanup: "zero sessions, runtime, and editor processes; archive and private roots removed",
   tier: "smoke-tested",
   support: "Experimental",
   evidenceOwner: "docs/testing.md#experimental-antigravity-smoke"
@@ -102,6 +124,51 @@ const EXPECTED_NATIVE_R_OWNERS = [
   ".github/workflows/candidate-acceptance.yml#r_platform",
   ".github/workflows/candidate-acceptance.yml#r_local"
 ];
+const DIAGNOSTIC_LIMIT_MESSAGE = "Compatibility diagnostic retention limit reached.";
+
+class BoundedDiagnostics {
+  #messages = [];
+  #bytes = 0;
+  #saturated = false;
+
+  get length() {
+    return this.#messages.length;
+  }
+
+  push(...messages) {
+    for (const message of messages) {
+      if (this.#saturated) break;
+      const text = String(message);
+      const separatorBytes = this.#messages.length === 0 ? 0 : 1;
+      const textBytes = Buffer.byteLength(text, "utf8");
+      const retainedSentinelSeparatorBytes = 1;
+      const directSentinelSeparatorBytes = this.#messages.length === 0 ? 0 : 1;
+      const sentinelBytes = Buffer.byteLength(DIAGNOSTIC_LIMIT_MESSAGE, "utf8");
+      const mustReserveSentinel =
+        this.#messages.length >= COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTICS - 1 ||
+        this.#bytes + separatorBytes + textBytes + retainedSentinelSeparatorBytes + sentinelBytes >
+          COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTIC_BYTES;
+      if (mustReserveSentinel) {
+        if (
+          this.#messages.length < COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTICS &&
+          this.#bytes + directSentinelSeparatorBytes + sentinelBytes <= COMPATIBILITY_EVIDENCE_MAX_DIAGNOSTIC_BYTES
+        ) {
+          this.#messages.push(DIAGNOSTIC_LIMIT_MESSAGE);
+          this.#bytes += directSentinelSeparatorBytes + sentinelBytes;
+        }
+        this.#saturated = true;
+        break;
+      }
+      this.#messages.push(text);
+      this.#bytes += separatorBytes + textBytes;
+    }
+    return this.#messages.length;
+  }
+
+  toArray() {
+    return [...this.#messages];
+  }
+}
 
 function record(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -194,7 +261,7 @@ function validateAuthority(authority, problems) {
   }
   if (
     !exactKeys(authority, ["schemaVersion", "tiers", "editors", "forkSmokes", "nativeR"]) ||
-    authority.schemaVersion !== 2
+    authority.schemaVersion !== 3
   ) {
     problems.push("Compatibility evidence must contain only the versioned tier, editor, and Native R authority.");
     return false;
@@ -227,18 +294,22 @@ function validateAuthority(authority, problems) {
     problems.push("Compatibility editor entries must be known, unique, and ordered.");
   }
   for (const entry of authority.editors) {
+    const editorKeys = [
+      "id",
+      "name",
+      "apiVersion",
+      "releaseVersion",
+      "versionOwner",
+      "platforms",
+      "tier",
+      "support",
+      "workflowOwners"
+    ];
+    if (entry?.id === "vscode") {
+      editorKeys.push("movingStableWorkflowOwners", "pinnedWorkflowOwners", "fanInWorkflowOwners");
+    }
     if (
-      !exactKeys(entry, [
-        "id",
-        "name",
-        "apiVersion",
-        "releaseVersion",
-        "versionOwner",
-        "platforms",
-        "tier",
-        "support",
-        "workflowOwners"
-      ]) ||
+      !exactKeys(entry, editorKeys) ||
       typeof entry.name !== "string" ||
       !Array.isArray(entry.platforms) ||
       entry.platforms.length === 0 ||
@@ -252,6 +323,22 @@ function validateAuthority(authority, problems) {
     }
     if (!sameArray(entry.workflowOwners, EXPECTED_EDITOR_OWNERS.get(entry.id))) {
       problems.push(`Compatibility editor ${entry.id} workflow owners must be complete, unique, and ordered.`);
+    }
+    if (
+      entry.id === "vscode" &&
+      (!sameArray(entry.movingStableWorkflowOwners, EXPECTED_VSCODE_EVIDENCE.movingStableWorkflowOwners) ||
+        !sameArray(entry.pinnedWorkflowOwners, EXPECTED_VSCODE_EVIDENCE.pinnedWorkflowOwners) ||
+        !sameArray(entry.fanInWorkflowOwners, EXPECTED_VSCODE_EVIDENCE.fanInWorkflowOwners) ||
+        new Set([...entry.movingStableWorkflowOwners, ...entry.pinnedWorkflowOwners, ...entry.fanInWorkflowOwners])
+          .size !== entry.workflowOwners.length ||
+        entry.workflowOwners.some(
+          (owner) =>
+            !entry.movingStableWorkflowOwners.includes(owner) &&
+            !entry.pinnedWorkflowOwners.includes(owner) &&
+            !entry.fanInWorkflowOwners.includes(owner)
+        ))
+    ) {
+      problems.push("VS Code evidence lanes must distinguish moving stable, exact pinned, and fan-in owners.");
     }
     const expectedFields = EXPECTED_EDITOR_FIELDS.get(entry.id);
     if (
@@ -335,7 +422,14 @@ function forkSmoke(authority) {
 function versionEvidence(target) {
   if (target.apiVersion === null) return "None";
   if (target.releaseVersion === null) return `API \`${target.apiVersion}\`; no release target`;
+  if (target.id === "vscode") {
+    return `API \`${target.apiVersion}\`; pinned performance \`${target.releaseVersion}\`; moving stable candidate lanes`;
+  }
   return `API \`${target.apiVersion}\`; pinned release target \`${target.releaseVersion}\``;
+}
+
+function workflowJobNames(owners) {
+  return owners.map((owner) => `\`${owner.slice(owner.indexOf("#") + 1)}\``).join(", ");
 }
 
 function platformLabels(platforms) {
@@ -401,9 +495,9 @@ export function renderCompatibilityReleaseSection(authority) {
     "",
     ...authority.tiers.map((entry) => `- **${entry.label}:** ${entry.meaning}`),
     "",
-    `The current release targets are VS Code ${vscode.releaseVersion} on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier and Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} at the **${tier(authority, cursor.tier).label}** tier. Native R records ${nativeVersions} at the **${tier(authority, authority.nativeR.tier).label}** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.`,
+    `VS Code is **${tier(authority, vscode.tier).label}** on ${platformLabels(vscode.platforms)} through distinct evidence lanes: exact ${vscode.releaseVersion} installed-performance evidence from ${workflowJobNames(vscode.pinnedWorkflowOwners)}; moving stable candidate evidence from ${workflowJobNames(vscode.movingStableWorkflowOwners)}; and source/final fan-in from ${workflowJobNames(vscode.fanInWorkflowOwners)}. The exact pin is not attributed to the moving stable jobs. Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} remains a **${tier(authority, cursor.tier).label}**. Native R records ${nativeVersions} at the **${tier(authority, authority.nativeR.tier).label}** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.`,
     "",
-    `Separately, Open Wrangler ${antigravity.extensionVersion} retains one **${tier(authority, antigravity.tier).label}** Antigravity ${antigravity.editorVersion} Linux x64 record through ${antigravity.registry}. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.`,
+    `Separately, Open Wrangler ${antigravity.extensionVersion} retains one **${tier(authority, antigravity.tier).label}** Antigravity ${antigravity.editorVersion} Linux ${antigravity.architecture} record through ${antigravity.registry}. It verifies installation, activation through \`${antigravity.activationCommand}\`, one ${antigravity.openedFormat} open, ${antigravity.sourceImmutability}, and ${antigravity.cleanup}. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.`,
     "",
     `Native R remains **${authority.nativeR.status}**. Promotion to fully qualified support is tracked by [issue #87](${authority.nativeR.promotionIssue}); local implementation evidence cannot replace installed or cross-platform release qualification.`,
     RELEASE_END
@@ -424,7 +518,7 @@ export function renderCompatibilityArchitectureParagraph(authority) {
   return [
     ARCHITECTURE_START,
     "",
-    `Compatibility vocabulary, versions, platforms, and workflow ownership come from \`fixtures/compatibility-evidence.json\` and are checked by \`scripts/compatibility-evidence.mjs\`. VS Code ${vscode.releaseVersion} is pinned by \`${vscode.versionOwner}\`; Cursor ${cursor.releaseVersion} is pinned by \`${cursor.versionOwner}\`. The current workflow owners are ${ownerSummary}. The separate Antigravity ${antigravity.editorVersion} Linux x64 smoke remains bound to \`${antigravity.evidenceOwner}\`. API compatibility is a source contract; it never inherits installed or release qualification from a higher tier.`,
+    `Compatibility vocabulary, versions, platforms, and workflow ownership come from \`fixtures/compatibility-evidence.json\` and are checked by \`scripts/compatibility-evidence.mjs\`. VS Code ${vscode.releaseVersion} is pinned by \`${vscode.versionOwner}\` only for ${workflowJobNames(vscode.pinnedWorkflowOwners)}; ${workflowJobNames(vscode.movingStableWorkflowOwners)} intentionally exercise the moving stable channel, and ${workflowJobNames(vscode.fanInWorkflowOwners)} own source/final fan-in. Cursor ${cursor.releaseVersion} is pinned by \`${cursor.versionOwner}\`. The current workflow owners are ${ownerSummary}. The separate Antigravity ${antigravity.editorVersion} Linux ${antigravity.architecture} smoke remains bound to \`${antigravity.evidenceOwner}\`. API compatibility is a source contract; it never inherits installed or release qualification from a higher tier.`,
     ARCHITECTURE_END
   ].join("\n");
 }
@@ -434,7 +528,7 @@ export function renderCompatibilityParityReference(authority) {
   const cursor = editor(authority, "cursor");
   const antigravity = forkSmoke(authority);
   const versions = authority.nativeR.versions.map((entry) => entry.version).join(" and ");
-  return `The compatibility authority records VS Code ${vscode.releaseVersion} on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier and Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} at the **${tier(authority, cursor.tier).label}** tier. Its separate Open Wrangler ${antigravity.extensionVersion}/Antigravity ${antigravity.editorVersion} Linux x64 record is **${tier(authority, antigravity.tier).label}** and does not promote other desktop forks above API-compatible. Native R ${versions} coverage is a **${tier(authority, authority.nativeR.tier).label}**, not full product qualification; its promotion remains tied to [issue #87](${authority.nativeR.promotionIssue}).`;
+  return `The compatibility authority records VS Code on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier through distinct exact ${vscode.releaseVersion} installed-performance and moving stable candidate lanes; the exact pin is not attributed to stable-channel jobs. Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} is a **${tier(authority, cursor.tier).label}**. Its separate Open Wrangler ${antigravity.extensionVersion}/Antigravity ${antigravity.editorVersion} Linux ${antigravity.architecture} record is **${tier(authority, antigravity.tier).label}** and does not promote other desktop forks above API-compatible. Native R ${versions} coverage is a **${tier(authority, authority.nativeR.tier).label}**, not full product qualification; its promotion remains tied to [issue #87](${authority.nativeR.promotionIssue}).`;
 }
 
 function inspectExactBlock(source, start, end, expected, label, problems) {
@@ -458,7 +552,7 @@ function inspectExactText(source, expected, label, problems) {
 }
 
 export function inspectCompatibilityEvidence(inputs) {
-  const problems = [];
+  const problems = new BoundedDiagnostics();
   let authority;
   try {
     authority = parseStrictJson(inputs.authoritySource, {
@@ -468,7 +562,7 @@ export function inspectCompatibilityEvidence(inputs) {
   } catch {
     return ["Compatibility evidence must be bounded strict JSON without duplicate members."];
   }
-  if (!validateAuthority(authority, problems)) return problems;
+  if (!validateAuthority(authority, problems)) return problems.toArray();
 
   let packageJson;
   try {
@@ -518,6 +612,12 @@ export function inspectCompatibilityEvidence(inputs) {
       if (!match || !workflowSources.get(match.groups.path)?.has(match.groups.job)) {
         problems.push(`Compatibility workflow owner ${JSON.stringify(owner)} is missing.`);
       }
+    }
+  }
+  for (const owner of vscode.movingStableWorkflowOwners) {
+    const job = owner.slice(owner.indexOf("#") + 1);
+    if (!candidateJobs.get(job)?.includes("VSCODE_TEST_VERSION: stable")) {
+      problems.push(`VS Code moving stable candidate lane ${owner} must retain VSCODE_TEST_VERSION: stable.`);
     }
   }
   requireMarkers(
@@ -619,11 +719,57 @@ export function inspectCompatibilityEvidence(inputs) {
     [
       "### Experimental Antigravity smoke",
       "On 2026-08-01, Open Wrangler 1.2.0 passed one bounded, non-release-blocking Antigravity Linux x64 smoke:",
-      "version 1.107.0, commit `15487b3041e65228cae24980a3f796c905ef582c`, and x64 architecture.",
-      "`Matt17BR.openwrangler@1.2.0` from that registry.",
+      `version ${forkSmoke(authority).editorVersion}, commit \`${forkSmoke(authority).editorCommit}\`, and ${forkSmoke(authority).architecture} architecture.`,
+      `\`${forkSmoke(authority).installedExtension}\` from that registry.`,
       "does not promote Antigravity to a first-class release target."
     ],
     "Antigravity smoke owner",
+    problems
+  );
+  requireBoundedMarkers(
+    inputs.testingSource,
+    [
+      "The shipped product configuration selected Open VSX.",
+      "The public `openWrangler.openFile` command activated the installed extension",
+      "opened the exact schema through native Polars."
+    ],
+    "Antigravity install, activation, and file-open properties",
+    problems
+  );
+  requireBoundedMarkers(
+    inputs.testingSource,
+    ["The source digest was unchanged."],
+    "Antigravity source immutability",
+    problems
+  );
+  requireBoundedMarkers(
+    inputs.testingSource,
+    [
+      "zero Open Wrangler sessions, no running standalone",
+      "no surviving editor process; the downloaded archive and private test roots were removed."
+    ],
+    "Antigravity cleanup properties",
+    problems
+  );
+  requireBoundedMarkers(
+    inputs.testingSource,
+    [
+      "VS Code owns the semantic editor,\nPython/Jupyter, R, and installed-performance journeys;",
+      `official VS Code ${vscode.releaseVersion} Linux x64`,
+      "The run may not reuse a preinstalled editor, moving download channel"
+    ],
+    "docs/testing.md contradicts the pinned VS Code evidence",
+    problems
+  );
+  requireBoundedMarkers(
+    inputs.ciDocumentationSource,
+    [
+      "installed performance in pinned VS Code and Cursor",
+      "one full generic packaged journey in Linux VS Code",
+      "Generic macOS/Windows platform cells own\nonly the packaged VS Code `platform-smoke`",
+      "Linux VS Code is the sole full generic packaged owner"
+    ],
+    "docs/ci.md contradicts the pinned VS Code evidence",
     problems
   );
 
@@ -658,7 +804,7 @@ export function inspectCompatibilityEvidence(inputs) {
     "docs/feature-parity.md",
     problems
   );
-  return problems;
+  return problems.toArray();
 }
 
 const root = resolve(import.meta.dirname, "..");
@@ -676,7 +822,8 @@ function repositoryInputs() {
     releasingSource: read("docs/releasing.md"),
     architectureSource: read("docs/architecture.md"),
     featureParitySource: read("docs/feature-parity.md"),
-    testingSource: read("docs/testing.md")
+    testingSource: read("docs/testing.md"),
+    ciDocumentationSource: read("docs/ci.md")
   };
 }
 

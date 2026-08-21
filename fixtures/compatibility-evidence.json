@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "tiers": [
     {
       "id": "api-compatible",
@@ -40,6 +40,18 @@
         ".github/workflows/candidate-acceptance.yml#performance",
         ".github/workflows/candidate-acceptance.yml#jupyter",
         ".github/workflows/candidate-acceptance.yml#r_local",
+        ".github/workflows/candidate-acceptance.yml#acceptance"
+      ],
+      "movingStableWorkflowOwners": [
+        ".github/workflows/candidate-acceptance.yml#platform",
+        ".github/workflows/candidate-acceptance.yml#r_platform",
+        ".github/workflows/candidate-acceptance.yml#linux",
+        ".github/workflows/candidate-acceptance.yml#jupyter",
+        ".github/workflows/candidate-acceptance.yml#r_local"
+      ],
+      "pinnedWorkflowOwners": [".github/workflows/candidate-acceptance.yml#performance"],
+      "fanInWorkflowOwners": [
+        ".github/workflows/candidate-acceptance.yml#contract",
         ".github/workflows/candidate-acceptance.yml#acceptance"
       ]
     },
@@ -85,7 +97,13 @@
       "editorVersion": "1.107.0",
       "editorCommit": "15487b3041e65228cae24980a3f796c905ef582c",
       "platform": "linux-x64",
+      "architecture": "x64",
       "registry": "Open VSX",
+      "installedExtension": "Matt17BR.openwrangler@1.2.0",
+      "activationCommand": "openWrangler.openFile",
+      "openedFormat": "semicolon CSV through native Polars",
+      "sourceImmutability": "source digest unchanged",
+      "cleanup": "zero sessions, runtime, and editor processes; archive and private roots removed",
       "tier": "smoke-tested",
       "support": "Experimental",
       "evidenceOwner": "docs/testing.md#experimental-antigravity-smoke"

@@ -17,7 +17,8 @@ const sources = Object.freeze({
   releasingSource: read("docs/releasing.md"),
   architectureSource: read("docs/architecture.md"),
   featureParitySource: read("docs/feature-parity.md"),
-  testingSource: read("docs/testing.md")
+  testingSource: read("docs/testing.md"),
+  ciDocumentationSource: read("docs/ci.md")
 });
 const authority = JSON.parse(sources.authoritySource);
 const inspect = (changes = {}) => inspectCompatibilityEvidence({ ...sources, ...changes });
@@ -119,15 +120,92 @@ test("fully qualified VS Code evidence requires the complete candidate fan-in", 
   );
 });
 
-test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
-  assert.match(
-    inspect(changedAuthority((candidate) => (candidate.forkSmokes[0].editorVersion = "1.108.0"))).join(" "),
-    /exact separate historical record/u
+test("the exact VS Code pin is not attributed to moving stable candidate lanes", () => {
+  const pinnedPlatform = sources.candidateWorkflowSource.replace(
+    "VSCODE_TEST_VERSION: stable",
+    "VSCODE_TEST_VERSION: 1.130.0"
   );
+  assert.match(inspect({ candidateWorkflowSource: pinnedPlatform }).join(" "), /moving stable candidate lane/u);
+  for (const field of ["movingStableWorkflowOwners", "pinnedWorkflowOwners", "fanInWorkflowOwners"]) {
+    assert.match(
+      inspect(changedAuthority((candidate) => candidate.editors[0][field].pop())).join(" "),
+      /evidence lanes must distinguish/u
+    );
+  }
+});
+
+test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
+  for (const [field, value] of [
+    ["editorVersion", "1.108.0"],
+    ["architecture", "arm64"],
+    ["installedExtension", "Matt17BR.openwrangler@1.2.1"],
+    ["activationCommand", "openWrangler.openUrl"],
+    ["openedFormat", "comma CSV through Pandas"],
+    ["sourceImmutability", "unverified"],
+    ["cleanup", "best effort"]
+  ]) {
+    assert.match(
+      inspect(changedAuthority((candidate) => (candidate.forkSmokes[0][field] = value))).join(" "),
+      /exact separate historical record/u
+    );
+  }
   assert.match(
     inspect({ testingSource: sources.testingSource.replace("Open Wrangler 1.2.0", "Open Wrangler 1.2.1") }).join(" "),
     /Antigravity smoke owner/u
   );
+  for (const [marker, expected] of [
+    ["The shipped product configuration selected Open VSX.", /install, activation, and file-open/u],
+    ["The public `openWrangler.openFile` command activated the installed extension", /activation/u],
+    ["opened the exact schema through native Polars.", /file-open/u],
+    ["The source digest was unchanged.", /source immutability/u],
+    ["no surviving editor process; the downloaded archive and private test roots were removed.", /cleanup properties/u]
+  ]) {
+    assert.match(inspect({ testingSource: sources.testingSource.replace(marker, "") }).join(" "), expected);
+  }
+});
+
+test("public testing and CI claims cannot contradict exact and moving editor evidence", () => {
+  assert.match(
+    inspect({
+      testingSource: sources.testingSource.replace(
+        "official VS Code 1.130.0 Linux x64",
+        "the moving VS Code stable channel on Linux x64"
+      )
+    }).join(" "),
+    /docs\/testing\.md contradicts the pinned VS Code evidence/u
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: sources.ciDocumentationSource.replace(
+        "installed performance in pinned VS Code and Cursor",
+        "installed performance in moving stable VS Code and Cursor"
+      )
+    }).join(" "),
+    /docs\/ci\.md contradicts the pinned VS Code evidence/u
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: sources.ciDocumentationSource.replace(
+        "one full generic packaged journey in Linux VS Code",
+        "one pinned 1.130.0 packaged journey in Linux VS Code"
+      )
+    }).join(" "),
+    /docs\/ci\.md contradicts the pinned VS Code evidence/u
+  );
+});
+
+test("near-cap duplicate workflow jobs retain bounded diagnostics", () => {
+  const duplicateJob = "  repeated_lane:\n    runs-on: ubuntu-24.04\n";
+  const targetBytes = 1_900_000;
+  const repeats = Math.floor(
+    (targetBytes - Buffer.byteLength(sources.candidateWorkflowSource, "utf8")) / Buffer.byteLength(duplicateJob, "utf8")
+  );
+  const diagnostics = inspect({
+    candidateWorkflowSource: `${sources.candidateWorkflowSource}${duplicateJob.repeat(repeats)}`
+  });
+  assert.ok(diagnostics.length <= 64, `retained ${diagnostics.length} diagnostics`);
+  assert.ok(Buffer.byteLength(diagnostics.join("\n"), "utf8") <= 16 * 1024);
+  assert.match(diagnostics.join(" "), /diagnostic retention limit/u);
 });
 
 test("workflow ownership and Native R release seams fail closed on drift", () => {
@@ -161,7 +239,7 @@ test("workflow ownership and Native R release seams fail closed on drift", () =>
 
 test("every generated public compatibility block rejects stale or duplicate claims", () => {
   for (const [key, marker, expected] of [
-    ["readmeSource", "pinned release target `1.130.0`", /README\.md/u],
+    ["readmeSource", "pinned performance `1.130.0`; moving stable candidate lanes", /README\.md/u],
     ["releasingSource", "Antigravity 1.107.0 Linux x64", /docs\/releasing\.md/u],
     ["architectureSource", "candidate-acceptance.yml#platform", /docs\/architecture\.md/u],
     ["featureParitySource", "Antigravity 1.107.0 Linux x64", /docs\/feature-parity\.md/u]
@@ -177,7 +255,7 @@ test("every generated public compatibility block rejects stale or duplicate clai
 test("strict JSON rejects duplicate authority members", () => {
   assert.match(
     inspect({
-      authoritySource: sources.authoritySource.replace('"schemaVersion": 2,', '"schemaVersion": 2, "schemaVersion": 2,')
+      authoritySource: sources.authoritySource.replace('"schemaVersion": 3,', '"schemaVersion": 3, "schemaVersion": 3,')
     }).join(" "),
     /strict JSON/u
   );
