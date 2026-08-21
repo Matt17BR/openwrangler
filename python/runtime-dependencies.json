@@ -125,6 +125,12 @@
         "cohortKind": "major",
         "minimumStatus": "qualified",
         "qualifiedVersions": ["9.15.0", "9.16.1"]
+      },
+      "pythonCompatibility": {
+        "pythonMaximumVersionExclusive": "3.11",
+        "minimumVersion": "8.39.0",
+        "maximumVersionExclusive": "9",
+        "qualifiedVersion": "8.39.0"
       }
     },
     {

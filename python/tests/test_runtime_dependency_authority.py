@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
+from pip._vendor.packaging.requirements import Requirement
 from pip._vendor.packaging.specifiers import SpecifierSet
 from pip._vendor.packaging.utils import canonicalize_name
 from pip._vendor.packaging.version import Version
@@ -23,6 +23,11 @@ from scripts import python_runtime_dependency_authority as authority
 
 from openwrangler_runtime import dependency_guard
 from openwrangler_runtime.session import SessionManager
+
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - exercised by the Python 3.10 qualification cohort
+    from pip._vendor import tomli as tomllib
 
 ROOT = Path(__file__).parents[2]
 
@@ -98,8 +103,18 @@ def test_generated_consumers_match_the_dependency_authority() -> None:
     assert authority.synchronize(write=False) == ()
 
     metadata = tomllib.loads(authority.PYPROJECT_PATH.read_text(encoding="utf-8"))
-    runtime_specs = [dependency.install_spec for dependency in dependencies if dependency.pyproject_group == "runtime"]
-    development_specs = [dependency.install_spec for dependency in dependencies if dependency.pyproject_group == "dev"]
+    runtime_specs = [
+        install_spec
+        for dependency in dependencies
+        if dependency.pyproject_group == "runtime"
+        for install_spec in dependency.pyproject_install_specs
+    ]
+    development_specs = [
+        install_spec
+        for dependency in dependencies
+        if dependency.pyproject_group == "dev"
+        for install_spec in dependency.pyproject_install_specs
+    ]
     assert metadata["project"]["dependencies"] == runtime_specs
     for install_spec in development_specs:
         assert metadata["project"]["optional-dependencies"]["dev"].count(install_spec) == 1
@@ -115,6 +130,37 @@ def test_supported_minima_are_exactly_executable_qualified() -> None:
     for dependency in dependencies:
         if dependency.minimum_version is not None:
             assert Version(dependency.qualified_versions[0]) == Version(dependency.minimum_version)
+        if dependency.python_compatibility is not None:
+            branch = dependency.python_compatibility
+            assert Version(branch.qualified_version) == Version(branch.minimum_version)
+
+
+def test_python_310_selects_the_qualified_compatible_ipython_branch() -> None:
+    metadata = tomllib.loads(authority.PYPROJECT_PATH.read_text(encoding="utf-8"))
+    assert SpecifierSet(metadata["project"]["requires-python"]).contains(Version("3.10"))
+    ipython = next(dependency for dependency in authority.load_authority() if dependency.identifier == "ipython")
+    branch = ipython.python_compatibility
+    assert branch is not None
+    assert branch.python_maximum_version_exclusive == "3.11"
+    assert branch.qualified_version == "8.39.0"
+
+    requirements = tuple(Requirement(spec) for spec in ipython.pyproject_install_specs)
+    selected_310 = tuple(
+        requirement
+        for requirement in requirements
+        if requirement.marker is not None and requirement.marker.evaluate({"python_version": "3.10"})
+    )
+    selected_311 = tuple(
+        requirement
+        for requirement in requirements
+        if requirement.marker is not None and requirement.marker.evaluate({"python_version": "3.11"})
+    )
+    assert len(selected_310) == 1
+    assert len(selected_311) == 1
+    assert selected_310[0].specifier.contains(Version(branch.qualified_version), prereleases=False)
+    assert selected_311[0].specifier.contains(Version(ipython.qualified_versions[0]), prereleases=False)
+    assert not selected_310[0].specifier.contains(Version(ipython.qualified_versions[0]), prereleases=False)
+    assert not selected_311[0].specifier.contains(Version(branch.qualified_version), prereleases=False)
 
 
 def test_version_fields_share_the_exact_64_character_boundary(tmp_path: Path) -> None:
@@ -268,6 +314,32 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
     unexpected_evidence_key = copy.deepcopy(baseline)
     unexpected_evidence_key["dependencies"][0]["evidence"] = ["secret-path"]
     malformed.append((unexpected_evidence_key, "invalid_authority_shape"))
+
+    incomplete_python_compatibility = copy.deepcopy(baseline)
+    incomplete_ipython = next(
+        item for item in incomplete_python_compatibility["dependencies"] if item["id"] == "ipython"
+    )
+    del incomplete_ipython["pythonCompatibility"]["qualifiedVersion"]
+    malformed.append((incomplete_python_compatibility, "invalid_authority_compatibility"))
+
+    unqualified_python_compatibility = copy.deepcopy(baseline)
+    unqualified_ipython = next(
+        item for item in unqualified_python_compatibility["dependencies"] if item["id"] == "ipython"
+    )
+    unqualified_ipython["pythonCompatibility"]["qualifiedVersion"] = "8.39.1"
+    malformed.append((unqualified_python_compatibility, "invalid_authority_compatibility"))
+
+    overlapping_python_compatibility = copy.deepcopy(baseline)
+    overlapping_ipython = next(
+        item for item in overlapping_python_compatibility["dependencies"] if item["id"] == "ipython"
+    )
+    overlapping_ipython["pythonCompatibility"]["maximumVersionExclusive"] = "10"
+    malformed.append((overlapping_python_compatibility, "invalid_authority_compatibility"))
+
+    malformed_python_boundary = copy.deepcopy(baseline)
+    malformed_ipython = next(item for item in malformed_python_boundary["dependencies"] if item["id"] == "ipython")
+    malformed_ipython["pythonCompatibility"]["pythonMaximumVersionExclusive"] = "3.11.0"
+    malformed.append((malformed_python_boundary, "invalid_authority_compatibility"))
 
     duplicate_distribution = copy.deepcopy(baseline)
     duplicate_distribution["dependencies"][0]["distribution"] = "example.package"
@@ -703,6 +775,11 @@ def _exercise_dependency(dependency: authority.Dependency, module: Any, tmp_path
 def test_installed_dependencies_exercise_the_probe_contract(tmp_path: Path) -> None:
     for dependency in authority.load_authority():
         module = pytest.importorskip(dependency.import_module)
+        branch = dependency.python_compatibility
+        if branch is not None and Version(".".join(str(part) for part in sys.version_info[:2])) < Version(
+            branch.python_maximum_version_exclusive
+        ):
+            assert Version(importlib.metadata.version(dependency.distribution)) == Version(branch.qualified_version)
         _exercise_dependency(dependency, module, tmp_path)
 
 

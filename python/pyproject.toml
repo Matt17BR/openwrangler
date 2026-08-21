@@ -17,7 +17,8 @@ dependencies = [
   "pyarrow>=25,<26",
   "openpyxl>=3.1.5,<4",
   "xlrd>=2.0.2,<3",
-  "ipython>=9.15.0,<10",
+  "ipython>=8.39.0,<9; python_version < '3.11'",
+  "ipython>=9.15.0,<10; python_version >= '3.11'",
   # END GENERATED PYTHON RUNTIME DEPENDENCIES
 ]
 

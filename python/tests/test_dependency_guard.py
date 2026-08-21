@@ -395,13 +395,13 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
 def _write_legacy_marker(
     fixture: GuardFixture,
     token: str,
-    dependency: dict[str, Any],
+    dependency: dict[str, Any] | list[dict[str, Any]],
 ) -> Path:
     _create_manual_journal(fixture)
     marker = fixture.journal / f"mutation-{token}.json"
     payload = json.dumps(
         {
-            "dependencies": [dependency],
+            "dependencies": dependency if isinstance(dependency, list) else [dependency],
             "environment": fixture.environment,
             "protocol": PROTOCOL,
             "token": token,
@@ -1464,6 +1464,7 @@ def test_shipped_v1_unbounded_journal_recovers_without_weakening_new_requests(
         "importModule": "pandas",
         "distribution": "pandas",
         "installSpec": "pandas",
+        "exactVersion": None,
         "minimumVersion": None,
         "maximumVersionExclusive": None,
     }
@@ -1514,6 +1515,68 @@ def test_shipped_v1_journal_transition_is_exact_allowlist_bound(
             "importModule": "pandas",
             "distribution": "pandas",
             "installSpec": "pandas>=1",
+            "exactVersion": None,
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+        },
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
+
+
+def test_actual_six_key_v1_journal_accepts_unbounded_pandas_with_the_released_duckdb_marker(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        [
+            {
+                "importModule": "pandas",
+                "distribution": "pandas",
+                "installSpec": "pandas",
+                "exactVersion": None,
+                "minimumVersion": None,
+                "maximumVersionExclusive": None,
+            },
+            {
+                "importModule": "duckdb",
+                "distribution": "duckdb",
+                "installSpec": "duckdb>=1.4.5,<1.6",
+                "exactVersion": None,
+                "minimumVersion": "1.4.5",
+                "maximumVersionExclusive": "1.6",
+            },
+        ],
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 0
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
+
+
+def test_impossible_five_key_v1_journal_shape_is_rejected(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        {
+            "importModule": "pandas",
+            "distribution": "pandas",
+            "installSpec": "pandas",
             "minimumVersion": None,
             "maximumVersionExclusive": None,
         },

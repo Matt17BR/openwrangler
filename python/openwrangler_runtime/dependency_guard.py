@@ -87,20 +87,21 @@ _DEPENDENCY_KEYS = {
     "minimumVersion",
     "maximumVersionExclusive",
 }
-_LEGACY_V1_DEPENDENCY_KEYS = _DEPENDENCY_KEYS - {"exactVersion"}
+_LEGACY_V1_DEPENDENCY_KEYS = _DEPENDENCY_KEYS
 _LEGACY_V1_DEPENDENCY_TRANSITIONS: dict[
-    tuple[str, str, str, str | None, str | None],
+    tuple[str, str, str, str | None, str | None, str | None],
     tuple[str | None, str | None, str | None],
 ] = {
-    ("polars", "polars", "polars", None, None): (None, None, None),
-    ("duckdb", "duckdb", "duckdb>=1.5.4,<1.6", "1.5.4", "1.6"): (None, "1.5.4", "1.6"),
-    ("fsspec", "fsspec", "fsspec==2026.7.0", None, None): ("2026.7.0", None, None),
-    ("pytz", "pytz", "pytz", None, None): (None, None, None),
-    ("pandas", "pandas", "pandas", None, None): (None, None, None),
-    ("pyarrow", "pyarrow", "pyarrow", None, None): (None, None, None),
-    ("openpyxl", "openpyxl", "openpyxl>=3.1.5", "3.1.5", None): (None, "3.1.5", None),
-    ("xlrd", "xlrd", "xlrd>=2.0.1", "2.0.1", None): (None, "2.0.1", None),
-    ("fastexcel", "fastexcel", "fastexcel>=0.9", "0.9", None): (None, "0.9", None),
+    ("polars", "polars", "polars", None, None, None): (None, None, None),
+    ("duckdb", "duckdb", "duckdb>=1.4.5,<1.6", None, "1.4.5", "1.6"): (None, "1.4.5", "1.6"),
+    ("duckdb", "duckdb", "duckdb>=1.5.4,<1.6", None, "1.5.4", "1.6"): (None, "1.5.4", "1.6"),
+    ("fsspec", "fsspec", "fsspec==2026.7.0", "2026.7.0", None, None): ("2026.7.0", None, None),
+    ("pytz", "pytz", "pytz", None, None, None): (None, None, None),
+    ("pandas", "pandas", "pandas", None, None, None): (None, None, None),
+    ("pyarrow", "pyarrow", "pyarrow", None, None, None): (None, None, None),
+    ("openpyxl", "openpyxl", "openpyxl>=3.1.5", None, "3.1.5", None): (None, "3.1.5", None),
+    ("xlrd", "xlrd", "xlrd>=2.0.1", None, "2.0.1", None): (None, "2.0.1", None),
+    ("fastexcel", "fastexcel", "fastexcel>=0.9", None, "0.9", None): (None, "0.9", None),
 }
 
 
@@ -405,13 +406,16 @@ def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, 
     import_module = _bounded_string(value["importModule"], maximum=256, code=code)
     distribution = _bounded_string(value["distribution"], maximum=128, code=code)
     install_spec = _bounded_string(value["installSpec"], maximum=2048, code=code)
+    exact = value["exactVersion"]
     minimum = value["minimumVersion"]
     maximum = value["maximumVersionExclusive"]
+    if exact is not None:
+        exact = _bounded_string(exact, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
     if minimum is not None:
         minimum = _bounded_string(minimum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
     if maximum is not None:
         maximum = _bounded_string(maximum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
-    transition_key = (import_module, distribution, install_spec, minimum, maximum)
+    transition_key = (import_module, distribution, install_spec, exact, minimum, maximum)
     try:
         exact, normalized_minimum, normalized_maximum = _LEGACY_V1_DEPENDENCY_TRANSITIONS[transition_key]
     except KeyError:
@@ -429,19 +433,10 @@ def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, 
 def _normalize_marker_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
         _fail(code)
-    normalized: list[dict[str, Any]] = []
-    legacy_schema: bool | None = None
-    for dependency in value:
-        is_legacy = isinstance(dependency, dict) and set(dependency) == _LEGACY_V1_DEPENDENCY_KEYS
-        if legacy_schema is None:
-            legacy_schema = is_legacy
-        elif legacy_schema != is_legacy:
-            _fail(code)
-        normalized.append(
-            _normalize_legacy_journal_dependency(dependency, code=code)
-            if is_legacy
-            else _normalize_dependency(dependency, code=code)
-        )
+    try:
+        normalized = [_normalize_dependency(dependency, code=code) for dependency in value]
+    except GuardError:
+        normalized = [_normalize_legacy_journal_dependency(dependency, code=code) for dependency in value]
     modules = {dependency["importModule"] for dependency in normalized}
     if len(modules) != len(normalized):
         _fail(code)

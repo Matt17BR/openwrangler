@@ -40,6 +40,7 @@ import {
   getSetting
 } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
+import { requiredDependencies } from "../../extension/pythonEnvironmentModel";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import {
@@ -18900,6 +18901,24 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
   const isolatedPython = createDependencyIsolatedPython(directory, python, invocationLog);
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  const lossySource = {
+    ...csvSource(fixture),
+    importOptions: {
+      delimiter: ",",
+      encoding: "utf8-lossy",
+      quoteChar: '"',
+      hasHeader: true
+    }
+  } as const;
+  const legacySource = {
+    kind: "file",
+    label: "legacy.xls",
+    path: path.join(directory, "legacy.xls"),
+    importOptions: { sheetIndex: 0 }
+  } as const;
+  const lossyRequirement = requiredDependencies("pandas", lossySource)[0].installSpec;
+  const legacyRequirements = requiredDependencies("pandas", legacySource).map((dependency) => dependency.installSpec);
+  const legacyRequirementList = legacyRequirements.join(", ");
 
   try {
     assert.equal(await vscode.commands.executeCommand("openWrangler.changeRuntime", isolatedPython), isolatedPython);
@@ -18939,34 +18958,21 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     const rejectedLossyUtf8 = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
-      source: {
-        ...csvSource(fixture),
-        importOptions: {
-          delimiter: ",",
-          encoding: "utf8-lossy",
-          quoteChar: '"',
-          hasHeader: true
-        }
-      },
+      source: lossySource,
       pageSize: 20,
       mode: "viewing"
     });
     assert.equal(rejectedLossyUtf8.kind, "error");
     if (rejectedLossyUtf8.kind === "error") {
       assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
-      assert.match(rejectedLossyUtf8.message, /Missing: pandas>=2\.2,<4\.$/u);
+      assert.equal(rejectedLossyUtf8.message.endsWith(`Missing: ${lossyRequirement}.`), true);
       assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
       assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLegacyExcel = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
-      source: {
-        kind: "file",
-        label: "legacy.xls",
-        path: path.join(directory, "legacy.xls"),
-        importOptions: { sheetIndex: 0 }
-      },
+      source: legacySource,
       backend: "pandas",
       pageSize: 20,
       mode: "viewing"
@@ -18974,7 +18980,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLegacyExcel.kind, "error");
     if (rejectedLegacyExcel.kind === "error") {
       assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
-      assert.match(rejectedLegacyExcel.message, /Missing: pandas>=2\.2,<4, xlrd>=2\.0\.1,<3/);
+      assert.equal(rejectedLegacyExcel.message.includes(`Missing: ${legacyRequirementList}`), true);
       assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -19000,7 +19006,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       );
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas>=2.2,<4, xlrd>=2.0.1,<3"
+        `Install ${legacyRequirementList}`
       );
       try {
         await confirmationPage.bringToFront();
@@ -19008,7 +19014,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         const confirmationDetail = await confirmation.locator(".dialog-message-detail").innerText();
         assert.equal(
           confirmationMessage,
-          `Install pandas>=2.2,<4, xlrd>=2.0.1,<3 into ${isolatedPython}?`,
+          `Install ${legacyRequirementList} into ${isolatedPython}?`,
           "The real dependency confirmation must identify the exact requirements and interpreter."
         );
         assert.equal(confirmationDetail, "Open Wrangler never installs packages without this confirmation.");

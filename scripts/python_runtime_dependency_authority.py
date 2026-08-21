@@ -142,6 +142,18 @@ def _attach_cleanup_error(
 
 
 @dataclass(frozen=True)
+class PythonCompatibilityBranch:
+    python_maximum_version_exclusive: str
+    minimum_version: str
+    maximum_version_exclusive: str
+    qualified_version: str
+
+    @property
+    def specifier(self) -> str:
+        return f">={self.minimum_version},<{self.maximum_version_exclusive}"
+
+
+@dataclass(frozen=True)
 class Dependency:
     identifier: str
     import_module: str
@@ -153,6 +165,7 @@ class Dependency:
     cohort_kind: str
     minimum_status: str
     qualified_versions: tuple[str, ...]
+    python_compatibility: PythonCompatibilityBranch | None = None
 
     @property
     def specifier(self) -> str:
@@ -163,6 +176,17 @@ class Dependency:
     @property
     def install_spec(self) -> str:
         return f"{self.distribution}{self.specifier}"
+
+    @property
+    def pyproject_install_specs(self) -> tuple[str, ...]:
+        branch = self.python_compatibility
+        if branch is None:
+            return (self.install_spec,)
+        boundary = branch.python_maximum_version_exclusive
+        return (
+            f"{self.distribution}{branch.specifier}; python_version < '{boundary}'",
+            f"{self.install_spec}; python_version >= '{boundary}'",
+        )
 
     def descriptor(self) -> dict[str, str]:
         descriptor = {
@@ -404,7 +428,10 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
     modules: set[str] = set()
     distributions: set[str] = set()
     for value in values:
-        if not isinstance(value, dict) or set(value) != expected_keys:
+        if not isinstance(value, dict) or frozenset(value) not in {
+            frozenset(expected_keys),
+            frozenset((*expected_keys, "pythonCompatibility")),
+        }:
             _fail("invalid_authority_shape")
         identifier = _text(value["id"], pattern=_IDENTIFIER)
         import_module = _text(value["importModule"], pattern=_MODULE)
@@ -513,6 +540,53 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
         if group not in {"runtime", "dev"}:
             _fail("invalid_authority_group")
 
+        python_compatibility: PythonCompatibilityBranch | None = None
+        compatibility_raw = value.get("pythonCompatibility")
+        if compatibility_raw is not None:
+            if exact_text is not None or group != "runtime":
+                _fail("invalid_authority_compatibility")
+            if not isinstance(compatibility_raw, dict) or set(compatibility_raw) != {
+                "pythonMaximumVersionExclusive",
+                "minimumVersion",
+                "maximumVersionExclusive",
+                "qualifiedVersion",
+            }:
+                _fail("invalid_authority_compatibility")
+            python_maximum_text, python_maximum = _version(
+                compatibility_raw["pythonMaximumVersionExclusive"]
+            )
+            compatibility_minimum_text, compatibility_minimum = _version(
+                compatibility_raw["minimumVersion"]
+            )
+            compatibility_maximum_text, compatibility_maximum = _version(
+                compatibility_raw["maximumVersionExclusive"]
+            )
+            compatibility_qualified_text, compatibility_qualified = _version(
+                compatibility_raw["qualifiedVersion"]
+            )
+            if (
+                len(python_maximum.release) != 2
+                or python_maximum.epoch
+                or python_maximum.is_prerelease
+                or python_maximum.is_devrelease
+                or compatibility_minimum.is_prerelease
+                or compatibility_minimum.is_devrelease
+                or compatibility_maximum.is_prerelease
+                or compatibility_maximum.is_devrelease
+                or compatibility_qualified != compatibility_minimum
+                or compatibility_minimum >= compatibility_maximum
+                or compatibility_maximum > lower
+                or compatibility_maximum
+                != _next_cohort(compatibility_qualified, "major")
+            ):
+                _fail("invalid_authority_compatibility")
+            python_compatibility = PythonCompatibilityBranch(
+                python_maximum_version_exclusive=python_maximum_text,
+                minimum_version=compatibility_minimum_text,
+                maximum_version_exclusive=compatibility_maximum_text,
+                qualified_version=compatibility_qualified_text,
+            )
+
         dependencies.append(
             Dependency(
                 identifier=identifier,
@@ -525,6 +599,7 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
                 cohort_kind=cohort_kind,
                 minimum_status=minimum_status,
                 qualified_versions=tuple(qualified_texts),
+                python_compatibility=python_compatibility,
             )
         )
     return tuple(dependencies)
@@ -2468,9 +2543,10 @@ def _authority_write_lock(
 
 def _render_pyproject(dependencies: tuple[Dependency, ...], group: str) -> str:
     return "\n".join(
-        f'  "{dependency.install_spec}",'
+        f'  "{install_spec}",'
         for dependency in dependencies
         if dependency.pyproject_group == group
+        for install_spec in dependency.pyproject_install_specs
     )
 
 

@@ -4,6 +4,7 @@ import { devNull, tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
+import { requiredDependencies } from "../../extension/pythonEnvironmentModel";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import { createDependencyInstallLifecyclePython } from "./dependencyInstallLifecycleFixture";
 import type { TestApi } from "./extensionHostTestApi";
@@ -51,6 +52,14 @@ export function createDependencyInstallShutdownJourney({
     const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
     let shutdown: Promise<void> | undefined;
     let shutdownConfirmed = false;
+    const legacySource = {
+      kind: "file",
+      label: "dependency-shutdown.xls",
+      path: path.join(directory, "dependency-shutdown.xls"),
+      importOptions: { sheetIndex: 0 }
+    } as const;
+    const requirements = requiredDependencies("pandas", legacySource).map((dependency) => dependency.installSpec);
+    const requirementList = requirements.join(", ");
 
     try {
       assert.equal(
@@ -60,12 +69,7 @@ export function createDependencyInstallShutdownJourney({
       const rejected = await testing.request({
         kind: "openSession",
         ...gridColumnWindow,
-        source: {
-          kind: "file",
-          label: "dependency-shutdown.xls",
-          path: path.join(directory, "dependency-shutdown.xls"),
-          importOptions: { sheetIndex: 0 }
-        },
+        source: legacySource,
         backend: "pandas",
         pageSize: 20,
         mode: "viewing"
@@ -73,7 +77,7 @@ export function createDependencyInstallShutdownJourney({
       assert.equal(rejected.kind, "error");
       if (rejected.kind === "error") {
         assert.equal(rejected.code, "missing_dependencies");
-        assert.match(rejected.message, /Missing: pandas>=2\.2,<4, xlrd>=2\.0\.1,<3\.$/u);
+        assert.equal(rejected.message.endsWith(`Missing: ${requirementList}.`), true);
         assert.doesNotMatch(rejected.message, /openpyxl/);
       }
       assert.equal(testing.runtimeRunning(), false, "The fake pip target must fail before runtime startup.");
@@ -91,12 +95,12 @@ export function createDependencyInstallShutdownJourney({
       });
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas>=2.2,<4, xlrd>=2.0.1,<3"
+        `Install ${requirementList}`
       );
       await confirmationPage.bringToFront();
       assert.equal(
         await confirmation.locator(".dialog-message-text").innerText(),
-        `Install pandas>=2.2,<4, xlrd>=2.0.1,<3 into ${lifecycle.executable}?`
+        `Install ${requirementList} into ${lifecycle.executable}?`
       );
       const installButton = confirmation.getByRole("button", { name: "Install", exact: true });
       assert.equal(
@@ -121,7 +125,7 @@ export function createDependencyInstallShutdownJourney({
       recordAcceptanceProgress("verify:dependency-install-child-started");
 
       const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
-      assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", "pandas>=2.2,<4", "xlrd>=2.0.1,<3"]);
+      assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", ...requirements]);
       assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
       assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
       assert.equal(
