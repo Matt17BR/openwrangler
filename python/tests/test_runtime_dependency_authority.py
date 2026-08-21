@@ -184,7 +184,7 @@ def test_version_fields_share_the_exact_64_character_boundary(tmp_path: Path) ->
                 "qualification": {
                     "cohortKind": "exact",
                     "minimumStatus": "qualified",
-                    "qualifiedVersions": [version],
+                    "qualifiedCases": [{"pythonVersion": "3.12", "version": version}],
                 },
             }
         )
@@ -283,23 +283,29 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
     malformed.append((unqualified_minimum, "invalid_authority_qualification"))
 
     unsupported_qualification = copy.deepcopy(baseline)
-    unsupported_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "2"
+    unsupported_qualification["dependencies"][0]["qualification"]["qualifiedCases"][-1]["version"] = "2"
     malformed.append((unsupported_qualification, "invalid_authority_qualification"))
 
     prerelease_qualification = copy.deepcopy(baseline)
-    prerelease_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "1.43.3rc1"
+    prerelease_qualification["dependencies"][0]["qualification"]["qualifiedCases"][-1]["version"] = "1.43.3rc1"
     malformed.append((prerelease_qualification, "invalid_authority_qualification"))
 
     development_qualification = copy.deepcopy(baseline)
-    development_qualification["dependencies"][0]["qualification"]["qualifiedVersions"][-1] = "1.43.3.dev1"
+    development_qualification["dependencies"][0]["qualification"]["qualifiedCases"][-1]["version"] = "1.43.3.dev1"
     malformed.append((development_qualification, "invalid_authority_qualification"))
 
+    noncanonical_python_qualification = copy.deepcopy(baseline)
+    noncanonical_python_qualification["dependencies"][0]["qualification"]["qualifiedCases"][0]["pythonVersion"] = (
+        "3.12.post1"
+    )
+    malformed.append((noncanonical_python_qualification, "invalid_authority_qualification"))
+
     unordered_qualification = copy.deepcopy(baseline)
-    unordered_qualification["dependencies"][0]["qualification"]["qualifiedVersions"].reverse()
+    unordered_qualification["dependencies"][0]["qualification"]["qualifiedCases"].reverse()
     malformed.append((unordered_qualification, "invalid_authority_qualification"))
 
     duplicate_qualification = copy.deepcopy(baseline)
-    qualified = duplicate_qualification["dependencies"][0]["qualification"]["qualifiedVersions"]
+    qualified = duplicate_qualification["dependencies"][0]["qualification"]["qualifiedCases"]
     qualified.append(qualified[-1])
     malformed.append((duplicate_qualification, "invalid_authority_qualification"))
 
@@ -319,14 +325,14 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
     incomplete_ipython = next(
         item for item in incomplete_python_compatibility["dependencies"] if item["id"] == "ipython"
     )
-    del incomplete_ipython["pythonCompatibility"]["qualifiedVersion"]
+    del incomplete_ipython["pythonCompatibility"]["qualifiedCase"]
     malformed.append((incomplete_python_compatibility, "invalid_authority_compatibility"))
 
     unqualified_python_compatibility = copy.deepcopy(baseline)
     unqualified_ipython = next(
         item for item in unqualified_python_compatibility["dependencies"] if item["id"] == "ipython"
     )
-    unqualified_ipython["pythonCompatibility"]["qualifiedVersion"] = "8.39.1"
+    unqualified_ipython["pythonCompatibility"]["qualifiedCase"]["version"] = "8.39.1"
     malformed.append((unqualified_python_compatibility, "invalid_authority_compatibility"))
 
     overlapping_python_compatibility = copy.deepcopy(baseline)
@@ -340,6 +346,17 @@ def test_authority_failures_are_bounded_and_do_not_echo_input(tmp_path: Path) ->
     malformed_ipython = next(item for item in malformed_python_boundary["dependencies"] if item["id"] == "ipython")
     malformed_ipython["pythonCompatibility"]["pythonMaximumVersionExclusive"] = "3.11.0"
     malformed.append((malformed_python_boundary, "invalid_authority_compatibility"))
+
+    null_python_compatibility = copy.deepcopy(baseline)
+    null_ipython = next(item for item in null_python_compatibility["dependencies"] if item["id"] == "ipython")
+    null_ipython["pythonCompatibility"] = None
+    malformed.append((null_python_compatibility, "invalid_authority_compatibility"))
+
+    for boundary in ("3.11.post1", "3.11+local", "3.10", "3.99"):
+        invalid_python_boundary = copy.deepcopy(baseline)
+        invalid_ipython = next(item for item in invalid_python_boundary["dependencies"] if item["id"] == "ipython")
+        invalid_ipython["pythonCompatibility"]["pythonMaximumVersionExclusive"] = boundary
+        malformed.append((invalid_python_boundary, "invalid_authority_compatibility"))
 
     duplicate_distribution = copy.deepcopy(baseline)
     duplicate_distribution["dependencies"][0]["distribution"] = "example.package"
@@ -447,7 +464,10 @@ def test_epoch_and_supported_pandas_cohorts_have_pep440_boundaries(tmp_path: Pat
             "qualification": {
                 "cohortKind": "major",
                 "minimumStatus": "qualified",
-                "qualifiedVersions": ["1!2.3", "1!3.9"],
+                "qualifiedCases": [
+                    {"pythonVersion": "3.12", "version": "1!2.3"},
+                    {"pythonVersion": "3.12", "version": "1!3.9"},
+                ],
             },
         }
     )
@@ -489,7 +509,7 @@ def test_exact_prerelease_and_development_versions_are_rejected(tmp_path: Path, 
             "qualification": {
                 "cohortKind": "exact",
                 "minimumStatus": "qualified",
-                "qualifiedVersions": [version],
+                "qualifiedCases": [{"pythonVersion": "3.12", "version": version}],
             },
         }
     )
@@ -786,25 +806,40 @@ def test_installed_dependencies_exercise_the_probe_contract(tmp_path: Path) -> N
 def test_generated_cohort_job_maps_every_exact_qualification_once() -> None:
     dependencies = authority.load_authority()
     expected = tuple(
-        (dependency.identifier, version, f"{dependency.distribution}=={version}")
+        (
+            dependency.identifier,
+            case.python_version,
+            case.version,
+            f"{dependency.distribution}=={case.version}",
+        )
         for dependency in dependencies
-        for version in dependency.qualified_versions
+        for case in dependency.executable_qualification_cases
     )
     rendered = authority._render_workflow(dependencies)
     assert rendered.count("          - id: ") == len(expected)
     assert 'python -m pip install -e "python[dev]" "${{ matrix.requirement }}"' in rendered
+    assert "python-version: ${{ matrix.python }}" in rendered
     assert "PYTHONPATH:" not in rendered
-    for identifier, version, requirement in expected:
+    for identifier, python_version, version, requirement in expected:
         row = (
             f"          - id: {json.dumps(identifier)}\n"
+            f"            python: {json.dumps(python_version)}\n"
             f"            version: {json.dumps(version)}\n"
             f"            requirement: {json.dumps(requirement)}"
         )
         assert rendered.count(row) == 1
-    assert {version for identifier, version, _requirement in expected if identifier == "pandas"} == {"2.3.3", "3.0.5"}
+    assert {
+        (python_version, version)
+        for identifier, python_version, version, _requirement in expected
+        if identifier == "ipython"
+    } == {("3.10", "8.39.0"), ("3.12", "9.15.0"), ("3.12", "9.16.1")}
+    assert {version for identifier, _python, version, _requirement in expected if identifier == "pandas"} == {
+        "2.3.3",
+        "3.0.5",
+    }
     assert all(
         not Version(version).is_prerelease and not Version(version).is_devrelease
-        for _identifier, version, _requirement in expected
+        for _identifier, _python, version, _requirement in expected
     )
     workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
     assert f"{authority.WORKFLOW_START}\n{rendered}\n{authority.WORKFLOW_END}" in workflow
@@ -812,14 +847,18 @@ def test_generated_cohort_job_maps_every_exact_qualification_once() -> None:
 
 def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
     identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
+    python_version = os.environ.get("OPENWRANGLER_QUALIFIED_PYTHON_VERSION")
     version = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION")
-    if identifier is None and version is None:
+    if identifier is None and python_version is None and version is None:
         pytest.skip("workflow-only exact-version qualification probe")
-    assert identifier is not None and version is not None
+    assert identifier is not None and python_version is not None and version is not None
+    assert python_version == ".".join(str(part) for part in sys.version_info[:2])
     matches = tuple(dependency for dependency in authority.load_authority() if dependency.identifier == identifier)
     assert len(matches) == 1
     dependency = matches[0]
-    assert version in dependency.qualified_versions
+    assert authority.QualificationCase(python_version=python_version, version=version) in (
+        dependency.executable_qualification_cases
+    )
     assert not Version(version).is_prerelease
     assert not Version(version).is_devrelease
     module = _import_qualified_module(dependency, version)
@@ -1133,7 +1172,7 @@ def test_locked_authority_descriptor_prevents_aba_publication(tmp_path: Path, mo
     alternate_value = json.loads(authority_path.read_text(encoding="utf-8"))
     fsspec = next(dependency for dependency in alternate_value["dependencies"] if dependency["id"] == "fsspec")
     fsspec["exactVersion"] = "2026.8.0"
-    fsspec["qualification"]["qualifiedVersions"] = ["2026.8.0"]
+    fsspec["qualification"]["qualifiedCases"] = [{"pythonVersion": "3.12", "version": "2026.8.0"}]
     alternate_authority.write_text(json.dumps(alternate_value, indent=2) + "\n", encoding="utf-8")
     alternate_dependencies = authority.load_authority(alternate_authority)
     monkeypatch.setattr(authority, "AUTHORITY_PATH", authority_path)

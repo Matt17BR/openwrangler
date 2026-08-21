@@ -476,12 +476,39 @@ function assertCrossScheduledOwners(document) {
   assert.equal(cohorts.if, undefined);
   assert.equal(cohorts["runs-on"], "ubuntu-24.04");
   assert.equal(cohorts["timeout-minutes"], 15);
+  assert.equal(
+    cohorts.name,
+    "Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})"
+  );
+  assert.ok(
+    cohorts.strategy.matrix.include.every(
+      (row) =>
+        Object.keys(row).sort().join(",") === "id,python,requirement,version" &&
+        row.requirement.endsWith(`==${row.version}`)
+    )
+  );
+  assert.deepEqual(
+    cohorts.strategy.matrix.include.filter((row) => row.id === "ipython"),
+    [
+      { id: "ipython", python: "3.10", version: "8.39.0", requirement: "ipython==8.39.0" },
+      { id: "ipython", python: "3.12", version: "9.15.0", requirement: "ipython==9.15.0" },
+      { id: "ipython", python: "3.12", version: "9.16.1", requirement: "ipython==9.16.1" }
+    ]
+  );
   assert.deepEqual(stepsUsing(cohorts, "actions/setup-python@"), [
     {
       uses: SETUP_PYTHON,
-      with: { "python-version": "3.12" }
+      with: { "python-version": "${{ matrix.python }}" }
     }
   ]);
+  const qualifiedProbe = cohorts.steps.find((step) =>
+    step?.run?.includes("python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe")
+  );
+  assert.deepEqual(qualifiedProbe?.env, {
+    OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: "${{ matrix.id }}",
+    OPENWRANGLER_QUALIFIED_PYTHON_VERSION: "${{ matrix.python }}",
+    OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: "${{ matrix.version }}"
+  });
 
   const scheduled = document.jobs["r-4-4-scheduled-qualification"];
   assert.equal(scheduled.if, "${{ !cancelled() }}");

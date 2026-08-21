@@ -12,7 +12,10 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["1.35.2", "1.43.2"]
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "1.35.2" },
+          { "pythonVersion": "3.12", "version": "1.43.2" }
+        ]
       }
     },
     {
@@ -26,7 +29,10 @@
       "qualification": {
         "cohortKind": "minor",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["1.5.4", "1.5.5"]
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "1.5.4" },
+          { "pythonVersion": "3.12", "version": "1.5.5" }
+        ]
       }
     },
     {
@@ -40,7 +46,7 @@
       "qualification": {
         "cohortKind": "exact",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["2026.7.0"]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.7.0" }]
       }
     },
     {
@@ -54,7 +60,7 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["2026.3.post1"]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.3.post1" }]
       }
     },
     {
@@ -68,7 +74,10 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["2.3.3", "3.0.5"]
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "2.3.3" },
+          { "pythonVersion": "3.12", "version": "3.0.5" }
+        ]
       }
     },
     {
@@ -82,7 +91,10 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["25.0.0", "25.0.1"]
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "25.0.0" },
+          { "pythonVersion": "3.12", "version": "25.0.1" }
+        ]
       }
     },
     {
@@ -96,7 +108,7 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["3.1.5"]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "3.1.5" }]
       }
     },
     {
@@ -110,7 +122,7 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["2.0.2"]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2.0.2" }]
       }
     },
     {
@@ -124,13 +136,16 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["9.15.0", "9.16.1"]
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "9.15.0" },
+          { "pythonVersion": "3.12", "version": "9.16.1" }
+        ]
       },
       "pythonCompatibility": {
         "pythonMaximumVersionExclusive": "3.11",
         "minimumVersion": "8.39.0",
         "maximumVersionExclusive": "9",
-        "qualifiedVersion": "8.39.0"
+        "qualifiedCase": { "pythonVersion": "3.10", "version": "8.39.0" }
       }
     },
     {
@@ -144,7 +159,7 @@
       "qualification": {
         "cohortKind": "major",
         "minimumStatus": "qualified",
-        "qualifiedVersions": ["0.20.2"]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "0.20.2" }]
       }
     }
   ]

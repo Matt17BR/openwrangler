@@ -62,6 +62,8 @@ WORKFLOW_END = "  # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _DISTRIBUTION = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
+_PYTHON_MAJOR_MINOR = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
+SUPPORTED_PYTHON_MINIMUM = Version("3.10")
 
 
 class AuthorityError(Exception):
@@ -142,11 +144,25 @@ def _attach_cleanup_error(
 
 
 @dataclass(frozen=True)
+class QualificationCase:
+    python_version: str
+    version: str
+
+
+@dataclass(frozen=True)
 class PythonCompatibilityBranch:
     python_maximum_version_exclusive: str
     minimum_version: str
     maximum_version_exclusive: str
-    qualified_version: str
+    qualified_case: QualificationCase
+
+    @property
+    def qualified_version(self) -> str:
+        return self.qualified_case.version
+
+    @property
+    def qualified_python_version(self) -> str:
+        return self.qualified_case.python_version
 
     @property
     def specifier(self) -> str:
@@ -164,8 +180,19 @@ class Dependency:
     pyproject_group: str
     cohort_kind: str
     minimum_status: str
-    qualified_versions: tuple[str, ...]
+    primary_qualification_cases: tuple[QualificationCase, ...]
     python_compatibility: PythonCompatibilityBranch | None = None
+
+    @property
+    def qualified_versions(self) -> tuple[str, ...]:
+        return tuple(case.version for case in self.primary_qualification_cases)
+
+    @property
+    def executable_qualification_cases(self) -> tuple[QualificationCase, ...]:
+        branch = self.python_compatibility
+        if branch is None:
+            return self.primary_qualification_cases
+        return (branch.qualified_case, *self.primary_qualification_cases)
 
     @property
     def specifier(self) -> str:
@@ -243,6 +270,30 @@ def _version(value: Any) -> tuple[str, Version]:
         return text, Version(text)
     except (InvalidVersion, MemoryError, RecursionError):
         _fail("invalid_authority_version")
+
+
+def _python_major_minor(
+    value: Any, *, code: str = "invalid_authority_compatibility"
+) -> tuple[str, Version]:
+    text = _text(value, maximum=VERSION_FIELD_MAX_LENGTH)
+    if _PYTHON_MAJOR_MINOR.fullmatch(text) is None:
+        _fail(code)
+    try:
+        version = Version(text)
+    except (InvalidVersion, MemoryError, RecursionError):
+        _fail(code)
+    if (
+        str(version) != text
+        or version.epoch
+        or version.is_prerelease
+        or version.is_devrelease
+        or version.is_postrelease
+        or version.local is not None
+        or len(version.release) != 2
+        or version < SUPPORTED_PYTHON_MINIMUM
+    ):
+        _fail(code)
+    return text, version
 
 
 def _cohort_key(version: Version, kind: str) -> tuple[int, ...]:
@@ -482,7 +533,7 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
         if not isinstance(qualification_raw, dict) or set(qualification_raw) != {
             "cohortKind",
             "minimumStatus",
-            "qualifiedVersions",
+            "qualifiedCases",
         }:
             _fail("invalid_authority_qualification")
         cohort_kind = _text(qualification_raw["cohortKind"])
@@ -491,16 +542,24 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
             _fail("invalid_authority_qualification")
         if minimum_status != "qualified":
             _fail("invalid_authority_qualification")
-        qualified_raw = qualification_raw["qualifiedVersions"]
+        qualified_raw = qualification_raw["qualifiedCases"]
         if (
             not isinstance(qualified_raw, list)
             or not 1 <= len(qualified_raw) <= MAX_QUALIFIED_VERSIONS
         ):
             _fail("invalid_authority_qualification")
-        qualified_texts: list[str] = []
         qualified_versions: list[Version] = []
+        primary_qualification_cases: list[QualificationCase] = []
         for item in qualified_raw:
-            qualified_text, qualified_version = _version(item)
+            if not isinstance(item, dict) or set(item) != {
+                "pythonVersion",
+                "version",
+            }:
+                _fail("invalid_authority_qualification")
+            qualified_python_text, _qualified_python = _python_major_minor(
+                item["pythonVersion"], code="invalid_authority_qualification"
+            )
+            qualified_text, qualified_version = _version(item["version"])
             if qualified_versions and qualified_versions[-1] >= qualified_version:
                 _fail("invalid_authority_qualification")
             if not specifier.contains(
@@ -508,8 +567,13 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
                 prereleases=False,
             ):
                 _fail("invalid_authority_qualification")
-            qualified_texts.append(qualified_text)
             qualified_versions.append(qualified_version)
+            primary_qualification_cases.append(
+                QualificationCase(
+                    python_version=qualified_python_text,
+                    version=qualified_text,
+                )
+            )
 
         if exact_text is not None:
             assert exact_version is not None
@@ -541,18 +605,19 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
             _fail("invalid_authority_group")
 
         python_compatibility: PythonCompatibilityBranch | None = None
+        has_python_compatibility = "pythonCompatibility" in value
         compatibility_raw = value.get("pythonCompatibility")
-        if compatibility_raw is not None:
+        if has_python_compatibility:
             if exact_text is not None or group != "runtime":
                 _fail("invalid_authority_compatibility")
             if not isinstance(compatibility_raw, dict) or set(compatibility_raw) != {
                 "pythonMaximumVersionExclusive",
                 "minimumVersion",
                 "maximumVersionExclusive",
-                "qualifiedVersion",
+                "qualifiedCase",
             }:
                 _fail("invalid_authority_compatibility")
-            python_maximum_text, python_maximum = _version(
+            python_maximum_text, python_maximum = _python_major_minor(
                 compatibility_raw["pythonMaximumVersionExclusive"]
             )
             compatibility_minimum_text, compatibility_minimum = _version(
@@ -561,15 +626,22 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
             compatibility_maximum_text, compatibility_maximum = _version(
                 compatibility_raw["maximumVersionExclusive"]
             )
+            compatibility_case_raw = compatibility_raw["qualifiedCase"]
+            if not isinstance(compatibility_case_raw, dict) or set(
+                compatibility_case_raw
+            ) != {"pythonVersion", "version"}:
+                _fail("invalid_authority_compatibility")
+            compatibility_python_text, compatibility_python = _python_major_minor(
+                compatibility_case_raw["pythonVersion"]
+            )
             compatibility_qualified_text, compatibility_qualified = _version(
-                compatibility_raw["qualifiedVersion"]
+                compatibility_case_raw["version"]
+            )
+            primary_python_versions = tuple(
+                Version(case.python_version) for case in primary_qualification_cases
             )
             if (
-                len(python_maximum.release) != 2
-                or python_maximum.epoch
-                or python_maximum.is_prerelease
-                or python_maximum.is_devrelease
-                or compatibility_minimum.is_prerelease
+                compatibility_minimum.is_prerelease
                 or compatibility_minimum.is_devrelease
                 or compatibility_maximum.is_prerelease
                 or compatibility_maximum.is_devrelease
@@ -578,13 +650,21 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
                 or compatibility_maximum > lower
                 or compatibility_maximum
                 != _next_cohort(compatibility_qualified, "major")
+                or compatibility_python >= python_maximum
+                or any(
+                    primary_python < python_maximum
+                    for primary_python in primary_python_versions
+                )
             ):
                 _fail("invalid_authority_compatibility")
             python_compatibility = PythonCompatibilityBranch(
                 python_maximum_version_exclusive=python_maximum_text,
                 minimum_version=compatibility_minimum_text,
                 maximum_version_exclusive=compatibility_maximum_text,
-                qualified_version=compatibility_qualified_text,
+                qualified_case=QualificationCase(
+                    python_version=compatibility_python_text,
+                    version=compatibility_qualified_text,
+                ),
             )
 
         dependencies.append(
@@ -598,7 +678,7 @@ def _parse_authority_bytes(raw: bytes) -> tuple[Dependency, ...]:
                 pyproject_group=group,
                 cohort_kind=cohort_kind,
                 minimum_status=minimum_status,
-                qualified_versions=tuple(qualified_texts),
+                primary_qualification_cases=tuple(primary_qualification_cases),
                 python_compatibility=python_compatibility,
             )
         )
@@ -2574,7 +2654,7 @@ def _render_host(dependencies: tuple[Dependency, ...]) -> str:
 def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
     lines = [
         "  python-runtime-dependency-cohorts:",
-        "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }})",
+        "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})",
         "    runs-on: ubuntu-24.04",
         "    timeout-minutes: 15",
         "    strategy:",
@@ -2583,12 +2663,13 @@ def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
         "        include:",
     ]
     for dependency in dependencies:
-        for version in dependency.qualified_versions:
+        for case in dependency.executable_qualification_cases:
             lines.extend(
                 (
                     f"          - id: {json.dumps(dependency.identifier)}",
-                    f"            version: {json.dumps(version)}",
-                    f"            requirement: {json.dumps(f'{dependency.distribution}=={version}')}",
+                    f"            python: {json.dumps(case.python_version)}",
+                    f"            version: {json.dumps(case.version)}",
+                    f"            requirement: {json.dumps(f'{dependency.distribution}=={case.version}')}",
                 )
             )
     lines.extend(
@@ -2597,7 +2678,7 @@ def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
             "      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0",
             "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
             "        with:",
-            '          python-version: "3.12"',
+            "          python-version: ${{ matrix.python }}",
             "      - name: Install Open Wrangler and exact qualified dependency",
             '        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"',
             "      - name: Exercise exact qualified dependency",
@@ -2607,6 +2688,7 @@ def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
             "          -q",
             "        env:",
             "          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}",
+            "          OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}",
             "          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}",
         )
     )
