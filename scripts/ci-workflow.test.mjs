@@ -26,6 +26,7 @@ import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  CORE_SCHEMA,
   EVENT_ALIAS,
   EVENT_DOCUMENT,
   EVENT_MAPPING,
@@ -34,6 +35,7 @@ import {
   EVENT_SEQUENCE,
   SCALAR_STYLE_PLAIN,
   load as parseYaml,
+  mergeTag,
   parseEvents as parseYamlEvents
 } from "js-yaml";
 import { loadConfigFromFile } from "vite";
@@ -61,6 +63,15 @@ const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
 const WORKFLOW_YAML_NODE_LIMIT = 20_000;
 const WORKFLOW_YAML_DEPTH_LIMIT = 64;
+const WORKFLOW_YAML_ALIAS_LIMIT = 0;
+const WORKFLOW_YAML_MERGE_KEY_LIMIT = 0;
+const WORKFLOW_YAML_SCHEMA = CORE_SCHEMA.withTags(mergeTag);
+const WORKFLOW_YAML_LOAD_OPTIONS = Object.freeze({
+  maxAliases: WORKFLOW_YAML_ALIAS_LIMIT,
+  maxDepth: WORKFLOW_YAML_DEPTH_LIMIT,
+  maxTotalMergeKeys: WORKFLOW_YAML_MERGE_KEY_LIMIT,
+  schema: WORKFLOW_YAML_SCHEMA
+});
 const WORKFLOW_INVENTORY_LIMIT = 128;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
@@ -297,9 +308,10 @@ function parseBoundedWorkflowYaml(bytes) {
   const stack = [];
   let depth = 0;
   let nodes = 0;
-  for (const event of parseYamlEvents(source)) {
+  for (const event of parseYamlEvents(source, { maxDepth: WORKFLOW_YAML_DEPTH_LIMIT })) {
     assert.notEqual(event.type, EVENT_ALIAS, "workflow YAML aliases are forbidden");
     assert.equal(event.anchorStart ?? -1, -1, "workflow YAML anchors are forbidden");
+    assert.equal(event.tagStart ?? -1, -1, "workflow YAML explicit tags are forbidden");
     if ([EVENT_DOCUMENT, EVENT_MAPPING, EVENT_SEQUENCE].includes(event.type)) {
       stack.push(event.type);
       if (event.type !== EVENT_DOCUMENT) {
@@ -323,7 +335,7 @@ function parseBoundedWorkflowYaml(bytes) {
     assert.ok(nodes <= WORKFLOW_YAML_NODE_LIMIT, "workflow YAML exceeds its node limit");
   }
   assert.deepEqual(stack, [], "workflow YAML structure is incomplete");
-  return parseYaml(source);
+  return parseYaml(source, WORKFLOW_YAML_LOAD_OPTIONS);
 }
 
 function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } = {}) {
@@ -816,7 +828,14 @@ function escapeRegularExpression(value) {
 
 function requiredCheckName(jobId, job) {
   const name = job?.name;
-  if (name === undefined) return Object.freeze({ exact: jobId, mayEqual: (required) => required === jobId });
+  if (name === undefined) {
+    const isMatrixJob =
+      job?.strategy !== null && typeof job?.strategy === "object" && Object.hasOwn(job.strategy, "matrix");
+    return Object.freeze({
+      exact: isMatrixJob ? undefined : jobId,
+      mayEqual: (required) => required === jobId
+    });
+  }
   assert.equal(typeof name, "string", `${jobId} check name must be text when present`);
   assert.notEqual(name, "", `${jobId} check name must not be empty`);
   if (!name.includes("${{")) return Object.freeze({ exact: name, mayEqual: (required) => required === name });
@@ -1606,16 +1625,18 @@ test("bounded workflow reads reject aliasing, oversize, and in-place content dri
   }
 });
 
-test("workflow YAML rejects aliases, merges, excessive depth, and excessive nodes before traversal", () => {
+test("workflow YAML enforces parser bounds and rejects aliases, merges, tags, depth, and nodes", () => {
   assert.deepEqual(parseBoundedWorkflowYaml("name: fixture\njobs: {}\n"), { name: "fixture", jobs: {} });
   assert.throws(() => parseBoundedWorkflowYaml("base: &base\n  name: fixture\ncopy: *base\n"), /anchors|aliases/u);
   assert.throws(() => parseBoundedWorkflowYaml("job:\n  <<: { name: fixture }\n"), /merge keys/u);
+  assert.throws(() => parseBoundedWorkflowYaml("name: !!str fixture\n"), /explicit tags/u);
+  assert.throws(() => parseBoundedWorkflowYaml("job:\n  !!merge '<<': { name: fixture }\n"), /explicit tags/u);
 
   let deeplyNested = "leaf: value\n";
   for (let index = 0; index <= WORKFLOW_YAML_DEPTH_LIMIT; index += 1) {
     deeplyNested = `level_${index}:\n${deeplyNested.replace(/^/gmu, "  ")}`;
   }
-  assert.throws(() => parseBoundedWorkflowYaml(deeplyNested), /depth limit/u);
+  assert.throws(() => parseBoundedWorkflowYaml(deeplyNested), /depth limit|maxDepth/u);
   const excessiveNodes = `items: [${"x,".repeat(WORKFLOW_YAML_NODE_LIMIT)}x]\n`;
   assert.throws(() => parseBoundedWorkflowYaml(excessiveNodes), /node limit/u);
 });
@@ -1752,6 +1773,16 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   const fallbackRequiredCheck = structuredClone(capabilityDocuments);
   delete fallbackRequiredCheck.pull_request.jobs.validate.name;
   assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, fallbackRequiredCheck));
+  const matrixFallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete matrixFallbackRequiredCheck.pull_request.jobs.validate.name;
+  matrixFallbackRequiredCheck.pull_request.jobs.validate.strategy = { matrix: { os: ["ubuntu-latest"] } };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, matrixFallbackRequiredCheck),
+    /unevaluable possible check-name collision/u
+  );
+  const namedMatrixRequiredCheck = structuredClone(matrixFallbackRequiredCheck);
+  namedMatrixRequiredCheck.pull_request.jobs.validate.name = "validate";
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, namedMatrixRequiredCheck));
   const wrongFallbackRequiredCheck = structuredClone(capabilityDocuments);
   delete wrongFallbackRequiredCheck.codeql.jobs["codeql-gate"].name;
   assert.throws(() => assertCapabilityGraph(capabilityGraph, wrongFallbackRequiredCheck), /exactly one declared job/u);
