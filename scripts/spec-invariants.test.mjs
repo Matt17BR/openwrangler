@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, open, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, open, opendir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -326,6 +326,78 @@ test("a module-local document lookalike cannot prove selector liveness", async (
   await assert.rejects(checkWebviewStyles(root), /shadowedDocumentSink \(application\.css\)/u);
 });
 
+test("DOM class liveness follows lexical bindings, reassignment, and forced toggle removal", async (t) => {
+  const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    [
+      "const fake = { classList: { add() {}, toggle() {} } };",
+      'const element = document.createElement("div");',
+      'element.classList.add("outerLive");',
+      "{",
+      "  const element = fake;",
+      '  element.classList.add("shadowedSink");',
+      "}",
+      'let reassigned = document.createElement("div");',
+      "reassigned = fake;",
+      'reassigned.classList.add("reassignedSink");',
+      "function useShadowedDocument() {",
+      "  const document = { createElement: () => fake };",
+      '  document.createElement().classList.add("shadowedDocumentSink");',
+      "}",
+      'document.createElement("div").classList.add("globalLive");',
+      'document.createElement("div").classList.toggle("forcedFalse", false);',
+      'document.createElement("div").classList.toggle("forcedTrue", true);',
+      "void useShadowedDocument;",
+      'export const app = <div className="used" />;',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    resolve(styleRoot, "application.css"),
+    ".outerLive, .globalLive, .forcedTrue { display: block; }\n",
+    "utf8"
+  );
+  await assert.doesNotReject(checkWebviewStyles(root));
+
+  await writeFile(
+    resolve(styleRoot, "application.css"),
+    [
+      ".outerLive,",
+      ".globalLive,",
+      ".forcedTrue,",
+      ".shadowedSink,",
+      ".reassignedSink,",
+      ".shadowedDocumentSink,",
+      ".forcedFalse { display: block; }",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await assert.rejects(checkWebviewStyles(root), (error) => {
+    for (const className of ["forcedFalse", "reassignedSink", "shadowedDocumentSink", "shadowedSink"]) {
+      assert.match(error.message, new RegExp(`${className} \\(application\\.css\\)`, "u"));
+    }
+    for (const className of ["forcedTrue", "globalLive", "outerLive"]) {
+      assert.doesNotMatch(error.message, new RegExp(`${className} \\(application\\.css\\)`, "u"));
+    }
+    return true;
+  });
+});
+
+test("the TypeScript liveness walk handles deeply nested valid TSX iteratively", async (t) => {
+  const { root, webviewRoot } = await webviewStyleFixture(t);
+  const depth = 300;
+  await writeFile(
+    resolve(webviewRoot, "App.tsx"),
+    `export const app = ${"<div>".repeat(depth)}<span className="used" />${"</div>".repeat(depth)};\n`,
+    "utf8"
+  );
+
+  await assert.doesNotReject(checkWebviewStyles(root));
+});
+
 test("the CSS parser inventories @scope and native nested selectors without declaration false positives", async (t) => {
   const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t);
   await writeFile(
@@ -433,6 +505,48 @@ test("the webview style check rejects a replaced ancestor after opening its no-f
     /src\/webviews\/styles ancestor changed while its (?:no-follow descriptor was opened|descriptor-bound operation ran)/u
   );
   assert.equal(replaced, true);
+});
+
+test("the webview style inventory is streamed, bounded, replacement-safe, and single-link", async (t) => {
+  await t.test("wide directories count non-CSS entries before retention", async (t_) => {
+    const { root, styleRoot } = await webviewStyleFixture(t_);
+    const additional = WEBVIEW_STYLE_LIMITS.directoryEntries - WEBVIEW_STYLE_IMPORTS.length + 1;
+    await Promise.all(
+      Array.from({ length: additional }, (_, index) =>
+        writeFile(resolve(styleRoot, `unowned-${index}.txt`), "", "utf8")
+      )
+    );
+    await assert.rejects(checkWebviewStyles(root), /256-entry directory inventory limit/u);
+  });
+
+  await t.test("directory replacement during its streamed inventory fails closed", async (t_) => {
+    const { root, styleRoot } = await webviewStyleFixture(t_);
+    const original = `${styleRoot}.original`;
+    let replaced = false;
+    await assert.rejects(
+      checkWebviewStyles(root, {
+        filesystem: {
+          async opendir(path, options) {
+            const directory = await opendir(path, options);
+            if (path === styleRoot && !replaced) {
+              replaced = true;
+              await rename(styleRoot, original);
+              await mkdir(styleRoot);
+            }
+            return directory;
+          }
+        }
+      }),
+      /src\/webviews\/styles ancestor changed while its descriptor-bound operation ran/u
+    );
+    assert.equal(replaced, true);
+  });
+
+  await t.test("hard-linked owned inputs fail the single-link check", async (t_) => {
+    const { root, styleRoot, webviewRoot } = await webviewStyleFixture(t_);
+    await link(resolve(styleRoot, "foundations.css"), resolve(webviewRoot, "foundations.alias"));
+    await assert.rejects(checkWebviewStyles(root), /foundations\.css must be a single-link no-follow regular file/u);
+  });
 });
 
 test("the webview style check enforces selector count and length budgets", async (t) => {
