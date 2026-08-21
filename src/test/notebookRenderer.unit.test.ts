@@ -144,6 +144,87 @@ describe("notebook renderer", () => {
     } finally {
       vi.useRealTimers();
     }
+
+    postMessage.mockClear();
+    const digestSettlements = Array.from({ length: 129 }, () => deferred<ArrayBuffer>());
+    let digestIndex = 0;
+    const digestSpy = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockImplementation(() => digestSettlements[digestIndex++]!.promise);
+    const digestControllers: AbortController[] = [];
+    const digestOperations: Promise<void>[] = [];
+    try {
+      for (let index = 0; index < 129; index += 1) {
+        const digestController = new AbortController();
+        digestControllers.push(digestController);
+        const digestElement = document.createElement("div");
+        digestElement.appendChild(document.createElement("table"));
+        digestOperations.push(
+          hook!.postRender(
+            { id: `deferred-digest-${index}`, mime: "text/html", data: () => bytes },
+            digestElement,
+            digestController.signal
+          )
+        );
+      }
+      await Promise.resolve();
+      expect(digestSpy).toHaveBeenCalledTimes(128);
+    } finally {
+      for (const settlement of digestSettlements) settlement.resolve(new Uint8Array(32).buffer);
+      await Promise.all(digestOperations);
+      for (const digestController of digestControllers) digestController.abort();
+      digestSpy.mockRestore();
+    }
+
+    postMessage.mockClear();
+    const firstDigest = deferred<ArrayBuffer>();
+    const replacementDigest = deferred<ArrayBuffer>();
+    const replacementDigestSpy = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockReturnValueOnce(firstDigest.promise)
+      .mockReturnValueOnce(replacementDigest.promise);
+    try {
+      const firstController = new AbortController();
+      const firstRemove = vi.spyOn(firstController.signal, "removeEventListener");
+      const firstElement = document.createElement("div");
+      firstElement.appendChild(document.createElement("table"));
+      const firstOperation = hook!.postRender(
+        { id: "late-digest-replacement", mime: "text/html", data: () => bytes },
+        firstElement,
+        firstController.signal
+      );
+      await Promise.resolve();
+      firstController.abort();
+      expect(firstRemove).toHaveBeenCalledWith("abort", expect.any(Function));
+
+      const replacementController = new AbortController();
+      const replacementRemove = vi.spyOn(replacementController.signal, "removeEventListener");
+      const replacementElement = document.createElement("div");
+      replacementElement.appendChild(document.createElement("table"));
+      const replacementOperation = hook!.postRender(
+        { id: "late-digest-replacement", mime: "text/html", data: () => bytes },
+        replacementElement,
+        replacementController.signal
+      );
+      firstDigest.resolve(new Uint8Array(32).buffer);
+      await firstOperation;
+      replacementDigest.resolve(new Uint8Array(32).fill(1).buffer);
+      await replacementOperation;
+      expect(replacementRemove).toHaveBeenCalledWith("abort", expect.any(Function));
+
+      expect(
+        postMessage.mock.calls.filter(
+          ([message]) =>
+            (message as { kind?: string; outputItemId?: string }).kind === "openWrangler.inlineCandidate" &&
+            (message as { outputItemId?: string }).outputItemId === "late-digest-replacement"
+        )
+      ).toHaveLength(1);
+      const postsBeforeCompletedAbort = postMessage.mock.calls.length;
+      replacementController.abort();
+      expect(postMessage).toHaveBeenCalledTimes(postsBeforeCompletedAbort);
+    } finally {
+      replacementDigestSpy.mockRestore();
+    }
   });
 
   it("shows compact capture paging and forwards only the validated canonical payload", () => {
@@ -328,6 +409,14 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 });
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function canonicalPayload(totalRows: number, variableName?: string) {
   return {

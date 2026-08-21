@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import {
   NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
@@ -10,7 +11,7 @@ import {
 import { SessionCoordinator } from "../sessionCoordinator";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../sessionResponseValidation";
 import { OpenWranglerPanel } from "../webviewPanel";
-import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
+import { KernelBridge, shouldRegisterNotebookFormatters, type ExecutedNotebookCellResultBinding } from "./kernelBridge";
 import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
@@ -23,6 +24,7 @@ const INLINE_UPGRADE_RENDERER_ID = "openWrangler.inlineHtmlUpgrade";
 const INLINE_UPGRADE_PROTOCOL = 1;
 const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
 const INLINE_UPGRADE_MAX_OPERATIONS = 8;
+const INLINE_UPGRADE_MAX_OPERATIONS_PER_EDITOR = INLINE_UPGRADE_MAX_OPERATIONS - 1;
 const INLINE_UPGRADE_MAX_RETAINED = 128;
 const INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS = 10_000;
 
@@ -43,6 +45,7 @@ interface InlineUpgradeOperation {
   binding?: InlineNotebookCellResultBinding;
   bindingInvalidation?: vscode.Disposable;
   deadline?: ReturnType<typeof setTimeout>;
+  publishedPayload?: NotebookOutputPayload;
   active: boolean;
   published: boolean;
 }
@@ -63,15 +66,21 @@ export function registerNotebookRendererMessaging(
     workQueue: [],
     settlingWork: new Set<InlineUpgradeOperation>()
   };
-  const rendererChannels = [vscode.notebooks.createRendererMessaging("openWrangler.renderer")];
-  if (tracker) rendererChannels.push(vscode.notebooks.createRendererMessaging(INLINE_UPGRADE_RENDERER_ID));
-  for (const messaging of rendererChannels) {
+  const rendererChannels = [
+    { messaging: vscode.notebooks.createRendererMessaging("openWrangler.renderer"), inlineUpgrade: false }
+  ];
+  if (tracker) {
+    rendererChannels.push({
+      messaging: vscode.notebooks.createRendererMessaging(INLINE_UPGRADE_RENDERER_ID),
+      inlineUpgrade: true
+    });
+  }
+  for (const { messaging, inlineUpgrade } of rendererChannels) {
     context.subscriptions.push(
       messaging.onDidReceiveMessage(({ editor, message }) => {
         if (isOpenInOpenWranglerMessage(message)) {
-          if (tracker && isInlineUpgradeAction(message)) {
-            const operation = inlineUpgradeActionOperation(state, editor, message);
-            if (operation) void openOwnedInlineUpgrade(context, coordinator, state, operation, message);
+          if (tracker && (inlineUpgrade || isInlineUpgradeAction(message))) {
+            void openOwnedInlineUpgrade(context, coordinator, state, editor, message);
             return;
           }
           openLinkedNotebookResult(context, coordinator, editor, message);
@@ -115,40 +124,49 @@ function isInlineUpgradeAction(message: OpenInOpenWranglerMessage): boolean {
   );
 }
 
-function inlineUpgradeActionOperation(
-  state: InlineUpgradeState,
-  editor: vscode.NotebookEditor,
-  message: OpenInOpenWranglerMessage
-): InlineUpgradeOperation | undefined {
-  const payload = normalizeNotebookOutputPayload(message.payload);
-  if (!payload) return undefined;
-  const token = payload.metadata.sessionId.slice("inline-".length);
-  const operation = state.operations.get(token);
-  return operation?.active && operation.published && operation.editor === editor ? operation : undefined;
-}
-
 async function openOwnedInlineUpgrade(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   state: InlineUpgradeState,
-  operation: InlineUpgradeOperation,
+  editor: vscode.NotebookEditor,
   message: OpenInOpenWranglerMessage
 ): Promise<void> {
+  const payload = normalizeNotebookOutputPayload(message.payload);
+  if (!payload) return;
+  const token = payload.metadata.sessionId.slice("inline-".length);
+  const operation = state.operations.get(token);
+  if (!operation || operation.editor !== editor) return;
   if (
+    !operation.active ||
+    !operation.published ||
+    !operation.publishedPayload ||
+    !isDeepStrictEqual(payload, operation.publishedPayload) ||
     !(await hasCurrentInlineUpgradeKernel(operation)) ||
     !isInlineUpgradeOperationCurrent(state.operations, operation)
   ) {
     terminateInlineUpgradeOperation(state, operation);
     return;
   }
-  openLinkedNotebookResult(context, coordinator, operation.editor, message);
+  const binding = operation.binding;
+  if (!binding) {
+    terminateInlineUpgradeOperation(state, operation);
+    return;
+  }
+  openLinkedNotebookResult(
+    context,
+    coordinator,
+    operation.editor,
+    { kind: "openInOpenWrangler", payload: operation.publishedPayload },
+    binding.kernelBinding
+  );
 }
 
 function openLinkedNotebookResult(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   editor: vscode.NotebookEditor,
-  message: OpenInOpenWranglerMessage
+  message: OpenInOpenWranglerMessage,
+  requiredKernelBinding?: ExecutedNotebookCellResultBinding
 ): void {
   const payload = normalizeNotebookOutputPayload(message.payload);
   if (!payload) {
@@ -182,7 +200,10 @@ function openLinkedNotebookResult(
     const label = isNotebookLiveResultHandle(variableName) ? payload.metadata.source.label : variableName;
     OpenWranglerPanel.create(
       context,
-      coordinator.createBridge(new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()), notebook),
+      coordinator.createBridge(
+        new KernelBridge(context, notebook, shouldRegisterNotebookFormatters(), {}, requiredKernelBinding),
+        notebook
+      ),
       {
         kind: "notebookVariable",
         label,
@@ -262,7 +283,13 @@ function pumpInlineUpgradeWork(
   state: InlineUpgradeState
 ): void {
   while (state.settlingWork.size < INLINE_UPGRADE_MAX_OPERATIONS) {
-    const operation = state.workQueue.shift();
+    const queueIndex = state.workQueue.findIndex(
+      (queued) =>
+        [...state.settlingWork].filter((settling) => settling.editor === queued.editor).length <
+        INLINE_UPGRADE_MAX_OPERATIONS_PER_EDITOR
+    );
+    if (queueIndex < 0) return;
+    const [operation] = state.workQueue.splice(queueIndex, 1);
     if (!operation) return;
     if (!isInlineUpgradeOperationOwned(state.operations, operation)) continue;
     if (
@@ -309,6 +336,7 @@ async function runInlineUpgradeWork(
     if (!(await hasCurrentInlineUpgradeKernel(operation))) return;
     const payload = await createInlineUpgradePayload(context, operation);
     if (!payload || !isInlineUpgradeOperationCurrent(state.operations, operation)) return;
+    const publishedPayload = structuredClone(payload);
     const posted = await operation.messaging.postMessage(
       {
         kind: "openWrangler.inlineUpgrade",
@@ -321,7 +349,8 @@ async function runInlineUpgradeWork(
       },
       operation.editor
     );
-    if (!posted) return;
+    if (!posted || !isInlineUpgradeOperationCurrent(state.operations, operation)) return;
+    operation.publishedPayload = publishedPayload;
     operation.published = true;
     if (!(await hasCurrentInlineUpgradeKernel(operation))) {
       terminateInlineUpgradeOperation(state, operation);
@@ -344,7 +373,7 @@ async function createInlineUpgradePayload(
 ): Promise<NotebookOutputPayload | undefined> {
   const binding = operation.binding;
   if (!binding || !(await hasCurrentInlineUpgradeKernel(operation))) return undefined;
-  const bridge = new KernelBridge(context, binding.notebook, true);
+  const bridge = new KernelBridge(context, binding.notebook, true, {}, binding.kernelBinding);
   let session: { readonly sessionId: string; readonly revision: number } | undefined;
   let payload: NotebookOutputPayload | undefined;
   let cleanupFailed = false;
@@ -521,6 +550,7 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   operation.cancellation.dispose();
   operation.bindingInvalidation?.dispose();
   operation.binding?.dispose();
+  operation.publishedPayload = undefined;
   postInlineUpgradeTerminal(operation.messaging, operation.editor, operation.candidate);
 }
 

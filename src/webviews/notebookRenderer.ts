@@ -49,11 +49,12 @@ let htmlUpgradeRegistration: Promise<void> | undefined;
 interface InlineUpgradeCandidate {
   readonly outputItemId: string;
   readonly token: string;
-  readonly byteLength: number;
-  readonly sha256: string;
   readonly element: HTMLElement;
   readonly signal: AbortSignal;
   readonly ordinaryNodes: readonly ChildNode[];
+  byteLength?: number;
+  sha256?: string;
+  abortListener?: () => void;
   deadline?: ReturnType<typeof setTimeout>;
   enhancement?: HTMLElement;
 }
@@ -114,8 +115,12 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       candidate.element.replaceChildren(enhancement);
       candidate.enhancement = enhancement;
       completed.add(candidate.outputItemId);
-      if (candidate.deadline) clearTimeout(candidate.deadline);
-      candidate.deadline = undefined;
+      releaseHtmlUpgradeCandidateDeadline(candidate);
+      candidate.abortListener = () => {
+        if (candidates.get(candidate.outputItemId) !== candidate) return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      };
+      candidate.signal.addEventListener("abort", candidate.abortListener, { once: true });
     } catch {
       retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
     }
@@ -131,42 +136,50 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       ) {
         return;
       }
-      let candidate: InlineUpgradeCandidate;
-      try {
-        const ordinaryNodes = [...element.childNodes];
-        const bytes = outputItem.data();
-        if (bytes.byteLength === 0 || bytes.byteLength > INLINE_UPGRADE_MAX_HTML_BYTES) return;
-        candidate = {
-          outputItemId: outputItem.id,
-          token: randomToken(),
-          byteLength: bytes.byteLength,
-          sha256: await sha256(bytes),
-          element,
-          signal,
-          ordinaryNodes
-        };
-      } catch {
-        return;
-      }
-      if (signal.aborted || candidates.has(outputItem.id) || !hasExactChildren(element, candidate.ordinaryNodes))
-        return;
       if (candidates.size >= INLINE_UPGRADE_MAX_CANDIDATES) {
-        const oldest = candidates.values().next().value as InlineUpgradeCandidate | undefined;
-        if (oldest) retireHtmlUpgradeCandidate(context, candidates, completed, oldest, true);
+        const oldestSettled = [...candidates.values()].find((candidate) => candidate.sha256 !== undefined);
+        if (!oldestSettled) return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, oldestSettled, true);
       }
+      const candidate: InlineUpgradeCandidate = {
+        outputItemId: outputItem.id,
+        token: randomToken(),
+        element,
+        signal,
+        ordinaryNodes: [...element.childNodes]
+      };
       candidates.set(outputItem.id, candidate);
       candidate.deadline = setTimeout(
         () => retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true),
         INLINE_UPGRADE_TERMINAL_DEADLINE_MS
       );
-      signal.addEventListener(
-        "abort",
-        () => {
-          if (candidates.get(outputItem.id) !== candidate) return;
+      candidate.abortListener = () => {
+        if (candidates.get(outputItem.id) !== candidate) return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      };
+      signal.addEventListener("abort", candidate.abortListener, { once: true });
+      try {
+        const bytes = outputItem.data();
+        if (bytes.byteLength === 0 || bytes.byteLength > INLINE_UPGRADE_MAX_HTML_BYTES) {
           retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
-        },
-        { once: true }
-      );
+          return;
+        }
+        candidate.byteLength = bytes.byteLength;
+        const digest = await sha256(bytes);
+        if (
+          signal.aborted ||
+          candidates.get(outputItem.id) !== candidate ||
+          !hasExactChildren(element, candidate.ordinaryNodes)
+        ) {
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+          return;
+        }
+        candidate.sha256 = digest;
+        releaseHtmlUpgradeCandidateAbortOwnership(candidate);
+      } catch {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        return;
+      }
       context.postMessage?.({
         kind: "openWrangler.inlineCandidate",
         protocol: INLINE_UPGRADE_PROTOCOL,
@@ -189,8 +202,7 @@ function retireHtmlUpgradeCandidate(
   if (candidates.get(candidate.outputItemId) !== candidate) return;
   candidates.delete(candidate.outputItemId);
   completed.delete(candidate.outputItemId);
-  if (candidate.deadline) clearTimeout(candidate.deadline);
-  candidate.deadline = undefined;
+  releaseHtmlUpgradeCandidateAsyncOwnership(candidate);
   restoreOrdinaryHtml(candidate);
   if (notifyHost) {
     context.postMessage?.({
@@ -200,6 +212,21 @@ function retireHtmlUpgradeCandidate(
       outputItemId: candidate.outputItemId
     });
   }
+}
+
+function releaseHtmlUpgradeCandidateAsyncOwnership(candidate: InlineUpgradeCandidate): void {
+  releaseHtmlUpgradeCandidateDeadline(candidate);
+  releaseHtmlUpgradeCandidateAbortOwnership(candidate);
+}
+
+function releaseHtmlUpgradeCandidateDeadline(candidate: InlineUpgradeCandidate): void {
+  if (candidate.deadline) clearTimeout(candidate.deadline);
+  candidate.deadline = undefined;
+}
+
+function releaseHtmlUpgradeCandidateAbortOwnership(candidate: InlineUpgradeCandidate): void {
+  if (candidate.abortListener) candidate.signal.removeEventListener("abort", candidate.abortListener);
+  candidate.abortListener = undefined;
 }
 
 function isHtmlRendererContext(context: RendererContext): context is HtmlRendererContext {
