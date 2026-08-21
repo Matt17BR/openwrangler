@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseStrictJson } from "./strict-json.mjs";
@@ -124,6 +125,71 @@ const EXPECTED_NATIVE_R_OWNERS = [
   ".github/workflows/candidate-acceptance.yml#r_platform",
   ".github/workflows/candidate-acceptance.yml#r_local"
 ];
+const CANONICAL_PUBLIC_RECORDS = Object.freeze([
+  {
+    source: "testingSource",
+    start: "Manual release-candidate qualification packages once",
+    end: "\n\nStable promotion runs no product test",
+    digest: "1b8112968143466cfd8cf5b6f8b1f659ef143bf648345b4cca9b933f95ec69ae",
+    label: "canonical docs/testing.md release ownership record"
+  },
+  {
+    source: "testingSource",
+    start: "### Experimental Antigravity smoke",
+    end: "\n\nCursor 3.11 hides third-party editor-title actions",
+    digest: "ea08b9c97cd850b8fb9b91b1dd4bfe660913e75de13d8781aa3a4b4a5b89cf20",
+    label: "canonical Antigravity smoke record"
+  },
+  {
+    source: "testingSource",
+    start: "The hosted job runs on `ubuntu-24.04`.",
+    end: "\n\nThe report retains the intended channel",
+    digest: "0fe54652b45e8fcc7018cb8990d019b398f13848be1114f06f213b9a14b4b39d",
+    label: "canonical docs/testing.md pinned-editor record"
+  },
+  {
+    source: "ciDocumentationSource",
+    start: "The release tier adds the expensive product checks",
+    end: "\n\nRelease prerequisites are explicit gates",
+    digest: "989594344ffdd591b0724df2384562e438f7f11ee64e360a7c2ac89c365fef44",
+    label: "canonical docs/ci.md compatibility ownership record"
+  },
+  {
+    source: "ciDocumentationSource",
+    start: "Python, remote R, the generic platform matrix",
+    end: "\n\nThe Windows/Python 3.14 runtime cell",
+    digest: "fee996cb8c0243bb9f46dfbc27f422ebdbc0db7e922f1c8d018f5143afc80e0a",
+    label: "canonical docs/ci.md platform ownership record"
+  },
+  {
+    source: "ciDocumentationSource",
+    start: "Linux lifecycle runs `core-operations`",
+    end: "\n\nThe Native R performance runner",
+    digest: "7c105d74af33a9f8938eca14dadc47433db9daa5d318e3a60cfbe25d80338a41",
+    label: "canonical docs/ci.md Native R ownership record"
+  },
+  {
+    source: "ciDocumentationSource",
+    start: "The remote R sibling runs only the packaged VS Code Docker journey",
+    end: "\n\nPreview release run #72",
+    digest: "6014ef9b1017d2a9534e98f7041a964a3b30370976b7f4b126a864f2ed5e2625",
+    label: "canonical docs/ci.md selector ownership record"
+  },
+  {
+    source: "architectureSource",
+    start: "Preview and stable releases produce one canonical candidate",
+    end: "\n\n<!-- open-wrangler-compatibility-owners:start -->",
+    digest: "1d618d8338c0ea4ac8e178d89ef45a3f99ffd60bba88b82acf88a10c59d2f96f",
+    label: "canonical docs/architecture.md compatibility topology record"
+  },
+  {
+    source: "architectureSource",
+    start: "The shared workflow exports no acceptance result",
+    end: "\n\nPreview [run #74]",
+    digest: "740c5d8f14b74842fbcd67ede747b06bc1ab247327a0f9bbcefa98538337dfce",
+    label: "canonical docs/architecture.md selector ownership record"
+  }
+]);
 const DIAGNOSTIC_LIMIT_MESSAGE = "Compatibility diagnostic retention limit reached.";
 
 class BoundedDiagnostics {
@@ -239,18 +305,75 @@ function workflowJobs(source, label, problems) {
   return jobs;
 }
 
+function yamlWithoutComment(text) {
+  let quote;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if ((character === '"' || character === "'") && (index === 0 || text[index - 1] !== "\\")) {
+      quote = quote === character ? undefined : (quote ?? character);
+      continue;
+    }
+    if (character === "#" && quote === undefined && (index === 0 || /\s/u.test(text[index - 1]))) {
+      return text.slice(0, index);
+    }
+  }
+  return text;
+}
+
+function yamlScalarWithoutComment(rawValue) {
+  const value = yamlWithoutComment(rawValue).trim();
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function workflowScalarAssignments(jobSource, key) {
+  const assignments = [];
+  const assignment = new RegExp(`^\\s+(?:${key}|"${key}"|'${key}'):\\s*(?<value>.*)$`, "u");
+  for (const line of jobSource.split("\n")) {
+    const match = assignment.exec(line);
+    if (match) assignments.push(yamlScalarWithoutComment(match.groups.value));
+  }
+  return assignments;
+}
+
+function workflowScalarAssignmentForms(jobSource, key) {
+  const assignment = new RegExp(`(?:^|[\\s,{])(?:${key}|"${key}"|'${key}')\\s*:`, "gu");
+  return jobSource
+    .split("\n")
+    .map((line) => [...yamlWithoutComment(line).matchAll(assignment)].length)
+    .reduce((total, count) => total + count, 0);
+}
+
 function requireMarkers(source, markers, label, problems) {
   for (const marker of markers) {
     if (!source.includes(marker)) problems.push(`${label} lost required source marker ${JSON.stringify(marker)}.`);
   }
 }
 
-function requireBoundedMarkers(source, markers, label, problems) {
+function inspectCanonicalRecord(source, record, problems) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 4 * 1024 * 1024) {
-    problems.push(`${label} must be bounded source text.`);
+    problems.push(`${record.label} must be bounded source text.`);
     return;
   }
-  requireMarkers(source, markers, label, problems);
+  const start = source.indexOf(record.start);
+  const duplicateStart = start < 0 ? -1 : source.indexOf(record.start, start + record.start.length);
+  const end = start < 0 ? -1 : source.indexOf(record.end, start + record.start.length);
+  if (start < 0 || duplicateStart >= 0 || end < 0) {
+    problems.push(`${record.label} must have one bounded canonical record.`);
+    return;
+  }
+  const canonicalRecord = source.slice(start, end);
+  if (
+    Buffer.byteLength(canonicalRecord, "utf8") > 64 * 1024 ||
+    createHash("sha256").update(canonicalRecord, "utf8").digest("hex") !== record.digest
+  ) {
+    problems.push(`${record.label} must match its exact bounded canonical record without contradictory claims.`);
+  }
 }
 
 function validateAuthority(authority, problems) {
@@ -614,10 +737,24 @@ export function inspectCompatibilityEvidence(inputs) {
       }
     }
   }
-  for (const owner of vscode.movingStableWorkflowOwners) {
-    const job = owner.slice(owner.indexOf("#") + 1);
-    if (!candidateJobs.get(job)?.includes("VSCODE_TEST_VERSION: stable")) {
-      problems.push(`VS Code moving stable candidate lane ${owner} must retain VSCODE_TEST_VERSION: stable.`);
+  const movingStableJobs = new Set(
+    vscode.movingStableWorkflowOwners.map((owner) => owner.slice(owner.indexOf("#") + 1))
+  );
+  for (const [job, jobSource] of candidateJobs) {
+    const assignments = workflowScalarAssignments(jobSource, "VSCODE_TEST_VERSION");
+    const assignmentForms = workflowScalarAssignmentForms(jobSource, "VSCODE_TEST_VERSION");
+    if (assignmentForms !== assignments.length) {
+      problems.push(`Candidate lane ${job} has an unsupported structural editor-version assignment.`);
+      continue;
+    }
+    if (movingStableJobs.has(job)) {
+      if (assignments.length === 0 || assignments.some((value) => value !== "stable")) {
+        problems.push(
+          `VS Code moving stable candidate lane ${job} must give every active phase one structural editor-version assignment equal to stable.`
+        );
+      }
+    } else if (assignments.length > 0) {
+      problems.push(`Candidate lane ${job} has an unexpected structural editor-version assignment.`);
     }
   }
   requireMarkers(
@@ -626,8 +763,7 @@ export function inspectCompatibilityEvidence(inputs) {
       "- os: macos-latest",
       "- os: windows-latest",
       "OPEN_WRANGLER_PACKAGED_EDITORS: vscode",
-      "OPEN_WRANGLER_PACKAGED_MODE: platform-smoke",
-      "VSCODE_TEST_VERSION: stable"
+      "OPEN_WRANGLER_PACKAGED_MODE: platform-smoke"
     ],
     "VS Code platform owner",
     problems
@@ -637,8 +773,7 @@ export function inspectCompatibilityEvidence(inputs) {
     [
       "OPEN_WRANGLER_PACKAGED_EDITORS: vscode",
       "OPEN_WRANGLER_PACKAGED_EDITORS: cursor",
-      "OPEN_WRANGLER_PACKAGED_MODE: platform-smoke",
-      "VSCODE_TEST_VERSION: stable"
+      "OPEN_WRANGLER_PACKAGED_MODE: platform-smoke"
     ],
     "Linux editor owner",
     problems
@@ -662,8 +797,7 @@ export function inspectCompatibilityEvidence(inputs) {
       "OPEN_WRANGLER_PACKAGED_EDITORS: vscode",
       "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: candidate-one-owner",
       'OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"',
-      'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"',
-      "VSCODE_TEST_VERSION: stable"
+      'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"'
     ],
     "VS Code released-Jupyter owner",
     problems
@@ -714,64 +848,9 @@ export function inspectCompatibilityEvidence(inputs) {
     problems.push("Native R versions, platforms, or current evidence tier differ from candidate workflow ownership.");
   }
 
-  requireBoundedMarkers(
-    inputs.testingSource,
-    [
-      "### Experimental Antigravity smoke",
-      "On 2026-08-01, Open Wrangler 1.2.0 passed one bounded, non-release-blocking Antigravity Linux x64 smoke:",
-      `version ${forkSmoke(authority).editorVersion}, commit \`${forkSmoke(authority).editorCommit}\`, and ${forkSmoke(authority).architecture} architecture.`,
-      `\`${forkSmoke(authority).installedExtension}\` from that registry.`,
-      "does not promote Antigravity to a first-class release target."
-    ],
-    "Antigravity smoke owner",
-    problems
-  );
-  requireBoundedMarkers(
-    inputs.testingSource,
-    [
-      "The shipped product configuration selected Open VSX.",
-      "The public `openWrangler.openFile` command activated the installed extension",
-      "opened the exact schema through native Polars."
-    ],
-    "Antigravity install, activation, and file-open properties",
-    problems
-  );
-  requireBoundedMarkers(
-    inputs.testingSource,
-    ["The source digest was unchanged."],
-    "Antigravity source immutability",
-    problems
-  );
-  requireBoundedMarkers(
-    inputs.testingSource,
-    [
-      "zero Open Wrangler sessions, no running standalone",
-      "no surviving editor process; the downloaded archive and private test roots were removed."
-    ],
-    "Antigravity cleanup properties",
-    problems
-  );
-  requireBoundedMarkers(
-    inputs.testingSource,
-    [
-      "VS Code owns the semantic editor,\nPython/Jupyter, R, and installed-performance journeys;",
-      `official VS Code ${vscode.releaseVersion} Linux x64`,
-      "The run may not reuse a preinstalled editor, moving download channel"
-    ],
-    "docs/testing.md contradicts the pinned VS Code evidence",
-    problems
-  );
-  requireBoundedMarkers(
-    inputs.ciDocumentationSource,
-    [
-      "installed performance in pinned VS Code and Cursor",
-      "one full generic packaged journey in Linux VS Code",
-      "Generic macOS/Windows platform cells own\nonly the packaged VS Code `platform-smoke`",
-      "Linux VS Code is the sole full generic packaged owner"
-    ],
-    "docs/ci.md contradicts the pinned VS Code evidence",
-    problems
-  );
+  for (const record of CANONICAL_PUBLIC_RECORDS) {
+    inspectCanonicalRecord(inputs[record.source], record, problems);
+  }
 
   inspectExactBlock(
     inputs.readmeSource,

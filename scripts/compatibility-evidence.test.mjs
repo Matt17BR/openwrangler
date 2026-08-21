@@ -134,6 +134,26 @@ test("the exact VS Code pin is not attributed to moving stable candidate lanes",
   }
 });
 
+test("every active editor-version assignment is structurally classified", () => {
+  const inlineCommentAlias = sources.candidateWorkflowSource.replace(
+    "VSCODE_TEST_VERSION: stable",
+    "VSCODE_TEST_VERSION: 1.130.0 # VSCODE_TEST_VERSION: stable"
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: inlineCommentAlias }).join(" "),
+    /structural editor-version assignment/u
+  );
+
+  const mixedRPlatformPhases = sources.candidateWorkflowSource.replace(
+    "          VSCODE_TEST_VERSION: stable\n      - name: Upload platform R core failure diagnostics",
+    "          VSCODE_TEST_VERSION: 1.130.0\n      - name: Upload platform R core failure diagnostics"
+  );
+  assert.match(
+    inspect({ candidateWorkflowSource: mixedRPlatformPhases }).join(" "),
+    /structural editor-version assignment/u
+  );
+});
+
 test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
   for (const [field, value] of [
     ["editorVersion", "1.108.0"],
@@ -151,16 +171,19 @@ test("the exact Antigravity smoke stays separate and bound to its immutable reco
   }
   assert.match(
     inspect({ testingSource: sources.testingSource.replace("Open Wrangler 1.2.0", "Open Wrangler 1.2.1") }).join(" "),
-    /Antigravity smoke owner/u
+    /canonical Antigravity smoke record/u
   );
-  for (const [marker, expected] of [
-    ["The shipped product configuration selected Open VSX.", /install, activation, and file-open/u],
-    ["The public `openWrangler.openFile` command activated the installed extension", /activation/u],
-    ["opened the exact schema through native Polars.", /file-open/u],
-    ["The source digest was unchanged.", /source immutability/u],
-    ["no surviving editor process; the downloaded archive and private test roots were removed.", /cleanup properties/u]
+  for (const marker of [
+    "The shipped product configuration selected Open VSX.",
+    "The public `openWrangler.openFile` command activated the installed extension",
+    "opened the exact schema through native Polars.",
+    "The source digest was unchanged.",
+    "no surviving editor process; the downloaded archive and private test roots were removed."
   ]) {
-    assert.match(inspect({ testingSource: sources.testingSource.replace(marker, "") }).join(" "), expected);
+    assert.match(
+      inspect({ testingSource: sources.testingSource.replace(marker, "") }).join(" "),
+      /canonical Antigravity smoke record/u
+    );
   }
 });
 
@@ -172,16 +195,16 @@ test("public testing and CI claims cannot contradict exact and moving editor evi
         "the moving VS Code stable channel on Linux x64"
       )
     }).join(" "),
-    /docs\/testing\.md contradicts the pinned VS Code evidence/u
+    /canonical docs\/testing\.md pinned-editor record/u
   );
   assert.match(
     inspect({
       ciDocumentationSource: sources.ciDocumentationSource.replace(
-        "installed performance in pinned VS Code and Cursor",
-        "installed performance in moving stable VS Code and Cursor"
+        "installed performance in pinned VS Code",
+        "installed performance in moving stable VS Code"
       )
     }).join(" "),
-    /docs\/ci\.md contradicts the pinned VS Code evidence/u
+    /canonical docs\/ci\.md compatibility ownership record/u
   );
   assert.match(
     inspect({
@@ -190,8 +213,37 @@ test("public testing and CI claims cannot contradict exact and moving editor evi
         "one pinned 1.130.0 packaged journey in Linux VS Code"
       )
     }).join(" "),
-    /docs\/ci\.md contradicts the pinned VS Code evidence/u
+    /canonical docs\/ci\.md compatibility ownership record/u
   );
+});
+
+test("canonical smoke and public ownership records reject coexistence contradictions", () => {
+  assert.match(
+    inspect({
+      testingSource: sources.testingSource.replace(
+        "The source digest was unchanged.",
+        "The source digest was unchanged. A later check found that the source digest changed."
+      )
+    }).join(" "),
+    /canonical Antigravity smoke record/u
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: sources.ciDocumentationSource.replace(
+        "Cursor owns no Jupyter or R phase",
+        "Cursor owns every Jupyter and R phase"
+      )
+    }).join(" "),
+    /canonical docs\/ci\.md compatibility ownership record/u
+  );
+});
+
+test("public claims assign Cursor only its exact Linux compatibility seam", () => {
+  assert.doesNotMatch(sources.architectureSource, /macOS\/Windows VS Code\/Cursor/u);
+  assert.doesNotMatch(sources.architectureSource, /runs both in VS Code and Cursor/u);
+  assert.doesNotMatch(sources.ciDocumentationSource, /local R runs in VS Code\s+and Cursor/u);
+  assert.doesNotMatch(sources.ciDocumentationSource, /installed performance in pinned VS Code and Cursor/u);
+  assert.doesNotMatch(sources.ciDocumentationSource, /Linux executes those selectors in\s+VS Code and Cursor/u);
 });
 
 test("near-cap duplicate workflow jobs retain bounded diagnostics", () => {

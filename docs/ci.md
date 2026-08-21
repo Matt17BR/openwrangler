@@ -118,19 +118,19 @@ readiness rule, provenance contract, or publication topology changes with this f
 The release tier adds the expensive product checks that no longer run on every pull request:
 
 - focused packaged VS Code `platform-smoke` OS compatibility on macOS and Windows, without native-R setup or
-  execution, while one pinned Linux Cursor smoke owns generic fork compatibility;
+  execution, while one pinned Linux Cursor smoke owns the lifecycle/renderer-replacement/narrow-grid/reveal-state
+  fork-compatibility seam;
 - native-R platform acceptance in a separate macOS/Windows matrix, with fresh VS Code-only core, native-frame, and
   kernel-restart phases;
-- released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs: VS Code owns complete local and
-  remote Python coverage while Cursor keeps one allowed Variables/renderer/page/close seam; local R runs in VS Code
-  and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations
-  for core, native-frame, restart, the active R terminal, and R Markdown/Quarto, with the complete value and
-  categorical catalogs owned once by Linux VS Code;
+- released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs uses VS Code only for complete
+  local and remote Python and R coverage; Cursor owns no Jupyter or R phase, and the complete value and categorical
+  catalogs are owned once by Linux VS Code;
 - native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI owns the R 4.5
   source contracts, while scheduled/manual Cross owns the R 4.4 source qualification;
 - Remote SSH;
-- installed performance in pinned VS Code and Cursor, gated on first-grid timing, cache residency, scrolling,
-  outstanding-work responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling;
+- installed performance in pinned VS Code, gated on first-grid timing, cache residency, scrolling, outstanding-work
+  responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling; Cursor performance remains
+  historical evidence only;
 - one full generic packaged journey in Linux VS Code, a focused Linux Cursor `platform-smoke`, exact-artifact
   platform/package checks, live public-metadata and security audits, and the strict runtime benchmark;
   protected pull-request CI remains the sole owner of source, coverage, extension-host, browser-baseline, and
@@ -184,8 +184,8 @@ R transport is v14; public protocol v2 and every candidate job, selector, phase,
 inactivity deadline, and no-retry boundary remain unchanged. Candidate core,
 value, and categorical do not duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive
 collapse, viewing, Rename, and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget.
-Value and categorical ownership is unchanged, and Cursor, macOS, and Windows retain their representative
-core/editor/platform and native-frame seams.
+Value and categorical ownership is unchanged. macOS and Windows retain their representative VS Code
+core/editor/platform and native-frame seams; Cursor retains only the focused Linux `platform-smoke` seam.
 
 The Native R performance runner's unit contracts and report validators are portable script contracts owned by
 `npm run test:scripts:portable`, which the unconditional PR workflow's `invariant-core` job runs directly alongside
@@ -206,10 +206,11 @@ native R/Quarto tooling. Internal
 jobs, platform cells, and both local-R shard matrix cells keep sibling cancellation disabled, so one failure cannot
 interrupt another owner's editor or Docker cleanup. Every native editor phase retains its own 300-second hard deadline
 and 180-second inactivity deadline without automatic retry. Explicit candidate core skips embedded native-frame and
-restart work on Linux, macOS, and Windows because the dedicated selectors own both. Linux executes those selectors in
-VS Code and Cursor; macOS and Windows execute them in VS Code, preserving the candidate coverage previously embedded in
-their platform core. Focused value and categorical selectors also omit native-frame work and remain restart-free.
-Default/unset manual core retains its full catalog and embedded behavior, so the manually dispatched Released Jupyter workflow remains an
+restart work on Linux, macOS, and Windows because the dedicated selectors own both. Linux, macOS, and Windows execute
+those selectors in VS Code; Cursor retains only the focused Linux `platform-smoke`, preserving the candidate coverage
+previously embedded in the platform core. Focused value and categorical selectors also omit native-frame work and
+remain restart-free. Default/unset manual core retains its full catalog and embedded behavior, so the manually
+dispatched Released Jupyter workflow remains an
 intentionally separate, backward-compatible, non-authoritative diagnostic: its existing local-R core, value,
 categorical, and terminal phases are serial and use their existing exact four-way fan-in. Remote R likewise retains
 its representative embedded behavior. The manual workflow does not model or substitute for candidate acceptance.

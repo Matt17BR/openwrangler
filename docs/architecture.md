@@ -765,7 +765,7 @@ After dispatch, generated-code insertion observes the exact original document fo
 
 Preview and stable releases produce one canonical candidate and call the shared candidate-acceptance workflow once
 through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. Linux
-VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code/Cursor cells run
+VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code cells run
 the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate
 `r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then
 `kernel-restart`. Protected pull-request CI solely owns the direct R 4.4/4.5 contract; candidate acceptance consumes
@@ -794,9 +794,10 @@ all of its raw phase outcomes and uploads have had a chance to complete. All edi
 The shared workflow exports no acceptance result that a caller could reinterpret. Its terminal fan-in evaluates the
 literal result of every internal job and succeeds only when all are `success`. Publication separately depends on
 literal success from package production, the single candidate-workflow call, and Remote SSH. Candidate core omits
-embedded native-frame and restart work on all three hosted platforms because the dedicated selectors own it. Linux
-runs both in VS Code and Cursor; macOS and Windows run both in VS Code. Focused value and categorical selectors also
-omit native-frame work and remain restart-free. Default/unset manual core retains its full catalog, while the remote R
+embedded native-frame and restart work on all three hosted platforms because the dedicated selectors own it. Linux,
+macOS, and Windows run both selectors in VS Code; Cursor owns only its focused Linux `platform-smoke`. Focused value
+and categorical selectors also omit native-frame work and remain restart-free. Default/unset manual core retains its
+full catalog, while the remote R
 journey retains representative embedded behavior. Every hosted platform retains a native/restart seam, while only
 Linux repeats the comprehensive depth. The manually dispatched Released Jupyter workflow therefore remains a serial,
 backward-compatible, non-authoritative diagnostic and is intentionally not part of that release proof.
