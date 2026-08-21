@@ -4,14 +4,7 @@ on:
   pull_request:
     paths:
       - AGENTS.md
-      - .github/AGENTS.md
-      - docs/AGENTS.md
-      - python/AGENTS.md
-      - r/AGENTS.md
-      - scripts/AGENTS.md
-      - src/extension/AGENTS.md
-      - src/shared/AGENTS.md
-      - src/webviews/AGENTS.md
+      - "**/AGENTS.md"
       - scripts/agent-instructions-context.mjs
       - scripts/agent-instructions-context.test.mjs
       - .github/workflows/scoped-agent-instructions.yml
@@ -19,14 +12,7 @@ on:
     branches: [main]
     paths:
       - AGENTS.md
-      - .github/AGENTS.md
-      - docs/AGENTS.md
-      - python/AGENTS.md
-      - r/AGENTS.md
-      - scripts/AGENTS.md
-      - src/extension/AGENTS.md
-      - src/shared/AGENTS.md
-      - src/webviews/AGENTS.md
+      - "**/AGENTS.md"
       - scripts/agent-instructions-context.mjs
       - scripts/agent-instructions-context.test.mjs
       - .github/workflows/scoped-agent-instructions.yml

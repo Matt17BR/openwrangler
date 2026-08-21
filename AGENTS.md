@@ -18,6 +18,7 @@ A rule is normative only in the file containing its `OW-RULE` marker. Refer to c
 | `src/extension/**` | `src/extension/AGENTS.md` | VS Code APIs, sessions, runtime lifecycle, commands, editors, and notebooks |
 | `src/shared/**` | `src/shared/AGENTS.md` | Versioned protocol, schemas, operations, and host/webview contracts |
 | `src/webviews/**` | `src/webviews/AGENTS.md` | React UI, renderer state, accessibility, and browser security |
+| `src/test/**` | Every owner whose behavior the test exercises | Route each test to its implementation owner; extension-host and installed harness work also reads `scripts/AGENTS.md` |
 
 Root-level public text such as `README.md` and `CHANGELOG.md` also requires `docs/AGENTS.md`. Changes that alter a protocol, operation, runtime, release gate, or installed behavior require both the implementation owner and the corresponding documentation or harness owner.
 
@@ -71,4 +72,4 @@ that merged-tree proof.
 <!-- OW-RULE:I08 -->
 8. `scratch.txt` and all other untracked user files are user-owned. Never edit, delete, stage, or package them.
 
-<!-- OW-INSTRUCTIONS:EOF path="AGENTS.md" sha256="3ce1c4a888f13bb6d38e43a5cf2a3359e0b172e41074641b28fe48c9bc8127d7" -->
+<!-- OW-INSTRUCTIONS:EOF path="AGENTS.md" sha256="d120ef8af6a7e41a492b8fc2b2b6d20eff80f239e82aaf9dc7d8c7bd7c6a994d" -->
