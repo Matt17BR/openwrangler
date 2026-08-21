@@ -362,23 +362,58 @@ function readExactChildReadinessMarker(
 }
 
 function observeChildSettlement(child) {
-  const state = { closed: false, errors: [], exit: undefined, exited: false, termination: undefined };
-  const result = new Promise((resolvePromise) => {
-    const onError = (error) => state.errors.push(error);
-    const onExit = (code, signal) => {
-      state.exit = { code, signal };
-      state.exited = true;
-    };
-    child.on("error", onError);
-    child.once("exit", onExit);
-    child.once("close", (code, signal) => {
-      state.closed = true;
-      child.off("error", onError);
-      child.off("exit", onExit);
-      resolvePromise({ close: { code, signal }, exit: state.exit });
-    });
+  const state = {
+    closed: false,
+    errors: [],
+    exit: undefined,
+    exited: false,
+    settled: false,
+    terminalReleaseAttested: false,
+    termination: undefined
+  };
+  let resolveExit;
+  const exited = new Promise((resolvePromise) => {
+    resolveExit = resolvePromise;
   });
-  return { result, state };
+  let onClose;
+  let onError;
+  let onExit;
+  let resolveResult;
+  const result = new Promise((resolvePromise) => {
+    resolveResult = resolvePromise;
+  });
+  const settle = (close, terminalReleaseAttested) => {
+    if (state.settled) return;
+    state.settled = true;
+    state.terminalReleaseAttested = terminalReleaseAttested;
+    child.off("error", onError);
+    child.off("exit", onExit);
+    child.off("close", onClose);
+    resolveResult({ close, exit: state.exit, terminalReleaseAttested });
+  };
+  onError = (error) => state.errors.push(error);
+  onExit = (code, signal) => {
+    state.exit = { code, signal };
+    state.exited = true;
+    resolveExit();
+  };
+  onClose = (code, signal) => {
+    state.closed = true;
+    settle({ code, signal }, false);
+  };
+  child.on("error", onError);
+  child.once("exit", onExit);
+  child.once("close", onClose);
+  return {
+    attestTerminalRelease() {
+      assert.equal(state.exited, true, "terminal release requires the exact child exit");
+      assert.notEqual(state.exit, undefined, "terminal release requires an exact child exit receipt");
+      settle(state.exit, true);
+    },
+    exited,
+    result,
+    state
+  };
 }
 
 function terminateObservedChild(
@@ -418,10 +453,30 @@ function terminateObservedChild(
       } catch (error) {
         faults.push(error);
       }
+      if (!observation.state.settled && !observation.state.exited) signal("SIGKILL");
+      const controlClosed = control.closed
+        ? Promise.resolve()
+        : new Promise((resolvePromise) => control.once("close", resolvePromise));
+      if (!observation.state.settled && !control.closed) {
+        try {
+          control.destroy();
+        } catch (error) {
+          faults.push(error);
+        }
+      }
+      const attestTerminalRelease = () => {
+        if (!observation.state.settled && observation.state.exited && control.closed) {
+          observation.attestTerminalRelease();
+        }
+      };
+      attestTerminalRelease();
+      if (!observation.state.settled) {
+        void Promise.all([observation.exited, controlClosed]).then(attestTerminalRelease);
+      }
     }
   }, settlementTimeoutMs);
   if (!observation.state.exited) signal("SIGTERM");
-  void observation.result.then(({ close, exit }) => {
+  void observation.result.then(({ close, exit, terminalReleaseAttested }) => {
     for (const deadline of [escalation, terminalDeadline]) {
       try {
         cancelDeadline(deadline);
@@ -433,7 +488,7 @@ function terminateObservedChild(
     if (!(control.readableEnded || control.destroyed)) {
       faults.push(new Error("FIFO child control pipe remained live after close"));
     }
-    resolveTermination({ close, exit, faults });
+    resolveTermination({ close, exit, faults, terminalReleaseAttested });
   });
   return termination;
 }
@@ -1884,6 +1939,10 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
       this.killCalls.push(signal);
       const outcome = this.signalOutcomes.shift() ?? true;
       if (outcome instanceof Error) throw outcome;
+      if (outcome === "exit") {
+        this.exit(null, signal);
+        return true;
+      }
       return outcome;
     }
 
@@ -2057,21 +2116,32 @@ test("FIFO child settlement retains ownership through errors, failed signals, ti
     assertReleased(terminalChild, terminalDeadlines);
   }
 
-  const lateChild = new SyntheticChild([false, false]);
-  const lateDeadlines = createDeadlines();
-  let terminalBoundaryEntered = false;
-  const lateSettlement = startSettlement(lateChild, lateDeadlines, () => {
-    terminalBoundaryEntered = true;
-  });
-  lateDeadlines.run(1);
-  lateDeadlines.run(2);
-  assert.equal(terminalBoundaryEntered, true);
-  await assertPending(lateSettlement.result);
-  assert.equal(lateChild.stdio[3].destroyed, false, "terminal ownership must persist until late close");
-  lateChild.close(1, null);
-  const lateResult = await lateSettlement.result;
-  assert.equal(lateResult.faults.length, 3);
-  assertReleased(lateChild, lateDeadlines);
+  for (const terminalFailure of [undefined, new Error("synthetic terminal ownership failure")]) {
+    const terminalChild = new SyntheticChild([false, false, "exit"]);
+    const terminalDeadlines = createDeadlines();
+    let terminalBoundaryEntered = false;
+    const terminalSettlement = startSettlement(terminalChild, terminalDeadlines, () => {
+      terminalBoundaryEntered = true;
+      if (terminalFailure !== undefined) throw terminalFailure;
+    });
+    terminalDeadlines.run(1);
+    terminalDeadlines.run(2);
+    assert.equal(terminalBoundaryEntered, true);
+    const boundedResult = await Promise.race([
+      terminalSettlement.result,
+      waitForMonotonicDelay(25).then(() => undefined)
+    ]);
+    assert.notEqual(boundedResult, undefined, "terminal ownership must settle without a manual close event");
+    assert.deepEqual(terminalChild.killCalls, ["SIGTERM", "SIGKILL", "SIGKILL"]);
+    assert.equal(terminalChild.syntheticExited, true, "the exact synthetic child must not survive terminal ownership");
+    assert.equal(terminalChild.stdio[3].closed, true, "the synthetic fd3 pipe must close before terminal ownership");
+    assert.equal(terminalSettlement.observation.state.closed, false, "the proof must not invent a child close event");
+    assert.equal(boundedResult.terminalReleaseAttested, true);
+    assert.deepEqual(boundedResult.close, boundedResult.exit);
+    assert.equal(boundedResult.faults.length, terminalFailure === undefined ? 3 : 4);
+    assert.equal(boundedResult.faults.includes(terminalFailure), terminalFailure !== undefined);
+    assertReleased(terminalChild, terminalDeadlines);
+  }
 });
 
 test(
