@@ -147,27 +147,34 @@ function canonicalContainedPath(root, relativePath, allowedPaths) {
   return { absolutePath, canonicalRoot };
 }
 
-function openDirectoryChain(root, components) {
+function openDirectoryChain(root, components, hooks = {}) {
   const receipts = [];
   let currentPath = root;
   try {
     for (const component of [undefined, ...components]) {
       if (component !== undefined) currentPath = resolve(currentPath, component);
-      const before = lstatSync(currentPath, { bigint: true });
-      assert.equal(before.isDirectory(), true, `${currentPath} must remain a directory`);
-      assert.equal(before.isSymbolicLink(), false, `${currentPath} must not be a symbolic link`);
-      const descriptor = openSync(
-        currentPath,
-        constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
-      );
+      let descriptor;
       try {
+        descriptor = openSync(
+          currentPath,
+          constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+        );
         const opened = fstatSync(descriptor, { bigint: true });
-        if (!opened.isDirectory() || !sameFileIdentity(fileIdentity(before), fileIdentity(opened))) {
-          throw new Error(`${currentPath} changed while its directory identity was pinned`);
-        }
+        assert.equal(opened.isDirectory(), true, `${currentPath} must open as a directory`);
+        hooks.afterDirectoryDescriptorOpen?.({ descriptor, path: currentPath });
+        const pathStatus = lstatSync(currentPath, { bigint: true });
+        assert.equal(pathStatus.isDirectory(), true, `${currentPath} must remain a directory`);
+        assert.equal(pathStatus.isSymbolicLink(), false, `${currentPath} must not be a symbolic link`);
+        assert.equal(
+          sameFileIdentity(fileIdentity(pathStatus), fileIdentity(opened)),
+          true,
+          `${currentPath} directory identity changed before use`
+        );
         receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
+        descriptor = undefined;
       } catch (error) {
-        throw closeDescriptor(descriptor, error);
+        if (descriptor !== undefined) throw closeDescriptor(descriptor, error);
+        throw error;
       }
     }
     return receipts;
@@ -201,26 +208,29 @@ function closeDirectoryChain(receipts, primaryError) {
 function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root = REPOSITORY_ROOT } = {}) {
   const { absolutePath, canonicalRoot } = canonicalContainedPath(root, relativePath, allowedPaths);
   const components = relativePath.split("/");
-  const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1));
+  const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1), hooks);
   let descriptor;
   let failure;
   let result;
   try {
     hooks.afterDirectoryOpen?.({ directories, relativePath });
-    const before = lstatSync(absolutePath, { bigint: true });
-    assert.equal(before.isFile(), true, `${relativePath} must be a regular file`);
-    assert.equal(before.isSymbolicLink(), false, `${relativePath} must not be a symbolic link`);
-    assert.equal(before.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
-    assert.ok(before.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
     descriptor = openSync(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const opened = fstatSync(descriptor, { bigint: true });
     assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
-    assert.equal(opened.nlink, 1n, `${relativePath} must remain unlinked`);
+    assert.equal(opened.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
+    assert.ok(opened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
+    hooks.afterFileDescriptorOpen?.({ descriptor, relativePath });
+    const pathOpened = lstatSync(absolutePath, { bigint: true });
+    assert.equal(pathOpened.isFile(), true, `${relativePath} path must remain a regular file`);
+    assert.equal(pathOpened.isSymbolicLink(), false, `${relativePath} path must not be a symbolic link`);
+    assert.equal(pathOpened.nlink, 1n, `${relativePath} path must not have hard-linked aliases`);
+    assert.ok(pathOpened.size <= BigInt(CAPABILITY_FILE_LIMIT), `${relativePath} exceeds the capability file limit`);
     assert.equal(
-      sameFileIdentity(fileIdentity(opened), fileIdentity(before)),
+      sameFileIdentity(fileIdentity(opened), fileIdentity(pathOpened)),
       true,
-      `${relativePath} changed before open`
+      `${relativePath} path identity changed before use`
     );
+    revalidateDirectoryChain(directories);
     hooks.afterFileOpen?.({ descriptor, relativePath });
 
     const chunks = [];
@@ -1711,6 +1721,76 @@ test("bounded workflow reads reject aliasing, oversize, and in-place content dri
     assert.throws(() => readFixture(symbolic), /regular file|symbolic link/u);
   }
 });
+
+test(
+  "bounded workflow reads bind descriptors before rejecting directory and file replacement",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const createFixtureRoot = (prefix) => {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
+      context.after(() => rmSync(root, { force: true, recursive: true }));
+      mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+      writeFileSync(join(root, ".github", "workflows", "fixture.yml"), "name: owned\n");
+      return root;
+    };
+    const relativePath = ".github/workflows/fixture.yml";
+    const allowedPaths = new Set([relativePath]);
+
+    const directoryRoot = createFixtureRoot("ow-ci-capability-directory-race-");
+    mkdirSync(join(directoryRoot, ".github-replacement", "workflows"), { recursive: true });
+    writeFileSync(join(directoryRoot, ".github-replacement", "workflows", "fixture.yml"), "name: replacement\n");
+    let directoryReplaced = false;
+    let directoryReplacementReads = 0;
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths,
+          hooks: {
+            afterChunk() {
+              directoryReplacementReads += 1;
+            },
+            afterDirectoryDescriptorOpen({ path }) {
+              if (directoryReplaced || path !== join(directoryRoot, ".github")) return;
+              directoryReplaced = true;
+              renameSync(join(directoryRoot, ".github"), join(directoryRoot, ".github-owned"));
+              renameSync(join(directoryRoot, ".github-replacement"), join(directoryRoot, ".github"));
+            }
+          },
+          root: directoryRoot
+        }),
+      /directory identity changed before use/u
+    );
+    assert.equal(directoryReplaced, true);
+    assert.equal(directoryReplacementReads, 0, "A replaced directory must reject before file bytes are read.");
+
+    const fileRoot = createFixtureRoot("ow-ci-capability-file-race-");
+    const filePath = join(fileRoot, relativePath);
+    const replacementPath = join(fileRoot, ".github", "workflows", "replacement.yml");
+    writeFileSync(replacementPath, "name: other\n");
+    let fileReplaced = false;
+    let fileReplacementReads = 0;
+    assert.throws(
+      () =>
+        readBoundedNoFollowFile(relativePath, {
+          allowedPaths,
+          hooks: {
+            afterChunk() {
+              fileReplacementReads += 1;
+            },
+            afterFileDescriptorOpen() {
+              fileReplaced = true;
+              renameSync(filePath, join(fileRoot, ".github", "workflows", "owned.yml"));
+              renameSync(replacementPath, filePath);
+            }
+          },
+          root: fileRoot
+        }),
+      /path identity changed before use/u
+    );
+    assert.equal(fileReplaced, true);
+    assert.equal(fileReplacementReads, 0, "A replaced file must reject before replacement bytes are read.");
+  }
+);
 
 test("workflow YAML enforces parser bounds and rejects aliases, merges, tags, depth, and nodes", () => {
   assert.deepEqual(parseBoundedWorkflowYaml("name: fixture\njobs: {}\n"), { name: "fixture", jobs: {} });
