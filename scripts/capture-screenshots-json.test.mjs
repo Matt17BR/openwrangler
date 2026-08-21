@@ -211,6 +211,88 @@ test("Axe target diagnostics cap sparse and multibyte work before later values",
   });
 });
 
+test("Axe classification owns intermediate entries under inherited non-writable numeric properties", () => {
+  const inheritedFirstIndex = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  const inheritedDiagnosticLimitIndex = Object.getOwnPropertyDescriptor(Array.prototype, "5");
+  assert.equal(inheritedFirstIndex, undefined);
+  assert.equal(inheritedDiagnosticLimitIndex, undefined);
+  const input = {
+    harness: "inherited-index.html",
+    violations: [
+      axeViolation({
+        id: "inherited-index",
+        impact: "minor",
+        nodes: Array.from({ length: 6 }, (_, index) => ({
+          target: [`.bounded-${index}`],
+          failureSummary: `failed-${index}`
+        }))
+      })
+    ]
+  };
+  let scan;
+  let report;
+  let detail;
+  Object.defineProperty(Array.prototype, "0", {
+    value: "inherited",
+    enumerable: false,
+    configurable: true,
+    writable: false
+  });
+  Object.defineProperty(Array.prototype, "5", {
+    value: "inherited",
+    enumerable: false,
+    configurable: true,
+    writable: false
+  });
+  try {
+    const collector = createAxeResultCollector();
+    scan = collector.record(input);
+    report = collector.report();
+    detail = formatAxeFailureDetail(report);
+  } finally {
+    delete Array.prototype[0];
+    delete Array.prototype[5];
+  }
+
+  assert.equal(scan.protocol, "openwrangler-axe-scan-result-v1");
+  assert.equal(scan.status, "failed");
+  assert.equal(scan.findingCount, 1);
+  assert.equal(scan.findings[0].id, "inherited-index");
+  assert.equal(scan.findings[0].nodes[0].target, ".bounded-0");
+  assert.equal(scan.findings[0].omittedNodeCount, 1);
+  assert.equal(report.protocol, AXE_RUN_RESULT_PROTOCOL);
+  assert.equal(report.status, "failed");
+  assert.equal(report.findingCount, 1);
+  assert.equal(report.scans[0], scan);
+  assert.match(detail, /1 additional affected nodes omitted/u);
+});
+
+test("Axe classification never writes intermediate entries through an Array prototype Proxy", () => {
+  const input = {
+    harness: "prototype-set-trap.html",
+    violations: [axeViolation({ id: "prototype-set-trap", impact: "minor" })]
+  };
+  const originalPrototypeParent = Object.getPrototypeOf(Array.prototype);
+  let prototypeSetCalls = 0;
+  const proxyPrototypeParent = new Proxy(originalPrototypeParent, {
+    set() {
+      prototypeSetCalls += 1;
+      throw new Error("Axe classification wrote through the Array prototype chain.");
+    }
+  });
+  let scan;
+  Object.setPrototypeOf(Array.prototype, proxyPrototypeParent);
+  try {
+    scan = classifyAxeScanResult(input);
+  } finally {
+    Object.setPrototypeOf(Array.prototype, originalPrototypeParent);
+  }
+
+  assert.equal(prototypeSetCalls, 0);
+  assert.equal(scan.status, "failed");
+  assert.equal(scan.findings[0].id, "prototype-set-trap");
+});
+
 test("Axe aggregate node budgets preflight 512 maximum-node findings and rejected run overflow", () => {
   let aggregateTargetReads = 0;
   const aggregateNode = { failureSummary: "aggregate failure" };
@@ -672,6 +754,49 @@ test("Axe classification errors emit only allowlisted bounded codes through the 
     code: "classification_failed"
   });
   assert.equal(codeAccessorCalls, 0);
+});
+
+test("Axe classification error receipts bypass inherited setters without leaking diagnostics", () => {
+  const actualDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, "actual");
+  const limitDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, "limit");
+  assert.equal(actualDescriptor, undefined);
+  assert.equal(limitDescriptor, undefined);
+  let actualSetterCalls = 0;
+  let limitSetterCalls = 0;
+  let serialized;
+  Object.defineProperty(Object.prototype, "actual", {
+    set() {
+      actualSetterCalls += 1;
+    },
+    configurable: true
+  });
+  Object.defineProperty(Object.prototype, "limit", {
+    set() {
+      limitSetterCalls += 1;
+    },
+    configurable: true
+  });
+  try {
+    const error = new AxeResultClassificationError("too_many_scan_findings", "private diagnostic must not escape", {
+      actual: AXE_RESULT_LIMITS.findingsPerScan + 1,
+      limit: AXE_RESULT_LIMITS.findingsPerScan
+    });
+    serialized = serializeAxeClassificationError(error);
+  } finally {
+    delete Object.prototype.actual;
+    delete Object.prototype.limit;
+  }
+
+  assert.equal(actualSetterCalls, 0);
+  assert.equal(limitSetterCalls, 0);
+  assert.deepEqual(JSON.parse(serialized.slice(AXE_MACHINE_RESULT_PREFIX.length)), {
+    protocol: AXE_RUN_RESULT_PROTOCOL,
+    status: "invalid",
+    code: "too_many_scan_findings",
+    actual: AXE_RESULT_LIMITS.findingsPerScan + 1,
+    limit: AXE_RESULT_LIMITS.findingsPerScan
+  });
+  assert.doesNotMatch(serialized, /private diagnostic/u);
 });
 
 test("Axe human diagnostics visibly escape unsafe control and bidi code points", () => {
