@@ -996,7 +996,17 @@ function containsContradictoryCleaningHistoryClaim(source) {
       has(candidate, ["latest", "newest", "last", "final"]) ||
       (candidate.includes("most") && candidate.includes("recent"));
     const hasExclusivity = (candidate) =>
-      has(candidate, ["only", "sole", "solely", "exclusively", "limited", "restricted", "confined", "reserved"]);
+      has(candidate, [
+        "only",
+        "just",
+        "sole",
+        "solely",
+        "exclusively",
+        "limited",
+        "restricted",
+        "confined",
+        "reserved"
+      ]);
     const hasPrior = (candidate) =>
       has(candidate, ["earlier", "older", "prior", "previous", "preceding", "nonlatest", "noncurrent"]);
     const latest = hasLatest(tokens) || (inheritsSubject && hasLatest(contextTokens));
@@ -1010,10 +1020,29 @@ function containsContradictoryCleaningHistoryClaim(source) {
     const priorDenied = hasSubject && inspectEditDelete && prior && negative;
     const implementedActionDenied = (hasSubject || hasCleaningContext) && inspectEditDelete && unavailable;
 
+    const targetSetQuantifier = has(tokens, ["all", "both", "multiple", "every", "each"]);
+    const explicitSingleInvocationScope =
+      (tokens.includes("per") && has(tokens, ["action", "command", "invocation", "request"])) ||
+      (tokens.includes("at") && tokens.includes("time")) ||
+      (has(tokens, ["native", "action", "command"]) && has(tokens, ["selected", "current"]) && tokens.includes("one"));
+    const excludesPartOfSet = has(contextTokens, ["all", "every"]) && has(contextTokens, ["but", "except"]);
+    const restrictiveCount =
+      has(tokens, ["one", "two", "three", "both", "multiple", "several", "few", "some", "single"]) ||
+      tokens.some((token) => /^\d+$/u.test(token));
+    const partiallyDeniedImplementedAction =
+      hasSubject &&
+      inspectEditDelete &&
+      ((negative && targetSetQuantifier) ||
+        (tokens.includes("no") && has(tokens, ["other", "others"])) ||
+        ((excludesPartOfSet || (exclusivity && restrictiveCount)) && !explicitSingleInvocationScope));
+
     const undo = hasStem(tokens, ["undo", "rollback", "revert", "revers", "restor"]);
     const arbitraryTarget =
       has(tokens, [
         "any",
+        "all",
+        "both",
+        "multiple",
         "every",
         "each",
         "earlier",
@@ -1031,8 +1060,14 @@ function containsContradictoryCleaningHistoryClaim(source) {
         "individual",
         "whichever"
       ]) || hasStem(tokens, ["choos", "pick", "select", "specif"]);
-    const hasAnaphoricTarget = has(tokens, ["it", "one", "ones", "them", "these", "those"]);
-    const arbitraryUndo = (hasSubject || hasAnaphoricTarget) && undo && arbitraryTarget && !negative;
+    const hasAnaphoricTarget = has(tokens, ["it", "one", "ones", "they", "them", "these", "those"]);
+    const exactLatestUndoScope = undo && latest && exclusivity && !negative;
+    const arbitraryUndo =
+      (hasSubject || hasAnaphoricTarget) &&
+      undo &&
+      (arbitraryTarget || excludesPartOfSet) &&
+      !negative &&
+      !exactLatestUndoScope;
     const unrelatedUndoSurface = has(tokens, [
       "button",
       "buttons",
@@ -1079,6 +1114,7 @@ function containsContradictoryCleaningHistoryClaim(source) {
       latestOnly ||
       priorDenied ||
       implementedActionDenied ||
+      partiallyDeniedImplementedAction ||
       arbitraryUndo ||
       undoDenied ||
       undoLatestDenied ||
