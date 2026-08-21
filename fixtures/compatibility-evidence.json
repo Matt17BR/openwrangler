@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "tiers": [
     {
       "id": "api-compatible",
@@ -28,13 +28,19 @@
       "name": "VS Code",
       "apiVersion": "^1.106.0",
       "releaseVersion": "1.130.0",
+      "versionOwner": "scripts/remote-workspace-contract.mjs#PINNED_REMOTE_VSCODE_VERSION",
       "platforms": ["linux", "macos", "windows"],
       "tier": "fully-qualified",
       "support": "Release-tested",
       "workflowOwners": [
+        ".github/workflows/candidate-acceptance.yml#contract",
         ".github/workflows/candidate-acceptance.yml#platform",
+        ".github/workflows/candidate-acceptance.yml#r_platform",
         ".github/workflows/candidate-acceptance.yml#linux",
-        ".github/workflows/candidate-acceptance.yml#r_platform"
+        ".github/workflows/candidate-acceptance.yml#performance",
+        ".github/workflows/candidate-acceptance.yml#jupyter",
+        ".github/workflows/candidate-acceptance.yml#r_local",
+        ".github/workflows/candidate-acceptance.yml#acceptance"
       ]
     },
     {
@@ -42,6 +48,7 @@
       "name": "Cursor",
       "apiVersion": "^1.106.0",
       "releaseVersion": "3.13.10",
+      "versionOwner": "scripts/cursor-acquisition.mjs#PINNED_CURSOR_VERSION",
       "platforms": ["linux"],
       "tier": "focused-release-seam",
       "support": "Release-tested",
@@ -52,6 +59,7 @@
       "name": "Other VS Code desktop forks",
       "apiVersion": "^1.106.0",
       "releaseVersion": null,
+      "versionOwner": "package.json#engines.vscode",
       "platforms": ["distribution-specific"],
       "tier": "api-compatible",
       "support": "Experimental",
@@ -62,10 +70,25 @@
       "name": "Browser-hosted `vscode.dev`",
       "apiVersion": null,
       "releaseVersion": null,
+      "versionOwner": null,
       "platforms": ["browser"],
       "tier": null,
       "support": "Unsupported",
       "workflowOwners": []
+    }
+  ],
+  "forkSmokes": [
+    {
+      "id": "antigravity-open-vsx-1.2.0-linux-x64",
+      "name": "Antigravity smoke",
+      "extensionVersion": "1.2.0",
+      "editorVersion": "1.107.0",
+      "editorCommit": "15487b3041e65228cae24980a3f796c905ef582c",
+      "platform": "linux-x64",
+      "registry": "Open VSX",
+      "tier": "smoke-tested",
+      "support": "Experimental",
+      "evidenceOwner": "docs/testing.md#experimental-antigravity-smoke"
     }
   ],
   "nativeR": {

@@ -26,9 +26,14 @@ const EXPECTED_EDITOR_OWNERS = new Map([
   [
     "vscode",
     [
+      ".github/workflows/candidate-acceptance.yml#contract",
       ".github/workflows/candidate-acceptance.yml#platform",
+      ".github/workflows/candidate-acceptance.yml#r_platform",
       ".github/workflows/candidate-acceptance.yml#linux",
-      ".github/workflows/candidate-acceptance.yml#r_platform"
+      ".github/workflows/candidate-acceptance.yml#performance",
+      ".github/workflows/candidate-acceptance.yml#jupyter",
+      ".github/workflows/candidate-acceptance.yml#r_local",
+      ".github/workflows/candidate-acceptance.yml#acceptance"
     ]
   ],
   ["cursor", [".github/workflows/candidate-acceptance.yml#linux"]],
@@ -36,14 +41,63 @@ const EXPECTED_EDITOR_OWNERS = new Map([
   ["vscode-dev", []]
 ]);
 const EXPECTED_EDITOR_FIELDS = new Map([
-  ["vscode", { name: "VS Code", tier: "fully-qualified", support: "Release-tested" }],
-  ["cursor", { name: "Cursor", tier: "focused-release-seam", support: "Release-tested" }],
+  [
+    "vscode",
+    {
+      name: "VS Code",
+      releaseVersion: "1.130.0",
+      versionOwner: "scripts/remote-workspace-contract.mjs#PINNED_REMOTE_VSCODE_VERSION",
+      platforms: ["linux", "macos", "windows"],
+      tier: "fully-qualified",
+      support: "Release-tested"
+    }
+  ],
+  [
+    "cursor",
+    {
+      name: "Cursor",
+      releaseVersion: "3.13.10",
+      versionOwner: "scripts/cursor-acquisition.mjs#PINNED_CURSOR_VERSION",
+      platforms: ["linux"],
+      tier: "focused-release-seam",
+      support: "Release-tested"
+    }
+  ],
   [
     "other-vscode-desktop-forks",
-    { name: "Other VS Code desktop forks", tier: "api-compatible", support: "Experimental" }
+    {
+      name: "Other VS Code desktop forks",
+      releaseVersion: null,
+      versionOwner: "package.json#engines.vscode",
+      platforms: ["distribution-specific"],
+      tier: "api-compatible",
+      support: "Experimental"
+    }
   ],
-  ["vscode-dev", { name: "Browser-hosted `vscode.dev`", tier: null, support: "Unsupported" }]
+  [
+    "vscode-dev",
+    {
+      name: "Browser-hosted `vscode.dev`",
+      releaseVersion: null,
+      versionOwner: null,
+      platforms: ["browser"],
+      tier: null,
+      support: "Unsupported"
+    }
+  ]
 ]);
+const EXPECTED_FORK_SMOKE = Object.freeze({
+  id: "antigravity-open-vsx-1.2.0-linux-x64",
+  name: "Antigravity smoke",
+  extensionVersion: "1.2.0",
+  editorVersion: "1.107.0",
+  editorCommit: "15487b3041e65228cae24980a3f796c905ef582c",
+  platform: "linux-x64",
+  registry: "Open VSX",
+  tier: "smoke-tested",
+  support: "Experimental",
+  evidenceOwner: "docs/testing.md#experimental-antigravity-smoke"
+});
 const EXPECTED_NATIVE_R_OWNERS = [
   ".github/workflows/candidate-acceptance.yml#r_platform",
   ".github/workflows/candidate-acceptance.yml#r_local"
@@ -81,6 +135,10 @@ function boundedValue(value, depth = 0, state = { nodes: 0 }) {
 }
 
 function oneCapture(source, pattern, label, problems) {
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 2 * 1024 * 1024) {
+    problems.push(`${label} must be bounded source text.`);
+    return undefined;
+  }
   const matches = [...source.matchAll(pattern)];
   if (matches.length !== 1 || !matches[0]?.groups?.value) {
     problems.push(`${label} must have one exact immutable source value.`);
@@ -120,13 +178,24 @@ function requireMarkers(source, markers, label, problems) {
   }
 }
 
+function requireBoundedMarkers(source, markers, label, problems) {
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 4 * 1024 * 1024) {
+    problems.push(`${label} must be bounded source text.`);
+    return;
+  }
+  requireMarkers(source, markers, label, problems);
+}
+
 function validateAuthority(authority, problems) {
   const initialProblemCount = problems.length;
   if (!boundedValue(authority)) {
     problems.push("Compatibility evidence exceeds its structural or text bounds.");
     return false;
   }
-  if (!exactKeys(authority, ["schemaVersion", "tiers", "editors", "nativeR"]) || authority.schemaVersion !== 1) {
+  if (
+    !exactKeys(authority, ["schemaVersion", "tiers", "editors", "forkSmokes", "nativeR"]) ||
+    authority.schemaVersion !== 2
+  ) {
     problems.push("Compatibility evidence must contain only the versioned tier, editor, and Native R authority.");
     return false;
   }
@@ -164,6 +233,7 @@ function validateAuthority(authority, problems) {
         "name",
         "apiVersion",
         "releaseVersion",
+        "versionOwner",
         "platforms",
         "tier",
         "support",
@@ -187,10 +257,15 @@ function validateAuthority(authority, problems) {
     if (
       !expectedFields ||
       entry.name !== expectedFields.name ||
+      entry.releaseVersion !== expectedFields.releaseVersion ||
+      entry.versionOwner !== expectedFields.versionOwner ||
+      !sameArray(entry.platforms, expectedFields.platforms) ||
       entry.tier !== expectedFields.tier ||
       entry.support !== expectedFields.support
     ) {
-      problems.push(`Compatibility editor ${entry.id} name, tier, or support status is unsupported.`);
+      problems.push(
+        `Compatibility editor ${entry.id} rendered version, platform, tier, or support fields are unpinned.`
+      );
     }
     if (entry.support === "Unsupported") {
       if (
@@ -204,6 +279,14 @@ function validateAuthority(authority, problems) {
     } else if (!TIER_IDS.includes(entry.tier) || entry.workflowOwners.length === 0) {
       problems.push(`Compatibility editor ${entry.id} must have a known tier and at least one workflow owner.`);
     }
+  }
+  if (
+    !Array.isArray(authority.forkSmokes) ||
+    authority.forkSmokes.length !== 1 ||
+    !exactKeys(authority.forkSmokes[0], Object.keys(EXPECTED_FORK_SMOKE)) ||
+    !sameArray(Object.entries(authority.forkSmokes[0]), Object.entries(EXPECTED_FORK_SMOKE))
+  ) {
+    problems.push("The Antigravity 1.2.0 Linux x64 smoke must remain one exact separate historical record.");
   }
   const nativeR = authority.nativeR;
   if (
@@ -245,6 +328,10 @@ function editor(authority, id) {
   return authority.editors.find((candidate) => candidate.id === id);
 }
 
+function forkSmoke(authority) {
+  return authority.forkSmokes[0];
+}
+
 function versionEvidence(target) {
   if (target.apiVersion === null) return "None";
   if (target.releaseVersion === null) return `API \`${target.apiVersion}\`; no release target`;
@@ -273,6 +360,14 @@ export function renderCompatibilityReadmeTable(authority) {
     const evidence = target.tier === null ? "—" : tier(authority, target.tier).label;
     return [target.name, versionEvidence(target), platformLabels(target.platforms), evidence, target.support];
   });
+  const antigravity = forkSmoke(authority);
+  rows.push([
+    antigravity.name,
+    `Open Wrangler \`${antigravity.extensionVersion}\`; editor \`${antigravity.editorVersion}\``,
+    "Linux x64",
+    tier(authority, antigravity.tier).label,
+    antigravity.support
+  ]);
   const nativePlatforms = [...new Set(authority.nativeR.versions.flatMap((entry) => entry.platforms))];
   rows.push([
     authority.nativeR.name,
@@ -293,6 +388,7 @@ export function renderCompatibilityReadmeTable(authority) {
 export function renderCompatibilityReleaseSection(authority) {
   const vscode = editor(authority, "vscode");
   const cursor = editor(authority, "cursor");
+  const antigravity = forkSmoke(authority);
   const nativeVersions = authority.nativeR.versions
     .map((entry) => `R ${entry.version} on ${platformLabels(entry.platforms)}`)
     .join("; ");
@@ -307,12 +403,17 @@ export function renderCompatibilityReleaseSection(authority) {
     "",
     `The current release targets are VS Code ${vscode.releaseVersion} on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier and Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} at the **${tier(authority, cursor.tier).label}** tier. Native R records ${nativeVersions} at the **${tier(authority, authority.nativeR.tier).label}** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.`,
     "",
+    `Separately, Open Wrangler ${antigravity.extensionVersion} retains one **${tier(authority, antigravity.tier).label}** Antigravity ${antigravity.editorVersion} Linux x64 record through ${antigravity.registry}. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.`,
+    "",
     `Native R remains **${authority.nativeR.status}**. Promotion to fully qualified support is tracked by [issue #87](${authority.nativeR.promotionIssue}); local implementation evidence cannot replace installed or cross-platform release qualification.`,
     RELEASE_END
   ].join("\n");
 }
 
 export function renderCompatibilityArchitectureParagraph(authority) {
+  const vscode = editor(authority, "vscode");
+  const cursor = editor(authority, "cursor");
+  const antigravity = forkSmoke(authority);
   const ownerSummary = [
     ["VS Code", editor(authority, "vscode").workflowOwners],
     ["Cursor", editor(authority, "cursor").workflowOwners],
@@ -323,7 +424,7 @@ export function renderCompatibilityArchitectureParagraph(authority) {
   return [
     ARCHITECTURE_START,
     "",
-    `Compatibility vocabulary, versions, platforms, and workflow ownership come from \`fixtures/compatibility-evidence.json\` and are checked by \`scripts/compatibility-evidence.mjs\`. The current workflow owners are ${ownerSummary}. API compatibility is a source contract; it never inherits installed or release qualification from a higher tier.`,
+    `Compatibility vocabulary, versions, platforms, and workflow ownership come from \`fixtures/compatibility-evidence.json\` and are checked by \`scripts/compatibility-evidence.mjs\`. VS Code ${vscode.releaseVersion} is pinned by \`${vscode.versionOwner}\`; Cursor ${cursor.releaseVersion} is pinned by \`${cursor.versionOwner}\`. The current workflow owners are ${ownerSummary}. The separate Antigravity ${antigravity.editorVersion} Linux x64 smoke remains bound to \`${antigravity.evidenceOwner}\`. API compatibility is a source contract; it never inherits installed or release qualification from a higher tier.`,
     ARCHITECTURE_END
   ].join("\n");
 }
@@ -331,8 +432,9 @@ export function renderCompatibilityArchitectureParagraph(authority) {
 export function renderCompatibilityParityReference(authority) {
   const vscode = editor(authority, "vscode");
   const cursor = editor(authority, "cursor");
+  const antigravity = forkSmoke(authority);
   const versions = authority.nativeR.versions.map((entry) => entry.version).join(" and ");
-  return `The compatibility authority records VS Code ${vscode.releaseVersion} on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier and Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} at the **${tier(authority, cursor.tier).label}** tier. Native R ${versions} coverage is a **${tier(authority, authority.nativeR.tier).label}**, not full product qualification; its promotion remains tied to [issue #87](${authority.nativeR.promotionIssue}).`;
+  return `The compatibility authority records VS Code ${vscode.releaseVersion} on ${platformLabels(vscode.platforms)} at the **${tier(authority, vscode.tier).label}** tier and Cursor ${cursor.releaseVersion} on ${platformLabels(cursor.platforms)} at the **${tier(authority, cursor.tier).label}** tier. Its separate Open Wrangler ${antigravity.extensionVersion}/Antigravity ${antigravity.editorVersion} Linux x64 record is **${tier(authority, antigravity.tier).label}** and does not promote other desktop forks above API-compatible. Native R ${versions} coverage is a **${tier(authority, authority.nativeR.tier).label}**, not full product qualification; its promotion remains tied to [issue #87](${authority.nativeR.promotionIssue}).`;
 }
 
 function inspectExactBlock(source, start, end, expected, label, problems) {
@@ -384,6 +486,7 @@ export function inspectCompatibilityEvidence(inputs) {
   const cursorVersion = oneCapture(
     inputs.cursorAcquisitionSource,
     /^export const PINNED_CURSOR_VERSION = "(?<value>[^"]+)";$/gmu,
+    "Pinned Cursor version",
     problems
   );
   const vscode = editor(authority, "vscode");
@@ -441,6 +544,48 @@ export function inspectCompatibilityEvidence(inputs) {
     problems
   );
   requireMarkers(
+    candidateJobs.get("performance") ?? "",
+    [
+      "name: Installed performance in pinned editors",
+      "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
+      "--pinned-editors",
+      "--editors vscode",
+      "--candidate-in canonical-release/openwrangler.vsix"
+    ],
+    "VS Code installed-performance owner",
+    problems
+  );
+  requireMarkers(
+    candidateJobs.get("jupyter") ?? "",
+    [
+      "matrix:\n        phase: [python, r-remote]",
+      "OPEN_WRANGLER_PACKAGED_EDITORS: vscode",
+      "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: candidate-one-owner",
+      'OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"',
+      'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"',
+      "VSCODE_TEST_VERSION: stable"
+    ],
+    "VS Code released-Jupyter owner",
+    problems
+  );
+  requireMarkers(
+    candidateJobs.get("acceptance") ?? "",
+    [
+      "needs: [contract, platform, r_platform, linux, performance, jupyter, r_local]",
+      "CONTRACT_RESULT: ${{ needs.contract.result }}",
+      "PLATFORM_RESULT: ${{ needs.platform.result }}",
+      "R_PLATFORM_RESULT: ${{ needs.r_platform.result }}",
+      "LINUX_RESULT: ${{ needs.linux.result }}",
+      "PERFORMANCE_RESULT: ${{ needs.performance.result }}",
+      "JUPYTER_RESULT: ${{ needs.jupyter.result }}",
+      "R_LOCAL_RESULT: ${{ needs.r_local.result }}",
+      'test "$PERFORMANCE_RESULT" = "success"',
+      'test "$JUPYTER_RESULT" = "success"'
+    ],
+    "complete VS Code qualification fan-in",
+    problems
+  );
+  requireMarkers(
     candidateJobs.get("r_platform") ?? "",
     [
       '- os: ubuntu-24.04\n            python: "3.12"\n            r: "4.4.3"',
@@ -468,6 +613,19 @@ export function inspectCompatibilityEvidence(inputs) {
   ) {
     problems.push("Native R versions, platforms, or current evidence tier differ from candidate workflow ownership.");
   }
+
+  requireBoundedMarkers(
+    inputs.testingSource,
+    [
+      "### Experimental Antigravity smoke",
+      "On 2026-08-01, Open Wrangler 1.2.0 passed one bounded, non-release-blocking Antigravity Linux x64 smoke:",
+      "version 1.107.0, commit `15487b3041e65228cae24980a3f796c905ef582c`, and x64 architecture.",
+      "`Matt17BR.openwrangler@1.2.0` from that registry.",
+      "does not promote Antigravity to a first-class release target."
+    ],
+    "Antigravity smoke owner",
+    problems
+  );
 
   inspectExactBlock(
     inputs.readmeSource,
@@ -517,7 +675,8 @@ function repositoryInputs() {
     readmeSource: read("README.md"),
     releasingSource: read("docs/releasing.md"),
     architectureSource: read("docs/architecture.md"),
-    featureParitySource: read("docs/feature-parity.md")
+    featureParitySource: read("docs/feature-parity.md"),
+    testingSource: read("docs/testing.md")
   };
 }
 

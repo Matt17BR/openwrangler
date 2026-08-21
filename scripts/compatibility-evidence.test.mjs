@@ -16,7 +16,8 @@ const sources = Object.freeze({
   readmeSource: read("README.md"),
   releasingSource: read("docs/releasing.md"),
   architectureSource: read("docs/architecture.md"),
-  featureParitySource: read("docs/feature-parity.md")
+  featureParitySource: read("docs/feature-parity.md"),
+  testingSource: read("docs/testing.md")
 });
 const authority = JSON.parse(sources.authoritySource);
 const inspect = (changes = {}) => inspectCompatibilityEvidence({ ...sources, ...changes });
@@ -66,7 +67,66 @@ test("editor versions and platforms are derived from immutable source owners", (
   );
   assert.match(
     inspect(changedAuthority((candidate) => candidate.editors[1].platforms.push("windows"))).join(" "),
-    /platforms are unsupported/u
+    /rendered version, platform/u
+  );
+  for (const [index, field, value] of [
+    [0, "releaseVersion", "1.131.0"],
+    [1, "versionOwner", "scripts/other-owner.mjs#PINNED_CURSOR_VERSION"],
+    [2, "platforms", ["linux"]],
+    [3, "releaseVersion", "browser-moving"]
+  ]) {
+    assert.match(
+      inspect(changedAuthority((candidate) => (candidate.editors[index][field] = value))).join(" "),
+      /rendered version, platform/u
+    );
+  }
+});
+
+test("missing and duplicate Cursor version pins return bounded diagnostics", () => {
+  for (const cursorAcquisitionSource of [
+    sources.cursorAcquisitionSource.replace('export const PINNED_CURSOR_VERSION = "3.13.10";\n', ""),
+    sources.cursorAcquisitionSource.replace(
+      'export const PINNED_CURSOR_VERSION = "3.13.10";',
+      'export const PINNED_CURSOR_VERSION = "3.13.10";\nexport const PINNED_CURSOR_VERSION = "3.13.10";'
+    )
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.match(inspect({ cursorAcquisitionSource }).join(" "), /Pinned Cursor version/u);
+    });
+  }
+});
+
+test("fully qualified VS Code evidence requires the complete candidate fan-in", () => {
+  const incomplete = sources.candidateWorkflowSource.replace(
+    "needs: [contract, platform, r_platform, linux, performance, jupyter, r_local]",
+    "needs: [contract, platform, r_platform, linux, jupyter, r_local]"
+  );
+  assert.match(inspect({ candidateWorkflowSource: incomplete }).join(" "), /complete VS Code qualification fan-in/u);
+  assert.match(
+    inspect({
+      candidateWorkflowSource: sources.candidateWorkflowSource.replace("--editors vscode", "--editors cursor")
+    }).join(" "),
+    /installed-performance owner/u
+  );
+  assert.match(
+    inspect({
+      candidateWorkflowSource: sources.candidateWorkflowSource.replace(
+        "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: candidate-one-owner",
+        "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: stale-owner"
+      )
+    }).join(" "),
+    /released-Jupyter owner/u
+  );
+});
+
+test("the exact Antigravity smoke stays separate and bound to its immutable record", () => {
+  assert.match(
+    inspect(changedAuthority((candidate) => (candidate.forkSmokes[0].editorVersion = "1.108.0"))).join(" "),
+    /exact separate historical record/u
+  );
+  assert.match(
+    inspect({ testingSource: sources.testingSource.replace("Open Wrangler 1.2.0", "Open Wrangler 1.2.1") }).join(" "),
+    /Antigravity smoke owner/u
   );
 });
 
@@ -81,7 +141,7 @@ test("workflow ownership and Native R release seams fail closed on drift", () =>
   );
   assert.match(
     inspect(changedAuthority((candidate) => (candidate.editors[0].tier = "smoke-tested"))).join(" "),
-    /tier, or support status is unsupported/u
+    /rendered version, platform, tier, or support fields are unpinned/u
   );
   assert.match(
     inspect({ candidateWorkflowSource: sources.candidateWorkflowSource.replace('r: "4.4.3"', 'r: "4.4.2"') }).join(" "),
@@ -102,9 +162,9 @@ test("workflow ownership and Native R release seams fail closed on drift", () =>
 test("every generated public compatibility block rejects stale or duplicate claims", () => {
   for (const [key, marker, expected] of [
     ["readmeSource", "pinned release target `1.130.0`", /README\.md/u],
-    ["releasingSource", "API-compatible", /docs\/releasing\.md/u],
+    ["releasingSource", "Antigravity 1.107.0 Linux x64", /docs\/releasing\.md/u],
     ["architectureSource", "candidate-acceptance.yml#platform", /docs\/architecture\.md/u],
-    ["featureParitySource", "Native R 4.4.3 and 4.5.2", /docs\/feature-parity\.md/u]
+    ["featureParitySource", "Antigravity 1.107.0 Linux x64", /docs\/feature-parity\.md/u]
   ]) {
     assert.match(inspect({ [key]: sources[key].replace(marker, `${marker}-stale`) }).join(" "), expected);
   }
@@ -117,7 +177,7 @@ test("every generated public compatibility block rejects stale or duplicate clai
 test("strict JSON rejects duplicate authority members", () => {
   assert.match(
     inspect({
-      authoritySource: sources.authoritySource.replace('"schemaVersion": 1,', '"schemaVersion": 1, "schemaVersion": 1,')
+      authoritySource: sources.authoritySource.replace('"schemaVersion": 2,', '"schemaVersion": 2, "schemaVersion": 2,')
     }).join(" "),
     /strict JSON/u
   );

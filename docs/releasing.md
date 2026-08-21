@@ -42,6 +42,8 @@ Compatibility claims use one ordered evidence vocabulary from `fixtures/compatib
 
 The current release targets are VS Code 1.130.0 on Linux, macOS, Windows at the **Fully qualified** tier and Cursor 3.13.10 on Linux at the **Focused release seam** tier. Native R records R 4.4.3 on Linux; R 4.5.2 on Linux, macOS, Windows at the **Focused release seam** tier. A tier names the required evidence; an exact candidate earns it only when every listed workflow owner passes.
 
+Separately, Open Wrangler 1.2.0 retains one **Smoke-tested** Antigravity 1.107.0 Linux x64 record through Open VSX. It is historical, experimental, and does not raise the general desktop-fork category above API-compatible.
+
 Native R remains **Partial**. Promotion to fully qualified support is tracked by [issue #87](https://github.com/Matt17BR/openwrangler/issues/87); local implementation evidence cannot replace installed or cross-platform release qualification.
 <!-- open-wrangler-compatibility-tiers:end -->
 
