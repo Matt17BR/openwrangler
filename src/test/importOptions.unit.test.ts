@@ -19,7 +19,7 @@ interface Pick {
 const importOptionMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn<(items: readonly unknown[], options?: PromptOptions) => Promise<unknown>>(async () => undefined),
   showInputBox: vi.fn<(options?: PromptOptions) => Promise<string | undefined>>(async () => undefined),
-  executeCommand: vi.fn(async () => undefined),
+  executeCommand: vi.fn<(command: string, ...args: unknown[]) => Promise<void>>(async () => undefined),
   read: vi.fn(),
   close: vi.fn(async () => undefined),
   open: vi.fn()
