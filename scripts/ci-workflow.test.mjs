@@ -25,13 +25,24 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { load as parseYaml } from "js-yaml";
+import {
+  EVENT_ALIAS,
+  EVENT_DOCUMENT,
+  EVENT_MAPPING,
+  EVENT_POP,
+  EVENT_SCALAR,
+  EVENT_SEQUENCE,
+  SCALAR_STYLE_PLAIN,
+  load as parseYaml,
+  parseEvents as parseYamlEvents
+} from "js-yaml";
 import { loadConfigFromFile } from "vite";
 import {
   CI_CLASSIFIER_OUTPUTS,
   classifyCiChange,
   parseChangedPathBuffer,
-  resolvePullRequestClassificationRange
+  resolvePullRequestClassificationRange,
+  sanitizedGitEnvironment
 } from "./ci-path-classification.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
@@ -48,6 +59,8 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const WORKFLOW_YAML_NODE_LIMIT = 20_000;
+const WORKFLOW_YAML_DEPTH_LIMIT = 64;
 const WORKFLOW_INVENTORY_LIMIT = 128;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
@@ -90,6 +103,15 @@ function sameFileIdentity(left, right) {
   return Object.keys(left).every((key) => left[key] === right[key]);
 }
 
+function closeDescriptor(descriptor, primaryError) {
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    return primaryError ?? error;
+  }
+  return primaryError;
+}
+
 function canonicalContainedPath(root, relativePath, allowedPaths) {
   assert.equal(typeof relativePath, "string", "bounded repository paths must be strings");
   assert.doesNotMatch(relativePath, /[\\\0]/u, `${relativePath} must use a canonical repository-relative path`);
@@ -124,17 +146,19 @@ function openDirectoryChain(root, components) {
         currentPath,
         constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
       );
-      const opened = fstatSync(descriptor, { bigint: true });
-      if (!opened.isDirectory() || !sameFileIdentity(fileIdentity(before), fileIdentity(opened))) {
-        closeSync(descriptor);
-        throw new Error(`${currentPath} changed while its directory identity was pinned`);
+      try {
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (!opened.isDirectory() || !sameFileIdentity(fileIdentity(before), fileIdentity(opened))) {
+          throw new Error(`${currentPath} changed while its directory identity was pinned`);
+        }
+        receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
+      } catch (error) {
+        throw closeDescriptor(descriptor, error);
       }
-      receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
     }
     return receipts;
   } catch (error) {
-    closeDirectoryChain(receipts);
-    throw error;
+    throw closeDirectoryChain(receipts, error);
   }
 }
 
@@ -154,8 +178,10 @@ function revalidateDirectoryChain(receipts) {
   }
 }
 
-function closeDirectoryChain(receipts) {
-  for (const receipt of [...receipts].reverse()) closeSync(receipt.descriptor);
+function closeDirectoryChain(receipts, primaryError) {
+  let failure = primaryError;
+  for (const receipt of [...receipts].reverse()) failure = closeDescriptor(receipt.descriptor, failure);
+  return failure;
 }
 
 function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root = REPOSITORY_ROOT } = {}) {
@@ -163,6 +189,8 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
   const components = relativePath.split("/");
   const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1));
   let descriptor;
+  let failure;
+  let result;
   try {
     hooks.afterDirectoryOpen?.({ directories, relativePath });
     const before = lstatSync(absolutePath, { bigint: true });
@@ -226,16 +254,21 @@ function readBoundedNoFollowFile(relativePath, { allowedPaths, hooks = {}, root 
     );
     assert.equal(BigInt(total), after.size, `${relativePath} returned incomplete bytes`);
     revalidateDirectoryChain(directories);
-    return Object.freeze({ bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
+    result = Object.freeze({ bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
+  } catch (error) {
+    failure = error;
   } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-    closeDirectoryChain(directories);
+    if (descriptor !== undefined) failure = closeDescriptor(descriptor, failure);
+    failure = closeDirectoryChain(directories, failure);
   }
+  if (failure !== undefined) throw failure;
+  return result;
 }
 
 function readDirectoryInventory(directoryPath) {
   const directory = opendirSync(directoryPath);
   const entries = [];
+  let failure;
   try {
     for (;;) {
       const entry = directory.readSync();
@@ -244,15 +277,60 @@ function readDirectoryInventory(directoryPath) {
       assert.ok(Buffer.byteLength(entry.name, "utf8") <= 255, "workflow inventory contains an oversized name");
       entries.push(entry.name);
     }
+  } catch (error) {
+    failure = error;
   } finally {
-    directory.closeSync();
+    try {
+      directory.closeSync();
+    } catch (error) {
+      failure ??= error;
+    }
   }
+  if (failure !== undefined) throw failure;
   return entries.filter((name) => /\.ya?ml$/u.test(name)).sort();
+}
+
+function parseBoundedWorkflowYaml(bytes) {
+  const source = Buffer.isBuffer(bytes) ? bytes.toString("utf8") : bytes;
+  assert.equal(typeof source, "string", "workflow YAML must be text");
+  assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT, "workflow YAML exceeds its byte limit");
+  const stack = [];
+  let depth = 0;
+  let nodes = 0;
+  for (const event of parseYamlEvents(source)) {
+    assert.notEqual(event.type, EVENT_ALIAS, "workflow YAML aliases are forbidden");
+    assert.equal(event.anchorStart ?? -1, -1, "workflow YAML anchors are forbidden");
+    if ([EVENT_DOCUMENT, EVENT_MAPPING, EVENT_SEQUENCE].includes(event.type)) {
+      stack.push(event.type);
+      if (event.type !== EVENT_DOCUMENT) {
+        depth += 1;
+        nodes += 1;
+      }
+    } else if (event.type === EVENT_SCALAR) {
+      nodes += 1;
+      const scalar = source.slice(event.valueStart, event.valueEnd);
+      assert.equal(
+        event.style === SCALAR_STYLE_PLAIN && scalar === "<<",
+        false,
+        "workflow YAML merge keys are forbidden"
+      );
+    } else if (event.type === EVENT_POP) {
+      const opened = stack.pop();
+      assert.notEqual(opened, undefined, "workflow YAML structure is unbalanced");
+      if (opened !== EVENT_DOCUMENT) depth -= 1;
+    }
+    assert.ok(depth <= WORKFLOW_YAML_DEPTH_LIMIT, "workflow YAML exceeds its depth limit");
+    assert.ok(nodes <= WORKFLOW_YAML_NODE_LIMIT, "workflow YAML exceeds its node limit");
+  }
+  assert.deepEqual(stack, [], "workflow YAML structure is incomplete");
+  return parseYaml(source);
 }
 
 function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } = {}) {
   const { absolutePath: directoryPath, canonicalRoot } = canonicalContainedPath(root, WORKFLOW_DIRECTORY);
   const directories = openDirectoryChain(canonicalRoot, WORKFLOW_DIRECTORY.split("/"));
+  let failure;
+  let result;
   try {
     const firstNames = readDirectoryInventory(directoryPath);
     hooks.afterFirstInventory?.({ directoryPath, firstNames });
@@ -264,16 +342,20 @@ function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } 
     const snapshots = Object.fromEntries(
       paths.map((path) => {
         const snapshot = readBoundedNoFollowFile(path, { allowedPaths, hooks: hooks.file, root: canonicalRoot });
-        return [path, Object.freeze({ ...snapshot, document: parseYaml(snapshot.bytes.toString("utf8")) })];
+        return [path, Object.freeze({ ...snapshot, document: parseBoundedWorkflowYaml(snapshot.bytes) })];
       })
     );
     hooks.afterFiles?.({ directoryPath, paths, snapshots });
     assert.deepEqual(readDirectoryInventory(directoryPath), firstNames, "workflow inventory changed after reading");
     revalidateDirectoryChain(directories);
-    return Object.freeze(snapshots);
+    result = Object.freeze(snapshots);
+  } catch (error) {
+    failure = error;
   } finally {
-    closeDirectoryChain(directories);
+    failure = closeDirectoryChain(directories, failure);
   }
+  if (failure !== undefined) throw failure;
+  return result;
 }
 
 function readBoundedCapabilityFile(relativePath, options = {}) {
@@ -713,15 +795,40 @@ function jobNeeds(job) {
 
 function dependencyClosure(document, terminalJob) {
   const visited = new Set();
+  const active = new Set();
   const visit = (jobId) => {
     if (visited.has(jobId)) return;
+    assert.equal(active.has(jobId), false, `capability dependency cycle includes ${jobId}`);
     const job = document?.jobs?.[jobId];
     assert.ok(job, `missing capability job ${jobId}`);
-    visited.add(jobId);
+    active.add(jobId);
     for (const dependency of jobNeeds(job)) visit(dependency);
+    active.delete(jobId);
+    visited.add(jobId);
   };
   visit(terminalJob);
   return visited;
+}
+
+function escapeRegularExpression(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function requiredCheckName(jobId, job) {
+  const name = job?.name;
+  if (name === undefined) return Object.freeze({ exact: jobId, mayEqual: (required) => required === jobId });
+  assert.equal(typeof name, "string", `${jobId} check name must be text when present`);
+  assert.notEqual(name, "", `${jobId} check name must not be empty`);
+  if (!name.includes("${{")) return Object.freeze({ exact: name, mayEqual: (required) => required === name });
+  const expression = /\$\{\{[^{}]{1,1024}\}\}/gu;
+  const parts = name.split(expression);
+  const reconstructedLength = parts.reduce((total, part) => total + part.length, 0);
+  const expressionLength = [...name.matchAll(expression)].reduce((total, match) => total + match[0].length, 0);
+  if (reconstructedLength + expressionLength !== name.length) {
+    return Object.freeze({ exact: undefined, mayEqual: () => true });
+  }
+  const pattern = new RegExp(`^${parts.map(escapeRegularExpression).join(".*")}$`, "u");
+  return Object.freeze({ exact: undefined, mayEqual: (required) => pattern.test(required) });
 }
 
 function expectedCapabilityJobCondition(workflowId, jobId) {
@@ -843,14 +950,23 @@ function assertCapabilityGraph(graph, documents, workflowInventory = repositoryW
     completeDocuments[graph.workflows[workflowId].file] = document;
   }
   const declaredChecks = Object.entries(completeDocuments).flatMap(([path, document]) =>
-    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({ job, jobId, path }))
+    Object.entries(document.jobs ?? {}).map(([jobId, job]) => ({
+      checkName: requiredCheckName(jobId, job),
+      job,
+      jobId,
+      path
+    }))
   );
   for (const checkName of requiredChecks) {
-    const owners = declaredChecks.filter(({ job }) => job?.name === checkName);
+    const ambiguous = declaredChecks.filter(
+      ({ checkName: candidate }) => candidate.exact === undefined && candidate.mayEqual(checkName)
+    );
+    assert.deepEqual(ambiguous, [], `${checkName} has an unevaluable possible check-name collision`);
+    const owners = declaredChecks.filter(({ checkName: candidate }) => candidate.exact === checkName);
     assert.equal(owners.length, 1, `${checkName} must name exactly one declared job`);
     assertCapabilityJobFatal(owners[0].job, `${owners[0].path}:${owners[0].jobId}`);
   }
-  assert.equal(documents.pull_request.jobs.validate.name, "validate");
+  assert.equal(requiredCheckName("validate", documents.pull_request.jobs.validate).exact, "validate");
   assert.ok(Object.hasOwn(documents.codeql.on ?? {}, "pull_request"));
   assert.equal(documents.codeql.jobs["codeql-gate"].name, "CodeQL gate");
   assert.deepEqual(release.requires, ["artifact_provenance", "installed_candidate"]);
@@ -1253,7 +1369,12 @@ test("classifier CLI reads the real cumulative stack graph instead of the direct
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-stack-graph-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const runGit = (...arguments_) =>
-    execFileSync("git", arguments_, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      env: sanitizedGitEnvironment(process.env),
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
   const commit = (message) => {
     runGit("add", "-A");
     runGit(
@@ -1286,13 +1407,21 @@ test("classifier CLI reads the real cumulative stack graph instead of the direct
       cwd: root,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...sanitizedGitEnvironment(process.env),
         CI_BASE_SHA: pullRequestBaseSha,
         CI_EVENT_NAME: "pull_request",
         CI_HEAD_SHA: pullRequestHeadSha,
         CI_STACK_BASE_SHA: stacked ? stackBaseSha : "",
         CI_STACK_POSITION: stacked ? "2" : "",
         CI_STACK_SIZE: stacked ? "2" : "",
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: join(root, "hostile-alternates"),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.fsmonitor",
+        GIT_CONFIG_VALUE_0: "!exit 97",
+        GIT_DIR: join(root, "hostile-git-dir"),
+        GIT_OBJECT_DIRECTORY: join(root, "hostile-objects"),
+        GIT_REPLACE_REF_BASE: "refs/hostile/",
+        GIT_WORK_TREE: join(root, "hostile-work-tree"),
         GITHUB_OUTPUT: outputPath
       },
       stdio: ["ignore", "pipe", "pipe"]
@@ -1319,6 +1448,25 @@ test("classifier CLI reads the real cumulative stack graph instead of the direct
     windows_unique_required: "true"
   });
   assert.match(stacked.stdout, new RegExp(`base=${stackBaseSha} head=${pullRequestHeadSha} stacked=true`, "u"));
+});
+
+test("Git classification scrubs every ambient Git routing and configuration override", () => {
+  const clean = sanitizedGitEnvironment({
+    GIT_CONFIG_COUNT: "1",
+    GIT_DIR: "/hostile/git-dir",
+    Git_Work_Tree: "/hostile/work-tree",
+    HOME: "/safe/home",
+    PATH: "/safe/bin"
+  });
+  assert.equal(clean.HOME, "/safe/home");
+  assert.equal(clean.PATH, "/safe/bin");
+  assert.equal(clean.GIT_DIR, undefined);
+  assert.equal(clean.Git_Work_Tree, undefined);
+  assert.equal(clean.GIT_CONFIG_COUNT, undefined);
+  assert.equal(clean.GIT_CONFIG_NOSYSTEM, "1");
+  assert.equal(clean.GIT_NO_REPLACE_OBJECTS, "1");
+  assert.equal(clean.GIT_OPTIONAL_LOCKS, "0");
+  assert.throws(() => sanitizedGitEnvironment(null), /environment mapping/u);
 });
 
 test("ordinary pull requests fall back to their exact base while partial stack metadata fails closed", () => {
@@ -1458,6 +1606,51 @@ test("bounded workflow reads reject aliasing, oversize, and in-place content dri
   }
 });
 
+test("workflow YAML rejects aliases, merges, excessive depth, and excessive nodes before traversal", () => {
+  assert.deepEqual(parseBoundedWorkflowYaml("name: fixture\njobs: {}\n"), { name: "fixture", jobs: {} });
+  assert.throws(() => parseBoundedWorkflowYaml("base: &base\n  name: fixture\ncopy: *base\n"), /anchors|aliases/u);
+  assert.throws(() => parseBoundedWorkflowYaml("job:\n  <<: { name: fixture }\n"), /merge keys/u);
+
+  let deeplyNested = "leaf: value\n";
+  for (let index = 0; index <= WORKFLOW_YAML_DEPTH_LIMIT; index += 1) {
+    deeplyNested = `level_${index}:\n${deeplyNested.replace(/^/gmu, "  ")}`;
+  }
+  assert.throws(() => parseBoundedWorkflowYaml(deeplyNested), /depth limit/u);
+  const excessiveNodes = `items: [${"x,".repeat(WORKFLOW_YAML_NODE_LIMIT)}x]\n`;
+  assert.throws(() => parseBoundedWorkflowYaml(excessiveNodes), /node limit/u);
+});
+
+test("bounded workflow reads close every descriptor while preserving the primary failure", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-ci-capability-close-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const relativePath = ".github/workflows/fixture.yml";
+  mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(root, relativePath), "name: fixture\n");
+  let directoryDescriptors = [];
+  const primary = new Error("primary workflow read failure");
+  assert.throws(
+    () =>
+      readBoundedNoFollowFile(relativePath, {
+        allowedPaths: new Set([relativePath]),
+        hooks: {
+          afterDirectoryOpen({ directories }) {
+            directoryDescriptors = directories.map(({ descriptor }) => descriptor);
+          },
+          afterRead({ descriptor }) {
+            closeSync(descriptor);
+            closeSync(directoryDescriptors[1]);
+            throw primary;
+          }
+        },
+        root
+      }),
+    (error) => error === primary
+  );
+  for (const descriptor of directoryDescriptors) {
+    assert.throws(() => fstatSync(descriptor), { code: "EBADF" });
+  }
+});
+
 test(
   "bounded workflow reads reject intermediate ancestor replacement",
   { skip: process.platform === "win32" },
@@ -1529,6 +1722,13 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   duplicateRequiredJob.capabilities.installed_candidate.requiredJobs.push("platform");
   assert.throws(() => assertCapabilityGraph(duplicateRequiredJob, capabilityDocuments), /required job twice/u);
 
+  const selfCycle = structuredClone(capabilityDocuments);
+  selfCycle.pull_request.jobs.validate.needs.push("validate");
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, selfCycle), /dependency cycle/u);
+  const multiNodeCycle = structuredClone(capabilityDocuments);
+  multiNodeCycle.candidate.jobs.contract.needs = "platform";
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, multiNodeCycle), /dependency cycle/u);
+
   const duplicateRequiredCheck = structuredClone(capabilityGraph);
   duplicateRequiredCheck.capabilities.source_coverage.requiredChecks = ["validate", "validate"];
   assert.throws(() => assertCapabilityGraph(duplicateRequiredCheck, capabilityDocuments));
@@ -1548,6 +1748,29 @@ test("capability mutations reject remove, skip, nonfatal, and disconnected evide
   assert.throws(
     () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, duplicateOutsideCapabilities),
     /exactly one declared job/u
+  );
+  const fallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete fallbackRequiredCheck.pull_request.jobs.validate.name;
+  assert.doesNotThrow(() => assertCapabilityGraph(capabilityGraph, fallbackRequiredCheck));
+  const wrongFallbackRequiredCheck = structuredClone(capabilityDocuments);
+  delete wrongFallbackRequiredCheck.codeql.jobs["codeql-gate"].name;
+  assert.throws(() => assertCapabilityGraph(capabilityGraph, wrongFallbackRequiredCheck), /exactly one declared job/u);
+  const duplicateFallbackOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+  duplicateFallbackOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.validate = {
+    "runs-on": "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, duplicateFallbackOutsideCapabilities),
+    /exactly one declared job/u
+  );
+  const ambiguousOutsideCapabilities = structuredClone(duplicateOutsideCapabilities);
+  ambiguousOutsideCapabilities[".github/workflows/daily-preview.yml"].document.jobs.ambiguous = {
+    name: "${{ matrix.required_check }}",
+    "runs-on": "ubuntu-latest"
+  };
+  assert.throws(
+    () => assertCapabilityGraph(capabilityGraph, capabilityDocuments, ambiguousOutsideCapabilities),
+    /unevaluable possible check-name collision/u
   );
 
   const missingStackTrigger = structuredClone(capabilityGraph);
@@ -2807,7 +3030,7 @@ test("repository-only roots remain excluded from the VSIX inventory", () => {
 });
 
 test("routine Dependabot updates remain grouped, bounded, staggered, and security-independent", () => {
-  const dependabot = parseYaml(readFileSync(".github/dependabot.yml", "utf8"));
+  const dependabot = parseBoundedWorkflowYaml(readFileSync(".github/dependabot.yml"));
   assert.equal(dependabot.version, 2);
   assert.deepEqual(
     dependabot.updates.map((entry) => [

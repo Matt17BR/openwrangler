@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/u;
+const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 export const CI_CLASSIFIER_OUTPUTS = Object.freeze([
   "r_contract_required",
   "canonical_editor_required",
@@ -206,6 +207,26 @@ export function parseChangedPathBuffer(buffer) {
   return paths;
 }
 
+export function sanitizedGitEnvironment(environment) {
+  if (environment === null || typeof environment !== "object" || Array.isArray(environment)) {
+    throw new TypeError("Git environment must be one environment mapping.");
+  }
+  return Object.freeze({
+    ...Object.fromEntries(
+      Object.entries(environment).filter(([name, value]) => !/^git_/iu.test(name) && typeof value === "string")
+    ),
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: NULL_DEVICE,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: NULL_DEVICE,
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_PAGER: "cat",
+    GIT_TERMINAL_PROMPT: "0"
+  });
+}
+
 function readPullRequestPaths({ baseSha, headSha }) {
   if (!COMMIT_SHA.test(baseSha ?? "") || !COMMIT_SHA.test(headSha ?? "")) {
     throw new Error("Pull-request base and head revisions must be exact lowercase commit SHAs.");
@@ -213,8 +234,32 @@ function readPullRequestPaths({ baseSha, headSha }) {
   return parseChangedPathBuffer(
     execFileSync(
       "git",
-      ["diff", "--name-only", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", baseSha, headSha, "--"],
-      { cwd: process.cwd(), encoding: "buffer", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"] }
+      [
+        "--no-replace-objects",
+        "--literal-pathspecs",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.useReplaceRefs=false",
+        "diff",
+        "--name-only",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "-z",
+        baseSha,
+        headSha,
+        "--"
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "buffer",
+        env: sanitizedGitEnvironment(process.env),
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "inherit"]
+      }
     )
   );
 }
