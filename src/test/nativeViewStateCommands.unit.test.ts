@@ -89,6 +89,51 @@ describe("native state and presentation commands", () => {
     }
   });
 
+  it("keeps one context write in flight and drains only the latest reentrant update", async () => {
+    const initial = snapshotWithDraft();
+    initial.metadata = {
+      ...initial.metadata,
+      capabilities: {
+        ...initial.metadata.capabilities,
+        notebookInsert: true,
+        documentInsert: true
+      }
+    };
+    const latest = noDraftSnapshot();
+    const firstWrite = deferred();
+    let contextWriteCount = 0;
+    const executeContextCommand = async (...args: unknown[]): Promise<undefined> => {
+      const [command] = args;
+      if (command !== "setContext") return undefined;
+      contextWriteCount += 1;
+      if (contextWriteCount === 1) await firstWrite.promise;
+      if (contextWriteCount === 2) {
+        for (const listener of nativeMocks.coordinatorListeners) {
+          listener(undefined);
+          listener(latest);
+        }
+      }
+      return undefined;
+    };
+    nativeMocks.executeCommand.mockImplementation(executeContextCommand as () => Promise<undefined>);
+
+    register(initial);
+    expect(nativeMocks.executeCommand).toHaveBeenCalledOnce();
+    firstWrite.resolve();
+    await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(8));
+
+    expect(nativeMocks.executeCommand.mock.calls).toEqual([
+      ["setContext", "openWrangler.hasDraft", true],
+      ["setContext", "openWrangler.canChangePlan", false],
+      ["setContext", "openWrangler.canInsertNotebookCode", true],
+      ["setContext", "openWrangler.canInsertRDocumentCode", true],
+      ["setContext", "openWrangler.hasDraft", false],
+      ["setContext", "openWrangler.canChangePlan", true],
+      ["setContext", "openWrangler.canInsertNotebookCode", false],
+      ["setContext", "openWrangler.canInsertRDocumentCode", false]
+    ]);
+  });
+
   it("rolls back coordinator side effects when a native provider constructor fails", () => {
     const failingProvider = {
       onDidChangeVariables: () => {

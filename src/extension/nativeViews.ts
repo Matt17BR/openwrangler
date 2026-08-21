@@ -23,12 +23,7 @@ import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./not
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 import type { NotebookLiveVariableProvider, NotebookLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
-import {
-  OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
-  REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
-  type RLiveVariableProvider,
-  type RLiveVariableSnapshot
-} from "./r/rInteractiveCommands";
+import type { RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
@@ -44,6 +39,8 @@ export type ViewSortDispatchStatus =
 const VIEW_SORT_HANDLE_KIND = "openWrangler.viewSort";
 const VIEW_SORT_TREE_ID_PREFIX = `${VIEW_SORT_HANDLE_KIND}:`;
 const VIEW_SORT_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiveVariable";
+const REFRESH_R_INTERACTIVE_VARIABLES_COMMAND = "openWrangler.refreshRInteractiveVariables";
 export type NotebookInsertionDiagnosticStatus =
   | NotebookInsertionResult["status"]
   | "untrusted"
@@ -361,9 +358,12 @@ const NATIVE_PLAN_CONTEXT_KEYS = [
   "openWrangler.canInsertNotebookCode",
   "openWrangler.canInsertRDocumentCode"
 ] as const;
+type NativePlanContextValues = readonly [boolean, boolean, boolean, boolean];
+const CLEARED_NATIVE_PLAN_CONTEXTS: NativePlanContextValues = [false, false, false, false];
 
 class NativePlanContextOwner implements vscode.Disposable {
-  private pending: Promise<void> | undefined;
+  private latest: NativePlanContextValues | undefined;
+  private drainActive = false;
   private disposed = false;
 
   update(snapshot: ActiveSessionSnapshot | undefined): void {
@@ -379,11 +379,29 @@ class NativePlanContextOwner implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.enqueue([false, false, false, false]);
+    this.latest = CLEARED_NATIVE_PLAN_CONTEXTS;
+    this.startDrain();
   }
 
-  private enqueue(values: readonly [boolean, boolean, boolean, boolean]): void {
-    const write = async () => {
+  private enqueue(values: NativePlanContextValues): void {
+    this.latest = values;
+    this.startDrain();
+  }
+
+  private startDrain(): void {
+    if (this.drainActive) return;
+    this.drainActive = true;
+    const drain = this.drain();
+    void drain.then(
+      () => this.finishDrain(),
+      () => this.finishDrain()
+    );
+  }
+
+  private async drain(): Promise<void> {
+    while (this.latest) {
+      const values = this.latest;
+      this.latest = undefined;
       for (let index = 0; index < NATIVE_PLAN_CONTEXT_KEYS.length; index += 1) {
         try {
           await vscode.commands.executeCommand("setContext", NATIVE_PLAN_CONTEXT_KEYS[index], values[index]);
@@ -392,9 +410,12 @@ class NativePlanContextOwner implements vscode.Disposable {
           // failed key cannot break sequencing or strand the final rollback.
         }
       }
-    };
-    const next = this.pending ? this.pending.then(write, write) : write();
-    this.pending = next.catch(() => undefined);
+    }
+  }
+
+  private finishDrain(): void {
+    this.drainActive = false;
+    if (this.latest) this.startDrain();
   }
 }
 

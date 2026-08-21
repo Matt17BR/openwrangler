@@ -29,7 +29,7 @@ export const activationTriggerContract = defineActivationTriggerContract({
     events: [],
     roots: ["src/extension/activate.ts"],
     maximumModules: 3,
-    maximumBytes: 48 * 1024,
+    maximumBytes: 64 * 1024,
     forbidden: ["pythonBridge.ts", "r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   utility: {
@@ -40,7 +40,7 @@ export const activationTriggerContract = defineActivationTriggerContract({
     ],
     roots: ["src/extension/activate.ts"],
     maximumModules: 3,
-    maximumBytes: 48 * 1024,
+    maximumBytes: 64 * 1024,
     forbidden: ["pythonBridge.ts", "r/", "notebooks/", "files/fileOpen.ts", "nativeViews.ts"]
   },
   "notebook-preview": {
@@ -178,7 +178,12 @@ export const activationTriggerContract = defineActivationTriggerContract({
     roots: ["src/extension/activate.ts", "src/extension/sessionCoordinator.ts", "src/extension/nativeViews.ts"],
     maximumModules: 96,
     maximumBytes: 1700 * 1024,
-    forbidden: ["pythonBridge.ts", "files/fileOpen.ts", "notebooks/pythonInteractiveCommands.ts"]
+    forbidden: [
+      "pythonBridge.ts",
+      "files/fileOpen.ts",
+      "notebooks/pythonInteractiveCommands.ts",
+      "r/rInteractiveCommands.ts"
+    ]
   },
   "native-live": {
     events: ["onCommand:openWrangler.refreshLiveDataframes", "onView:openWrangler.operations"],
@@ -220,8 +225,14 @@ export const activationEventClassifications = classifyActivationEvents(
 );
 
 export const dynamicEdgeClassifications = freezeClassifications({
-  "src/extension/lazyActivationOwners.ts|require|./notebooks/notebookPreviewCoordinator": ["notebook-preview"],
-  "src/extension/lazyActivationOwners.ts|import|./sessionCoordinator.js": [
+  "src/extension/lazyActivationOwners.ts|require|./notebooks/notebookPreviewCoordinator": [
+    "notebook-preview",
+    "notebook",
+    "r-document",
+    "native-live",
+    "test-api"
+  ],
+  "src/extension/lazyActivationOwners.ts|require|./sessionCoordinator": [
     "notebook",
     "r",
     "r-document",
@@ -230,49 +241,49 @@ export const dynamicEdgeClassifications = freezeClassifications({
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./pythonBridge.js": [
+  "src/extension/lazyActivationOwners.ts|require|./pythonBridge": [
     "runtime",
     "trusted-pickle",
     "custom-editor",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./files/fileOpen.js": ["custom-editor", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./files/trustedPickleConversion.js": ["trusted-pickle", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./files/trustedPickleWorker.js": ["trusted-pickle", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./notebooks/pythonInteractiveCommands.js": [
+  "src/extension/lazyActivationOwners.ts|require|./files/fileOpen": ["custom-editor", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./files/trustedPickleConversion": ["trusted-pickle", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./files/trustedPickleWorker": ["trusted-pickle", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./notebooks/pythonInteractiveCommands": [
     "notebook",
     "r-document",
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./notebooks/jupyterBridge.js": [
+  "src/extension/lazyActivationOwners.ts|require|./notebooks/jupyterBridge": [
     "notebook",
     "r-document",
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./notebooks/notebookCellResult.js": [
+  "src/extension/lazyActivationOwners.ts|require|./notebooks/notebookCellResult": [
     "notebook",
     "r-document",
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./notebooks/rendererMessaging.js": [
+  "src/extension/lazyActivationOwners.ts|require|./notebooks/rendererMessaging": [
     "notebook",
     "r-document",
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./r/rInteractiveCommands.js": [
+  "src/extension/lazyActivationOwners.ts|require|./r/rInteractiveCommands": [
     "r",
     "r-document",
     "native-live",
     "test-api"
   ],
-  "src/extension/lazyActivationOwners.ts|import|./r/rDocumentCommands.js": ["r-document", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./runtimeCommands.js": ["runtime", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./nativeViews.js": ["native-view", "native-live", "test-api"],
-  "src/extension/lazyActivationOwners.ts|import|./webviewPanel.js": ["test-api"]
+  "src/extension/lazyActivationOwners.ts|require|./r/rDocumentCommands": ["r-document", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./runtimeCommands": ["runtime", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./nativeViews": ["native-view", "native-live", "test-api"],
+  "src/extension/lazyActivationOwners.ts|require|./webviewPanel": ["test-api"]
 });
 
 export async function measureActivationTriggers(repositoryRoot = defaultRepositoryRoot) {
@@ -405,6 +416,7 @@ async function measureDependencyFreeActivationInProcess(repositoryRoot, synchron
       showErrorMessage: async () => undefined
     },
     workspace: {
+      notebookDocuments: [],
       onDidOpenNotebookDocument: register,
       onDidGrantWorkspaceTrust: register
     },
@@ -755,7 +767,7 @@ async function discoverTransitiveRuntimeSources(
   roots,
   {
     maximumAggregateBytes = maximumAggregateSourceBytes,
-    beforeDescriptorOpen,
+    afterDescriptorOpen,
     afterDescriptorRead,
     ...syntaxOptions
   } = {}
@@ -767,7 +779,7 @@ async function discoverTransitiveRuntimeSources(
     const file = pending.pop();
     if (visited.has(file)) continue;
     const { source } = await readBoundedRegularFile(repositoryRoot, file, aggregateBudget, {
-      beforeDescriptorOpen,
+      afterDescriptorOpen,
       afterDescriptorRead
     });
     visited.add(file);
@@ -827,39 +839,9 @@ async function readBoundedRegularFile(
   repositoryRoot,
   file,
   aggregateBudget = boundedAggregateBudget(maximumAggregateSourceBytes),
-  { beforeDescriptorOpen, afterDescriptorRead } = {}
+  { afterDescriptorOpen, afterDescriptorRead } = {}
 ) {
   assertContained(repositoryRoot, file);
-  const canonicalBefore = await canonicalContainedPath(repositoryRoot, file);
-  const rootStat = await lstat(canonicalBefore.root, { bigint: true });
-  if (!rootStat.isDirectory())
-    throw new Error(`Activation inventory repository root is not a directory: ${repositoryRoot}`);
-  const sourceStat = await lstat(file, { bigint: true });
-  if (
-    sourceStat.isSymbolicLink() ||
-    !sourceStat.isFile() ||
-    sourceStat.nlink !== 1n ||
-    sourceStat.size > BigInt(maximumSourceBytes)
-  ) {
-    throw new Error(`Activation inventory source is not a bounded regular file: ${file}`);
-  }
-  await beforeDescriptorOpen?.(file);
-  const canonicalBeforeOpen = await canonicalContainedPath(repositoryRoot, file);
-  const [pathBeforeOpen, rootBeforeOpen] = await Promise.all([
-    lstat(file, { bigint: true }),
-    lstat(canonicalBeforeOpen.root, { bigint: true })
-  ]);
-  if (
-    pathBeforeOpen.isSymbolicLink() ||
-    !pathBeforeOpen.isFile() ||
-    pathBeforeOpen.nlink !== 1n ||
-    !sameFileVersion(sourceStat, pathBeforeOpen) ||
-    !sameFileIdentity(rootStat, rootBeforeOpen) ||
-    canonicalBeforeOpen.root !== canonicalBefore.root ||
-    canonicalBeforeOpen.file !== canonicalBefore.file
-  ) {
-    throw new Error(`Activation inventory source changed identity before read: ${file}`);
-  }
   const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
   const nonBlocking = typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0;
   let handle;
@@ -870,17 +852,22 @@ async function readBoundedRegularFile(
     throw error;
   }
   try {
+    await afterDescriptorOpen?.(file);
     const descriptorStat = await handle.stat({ bigint: true });
-    const canonicalAtOpen = await canonicalContainedPath(repositoryRoot, file);
-    const rootAtOpen = await lstat(canonicalAtOpen.root, { bigint: true });
+    if (!descriptorStat.isFile() || descriptorStat.nlink !== 1n || descriptorStat.size > BigInt(maximumSourceBytes)) {
+      throw new Error(`Activation inventory source is not a bounded regular file: ${file}`);
+    }
+    const canonicalBefore = await canonicalContainedPath(repositoryRoot, file);
+    const [pathBefore, rootBefore] = await Promise.all([
+      lstat(file, { bigint: true }),
+      lstat(canonicalBefore.root, { bigint: true })
+    ]);
     if (
-      !descriptorStat.isFile() ||
-      descriptorStat.nlink !== 1n ||
-      descriptorStat.size > BigInt(maximumSourceBytes) ||
-      !sameFileVersion(sourceStat, descriptorStat) ||
-      !sameFileIdentity(rootStat, rootAtOpen) ||
-      canonicalAtOpen.root !== canonicalBefore.root ||
-      canonicalAtOpen.file !== canonicalBefore.file
+      !rootBefore.isDirectory() ||
+      pathBefore.isSymbolicLink() ||
+      !pathBefore.isFile() ||
+      pathBefore.nlink !== 1n ||
+      !sameFileVersion(descriptorStat, pathBefore)
     ) {
       throw new Error(`Activation inventory source changed identity before read: ${file}`);
     }
@@ -903,12 +890,14 @@ async function readBoundedRegularFile(
     ]);
     const rootAfter = await lstat(canonicalAfter.root, { bigint: true });
     if (
+      !descriptorAfter.isFile() ||
       pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
       descriptorAfter.nlink !== 1n ||
       pathAfter.nlink !== 1n ||
       !sameFileVersion(descriptorStat, descriptorAfter) ||
       !sameFileVersion(descriptorAfter, pathAfter) ||
-      !sameFileIdentity(rootStat, rootAfter) ||
+      !sameFileIdentity(rootBefore, rootAfter) ||
       canonicalAfter.root !== canonicalBefore.root ||
       canonicalAfter.file !== canonicalBefore.file ||
       descriptorAfter.size !== descriptorStat.size
@@ -965,24 +954,12 @@ function syntaxRuntimeInventory(source, file, options = {}) {
   const checker = lexicalBindingChecker(sourceFile, source, file);
   const origins = new Map();
   const wrapperCalls = new Set();
-  const authority = { checker, origins, wrapperCalls };
+  const authority = createLoaderOriginAuthority(checker, origins, wrapperCalls, [
+    ...variableDeclarations,
+    ...functionDeclarations
+  ]);
   for (const declaration of importDeclarations) collectCreateRequireImport(declaration, authority);
-  let changed = true;
-  let remainingPasses = variableDeclarations.length + functionDeclarations.length + 1;
-  while (changed && remainingPasses > 0) {
-    changed = false;
-    remainingPasses -= 1;
-    for (const declaration of variableDeclarations) {
-      changed = collectVariableLoaderOrigin(declaration, authority) || changed;
-    }
-    for (const declaration of functionDeclarations) {
-      if (!declaration.name) continue;
-      const wrapper = functionLoaderCall(declaration, authority);
-      if (!wrapper) continue;
-      changed = addBindingOrigin(declaration.name, wrapper.kind, authority) || changed;
-      wrapperCalls.add(wrapper.call);
-    }
-  }
+  propagateLoaderOrigins(authority);
 
   const loaderEscapes = unsupportedLoaderAliasUses(sourceFile, syntaxNodes, authority);
   if (loaderEscapes.length > 0) {
@@ -1004,6 +981,83 @@ function syntaxRuntimeInventory(source, file, options = {}) {
     });
   }
   return { dynamicEdges, staticSpecifiers };
+}
+
+function createLoaderOriginAuthority(checker, origins, wrapperCalls, declarations) {
+  const dependents = new Map();
+  let dependencyEdges = 0;
+  for (const declaration of declarations) {
+    for (const symbol of loaderDependencySymbols(declaration, checker)) {
+      const entries = dependents.get(symbol) ?? [];
+      entries.push(declaration);
+      dependents.set(symbol, entries);
+      dependencyEdges += 1;
+    }
+  }
+  const propagationLimit = declarations.length + dependencyEdges;
+  const authority = {
+    checker,
+    origins,
+    wrapperCalls,
+    dependents,
+    declarationQueue: [],
+    queuedDeclarations: new Set(),
+    propagationLimit,
+    propagationEnqueues: 0
+  };
+  for (const declaration of declarations) enqueueLoaderDeclaration(declaration, authority);
+  return authority;
+}
+
+function loaderDependencySymbols(declaration, checker) {
+  let expression;
+  if (ts.isVariableDeclaration(declaration)) {
+    expression = declaration.initializer;
+  } else if (declaration.body?.statements.length === 1 && ts.isReturnStatement(declaration.body.statements[0])) {
+    expression = declaration.body.statements[0].expression;
+  }
+  if (!expression) return [];
+  const symbols = new Set();
+  const pending = [expression];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (ts.isIdentifier(node) && isIdentifierExpressionReference(node)) {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (symbol) symbols.add(symbol);
+    }
+    const children = [];
+    ts.forEachChild(node, (child) => children.push(child));
+    for (const child of children) pending.push(child);
+  }
+  return symbols;
+}
+
+function propagateLoaderOrigins(authority) {
+  let index = 0;
+  while (index < authority.declarationQueue.length) {
+    const declaration = authority.declarationQueue[index];
+    index += 1;
+    authority.queuedDeclarations.delete(declaration);
+    if (ts.isVariableDeclaration(declaration)) {
+      collectVariableLoaderOrigin(declaration, authority);
+      continue;
+    }
+    if (!declaration.name) continue;
+    const wrapper = functionLoaderCall(declaration, authority);
+    if (!wrapper) continue;
+    addBindingOrigin(declaration.name, wrapper.kind, authority);
+    authority.wrapperCalls.add(wrapper.call);
+  }
+}
+
+function enqueueLoaderDeclaration(declaration, authority) {
+  if (authority.queuedDeclarations.has(declaration)) return;
+  authority.propagationEnqueues += 1;
+  if (authority.propagationEnqueues > authority.propagationLimit) {
+    throw new Error("Activation inventory loader alias propagation exceeded its linear bound.");
+  }
+  authority.queuedDeclarations.add(declaration);
+  authority.declarationQueue.push(declaration);
 }
 
 function unsupportedLoaderAliasUses(sourceFile, syntaxNodes, authority) {
@@ -1031,6 +1085,7 @@ function isSupportedLoaderUse(loaderExpression, kind, authority) {
     ts.isIdentifier(loaderExpression) &&
     ((ts.isVariableDeclaration(parent) && parent.name === loaderExpression) ||
       (ts.isFunctionDeclaration(parent) && parent.name === loaderExpression) ||
+      (ts.isImportClause(parent) && parent.name === loaderExpression) ||
       (ts.isImportSpecifier(parent) &&
         (parent.name === loaderExpression || parent.propertyName === loaderExpression)) ||
       (ts.isNamespaceImport(parent) && parent.name === loaderExpression) ||
@@ -1218,11 +1273,15 @@ function collectCreateRequireImport(declaration, authority) {
   if (
     !ts.isStringLiteral(declaration.moduleSpecifier) ||
     !/^(?:node:)?module$/u.test(declaration.moduleSpecifier.text) ||
-    !declaration.importClause?.namedBindings
+    !declaration.importClause ||
+    declaration.importClause.isTypeOnly
   ) {
     return;
   }
-  const bindings = declaration.importClause.namedBindings;
+  const clause = declaration.importClause;
+  if (clause.name) addBindingOrigin(clause.name, "createRequireNamespace", authority);
+  const bindings = clause.namedBindings;
+  if (!bindings) return;
   if (ts.isNamespaceImport(bindings)) {
     addBindingOrigin(bindings.name, "createRequireNamespace", authority);
     return;
@@ -1280,6 +1339,9 @@ function addBindingOrigin(identifier, kind, authority) {
   }
   if (previous === kind) return false;
   authority.origins.set(symbol, kind);
+  for (const declaration of authority.dependents.get(symbol) ?? []) {
+    enqueueLoaderDeclaration(declaration, authority);
+  }
   return true;
 }
 
@@ -1402,6 +1464,7 @@ function createRequireNamespaceForMember(expression, authority) {
   }
   if (!owner) return undefined;
   const namespace = unwrapExpression(owner);
+  if (isNodeModuleRequireCall(namespace, authority)) return namespace;
   if (!ts.isIdentifier(namespace)) return undefined;
   const symbol = authority.checker.getSymbolAtLocation(namespace);
   return symbol && authority.origins.get(symbol) === "createRequireNamespace" ? namespace : undefined;

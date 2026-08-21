@@ -8,6 +8,7 @@ type MockExtensionContext = { subscriptions: MockDisposable[] };
 const host = vi.hoisted(() => {
   const commands = new Map<string, CommandHandler>();
   const visibleNotebookEditors: Array<{ notebook: { notebookType: string } }> = [];
+  const notebookDocuments: Array<{ notebookType: string }> = [];
   const customEditorProviders: unknown[] = [];
   const treeProviders = new Map<string, unknown>();
   const webviewProviders = new Map<string, unknown>();
@@ -16,7 +17,7 @@ const host = vi.hoisted(() => {
   const listeners = {
     visible: new Set<() => void>(),
     active: new Set<() => void>(),
-    open: new Set<() => void>(),
+    open: new Set<(document: { notebookType: string }) => void>(),
     trust: new Set<() => void>()
   };
   const disposable = (dispose: () => void = () => undefined) => ({ dispose: vi.fn(dispose) });
@@ -35,6 +36,7 @@ const host = vi.hoisted(() => {
   return {
     commands,
     visibleNotebookEditors,
+    notebookDocuments,
     listeners,
     disposable,
     registerCommand,
@@ -68,6 +70,7 @@ const host = vi.hoisted(() => {
     reset(): void {
       commands.clear();
       visibleNotebookEditors.splice(0);
+      notebookDocuments.splice(0);
       customEditorProviders.splice(0);
       treeProviders.clear();
       webviewProviders.clear();
@@ -114,7 +117,13 @@ vi.mock("vscode", () => ({
     showErrorMessage: host.showErrorMessage
   },
   workspace: {
-    onDidOpenNotebookDocument: (listener: () => void) => eventDisposable(host.listeners.open, listener),
+    get notebookDocuments() {
+      return host.notebookDocuments;
+    },
+    onDidOpenNotebookDocument: (listener: (document: { notebookType: string }) => void) => {
+      host.listeners.open.add(listener);
+      return host.disposable(() => host.listeners.open.delete(listener));
+    },
     onDidGrantWorkspaceTrust: (listener: () => void) => eventDisposable(host.listeners.trust, listener)
   }
 }));
@@ -572,6 +581,28 @@ describe("lazy activation owners", () => {
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
   });
 
+  it("prepares a relevant opened notebook before visibility without constructing its full owner", async () => {
+    const previewConstructed = vi.fn();
+    host.notebookDocuments.push({ notebookType: "raw-notebook" }, { notebookType: "jupyter-notebook" });
+    active = createOwners(previewConstructed);
+    active.startBeforeFirstYield();
+
+    expect(previewConstructed).toHaveBeenCalledOnce();
+    expect(active.diagnosticsForTesting().constructedOwners).toEqual(["notebook-preview"]);
+    expect(owners.notebookRegistered).not.toHaveBeenCalled();
+    expect(owners.sessionConstructed).not.toHaveBeenCalled();
+
+    for (const listener of host.listeners.open) listener({ notebookType: "interactive" });
+    expect(previewConstructed).toHaveBeenCalledOnce();
+
+    host.visibleNotebookEditors.push({ notebook: { notebookType: "jupyter-notebook" } });
+    for (const listener of host.listeners.visible) listener();
+    await vi.waitFor(() => expect(owners.notebookRegistered).toHaveBeenCalledOnce());
+    expect(previewConstructed).toHaveBeenCalledOnce();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
+    expect(owners.pythonConstructed).not.toHaveBeenCalled();
+  });
+
   it("rolls back every registration when a lazy command group fails partway", async () => {
     active = createOwners();
     host.setRegistrationFailure({ id: "openWrangler.openPath", attempt: 1 });
@@ -761,7 +792,23 @@ function createOwners(
         }
       }) as never,
     ownerSettlementTimeoutMs,
-    additionalOwnerPromises
+    additionalOwnerPromises,
+    {
+      sessionCoordinator: () => import("../extension/sessionCoordinator"),
+      pythonBridge: () => import("../extension/pythonBridge"),
+      fileOpen: () => import("../extension/files/fileOpen"),
+      trustedPickleConversion: () => import("../extension/files/trustedPickleConversion"),
+      trustedPickleWorker: () => import("../extension/files/trustedPickleWorker"),
+      pythonInteractiveCommands: () => import("../extension/notebooks/pythonInteractiveCommands"),
+      jupyterBridge: () => import("../extension/notebooks/jupyterBridge"),
+      notebookCellResult: () => import("../extension/notebooks/notebookCellResult"),
+      rendererMessaging: () => import("../extension/notebooks/rendererMessaging"),
+      rInteractiveCommands: () => import("../extension/r/rInteractiveCommands"),
+      rDocumentCommands: () => import("../extension/r/rDocumentCommands"),
+      runtimeCommands: () => import("../extension/runtimeCommands"),
+      nativeViews: () => import("../extension/nativeViews"),
+      webviewPanel: () => import("../extension/webviewPanel")
+    }
   );
 }
 

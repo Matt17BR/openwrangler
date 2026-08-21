@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import ts from "typescript";
 import {
   activationEventClassifications,
   activationBudgetFailures,
@@ -46,14 +47,16 @@ test("production activation trigger classes stay within their closed runtime-sou
     report.measurements["native-view"].files.includes("src/extension/notebooks/pythonInteractiveCommands.ts"),
     false
   );
-  // NativeViews still imports R command constants through the #744-owned seam;
-  // the independent lazy edge below is what distinguishes R owner discovery.
-  assert.equal(report.measurements["native-view"].files.includes("src/extension/r/rInteractiveCommands.ts"), true);
+  assert.equal(report.measurements["native-view"].files.includes("src/extension/r/rInteractiveCommands.ts"), false);
   assert.equal(
     report.measurements["native-live"].files.includes("src/extension/notebooks/pythonInteractiveCommands.ts"),
     true
   );
   assert.equal(report.measurements["native-live"].files.includes("src/extension/r/rInteractiveCommands.ts"), true);
+  assert.equal(
+    report.measurements["test-api"].files.includes("src/extension/notebooks/notebookPreviewCoordinator.ts"),
+    true
+  );
   assert.equal(report.dynamicEdges.discovered.length, Object.keys(dynamicEdgeClassifications).length);
   assert.deepEqual(report.dynamicEdges.unclassified, []);
   assert.deepEqual(report.dynamicEdges.staleClassifications, []);
@@ -113,6 +116,25 @@ test("one trigger contract owns both activation events and runtime closures", ()
   );
   assert.deepEqual(activationTriggerContract["test-api"].events, []);
   assert.deepEqual(activationTriggerContract["test-api"].roots, ["src/extension/activate.ts"]);
+});
+
+test("production lazy loaders emit only deferred literal CommonJS requires", async () => {
+  const source = await readFile(new URL("../src/extension/lazyActivationOwners.ts", import.meta.url), "utf8");
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    fileName: "src/extension/lazyActivationOwners.ts"
+  }).outputText;
+  assert.doesNotMatch(output, /\bimport\s*\(/u);
+
+  const inventory = await measureActivationInventory();
+  const lazyEdges = inventory.dynamicEdges.discovered.filter(({ key }) =>
+    key.startsWith("src/extension/lazyActivationOwners.ts|")
+  );
+  assert.equal(lazyEdges.length > 0, true);
+  assert.equal(
+    lazyEdges.every(({ key }) => key.includes("|require|")),
+    true
+  );
 });
 
 test("the elapsed activation gate rejects an injected synchronous registration delay", async () => {
@@ -283,21 +305,49 @@ test("the syntax authority recognizes namespace and CommonJS createRequire loade
   await withInventoryFixture(
     `
       import * as moduleApi from "node:module";
+      import moduleApiDefault from "node:module";
+      import type typeOnlyDefault from "node:module";
+      import type * as typeOnlyNamespace from "node:module";
+      import { type createRequire as typeOnlyCreateRequire } from "node:module";
       const namespaceRequire = moduleApi.createRequire(import.meta.url);
+      const defaultRequire = moduleApiDefault.createRequire(import.meta.url);
       const commonJsModule = require("node:module");
       const commonJsRequire = commonJsModule.createRequire(__filename);
+      const directMemberRequire = require("node:module").createRequire(__filename);
       namespaceRequire("./namespace-owner.js");
+      defaultRequire("./default-owner.js");
       commonJsRequire("./commonjs-owner.js");
+      directMemberRequire("./direct-member-owner.js");
+      type TypeOnlyBindings = [typeof typeOnlyDefault, typeof typeOnlyNamespace, typeof typeOnlyCreateRequire];
     `,
     { activationEvents: [], contributes: { commands: [] } },
     async (report) => {
       assert.deepEqual(report.dynamicEdges.discovered, [
         { key: "src/extension/fixture.ts|require|./commonjs-owner.js", occurrences: 1 },
+        { key: "src/extension/fixture.ts|require|./default-owner.js", occurrences: 1 },
+        { key: "src/extension/fixture.ts|require|./direct-member-owner.js", occurrences: 1 },
         { key: "src/extension/fixture.ts|require|./namespace-owner.js", occurrences: 1 },
-        { key: "src/extension/fixture.ts|require|node:module", occurrences: 1 }
+        { key: "src/extension/fixture.ts|require|node:module", occurrences: 2 }
       ]);
     }
   );
+});
+
+test("loader alias propagation is linear and cycle-safe across forward chains", async () => {
+  const aliases = Array.from({ length: 2_048 }, (_, index) =>
+    index === 2_047 ? `const loader${index} = require;` : `const loader${index} = loader${index + 1};`
+  );
+  const source = [
+    ...aliases,
+    'loader0("./linear-owner.js");',
+    "function cycleOne(specifier) { return cycleTwo(specifier); }",
+    "function cycleTwo(specifier) { return cycleOne(specifier); }"
+  ].join("\n");
+  await withInventoryFixture(source, { activationEvents: [], contributes: { commands: [] } }, async (report) => {
+    assert.deepEqual(report.dynamicEdges.discovered, [
+      { key: "src/extension/fixture.ts|require|./linear-owner.js", occurrences: 1 }
+    ]);
+  });
 });
 
 test("the syntax authority rejects loader aliases that escape through unsupported storage", async () => {
@@ -450,7 +500,7 @@ test("transitive source discovery rejects symlinks before reading them", async (
   });
 });
 
-test("transitive source discovery rejects a path replacement between identity check and descriptor open", async () => {
+test("transitive source discovery binds the opened descriptor before path identity checks", async () => {
   await withSourceFixture(async (root) => {
     const sourceRoot = path.join(root, "src/extension");
     const dependency = path.join(sourceRoot, "dependency.ts");
@@ -460,7 +510,7 @@ test("transitive source discovery rejects a path replacement between identity ch
 
     await assert.rejects(
       measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
-        beforeDescriptorOpen: async (file) => {
+        afterDescriptorOpen: async (file) => {
           if (file !== dependency || replaced) return;
           replaced = true;
           await rename(dependency, `${dependency}.previous`);
@@ -486,7 +536,7 @@ test(
 
       await assert.rejects(
         measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
-          beforeDescriptorOpen: async (file) => {
+          afterDescriptorOpen: async (file) => {
             if (file !== dependency || replaced) return;
             replaced = true;
             await rename(dependency, `${dependency}.previous`);
@@ -504,7 +554,7 @@ test(
 
       await assert.rejects(
         measureTransitiveRuntimeSources(root, ["src/extension/entry.ts"], {
-          beforeDescriptorOpen: async (file) => {
+          afterDescriptorOpen: async (file) => {
             if (file !== dependency) return;
             await rename(dependency, `${dependency}.previous`);
             await symlink("/dev/null", dependency);
