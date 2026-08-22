@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
+import {
+  Dir,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readSync,
+  realpathSync
+} from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
@@ -66,64 +76,64 @@ export const APPLICATION_DELIVERY_EVIDENCE = Object.freeze({
 });
 
 const CANONICAL_INVARIANT_DIGESTS = Object.freeze({
-  I01: "8e72528721db4ab1e22e105887e21d8dbfb2aab1b0c804e975f2ddb694f547a9",
-  I02: "45cd3d7d851c6e0fe759e29bca461a6f01d8d62fd52ab7d04a19c4c45e38fb34",
-  I03: "7bde5dc808753e4448c5d362786552fe5dcb994f237cb3a582fff5197ea6da55",
-  I04: "9c4039e08f2920dcb837b478708960b06fa5c101947b5ffa5fd8f26cce6a594a",
-  I05: "18e418eb7d65bd71c149c8db641fe834b7808f14df14f8ec7f7edd78eb69e4d6",
-  I06: "a22becccb8650fbef1f338ccc3af9af062920c22d83e5591443b4e54130de5c7",
-  I07: "3e85afb7351a870051bf56c86bac1dac5a396faf0901d3dc8a668f3b5bec7d76",
-  I08: "b2e21643fbd34a2e0373166e31b837abadb8996f708de5df469a1ca0da201252",
-  I09: "7d884e00f8e7c7c9affcf1d75af0b51491f70c11ccbb6bbec3f31381012449a3",
-  I10: "3cf94384bd4e7e6e521e03f6cfcd4083ae4d14ffbc0361e516e5366a45703e4b",
-  I11: "71c4e6cc4a7918ea92268fb365a41df3f194933d76d140304d813c303e169bcc",
-  I12: "d2d726fcb4864808508580a133cff13cc9f40682620c82bc7a56f5d9fffeac85",
-  I13: "90fe38f15a27c754b4bbab1ea4a401013ae527950fafd354b64597c415f2dca7",
-  I14: "7c9a205733a7323093996c3e23eee0b299e1735182ceb26ef9c35a1b93ee79c0",
-  I15: "757cbf037f01fdf92ae8fc818910512196c416dd48094fe9be853857ed22a10b",
-  I16: "6313ecd15e9adf89bcba68f58e4b9ec1d18a165875ad97fb224621c447fb641f",
-  I17: "12067cabc4ca3b4af50683499ff40f6950b55d29bb062df16ed1abbfae08337d",
-  I18: "1e559cf6aa4eafb3c8fcc1d0a43088063e8e2606345b4d50a6466c596d2c132e",
-  I19: "9c6529a02a8c0519738969d0240451a95fe723235b9eb03bd4a3e307c65a4655",
-  I20: "61afafaa23a78a5257da8843ef149f613055238b991a98600f2fc6d8ce6ff513",
-  I21: "ed823e0d37c7f1575c90adf47b11b01951b3a866c573de570d9368f06d501b4f",
-  I22: "b0daf74d7e640894cd605959a809ea5a1e94a2548ca9fe44f67c97bb9e4e9efc",
-  I23: "414b2ad3aa777d027f2ddcde6c50c043c3a2b6ff9ad4deec28b00c9ad27ef9d1",
-  I24: "c2e9b807bb56091496fa5f6f8cae8e2c221725e04bae8f3ef5b0fa71447c786c",
-  I25: "493f05401bad5bdbcbaed15654f5e98376e0ca5e9da439facae3cb3c840e69c5",
-  I26: "0609fe8d69320eed6bf4d00471d734328f1dd8b9b8b8bc15ff06a79a31e45bea",
-  I27: "ea9c68be4a98678374abe2e2ef0b43408c4a455543f50335befa3697008c7631",
-  I28: "4360da3caa640915ca0c1901f2b4ee7404c57315d01fa4de50bf028ebd3cf863",
-  I29: "7bfd3f5f5242f187081a9c1b560c6b0925efb7f49f8ac968322adc08311fb535",
-  I30: "4ce64dabfa8855ac8face48ac64a41ddc5fb2c3e8d0a2401fb6eb6a1cf085e9e",
-  I31: "3131b901e72e3ae9731dad8f6a4b82705ad959aff4baf6dc9154ebc950903ba0",
-  I32: "bbbfa09df098601834cc86b3cdbedda6b392cddca403f7dfd96c4fe3bdc96156",
-  I33: "f0db19db6cb89e9e4e8a28c762985c9a4abc46309a7af16f4938d710d1ac40fe",
-  I34: "8db8fc19058174f425da2d17fc9049ed769b7158672fb60e0bcba74f3c8d12df",
-  I35: "8736efce7487f53753929bee59796f64183d01e3900f28cbf941510976a805f8",
-  I36: "f97bc6174859b5951864d2d4b5937670575f4e2cb5ee5efedaab3c60b3f21fba",
-  I37: "1b76772c379bbe6954e802ce33fd79cf13b84aa4a072016589472744548bb176",
-  I38: "762353d53946587402e7675a96855d6766e26df21680589e924fa5d78bfadea1",
-  I39: "38fa3e31c13b7a9729d12889064e0cb56f80746c9942714c61ea3de444efd3c4",
-  I40: "a24c4916e5797309917c912f4e5ffdcf29ba18b24054685f9722db261b6a6eb2",
-  I41: "365946925062ea0670b6115515e805905371595eecb934cb7ab23a0b72bd2e2e",
-  I42: "d9d99f54f100111ef17307f763272c8f5fd8a04d1d14faeb5d8d7da8280c447f",
-  I43: "60c9f487b5567214955cab6ccefc57d06bd91252fecf112bd3b4faa6d7e6ea4e",
-  I44: "ce44b52105765b18481fcc1a70fe4062fb262c23902e9cbc535706be5ead5b85",
-  I45: "93bf757d6291a72d2086eb461cccf1bd5496c2cf76d5f52d4b9b6ad8a53b5277",
-  I46: "46820b8c8b489465163deba7badd0a806b02c32ef01b5c8ca1e3c0c056ad3477",
-  I47: "5512bbd753ce3542daa5cba4cf274a18c574f6900a1c7ec7c63ff0b76d2d7d32",
-  I48: "0a8fe23de9d4a29da0462a0bd8ab35200ff77955eecba3f7ef4963df88d2f6b7",
-  I49: "1e74e042913ce641a573596a02bdfc24f98b07a7369adfeb8a016f91fc6ac3d3",
-  I50: "2bb4cac84068ce312db5dc02d18bbd07856761e722cb6bcd5fa02a546a010cf8",
-  I51: "e8297589cec37799e4b86f2b32963a5bf457ae490296f64e4da5e6aeb3c4d36b",
-  I52: "a134a41159e867c205619e54dffb26095471587c8a8e960dc7606f26274d22df",
-  I53: "e27c4b982ce6f4a0502bf2c4ff37e32d73f3df95d719ae5f830097b5b5901d6f",
-  I54: "b2a7dd82681cf1ad5766352ebf5c8f07d8b64de407c2e9ca4b237d76b59072a5",
-  I55: "98bb5eb5246eeecd46055b97bfdce0887a3c7efa242dc72f138d02753060871e",
-  I56: "77405fb4b4faaae726feeec543628c69b65cb1d17638afed3ec326fb936c9568",
-  I57: "1c8a7faaf14ce70513af3f0d7556363d313c3d45ed9409e6041abe0aaeb7bcf3",
-  I58: "a0781a6b1974ac92c12bd5bb9eef3598187a5f229558a3a90496887fe411cb86"
+  I01: "34fc798aa5cdf4abc207bfc9b5008b139d1f82110157cd935bff584c548b7f71",
+  I02: "5f2f96f62971f7abd72b0b5b293ee20296d5330413e3e41fe25a91228f71d6fc",
+  I03: "aedfc27be9428e7cbbc040be7cb5c0b112125463b1d2a74fd6fe59daf73f9963",
+  I04: "4f43c86181c9f21b09c1c6b09f6a4f20ab85eb3a8ac2691365db023cd5f5757a",
+  I05: "7dbeceb9b6ba15efa7946d4e84ac8de679aa52c93788b73443285e0eba05c416",
+  I06: "75edcf3b3e01db48a3ac0e00cc3583be2919ea26b2286062cdc086e6a836e34a",
+  I07: "1b87e008a430d46956c412640d04fdaf337ffe87c09f77288173f0c4389e7891",
+  I08: "ea18bdee98b20ddd5cd19316e9c9b917e8cd69f81dd14c99d603aeb3a30b3c84",
+  I09: "dc075aa72a0b36933569035b1bc0b5e9079609ecaa17d124878625dab17e3098",
+  I10: "92112d1c1043c821a986fbff2da34d08187129e801c810b659486d7a8566d2d5",
+  I11: "17ac7dcb6409e58089eb9f47a216868ea44c1a8ff665f6d496e3f4ea2fe2d8ab",
+  I12: "afe26ca1d7dd70b204780d91e5cab16016199505b99d51bd4fd5a18340c53b31",
+  I13: "43dba82b79164bba8cbf76a477214a5452d8ed9eb7f9df8674f433245d1be202",
+  I14: "b70eb629935b1ba2889f1db322c753677530b257be553b82abd86a7971f4e596",
+  I15: "8093bef8fb53055e1a40206e1c072bb67f8f5c62b63979c3a1d1d5933d857498",
+  I16: "8bac3e7f0e9c7d32f711bcb3158b460e3ce391f70d16fd1a15b1fea620ec9306",
+  I17: "9b3a7cc44904a45b7d5c7a068e90892fef80833a8eba12e8a58c16561c811d25",
+  I18: "f158d138252dc6811f2fa70fcc78cea7511be22781d57122d889823ac8221095",
+  I19: "cc15c7aab53eb09360a278a2f849f68b39e866b64bd418003acda6f4369c69af",
+  I20: "959f3f3550356452a1aa19c8e952c3c0166d58b9e4a8c89b2b83d9584f076436",
+  I21: "b46cb973722141001ddcc1134239b5d28edf91308d3c11d67664cdd8eed6ccf4",
+  I22: "0cc5ef230e589fad227b3cad343b8c079f3dddf084faa08fde315edcec740d88",
+  I23: "87a1da6d659bb575be10a530c6a18cab78915662b0aec302ce22993476ba8e5d",
+  I24: "ca11260fa25e2a1002472fce82734c7ebd77152048f84f4f52070f3aefc15132",
+  I25: "56c39d2265690345644b507ddc2ecff31356cd72f1bf691715807468e3961811",
+  I26: "c5ab67a703eea113e08cce5385bd350ba130918e05449d4df2c952ea3949ff8e",
+  I27: "9c8555258893f26125ac8137f872fef03269c2f2ff87c314ebcd74960dcbc907",
+  I28: "95eb24a8b0d5a88e8a5818a1f98eabf2c5433146a439d560be5d7c8e74650f30",
+  I29: "922fc2bb59543238fe616242f8ec97cb731220f2fa564d678209fd4052e1328b",
+  I30: "88b3f670db2357916378f8bc9d684afcf6acda1b2234f46c05e8507d63907dbd",
+  I31: "2d474686ce213f32b44dc4d14955449cb976fb8cc0cd4cdcbc2fae33ceef10c5",
+  I32: "7d1a11f0a380b0ec8bf62a294f5f3874d8ba29cfc77800683424fa3a08f53e6f",
+  I33: "5e9ad55c2ef7e7f68dedd0fb1616b7dd10e081420807aba8c582dd5e60c5a110",
+  I34: "ed90eb521e27e6f65691f2bc8b0efe7d2b94b5823a9b7abc1c450bea80dbd6ef",
+  I35: "fdafcab9bd7c9bdc917c935b9e5ef5a9c59e9f522a48e05fe7c60f87d0c1cac4",
+  I36: "1c249f9cdc94ae6f8f47e75a1cc6249e9609eb94d77c1d8db4d0b5d7a847e605",
+  I37: "a2bcdd00ff6ccecbfee5f8e72bba07919934a5eb8990eadf3776034639393d33",
+  I38: "f4c566883f88d12a4db2b4c4f27cb57ff41de89ced6683befdf939324a530cbb",
+  I39: "5c9b3866ca8d6affc76b198f5516db5b24c652b1cbfc3d9ff15ceca082acaeea",
+  I40: "5fd1108a8348c9b0e221f4c843fbcbca8ca918f257eff59cc03ad29290053643",
+  I41: "48dfd0f585feef41ce0bd4c2664281d22900a4c21170322a5fc5954f41638b7f",
+  I42: "ed4b66c37fa5e8338e7e85ae39ea5d7d5897406c49ef16c63f0c46696cad896c",
+  I43: "2324a3c9d39a0cf4e0f00f8978fc3a1763a2571761f5d87089a94380fafa892a",
+  I44: "ab81f0c134c2febcef7aba45488c8231fdf1bcb2a7516d3ebe38c3c2fa568425",
+  I45: "cf3e3e5de86488f5a3ed428a95bf1f046179a3ca25634b465d1da323d305536f",
+  I46: "e73f3fdd8c47ddbbde035ab7e4365f2e09a64d9839e253bb522e3301ae7e371e",
+  I47: "f479dadf1eadcded574e2a3b7fe191106490a04d23f251d79fef61920bdaabef",
+  I48: "c716a766c09a19c8ed29df8cde3ad3b802029caf8f3ed40bb0266f745a9aaff5",
+  I49: "f39c199273c404b762937a6d31154f23785ca1462cb49b816272f6cea513659d",
+  I50: "f05b8625c1d30dec3fcdf0786c732be03aef8ac692289a79397016dca106838c",
+  I51: "f2021f1b2ed72e16c040f5ca4a83808fe92256de49bb2d7ddf61863c0f82529e",
+  I52: "a73626660cb24d8478015dbb0aa7410a26ccf338938e6c9b2ca9f86e0e6d54f7",
+  I53: "4d0195bb8b6f34abf2c99b4d2f00f46962655b9009858b453e2e9c2391ec8ff3",
+  I54: "cd1466b3207fd65daf610d38b4123109f14d59f25b258a5ef858f6af394d83e4",
+  I55: "3f1b663056c8fa2449bcaaa3045506c45e6625edc290bbc7105401792a9b12ce",
+  I56: "f7ed9b0113b2984c439d2e00691d8f1ef03eccbf049ababaa7dcae36cb23ee0e",
+  I57: "956ccde4935b0c7156f32357ee5ba76006f289a49293e6fecb4611bdbd2d3589",
+  I58: "d758926763928349c3c8d2a126bada576c579f4f018e4e9fe3fbc6c9bc3133ad"
 });
 
 const CANONICAL_ACTIVE_POLICY_STRUCTURE_DIGESTS = Object.freeze({
@@ -469,12 +479,60 @@ function completionMarker(path, digest) {
 
 function canonicalInvariantBody(rule, text) {
   const number = Number.parseInt(rule.slice(1), 10);
-  const numberedPrefix = new RegExp(`^${number}\\.\\s*`, "u");
-  const trimmed = text.trim();
-  if (!numberedPrefix.test(trimmed)) {
+  const numberedPrefix = `${number}. `;
+  if (!text.startsWith(numberedPrefix)) {
     throw instructionError(`${rule} does not begin with its exact invariant number.`);
   }
-  return trimmed.replace(numberedPrefix, "").trim().replace(/\s+/gu, " ");
+  let fence;
+  return text
+    .slice(numberedPrefix.length)
+    .split("\n")
+    .map((line) => {
+      if (/^[ \t]*$/u.test(line)) return "";
+      const leading = /^[ \t]*/u.exec(line)?.[0] ?? "";
+      const fenceMatch = leading.length <= 3 ? /^(`{3,}|~{3,})/u.exec(line.slice(leading.length)) : null;
+      const isFenceBoundary = fenceMatch !== null;
+      const wasInsideFence = fence !== undefined;
+      if (isFenceBoundary) {
+        const marker = fenceMatch[1];
+        if (fence === undefined) fence = Object.freeze({ character: marker[0], length: marker.length });
+        else if (marker[0] === fence.character && marker.length >= fence.length) fence = undefined;
+      }
+      if (wasInsideFence || isFenceBoundary) return line;
+      const trailing = /[ \t]*$/u.exec(line)?.[0] ?? "";
+      const contentEnd = trailing.length === 0 ? line.length : line.length - trailing.length;
+      const content = line.slice(leading.length, contentEnd);
+      const normalizedContent = content.replace(/[ \t]+/gu, " ");
+      const markdownHardBreak = trailing.length >= 2 ? "  " : "";
+      return `${leading}${normalizedContent}${markdownHardBreak}`;
+    })
+    .join("\n");
+}
+
+const nativeDirectoryPathGetter = Object.getOwnPropertyDescriptor(Dir.prototype, "path")?.get;
+
+function bindNativeDirectory(directory) {
+  if (Object.getPrototypeOf(directory) !== Dir.prototype || typeof nativeDirectoryPathGetter !== "function") {
+    throw instructionError("An opened instruction-scan directory is not an owned native directory handle.");
+  }
+  let path;
+  try {
+    path = nativeDirectoryPathGetter.call(directory);
+  } catch {
+    throw instructionError("An opened instruction-scan directory could not expose its owned native path.");
+  }
+  if (typeof path !== "string") {
+    throw instructionError("An opened instruction-scan directory could not expose its owned native path.");
+  }
+  return Object.freeze({ directory, path });
+}
+
+function readNativeDirectory(directory) {
+  return Dir.prototype.readSync.call(directory);
+}
+
+function closeNativeDirectory(directory) {
+  return Dir.prototype.closeSync.call(directory);
 }
 
 function validateCanonicalInvariantBodies(path, body, expectedRules) {
@@ -731,13 +789,14 @@ export function scanTrackedAgentInstructionPaths(
     if (!beforeOpen.isDirectory() || beforeOpen.isSymbolicLink() || !exactStatIdentity(current.snapshot, beforeOpen)) {
       throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
     }
-    const directory = openDirectory(current.path);
+    const openedDirectory = openDirectory(current.path);
+    let nativeDirectory;
     let failure;
     try {
+      nativeDirectory = bindNativeDirectory(openedDirectory);
       let handleSnapshot;
       try {
-        if (typeof directory?.path !== "string") throw new Error("missing native directory path");
-        const handlePath = realpathSync(directory.path);
+        const handlePath = realpathSync(nativeDirectory.path);
         handleSnapshot = lstatSync(handlePath, { bigint: true });
       } catch {
         throw instructionError("An opened instruction-scan directory handle could not be identity-bound.");
@@ -753,7 +812,11 @@ export function scanTrackedAgentInstructionPaths(
       if (!afterOpen.isDirectory() || afterOpen.isSymbolicLink() || !exactStatIdentity(current.snapshot, afterOpen)) {
         throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
       }
-      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+      for (
+        let entry = readNativeDirectory(nativeDirectory.directory);
+        entry !== null;
+        entry = readNativeDirectory(nativeDirectory.directory)
+      ) {
         entryCount += 1;
         if (entryCount > maxEntries) {
           throw instructionError("The instruction scope scan exceeded its entry bound before retention.");
@@ -782,7 +845,7 @@ export function scanTrackedAgentInstructionPaths(
       const afterScan = lstatSync(current.path, { bigint: true });
       let handleAfterScan;
       try {
-        handleAfterScan = lstatSync(realpathSync(directory.path), { bigint: true });
+        handleAfterScan = lstatSync(realpathSync(nativeDirectory.path), { bigint: true });
       } catch {
         throw instructionError("An opened instruction-scan directory handle lost its bound identity during scanning.");
       }
@@ -797,10 +860,12 @@ export function scanTrackedAgentInstructionPaths(
     } catch (error) {
       failure = error;
     }
-    try {
-      directory.closeSync();
-    } catch {
-      failure ??= instructionError("An instruction-scan directory descriptor did not close.");
+    if (nativeDirectory) {
+      try {
+        closeNativeDirectory(nativeDirectory.directory);
+      } catch {
+        failure ??= instructionError("An instruction-scan directory descriptor did not close.");
+      }
     }
     if (failure) throw failure;
   }

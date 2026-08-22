@@ -27,7 +27,8 @@ import {
   readBoundedInstructionFile,
   scanTrackedAgentInstructionPaths,
   validateAgentInstructionContext,
-  validateConstructedInstructionContext
+  validateConstructedInstructionContext,
+  validateInstructionDocument
 } from "./agent-instructions-context.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -366,6 +367,44 @@ test("every instruction-scan directory handle is bound to its queued directory i
   );
 });
 
+test("instruction scans accept native handles from an honest opener but reject foreign delegated wrappers", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-owned-native-directory-"));
+  const foreignRoot = mkdtempSync(join(tmpdir(), "openwrangler-agent-foreign-delegate-"));
+  temporaryRoots.add(root);
+  temporaryRoots.add(foreignRoot);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  writeFileSync(join(foreignRoot, "AGENTS.md"), "foreign\n", "utf8");
+
+  assert.deepEqual(
+    scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+      openDirectory(path) {
+        return opendirSync(path);
+      }
+    }),
+    ["AGENTS.md"]
+  );
+
+  const foreign = opendirSync(foreignRoot);
+  try {
+    assert.throws(
+      () =>
+        scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+          openDirectory(expectedPath) {
+            return {
+              path: expectedPath,
+              readSync: () => foreign.readSync(),
+              closeSync: () => foreign.closeSync()
+            };
+          }
+        }),
+      /not an owned native directory handle/u,
+      "FOREIGN_DELEGATE_ACCEPTED"
+    );
+  } finally {
+    foreign.closeSync();
+  }
+});
+
 test("ancestor replacement fails descriptor-bound discovery and instruction reads", () => {
   const discoveryRoot = temporaryInstructionTree();
   assert.throws(
@@ -414,6 +453,58 @@ test("only the positive canonical active-policy structure survives resealing", (
     writeFileSync(docsPath, reseal("docs/AGENTS.md", changed), "utf8");
     assert.throws(() => validateAgentInstructionContext(root), /canonical active-policy structure/u);
   }
+});
+
+test("canonical rule seals preserve Markdown-significant indentation, nesting, quotations, and fences", () => {
+  const whitespaceRoot = temporaryInstructionTree();
+  const whitespacePath = join(whitespaceRoot, "AGENTS.md");
+  const whitespaceChanged = readFileSync(whitespacePath, "utf8").replace(
+    "Viewing filters/sorts are separate from committed cleaning steps",
+    "Viewing   filters/sorts are   separate from committed cleaning steps"
+  );
+  assert.notEqual(whitespaceChanged, readFileSync(whitespacePath, "utf8"));
+  writeFileSync(whitespacePath, reseal("AGENTS.md", whitespaceChanged), "utf8");
+  assert.doesNotThrow(() => validateAgentInstructionContext(whitespaceRoot));
+
+  const changes = [
+    {
+      path: "AGENTS.md",
+      mutate: (text) => text.replace("<!-- OW-RULE:I02 -->\n2. ", "<!-- OW-RULE:I02 -->\n    2. ")
+    },
+    {
+      path: "src/shared/AGENTS.md",
+      mutate: (text) => text.replace("    Grouped targets and keys", "        Grouped targets and keys")
+    },
+    {
+      path: "src/shared/AGENTS.md",
+      mutate: (text) => text.replace("    Grouped targets and keys", "    > Grouped targets and keys")
+    },
+    {
+      path: "src/shared/AGENTS.md",
+      mutate: (text) =>
+        text.replace("    Grouped targets and keys", "    ```text\n    Grouped targets and keys\n    ```")
+    }
+  ];
+  for (const change of changes) {
+    const root = temporaryInstructionTree();
+    const instructionPath = join(root, change.path);
+    const original = readFileSync(instructionPath, "utf8");
+    const changed = change.mutate(original);
+    assert.notEqual(changed, original);
+    writeFileSync(instructionPath, reseal(change.path, changed), "utf8");
+    assert.throws(
+      () => validateAgentInstructionContext(root),
+      /exact invariant number|independently sealed canonical body/u,
+      change.path === "AGENTS.md" ? "INDENTED_RULE_ACCEPTED" : "MARKDOWN_STRUCTURE_ACCEPTED"
+    );
+  }
+
+  assert.doesNotThrow(() =>
+    validateInstructionDocument(
+      repositoryRoot,
+      INSTRUCTION_MANIFEST.find((entry) => entry.path === "scripts/AGENTS.md")
+    )
+  );
 });
 
 test("the dedicated workflow triggers for every recursive AGENTS.md path", () => {
