@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSchema, GridPage } from "../shared/protocol";
 import {
   buildGridClipboardPayload,
@@ -7,7 +7,8 @@ import {
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
   gridClipboardSelectionDescription,
-  tryAcquireGridClipboardWrite
+  tryAcquireGridClipboardWrite,
+  writeGridClipboardText
 } from "../webviews/grid/gridClipboard";
 
 const schema: ColumnSchema[] = [
@@ -36,6 +37,10 @@ const page: GridPage = {
 };
 
 describe("grid clipboard contract", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("retains one shared write owner until its noncancellable adapter settles", async () => {
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const unsettledWrite = deferred<void>();
@@ -60,6 +65,45 @@ describe("grid clipboard contract", () => {
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
       else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("does not enter fallback or restore stale focus after the exact owner changes", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const primary = deferred<void>();
+    const writeText = vi.fn(() => primary.promise);
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const owner = document.createElement("button");
+    const replacement = document.createElement("button");
+    document.body.append(owner, replacement);
+    owner.focus();
+    let current = true;
+
+    try {
+      const write = writeGridClipboardText("owned", (phase) => {
+        return (
+          current &&
+          (document.activeElement === owner || ("helper" in phase && document.activeElement === phase.helper))
+        );
+      });
+      replacement.focus();
+      current = false;
+      primary.reject(new Error("permission denied"));
+
+      await expect(write).rejects.toThrow("Clipboard ownership changed");
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(replacement);
+      expect(document.querySelector("textarea")).toBeNull();
+    } finally {
+      owner.remove();
+      replacement.remove();
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      else Reflect.deleteProperty(document, "execCommand");
     }
   });
 
@@ -380,6 +424,24 @@ describe("grid clipboard contract", () => {
     });
   });
 
+  it("keeps empty, null, quoted, and Unicode values distinct without adding a header", () => {
+    const accumulator = createGridClipboardColumnAccumulator();
+    expect(accumulator.append(cell(""))).toBeUndefined();
+    expect(accumulator.append({ kind: "null", raw: null, display: "", isNull: true, isNaN: false })).toBeUndefined();
+    expect(accumulator.append(cell('München\t"Süd"'))).toBeUndefined();
+
+    expect(accumulator.finish()).toEqual({
+      ok: true,
+      payload: {
+        text: '\n\n"München\t""Süd"""',
+        rowCount: 3,
+        columnCount: 1,
+        includesRowLabel: false,
+        completeRow: false
+      }
+    });
+  });
+
   it("enforces the exact UTF-8 cap incrementally across many logical-column pages", () => {
     const maximumBytes = 4 * 1024 * 1024;
     const fieldCount = 4_096;
@@ -432,8 +494,10 @@ function cell(display: string) {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }

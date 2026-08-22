@@ -166,25 +166,7 @@
   }
 }
 
-@container (max-width: 480px) {
-  .gridStatusBar {
-    display: grid;
-    grid-template-columns: auto auto auto minmax(0, 1fr);
-  }
-
-  .visibleRowsStatus {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
-
-  .gridClipboardControls {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
+@container (max-width: 900px) {
   .gridClipboardSelectionStatus {
     border: 0;
     clip-path: inset(50%);
@@ -201,15 +183,71 @@
     min-width: 24px;
     padding: 2px;
   }
+}
+
+@container (max-width: 1048px) {
+  .gridStatusBar {
+    flex-wrap: wrap;
+  }
+}
+
+@container (max-width: 700px) {
+  .gridClipboardButton,
+  .gridProfileControls,
+  .profileValueToggle.compact button,
+  .headerProfilesButton {
+    font-size: 10px;
+  }
+
+  .profileValueToggle.compact button,
+  .headerProfilesButton {
+    padding-inline: 2px;
+  }
+}
+
+@container (max-width: 480px) {
+  .gridStatusBar {
+    display: grid;
+    grid-template-columns: auto auto auto minmax(0, 1fr);
+  }
+
+  .visibleRowsStatus {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .gridClipboardControls {
+    grid-column: 3;
+    grid-row: 1;
+  }
 
   .gridClipboardButtonLabel {
     display: none;
   }
 
   .gridProfileControls {
-    justify-self: end;
     grid-column: 4;
     grid-row: 1;
+    justify-self: end;
+  }
+
+  .headerProfilesButton {
+    min-height: 24px;
+  }
+}
+
+@container (max-width: 313px) {
+  .gridProfileControls {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: end;
+  }
+}
+
+@container (max-width: 265px) {
+  .visibleRowsStatus {
+    white-space: normal;
   }
 }
 

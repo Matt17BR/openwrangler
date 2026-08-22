@@ -76,6 +76,7 @@ import {
   packagedEditorPythonPreflightProfile,
   resolveAndPreflightAcceptancePython
 } from "./packaged-python-preflight.mjs";
+import { resolvePackagedGridColumnCopySelection } from "./packaged-grid-column-copy-selector.mjs";
 import {
   PACKAGED_PYTHON_JUPYTER_PROFILE_ENV,
   packagedPythonJupyterEditorPlan,
@@ -235,21 +236,28 @@ try {
           if (
             acceptanceMode !== "full" &&
             acceptanceMode !== "platform-smoke" &&
+            acceptanceMode !== "grid-column-copy" &&
             acceptanceMode !== "data-wrangler-coexistence" &&
             acceptanceMode !== "r-jupyter"
           ) {
             throw new Error(
-              'OPEN_WRANGLER_PACKAGED_MODE must be "full", "platform-smoke", "data-wrangler-coexistence", or "r-jupyter".'
+              'OPEN_WRANGLER_PACKAGED_MODE must be "full", "platform-smoke", "grid-column-copy", "data-wrangler-coexistence", or "r-jupyter".'
             );
           }
           if (
-            (acceptanceMode === "platform-smoke" || acceptanceMode === "data-wrangler-coexistence") &&
+            (acceptanceMode === "platform-smoke" ||
+              acceptanceMode === "grid-column-copy" ||
+              acceptanceMode === "data-wrangler-coexistence") &&
             (requested?.length !== 1 || !["vscode", "cursor"].includes(requested[0]))
           ) {
             throw new Error(
               `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
             );
           }
+          const gridColumnCopySelection = resolvePackagedGridColumnCopySelection({
+            acceptanceMode,
+            requestedEditors: requested
+          });
           const pythonJupyterProfile = resolvePackagedPythonJupyterProfile({
             value: process.env[PACKAGED_PYTHON_JUPYTER_PROFILE_ENV],
             acceptanceMode,
@@ -621,7 +629,9 @@ try {
                   }
                 : acceptanceMode === "platform-smoke"
                   ? { "platform-smoke": resolve(profile, "platform-smoke-result.json") }
-                  : {}),
+                  : gridColumnCopySelection.enabled
+                    ? { [gridColumnCopySelection.phase]: resolve(profile, "grid-column-copy-result.json") }
+                    : {}),
               ...(pythonExtensionInstallTarget
                 ? acceptanceMode === "full" && genericPackagedPhasesEnabled
                   ? { "python-environment": resolve(profile, "python-environment-result.json") }
@@ -672,7 +682,9 @@ try {
                 ? { restricted: randomUUID(), seed: randomUUID(), verify: randomUUID() }
                 : acceptanceMode === "platform-smoke"
                   ? { "platform-smoke": randomUUID() }
-                  : {}),
+                  : gridColumnCopySelection.enabled
+                    ? { [gridColumnCopySelection.phase]: randomUUID() }
+                    : {}),
               ...(pythonExtensionInstallTarget && acceptanceMode === "full" && genericPackagedPhasesEnabled
                 ? { "python-environment": randomUUID() }
                 : {}),
@@ -719,6 +731,7 @@ try {
             const userDataByPhase = new Map([
               ["setup", userData],
               ["platform-smoke", userData],
+              ["grid-column-copy", userData],
               ["restricted", restrictedUserData],
               ["python-environment", pythonEnvironmentUserData],
               ["jupyter-r", jupyterRUserData],
@@ -1459,6 +1472,22 @@ try {
                     },
                     platformSmokeSelector
                   );
+                } else if (gridColumnCopySelection.enabled) {
+                  activePhase = gridColumnCopySelection.phase;
+                  await runEditorAcceptancePhase({
+                    editor: identifiedEditor,
+                    workspace,
+                    userData,
+                    extensions,
+                    developmentPaths: [fakeJupyter],
+                    testModule,
+                    python: acceptancePythonForPhase(gridColumnCopySelection.phase, testPython, jupyterKernelPython),
+                    phase: gridColumnCopySelection.phase,
+                    resultPath: resultPaths[gridColumnCopySelection.phase],
+                    runId: runIds[gridColumnCopySelection.phase],
+                    progressPath: progressPaths[gridColumnCopySelection.phase],
+                    requiresWorkbenchCdp: true
+                  });
                 } else if (acceptanceMode === "full" && genericPackagedPhasesEnabled) {
                   activePhase = "restricted";
                   await runEditorAcceptancePhase({

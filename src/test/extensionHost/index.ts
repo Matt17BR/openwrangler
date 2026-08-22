@@ -165,6 +165,11 @@ import { createReleasedPySparkJupyterJourney } from "./releasedPySparkJupyterJou
 import { createReleasedPythonSourceCellJourney } from "./releasedPythonSourceCellJourney";
 import { createReleasedPythonFileEntrypointJourney } from "./releasedPythonFileEntrypointJourney";
 import { createPackagedExcelDependencyInstallJourney } from "./packagedExcelDependencyInstallJourney";
+import {
+  createPackagedGridColumnCopyJourney,
+  createPlaywrightGridColumnCopySurface,
+  packagedGridColumnCopyFixtureCsv
+} from "./packagedGridColumnCopyJourney";
 import { createDependencyMutationRecoveryJourney } from "./dependencyMutationRecoveryJourney";
 import { createPackagedFirstUseInteractionJourney } from "./packagedFirstUseInteractionJourney";
 import {
@@ -525,6 +530,26 @@ const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInterac
   waitFor,
   waitForLocatorText,
   webviewDiscoveryTimeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
+});
+
+const exercisePackagedGridColumnCopyJourney = createPackagedGridColumnCopyJourney({
+  closeAllEditors: async () => {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  },
+  connectToEditorWorkbench,
+  createSurface: async (workbench, testing, sessionId) => {
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    return createPlaywrightGridColumnCopySurface(workbench, target.frame);
+  },
+  openFixture: async (fixture) => {
+    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+  },
+  readClipboardText: async () => vscode.env.clipboard.readText(),
+  readFixture: async (fixture) => vscode.workspace.fs.readFile(fixture),
+  recordProgress: recordAcceptanceProgress,
+  waitFor,
+  writeClipboardText: async (text) => vscode.env.clipboard.writeText(text),
+  sessionTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS
 });
 
 export async function run(): Promise<void> {
@@ -1021,6 +1046,18 @@ export async function run(): Promise<void> {
           console.log("Open Wrangler packaged platform smoke passed.");
         }
       });
+    },
+    packagedGridColumnCopy: async () => {
+      recordAcceptanceProgress("grid-column-copy:start");
+      const gridColumnCopyFixture = ensureDeterministicDelimitedFixture(
+        workspace,
+        "[Copy] filtered and sorted whole column.csv",
+        packagedGridColumnCopyFixtureCsv(),
+        "packaged whole-column copy"
+      );
+      await exercisePackagedGridColumnCopyJourney(testing, gridColumnCopyFixture);
+      recordAcceptanceProgress("grid-column-copy:phase-complete");
+      console.log("Open Wrangler packaged whole-column copy acceptance passed.");
     },
     remoteWorkspace: async () => {
       assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");

@@ -1336,6 +1336,8 @@ export function DataGrid({
                     width={widths[column.position]}
                     selected={viewState.selectedColumnId === column.id}
                     clipboardSelected={gridClipboard.isColumnSelected(column.id)}
+                    clipboardAction={gridClipboard.columnCopyAction(column)}
+                    logicalViewOwner={logicalViewContext}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
                     compactInsights={compactHeaderProfiles}
@@ -1362,7 +1364,7 @@ export function DataGrid({
                       reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       gridClipboard.selectColumn(column);
                     }}
-                    onCopy={() => void gridClipboard.copyColumn()}
+                    onCopy={() => gridClipboard.copyColumn(column)}
                     onApplyProfileFilter={onApplyProfileFilter}
                     onBeginResize={beginColumnResize}
                     onResize={(width) =>
@@ -2196,6 +2198,8 @@ function ColumnHeader({
   width,
   selected,
   clipboardSelected,
+  clipboardAction,
+  logicalViewOwner,
   added,
   showInsights,
   compactInsights,
@@ -2226,6 +2230,15 @@ function ColumnHeader({
   width: number;
   selected: boolean;
   clipboardSelected: boolean;
+  clipboardAction: {
+    ariaLabel: string;
+    busy: boolean;
+    disabled: boolean;
+    icon: "check" | "copy" | "loading" | "warning";
+    menuLabel: string;
+    title: string;
+  };
+  logicalViewOwner: string;
   added: boolean;
   showInsights: boolean;
   compactInsights: boolean;
@@ -2246,12 +2259,28 @@ function ColumnHeader({
   onClearSortColumn(column: string): void;
   onActivate(): void;
   onSelect(): void;
-  onCopy(): void;
+  onCopy(): Promise<boolean>;
   onApplyProfileFilter?: (filter: ColumnFilter) => void;
   onBeginResize: BeginColumnResize;
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
+  const logicalViewOwnerRef = useRef(logicalViewOwner);
+  useLayoutEffect(() => {
+    logicalViewOwnerRef.current = logicalViewOwner;
+  }, [logicalViewOwner]);
+  const menuGenerationRef = useRef(0);
+  const menuOperationGenerationRef = useRef(0);
+  const clipboardOperationGenerationRef = useRef(0);
+  const pendingClipboardOperationCountRef = useRef(0);
+  const mountedRef = useRef(true);
+  const [clipboardOperationState, setClipboardOperationState] = useState({ generation: 0, pending: 0 });
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const filterDisabledDescriptionId = `column-filter-disabled-${column.position}`;
   const sortDisabledDescriptionId = `column-sort-disabled-${column.position}`;
@@ -2298,6 +2327,41 @@ function ColumnHeader({
     closeMenu();
     action();
   };
+  const runClipboardAction = async (): Promise<boolean> => {
+    clipboardOperationGenerationRef.current += 1;
+    pendingClipboardOperationCountRef.current += 1;
+    setClipboardOperationState({
+      generation: clipboardOperationGenerationRef.current,
+      pending: pendingClipboardOperationCountRef.current
+    });
+    try {
+      return await onCopy();
+    } finally {
+      pendingClipboardOperationCountRef.current -= 1;
+      if (mountedRef.current) {
+        setClipboardOperationState({
+          generation: clipboardOperationGenerationRef.current,
+          pending: pendingClipboardOperationCountRef.current
+        });
+      }
+    }
+  };
+  const runClipboardMenuAction = async () => {
+    const menu = menuRef.current;
+    const menuGeneration = menuGenerationRef.current;
+    const operationViewOwner = logicalViewOwner;
+    const operationGeneration = ++menuOperationGenerationRef.current;
+    if (
+      (await runClipboardAction()) &&
+      menuRef.current === menu &&
+      menu?.open === true &&
+      logicalViewOwnerRef.current === operationViewOwner &&
+      menuGenerationRef.current === menuGeneration &&
+      menuOperationGenerationRef.current === operationGeneration
+    ) {
+      closeMenu();
+    }
+  };
   const activeSortLabel =
     activeSort &&
     `${activeSort.direction === "asc" ? "ascending" : "descending"}${
@@ -2329,6 +2393,8 @@ function ColumnHeader({
         .join(", ")}
       data-diff-state={added ? "added" : undefined}
       data-clipboard-selected={clipboardSelected ? "true" : undefined}
+      data-clipboard-operation-generation={clipboardOperationState.generation}
+      data-clipboard-operation-pending={clipboardOperationState.pending > 0 ? "true" : "false"}
       className={[
         selected ? "selectedColumn" : "",
         clipboardSelected ? "gridClipboardSelected" : "",
@@ -2346,7 +2412,7 @@ function ColumnHeader({
         if (event.target !== event.currentTarget) return;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
           event.preventDefault();
-          onCopy();
+          void runClipboardAction();
           return;
         }
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -2364,6 +2430,15 @@ function ColumnHeader({
             <small>{column.rawType}</small>
           </span>
           <div className="columnHeaderActions">
+            <button
+              type="button"
+              className={`columnSortIndicator codicon codicon-${clipboardAction.icon}${clipboardAction.busy ? " codicon-modifier-spin" : ""}`}
+              aria-label={clipboardAction.ariaLabel}
+              aria-busy={clipboardAction.busy}
+              disabled={clipboardAction.disabled}
+              title={clipboardAction.title}
+              onClick={() => void runClipboardAction()}
+            />
             {activeSort && (
               <button
                 type="button"
@@ -2382,7 +2457,13 @@ function ColumnHeader({
                 )}
               </button>
             )}
-            <details ref={menuRef} className="columnMenu">
+            <details
+              ref={menuRef}
+              className="columnMenu"
+              onToggle={() => {
+                menuGenerationRef.current += 1;
+              }}
+            >
               <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
               <div className="columnMenuContent">
                 {viewControlsDisabled && (
@@ -2400,6 +2481,14 @@ function ColumnHeader({
                     {sortControlsDisabledReason}
                   </span>
                 )}
+                <button
+                  type="button"
+                  disabled={clipboardAction.disabled}
+                  title={clipboardAction.title}
+                  onClick={() => void runClipboardMenuAction()}
+                >
+                  {clipboardAction.menuLabel}
+                </button>
                 <button
                   type="button"
                   disabled={filterUnavailable}

@@ -124,7 +124,7 @@ test("the rendered crosswalk is deterministic and covers every invariant", () =>
 test("the repository webview stylesheet entry has bounded owners and no dead selector classes", async () => {
   const receipt = await checkWebviewStyles();
   assert.equal(receipt.entry, "src/webviews/styles.css");
-  assert.equal(receipt.ownedStylesheets, 10);
+  assert.equal(receipt.ownedStylesheets, 11);
   assert.ok(receipt.selectorClasses > 0);
   assert.ok(receipt.sourceFiles > 0);
 });
