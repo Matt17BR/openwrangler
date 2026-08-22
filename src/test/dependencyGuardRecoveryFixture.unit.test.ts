@@ -167,6 +167,7 @@ describe("dependency-guard recovery fixture", () => {
           `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py,,`
         ),
       [
+        `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
       ]
@@ -176,6 +177,7 @@ describe("dependency-guard recovery fixture", () => {
       (recordSource) =>
         recordSource.replace(`${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`, "foreign_guard_fixture/__init__.py,,"),
       [
+        "foreign_guard_fixture/__init__.py",
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
       ]
