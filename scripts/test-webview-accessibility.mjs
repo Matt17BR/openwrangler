@@ -1059,7 +1059,10 @@ async function verifyGridStatusBar(browser) {
     previousDisabled,
     nextDisabled,
     expectSecondRow,
-    openProfilesDrawer = false
+    openProfilesDrawer = false,
+    visibleRowsOverride,
+    expectSingleLine = true,
+    expectVisibleClipboardLabels = expectedDataGridWidth > 480
   } of [
     {
       harness: "grid-zoom-0-8.html",
@@ -1074,6 +1077,15 @@ async function verifyGridStatusBar(browser) {
       harness: "grid-view.html",
       width: 1280,
       expectedDataGridWidth: 1280,
+      range: "Rows 1\u20134 of 4",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false
+    },
+    {
+      harness: "grid-view.html",
+      width: 800,
+      expectedDataGridWidth: 800,
       range: "Rows 1\u20134 of 4",
       previousDisabled: true,
       nextDisabled: true,
@@ -1126,6 +1138,18 @@ async function verifyGridStatusBar(browser) {
       openProfilesDrawer: true
     },
     {
+      harness: "summary-families-dark-zoom-200.html",
+      width: 1280,
+      expectedDataGridWidth: 200,
+      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      previousDisabled: true,
+      nextDisabled: false,
+      expectSecondRow: true,
+      openProfilesDrawer: true,
+      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      expectSingleLine: false
+    },
+    {
       harness: "wide-view.html",
       width: 320,
       expectedDataGridWidth: 320,
@@ -1171,6 +1195,11 @@ async function verifyGridStatusBar(browser) {
     const statusBar = page.locator(".gridStatusBar");
     await statusBar.waitFor();
     const visibleRows = statusBar.getByRole("status", { name: "Visible rows" });
+    if (visibleRowsOverride !== undefined) {
+      await visibleRows.evaluate((status, text) => {
+        status.textContent = text;
+      }, visibleRowsOverride);
+    }
     if ((await visibleRows.textContent())?.trim() !== range) {
       throw new Error(`${harness} did not expose the exact visible-row range ${JSON.stringify(range)}.`);
     }
@@ -1306,6 +1335,16 @@ async function verifyGridStatusBar(browser) {
               : [];
           })
         : [{ reason: "missing-visible-row-status" }];
+      const visibleClipboardLabels = [...bar.querySelectorAll(".gridClipboardButtonLabel")].flatMap((label) => {
+        const labelBounds = label.getBoundingClientRect();
+        const style = getComputedStyle(label);
+        return labelBounds.width > epsilon &&
+          labelBounds.height > epsilon &&
+          style.display !== "none" &&
+          style.visibility !== "hidden"
+          ? [label.textContent?.trim() ?? ""]
+          : [];
+      });
       return {
         actionableDescendantCount: actionableDescendants.length,
         actionableDescendantFailures,
@@ -1324,6 +1363,7 @@ async function verifyGridStatusBar(browser) {
         rangeSingleLine: Boolean(
           rangeStatus && rangeStyle && rangeStatus.clientHeight <= Number.parseFloat(rangeStyle.fontSize) * 1.5
         ),
+        visibleClipboardLabels,
         headerProfilesReachable: Boolean(
           headerProfilesBounds &&
           headerProfilesBounds.left >= bounds.left - 1 &&
@@ -1353,7 +1393,9 @@ async function verifyGridStatusBar(browser) {
       layout.visibleRowStatusFailures.length > 0 ||
       layout.rangeClipped ||
       layout.rangeOnSecondRow !== expectSecondRow ||
-      !layout.rangeSingleLine ||
+      layout.rangeSingleLine !== expectSingleLine ||
+      (expectVisibleClipboardLabels &&
+        layout.visibleClipboardLabels.join("|") !== "Copy cell|Copy row|Copy range|Copy column") ||
       !layout.headerProfilesReachable ||
       layout.headerProfilesBackground === "transparent" ||
       layout.headerProfilesBackground === "rgba(0, 0, 0, 0)" ||
