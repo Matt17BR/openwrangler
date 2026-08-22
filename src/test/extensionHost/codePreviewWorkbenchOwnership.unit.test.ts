@@ -903,6 +903,31 @@ function actionOptions(
   });
 }
 
+function addSiblingOverlayBranch(
+  fixture: ReturnType<typeof createFixture>,
+  anchorName: string,
+  flowOwnerId: string
+): { readonly content: FakeElement; readonly frame: FakeElement; readonly root: FakeElement } {
+  const root = fixture.makeElement({
+    parent: fixture.root,
+    rectangle: rectangle(0, 0, 1_280, 800)
+  });
+  const content = fixture.makeElement({
+    classNames: ["webview-overlay-content"],
+    parent: root,
+    rectangle: rectangle(980, 20, 280, 760),
+    styleProperties: { "position-anchor": anchorName }
+  });
+  content.dataset.parentFlowToElementId = flowOwnerId;
+  const frame = fixture.makeElement({
+    classNames: ["webview"],
+    parent: content,
+    rectangle: rectangle(980, 20, 280, 760),
+    tagName: "IFRAME"
+  });
+  return { content, frame, root };
+}
+
 function expectReason(
   authority: WorkbenchOwnershipAuthority,
   receipt: WorkbenchOwnershipReceipt,
@@ -1145,6 +1170,48 @@ describe("Code Preview split-overlay workbench ownership", () => {
     }
   );
 
+  it("allows an independent sibling overlay branch but rejects target flow and owner duplicates", () => {
+    const independent = createFixture(authority);
+    const independentAnchorName = "--overlay-anchor-independent-webview";
+    independent.makeElement({
+      parent: independent.anchorParent,
+      rectangle: rectangle(980, 20, 280, 760),
+      styleProperties: { "anchor-name": independentAnchorName }
+    });
+    const independentBranch = addSiblingOverlayBranch(independent, independentAnchorName, "");
+    expect(independentBranch.root.parentElement).toBe(independent.root);
+    expect(independentBranch.root.children).toEqual([independentBranch.content]);
+    expect(independentBranch.content.children).toEqual([independentBranch.frame]);
+    expect(captureOwnership(authority, independent).reason).toBe("owned");
+
+    const sameFlow = createFixture(authority);
+    addSiblingOverlayBranch(sameFlow, FLOW_ANCHOR_NAME, "");
+    expectReason(
+      authority,
+      authority.inspect(sameFlow.outerFrame, inspectionOptions(authority)),
+      "webview-overlay-flow-not-unique"
+    );
+
+    const targetOwnerId = "workbench-view-code-preview";
+    const sameOwner = createFixture(authority, {
+      anchorId: targetOwnerId,
+      flowOwnerId: targetOwnerId
+    });
+    const siblingAnchorName = "--overlay-anchor-sibling-webview";
+    sameOwner.makeElement({
+      id: "sibling-workbench-view",
+      parent: sameOwner.anchorParent,
+      rectangle: rectangle(980, 20, 280, 760),
+      styleProperties: { "anchor-name": siblingAnchorName }
+    });
+    addSiblingOverlayBranch(sameOwner, siblingAnchorName, targetOwnerId);
+    expectReason(
+      authority,
+      authority.inspect(sameOwner.outerFrame, inspectionOptions(authority)),
+      "webview-overlay-flow-owner-not-unique"
+    );
+  });
+
   it("accepts the exact non-empty flow owner only when its CSS anchor and DOM id resolve to one element", () => {
     const fixture = createFixture(authority, {
       anchorId: "workbench-view-code-preview",
@@ -1290,20 +1357,22 @@ describe("Code Preview split-overlay workbench ownership", () => {
       "workbench-root-not-exact"
     );
 
-    const duplicateOverlay = createFixture(authority);
-    const duplicateOverlayRoot = duplicateOverlay.makeElement({
-      parent: duplicateOverlay.root,
+    const duplicateTargetFlow = createFixture(authority);
+    const duplicateOverlayRoot = duplicateTargetFlow.makeElement({
+      parent: duplicateTargetFlow.root,
       rectangle: rectangle(0, 0, 1_280, 800)
     });
-    duplicateOverlay.makeElement({
+    const duplicateOverlayContent = duplicateTargetFlow.makeElement({
       classNames: ["webview-overlay-content"],
       parent: duplicateOverlayRoot,
-      rectangle: rectangle(980, 20, 280, 760)
+      rectangle: rectangle(980, 20, 280, 760),
+      styleProperties: { "position-anchor": FLOW_ANCHOR_NAME }
     });
+    duplicateOverlayContent.dataset.parentFlowToElementId = "";
     expectReason(
       authority,
-      authority.inspect(duplicateOverlay.outerFrame, inspectionOptions(authority)),
-      "webview-overlay-content-not-unique"
+      authority.inspect(duplicateTargetFlow.outerFrame, inspectionOptions(authority)),
+      "webview-overlay-flow-not-unique"
     );
 
     const extraOverlayChild = createFixture(authority);

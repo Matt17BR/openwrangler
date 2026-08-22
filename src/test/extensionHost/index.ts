@@ -9956,6 +9956,8 @@ function inspectCodePreviewWorkbenchOwnership(
       let identifiedCount = 0;
       let identifiedCandidateCount = 0;
       let exactOverlayContentCount = 0;
+      let targetOverlayFlowCount = 0;
+      let targetOverlayOwnerCount = 0;
       let exactWorkbenchRootCount = 0;
       const inventoryFailure = walkElements(
         current.ownerDocument.documentElement,
@@ -9971,9 +9973,15 @@ function inspectCodePreviewWorkbenchOwnership(
             candidate.classList.contains("webview-overlay-content") &&
             candidate.parentElement?.parentElement === workbenchRoot
           ) {
-            exactOverlayContentCount += 1;
-            if (exactOverlayContentCount > 1) return "webview-overlay-content-not-unique";
-            if (candidate !== overlayContent) return "webview-overlay-content-not-exact";
+            if (candidate === overlayContent) exactOverlayContentCount += 1;
+            if (candidate.style.getPropertyValue("position-anchor") === anchorName) {
+              targetOverlayFlowCount += 1;
+              if (targetOverlayFlowCount > 1) return "webview-overlay-flow-not-unique";
+            }
+            if (flowOwnerId.length > 0 && candidate.dataset?.parentFlowToElementId === flowOwnerId) {
+              targetOverlayOwnerCount += 1;
+              if (targetOverlayOwnerCount > 1) return "webview-overlay-flow-owner-not-unique";
+            }
           }
           const candidateAnchorName = candidate.style.getPropertyValue("anchor-name");
           if (candidateAnchorName.length > 0) {
@@ -10021,6 +10029,12 @@ function inspectCodePreviewWorkbenchOwnership(
       }
       if (exactOverlayContentCount !== 1) {
         return fail("webview-overlay-content-not-exact", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (targetOverlayFlowCount !== 1) {
+        return fail("webview-overlay-flow-not-unique", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (flowOwnerId.length > 0 && targetOverlayOwnerCount !== 1) {
+        return fail("webview-overlay-flow-owner-not-unique", chain, relations, containerIndex, flowLinkCount);
       }
       if (anchoredCount !== 1 || !anchored) {
         return fail("flow-anchor-not-unique", chain, relations, containerIndex, flowLinkCount);
