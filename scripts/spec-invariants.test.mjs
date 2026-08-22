@@ -431,10 +431,6 @@ test("cleaning-history rendered line separators preserve statement ownership aft
     "&#x0B;",
     "&#12;",
     "&#x0C;",
-    "&#13;",
-    "&#x0D;",
-    "&#10;",
-    "&#x0A;",
     "&#133;",
     "&#x85;",
     "&#1417;",
@@ -507,6 +503,43 @@ test("cleaning-history rendered line separators preserve statement ownership aft
       /unsupported visible sentence terminal/u,
       example
     );
+  }
+});
+
+test("cleaning-history rendered newline entities preserve inline claim continuity", () => {
+  const model = cleaningHistoryModel();
+  const whitespaceEntities = ["&#10;", "&#x0A;", "&#13;", "&#x0D;", "&NewLine;"];
+
+  for (const separator of whitespaceEntities) {
+    for (const example of [
+      `Committed steps cannot be${separator}edited.`,
+      `Committed steps can be edited only${separator}if the latest committed step is selected.`
+    ]) {
+      assert.throws(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        /contradictory cleaning-history capability claim/u,
+        example
+      );
+    }
+    for (const example of [
+      `Committed steps can be${separator}edited.`,
+      `Undo is available only${separator}if the latest committed step is selected.`
+    ]) {
+      assert.doesNotThrow(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        example
+      );
+    }
   }
 });
 
@@ -1795,12 +1828,22 @@ test("cleaning-history explicit owners fence anaphors and adversative Undo claus
     "Committed steps remain visible. Editing them can make the report unavailable.",
     "Committed steps remain visible. Editing them in the toolbar can make the report unavailable.",
     "Committed steps remain visible. Editing them in the toolbar causes the report to become unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar means the report is unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar ensures the report remains unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar allows the report to remain unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar means the generated report is temporarily unavailable.",
     "Undo is unavailable for every committed step except the latest one, but reports remain visible."
   ];
   const contradictions = [
     "Committed steps remain visible. Editing them remains unavailable.",
     "Committed steps remain visible. Editing them in the toolbar remains unavailable.",
     "Committed steps remain visible. Editing them in the toolbar causes unavailable.",
+    "Committed steps remain visible. Editing them causes the report to claim committed steps are unavailable.",
+    "Committed steps remain visible. Editing them causes the report to claim committed steps are still unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar means manual editing is unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar means manual editing remains temporarily unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar allows later editing to remain unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar allows later editing to remain currently unavailable.",
     "Undo is unavailable for every committed step except the latest one, but committed steps can be reordered."
   ];
 
@@ -1878,6 +1921,9 @@ test("cleaning-history only-if spellings share exact bounded condition semantics
     "Committed steps can be edited only-when the latest committed step is selected.",
     "Committed steps can be edited if and only if the latest committed step is selected.",
     "Committed steps can be edited if-and-only-if the latest committed step is selected.",
+    "Committed steps can be edited only\u00adif the latest committed step is selected.",
+    "Committed steps can be edited only\u200bwhen the latest committed step is selected.",
+    "Committed steps can be edited if\u200band\u200bonly\u200bif the latest committed step is selected.",
     "Undo is available only-if the latest committed step is not selected.",
     "Undo is available if-and-only-if the latest committed step is not selected."
   ];
@@ -1886,7 +1932,10 @@ test("cleaning-history only-if spellings share exact bounded condition semantics
     "Undo is available only-when the latest committed step is selected.",
     "Undo is available if and only if the latest committed step is selected.",
     "Undo is available if-and-only-if the latest committed step is selected.",
+    "Undo is available only\u00adif the latest committed step is selected.",
+    "Undo is available if\u200band\u200bonly\u200bif the latest committed step is selected.",
     "Committed steps can be inspected not only-if the latest committed step is selected.",
+    "Committed steps can be inspected not only\u200bif the latest committed step is selected.",
     "Committed steps can be edited if the latest committed step is selected."
   ];
 
@@ -1913,6 +1962,57 @@ test("cleaning-history only-if spellings share exact bounded condition semantics
       example
     );
   }
+});
+
+test("cleaning-history repeated condition branches remain atomic and bounded", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Only if the latest committed step is selected and if an earlier committed step is selected, committed steps can be edited.",
+    "Only when the latest committed step is selected or when an earlier committed step is selected, committed steps can be edited.",
+    "Only if the latest committed step is selected unless an earlier committed step is selected, committed steps can be edited.",
+    "Undo is available only if the latest committed step is selected and if an earlier committed step is selected."
+  ];
+  const truthful = [
+    "Only if the latest committed step is selected and if the same latest committed step remains selected, Undo is available.",
+    "If the latest committed step is selected and if an earlier committed step is selected, committed steps can be edited."
+  ];
+  const overBound = `Only if the latest committed step is selected and if ${"the ".repeat(
+    40
+  )}earlier committed step is selected, committed steps can be edited.`;
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /(?:contradictory cleaning-history capability claim|unsupported repeated or unless condition branch)/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overBound)
+      }),
+    /exceeds the 34-token atomic condition or exception bound/u,
+    overBound
+  );
 });
 
 test("cleaning-history exclusive prefixes survive rendered punctuation fragments within the exact bound", () => {
