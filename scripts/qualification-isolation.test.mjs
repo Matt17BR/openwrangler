@@ -2991,6 +2991,67 @@ test("charges synchronous worker construction to the existing absolute deadline"
   );
 });
 
+test("rejects a result received after the absolute Python payload deadline", async () => {
+  class ResultWorker extends EventEmitter {
+    terminate() {
+      return Promise.resolve(0);
+    }
+  }
+  const worker = new ResultWorker();
+  const result = QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+    deadlineNanoseconds: process.hrtime.bigint() + 5_000_000n
+  });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+  worker.emit("message", {
+    protocol: "openwrangler-python-payload-scan-v1",
+    type: "result",
+    value: { directories: [], linkedDirectories: [], payloads: [], roots: [], snapshots: [] }
+  });
+  await assert.rejects(result, /Python payload discovery exceeded its absolute deadline/u);
+});
+
+test("rechecks the absolute Python payload deadline immediately before success", async () => {
+  class ResultWorker extends EventEmitter {
+    terminate() {
+      return Promise.resolve(0);
+    }
+  }
+  const worker = new ResultWorker();
+  const result = QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+    deadlineNanoseconds: process.hrtime.bigint() + 5_000_000n,
+    onProgress() {}
+  });
+  worker.emit("message", {
+    protocol: "openwrangler-python-payload-scan-v1",
+    type: "progress",
+    value: { entries: 1 }
+  });
+  worker.emit("message", {
+    protocol: "openwrangler-python-payload-scan-v1",
+    type: "result",
+    value: { directories: [], linkedDirectories: [], payloads: [], roots: [], snapshots: [] }
+  });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+  await assert.rejects(result, /Python payload discovery exceeded its absolute deadline/u);
+});
+
+test("bounds Python payload worker construction diagnostics", async () => {
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.discoverPythonPayloads([], "/unused", {
+      includeVenv: false,
+      timeoutMilliseconds: 100,
+      workerFactoryForTest() {
+        throw new Error(`worker construction failed ${"x".repeat(20_000)}`);
+      }
+    }),
+    (error) => {
+      assert.match(error.message, /worker construction failed/u);
+      assert.ok(Buffer.byteLength(error.message, "utf8") <= 4_096);
+      return true;
+    }
+  );
+});
+
 test("terminates a never-settling Python payload scan at one absolute deadline", async () => {
   const worker = new Worker("setInterval(() => {}, 1_000)", { eval: true });
   let exited = false;
@@ -3008,6 +3069,7 @@ test("terminates a never-settling Python payload scan at one absolute deadline",
 
 test("bounds uncertain Python payload worker termination and ignores late progress", async () => {
   let progress = 0;
+  let unrefed = false;
   class StalledWorker extends EventEmitter {
     terminate() {
       setImmediate(() =>
@@ -3018,6 +3080,10 @@ test("bounds uncertain Python payload worker termination and ignores late progre
         })
       );
       return new Promise(() => {});
+    }
+
+    unref() {
+      unrefed = true;
     }
   }
   const worker = new StalledWorker();
@@ -3034,7 +3100,49 @@ test("bounds uncertain Python payload worker termination and ignores late progre
   );
   await new Promise((resolveDelay) => setImmediate(resolveDelay));
   assert.equal(progress, 0);
+  assert.equal(unrefed, true);
+  assert.equal(worker.listenerCount("message"), 0);
+  assert.equal(worker.listenerCount("exit"), 0);
+  assert.equal(worker.listenerCount("error"), 1);
+  worker.emit("error", new Error("bounded late worker error"));
   assert.ok(Date.now() - started < 1_000, "worker settlement exceeded its fixed bound");
+});
+
+test("lets a subprocess exit after an uncertain live Python payload worker", () => {
+  const moduleUrl = new URL("./qualification-isolation.mjs", import.meta.url).href;
+  const program = `
+    import { Worker } from "node:worker_threads";
+    import { QUALIFICATION_ISOLATION_TEST_BOUNDARY as boundary } from ${JSON.stringify(moduleUrl)};
+    const worker = new Worker("setInterval(() => {}, 1000)", { eval: true });
+    worker.terminate = () => new Promise(() => {});
+    try {
+      await boundary.runOwnedPythonDiscoveryWorker(worker, {
+        deadlineNanoseconds: process.hrtime.bigint() + 5_000_000n,
+        settlementTimeoutMilliseconds: 20
+      });
+    } catch (error) {
+      worker.emit("error", new Error("late worker failure"));
+      process.stdout.write(JSON.stringify({
+        error: error.message,
+        errorListeners: worker.listenerCount("error"),
+        exitListeners: worker.listenerCount("exit"),
+        messageListeners: worker.listenerCount("message")
+      }));
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+    encoding: "utf8",
+    timeout: 2_000
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    error: "Python payload discovery worker ownership is uncertain after its settlement deadline",
+    errorListeners: 1,
+    exitListeners: 0,
+    messageListeners: 0
+  });
 });
 
 test("bounds raw Python payload worker diagnostics", async () => {

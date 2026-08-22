@@ -4331,8 +4331,18 @@ async function runOwnedPythonDiscoveryWorker(
         return;
       }
       if (message.type === "result") {
+        if (remainingPythonPayloadScanMilliseconds(deadlineNanoseconds) === 0) {
+          expire();
+          return;
+        }
         progress.then(
-          () => finish(resolveResult, message.value),
+          () => {
+            if (remainingPythonPayloadScanMilliseconds(deadlineNanoseconds) === 0) {
+              expire();
+              return;
+            }
+            finish(resolveResult, message.value);
+          },
           (error) => finish(rejectResult, boundedScanError(error))
         );
       } else finish(rejectResult, new Error("Python payload discovery worker returned an invalid message"));
@@ -4382,6 +4392,14 @@ async function runOwnedPythonDiscoveryWorker(
   }
   settlementError ??= lateWorkerError;
   if (settlementError instanceof OwnedProcessTreeError) {
+    worker.removeListener?.("message", onMessage);
+    worker.removeListener?.("exit", onExit);
+    try {
+      worker.unref?.();
+    } catch (error) {
+      settlementError.errors ??= [];
+      settlementError.errors.push(boundedScanError(error));
+    }
     settlementError.errors = [primaryError, ...(settlementError.errors ?? [])].filter(Boolean);
     throw settlementError;
   }
@@ -4416,9 +4434,14 @@ async function discoverPythonPayloads(searchPaths, venv, options = {}) {
       venv
     }
   };
-  const worker = options.workerFactoryForTest
-    ? options.workerFactoryForTest(new URL(import.meta.url), workerOptions)
-    : new Worker(new URL(import.meta.url), workerOptions);
+  let worker;
+  try {
+    worker = options.workerFactoryForTest
+      ? options.workerFactoryForTest(new URL(import.meta.url), workerOptions)
+      : new Worker(new URL(import.meta.url), workerOptions);
+  } catch (error) {
+    throw boundedScanError(error);
+  }
   const value = await runOwnedPythonDiscoveryWorker(worker, {
     deadlineNanoseconds,
     onProgress: options.afterEntryRetainedForTest,
