@@ -182,6 +182,36 @@ function pySparkPipBootstrapBody(launch) {
 const PYSPARK_PRIMARY_IDENTITY_RECEIPT = "__OW_PRIMARY_IDENTITY__=same;errno=5";
 const PYSPARK_CLEANUP_FAILURE_RECEIPT =
   "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception (type=OSError errno=9).";
+const PYSPARK_MISSING_MEMFD_CAPABILITY_PRELUDE = "import os\nif hasattr(os, 'memfd_create'): del os.memfd_create\n";
+const PYTHON_TRACEBACK_FRAME_PATTERN = /^ {2}File "<string>", line ([1-9]\d*), in (.+)$/u;
+
+let testPythonMemfdSealingAvailable;
+
+function testPythonSupportsMemfdSealing() {
+  if (testPythonMemfdSealingAvailable !== undefined) return testPythonMemfdSealingAvailable;
+  const result = spawnSync(
+    process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3",
+    [
+      "-I",
+      "-c",
+      `import fcntl, os
+required = ("F_ADD_SEALS", "F_GET_SEALS", "F_SEAL_GROW", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_WRITE")
+available = (
+    hasattr(os, "memfd_create")
+    and hasattr(os, "MFD_ALLOW_SEALING")
+    and hasattr(os, "MFD_CLOEXEC")
+    and all(hasattr(fcntl, name) for name in required)
+)
+print("available" if available else "missing")
+`
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^(?:available|missing)\r?\n$/u);
+  testPythonMemfdSealingAvailable = result.stdout.trim() === "available";
+  return testPythonMemfdSealingAvailable;
+}
 
 function assertOptionalPythonTracebackExcerpt(lines, expectedSource, label) {
   assert.ok(lines.length <= 2, `${label} must contain at most one source excerpt and one position marker`);
@@ -212,12 +242,12 @@ function assertPySparkPrimaryCleanupTracebackReceipt(stderr, options) {
   assert.equal(lines.at(-1), PYSPARK_CLEANUP_FAILURE_RECEIPT, `${options.name} cleanup failure`);
 
   const tracebackLines = lines.slice(2, -2);
-  const framePattern = /^ {2}File "<string>", line ([1-9]\d*), in (.+)$/u;
   const frames = tracebackLines.flatMap((line, index) => {
-    const match = framePattern.exec(line);
+    const match = PYTHON_TRACEBACK_FRAME_PATTERN.exec(line);
     return match === null ? [] : [{ functionName: match[2], index, line: Number.parseInt(match[1], 10) }];
   });
   assert.equal(frames.length, 2, `${options.name} exact traceback frame count`);
+  assert.equal(frames[0].index, 0, `${options.name} first traceback frame`);
   assert.deepEqual(
     frames.map((frame) => frame.functionName),
     ["<module>", options.wrapperName],
@@ -255,19 +285,65 @@ function assertPySparkTracebackReceiptMutationControls(stderr, options) {
   assert.doesNotMatch(excerptFree, /os\.close\(raw_descriptor\)|raise _ow_primary/u);
   assertPySparkPrimaryCleanupTracebackReceipt(excerptFree, options);
 
-  const wrapperFrame = new RegExp(`^ {2}File "<string>", line [1-9]\\d*, in ${options.wrapperName}\\n`, "mu");
+  const excerptFreeFrames = excerptFree.split(/\r?\n/u).flatMap((line) => {
+    const match = PYTHON_TRACEBACK_FRAME_PATTERN.exec(line);
+    return match === null ? [] : [{ functionName: match[2], line: Number.parseInt(match[1], 10), text: line }];
+  });
+  assert.deepEqual(
+    excerptFreeFrames.map((frame) => frame.functionName),
+    ["<module>", options.wrapperName],
+    `${options.name} mutation frame fixtures`
+  );
+  const [moduleFrame, wrapperFrame] = excerptFreeFrames;
+  const withExcerpts = excerptFree
+    .replace(`${moduleFrame.text}\n`, `${moduleFrame.text}\n    os.close(raw_descriptor)\n    ^^^^\n`)
+    .replace(`${wrapperFrame.text}\n`, `${wrapperFrame.text}\n    raise _ow_primary\n    ~~~~\n`);
+  assert.notEqual(withExcerpts, excerptFree, `${options.name} optional excerpt fixture`);
+  assertPySparkPrimaryCleanupTracebackReceipt(withExcerpts, options);
+
   const reversedCleanup = stderr
     .replace(`${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n`, "")
     .replace(`${options.primaryText}\n`, `${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n${options.primaryText}\n`);
   const mutations = [
-    ["missing wrapper frame", stderr.replace(wrapperFrame, "")],
+    ["missing wrapper frame", excerptFree.replace(`${wrapperFrame.text}\n`, "")],
     [
       "duplicate traceback",
-      stderr.replace(
+      excerptFree.replace(
         "Traceback (most recent call last):\n",
         "Traceback (most recent call last):\nTraceback (most recent call last):\n"
       )
     ],
+    [
+      "private pre-frame text",
+      excerptFree.replace(
+        "Traceback (most recent call last):\n",
+        "Traceback (most recent call last):\nPRIVATE_PREFRAME_TEXT\n"
+      )
+    ],
+    [
+      "renamed module frame",
+      excerptFree.replace(moduleFrame.text, `  File "<string>", line ${moduleFrame.line}, in private_module`)
+    ],
+    [
+      "renamed wrapper frame",
+      excerptFree.replace(wrapperFrame.text, `  File "<string>", line ${wrapperFrame.line}, in private_wrapper`)
+    ],
+    [
+      "inverted frame line order",
+      excerptFree.replace(
+        wrapperFrame.text,
+        `  File "<string>", line ${moduleFrame.line + 1}, in ${options.wrapperName}`
+      )
+    ],
+    [
+      "equal frame line order",
+      excerptFree.replace(wrapperFrame.text, `  File "<string>", line ${moduleFrame.line}, in ${options.wrapperName}`)
+    ],
+    ["corrupt call-site excerpt", withExcerpts.replace("os.close(raw_descriptor)", "os.close(private_descriptor)")],
+    ["corrupt wrapper excerpt", withExcerpts.replace("raise _ow_primary", "raise private_primary")],
+    ["corrupt call-site marker", withExcerpts.replace("    ^^^^\n", "    ^ private\n")],
+    ["corrupt wrapper marker", withExcerpts.replace("    ~~~~\n", "    ~ private\n")],
+    ["oversized allowed marker", withExcerpts.replace("^^^^", "^".repeat(8_192))],
     ["changed identity", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=different;errno=5")],
     ["changed errno", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=same;errno=6")],
     ["cleanup before primary", reversedCleanup],
@@ -281,6 +357,50 @@ function assertPySparkTracebackReceiptMutationControls(stderr, options) {
       `${options.name} must reject ${label}`
     );
   }
+}
+
+function portablePySparkPrimaryCleanupTracebackReceipt() {
+  const cleanupReceipt = JSON.stringify(PYSPARK_CLEANUP_FAILURE_RECEIPT);
+  return spawnSync(
+    process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3",
+    [
+      "-I",
+      "-c",
+      `import errno, os, sys
+_ow_system_excepthook = sys.__excepthook__
+_ow_cleanup_receipt = ${cleanupReceipt}
+_ow_primary = OSError(errno.EIO, "bounded primary raw-close test denial")
+def _ow_identity_excepthook(exc_type, exc_value, exc_traceback):
+    identity = "same" if exc_value is _ow_primary else "different"
+    value = OSError.errno.__get__(exc_value, OSError) if isinstance(exc_value, OSError) else None
+    sys.stderr.write("__OW_PRIMARY_IDENTITY__=" + identity + ";errno=" + str(value) + "\\n")
+    _ow_system_excepthook(exc_type, exc_value, exc_traceback)
+if sys.version_info >= (3, 11):
+    sys.excepthook = _ow_identity_excepthook
+else:
+    sys.__excepthook__ = _ow_identity_excepthook
+def _ow_fail_bounded_primary_and_cleanup_close(fd):
+    raise _ow_primary
+os.close = _ow_fail_bounded_primary_and_cleanup_close
+raw_descriptor = 3
+try:
+    os.close(raw_descriptor)
+except BaseException as caught:
+    if caught is not _ow_primary:
+        raise
+    if sys.version_info >= (3, 11):
+        BaseException.add_note(_ow_primary, _ow_cleanup_receipt)
+    else:
+        previous_excepthook = sys.__excepthook__
+        def _ow_report_primary_with_cleanup(exc_type, exc_value, exc_traceback):
+            previous_excepthook(exc_type, exc_value, exc_traceback)
+            sys.stderr.write(_ow_cleanup_receipt + "\\n")
+        sys.excepthook = _ow_report_primary_with_cleanup
+    raise
+`
+    ],
+    { encoding: "utf8" }
+  );
 }
 
 function inspectDescriptorBoundFixture(path) {
@@ -2197,8 +2317,39 @@ test("PySpark acquisition streams one exact receipt to a private local artifact 
 });
 
 test(
-  "PySpark trusted bootstrap replaces raw fd3 with one immutable sealed memfd before pip",
+  "PySpark primary and cleanup traceback proof is portable and mutation-sensitive",
   { skip: process.platform !== "linux" },
+  () => {
+    const idempotentCapabilityPrelude = spawnSync(
+      process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3",
+      [
+        "-I",
+        "-c",
+        `${PYSPARK_MISSING_MEMFD_CAPABILITY_PRELUDE}${PYSPARK_MISSING_MEMFD_CAPABILITY_PRELUDE}print("missing")\n`
+      ],
+      { encoding: "utf8" }
+    );
+    assert.equal(idempotentCapabilityPrelude.status, 0, idempotentCapabilityPrelude.stderr);
+    assert.match(idempotentCapabilityPrelude.stdout, /^missing\r?\n$/u);
+
+    const result = portablePySparkPrimaryCleanupTracebackReceipt();
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    const options = {
+      maxStderrBytes: 8_192,
+      name: "portable-primary-and-cleanup-traceback",
+      primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
+      unexpected: /PRIVATE_PORTABLE_TRACEBACK_OUTPUT|\/private\/portable-traceback|FORGED_PORTABLE_TRACEBACK_OUTPUT/u,
+      wrapperName: "_ow_fail_bounded_primary_and_cleanup_close"
+    };
+    assertPySparkPrimaryCleanupTracebackReceipt(result.stderr, options);
+    assertPySparkTracebackReceiptMutationControls(result.stderr, options);
+  }
+);
+
+test(
+  "PySpark trusted bootstrap replaces raw fd3 with one immutable sealed memfd before pip",
+  { skip: process.platform !== "linux" || !testPythonSupportsMemfdSealing() },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-sealed-bootstrap-"));
     const payload = Buffer.from("sealed-same-uid-adversary", "utf8");
@@ -2350,10 +2501,11 @@ test(
       const pipBoundary = bootstrap.indexOf("server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)");
       assert.ok(pipBoundary > 0);
       const prefix = bootstrap.slice(0, pipBoundary);
+      const nativeSealingAvailable = testPythonSupportsMemfdSealing();
       const scenarios = [
         {
           name: "missing-capability",
-          prelude: "import os\ndel os.memfd_create\n",
+          prelude: PYSPARK_MISSING_MEMFD_CAPABILITY_PRELUDE,
           sha256: distribution.sha256,
           expected: /requires Linux memfd sealing support/u
         },
@@ -2362,6 +2514,7 @@ test(
           prelude:
             "import errno, fcntl\n_ow_fcntl = fcntl.fcntl\ndef _ow_fail_seal(fd, command, *args):\n    if command == fcntl.F_ADD_SEALS: raise OSError(errno.EPERM, 'sealed test denial')\n    return _ow_fcntl(fd, command, *args)\nfcntl.fcntl = _ow_fail_seal\n",
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /sealed test denial/u
         },
         {
@@ -2369,6 +2522,7 @@ test(
           prelude:
             "import os\n_ow_pwrite = os.pwrite\ndef _ow_corrupt_copy(fd, value, offset):\n    if fd != 3 and offset == 0: value = b'X' + value[1:]\n    return _ow_pwrite(fd, value, offset)\nos.pwrite = _ow_corrupt_copy\n",
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /rejected its sealed artifact copy/u
         },
         {
@@ -2376,6 +2530,7 @@ test(
           prelude:
             "import errno, os\n_ow_close = os.close\ndef _ow_fail_raw_close(fd):\n    if fd == 3: raise OSError(errno.EIO, 'raw close test denial')\n    return _ow_close(fd)\nos.close = _ow_fail_raw_close\n",
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /raw close test denial/u
         },
         {
@@ -2383,6 +2538,7 @@ test(
           prelude:
             "import errno, os\ndef _ow_fail_primary_and_cleanup_close(fd):\n    if fd == 3: raise OSError(errno.EIO, 'primary raw-close test denial')\n    raise OSError(errno.EBADF, 'secondary sealed-close test denial')\nos.close = _ow_fail_primary_and_cleanup_close\n",
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /OSError: \[Errno 5\] primary raw-close test denial/u,
           cleanupExpected:
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
@@ -2424,6 +2580,7 @@ def _ow_fail_bounded_primary_and_cleanup_close(fd):
 os.close = _ow_fail_bounded_primary_and_cleanup_close
 `.trimStart(),
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
           cleanupExpected:
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
@@ -2468,6 +2625,7 @@ def _ow_fail_python310_primary_and_cleanup_close(fd):
 os.close = _ow_fail_python310_primary_and_cleanup_close
 `.trimStart(),
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           cleanupExpected:
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
@@ -2484,6 +2642,7 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
           prelude:
             "import errno, os\n_ow_close = os.close\ndef _ow_fail_sealed_close(fd):\n    if fd != 3: raise OSError(errno.EBADF, 'sealed cleanup-only test denial')\n    return _ow_close(fd)\nos.close = _ow_fail_sealed_close\n",
           sha256: distribution.sha256,
+          requiresNativeSealing: true,
           expected: /OSError: \[Errno 9\] sealed cleanup-only test denial/u,
           unexpected: /sealed descriptor cleanup also failed/u
         },
@@ -2495,6 +2654,7 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
         }
       ];
       for (const scenario of scenarios) {
+        if (scenario.requiresNativeSealing && !nativeSealingAvailable) continue;
         const result = spawnSync(
           process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3",
           [
