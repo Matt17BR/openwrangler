@@ -299,6 +299,63 @@ describe("packaged whole-column copy journey", () => {
     expect(closeAllEditors).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an undefined complete-journey failure through receipt settlement and cleanup", async () => {
+    const fixture = fakeUri("file:///workspace/fixtures/grid-column-copy.csv");
+    const active = activeSession(fixture.toString());
+    let clipboard = "original";
+    let session = false;
+    const writeSettlement = deferred<void>();
+    const dispatchStarted = deferred<void>();
+    const closeAllEditors = vi.fn(async () => {
+      session = false;
+    });
+    const surface = {
+      restoreViewport: vi.fn(async () => undefined),
+      activateHeaderCopy: vi.fn(async (_column, retainReceipt) => {
+        retainReceipt({ waitForSettlement: () => writeSettlement.promise });
+        dispatchStarted.resolve();
+        return Promise.reject(undefined);
+      }),
+      assertHeaderFocused: vi.fn(async () => undefined),
+      pressHeaderCopyShortcut: vi.fn(async () => settledClipboardWriteReceipt()),
+      waitForColumnValues: vi.fn(async () => undefined),
+      waitForHeaderCopyState: vi.fn(async () => undefined)
+    } as unknown as PackagedGridColumnCopySurface;
+    const journey = createPackagedGridColumnCopyJourney({
+      closeAllEditors,
+      connectToEditorWorkbench: async () => ({}) as never,
+      createSurface: async () => surface,
+      openFixture: async () => {
+        session = true;
+      },
+      readClipboardText: async () => clipboard,
+      readFixture: async () => new TextEncoder().encode(packagedGridColumnCopyFixtureCsv()),
+      recordProgress: () => undefined,
+      waitFor: async (predicate) => {
+        if (!predicate()) throw new Error("not ready");
+      },
+      writeClipboardText: async (text) => {
+        clipboard = text;
+      },
+      sessionTimeoutMs: 1_000
+    });
+
+    const outcome = journey(
+      testingApi(active, () => session),
+      fixture as never
+    ).then(
+      () => "fulfilled" as const,
+      () => "rejected" as const
+    );
+    await dispatchStarted.promise;
+    await Promise.resolve();
+    expect(closeAllEditors).not.toHaveBeenCalled();
+
+    writeSettlement.resolve();
+    await expect(outcome).resolves.toBe("rejected");
+    expect(closeAllEditors).toHaveBeenCalledTimes(1);
+  });
+
   it("owns every receipt from a repeated dispatch callback before rejecting the protocol", async () => {
     const first = deferred<void>();
     const second = deferred<void>();
