@@ -1062,7 +1062,9 @@ async function verifyGridStatusBar(browser) {
     openProfilesDrawer = false,
     visibleRowsOverride,
     expectSingleLine = true,
-    expectVisibleClipboardLabels = expectedDataGridWidth > 480
+    expectVisibleClipboardLabels = expectedDataGridWidth > 480,
+    expectWrappedFooter,
+    expectSelectionStatusVisible
   } of [
     {
       harness: "grid-zoom-0-8.html",
@@ -1100,6 +1102,18 @@ async function verifyGridStatusBar(browser) {
       nextDisabled: true,
       expectSecondRow: false,
       visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000"
+    })),
+    ...[900, 901, 1048, 1049].map((width) => ({
+      harness: "grid-view.html",
+      width,
+      expectedDataGridWidth: width,
+      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false,
+      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      expectWrappedFooter: width === 900 ? undefined : width <= 1048,
+      expectSelectionStatusVisible: width > 900
     })),
     {
       harness: "grid-zoom-1-5.html",
@@ -1286,6 +1300,7 @@ async function verifyGridStatusBar(browser) {
       const scroller = bar.previousElementSibling;
       const rangeStatus = bar.querySelector('[role="status"][aria-label="Visible rows"]');
       const headerProfiles = bar.querySelector(".headerProfilesButton");
+      const selectionStatus = bar.querySelector(".gridClipboardSelectionStatus");
       const app = bar.closest(".app");
       const dataGrid = bar.closest(".dataGrid");
       const primaryActions = [...bar.querySelectorAll(".gridNavigationButton, .gridClipboardControls button")];
@@ -1300,6 +1315,8 @@ async function verifyGridStatusBar(browser) {
       })();
       const primaryActionBottom = Math.max(...primaryActions.map((action) => action.getBoundingClientRect().bottom));
       const headerProfilesBounds = headerProfiles?.getBoundingClientRect();
+      const selectionStatusBounds = selectionStatus?.getBoundingClientRect();
+      const selectionStatusStyle = selectionStatus ? getComputedStyle(selectionStatus) : undefined;
       const rangeStyle = rangeStatus ? getComputedStyle(rangeStatus) : undefined;
       const actionableDescendants = [
         ...bar.querySelectorAll("button, input, select, textarea, summary, a[href], [tabindex]")
@@ -1389,6 +1406,7 @@ async function verifyGridStatusBar(browser) {
         actionableDescendantCount: actionableDescendants.length,
         actionableDescendantFailures,
         visibleRowStatusFailures,
+        footerWrap: getComputedStyle(bar).flexWrap,
         position: getComputedStyle(bar).position,
         followsScroller: scroller?.matches('[data-testid="data-grid-scroller"]') === true,
         overflow: bar.scrollWidth - bar.clientWidth,
@@ -1404,6 +1422,15 @@ async function verifyGridStatusBar(browser) {
           rangeStatus && rangeStyle && rangeStatus.clientHeight <= Number.parseFloat(rangeStyle.fontSize) * 1.5
         ),
         visibleClipboardLabels,
+        selectionStatusVisible: Boolean(
+          selectionStatusBounds &&
+          selectionStatusStyle &&
+          selectionStatusBounds.width > 1 &&
+          selectionStatusBounds.height > 1 &&
+          selectionStatusStyle.clipPath === "none" &&
+          selectionStatusStyle.display !== "none" &&
+          selectionStatusStyle.visibility !== "hidden"
+        ),
         headerProfilesReachable: Boolean(
           headerProfilesBounds &&
           headerProfilesBounds.left >= bounds.left - 1 &&
@@ -1434,6 +1461,8 @@ async function verifyGridStatusBar(browser) {
       layout.rangeClipped ||
       layout.rangeOnSecondRow !== expectSecondRow ||
       layout.rangeSingleLine !== expectSingleLine ||
+      (expectWrappedFooter !== undefined && layout.footerWrap !== (expectWrappedFooter ? "wrap" : "nowrap")) ||
+      (expectSelectionStatusVisible !== undefined && layout.selectionStatusVisible !== expectSelectionStatusVisible) ||
       (expectVisibleClipboardLabels &&
         layout.visibleClipboardLabels.join("|") !== "Copy cell|Copy row|Copy range|Copy column") ||
       !layout.headerProfilesReachable ||

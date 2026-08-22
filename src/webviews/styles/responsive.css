@@ -185,7 +185,7 @@
   }
 }
 
-@container (max-width: 840px) {
+@container (max-width: 1048px) {
   .gridStatusBar {
     flex-wrap: wrap;
   }
