@@ -1347,6 +1347,123 @@ test("cleaning-history punctuation inherits only passive capability continuation
   }
 });
 
+test("cleaning-history coordinated passive capabilities share one bounded suffix exception", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps can be inspected and edited unless the latest committed step is selected.",
+    "Committed steps can be inspected, edited, and deleted unless the latest committed step is selected."
+  ];
+  const truthful = [
+    "The report can be inspected and edited unless the latest committed step is selected.",
+    "Committed steps can be inspected, the report can be edited unless the latest committed step is selected.",
+    "Committed steps remain visible, do not inspect the report unless the latest committed step is selected.",
+    "Committed steps remain visible, edit the report unless the latest committed step is selected.",
+    "Committed steps remain visible, delete the report unless the latest committed step is selected."
+  ];
+  const overLimit =
+    "Committed steps can be inspected, edited, deleted, and reordered unless the latest committed step is selected.";
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overLimit)
+      }),
+    /exceeds the 3-capability coordination limit/u,
+    overLimit
+  );
+});
+
+test("cleaning-history nominalized and infinitive capabilities require bounded ownership evidence", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps remain visible. Editing them is available only for the latest committed step.",
+    "Committed steps remain visible. Inspection of them is unavailable unless the latest committed step is selected.",
+    "Committed steps remain visible. Deletion of them is available only for the latest committed step.",
+    "Committed steps remain visible. Unless the latest committed step is selected, editing them is available.",
+    "Committed steps remain visible. Deletion of them is available unless the latest committed step is selected.",
+    "Committed steps remain visible. Unless the latest committed step is selected, inspection of them is available.",
+    "Committed steps remain visible. Unless the latest committed step is selected, to edit them is available.",
+    "Committed steps remain visible. To inspect them is available unless the latest committed step is selected.",
+    "Committed steps remain visible. To delete them is unavailable.",
+    "Editing is unavailable.",
+    "To inspect is unavailable."
+  ];
+  const truthful = [
+    "Editing the report is unavailable unless the latest committed step is selected.",
+    "Inspection of the report is unavailable unless the latest committed step is selected.",
+    "Deletion of the report is unavailable unless the latest committed step is selected.",
+    "To edit the report is unavailable unless the latest committed step is selected.",
+    "To inspect the report is unavailable unless the latest committed step is selected.",
+    "To delete the report is unavailable unless the latest committed step is selected.",
+    "Unless the latest committed step is selected, editing the report is unavailable.",
+    "Unless the latest committed step is selected, to edit the report is unavailable.",
+    "Committed steps remain visible. Unless the latest committed step is selected, edit the report.",
+    "Committed steps remain visible. Inspect the report unless the latest committed step is selected.",
+    "Committed steps remain visible. Delete the report unless the latest committed step is selected.",
+    `Editing the report ${"when selected ".repeat(7)}is unavailable.`
+  ];
+  const overOwnershipWindow = `Editing ${"is ".repeat(12)}unavailable.`;
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overOwnershipWindow)
+      }),
+    /exceeds the 12-token capability ownership window/u,
+    overOwnershipWindow
+  );
+});
+
 test("cleaning-history predicate work is explicitly bounded before clause analysis", () => {
   const model = cleaningHistoryModel();
   const atLimit = `Applied ${"edit ".repeat(512)}.`;
