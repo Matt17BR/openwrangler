@@ -1337,6 +1337,7 @@ export function DataGrid({
                     selected={viewState.selectedColumnId === column.id}
                     clipboardSelected={gridClipboard.isColumnSelected(column.id)}
                     clipboardAction={gridClipboard.columnCopyAction(column)}
+                    logicalViewOwner={logicalViewContext}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
                     compactInsights={compactHeaderProfiles}
@@ -2198,6 +2199,7 @@ function ColumnHeader({
   selected,
   clipboardSelected,
   clipboardAction,
+  logicalViewOwner,
   added,
   showInsights,
   compactInsights,
@@ -2236,6 +2238,7 @@ function ColumnHeader({
     menuLabel: string;
     title: string;
   };
+  logicalViewOwner: string;
   added: boolean;
   showInsights: boolean;
   compactInsights: boolean;
@@ -2262,6 +2265,10 @@ function ColumnHeader({
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
+  const logicalViewOwnerRef = useRef(logicalViewOwner);
+  useLayoutEffect(() => {
+    logicalViewOwnerRef.current = logicalViewOwner;
+  }, [logicalViewOwner]);
   const menuGenerationRef = useRef(0);
   const menuOperationGenerationRef = useRef(0);
   const clipboardOperationGenerationRef = useRef(0);
@@ -2342,11 +2349,13 @@ function ColumnHeader({
   const runClipboardMenuAction = async () => {
     const menu = menuRef.current;
     const menuGeneration = menuGenerationRef.current;
+    const operationViewOwner = logicalViewOwner;
     const operationGeneration = ++menuOperationGenerationRef.current;
     if (
       (await runClipboardAction()) &&
       menuRef.current === menu &&
       menu?.open === true &&
+      logicalViewOwnerRef.current === operationViewOwner &&
       menuGenerationRef.current === menuGeneration &&
       menuOperationGenerationRef.current === operationGeneration
     ) {
