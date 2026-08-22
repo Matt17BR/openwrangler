@@ -52,6 +52,7 @@ describe("packaged whole-column copy journey", () => {
       activateHeaderCopy: vi.fn(async (column) => {
         calls.push(`action:${column}`);
         clipboard = packagedGridColumnCopyExpectedCityText();
+        return settledClipboardWriteReceipt();
       }),
       assertHeaderFocused: vi.fn(async (column) => {
         calls.push(`focus:${column}`);
@@ -59,6 +60,7 @@ describe("packaged whole-column copy journey", () => {
       pressHeaderCopyShortcut: vi.fn(async (column, platform) => {
         calls.push(`shortcut:${column}:${platform}`);
         clipboard = packagedGridColumnCopyExpectedSalesText();
+        return settledClipboardWriteReceipt();
       }),
       waitForColumnValues: vi.fn(async (position, values) => {
         calls.push(`values:${position}:${values.join(",")}`);
@@ -126,9 +128,9 @@ describe("packaged whole-column copy journey", () => {
     let session = false;
     const surface = {
       restoreViewport: vi.fn(async () => undefined),
-      activateHeaderCopy: vi.fn(async () => undefined),
+      activateHeaderCopy: vi.fn(async () => settledClipboardWriteReceipt()),
       assertHeaderFocused: vi.fn(async () => undefined),
-      pressHeaderCopyShortcut: vi.fn(async () => undefined),
+      pressHeaderCopyShortcut: vi.fn(async () => settledClipboardWriteReceipt()),
       waitForColumnValues: vi.fn(async () => undefined),
       waitForHeaderCopyState: vi.fn(async () => {
         throw new Error("copying state absent");
@@ -173,6 +175,72 @@ describe("packaged whole-column copy journey", () => {
 
     await expect(journey(testing, fixture as never)).rejects.toThrow("copying state absent");
     expect(surface.pressHeaderCopyShortcut).not.toHaveBeenCalled();
+  });
+
+  it("retains a started header clipboard write through settlement before reporting an attestation failure", async () => {
+    const fixture = fakeUri("file:///workspace/fixtures/grid-column-copy.csv");
+    const active = activeSession(fixture.toString());
+    let session = false;
+    let clipboard = "original";
+    const writeSettlement = deferred<void>();
+    const copyingProofStarted = deferred<void>();
+    const closeAllEditors = vi.fn(async () => {
+      session = false;
+    });
+    const surface = {
+      restoreViewport: vi.fn(async () => undefined),
+      activateHeaderCopy: vi.fn(async () => {
+        void writeSettlement.promise.then(() => {
+          clipboard = packagedGridColumnCopyExpectedCityText();
+        });
+        return { waitForSettlement: () => writeSettlement.promise };
+      }),
+      assertHeaderFocused: vi.fn(async () => undefined),
+      pressHeaderCopyShortcut: vi.fn(async () => settledClipboardWriteReceipt()),
+      waitForColumnValues: vi.fn(async () => undefined),
+      waitForHeaderCopyState: vi.fn(async () => {
+        copyingProofStarted.resolve();
+        throw new Error("copying state proof failed");
+      })
+    } satisfies PackagedGridColumnCopySurface;
+    const journey = createPackagedGridColumnCopyJourney({
+      closeAllEditors,
+      connectToEditorWorkbench: async () => ({}) as never,
+      createSurface: async () => surface,
+      openFixture: async () => {
+        session = true;
+      },
+      readClipboardText: async () => clipboard,
+      readFixture: async () => new TextEncoder().encode(packagedGridColumnCopyFixtureCsv()),
+      recordProgress: () => undefined,
+      waitFor: async (predicate) => {
+        if (!predicate()) throw new Error("not ready");
+      },
+      writeClipboardText: async (text) => {
+        clipboard = text;
+      },
+      sessionTimeoutMs: 1_000
+    });
+
+    const outcome = journey(
+      testingApi(active, () => session),
+      fixture as never
+    ).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ error, status: "rejected" as const })
+    );
+    await copyingProofStarted.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closeAllEditors).not.toHaveBeenCalled();
+
+    writeSettlement.resolve();
+    const result = await outcome;
+    expect(result.status).toBe("rejected");
+    expect(result.status === "rejected" ? result.error : undefined).toBeInstanceOf(AggregateError);
+    expect((result.status === "rejected" ? (result.error as AggregateError).errors : [])[0]).toEqual(
+      new Error("copying state proof failed")
+    );
+    expect(closeAllEditors).toHaveBeenCalledTimes(1);
   });
 
   it("preserves a concurrent foreign clipboard value and emits only a fixed interference diagnostic", async () => {
@@ -584,12 +652,18 @@ function successfulSurface(
     }),
     activateHeaderCopy: vi.fn(async () => {
       setClipboard(packagedGridColumnCopyExpectedCityText());
+      return settledClipboardWriteReceipt();
     }),
     assertHeaderFocused: vi.fn(async () => undefined),
     pressHeaderCopyShortcut: vi.fn(async () => {
       setClipboard(packagedGridColumnCopyExpectedSalesText());
+      return settledClipboardWriteReceipt();
     }),
     waitForColumnValues: vi.fn(async () => undefined),
     waitForHeaderCopyState: vi.fn(async () => undefined)
   };
+}
+
+function settledClipboardWriteReceipt() {
+  return { waitForSettlement: async () => undefined };
 }

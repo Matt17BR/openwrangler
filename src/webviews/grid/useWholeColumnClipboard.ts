@@ -46,6 +46,7 @@ interface ActiveColumnPreparation extends ColumnCopyOwner {
   requestId?: string;
   revision: number;
   sessionId: string;
+  writeSettlement?: Pick<ColumnWriteRequest, "settle" | "settled">;
 }
 
 interface ActiveColumnWrite {
@@ -125,8 +126,10 @@ export function useWholeColumnClipboard({
 
   const cancelActive = useCallback(
     (publishIdle: boolean): void => {
-      const requestId = activeRef.current?.requestId;
+      const active = activeRef.current;
+      const requestId = active?.requestId;
       activeRef.current = undefined;
+      active?.writeSettlement?.settle();
       const pendingWrite = pendingWriteRef.current;
       pendingWriteRef.current = undefined;
       if (pendingWrite) settleWriteRequest(pendingWrite);
@@ -143,6 +146,7 @@ export function useWholeColumnClipboard({
     (active: ActiveColumnPreparation, reason: string): void => {
       if (activeRef.current !== active) return;
       activeRef.current = undefined;
+      active.writeSettlement?.settle();
       publishState({
         phase: "error",
         column: active.column,
@@ -349,6 +353,7 @@ export function useWholeColumnClipboard({
       if (activeRef.current !== active) return;
       activeRef.current = undefined;
       if (!result.ok) {
+        active.writeSettlement?.settle();
         publishState({
           phase: "error",
           column: active.column,
@@ -368,7 +373,9 @@ export function useWholeColumnClipboard({
         result,
         rowCount: result.payload.rowCount
       });
-      if (active.copyRequested) void writePreparedResult(active, result, active.copyFocusOwner);
+      if (active.copyRequested) {
+        void writePreparedResult(active, result, active.copyFocusOwner).finally(() => active.writeSettlement?.settle());
+      }
     },
     [publishState, writePreparedResult]
   );
@@ -506,14 +513,14 @@ export function useWholeColumnClipboard({
   }, [cancelActive]);
 
   const startPreparation = useCallback(
-    (column: ColumnSchema, copyRequested: boolean, ownsResult?: () => boolean): void => {
+    (column: ColumnSchema, copyRequested: boolean, ownsResult?: () => boolean): ActiveColumnPreparation | undefined => {
       cancelActive(false);
       setAnnouncement("");
       if (availabilityReason || !viewContextId) {
         const reason = availabilityReason ?? "Whole-column copy is unavailable in this data view.";
         publishState({ phase: "error", column, reason });
         setAnnouncement(reason);
-        return;
+        return undefined;
       }
       const active: ActiveColumnPreparation = {
         accumulator: createGridClipboardColumnAccumulator(),
@@ -528,7 +535,8 @@ export function useWholeColumnClipboard({
         ownsResult,
         preparationIdentity,
         revision: metadata.revision,
-        sessionId: metadata.sessionId
+        sessionId: metadata.sessionId,
+        writeSettlement: copyRequested ? createWriteSettlement() : undefined
       };
       activeRef.current = active;
       publishState({
@@ -542,6 +550,7 @@ export function useWholeColumnClipboard({
         setAnnouncement(`Preparing column ${column.name}. Copy will complete when it is ready.`);
       }
       requestNext(active);
+      return active;
     },
     [
       cancelActive,
@@ -591,7 +600,8 @@ export function useWholeColumnClipboard({
           current.phase === "error" ||
           current.preparationIdentity !== preparationIdentity)
       ) {
-        startPreparation(column, true, ownsResult);
+        const started = startPreparation(column, true, ownsResult);
+        if (started?.writeSettlement) await started.writeSettlement.settled;
         return ownsExternalResult();
       }
       const active = activeRef.current;
@@ -600,11 +610,13 @@ export function useWholeColumnClipboard({
           active.copyRequested = true;
           active.copyFocusOwner = captureClipboardFocusOwner();
           active.ownsResult = ownsResult;
+          active.writeSettlement = createWriteSettlement();
           publishState({ ...current, copyRequested: true });
         }
         if (ownsExternalResult()) {
           setAnnouncement(`Preparing column ${active.column.name}. Copy will complete when it is ready.`);
         }
+        if (active.writeSettlement) await active.writeSettlement.settled;
         return ownsExternalResult();
       }
       if (current.phase === "ready" && current.result?.ok && current.column && current.ownerId) {
