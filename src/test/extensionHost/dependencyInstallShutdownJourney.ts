@@ -6,7 +6,10 @@ import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
 import { requiredDependencies } from "../../extension/pythonEnvironmentModel";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
-import { createDependencyInstallLifecyclePython } from "./dependencyInstallLifecycleFixture";
+import {
+  createDependencyInstallLifecyclePython,
+  waitForDependencyInstallLifecycleStart
+} from "./dependencyInstallLifecycleFixture";
 import type { TestApi } from "./extensionHostTestApi";
 
 interface DependencyInstallGridColumnWindow {
@@ -117,11 +120,7 @@ export function createDependencyInstallShutdownJourney({
       recordAcceptanceProgress("verify:dependency-install-action-dispatched");
       await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
       recordAcceptanceProgress("verify:dependency-install-dialog-hidden");
-      await waitFor(
-        () => existsSync(lifecycle.started),
-        10_000,
-        "the disposable fake pip process to publish its start marker"
-      );
+      await waitForDependencyInstallLifecycleStart({ pendingCommand, started: lifecycle.started, waitFor });
       recordAcceptanceProgress("verify:dependency-install-child-started");
 
       const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
