@@ -802,11 +802,50 @@ const cleaningHistoryNominalizedCapabilities = new Set([
 ]);
 const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
 const cleaningHistoryExplicitUnrelatedOwnerWords = new Set(["report", "reports"]);
-const cleaningHistoryReportModifierPrepositions = new Set(["about", "of", "on"]);
-const cleaningHistoryReportObjectDemonstratives = new Set(["these", "those"]);
+const cleaningHistoryReportModifierPrepositions = new Set(["about", "of", "on", "with"]);
+const cleaningHistoryReportObjectReferences = new Set([
+  "all",
+  "both",
+  "each",
+  "every",
+  "few",
+  "neither",
+  "none",
+  "several",
+  "some",
+  "that",
+  "these",
+  "those",
+  "which"
+]);
 const cleaningHistoryPluralPersonalAnaphors = new Set(["them", "they"]);
-const cleaningHistoryReportObjectRelation =
-  /^(?:contain|contained|containing|contains|describe|described|describes|describing|include|included|includes|including|list|listed|listing|lists)$/u;
+const cleaningHistoryExplicitSubjectAuxiliaries = new Set([
+  "am",
+  "are",
+  "be",
+  "been",
+  "being",
+  "can",
+  "cannot",
+  "could",
+  "did",
+  "do",
+  "does",
+  "had",
+  "has",
+  "have",
+  "is",
+  "may",
+  "might",
+  "must",
+  "should",
+  "was",
+  "were",
+  "will",
+  "would"
+]);
+const cleaningHistoryProducesReportRelation =
+  /^(?:generate|generated|generates|generating|produce|produced|produces|producing)$/u;
 const cleaningHistoryCapabilityContextPrepositions = new Set([
   "at",
   "from",
@@ -1446,7 +1485,8 @@ const cleaningHistoryAnaphors = new Set([
   "these",
   "they",
   "this",
-  "those"
+  "those",
+  "which"
 ]);
 const cleaningHistoryBareHistoryNouns = new Set([
   "entries",
@@ -1655,7 +1695,11 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
     .replace(/\b(?:non)-(current|deletable|editable|inspectable|latest|modifiable)\b/giu, "non$1")
     .replace(/\b(?:un)-(deletable|editable|inspectable|modifiable)\b/giu, "un$1")
     .replace(/\bre-(arrange|arranged|arranges|arranging|order|ordered|ordering|orders)\b/giu, "re$1")
-    .replace(/\broll-(back|backs)\b/giu, "roll$1")
+    .replace(/\brolled[ -]back\b/giu, "undone")
+    .replace(/\brolling[ -]back\b/giu, "undoing")
+    .replace(/\brolls[ -]back\b/giu, "undoes")
+    .replace(/\broll[ -]backs\b/giu, "rollbacks")
+    .replace(/\broll[ -]back\b/giu, "rollback")
     .replace(/([\p{L}])-(?=[\p{L}])/gu, "$1 ")
     .toLowerCase();
   const tokens = [];
@@ -1763,36 +1807,56 @@ function cleaningHistoryReportRelationSubject(tokens) {
     explicit: true
   };
   const reportPlural = tokens[latestReportIndex] === "reports";
-  const reportSubject = (reportObject = undefined) => ({
+  const reportSubject = (reportObject = undefined, reportObjectComplement = false) => ({
     owner: "unrelated",
     scope: "unknown",
     explicit: true,
     reportSubject: true,
     reportPlural,
-    reportObject
+    reportObject,
+    reportObjectComplement
   });
   if (latestCleaningIndex < 0) return reportSubject();
   if (latestCleaningIndex < latestReportIndex) {
-    const reportIsCleaningContext = tokens
-      .slice(latestCleaningIndex + 1, latestReportIndex)
-      .some((token) => cleaningHistoryCapabilityContextPrepositions.has(token));
-    return reportIsCleaningContext ? cleaningSubject : reportSubject();
+    const relation = tokens.slice(latestCleaningIndex + 1, latestReportIndex);
+    const reportRelative = tokens.slice(latestReportIndex + 1).some((token) => ["that", "which"].includes(token));
+    if (reportRelative) return reportSubject();
+    const reportIsCleaningContext = relation.some((token) => cleaningHistoryCapabilityContextPrepositions.has(token));
+    const producesReportIndex = relation.findIndex((token) => cleaningHistoryProducesReportRelation.test(token));
+    const cleaningProducesReport =
+      producesReportIndex >= 0 &&
+      relation
+        .slice(0, producesReportIndex)
+        .every((token) => cleaningHistoryExplicitSubjectAuxiliaries.has(token) || ["that", "which"].includes(token)) &&
+      relation.slice(producesReportIndex + 1).every((token) => ["a", "an", "one", "the"].includes(token));
+    return reportIsCleaningContext || cleaningProducesReport
+      ? { ...cleaningSubject, producedReport: reportSubject() }
+      : reportSubject();
   }
 
   const firstCleaningAfterReport = cleaningIndices.find((index) => index > latestReportIndex);
   const relation = tokens.slice(latestReportIndex + 1, firstCleaningAfterReport);
+  const suffix = tokens.slice(firstCleaningAfterReport + 1);
   const cleaningIsReportModifier = relation.some((token) => cleaningHistoryReportModifierPrepositions.has(token));
-  const cleaningIsReportObject = relation.some((token) => cleaningHistoryReportObjectRelation.test(token));
+  const cleaningIsReportSource = relation.includes("by");
+  const reportRelationIsRelative = relation.some((token) => ["that", "which"].includes(token));
   const laterCleaningSubject = cleaningIndices.some((index) => index > firstCleaningAfterReport);
-  const cleaningObjectAnaphor = tokens
-    .slice(firstCleaningAfterReport + 1)
-    .some(
-      (token) =>
-        cleaningHistoryReportObjectDemonstratives.has(token) ||
-        (!reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
-    );
-  if ((cleaningIsReportModifier || cleaningIsReportObject) && !laterCleaningSubject && !cleaningObjectAnaphor) {
-    return reportSubject(cleaningSubject);
+  const cleaningObjectReference = suffix.some(
+    (token) =>
+      cleaningHistoryReportObjectReferences.has(token) ||
+      (!reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
+  );
+  const cleaningObjectComplement = suffix.includes("as");
+  const subjectPrefixEnd = suffix.findIndex((token) => cleaningHistoryCoordinateConnectors.has(token));
+  const subjectPrefix = suffix.slice(0, subjectPrefixEnd < 0 ? undefined : subjectPrefixEnd);
+  const explicitSubjectPredicate = subjectPrefix.some((token) => cleaningHistoryExplicitSubjectAuxiliaries.has(token));
+  if (
+    !laterCleaningSubject &&
+    !cleaningObjectReference &&
+    !cleaningObjectComplement &&
+    (cleaningIsReportModifier || cleaningIsReportSource || reportRelationIsRelative || !explicitSubjectPredicate)
+  ) {
+    return reportSubject(cleaningSubject, !cleaningIsReportModifier && !cleaningIsReportSource);
   }
   return cleaningSubject;
 }
@@ -2475,25 +2539,34 @@ function cleaningHistoryPredicateRecords(rendered) {
       }
       if (subject.owner === "anaphor") {
         const inherited = cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject);
-        const reportObjectAnaphor = segment.tokens
-          .slice(0, subjectProbeIndex)
-          .some(
-            (token) =>
-              cleaningHistoryReportObjectDemonstratives.has(token) ||
-              (!inherited?.reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
-          );
+        const anaphorTokens = segment.tokens.slice(0, subjectProbeIndex);
+        const reportObjectAnaphor = anaphorTokens.some(
+          (token) =>
+            cleaningHistoryReportObjectReferences.has(token) ||
+            (!inherited?.reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
+        );
+        const producedReportAnaphor = anaphorTokens.some((token) => ["it", "that", "which"].includes(token));
         subject =
-          inherited?.reportSubject && reportObjectAnaphor && inherited.reportObject !== undefined
-            ? { ...inherited.reportObject, explicit: false }
-            : inherited?.owner === "cleaning" || inherited?.reportSubject
-              ? { ...inherited, explicit: false }
-              : subject;
+          inherited?.producedReport !== undefined && producedReportAnaphor
+            ? { ...inherited.producedReport, explicit: false }
+            : inherited?.reportSubject && reportObjectAnaphor && inherited.reportObject !== undefined
+              ? { ...inherited.reportObject, explicit: false }
+              : inherited?.owner === "cleaning" || inherited?.reportSubject
+                ? { ...inherited, explicit: false }
+                : subject;
         if (subject.owner === "cleaning") {
           const localScope = cleaningHistoryScope(segment.tokens.slice(0, subjectProbeIndex));
           if (localScope !== "single" || segment.tokens.some((token) => ["this", "that"].includes(token))) {
             subject.scope = localScope === "single" ? inherited.scope : localScope;
           }
         }
+      } else if (
+        subject.owner === "none" &&
+        segment.separatorBefore === "as" &&
+        currentSubject?.reportObjectComplement &&
+        currentSubject.reportObject !== undefined
+      ) {
+        subject = { ...currentSubject.reportObject, explicit: false };
       } else if (
         subject.owner === "none" &&
         (currentSubject?.owner === "cleaning" || currentSubject?.reportSubject) &&
