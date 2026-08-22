@@ -166,25 +166,7 @@
   }
 }
 
-@container (max-width: 480px) {
-  .gridStatusBar {
-    display: grid;
-    grid-template-columns: auto auto auto minmax(0, 1fr);
-  }
-
-  .visibleRowsStatus {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
-
-  .gridClipboardControls {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
+@container (max-width: 900px) {
   .gridClipboardSelectionStatus {
     border: 0;
     clip-path: inset(50%);
@@ -205,11 +187,49 @@
   .gridClipboardButtonLabel {
     display: none;
   }
+}
+
+@container (max-width: 480px) {
+  .gridStatusBar {
+    display: grid;
+    grid-template-columns: auto auto auto minmax(0, 1fr);
+  }
+
+  .visibleRowsStatus {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .gridClipboardControls {
+    grid-column: 3;
+    grid-row: 1;
+  }
 
   .gridProfileControls {
-    justify-self: end;
     grid-column: 4;
     grid-row: 1;
+    justify-self: end;
+  }
+
+  .profileValueToggle.compact button,
+  .headerProfilesButton {
+    font-size: 10px;
+    padding-inline: 2px;
+  }
+
+  .headerProfilesButton {
+    min-height: 24px;
+  }
+}
+
+@container (max-width: 240px) {
+  .visibleRowsStatus {
+    grid-column: 1 / 4;
+  }
+
+  .gridProfileControls {
+    grid-row: 2;
   }
 }
 

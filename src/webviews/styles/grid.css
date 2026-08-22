@@ -200,9 +200,9 @@
 .gridClipboardControls {
   align-items: center;
   display: flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   gap: 3px;
-  min-width: 0;
+  min-width: max-content;
 }
 
 .gridClipboardSelectionStatus {
@@ -245,6 +245,7 @@
   display: flex;
   flex: 0 0 auto;
   gap: 4px;
+  min-width: max-content;
 }
 
 .headerProfilesFitStatus {
