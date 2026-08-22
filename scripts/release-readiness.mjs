@@ -20,6 +20,7 @@ import { isDeepStrictEqual } from "node:util";
 import { JSDOM } from "jsdom";
 import MarkdownIt from "markdown-it";
 import { SaxesParser } from "saxes";
+import ts from "typescript";
 import {
   DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
   assertReleaseCompleteStudyReport,
@@ -249,6 +250,7 @@ const MAX_PERFORMANCE_SKELETON_INPUT_CODE_UNITS = MAX_PERFORMANCE_README_BYTES;
 const MAX_PERFORMANCE_SKELETON_NORMALIZED_WORK = MAX_PERFORMANCE_README_BYTES;
 const MAX_PERFORMANCE_SKELETON_OUTPUT_CODE_UNITS = MAX_PERFORMANCE_README_BYTES;
 const PERFORMANCE_SKELETON_CHUNK_CODE_UNITS = 4 * 1024;
+const MAX_PERFORMANCE_CLAIM_TOKENS = 4_096;
 const MAX_PERFORMANCE_RAW_HTML_TAGS = 20_000;
 const MAX_PERFORMANCE_RAW_HTML_NODES = 40_000;
 const MAX_PERFORMANCE_RAW_HTML_DEPTH = 64;
@@ -307,16 +309,17 @@ const PERFORMANCE_CONFUSABLE_ASCII = new Map([
   ["х", "x"],
   ["у", "y"]
 ]);
-const PERFORMANCE_CLAIM_CONTEXT =
-  /\b(?:allocation\w*|benchmark|comparison|cpu|data\s+wrangler|duration|evidence|fast|footprint|latency|memory|open\s+wrangler|performance|ram|resource\w*|result|speed|throughput|timing|workbench|wrangler)\b/u;
 const PERFORMANCE_CLAIM_WORDS = Object.freeze([
   "allocation",
   "allocations",
   "allocates",
   "allocated",
   "allocating",
+  "as",
   "benchmark",
+  "better",
   "comparison",
+  "compared",
   "consumes",
   "consumed",
   "consuming",
@@ -334,9 +337,13 @@ const PERFORMANCE_CLAIM_WORDS = Object.freeze([
   "fast",
   "fell",
   "footprint",
+  "forty",
   "fraction",
   "greater",
   "half",
+  "halved",
+  "halves",
+  "halving",
   "higher",
   "latency",
   "less",
@@ -345,10 +352,17 @@ const PERFORMANCE_CLAIM_WORDS = Object.freeze([
   "memory",
   "more",
   "multiplier",
+  "of",
+  "one",
   "open",
   "outperforms",
   "overhead",
+  "percent",
   "performance",
+  "perform",
+  "performed",
+  "performing",
+  "performs",
   "ram",
   "reduced",
   "reduces",
@@ -363,12 +377,18 @@ const PERFORMANCE_CLAIM_WORDS = Object.freeze([
   "speed",
   "startup",
   "than",
+  "the",
+  "third",
+  "times",
+  "to",
   "throughput",
   "timing",
   "twice",
   "twofold",
   "uses",
+  "versus",
   "wait",
+  "with",
   "workbench",
   "working",
   "worse",
@@ -658,6 +678,141 @@ function canonicalPerformanceClaimText(value) {
   });
 }
 
+function performanceClaimWordCandidates(value) {
+  const skeleton = performanceClaimSkeleton(value);
+  if (skeleton === undefined) return Object.freeze([]);
+  if (/^[a-z]+$/u.test(skeleton)) return Object.freeze([skeleton]);
+  const characters = [...skeleton];
+  return Object.freeze(
+    (PERFORMANCE_CLAIM_WORDS_BY_LENGTH.get(characters.length) ?? []).filter((expected) =>
+      characters.every((character, index) => character === expected[index] || hasNonAsciiLetter(character))
+    )
+  );
+}
+
+function performanceClaimTokens(value) {
+  const tokens = [];
+  for (const match of value.matchAll(/\p{Letter}+|\d+(?:\.\d+)?|[%/]/gu)) {
+    if (tokens.length >= MAX_PERFORMANCE_CLAIM_TOKENS) return undefined;
+    const text = match[0].toLowerCase();
+    tokens.push(Object.freeze({ candidates: performanceClaimWordCandidates(text), text }));
+  }
+  return Object.freeze(tokens);
+}
+
+function claimTokenMatches(token, expected) {
+  return token?.text === expected || token?.candidates.includes(expected) === true;
+}
+
+function claimSequenceAt(tokens, index, expected) {
+  return expected.every((word, offset) => claimTokenMatches(tokens[index + offset], word));
+}
+
+function hasClaimSequence(tokens, expected) {
+  return tokens.some((_, index) => claimSequenceAt(tokens, index, expected));
+}
+
+const PERFORMANCE_METRIC_PHRASES = Object.freeze([
+  Object.freeze(["allocation"]),
+  Object.freeze(["allocations"]),
+  Object.freeze(["cpu"]),
+  Object.freeze(["duration"]),
+  Object.freeze(["footprint"]),
+  Object.freeze(["latency"]),
+  Object.freeze(["memory"]),
+  Object.freeze(["overhead"]),
+  Object.freeze(["ram"]),
+  Object.freeze(["resource"]),
+  Object.freeze(["resources"]),
+  Object.freeze(["response", "time"]),
+  Object.freeze(["startup", "time"]),
+  Object.freeze(["throughput"]),
+  Object.freeze(["timing"]),
+  Object.freeze(["wait"]),
+  Object.freeze(["working", "set"])
+]);
+
+function hasPerformanceMetric(tokens) {
+  return PERFORMANCE_METRIC_PHRASES.some((phrase) => hasClaimSequence(tokens, phrase));
+}
+
+function performanceQuantityLength(tokens, index) {
+  if (claimTokenMatches(tokens[index], "half") || claimTokenMatches(tokens[index], "twice")) return 1;
+  if (claimTokenMatches(tokens[index], "twofold")) return 1;
+  if (
+    claimSequenceAt(tokens, index, ["one", "half"]) ||
+    claimSequenceAt(tokens, index, ["one", "third"]) ||
+    claimSequenceAt(tokens, index, ["forty", "percent"])
+  ) {
+    return 2;
+  }
+  if (claimSequenceAt(tokens, index, ["a", "fraction"])) return 2;
+  if (/^\d+(?:\.\d+)?$/u.test(tokens[index]?.text ?? "")) {
+    if (tokens[index + 1]?.text === "%" || claimTokenMatches(tokens[index + 1], "times")) return 2;
+    if (tokens[index + 1]?.text === "/" && /^\d+(?:\.\d+)?$/u.test(tokens[index + 2]?.text ?? "")) {
+      return 3;
+    }
+  }
+  return 0;
+}
+
+function structuredPerformanceClaim(claimText) {
+  const tokens = performanceClaimTokens(claimText);
+  if (tokens === undefined) return true;
+  if (tokens.length === 0) return false;
+  const hasOpenWrangler = hasClaimSequence(tokens, ["open", "wrangler"]);
+  const hasDataWrangler = hasClaimSequence(tokens, ["data", "wrangler"]);
+  const hasNamedProduct =
+    hasOpenWrangler ||
+    hasDataWrangler ||
+    hasClaimSequence(tokens, ["the", "extension"]) ||
+    hasClaimSequence(tokens, ["the", "workbench"]);
+  if (!hasNamedProduct) return false;
+  const hasComparisonTarget =
+    (hasOpenWrangler && hasDataWrangler) ||
+    tokens.some((token) => claimTokenMatches(token, "than") || claimTokenMatches(token, "versus")) ||
+    hasClaimSequence(tokens, ["compared", "to"]) ||
+    hasClaimSequence(tokens, ["compared", "with"]);
+  if (!hasComparisonTarget) return false;
+
+  const qualitativeRelation = tokens.some(
+    (token, index) =>
+      ["perform", "performed", "performing", "performs"].some((word) => claimTokenMatches(token, word)) &&
+      ["better", "worse"].some((word) => claimTokenMatches(tokens[index + 1], word))
+  );
+  const changeRelation = tokens.some((token) =>
+    [
+      "cut",
+      "decreased",
+      "decreases",
+      "drop",
+      "dropped",
+      "fell",
+      "halved",
+      "halves",
+      "halving",
+      "reduced",
+      "reduces"
+    ].some((word) => claimTokenMatches(token, word))
+  );
+  const resourceVerb = tokens.some((token) =>
+    ["allocates", "allocated", "allocating", "consumes", "consumed", "consuming", "uses"].some((word) =>
+      claimTokenMatches(token, word)
+    )
+  );
+  const quantity = tokens.some((_, index) => performanceQuantityLength(tokens, index) > 0);
+  const comparativeAdjective = tokens.some((token) =>
+    ["faster", "greater", "higher", "less", "lower", "more", "shorter", "slower", "smaller"].some((word) =>
+      claimTokenMatches(token, word)
+    )
+  );
+  return (
+    qualitativeRelation ||
+    (hasPerformanceMetric(tokens) && (changeRelation || comparativeAdjective || quantity)) ||
+    (resourceVerb && quantity)
+  );
+}
+
 function semanticLinks(node) {
   return [...(node?.querySelectorAll?.("a") ?? [])].map((anchor) => ({
     href: anchor.href,
@@ -683,7 +838,6 @@ function sentenceScopedPerformanceClaim(text) {
     .filter(Boolean);
   return scopes.some((scope) => {
     const claimText = scope.replace(/\btime zones?\b/gu, "");
-    const unsupportedClaimLetters = hasNonAsciiLetter(claimText) && PERFORMANCE_CLAIM_CONTEXT.test(claimText);
     const comparisonContext =
       /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) ||
       /\b(?:as much as|compared (?:to|with)|of what|than|versus)\b/u.test(claimText);
@@ -715,8 +869,8 @@ function sentenceScopedPerformanceClaim(text) {
       /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) &&
       /\b(?:efficient|fast|lightweight|low-latency|responsive|slow)\b/u.test(claimText);
     return (
-      unsupportedClaimLetters ||
       currentEvidence ||
+      structuredPerformanceClaim(claimText) ||
       comparativeMetric ||
       metricFirstRatio ||
       inherentlyComparative ||
@@ -724,6 +878,24 @@ function sentenceScopedPerformanceClaim(text) {
       namedProductClaim
     );
   });
+}
+
+function validJavaScriptFamilySource(source, language) {
+  const scriptKind = ["jsx", "tsx"].includes(language)
+    ? language === "jsx"
+      ? ts.ScriptKind.JSX
+      : ts.ScriptKind.TSX
+    : ["ts"].includes(language)
+      ? ts.ScriptKind.TS
+      : ts.ScriptKind.JS;
+  try {
+    return (
+      ts.createSourceFile(`performance-example.${language}`, source, ts.ScriptTarget.Latest, false, scriptKind)
+        .parseDiagnostics.length === 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 function visibleCodeClaimText(node) {
@@ -734,6 +906,24 @@ function visibleCodeClaimText(node) {
     .toLowerCase();
   const source = node.textContent ?? "";
   if (language !== undefined && !PERFORMANCE_CODE_LANGUAGES.has(language)) return source;
+  const profile =
+    language === undefined
+      ? "generic"
+      : ["javascript", "js", "jsx", "ts", "tsx"].includes(language)
+        ? "javascript"
+        : ["py", "python"].includes(language)
+          ? "python"
+          : ["bash", "powershell", "shell", "sh", "toml", "yaml", "yml"].includes(language)
+            ? "shell"
+            : language;
+  if (profile === "json") {
+    try {
+      JSON.parse(source);
+    } catch {
+      return source;
+    }
+  }
+  if (profile === "javascript" && !validJavaScriptFamilySource(source, language ?? "js")) return source;
   const fragments = [];
   let fragment = "";
   let state = "source";
@@ -769,9 +959,20 @@ function visibleCodeClaimText(node) {
       }
       continue;
     }
+    if (state === "html-comment") {
+      if (source.startsWith("-->", index)) {
+        state = "source";
+        index += 2;
+      } else if (character === "\n") {
+        linePrefixIsWhitespace = true;
+        append("\n");
+      }
+      continue;
+    }
     if (state === "string") {
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
+      else if (profile === "sql" && character === delimiter && next === delimiter) index += 1;
       else if (source.startsWith(delimiter, index)) {
         state = "source";
         index += delimiter.length - 1;
@@ -782,32 +983,63 @@ function visibleCodeClaimText(node) {
       }
       continue;
     }
-    if (character === "/" && next === "/" && source[index - 1] !== ":") {
+    if (
+      ["c", "cpp", "css", "diff", "generic", "javascript"].includes(profile) &&
+      character === "/" &&
+      next === "/" &&
+      source[index - 1] !== ":"
+    ) {
       state = "line-comment";
       index += 1;
       continue;
     }
-    if (character === "/" && next === "*") {
+    if (["c", "cpp", "css", "generic", "javascript", "sql"].includes(profile) && character === "/" && next === "*") {
       state = "block-comment";
       index += 1;
       continue;
     }
-    if (linePrefixIsWhitespace && character === "#") {
+    if (["python", "r", "shell"].includes(profile) && character === "#") {
       state = "line-comment";
       continue;
     }
-    if (linePrefixIsWhitespace && character === "-" && next === "-") {
+    if (profile === "generic" && linePrefixIsWhitespace && character === "#") {
+      state = "line-comment";
+      continue;
+    }
+    if (profile === "sql" && character === "-" && next === "-") {
       state = "line-comment";
       index += 1;
       continue;
     }
-    if ((character === "'" || character === '"') && character === next && character === following) {
+    if (profile === "generic" && linePrefixIsWhitespace && character === "-" && next === "-") {
+      state = "line-comment";
+      index += 1;
+      continue;
+    }
+    if (["html", "xml"].includes(profile) && source.startsWith("<!--", index)) {
+      state = "html-comment";
+      index += 3;
+      continue;
+    }
+    if (
+      profile === "python" &&
+      (character === "'" || character === '"') &&
+      character === next &&
+      character === following
+    ) {
       state = "string";
       delimiter = character.repeat(3);
       index += 2;
       continue;
     }
-    if (character === "'" || character === '"' || character === "`") {
+    const supportsSingleQuote = !["css", "diff", "html", "json", "xml"].includes(profile);
+    const supportsDoubleQuote = !["diff"].includes(profile);
+    const supportsBacktick = ["generic", "javascript", "r", "shell"].includes(profile);
+    if (
+      (character === "'" && supportsSingleQuote) ||
+      (character === '"' && supportsDoubleQuote) ||
+      (character === "`" && supportsBacktick)
+    ) {
       state = "string";
       delimiter = character;
       continue;
@@ -818,7 +1050,8 @@ function visibleCodeClaimText(node) {
   }
   if (!["source", "line-comment"].includes(state)) return source;
   if (fragment !== "") fragments.push(fragment);
-  return fragments.join("");
+  const visibleSource = fragments.join("");
+  return /[\p{Letter}\p{Number}_()[\]{}=<>+*/-]/u.test(visibleSource) ? visibleSource : source;
 }
 
 function renderedClaimText(root, shouldSkip = () => false) {
@@ -836,10 +1069,7 @@ function renderedClaimText(root, shouldSkip = () => false) {
     const value = node.getAttribute(name);
     return value === null || value === "" || append(`${value}\n`, supplementalFragments);
   };
-  const visit = (node) => {
-    if (shouldSkip(node)) return true;
-    if (node.nodeType === node.TEXT_NODE) return append(node.nodeValue ?? "");
-    if (node.nodeType !== node.ELEMENT_NODE) return true;
+  const appendElementSupplemental = (node) => {
     for (const attribute of ["aria-description", "aria-label", "title"]) {
       if (!appendSupplementalAttribute(node, attribute)) return false;
     }
@@ -852,10 +1082,19 @@ function renderedClaimText(root, shouldSkip = () => false) {
       }
       if (!appendSupplementalAttribute(node, "placeholder")) return false;
     }
-    if (["OPTGROUP", "OPTION"].includes(node.tagName)) {
-      if (!appendSupplementalAttribute(node, "label")) return false;
+    return !["OPTGROUP", "OPTION"].includes(node.tagName) || appendSupplementalAttribute(node, "label");
+  };
+  const visit = (node) => {
+    if (shouldSkip(node)) return true;
+    if (node.nodeType === node.TEXT_NODE) return append(node.nodeValue ?? "");
+    if (node.nodeType !== node.ELEMENT_NODE) return true;
+    if (!appendElementSupplemental(node)) return false;
+    if (node.tagName === "PRE") {
+      for (const descendant of node.querySelectorAll("*")) {
+        if (!appendElementSupplemental(descendant)) return false;
+      }
+      return append(`${visibleCodeClaimText(node)}\n`);
     }
-    if (node.tagName === "PRE") return append(`${visibleCodeClaimText(node)}\n`);
     for (const child of node.childNodes) {
       if (!visit(child)) return false;
     }

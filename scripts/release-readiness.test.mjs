@@ -1282,6 +1282,23 @@ test("constrains historical and current Performance summaries to exact evidence-
       `metric-first comparison: ${metricFirstClaim}`
     );
   }
+  for (const ordinaryComparison of [
+    "Open Wrangler's latency halved compared with Data Wrangler.",
+    "Open Wrangler uses one-half of Data Wrangler's memory.",
+    "Open Wrangler uses one-third of Data Wrangler's memory.",
+    "Open Wrangler uses 1/2 the memory of Data Wrangler.",
+    "Open Wrangler uses 0.5-times the memory of Data Wrangler.",
+    "Open Wrangler uses forty-percent of Data Wrangler's memory.",
+    "Open Wrangler performs better than Data Wrangler."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${ordinaryComparison}`)
+      ),
+      [outOfSectionProblem],
+      `ordinary comparison grammar: ${ordinaryComparison}`
+    );
+  }
   const allTriggerConfusableClaim =
     "O\u0440\u0435n Wr\u0430ngl\u0435r is f\u0430st\u0435r than D\u0430t\u0430 Wr\u0430ngl\u0435r.";
   assert.deepEqual(
@@ -1299,11 +1316,31 @@ test("constrains historical and current Performance summaries to exact evidence-
     [outOfSectionProblem],
     "no product, comparator, context, metric, or verb token must need an intact ASCII spelling"
   );
+  const ambiguousAllTriggerConfusableClaim = "γγγγ γγγγγγγγ γγγγγγγγ γγγγγγ γγγγ γγγγ γγγγγγγγ.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${ambiguousAllTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "fully ambiguous confusable tokens must retain structural claim meaning"
+  );
+  const allSmallCapConfusableClaim = "Oᴘᴇɴ Wʀᴀɴɢʟᴇʀ ᴘᴇʀꜰᴏʀᴍꜱ ʙᴇᴛᴛᴇʀ ᴛʜᴀɴ Dᴀᴛᴀ Wʀᴀɴɢʟᴇʀ.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${allSmallCapConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "all-small-cap product and relation tokens must retain structural claim meaning"
+  );
   for (const mixedCodeAndProse of [
     "```js\nconst marker = true;\nOpen Wrangler is faster than Data Wrangler.\n```",
     "    const marker = true;\n    Open Wrangler is faster than Data Wrangler.",
     "```js\nreturn Open Wrangler is faster than Data Wrangler.\n```",
-    "    return Open Wrangler is faster than Data Wrangler."
+    "    return Open Wrangler is faster than Data Wrangler.",
+    '```js\n"Open Wrangler is faster than Data Wrangler.";\n```',
+    "```js\nconst marker = true; # Open Wrangler is faster than Data Wrangler.\n```",
+    "```js\nconst marker = true; -- Open Wrangler is faster than Data Wrangler.\n```",
+    '```json\n{"marker": true} // Open Wrangler is faster than Data Wrangler.\n```'
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${mixedCodeAndProse}`)),
@@ -1317,6 +1354,9 @@ test("constrains historical and current Performance summaries to exact evidence-
     '```js\nconst comparisons = [\n  "Open Wrangler is faster than Data Wrangler.",\n];\n```',
     "```js\n// Open Wrangler is faster than Data Wrangler.\nconst marker = true;\n```",
     '```python\n"""Open Wrangler uses less memory than Data Wrangler."""\nmarker = True\n```',
+    "```python\nmarker = True  # Open Wrangler is faster than Data Wrangler.\n```",
+    "```r\nmarker <- TRUE  # Open Wrangler is faster than Data Wrangler.\n```",
+    "```sql\nSELECT 1; -- Open Wrangler is faster than Data Wrangler.\n```",
     '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";',
     '    const marker = true;\n    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
   ]) {
@@ -1356,6 +1396,7 @@ test("constrains historical and current Performance summaries to exact evidence-
     '<input type="button" value="Open Wrangler beats Data Wrangler.">',
     '<span aria-label="Open Wrangler outperforms Data Wrangler."></span>',
     '<span aria-description="Open Wrangler uses half as much memory as Data Wrangler."></span>',
+    '<pre><code class="language-js" title="Open Wrangler is faster than Data Wrangler.">const marker = true;</code></pre>',
     '<textarea placeholder="Data Wrangler uses more memory than Open Wrangler."></textarea>',
     "<pre>Open Wrangler uses 50% of the memory Data Wrangler uses.</pre>",
     'Open Wrangler is <strong title="formatted emphasis">fa</strong>ster than Data Wrangler.',
@@ -1386,6 +1427,7 @@ test("constrains historical and current Performance summaries to exact evidence-
     "Time zones remain part of datetime values during profiling.",
     "The current section explains installation. Performance evidence remains historical.",
     "Open Wrangler is documented below. The parser accepts fast syntax.",
+    "Open Wrangler τεκμηριώνει τη μέθοδο χωρίς ισχυρισμό σύγκρισης.",
     "Resource comparisons require a dated report and do not assert a current result.",
     "The image alternative identifies the performance study chart.",
     "The résumé describes the performance methodology without asserting a result."
