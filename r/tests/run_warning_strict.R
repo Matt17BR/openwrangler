@@ -11,6 +11,15 @@ local({
     stop("The Native R warning contract target is missing or invalid", call. = FALSE)
   }
 
+  analysis_environment <- new.env(parent = baseenv())
+  sys.source(
+    "r/tools/static_analysis.R",
+    envir = analysis_environment,
+    keep.source = FALSE
+  )
+  analysis_environment$openwrangler_r_static_analysis$run(".")
+  rm(analysis_environment)
+
   warning_state <- new.env(parent = emptyenv())
   warning_state$diagnostics <- character()
   unexpected_warning <- function(condition) {
