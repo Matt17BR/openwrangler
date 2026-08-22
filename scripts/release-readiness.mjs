@@ -245,11 +245,16 @@ function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
 const PERFORMANCE_MARKDOWN = new MarkdownIt({ html: true, linkify: false, typographer: false });
 const MAX_PERFORMANCE_MARKDOWN_TOKENS = 100_000;
 const MAX_PERFORMANCE_RENDERED_BYTES = 8 * 1024 * 1024;
+const MAX_PERFORMANCE_SKELETON_INPUT_CODE_UNITS = MAX_PERFORMANCE_README_BYTES;
+const MAX_PERFORMANCE_SKELETON_NORMALIZED_WORK = MAX_PERFORMANCE_README_BYTES;
+const MAX_PERFORMANCE_SKELETON_OUTPUT_CODE_UNITS = MAX_PERFORMANCE_README_BYTES;
+const PERFORMANCE_SKELETON_CHUNK_CODE_UNITS = 4 * 1024;
 const MAX_PERFORMANCE_RAW_HTML_TAGS = 20_000;
 const MAX_PERFORMANCE_RAW_HTML_NODES = 40_000;
 const MAX_PERFORMANCE_RAW_HTML_DEPTH = 64;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 const UNICODE_LETTER = /\p{Letter}/u;
+const UNICODE_MARK = /\p{Mark}/u;
 const PERFORMANCE_CONFUSABLE_ASCII = new Map([
   ["Α", "A"],
   ["А", "A"],
@@ -304,6 +309,78 @@ const PERFORMANCE_CONFUSABLE_ASCII = new Map([
 ]);
 const PERFORMANCE_CLAIM_CONTEXT =
   /\b(?:allocation\w*|benchmark|comparison|cpu|data\s+wrangler|duration|evidence|fast|footprint|latency|memory|open\s+wrangler|performance|ram|resource\w*|result|speed|throughput|timing|workbench|wrangler)\b/u;
+const PERFORMANCE_CLAIM_WORDS = Object.freeze([
+  "allocation",
+  "allocations",
+  "allocates",
+  "allocated",
+  "allocating",
+  "benchmark",
+  "comparison",
+  "consumes",
+  "consumed",
+  "consuming",
+  "cpu",
+  "cut",
+  "data",
+  "decreased",
+  "decreases",
+  "drop",
+  "dropped",
+  "duration",
+  "efficient",
+  "evidence",
+  "faster",
+  "fast",
+  "fell",
+  "footprint",
+  "fraction",
+  "greater",
+  "half",
+  "higher",
+  "latency",
+  "less",
+  "lightweight",
+  "lower",
+  "memory",
+  "more",
+  "multiplier",
+  "open",
+  "outperforms",
+  "overhead",
+  "performance",
+  "ram",
+  "reduced",
+  "reduces",
+  "resource",
+  "resources",
+  "responsive",
+  "result",
+  "shorter",
+  "slower",
+  "smaller",
+  "sooner",
+  "speed",
+  "startup",
+  "than",
+  "throughput",
+  "timing",
+  "twice",
+  "twofold",
+  "uses",
+  "wait",
+  "workbench",
+  "working",
+  "worse",
+  "wrangler"
+]);
+const PERFORMANCE_CLAIM_WORDS_BY_LENGTH = new Map();
+for (const word of PERFORMANCE_CLAIM_WORDS) {
+  const length = [...word].length;
+  const words = PERFORMANCE_CLAIM_WORDS_BY_LENGTH.get(length) ?? [];
+  words.push(word);
+  PERFORMANCE_CLAIM_WORDS_BY_LENGTH.set(length, words);
+}
 const PERFORMANCE_RAW_HTML_VOID_TAGS = new Set([
   "area",
   "base",
@@ -504,12 +581,30 @@ function normalizedRenderedText(node) {
 }
 
 function performanceClaimSkeleton(value) {
-  const normalized = value.normalize("NFKD");
-  let folded = "";
-  for (const character of normalized) folded += PERFORMANCE_CONFUSABLE_ASCII.get(character) ?? character;
-  return folded
-    .replace(/\p{Mark}+/gu, "")
-    .toLowerCase()
+  if (typeof value !== "string" || value.length > MAX_PERFORMANCE_SKELETON_INPUT_CODE_UNITS) return undefined;
+  const chunks = [];
+  let chunk = "";
+  let normalizedWork = 0;
+  let outputCodeUnits = 0;
+  for (const sourceCharacter of value) {
+    const normalizedCharacter = sourceCharacter.normalize("NFKD");
+    normalizedWork += normalizedCharacter.length;
+    if (normalizedWork > MAX_PERFORMANCE_SKELETON_NORMALIZED_WORK) return undefined;
+    for (const character of normalizedCharacter) {
+      if (UNICODE_MARK.test(character)) continue;
+      const foldedCharacter = (PERFORMANCE_CONFUSABLE_ASCII.get(character) ?? character).toLowerCase();
+      outputCodeUnits += foldedCharacter.length;
+      if (outputCodeUnits > MAX_PERFORMANCE_SKELETON_OUTPUT_CODE_UNITS) return undefined;
+      chunk += foldedCharacter;
+      if (chunk.length >= PERFORMANCE_SKELETON_CHUNK_CODE_UNITS) {
+        chunks.push(chunk);
+        chunk = "";
+      }
+    }
+  }
+  if (chunk !== "") chunks.push(chunk);
+  return chunks
+    .join("")
     .replace(/[^\S\r\n]+/gu, " ")
     .replace(/\r\n?/gu, "\n")
     .replace(/ *\n+ */gu, "\n")
@@ -524,11 +619,43 @@ function hasNonAsciiLetter(value) {
 }
 
 function matchesClaimWord(value, expected) {
-  const characters = [...performanceClaimSkeleton(value)];
+  const skeleton = performanceClaimSkeleton(value);
+  if (skeleton === undefined) return false;
+  const characters = [...skeleton];
   return (
     characters.length === expected.length &&
     characters.every((character, index) => character === expected[index] || hasNonAsciiLetter(character))
   );
+}
+
+function canonicalPerformanceClaimText(value) {
+  return value.replace(/\p{Letter}+/gu, (word) => {
+    const skeleton = performanceClaimSkeleton(word);
+    if (skeleton === undefined || !hasNonAsciiLetter(skeleton)) return skeleton ?? word;
+    const characters = [...skeleton];
+    let bestMatch;
+    let bestScore = -1;
+    let tied = false;
+    for (const expected of PERFORMANCE_CLAIM_WORDS_BY_LENGTH.get(characters.length) ?? []) {
+      let score = 0;
+      let matched = true;
+      for (let index = 0; index < characters.length; index += 1) {
+        if (characters[index] === expected[index]) score += 1;
+        else if (!hasNonAsciiLetter(characters[index])) {
+          matched = false;
+          break;
+        }
+      }
+      if (!matched || score < bestScore) continue;
+      if (score === bestScore) tied = true;
+      else {
+        bestMatch = expected;
+        bestScore = score;
+        tied = false;
+      }
+    }
+    return tied || bestMatch === undefined ? skeleton : bestMatch;
+  });
 }
 
 function semanticLinks(node) {
@@ -548,13 +675,18 @@ function isInsidePerformanceSection(node, heading, followingHeading) {
 }
 
 function sentenceScopedPerformanceClaim(text) {
-  const scopes = performanceClaimSkeleton(text)
+  const skeleton = performanceClaimSkeleton(text);
+  if (skeleton === undefined) return true;
+  const scopes = canonicalPerformanceClaimText(skeleton)
     .split(/(?<=[.!?;:])\s+|\s+[—–]\s+|\n+/u)
     .map((scope) => scope.trim().toLowerCase())
     .filter(Boolean);
   return scopes.some((scope) => {
     const claimText = scope.replace(/\btime zones?\b/gu, "");
     const unsupportedClaimLetters = hasNonAsciiLetter(claimText) && PERFORMANCE_CLAIM_CONTEXT.test(claimText);
+    const comparisonContext =
+      /\b(?:data wrangler|open wrangler|the extension|the workbench)\b/u.test(claimText) ||
+      /\b(?:as much as|compared (?:to|with)|of what|than|versus)\b/u.test(claimText);
     const currentEvidence =
       /\b(?:current|latest|new|present-day|today(?:'s)?)\b[^.!?;]{0,80}\b(?:benchmark|comparison|performance|result|timing|evidence)\b/u.test(
         claimText
@@ -567,7 +699,8 @@ function sentenceScopedPerformanceClaim(text) {
         claimText
       );
     const metricFirstRatio =
-      /\b(?:allocation(?:s|\s+(?:count|rate))?|cpu|duration|footprint|latency|memory(?:\s+(?:footprint|use))?|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b[^.!?;]{0,48}\b(?:became|becomes|is|remains|was|were)\s+(?:about\s+|approximately\s+)?(?:half|twice|twofold|\d+(?:\.\d+)?\s*(?:%|x))(?![\p{Letter}\p{Number}_])(?:\s+(?:as\s+(?:high|large|long|much)|of)\b)?|\b(?:allocation(?:s|\s+(?:count|rate))?|cpu|duration|footprint|latency|memory(?:\s+(?:footprint|use))?|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b[^.!?;]{0,48}\b(?:cut|decreas\w*|drop\w*|fell|reduc\w*|shrank)\s+by\s+(?:half|\d+(?:\.\d+)?\s*%)(?![\p{Letter}\p{Number}_])|\b(?:allocates?|allocated|allocating|consumes?|consumed|consuming|uses?)\s+(?:about\s+|approximately\s+|only\s+)?(?:half|\d+(?:\.\d+)?\s*(?:%|x))(?![\p{Letter}\p{Number}_])\s+(?:of\s+what|as\s+much\s+as)\b/u.test(
+      comparisonContext &&
+      /\b(?:allocation(?:s|\s+(?:count|rate))?|cpu|duration|footprint|latency|memory(?:\s+(?:footprint|use))?|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b[^.!?;]{0,64}\b(?:became|becomes|is|remains|was|were)\s+(?:about\s+|approximately\s+)?(?:a\s+fraction|half|one\s+half|twice|twofold|\d+(?:\.\d+)?\s*(?:%|x)(?:\s+multiplier)?)(?![\p{Letter}\p{Number}_])(?:\s+(?:as\s+(?:high|large|long|much)|of)\b)?|\b(?:allocation(?:s|\s+(?:count|rate))?|cpu|duration|footprint|latency|memory(?:\s+(?:footprint|use))?|overhead|ram|resource(?:\s+(?:consumption|footprint|use))?s?|response\s+time|startup\s+time|throughput|timing|wait|working\s+set)\b[^.!?;]{0,64}\b(?:cut\s+in\s+half|(?:cut|decreas\w*|drop\w*|fell|reduc\w*|shrank)(?:\s+(?:by|to))?\s+(?:a\s+fraction|half|one\s+half|\d+(?:\.\d+)?\s*(?:%|x)(?:\s+multiplier)?)(?![\p{Letter}\p{Number}_])|(?:cut|decreas\w*|drop\w*|fell|reduc\w*|shrank)\b[^.!?;]{0,24}\b(?:compared (?:to|with)|than|versus)\b)|\b(?:allocates?|allocated|allocating|consumes?|consumed|consuming|uses?)\s+(?:about\s+|approximately\s+|only\s+)?(?:a\s+)?(?:a\s+fraction|half|one\s+half|\d+(?:\.\d+)?\s*(?:%|x)(?:\s+multiplier)?)(?![\p{Letter}\p{Number}_])\s+(?:of\s+what|as\s+much\s+as|compared (?:to|with))\b/u.test(
         claimText
       );
     const inherentlyComparative =
@@ -593,22 +726,99 @@ function sentenceScopedPerformanceClaim(text) {
   });
 }
 
-function isLegitimateCodeBlock(node) {
+function visibleCodeClaimText(node) {
   const code = node.querySelector(":scope > code") ?? node.querySelector("code");
   const language = [...(code?.classList ?? [])]
     .find((name) => name.startsWith("language-"))
     ?.slice("language-".length)
     .toLowerCase();
-  const sourceLines = (node.textContent ?? "").split(/\r?\n/u).filter((line) => /\S/u.test(line));
-  return (
-    sourceLines.length > 0 &&
-    (language === undefined || PERFORMANCE_CODE_LANGUAGES.has(language)) &&
-    sourceLines.every((line) =>
-      /^(?:\s*(?:[$>#]\s+|\/\*|\*\/|\*\s+|\/\/|--\s+|class\s+\w+|const\s+\w+|def\s+\w+|export\s+|from\s+\S+\s+import\s+|function\s+\w+|import\s+|let\s+\w+|library\s*\(|require\s*\(|select\s+\S+\s+from\s+|var\s+\w+|(?:async\s+)?(?:await|break|case|catch|continue|else|finally|for|if|new|return|switch|throw|try|while|yield)\b|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*(?:=|\(|\+\+|--)|[{}[\](),;]+\s*$|["'][^"']+["']\s*[:,]?\s*$))/iu.test(
-        line
-      )
-    )
-  );
+  const source = node.textContent ?? "";
+  if (language !== undefined && !PERFORMANCE_CODE_LANGUAGES.has(language)) return source;
+  const fragments = [];
+  let fragment = "";
+  let state = "source";
+  let delimiter = "";
+  let escaped = false;
+  let linePrefixIsWhitespace = true;
+  const append = (value) => {
+    fragment += value;
+    if (fragment.length >= PERFORMANCE_SKELETON_CHUNK_CODE_UNITS) {
+      fragments.push(fragment);
+      fragment = "";
+    }
+  };
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    const following = source[index + 2];
+    if (state === "line-comment") {
+      if (character === "\n") {
+        state = "source";
+        linePrefixIsWhitespace = true;
+        append("\n");
+      }
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && next === "/") {
+        state = "source";
+        index += 1;
+      } else if (character === "\n") {
+        linePrefixIsWhitespace = true;
+        append("\n");
+      }
+      continue;
+    }
+    if (state === "string") {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (source.startsWith(delimiter, index)) {
+        state = "source";
+        index += delimiter.length - 1;
+      } else if (character === "\n") {
+        if (!["`", "'''", '"""'].includes(delimiter)) return source;
+        linePrefixIsWhitespace = true;
+        append("\n");
+      }
+      continue;
+    }
+    if (character === "/" && next === "/" && source[index - 1] !== ":") {
+      state = "line-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      state = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (linePrefixIsWhitespace && character === "#") {
+      state = "line-comment";
+      continue;
+    }
+    if (linePrefixIsWhitespace && character === "-" && next === "-") {
+      state = "line-comment";
+      index += 1;
+      continue;
+    }
+    if ((character === "'" || character === '"') && character === next && character === following) {
+      state = "string";
+      delimiter = character.repeat(3);
+      index += 2;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      state = "string";
+      delimiter = character;
+      continue;
+    }
+    append(character);
+    if (character === "\n") linePrefixIsWhitespace = true;
+    else if (!/\s/u.test(character)) linePrefixIsWhitespace = false;
+  }
+  if (!["source", "line-comment"].includes(state)) return source;
+  if (fragment !== "") fragments.push(fragment);
+  return fragments.join("");
 }
 
 function renderedClaimText(root, shouldSkip = () => false) {
@@ -629,7 +839,7 @@ function renderedClaimText(root, shouldSkip = () => false) {
   const visit = (node) => {
     if (shouldSkip(node)) return true;
     if (node.nodeType === node.TEXT_NODE) return append(node.nodeValue ?? "");
-    if (node.nodeType !== node.ELEMENT_NODE || (node.tagName === "PRE" && isLegitimateCodeBlock(node))) return true;
+    if (node.nodeType !== node.ELEMENT_NODE) return true;
     for (const attribute of ["aria-description", "aria-label", "title"]) {
       if (!appendSupplementalAttribute(node, attribute)) return false;
     }
@@ -645,6 +855,7 @@ function renderedClaimText(root, shouldSkip = () => false) {
     if (["OPTGROUP", "OPTION"].includes(node.tagName)) {
       if (!appendSupplementalAttribute(node, "label")) return false;
     }
+    if (node.tagName === "PRE") return append(`${visibleCodeClaimText(node)}\n`);
     for (const child of node.childNodes) {
       if (!visit(child)) return false;
     }
@@ -665,11 +876,12 @@ function outsidePerformanceVisibleText(document, heading, followingHeading) {
 function performanceSection(readme) {
   const document = renderedMarkdownDocument(readme);
   if (document === undefined) return undefined;
-  const performanceHeadings = [...document.body.querySelectorAll("h2")].filter(
-    (heading) =>
-      performanceClaimSkeleton(normalizedRenderedText(heading)) === "performance" ||
-      matchesClaimWord(normalizedRenderedText(heading), "performance")
-  );
+  const performanceHeadings = [...document.body.querySelectorAll("h2")].filter((heading) => {
+    const renderedHeading = normalizedRenderedText(heading);
+    return (
+      performanceClaimSkeleton(renderedHeading) === "performance" || matchesClaimWord(renderedHeading, "performance")
+    );
+  });
   if (performanceHeadings.length !== 1) return undefined;
   const heading = performanceHeadings[0];
   const followingHeading = [...document.body.querySelectorAll("h1,h2")].find((candidate) =>
@@ -693,7 +905,6 @@ function performanceSection(readme) {
     (anchor) =>
       anchor !== heading &&
       !isInsidePerformanceSection(anchor, heading, followingHeading) &&
-      (anchor.closest("pre") === null || !isLegitimateCodeBlock(anchor.closest("pre"))) &&
       PERFORMANCE_REPORT_URL.test(anchor.href)
   );
   return {

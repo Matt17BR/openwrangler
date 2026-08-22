@@ -1269,7 +1269,12 @@ test("constrains historical and current Performance summaries to exact evidence-
     "Open Wrangler's memory use is half of Data Wrangler's.",
     "Open Wrangler's memory footprint is 50% of Data Wrangler's.",
     "Open Wrangler's latency dropped by half versus Data Wrangler.",
-    "Open Wrangler allocates 40% of what Data Wrangler does."
+    "Open Wrangler allocates 40% of what Data Wrangler does.",
+    "Open Wrangler's memory dropped to one half of Data Wrangler's.",
+    "Open Wrangler's latency fell to a fraction of Data Wrangler's.",
+    "Open Wrangler's memory uses a 0.5x multiplier compared with Data Wrangler.",
+    "Open Wrangler's latency was reduced compared with Data Wrangler.",
+    "Open Wrangler's latency was cut in half versus Data Wrangler."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${metricFirstClaim}`)),
@@ -1286,9 +1291,19 @@ test("constrains historical and current Performance summaries to exact evidence-
     [outOfSectionProblem],
     "all product, context, and comparator triggers contain confusable letters"
   );
+  const unmappedAllTriggerConfusableClaim = "Oγen Wγangler is fγster thγn Dγta Wγangler.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${unmappedAllTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "no product, comparator, context, metric, or verb token must need an intact ASCII spelling"
+  );
   for (const mixedCodeAndProse of [
     "```js\nconst marker = true;\nOpen Wrangler is faster than Data Wrangler.\n```",
-    "    const marker = true;\n    Open Wrangler is faster than Data Wrangler."
+    "    const marker = true;\n    Open Wrangler is faster than Data Wrangler.",
+    "```js\nreturn Open Wrangler is faster than Data Wrangler.\n```",
+    "    return Open Wrangler is faster than Data Wrangler."
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${mixedCodeAndProse}`)),
@@ -1300,6 +1315,8 @@ test("constrains historical and current Performance summaries to exact evidence-
     '```js\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
     '```js\nconst marker = true;\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
     '```js\nconst comparisons = [\n  "Open Wrangler is faster than Data Wrangler.",\n];\n```',
+    "```js\n// Open Wrangler is faster than Data Wrangler.\nconst marker = true;\n```",
+    '```python\n"""Open Wrangler uses less memory than Data Wrangler."""\nmarker = True\n```',
     '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";',
     '    const marker = true;\n    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
   ]) {
@@ -1312,6 +1329,8 @@ test("constrains historical and current Performance summaries to exact evidence-
   for (const comparisonMutation of [
     "Open Wrangler's memory use is documented beside Data Wrangler's.",
     "The chart uses 50% opacity for the memory-footprint series.",
+    "The chart uses one half opacity for the memory-footprint series.",
+    "The chart uses a 0.5x multiplier for visual spacing.",
     "Open Wrangler records latency without asserting a comparative result.",
     "The allocator processes 40% of the queued samples in the first pass.",
     "O\u0440\u0435n Wr\u0430ngl\u0435r documents D\u0430t\u0430 Wr\u0430ngl\u0435r integration."
@@ -1415,6 +1434,29 @@ test("constrains historical and current Performance summaries to exact evidence-
     );
   }
   assert.ok(Date.now() - structuralStartedAt < 2_000, "raw HTML limits must reject before synchronous DOM parsing");
+
+  const moduleUrl = pathToFileURL(resolve(repositoryRoot, "scripts/release-readiness.mjs")).href;
+  const expandingUnicodeProgram = `
+    import { inspectPerformanceSummary } from ${JSON.stringify(moduleUrl)};
+    const expanding = "\ufdfa".repeat(698_000);
+    const readme = "# Open Wrangler\\n\\n" + expanding +
+      "\\n\\n## Performance\\n\\n[dated report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)\\n";
+    const expected = ["README performance comparisons and current-result claims must appear only in its Performance section."];
+    const actual = inspectPerformanceSummary(readme);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      throw new Error("unexpected expanding-Unicode classification: " + JSON.stringify(actual));
+    }
+  `;
+  const expandingUnicodeResult = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=192", "--input-type=module", "--eval", expandingUnicodeProgram],
+    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000 }
+  );
+  assert.equal(
+    expandingUnicodeResult.status,
+    0,
+    `post-NFKD work must remain bounded before skeleton construction: ${expandingUnicodeResult.stderr}`
+  );
 
   const referenceHistorical = historicalReadme
     .replace(
