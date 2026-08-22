@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import prettier from "prettier";
 import { canonicalOperationCatalog } from "./operation-catalog.mjs";
 
@@ -8,6 +9,22 @@ const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8
 const schema = JSON.parse(readFileSync(resolve(root, "protocol", "openwrangler.v2.schema.json"), "utf8"));
 const outputPath = resolve(root, "docs", "reference.md");
 const operations = canonicalOperationCatalog(schema);
+const canonicalMimeRenderer = {
+  id: "openWrangler.renderer",
+  displayName: "Open Wrangler Renderer",
+  entrypoint: "./media/notebookRenderer.js",
+  requiresMessaging: "optional",
+  mimeTypes: ["application/vnd.openwrangler.viewer.v2+json"]
+};
+const canonicalHtmlExtension = {
+  id: "openWrangler.inlineHtmlUpgrade",
+  displayName: "Open Wrangler Inline HTML Upgrade",
+  entrypoint: {
+    extends: "vscode.builtin-renderer",
+    path: "./media/notebookRenderer.js"
+  },
+  requiresMessaging: "always"
+};
 
 const output = await prettier.format(
   `${[
@@ -80,13 +97,15 @@ const output = await prettier.format(
   { parser: "markdown" }
 );
 
-if (process.argv.includes("--check")) {
-  const existing = readFileSync(outputPath, "utf8");
-  if (existing !== output) {
-    throw new Error("Generated interface reference is stale. Run npm run generate:reference.");
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.includes("--check")) {
+    const existing = readFileSync(outputPath, "utf8");
+    if (existing !== output) {
+      throw new Error("Generated interface reference is stale. Run npm run generate:reference.");
+    }
+  } else {
+    writeFileSync(outputPath, output, "utf8");
   }
-} else {
-  writeFileSync(outputPath, output, "utf8");
 }
 
 function messageKinds(unionName) {
@@ -98,36 +117,36 @@ function messageKinds(unionName) {
   });
 }
 
-function notebookMimeTypeRows(renderers) {
+export function notebookMimeTypeRows(renderers) {
   if (!Array.isArray(renderers)) throw new Error("Notebook renderer contributions must be an array.");
-  return renderers.flatMap((renderer) => {
-    if (!renderer || typeof renderer !== "object" || Array.isArray(renderer)) {
-      throw new Error("Notebook renderer contributions must be objects.");
-    }
-    if (Array.isArray(renderer.mimeTypes)) {
-      if (
-        typeof renderer.entrypoint !== "string" ||
-        renderer.mimeTypes.length === 0 ||
-        renderer.mimeTypes.some((mimeType) => typeof mimeType !== "string" || mimeType.length === 0)
-      ) {
-        throw new Error("Direct notebook renderer contributions must declare an entrypoint and MIME types.");
-      }
-      return renderer.mimeTypes.map((mimeType) => `- \`${mimeType}\``);
-    }
-    const entrypoint = renderer.entrypoint;
-    if (
-      !Object.hasOwn(renderer, "mimeTypes") &&
-      entrypoint &&
-      typeof entrypoint === "object" &&
-      !Array.isArray(entrypoint) &&
-      Object.keys(entrypoint).length === 2 &&
-      entrypoint.extends === "vscode.builtin-renderer" &&
-      entrypoint.path === "./media/notebookRenderer.js"
-    ) {
-      return [];
-    }
-    throw new Error("Notebook renderer contributions must be direct renderers or the validated renderer extension.");
-  });
+  const mimeRenderers = renderers.filter((renderer) => matchesExactJsonShape(renderer, canonicalMimeRenderer));
+  const htmlExtensions = renderers.filter((renderer) => matchesExactJsonShape(renderer, canonicalHtmlExtension));
+  if (renderers.length !== 2 || mimeRenderers.length !== 1 || htmlExtensions.length !== 1) {
+    throw new Error(
+      "Notebook renderer contributions must contain exactly the canonical MIME-v2 renderer and built-in HTML extension."
+    );
+  }
+  return canonicalMimeRenderer.mimeTypes.map((mimeType) => `- \`${mimeType}\``);
+}
+
+function matchesExactJsonShape(actual, expected) {
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      actual.length === expected.length &&
+      expected.every((value, index) => matchesExactJsonShape(actual[index], value))
+    );
+  }
+  if (expected !== null && typeof expected === "object") {
+    if (actual === null || typeof actual !== "object" || Array.isArray(actual)) return false;
+    const expectedKeys = Object.keys(expected);
+    const actualKeys = Object.keys(actual);
+    return (
+      actualKeys.length === expectedKeys.length &&
+      expectedKeys.every((key) => Object.hasOwn(actual, key) && matchesExactJsonShape(actual[key], expected[key]))
+    );
+  }
+  return Object.is(actual, expected);
 }
 
 function table(headers, rows) {

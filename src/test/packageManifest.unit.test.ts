@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error The executable generator intentionally has no TypeScript declaration file.
+import { notebookMimeTypeRows } from "../../scripts/generate-reference.mjs";
 
 interface CommandContribution {
   command?: string;
@@ -52,7 +54,9 @@ interface PackageManifest {
     }>;
     notebookRenderer?: Array<{
       id?: string;
+      displayName?: string;
       requiresMessaging?: string;
+      mimeTypes?: string[];
       entrypoint?: string | { extends?: string; path?: string };
     }>;
     walkthroughs?: Array<{
@@ -649,24 +653,76 @@ describe("runtime dependency recovery contributions", () => {
 });
 
 describe("notebook renderer contribution", () => {
+  const mimeType = "application/vnd.openwrangler.viewer.v2+json";
+  const mimeRenderer = {
+    id: "openWrangler.renderer",
+    displayName: "Open Wrangler Renderer",
+    entrypoint: "./media/notebookRenderer.js",
+    requiresMessaging: "optional",
+    mimeTypes: [mimeType]
+  };
+  const htmlExtension = {
+    id: "openWrangler.inlineHtmlUpgrade",
+    displayName: "Open Wrangler Inline HTML Upgrade",
+    entrypoint: {
+      extends: "vscode.builtin-renderer",
+      path: "./media/notebookRenderer.js"
+    },
+    requiresMessaging: "always"
+  };
+
   it("keeps static output portable while always activating desktop messaging", () => {
     expect(manifest.activationEvents).toContain("onRenderer:openWrangler.renderer");
-    expect(manifest.contributes?.notebookRenderer).toContainEqual(
-      expect.objectContaining({ id: "openWrangler.renderer", requiresMessaging: "optional" })
-    );
+    expect(manifest.contributes?.notebookRenderer).toContainEqual(mimeRenderer);
     expect(manifest.contributes?.configuration?.properties).not.toHaveProperty("openWrangler.renderer.enabled");
   });
 
   it("extends the built-in HTML renderer without replacing ordinary HTML ownership", () => {
     expect(manifest.activationEvents).toContain("onRenderer:openWrangler.inlineHtmlUpgrade");
-    expect(manifest.contributes?.notebookRenderer).toContainEqual({
-      id: "openWrangler.inlineHtmlUpgrade",
-      displayName: "Open Wrangler Inline HTML Upgrade",
-      entrypoint: {
-        extends: "vscode.builtin-renderer",
-        path: "./media/notebookRenderer.js"
-      },
-      requiresMessaging: "always"
-    });
+    expect(manifest.contributes?.notebookRenderer).toContainEqual(htmlExtension);
+  });
+
+  it("binds the generated reference to one exact MIME renderer and one exact HTML extension", () => {
+    expect(notebookMimeTypeRows(manifest.contributes?.notebookRenderer)).toEqual([`- \`${mimeType}\``]);
+  });
+
+  it.each([
+    [
+      "the direct renderer identity using the extension shape",
+      [
+        {
+          id: mimeRenderer.id,
+          displayName: mimeRenderer.displayName,
+          entrypoint: htmlExtension.entrypoint,
+          requiresMessaging: mimeRenderer.requiresMessaging
+        },
+        htmlExtension
+      ]
+    ],
+    ["a direct renderer using the extension identity", [{ ...mimeRenderer, id: htmlExtension.id }, htmlExtension]],
+    ["an extension using the direct renderer identity", [mimeRenderer, { ...htmlExtension, id: mimeRenderer.id }]],
+    ["a changed direct display name", [{ ...mimeRenderer, displayName: "Open Wrangler" }, htmlExtension]],
+    ["a changed extension display name", [mimeRenderer, { ...htmlExtension, displayName: "Open Wrangler HTML" }]],
+    ["a changed direct messaging mode", [{ ...mimeRenderer, requiresMessaging: "always" }, htmlExtension]],
+    ["a changed extension messaging mode", [mimeRenderer, { ...htmlExtension, requiresMessaging: "optional" }]],
+    ["an empty direct entrypoint", [{ ...mimeRenderer, entrypoint: "" }, htmlExtension]],
+    [
+      "a changed extension entrypoint",
+      [mimeRenderer, { ...htmlExtension, entrypoint: { ...htmlExtension.entrypoint, path: "" } }]
+    ],
+    ["an omitted MIME type", [{ ...mimeRenderer, mimeTypes: [] }, htmlExtension]],
+    ["a duplicated MIME type", [{ ...mimeRenderer, mimeTypes: [mimeType, mimeType] }, htmlExtension]],
+    ["a MIME claim on the HTML extension", [mimeRenderer, { ...htmlExtension, mimeTypes: [mimeType] }]],
+    ["a duplicate direct renderer", [mimeRenderer, mimeRenderer]],
+    ["a duplicate HTML extension", [htmlExtension, htmlExtension]],
+    ["a missing direct renderer", [htmlExtension]],
+    ["a missing HTML extension", [mimeRenderer]],
+    ["an unexpected extra contribution", [mimeRenderer, htmlExtension, { ...mimeRenderer, id: "other" }]],
+    ["an unexpected direct property", [{ ...mimeRenderer, unexpected: true }, htmlExtension]],
+    ["an unexpected extension property", [mimeRenderer, { ...htmlExtension, unexpected: true }]]
+  ])("rejects %s", (_name, renderers) => {
+    expect(() => notebookMimeTypeRows(renderers)).toThrow(
+      "Notebook renderer contributions must contain exactly the canonical MIME-v2 renderer and built-in HTML extension."
+    );
   });
 });
