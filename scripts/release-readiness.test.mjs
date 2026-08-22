@@ -1265,14 +1265,63 @@ test("constrains historical and current Performance summaries to exact evidence-
       `plain-English indented content: ${outsideClaim}`
     );
   }
+  for (const metricFirstClaim of [
+    "Open Wrangler's memory use is half of Data Wrangler's.",
+    "Open Wrangler's memory footprint is 50% of Data Wrangler's.",
+    "Open Wrangler's latency dropped by half versus Data Wrangler.",
+    "Open Wrangler allocates 40% of what Data Wrangler does."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${metricFirstClaim}`)),
+      [outOfSectionProblem],
+      `metric-first comparison: ${metricFirstClaim}`
+    );
+  }
+  const allTriggerConfusableClaim =
+    "O\u0440\u0435n Wr\u0430ngl\u0435r is f\u0430st\u0435r than D\u0430t\u0430 Wr\u0430ngl\u0435r.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${allTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "all product, context, and comparator triggers contain confusable letters"
+  );
+  for (const mixedCodeAndProse of [
+    "```js\nconst marker = true;\nOpen Wrangler is faster than Data Wrangler.\n```",
+    "    const marker = true;\n    Open Wrangler is faster than Data Wrangler."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${mixedCodeAndProse}`)),
+      [outOfSectionProblem],
+      `mixed source and visible prose: ${mixedCodeAndProse}`
+    );
+  }
   for (const codeExample of [
     '```js\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
-    '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
+    '```js\nconst marker = true;\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
+    '```js\nconst comparisons = [\n  "Open Wrangler is faster than Data Wrangler.",\n];\n```',
+    '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";',
+    '    const marker = true;\n    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
   ]) {
     assert.deepEqual(
       inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${codeExample}`)),
       [],
       `source-code example: ${codeExample}`
+    );
+  }
+  for (const comparisonMutation of [
+    "Open Wrangler's memory use is documented beside Data Wrangler's.",
+    "The chart uses 50% opacity for the memory-footprint series.",
+    "Open Wrangler records latency without asserting a comparative result.",
+    "The allocator processes 40% of the queued samples in the first pass.",
+    "O\u0440\u0435n Wr\u0430ngl\u0435r documents D\u0430t\u0430 Wr\u0430ngl\u0435r integration."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${comparisonMutation}`)
+      ),
+      [],
+      `non-comparative mutation: ${comparisonMutation}`
     );
   }
   for (const renderedClaim of [
