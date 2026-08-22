@@ -9664,6 +9664,8 @@ type CodePreviewElementValue = CodePreviewElementHandle extends ElementHandle<in
 
 const MAX_CODE_PREVIEW_WORKBENCH_FRAMES = 64;
 const MAX_CODE_PREVIEW_DOM_ANCESTORS = 64;
+const MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS = 16_384;
+const MAX_CODE_PREVIEW_OVERLAY_ELEMENTS = 256;
 const MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES = 256;
 const MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS = 128;
 const MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES = 8192;
@@ -9673,9 +9675,6 @@ const CODE_PREVIEW_WORKBENCH_CONTAINERS = Object.freeze([
   Object.freeze({ className: "auxiliarybar", id: "workbench.parts.auxiliarybar" }),
   Object.freeze({ className: "sidebar", id: "workbench.parts.sidebar" })
 ]);
-const CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR = CODE_PREVIEW_WORKBENCH_CONTAINERS.map(
-  ({ className, id }) => `.part.${className}[id="${id}"]`
-).join(", ");
 
 interface CodePreviewWorkbenchContainerDescriptor {
   readonly className: string;
@@ -9710,10 +9709,11 @@ function inspectCodePreviewWorkbenchOwnership(
     maximumFlowAnchorNameCodeUnits: number;
     maximumFlowOwnerIdCandidates: number;
     maximumFlowOwnerIdCodeUnits: number;
+    maximumDocumentElements: number;
     maximumAncestors: number;
     maximumContainers: number;
+    maximumOverlayElements: number;
     retainElements: boolean;
-    containerSelector: string;
     supportedContainers: readonly CodePreviewWorkbenchContainerDescriptor[];
   }>
 ): CodePreviewWorkbenchOwnershipReceipt {
@@ -9728,10 +9728,12 @@ function inspectCodePreviewWorkbenchOwnership(
   type Candidate = {
     readonly classList: { contains(className: string): boolean };
     readonly dataset?: { readonly parentFlowToElementId?: string };
+    readonly firstElementChild: Candidate | null;
     readonly id: string;
     readonly isConnected: boolean;
+    readonly nextElementSibling: Candidate | null;
     readonly ownerDocument: {
-      readonly documentElement: unknown;
+      readonly documentElement: Candidate;
       readonly defaultView: null | {
         readonly innerHeight: number;
         readonly innerWidth: number;
@@ -9741,14 +9743,13 @@ function inspectCodePreviewWorkbenchOwnership(
           readonly visibility: string;
         };
       };
-      getElementById(id: string): Candidate | null;
-      querySelectorAll(selector: string): { readonly [index: number]: unknown; readonly length: number };
     };
     readonly parentElement: Candidate | null;
     readonly style: { getPropertyValue(name: string): string };
+    readonly tagName: string;
     contains(target: unknown): boolean;
     getBoundingClientRect(): Rectangle;
-    querySelectorAll(selector: "iframe"): { readonly [index: number]: unknown; readonly length: number };
+    hasAttribute(name: string): boolean;
   };
   const visibility = (candidate: Candidate): "detached" | "hidden" | "outside-viewport" | "visible" | "zero-layout" => {
     if (!candidate.isConnected) return "detached";
@@ -9792,6 +9793,45 @@ function inspectCodePreviewWorkbenchOwnership(
     reason,
     relations
   });
+  const walkElements = (
+    root: Candidate,
+    maximumElements: number,
+    overBoundReason: string,
+    visit: (candidate: Candidate) => string | undefined
+  ): string | undefined => {
+    const visited = new Set<Candidate>();
+    let candidate: Candidate | null = root;
+    while (candidate !== null) {
+      const active: Candidate = candidate;
+      if (visited.size >= maximumElements) return overBoundReason;
+      if (visited.has(active)) return "element-inventory-cycle";
+      visited.add(active);
+      const rejected = visit(active);
+      if (rejected !== undefined) return rejected;
+      const child: Candidate | null = active.firstElementChild;
+      if (child !== null) {
+        if (child.parentElement !== active) return "element-inventory-parent-mismatch";
+        candidate = child;
+        continue;
+      }
+      let branch: Candidate = active;
+      while (branch !== root && branch.nextElementSibling === null) {
+        const parent: Candidate | null = branch.parentElement;
+        if (parent === null) return "element-inventory-truncated";
+        branch = parent;
+      }
+      if (branch === root) {
+        candidate = null;
+      } else {
+        const sibling: Candidate | null = branch.nextElementSibling;
+        if (sibling === null || sibling.parentElement !== branch.parentElement) {
+          return "element-inventory-parent-mismatch";
+        }
+        candidate = sibling;
+      }
+    }
+    return undefined;
+  };
   if (
     !Number.isSafeInteger(options.maximumAncestors) ||
     options.maximumAncestors < 1 ||
@@ -9805,6 +9845,10 @@ function inspectCodePreviewWorkbenchOwnership(
     options.maximumFlowOwnerIdCandidates < 1 ||
     !Number.isSafeInteger(options.maximumFlowOwnerIdCodeUnits) ||
     options.maximumFlowOwnerIdCodeUnits < 1 ||
+    !Number.isSafeInteger(options.maximumDocumentElements) ||
+    options.maximumDocumentElements < 1 ||
+    !Number.isSafeInteger(options.maximumOverlayElements) ||
+    options.maximumOverlayElements < 1 ||
     options.supportedContainers.length < 1 ||
     options.supportedContainers.length > options.maximumContainers
   ) {
@@ -9824,8 +9868,35 @@ function inspectCodePreviewWorkbenchOwnership(
   ) {
     return fail("missing-webview-overlay-content");
   }
-  const overlayFrames = overlayContent.querySelectorAll("iframe");
-  if (overlayFrames.length !== 1 || overlayFrames[0] !== outerFrame) {
+  const overlayRoot = overlayContent.parentElement;
+  if (!overlayRoot || !overlayRoot.classList.contains("webview-overlay")) {
+    return fail("missing-webview-overlay-root");
+  }
+  const workbenchRoot = overlayRoot.parentElement;
+  if (!workbenchRoot || !workbenchRoot.classList.contains("monaco-workbench")) {
+    return fail("missing-monaco-workbench-root");
+  }
+  const overlayRootVisibility = visibility(overlayRoot);
+  if (overlayRootVisibility !== "visible") return fail(`overlay-root-${overlayRootVisibility}`);
+  const workbenchRootVisibility = visibility(workbenchRoot);
+  if (workbenchRootVisibility !== "visible") return fail(`workbench-root-${workbenchRootVisibility}`);
+  let overlayFrameCount = 0;
+  let exactOuterFrameCount = 0;
+  const overlayInventoryFailure = walkElements(
+    overlayContent,
+    options.maximumOverlayElements,
+    "overlay-element-inventory-over-bound",
+    (candidate) => {
+      if (candidate !== overlayContent && candidate.tagName === "IFRAME") {
+        overlayFrameCount += 1;
+        if (candidate === outerFrame) exactOuterFrameCount += 1;
+        if (overlayFrameCount > 1) return "overlay-outer-frame-not-exact";
+      }
+      return undefined;
+    }
+  );
+  if (overlayInventoryFailure !== undefined) return fail(overlayInventoryFailure);
+  if (overlayFrameCount !== 1 || exactOuterFrameCount !== 1) {
     return fail("overlay-outer-frame-not-exact");
   }
   let overlayCurrent = overlayContent;
@@ -9857,6 +9928,8 @@ function inspectCodePreviewWorkbenchOwnership(
   const chain: Candidate[] = [];
   const relations: CodePreviewWorkbenchOwnershipRelation[] = [];
   const visited = new Set<Candidate>([outerFrame]);
+  const containerCandidates: Candidate[] = [];
+  const descriptorCounts = options.supportedContainers.map(() => 0);
   let current = outerFrame;
   let containerIndex = -1;
   let flowLinkCount = 0;
@@ -9877,32 +9950,87 @@ function inspectCodePreviewWorkbenchOwnership(
       ) {
         return fail("invalid-flow-anchor-name", chain, relations, containerIndex, flowLinkCount);
       }
-      const anchorCandidates = current.ownerDocument.querySelectorAll('[style*="anchor-name"]');
-      if (anchorCandidates.length > options.maximumFlowAnchorCandidates) {
-        return fail("flow-anchor-inventory-over-bound", chain, relations, containerIndex, flowLinkCount);
-      }
       let anchored: Candidate | null = null;
       let anchoredCount = 0;
-      for (let index = 0; index < anchorCandidates.length; index += 1) {
-        const candidate = anchorCandidates[index] as Candidate;
-        if (candidate.style.getPropertyValue("anchor-name") !== anchorName) continue;
-        anchored = candidate;
-        anchoredCount += 1;
+      let anchorCandidateCount = 0;
+      let identified: Candidate | null = null;
+      let identifiedCount = 0;
+      let identifiedCandidateCount = 0;
+      let exactOverlayRootCount = 0;
+      let exactWorkbenchRootCount = 0;
+      const inventoryFailure = walkElements(
+        current.ownerDocument.documentElement,
+        options.maximumDocumentElements,
+        "document-element-inventory-over-bound",
+        (candidate) => {
+          if (candidate.classList.contains("monaco-workbench")) {
+            exactWorkbenchRootCount += 1;
+            if (exactWorkbenchRootCount > 1) return "workbench-root-not-unique";
+            if (candidate !== workbenchRoot) return "workbench-root-not-exact";
+          }
+          if (candidate.classList.contains("webview-overlay") && candidate.parentElement === workbenchRoot) {
+            exactOverlayRootCount += 1;
+            if (exactOverlayRootCount > 1) return "webview-overlay-root-not-unique";
+            if (candidate !== overlayRoot) return "webview-overlay-root-not-exact";
+          }
+          const candidateAnchorName = candidate.style.getPropertyValue("anchor-name");
+          if (candidateAnchorName.length > 0) {
+            anchorCandidateCount += 1;
+            if (anchorCandidateCount > options.maximumFlowAnchorCandidates) {
+              return "flow-anchor-inventory-over-bound";
+            }
+            if (candidateAnchorName === anchorName) {
+              anchored = candidate;
+              anchoredCount += 1;
+            }
+          }
+          if (flowOwnerId.length > 0 && candidate.hasAttribute("id")) {
+            identifiedCandidateCount += 1;
+            if (identifiedCandidateCount > options.maximumFlowOwnerIdCandidates) {
+              return "flow-owner-id-inventory-over-bound";
+            }
+            if (candidate.id === flowOwnerId) {
+              identified = candidate;
+              identifiedCount += 1;
+            }
+          }
+          for (let descriptorIndex = 0; descriptorIndex < options.supportedContainers.length; descriptorIndex += 1) {
+            const descriptor = options.supportedContainers[descriptorIndex];
+            if (
+              candidate.classList.contains("part") &&
+              candidate.id === descriptor.id &&
+              candidate.classList.contains(descriptor.className)
+            ) {
+              containerCandidates.push(candidate);
+              if (containerCandidates.length > options.maximumContainers) {
+                return "supported-container-inventory-over-bound";
+              }
+              descriptorCounts[descriptorIndex] += 1;
+            }
+          }
+          return undefined;
+        }
+      );
+      if (inventoryFailure !== undefined) {
+        return fail(inventoryFailure, chain, relations, containerIndex, flowLinkCount);
+      }
+      if (exactWorkbenchRootCount !== 1) {
+        return fail("workbench-root-not-exact", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (exactOverlayRootCount !== 1) {
+        return fail("webview-overlay-root-not-exact", chain, relations, containerIndex, flowLinkCount);
       }
       if (anchoredCount !== 1 || !anchored) {
         return fail("flow-anchor-not-unique", chain, relations, containerIndex, flowLinkCount);
       }
       if (flowOwnerId.length > 0) {
-        const identifiedCandidates = current.ownerDocument.querySelectorAll("[id]");
-        if (identifiedCandidates.length > options.maximumFlowOwnerIdCandidates) {
-          return fail("flow-owner-id-inventory-over-bound", chain, relations, containerIndex, flowLinkCount);
-        }
-        let identifiedCount = 0;
-        for (let index = 0; index < identifiedCandidates.length; index += 1) {
-          if ((identifiedCandidates[index] as Candidate).id === flowOwnerId) identifiedCount += 1;
-        }
-        const identified = current.ownerDocument.getElementById(flowOwnerId);
-        if (identifiedCount !== 1 || !identified || identified.id !== flowOwnerId || identified !== anchored) {
+        const exactIdentified = identified as Candidate | null;
+        if (
+          identifiedCount !== 1 ||
+          exactIdentified === null ||
+          exactIdentified.id !== flowOwnerId ||
+          exactIdentified !== anchored
+        ) {
           return fail("flow-owner-anchor-mismatch", chain, relations, containerIndex, flowLinkCount);
         }
       }
@@ -9942,6 +10070,10 @@ function inspectCodePreviewWorkbenchOwnership(
   );
   if (!containerIsSupported) {
     return fail("unsupported-nearest-workbench-part", chain, relations, containerIndex, flowLinkCount);
+  }
+  const workbenchRootIndex = chain.indexOf(workbenchRoot);
+  if (workbenchRootIndex <= containerIndex) {
+    return fail("workbench-root-not-shared", chain, relations, containerIndex, flowLinkCount);
   }
   const containerVisibility = visibility(container);
   if (containerVisibility !== "visible") {
@@ -9987,29 +10119,14 @@ function inspectCodePreviewWorkbenchOwnership(
     }
   }
 
-  const candidates = outerFrame.ownerDocument.querySelectorAll(options.containerSelector);
-  const candidateCount = candidates.length;
-  const supportedContainerInventoryBounded =
-    Number.isSafeInteger(candidateCount) && candidateCount >= 0 && candidateCount <= options.maximumContainers;
-  if (!supportedContainerInventoryBounded) {
-    return fail("supported-container-inventory-over-bound", chain, relations, containerIndex, flowLinkCount);
-  }
-  const descriptorCounts = options.supportedContainers.map(() => 0);
   let exactContainerCount = 0;
   let visibleOwningContainerCount = 0;
   const flowRelationIndex = relations.findIndex((relation) => relation.kind === "flow");
   const anchor = flowRelationIndex >= 0 ? chain[flowRelationIndex] : undefined;
   if (!anchor) return fail("missing-flow-anchor", chain, relations, containerIndex, flowLinkCount);
-  for (let index = 0; index < candidateCount; index += 1) {
-    const candidate = candidates[index] as Candidate;
+  for (const candidate of containerCandidates) {
     if (candidate === container) exactContainerCount += 1;
     if (visibility(candidate) === "visible" && candidate.contains(anchor)) visibleOwningContainerCount += 1;
-    for (let descriptorIndex = 0; descriptorIndex < options.supportedContainers.length; descriptorIndex += 1) {
-      const descriptor = options.supportedContainers[descriptorIndex];
-      if (candidate.id === descriptor.id && candidate.classList.contains(descriptor.className)) {
-        descriptorCounts[descriptorIndex] += 1;
-      }
-    }
   }
   if (descriptorCounts.some((count) => count > 1)) {
     return fail("supported-container-identity-duplicate", chain, relations, containerIndex, flowLinkCount);
@@ -11316,13 +11433,14 @@ async function captureCodePreviewWorkbenchOwnership(
     receiptHandle = await acquireCodePreviewOwnedHandle(
       () =>
         outerFrame.evaluateHandle(inspectCodePreviewWorkbenchOwnership, {
-          containerSelector: CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR,
           maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
           maximumContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS.length,
+          maximumDocumentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
           maximumFlowAnchorCandidates: MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES,
           maximumFlowAnchorNameCodeUnits: MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS,
           maximumFlowOwnerIdCandidates: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES,
           maximumFlowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS,
+          maximumOverlayElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS,
           retainElements: true,
           supportedContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS
         }),
@@ -11462,14 +11580,53 @@ async function captureSoleCodePreviewOverlayFrameElement(
 ): Promise<CodePreviewWorkbenchHandle> {
   const candidate = await acquireCodePreviewOwnedHandle(
     () =>
-      overlayContent.evaluateHandle((element, expected) => {
-        const frames = (
-          element as unknown as {
-            querySelectorAll(selector: "iframe"): { readonly [index: number]: unknown; readonly length: number };
+      overlayContent.evaluateHandle(
+        (element, options) => {
+          type Candidate = {
+            readonly firstElementChild: Candidate | null;
+            readonly nextElementSibling: Candidate | null;
+            readonly parentElement: Candidate | null;
+            readonly tagName: string;
+          };
+          const root = element as unknown as Candidate;
+          const expected = options.expected as unknown as Candidate;
+          const visited = new Set<Candidate>();
+          let current: Candidate | null = root;
+          let exactCount = 0;
+          let frameCount = 0;
+          while (current !== null) {
+            const active: Candidate = current;
+            if (visited.size >= options.maximumElements || visited.has(active)) return null;
+            visited.add(active);
+            if (active !== root && active.tagName === "IFRAME") {
+              frameCount += 1;
+              if (active === expected) exactCount += 1;
+              if (frameCount > 1) return null;
+            }
+            const child: Candidate | null = active.firstElementChild;
+            if (child !== null) {
+              if (child.parentElement !== active) return null;
+              current = child;
+              continue;
+            }
+            let branch: Candidate = active;
+            while (branch !== root && branch.nextElementSibling === null) {
+              const parent: Candidate | null = branch.parentElement;
+              if (parent === null) return null;
+              branch = parent;
+            }
+            if (branch === root) {
+              current = null;
+            } else {
+              const sibling: Candidate | null = branch.nextElementSibling;
+              if (sibling === null || sibling.parentElement !== branch.parentElement) return null;
+              current = sibling;
+            }
           }
-        ).querySelectorAll("iframe");
-        return frames.length === 1 && frames[0] === expected ? frames[0] : null;
-      }, expectedOuterFrame),
+          return frameCount === 1 && exactCount === 1 ? expected : null;
+        },
+        { expected: expectedOuterFrame, maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS }
+      ),
     bounded,
     "atomically pinning the sole Code Preview webview-overlay iframe",
     description
@@ -11523,17 +11680,18 @@ async function assertLiveCodePreviewActionOwnership(
   );
   const receipt = await bounded(() => {
     const ownership = outerFrame.evaluate(inspectCodePreviewWorkbenchOwnership, {
-      containerSelector: CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR,
       expectedChain: generation.ownershipElements,
       expectedOuterFrame: outerFrame,
       expectedOverlayChain: generation.overlayElements,
       expectedRelations: generation.ownershipRelations,
       maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
       maximumContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS.length,
+      maximumDocumentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
       maximumFlowAnchorCandidates: MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES,
       maximumFlowAnchorNameCodeUnits: MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS,
       maximumFlowOwnerIdCandidates: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES,
       maximumFlowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS,
+      maximumOverlayElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS,
       retainElements: false,
       supportedContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS
     });

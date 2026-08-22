@@ -33,12 +33,13 @@ interface WorkbenchOwnershipAuthority {
   readonly inspect: (element: unknown, options: Record<string, unknown>) => WorkbenchOwnershipReceipt;
   readonly limits: Readonly<{
     ancestors: number;
+    documentElements: number;
     flowAnchorCandidates: number;
     flowAnchorNameCodeUnits: number;
     flowOwnerIdCandidates: number;
     flowOwnerIdCodeUnits: number;
+    overlayElements: number;
   }>;
-  readonly selector: string;
 }
 
 interface FakeRectangle {
@@ -65,16 +66,16 @@ interface FakeDocument {
     getComputedStyle(target: unknown): FakeStyle;
   };
   documentElement: FakeElement;
-  getElementById(id: string): FakeElement | null;
-  querySelectorAll(selector: string): ArrayLike<unknown>;
 }
 
 interface FakeElement {
   readonly children: FakeElement[];
   readonly classList: { contains(className: string): boolean };
   readonly dataset: { parentFlowToElementId?: string };
+  readonly firstElementChild: FakeElement | null;
   readonly hasIdAttribute: boolean;
   readonly ownerDocument: FakeDocument;
+  readonly nextElementSibling: FakeElement | null;
   readonly style: FakeStyle;
   readonly tagName: string;
   id: string;
@@ -82,13 +83,15 @@ interface FakeElement {
   parentElement: FakeElement | null;
   contains(target: unknown): boolean;
   getBoundingClientRect(): FakeRectangle;
-  querySelectorAll(selector: string): ArrayLike<unknown>;
+  hasAttribute(name: string): boolean;
   setBoundingClientRect(rectangle: FakeRectangle): void;
 }
 
 const LIVE_ACTION_FUNCTION = "assertLiveCodePreviewActionOwnership";
 const CAPTURE_OWNERSHIP_FUNCTION = "captureCodePreviewWorkbenchOwnership";
 const CAPTURE_GENERATION_FUNCTION = "captureCodePreviewWorkbenchGeneration";
+const LIVE_INVOCATION_FUNCTION = "invokeLiveCodePreviewActionWithOwnership";
+const EDIT_LIVE_INVOCATION_FUNCTION = "editLiveCodePreviewAndInvoke";
 const OWNERSHIP_ASSERTION_HELPER = "assertCodePreviewWorkbenchOwnershipReceipt";
 const OWNERSHIP_INSPECTOR = "inspectCodePreviewWorkbenchOwnership";
 const FLOW_ANCHOR_NAME = "--overlay-anchor-code-preview";
@@ -98,12 +101,20 @@ const SUPPORTED_WORKBENCH_CONTAINERS = [
   { className: "auxiliarybar", id: "workbench.parts.auxiliarybar" },
   { className: "sidebar", id: "workbench.parts.sidebar" }
 ] as const;
-const SUPPORTED_WORKBENCH_CONTAINER_SELECTOR =
-  '.part.panel[id="workbench.parts.panel"], .part.auxiliarybar[id="workbench.parts.auxiliarybar"], .part.sidebar[id="workbench.parts.sidebar"]';
 
 function replaceExactlyOnce(source: string, from: string, to: string): string {
   nodeAssert.equal(source.split(from).length - 1, 1, `Expected exactly one source fragment: ${from}`);
   return source.replace(from, to);
+}
+
+function replaceTopLevelFunctionBody(source: string, name: string, replacement: string): string {
+  const syntax = ts.createSourceFile("extensionHost/index.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const declaration = syntax.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name
+  );
+  nodeAssert.ok(declaration?.body, `Missing ${name} function body.`);
+  return `${source.slice(0, declaration.body.getStart(syntax))}${replacement}${source.slice(declaration.body.end)}`;
 }
 
 function directVariable(
@@ -200,17 +211,18 @@ function assertLiveOwnershipBinding(source: string): void {
     actualOptions.set(name, property.initializer.getText(syntax));
   }
   const expectedOptions = new Map<string, string>([
-    ["containerSelector", "CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR"],
     ["expectedChain", "generation.ownershipElements"],
     ["expectedOuterFrame", "outerFrame"],
     ["expectedOverlayChain", "generation.overlayElements"],
     ["expectedRelations", "generation.ownershipRelations"],
     ["maximumAncestors", "MAX_CODE_PREVIEW_DOM_ANCESTORS"],
     ["maximumContainers", "CODE_PREVIEW_WORKBENCH_CONTAINERS.length"],
+    ["maximumDocumentElements", "MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS"],
     ["maximumFlowAnchorCandidates", "MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES"],
     ["maximumFlowAnchorNameCodeUnits", "MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS"],
     ["maximumFlowOwnerIdCandidates", "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES"],
     ["maximumFlowOwnerIdCodeUnits", "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS"],
+    ["maximumOverlayElements", "MAX_CODE_PREVIEW_OVERLAY_ELEMENTS"],
     ["retainElements", "false"],
     ["supportedContainers", "CODE_PREVIEW_WORKBENCH_CONTAINERS"]
   ]);
@@ -258,13 +270,14 @@ function assertAcquisitionOwnershipBinding(source: string): void {
     actualOptions.set(name, property.initializer.getText(syntax));
   }
   const expectedOptions = new Map<string, string>([
-    ["containerSelector", "CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR"],
     ["maximumAncestors", "MAX_CODE_PREVIEW_DOM_ANCESTORS"],
     ["maximumContainers", "CODE_PREVIEW_WORKBENCH_CONTAINERS.length"],
+    ["maximumDocumentElements", "MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS"],
     ["maximumFlowAnchorCandidates", "MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES"],
     ["maximumFlowAnchorNameCodeUnits", "MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS"],
     ["maximumFlowOwnerIdCandidates", "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES"],
     ["maximumFlowOwnerIdCodeUnits", "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS"],
+    ["maximumOverlayElements", "MAX_CODE_PREVIEW_OVERLAY_ELEMENTS"],
     ["retainElements", "true"],
     ["supportedContainers", "CODE_PREVIEW_WORKBENCH_CONTAINERS"]
   ]);
@@ -293,21 +306,134 @@ function assertAcquisitionOwnershipBinding(source: string): void {
     ["overlayContent", "outerFrame", "bounded", "description"],
     "Sole-overlay cardinality must bind the exact captured content and outer iframe."
   );
+  const soleOverlayCapture = findFunction("captureSoleCodePreviewOverlayFrameElement");
+  const materializedInventories = descendantCalls(soleOverlayCapture.body!).filter(
+    (call) => ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "querySelectorAll"
+  );
+  nodeAssert.equal(
+    materializedInventories.length,
+    0,
+    "Sole-overlay acquisition must not materialize an iframe candidate inventory."
+  );
+  const boundedCaptures = descendantCalls(soleOverlayCapture.body!).filter(
+    (call) =>
+      ts.isPropertyAccessExpression(call.expression) &&
+      ts.isIdentifier(call.expression.expression) &&
+      call.expression.expression.text === "overlayContent" &&
+      call.expression.name.text === "evaluateHandle"
+  );
+  nodeAssert.equal(boundedCaptures.length, 1, "Sole-overlay acquisition must retain one bounded renderer operation.");
+  const captureOptions = boundedCaptures[0].arguments[1];
+  nodeAssert.ok(ts.isObjectLiteralExpression(captureOptions), "Sole-overlay acquisition bounds must remain explicit.");
+  nodeAssert.deepEqual(
+    captureOptions.properties.map((property) => property.getText(syntax)),
+    ["expected: expectedOuterFrame", "maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS"],
+    "Sole-overlay acquisition must bind its exact frame and element cap."
+  );
+}
+
+function assertLiveInvocationBinding(source: string): void {
+  const syntax = ts.createSourceFile("extensionHost/index.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const findFunction = (name: string): ts.FunctionDeclaration => {
+    const declaration = syntax.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === name
+    );
+    nodeAssert.ok(declaration?.body, `${name} must remain a top-level function with a body.`);
+    return declaration;
+  };
+
+  const invocation = findFunction(LIVE_INVOCATION_FUNCTION);
+  const invocationStatements = Array.from(invocation.body!.statements);
+  nodeAssert.equal(invocationStatements.length, 2, "The live invocation must retain one final receipt and one action.");
+  const receipt = directVariable(invocationStatements, "receipt").declaration;
+  nodeAssert.ok(
+    receipt.initializer &&
+      ts.isAwaitExpression(receipt.initializer) &&
+      ts.isCallExpression(receipt.initializer.expression),
+    "The live invocation must await its authoritative action receipt before dispatch."
+  );
+  const receiptCall = receipt.initializer.expression;
+  nodeAssert.ok(
+    ts.isIdentifier(receiptCall.expression) && receiptCall.expression.text === LIVE_ACTION_FUNCTION,
+    `The live invocation must obtain its receipt from ${LIVE_ACTION_FUNCTION}.`
+  );
+  nodeAssert.deepEqual(
+    receiptCall.arguments.map((argument) => argument.getText(syntax)),
+    ["workbench", "generation", "selectedFrame", "target", "selector", "currentReceipt", "bounded", "description"],
+    "The live invocation must bind its final receipt to every exact generation and action owner."
+  );
+  const dispatchStatement = invocationStatements[1];
+  nodeAssert.ok(
+    ts.isReturnStatement(dispatchStatement) &&
+      dispatchStatement.expression !== undefined &&
+      ts.isCallExpression(dispatchStatement.expression),
+    "The live invocation must immediately return one receipt-consuming dispatch."
+  );
+  const dispatch = dispatchStatement.expression;
+  nodeAssert.ok(
+    ts.isIdentifier(dispatch.expression) && dispatch.expression.text === "invokeCodePreviewActionAfterDispatchBoundary",
+    "The live invocation must not bypass the receipt-consuming action boundary."
+  );
+  nodeAssert.equal(
+    dispatch.arguments[0]?.getText(syntax),
+    "receipt",
+    "The dispatch must consume the exact live receipt."
+  );
+  nodeAssert.equal(
+    dispatch.arguments[2]?.getText(syntax),
+    "action",
+    "The dispatch must invoke only the supplied action."
+  );
+
+  const editInvocation = findFunction(EDIT_LIVE_INVOCATION_FUNCTION);
+  const callSites = descendantCalls(editInvocation.body!).filter(
+    (call) => ts.isIdentifier(call.expression) && call.expression.text === LIVE_INVOCATION_FUNCTION
+  );
+  nodeAssert.equal(callSites.length, 1, "The packaged edit path must retain exactly one live invocation call site.");
+  const callSite = callSites[0];
+  nodeAssert.deepEqual(
+    callSite.arguments.slice(0, 7).map((argument) => argument.getText(syntax)),
+    ["workbench", "selectedGeneration", "selectedFrame", "target", "selector", "replacementReceipt", "bounded"],
+    "The packaged call site must pass every exact live generation owner."
+  );
+  nodeAssert.equal(
+    callSite.arguments[7]?.getText(syntax),
+    "`${description} authoritative final live action ownership`",
+    "The packaged call site must preserve the final ownership diagnostic."
+  );
+  nodeAssert.ok(
+    ts.isArrowFunction(callSite.arguments[8]),
+    "The packaged call site must own one bounded action callback."
+  );
+  nodeAssert.ok(ts.isReturnStatement(callSite.parent), "The final live invocation must remain the returned action.");
+  const actionBlock = callSite.parent.parent;
+  nodeAssert.ok(ts.isBlock(actionBlock), "The final live invocation must remain inside the bounded execute block.");
+  const callIndex = actionBlock.statements.indexOf(callSite.parent);
+  const boundaryMutation = actionBlock.statements[callIndex - 1];
+  nodeAssert.ok(
+    boundaryMutation &&
+      ts.isIfStatement(boundaryMutation) &&
+      boundaryMutation.expression.getText(syntax) === "options.boundaryTestHook",
+    "The final live invocation must immediately follow the optional action-boundary mutation."
+  );
 }
 
 function loadAuthority(): WorkbenchOwnershipAuthority {
   const path = resolve(process.cwd(), "src/test/extensionHost/index.ts");
   const source = readFileSync(path, "utf8");
   assertLiveOwnershipBinding(source);
+  assertLiveInvocationBinding(source);
   const syntax = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const variables = new Set([
     "MAX_CODE_PREVIEW_DOM_ANCESTORS",
+    "MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS",
+    "MAX_CODE_PREVIEW_OVERLAY_ELEMENTS",
     "MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES",
     "MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS",
     "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES",
     "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS",
-    "CODE_PREVIEW_WORKBENCH_CONTAINERS",
-    "CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR"
+    "CODE_PREVIEW_WORKBENCH_CONTAINERS"
   ]);
   const functions = new Set(["assertCodePreviewWorkbenchOwnershipReceipt", "inspectCodePreviewWorkbenchOwnership"]);
   const selected = syntax.statements.filter((statement) => {
@@ -318,7 +444,7 @@ function loadAuthority(): WorkbenchOwnershipAuthority {
     }
     return ts.isFunctionDeclaration(statement) && statement.name !== undefined && functions.has(statement.name.text);
   });
-  expect(selected).toHaveLength(9);
+  expect(selected).toHaveLength(10);
   const compiled = ts.transpileModule(
     `${selected.map((statement) => statement.getText(syntax)).join("\n")}\n` +
       "globalThis.__openWranglerWorkbenchOwnershipAuthority = {" +
@@ -327,12 +453,13 @@ function loadAuthority(): WorkbenchOwnershipAuthority {
       "inspect: inspectCodePreviewWorkbenchOwnership," +
       "limits: {" +
       "ancestors: MAX_CODE_PREVIEW_DOM_ANCESTORS," +
+      "documentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS," +
       "flowAnchorCandidates: MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES," +
       "flowAnchorNameCodeUnits: MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS," +
       "flowOwnerIdCandidates: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES," +
-      "flowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS" +
-      "}," +
-      "selector: CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR" +
+      "flowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS," +
+      "overlayElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS" +
+      "}" +
       "};",
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }
   ).outputText;
@@ -357,9 +484,8 @@ function createFixture(
     flowOwnerId?: string;
   }> = {}
 ) {
-  const descriptor = options.descriptor ?? SUPPORTED_WORKBENCH_CONTAINERS[1];
-  const queryOverrides = new Map<string, ArrayLike<unknown>>();
-  const elements: FakeElement[] = [];
+  const descriptor = options.descriptor ?? authority.containers[1];
+  const traversalReads = new Map<FakeElement, number>();
   const document: FakeDocument = {
     defaultView: {
       innerHeight: 800,
@@ -377,30 +503,7 @@ function createFixture(
         return { ...element.style, visibility: effectiveVisibility };
       }
     },
-    documentElement: undefined as unknown as FakeElement,
-    getElementById: (id: string) =>
-      elements.find(
-        (candidate) => candidate.hasIdAttribute && candidate.id === id && document.documentElement.contains(candidate)
-      ) ?? null,
-    querySelectorAll: (selector: string): ArrayLike<unknown> => {
-      const overridden = queryOverrides.get(selector);
-      if (overridden !== undefined) return overridden;
-      const attached = elements.filter((candidate) => document.documentElement.contains(candidate));
-      if (selector === authority.selector) {
-        return attached.filter(
-          (candidate) =>
-            candidate.classList.contains("part") &&
-            authority.containers.some(
-              (supported) => candidate.id === supported.id && candidate.classList.contains(supported.className)
-            )
-        );
-      }
-      if (selector === '[style*="anchor-name"]') {
-        return attached.filter((candidate) => candidate.style.getPropertyValue("anchor-name").length > 0);
-      }
-      if (selector === "[id]") return attached.filter((candidate) => candidate.hasIdAttribute);
-      return [];
-    }
+    documentElement: undefined as unknown as FakeElement
   };
 
   const setParent = (element: FakeElement, parent: FakeElement | null): void => {
@@ -439,10 +542,21 @@ function createFixture(
       children: [],
       classList: { contains: (className) => classNames.has(className) },
       dataset: {},
+      get firstElementChild() {
+        traversalReads.set(element, (traversalReads.get(element) ?? 0) + 1);
+        return element.children[0] ?? null;
+      },
       hasIdAttribute: elementOptions.id !== undefined,
       id: elementOptions.id ?? "",
       isConnected: elementOptions.connected ?? true,
       ownerDocument: document,
+      get nextElementSibling() {
+        traversalReads.set(element, (traversalReads.get(element) ?? 0) + 1);
+        const parent = element.parentElement;
+        if (parent === null) return null;
+        const index = parent.children.indexOf(element);
+        return index >= 0 ? (parent.children[index + 1] ?? null) : null;
+      },
       parentElement: null,
       style,
       tagName: elementOptions.tagName ?? "DIV",
@@ -457,27 +571,24 @@ function createFixture(
         return false;
       },
       getBoundingClientRect: () => bounds,
-      querySelectorAll: (selector) => {
-        if (selector !== "iframe") return [];
-        return elements.filter(
-          (candidate) =>
-            candidate !== element &&
-            candidate.tagName === "IFRAME" &&
-            element.contains(candidate) &&
-            document.documentElement.contains(candidate)
-        );
-      },
+      hasAttribute: (name) => name === "id" && element.hasIdAttribute,
       setBoundingClientRect: (nextBounds) => {
         bounds = nextBounds;
       }
     };
-    elements.push(element);
     setParent(element, elementOptions.parent ?? null);
     return element;
   };
 
-  const root = makeElement({ id: "workbench-root", rectangle: rectangle(0, 0, 1_280, 800) });
-  document.documentElement = root;
+  const documentRoot = makeElement({ rectangle: rectangle(0, 0, 1_280, 800), tagName: "HTML" });
+  document.documentElement = documentRoot;
+  const body = makeElement({ parent: documentRoot, rectangle: rectangle(0, 0, 1_280, 800), tagName: "BODY" });
+  const root = makeElement({
+    classNames: ["monaco-workbench"],
+    id: "workbench-root",
+    parent: body,
+    rectangle: rectangle(0, 0, 1_280, 800)
+  });
   const containerRectangle =
     descriptor.className === "panel"
       ? rectangle(0, 560, 1_280, 240)
@@ -533,15 +644,17 @@ function createFixture(
   return {
     anchor,
     anchorParent,
+    body,
     container,
     document,
+    documentRoot,
     makeElement,
     outerFrame,
     overlayContent,
     overlayRoot,
-    overrideQuery: (selector: string, candidates: ArrayLike<unknown>) => queryOverrides.set(selector, candidates),
     root,
-    setParent
+    setParent,
+    traversalReads: (element: FakeElement) => traversalReads.get(element) ?? 0
   };
 }
 
@@ -550,13 +663,14 @@ function inspectionOptions(
   overrides: Readonly<Record<string, unknown>> = {}
 ): Record<string, unknown> {
   return {
-    containerSelector: authority.selector,
     maximumAncestors: authority.limits.ancestors,
     maximumContainers: authority.containers.length,
+    maximumDocumentElements: authority.limits.documentElements,
     maximumFlowAnchorCandidates: authority.limits.flowAnchorCandidates,
     maximumFlowAnchorNameCodeUnits: authority.limits.flowAnchorNameCodeUnits,
     maximumFlowOwnerIdCandidates: authority.limits.flowOwnerIdCandidates,
     maximumFlowOwnerIdCodeUnits: authority.limits.flowOwnerIdCodeUnits,
+    maximumOverlayElements: authority.limits.overlayElements,
     retainElements: true,
     supportedContainers: authority.containers,
     ...overrides
@@ -594,26 +708,36 @@ function expectReason(
   );
 }
 
-function guardedArray(length: number): { readonly candidates: ArrayLike<unknown>; readonly indexReads: () => number } {
-  let reads = 0;
-  const candidates = new Proxy(new Array<unknown>(length), {
-    get(target, property, receiver) {
-      if (typeof property === "string" && /^(?:0|[1-9][0-9]*)$/u.test(property)) reads += 1;
-      return Reflect.get(target, property, receiver);
-    }
-  });
-  return { candidates, indexReads: () => reads };
-}
-
 describe("Code Preview split-overlay workbench ownership", () => {
   const authority = loadAuthority();
   expect(Array.from(authority.containers)).toEqual(SUPPORTED_WORKBENCH_CONTAINERS);
-  expect(authority.selector).toBe(SUPPORTED_WORKBENCH_CONTAINER_SELECTOR);
 
   it("binds the exact live action to the pinned outer iframe, generation topology, bounds, and immediate assertion", () => {
     const source = readFileSync(resolve(process.cwd(), "src/test/extensionHost/index.ts"), "utf8");
     expect(() => assertLiveOwnershipBinding(source)).not.toThrow();
     expect(() => assertAcquisitionOwnershipBinding(source)).not.toThrow();
+    expect(() => assertLiveInvocationBinding(source)).not.toThrow();
+
+    const directActionBypass = replaceTopLevelFunctionBody(
+      source,
+      LIVE_INVOCATION_FUNCTION,
+      "{\n  return action();\n}"
+    );
+    expect(() => assertLiveInvocationBinding(directActionBypass)).toThrow(/receipt and one action/u);
+
+    const movedCallSite = replaceExactlyOnce(
+      source,
+      "        await mutation.mutate();\n      }\n      return invokeLiveCodePreviewActionWithOwnership(",
+      "        await mutation.mutate();\n      }\n      void target;\n      return invokeLiveCodePreviewActionWithOwnership("
+    );
+    expect(() => assertLiveInvocationBinding(movedCallSite)).toThrow(/immediately follow/u);
+
+    const omittedCallSite = replaceExactlyOnce(
+      source,
+      "      return invokeLiveCodePreviewActionWithOwnership(",
+      "      return invokeLiveCodePreviewActionWithoutOwnership("
+    );
+    expect(() => assertLiveInvocationBinding(omittedCallSite)).toThrow(/exactly one live invocation/u);
 
     const delayedAssertion = replaceExactlyOnce(
       source,
@@ -684,6 +808,14 @@ describe("Code Preview split-overlay workbench ownership", () => {
       "      overlayContent,\n      panel,\n      bounded,"
     );
     expect(() => assertAcquisitionOwnershipBinding(wrongSoleFrame)).toThrow(/exact captured content and outer iframe/u);
+
+    const materializedSoleInventory = replaceExactlyOnce(
+      source,
+      "          const root = element as unknown as Candidate;",
+      '          void (element as unknown as { querySelectorAll(selector: string): unknown }).querySelectorAll("iframe");\n' +
+        "          const root = element as unknown as Candidate;"
+    );
+    expect(() => assertAcquisitionOwnershipBinding(materializedSoleInventory)).toThrow(/must not materialize/u);
   });
 
   it.each(SUPPORTED_WORKBENCH_CONTAINERS)(
@@ -695,13 +827,16 @@ describe("Code Preview split-overlay workbench ownership", () => {
       expect(fixture.overlayRoot.contains(fixture.outerFrame)).toBe(true);
       expect(fixture.overlayRoot.parentElement).toBe(fixture.root);
       expect(fixture.container.parentElement).toBe(fixture.root);
+      expect(fixture.root.classList.contains("monaco-workbench")).toBe(true);
+      expect(fixture.root.parentElement).toBe(fixture.body);
+      expect(fixture.body.parentElement).toBe(fixture.documentRoot);
 
       const receipt = captureOwnership(authority, fixture);
       expect(receipt).toMatchObject({
-        chainLength: 5,
+        chainLength: 7,
         containerIndex: 3,
         flowLinkCount: 1,
-        overlayChainLength: 2,
+        overlayChainLength: 4,
         reason: "owned"
       });
       expect(Array.from(receipt.chain)).toEqual([
@@ -709,12 +844,21 @@ describe("Code Preview split-overlay workbench ownership", () => {
         fixture.anchor,
         fixture.anchorParent,
         fixture.container,
-        fixture.root
+        fixture.root,
+        fixture.body,
+        fixture.documentRoot
       ]);
-      expect(Array.from(receipt.overlayChain)).toEqual([fixture.overlayRoot, fixture.root]);
+      expect(Array.from(receipt.overlayChain)).toEqual([
+        fixture.overlayRoot,
+        fixture.root,
+        fixture.body,
+        fixture.documentRoot
+      ]);
       expect(JSON.parse(JSON.stringify(receipt.relations))).toEqual([
         { kind: "parent" },
         { anchorName: FLOW_ANCHOR_NAME, flowOwnerId: "", kind: "flow" },
+        { kind: "parent" },
+        { kind: "parent" },
         { kind: "parent" },
         { kind: "parent" },
         { kind: "parent" }
@@ -826,7 +970,7 @@ describe("Code Preview split-overlay workbench ownership", () => {
     expectReason(
       authority,
       authority.inspect(hiddenOverlay.outerFrame, inspectionOptions(authority)),
-      "overlay-chain-hidden"
+      "overlay-root-hidden"
     );
 
     const unsupported = createFixture(authority);
@@ -841,6 +985,70 @@ describe("Code Preview split-overlay workbench ownership", () => {
       authority,
       authority.inspect(unsupported.outerFrame, inspectionOptions(authority)),
       "unsupported-nearest-workbench-part"
+    );
+  });
+
+  it("requires one exact root-mounted workbench and overlay owner", () => {
+    const decoy = createFixture(authority);
+    const decoyRoot = decoy.makeElement({ parent: decoy.body, rectangle: rectangle(0, 0, 1_280, 800) });
+    decoy.setParent(decoy.overlayRoot, decoyRoot);
+    expectReason(
+      authority,
+      authority.inspect(decoy.outerFrame, inspectionOptions(authority)),
+      "missing-monaco-workbench-root"
+    );
+
+    const duplicateWorkbench = createFixture(authority);
+    duplicateWorkbench.makeElement({
+      classNames: ["monaco-workbench"],
+      parent: duplicateWorkbench.body,
+      rectangle: rectangle(0, 0, 1_280, 800)
+    });
+    expectReason(
+      authority,
+      authority.inspect(duplicateWorkbench.outerFrame, inspectionOptions(authority)),
+      "workbench-root-not-unique"
+    );
+
+    const wrongWorkbench = createFixture(authority);
+    const unrelatedWorkbench = wrongWorkbench.makeElement({
+      classNames: ["monaco-workbench"],
+      parent: wrongWorkbench.body,
+      rectangle: rectangle(0, 0, 1_280, 800)
+    });
+    wrongWorkbench.setParent(wrongWorkbench.overlayRoot, unrelatedWorkbench);
+    expectReason(
+      authority,
+      authority.inspect(wrongWorkbench.outerFrame, inspectionOptions(authority)),
+      "workbench-root-not-exact"
+    );
+
+    const duplicateOverlay = createFixture(authority);
+    duplicateOverlay.makeElement({
+      classNames: ["webview-overlay"],
+      parent: duplicateOverlay.root,
+      rectangle: rectangle(0, 0, 1_280, 800)
+    });
+    expectReason(
+      authority,
+      authority.inspect(duplicateOverlay.outerFrame, inspectionOptions(authority)),
+      "webview-overlay-root-not-unique"
+    );
+
+    const detachedWorkbench = createFixture(authority);
+    detachedWorkbench.root.isConnected = false;
+    expectReason(
+      authority,
+      authority.inspect(detachedWorkbench.outerFrame, inspectionOptions(authority)),
+      "workbench-root-detached"
+    );
+
+    const detachedOverlay = createFixture(authority);
+    detachedOverlay.overlayRoot.isConnected = false;
+    expectReason(
+      authority,
+      authority.inspect(detachedOverlay.outerFrame, inspectionOptions(authority)),
+      "overlay-root-detached"
     );
   });
 
@@ -913,11 +1121,14 @@ describe("Code Preview split-overlay workbench ownership", () => {
 
     const overlayReparented = createFixture(authority);
     const overlayAcquisition = captureOwnership(authority, overlayReparented);
-    const overlayWrapper = overlayReparented.makeElement({
+    const overlayReplacement = overlayReparented.makeElement({
+      classNames: ["webview-overlay"],
       parent: overlayReparented.root,
       rectangle: rectangle(0, 0, 1_280, 800)
     });
-    overlayReparented.setParent(overlayReparented.overlayRoot, overlayWrapper);
+    overlayReparented.setParent(overlayReparented.overlayRoot, null);
+    overlayReparented.overlayRoot.isConnected = false;
+    overlayReparented.setParent(overlayReparented.overlayContent, overlayReplacement);
     expectReason(
       authority,
       authority.inspect(overlayReparented.outerFrame, actionOptions(authority, overlayReparented, overlayAcquisition)),
@@ -950,36 +1161,71 @@ describe("Code Preview split-overlay workbench ownership", () => {
     );
   });
 
-  it("rejects bounded candidate inventories before reading candidate elements", () => {
+  it("stops every ownership inventory at its exact cap before traversing later elements", () => {
     const anchorInventory = createFixture(authority);
-    const excessiveAnchors = guardedArray(authority.limits.flowAnchorCandidates + 1);
-    anchorInventory.overrideQuery('[style*="anchor-name"]', excessiveAnchors.candidates);
+    anchorInventory.makeElement({
+      parent: anchorInventory.anchorParent,
+      styleProperties: { "anchor-name": "--overlay-anchor-other-1" }
+    });
+    anchorInventory.makeElement({
+      parent: anchorInventory.anchorParent,
+      styleProperties: { "anchor-name": "--overlay-anchor-other-2" }
+    });
+    const anchorSentinel = anchorInventory.makeElement({ parent: anchorInventory.anchorParent });
     expectReason(
       authority,
-      authority.inspect(anchorInventory.outerFrame, inspectionOptions(authority)),
+      authority.inspect(anchorInventory.outerFrame, inspectionOptions(authority, { maximumFlowAnchorCandidates: 2 })),
       "flow-anchor-inventory-over-bound"
     );
-    expect(excessiveAnchors.indexReads()).toBe(0);
+    expect(anchorInventory.traversalReads(anchorSentinel)).toBe(0);
 
     const containerInventory = createFixture(authority);
-    const excessiveContainers = guardedArray(authority.containers.length + 1);
-    containerInventory.overrideQuery(authority.selector, excessiveContainers.candidates);
+    for (let index = 0; index < authority.containers.length; index += 1) {
+      const descriptor = authority.containers[index];
+      containerInventory.makeElement({
+        classNames: ["part", descriptor.className],
+        id: descriptor.id,
+        parent: containerInventory.root
+      });
+    }
+    const containerSentinel = containerInventory.makeElement({ parent: containerInventory.root });
     expectReason(
       authority,
       authority.inspect(containerInventory.outerFrame, inspectionOptions(authority)),
       "supported-container-inventory-over-bound"
     );
-    expect(excessiveContainers.indexReads()).toBe(0);
+    expect(containerInventory.traversalReads(containerSentinel)).toBe(0);
 
     const ownerIdInventory = createFixture(authority, { anchorId: "anchor", flowOwnerId: "anchor" });
-    const excessiveOwnerIds = guardedArray(authority.limits.flowOwnerIdCandidates + 1);
-    ownerIdInventory.overrideQuery("[id]", excessiveOwnerIds.candidates);
+    ownerIdInventory.makeElement({ id: "other-1", parent: ownerIdInventory.anchorParent });
+    ownerIdInventory.makeElement({ id: "other-2", parent: ownerIdInventory.anchorParent });
+    const ownerIdSentinel = ownerIdInventory.makeElement({ parent: ownerIdInventory.anchorParent });
     expectReason(
       authority,
-      authority.inspect(ownerIdInventory.outerFrame, inspectionOptions(authority)),
+      authority.inspect(ownerIdInventory.outerFrame, inspectionOptions(authority, { maximumFlowOwnerIdCandidates: 4 })),
       "flow-owner-id-inventory-over-bound"
     );
-    expect(excessiveOwnerIds.indexReads()).toBe(0);
+    expect(ownerIdInventory.traversalReads(ownerIdSentinel)).toBe(0);
+
+    const overlayInventory = createFixture(authority);
+    overlayInventory.makeElement({ parent: overlayInventory.overlayContent });
+    const overlaySentinel = overlayInventory.makeElement({ parent: overlayInventory.overlayContent });
+    expectReason(
+      authority,
+      authority.inspect(overlayInventory.outerFrame, inspectionOptions(authority, { maximumOverlayElements: 2 })),
+      "overlay-element-inventory-over-bound"
+    );
+    expect(overlayInventory.traversalReads(overlaySentinel)).toBe(0);
+
+    const documentInventory = createFixture(authority);
+    documentInventory.makeElement({ parent: documentInventory.root });
+    const documentSentinel = documentInventory.makeElement({ parent: documentInventory.root });
+    expectReason(
+      authority,
+      authority.inspect(documentInventory.outerFrame, inspectionOptions(authority, { maximumDocumentElements: 9 })),
+      "document-element-inventory-over-bound"
+    );
+    expect(documentInventory.traversalReads(documentSentinel)).toBe(0);
 
     const excessiveOwnershipChain = createFixture(authority);
     let wrapperParent = excessiveOwnershipChain.container;
