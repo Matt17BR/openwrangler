@@ -11,7 +11,7 @@ Maximum-Diagnostics: 256
 Maximum-Suppressions: 128
 Ratchet-Undefined-Symbol: 4
 Ratchet-Partial-Argument: 0
-Ratchet-Global-Assignment: 0
+Ratchet-Global-Assignment: 3
 Ratchet-Unqualified-Call: 6
 Ratchet-Namespace-Attachment: 0
 Ratchet-Unreachable-Expression: 0

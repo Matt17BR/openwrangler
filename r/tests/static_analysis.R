@@ -25,9 +25,10 @@ local({
     diagnostics = 16L,
     suppressions = 16L
   )
-  diagnostics <- function(source) {
-    analyzer$test$analyze_text(source, "r/openwrangler_runtime/frame_contract.R", fixture_limits)
+  diagnostics_with_limits <- function(source, limits = fixture_limits) {
+    analyzer$test$analyze_text(source, "r/openwrangler_runtime/frame_contract.R", limits)
   }
+  diagnostics <- function(source) diagnostics_with_limits(source)
   rules <- function(source) vapply(diagnostics(source), `[[`, character(1L), "rule")
   diagnostic_symbols <- function(source, rule) {
     selected <- Filter(function(item) identical(item$rule, rule), diagnostics(source))
@@ -43,8 +44,8 @@ local({
 
   result <- analyzer$run(".")
   assert_true(identical(result$protocol, "openwrangler-native-r-static-analysis-v1"), "Analyzer protocol changed")
-  assert_true(identical(result$diagnostic_count, 10L), "Production diagnostic count changed")
-  assert_true(identical(result$suppression_count, 10L), "Production suppression count changed")
+  assert_true(identical(result$diagnostic_count, 13L), "Production diagnostic count changed")
+  assert_true(identical(result$suppression_count, 13L), "Production suppression count changed")
 
   assert_true("undefined-symbol" %in% rules("function() missing_symbol"), "Undefined symbols were not detected")
   assert_true(
@@ -73,6 +74,48 @@ local({
       "function() { assign <- function(...) NULL; assign('unsafe_target', 1, envir = .GlobalEnv) }"
     )),
     "A locally shadowed assign call was treated as the base global mutator"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "target_name <- 'unsafe_target'; base::assign(target_name, 1, envir = .GlobalEnv)",
+      "global-assignment"
+    ),
+    "A dynamic target name bypassed resolved global assignment analysis"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "mutate <- base::assign; mutate(target_name, 1, envir = .GlobalEnv)",
+      "global-assignment"
+    ),
+    "An alias of base::assign bypassed resolved global assignment analysis"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "global_environment <- base::globalenv(); base::assign(target_name, 1, envir = global_environment)",
+      "global-assignment"
+    ),
+    "An alias of the global environment bypassed resolved global assignment analysis"
+  )
+  assert_true(
+    !("global-assignment" %in% rules(paste(
+      "function() {",
+      "  globalenv <- function() new.env(parent = emptyenv())",
+      "  base::assign('local_target', 1, envir = globalenv())",
+      "}",
+      sep = "\n"
+    ))),
+    "A shadowed globalenv callable was treated as the global environment"
+  )
+  assert_true(
+    !("global-assignment" %in% rules(paste(
+      "function() {",
+      "  assign <- function(...) NULL",
+      "  mutate <- assign",
+      "  mutate('local_target', 1, envir = .GlobalEnv)",
+      "}",
+      sep = "\n"
+    ))),
+    "An alias of a shadowed assign callable was treated as the base global mutator"
   )
   assert_true(
     "assign:.GlobalEnv" %in% diagnostic_symbols(
@@ -132,6 +175,36 @@ local({
     "A rebound random-seed snapshot variable spoofed the exact restoration exemption"
   )
   assert_true(
+    "global-assignment" %in% rules(paste(
+      "function() {",
+      "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  previous_random_seed <- replacement_seed",
+      "  on.exit({",
+      "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+      "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+      "  }, add = TRUE)",
+      "}",
+      sep = "\n"
+    )),
+    "A rebound random-seed value snapshot spoofed the exact restoration exemption"
+  )
+  assert_true(
+    "global-assignment" %in% rules(paste(
+      "function() {",
+      "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+      "  had_random_seed[1L] <- TRUE",
+      "  on.exit({",
+      "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+      "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+      "  }, add = TRUE)",
+      "}",
+      sep = "\n"
+    )),
+    "A subassignment to a random-seed snapshot spoofed the exact restoration exemption"
+  )
+  assert_true(
     !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
     "Local environment assignment was reported as global"
   )
@@ -171,6 +244,10 @@ local({
   assert_true(
     "unreachable-expression" %in% rules("function() { quit <- function(...) NULL; base::quit(save = 'no'); 2 }"),
     "A qualified base quit call was masked by an unrelated local binding"
+  )
+  assert_true(
+    !("unreachable-expression" %in% rules("function() { return <- function(...) NULL; return('not terminal'); 2 }")),
+    "A locally shadowed return call was treated as terminal"
   )
   assert_true(
     !("partial-argument" %in% rules("data.frame(row.n = 1)")),
@@ -289,6 +366,115 @@ local({
     "A function parameter mask leaked to an outer callable"
   )
 
+  live_lexical_false_positive <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner <- function() target(al = 1, beta = 2)",
+    "  target <- function(apple, pear) apple + pear",
+    "  inner()",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(live_lexical_false_positive, "partial-argument")),
+    "A nested function used a callable frozen at definition instead of its live lexical binding"
+  )
+  live_lexical_false_negative <- paste(
+    "function() {",
+    "  target <- function(apple, pear) apple + pear",
+    "  inner <- function() target(al = 1, beta = 2)",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  inner()",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(live_lexical_false_negative, "partial-argument"),
+    "A nested function missed a callable installed in its live lexical environment"
+  )
+
+  zero_iteration_for <- paste(
+    "function(values) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  for (target in values) invisible(target)",
+    "  target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(zero_iteration_for, "partial-argument"),
+    "A zero-iteration for path discarded the prior callable binding"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(
+      "function(values) { target <- function(alpha, beta) 1; for (target in values) target(al = 1, beta = 2) }",
+      "partial-argument"
+    )),
+    "A for-loop variable did not mask an outer callable inside the loop body"
+  )
+  zero_iteration_while <- paste(
+    "function(flag) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  while (flag) target <- function(apple, pear) apple + pear",
+    "  target(al = 1, beta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(zero_iteration_while, "partial-argument"),
+    "A zero-iteration while path discarded the prior callable binding"
+  )
+  multiple_iteration_for <- paste(
+    "function(values) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  replacement <- function(gamma, delta) gamma + delta",
+    "  for (value in values) { target(ga = 1, delta = 2); target <- replacement }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(multiple_iteration_for, "partial-argument"),
+    "A later for iteration did not observe a prior iteration binding"
+  )
+  multiple_iteration_while <- paste(
+    "function(flag) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  replacement <- function(gamma, delta) gamma + delta",
+    "  while (flag) { target(ga = 1, delta = 2); target <- replacement }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(multiple_iteration_while, "partial-argument"),
+    "A later while iteration did not observe a prior iteration binding"
+  )
+  multiple_iteration_repeat <- paste(
+    "function(flag) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  replacement <- function(gamma, delta) gamma + delta",
+    "  repeat { target(ga = 1, delta = 2); target <- replacement; if (flag) break }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(multiple_iteration_repeat, "partial-argument"),
+    "A later repeat iteration did not observe a prior iteration binding"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(
+      "function() { target <- function(alpha, beta) 1; repeat { target <- function(gamma, delta) 1; break }; target(al = 1, delta = 2) }",
+      "partial-argument"
+    )),
+    "A repeat body was incorrectly treated as a zero-iteration path"
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(
+      "function(flag) { if (flag) target <- function(alpha, beta) 1 else base::stop('done'); target(al = 1, beta = 2) }",
+      "partial-argument"
+    ),
+    "A terminal branch discarded the only continuing callable state"
+  )
+
   shifted_location <- paste(
     "unknown(al = 1)",
     "target <- function(alpha, beta) alpha + beta",
@@ -298,6 +484,16 @@ local({
   assert_true(
     identical(diagnostic_lines(shifted_location, "partial-argument", "target:al"), 3L),
     "An unresolved earlier call shifted a later argument diagnostic"
+  )
+  member_location <- paste(
+    "object$target(al = 1)",
+    "target <- function(alpha, beta) alpha + beta",
+    "target(al = 1, beta = 2)",
+    sep = "\n"
+  )
+  assert_true(
+    identical(diagnostic_lines(member_location, "partial-argument", "target:al"), 3L),
+    "A member call captured the exact later callable diagnostic location"
   )
 
   expect_error(
@@ -310,6 +506,34 @@ local({
   )
   too_many_diagnostics <- paste(sprintf("function() missing_%d", seq_len(17L)), collapse = "\n")
   expect_error(analyzer$test$analyze_text(too_many_diagnostics, "fixture.R", fixture_limits), "diagnostic count exceeds")
+
+  work_probe <- paste(
+    "target <- function(alpha, beta) alpha + beta",
+    "if (flag) target <- function(apple, pear) apple + pear",
+    "target(al = missing_value, beta = 2)",
+    sep = "\n"
+  )
+  measured_work <- attr(diagnostics(work_probe), "work", exact = TRUE)
+  assert_true(
+    identical(names(measured_work), c("candidate_states", "operations", "diagnostic_bytes")) &&
+      all(is.finite(measured_work)) && all(measured_work > 1),
+    "Analyzer work receipts are incomplete"
+  )
+  exact_work_limits <- fixture_limits
+  for (name in names(measured_work)) exact_work_limits[[name]] <- as.integer(measured_work[[name]])
+  exact_work <- diagnostics_with_limits(work_probe, exact_work_limits)
+  assert_true(
+    identical(attr(exact_work, "work", exact = TRUE), measured_work),
+    "Exact analyzer work bounds did not preserve the measured receipt"
+  )
+  for (name in names(measured_work)) {
+    below <- exact_work_limits
+    below[[name]] <- below[[name]] - 1L
+    expect_error(
+      diagnostics_with_limits(work_probe, below),
+      sprintf("analysis %s work exceeds its bound", gsub("_", " ", name, fixed = TRUE))
+    )
+  }
 
   runner <- paste(readLines("r/tests/run_warning_strict.R", warn = FALSE, encoding = "UTF-8"), collapse = "\n")
   hook <- regexpr("openwrangler_r_static_analysis\\$run", runner)
@@ -336,6 +560,28 @@ local({
   expect_error(analyzer$test$validate_inventory(temporary_root), "production inventory differs")
 
   policy <- analyzer$test$read_policy(".")
+  assert_true(
+    identical(unname(policy$ratchets[["global-assignment"]]), 3L),
+    "The intentional production global-assignment ratchet is not exact"
+  )
+  production_suppressions <- analyzer$test$parse_suppressions(".", policy)
+  global_suppressions <- Filter(
+    function(item) identical(item$rule, "global-assignment"),
+    production_suppressions
+  )
+  assert_true(
+    identical(
+      vapply(global_suppressions, `[[`, character(1L), "key"),
+      paste(
+        "r/openwrangler_runtime/interactive_agent.R",
+        c(311L, 368L, 601L),
+        "global-assignment",
+        "assign:.GlobalEnv",
+        sep = "\t"
+      )
+    ),
+    "The intentional production global-write suppression ownership changed"
+  )
   policy_root <- tempfile("ow-r-static-policy-")
   dir.create(file.path(policy_root, "r"), recursive = TRUE, mode = "0700")
   on.exit(unlink(policy_root, recursive = TRUE, force = TRUE), add = TRUE)
@@ -375,6 +621,15 @@ local({
     sprintf("r/openwrangler_runtime/frame_contract.R\t%d\tundefined-symbol\tmissing_%d\tExact fixture justification.", index, index)
   }, character(1L)))
   writeLines(overflow, suppression_path, useBytes = TRUE)
+  expect_error(analyzer$test$parse_suppressions(suppression_root, policy), "suppression ratchet exceeded")
+  global_overflow <- c(header, vapply(seq_len(4L), function(index) {
+    sprintf(
+      "r/openwrangler_runtime/interactive_agent.R\t%d\tglobal-assignment\tassign:.GlobalEnv:%d\tExact fixture justification.",
+      index,
+      index
+    )
+  }, character(1L)))
+  writeLines(global_overflow, suppression_path, useBytes = TRUE)
   expect_error(analyzer$test$parse_suppressions(suppression_root, policy), "suppression ratchet exceeded")
 
   oversized_path <- file.path(suppression_root, "oversized.txt")

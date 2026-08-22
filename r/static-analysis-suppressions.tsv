@@ -1,6 +1,9 @@
 path	line	rule	symbol	justification
 r/openwrangler_runtime/frame_contract.R	5592	unqualified-call	:=	Data.table replacement syntax is provided by the required data.table namespace.
 r/openwrangler_runtime/frame_contract.R	5592	undefined-symbol	.GRP	Data.table supplies this group index inside j evaluation.
+r/openwrangler_runtime/interactive_agent.R	311	global-assignment	assign:.GlobalEnv	The verified runtime owner publishes its private runtime binding in the exact active R global environment.
+r/openwrangler_runtime/interactive_agent.R	368	global-assignment	assign:.GlobalEnv	The verified terminal owner publishes its private terminal claim binding in the exact active R global environment.
+r/openwrangler_runtime/interactive_agent.R	601	global-assignment	assign:.GlobalEnv	The verified transport owner publishes its private command binding in the exact active R global environment.
 r/openwrangler_runtime/kernel_agent.R	6765	undefined-symbol	.ow_integer64_is_na	The generated runtime prelude installs this bounded integer64 helper.
 r/openwrangler_runtime/kernel_agent.R	6765	unqualified-call	.ow_storage_length	The generated runtime prelude installs this bounded storage helper.
 r/openwrangler_runtime/kernel_agent.R	6770	undefined-symbol	.ow_integer64_as_character	The generated runtime prelude installs this integer64 conversion helper.
