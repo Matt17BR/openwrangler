@@ -9718,7 +9718,7 @@ function inspectCodePreviewWorkbenchContainer(
   let containerAncestor: VisibleElement = container;
   let containerAncestorCount = 1;
   let containerAncestorsConnectedAndVisible = true;
-  let containerAncestorsExact = visible(container);
+  let containerAncestorsExact = true;
   let containerAncestorsSameDocument = true;
   for (const expectedParent of expectedAncestors) {
     containerAncestorCount += 1;
@@ -9778,6 +9778,38 @@ function inspectCodePreviewWorkbenchContainer(
     visibleOwningContainerCount,
     withinAncestorBound: containerAncestorCount <= options.maximumAncestors
   };
+}
+
+function assertCodePreviewWorkbenchContainerActionChain(
+  receipt: ReturnType<typeof inspectCodePreviewWorkbenchContainer>,
+  expectedAncestorCount: number,
+  description: string
+): void {
+  assert.equal(
+    receipt.withinAncestorBound &&
+      receipt.containerAncestorsConnectedAndVisible &&
+      receipt.containerReachedDocumentBoundary,
+    true,
+    `${description} requires every bounded workbench-container ancestor to remain connected, laid out, and visible.`
+  );
+  assert.equal(
+    receipt.containerAncestorCount === expectedAncestorCount &&
+      receipt.containerAncestorsExact &&
+      receipt.containerAncestorsSameDocument &&
+      receipt.containerDocumentBoundaryHasNoParent,
+    true,
+    `${description} requires exact bounded workbench-container ancestor identities and parent links through documentElement.`
+  );
+  assert.equal(
+    receipt.containerVisible,
+    true,
+    `${description} requires the exact workbench container to remain visible at action time.`
+  );
+  assert.equal(
+    receipt.outerVisible,
+    true,
+    `${description} requires the exact outer iframe to remain visible at action time.`
+  );
 }
 
 interface CodePreviewWorkbenchVisibilityReceipt {
@@ -11527,31 +11559,7 @@ async function assertLiveCodePreviewActionOwnership(
     true,
     `${description} requires live same-document workbench-container ownership at action time.`
   );
-  assert.equal(
-    receipt.panel.withinAncestorBound &&
-      receipt.panel.containerAncestorsConnectedAndVisible &&
-      receipt.panel.containerReachedDocumentBoundary,
-    true,
-    `${description} requires every bounded workbench-container ancestor to remain connected, laid out, and visible.`
-  );
-  assert.equal(
-    receipt.panel.containerAncestorCount === generation.panelAncestors.length + 1 &&
-      receipt.panel.containerAncestorsExact &&
-      receipt.panel.containerAncestorsSameDocument &&
-      receipt.panel.containerDocumentBoundaryHasNoParent,
-    true,
-    `${description} requires exact bounded workbench-container ancestor identities and parent links through documentElement.`
-  );
-  assert.equal(
-    receipt.panel.containerVisible,
-    true,
-    `${description} requires the exact workbench container to remain visible at action time.`
-  );
-  assert.equal(
-    receipt.panel.outerVisible,
-    true,
-    `${description} requires the exact outer iframe to remain visible at action time.`
-  );
+  assertCodePreviewWorkbenchContainerActionChain(receipt.panel, generation.panelAncestors.length + 1, description);
   assert.equal(
     receipt.panel.containerIsSupported &&
       receipt.panel.supportedContainerInventoryBounded &&

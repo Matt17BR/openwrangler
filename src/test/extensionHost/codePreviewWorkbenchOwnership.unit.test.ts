@@ -11,6 +11,11 @@ interface WorkbenchContainerDescriptor {
 }
 
 interface WorkbenchContainerAuthority {
+  readonly assertActionReceipt: (
+    receipt: Record<string, unknown>,
+    expectedAncestorCount: number,
+    description: string
+  ) => void;
   readonly assertReceipt: (receipt: Record<string, unknown>, description: string) => void;
   readonly containers: readonly WorkbenchContainerDescriptor[];
   readonly inspect: (container: unknown, options: Record<string, unknown>) => Record<string, unknown>;
@@ -54,6 +59,7 @@ function loadAuthority(): WorkbenchContainerAuthority {
   const syntax = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const variables = new Set(["CODE_PREVIEW_WORKBENCH_CONTAINERS", "CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR"]);
   const functions = new Set([
+    "assertCodePreviewWorkbenchContainerActionChain",
     "assertVisibleCodePreviewWorkbenchOwnership",
     "selectVisibleCodePreviewWorkbenchContainer",
     "inspectCodePreviewWorkbenchContainer"
@@ -66,10 +72,11 @@ function loadAuthority(): WorkbenchContainerAuthority {
     }
     return ts.isFunctionDeclaration(statement) && statement.name !== undefined && functions.has(statement.name.text);
   });
-  expect(selected).toHaveLength(5);
+  expect(selected).toHaveLength(6);
   const compiled = ts.transpileModule(
     `${selected.map((statement) => statement.getText(syntax)).join("\n")}\n` +
       "globalThis.__openWranglerWorkbenchContainerAuthority = {" +
+      "assertActionReceipt: assertCodePreviewWorkbenchContainerActionChain," +
       "assertReceipt: assertVisibleCodePreviewWorkbenchOwnership," +
       "containers: CODE_PREVIEW_WORKBENCH_CONTAINERS," +
       "inspect: inspectCodePreviewWorkbenchContainer," +
@@ -96,6 +103,7 @@ function createFixture(
     duplicateIframe?: boolean;
     extraContainers?: number;
     hidden?: boolean;
+    hiddenAncestor?: boolean;
     id?: string;
     intermediateAncestors?: number;
     outerFrameConnected?: boolean;
@@ -154,7 +162,12 @@ function createFixture(
     Object.defineProperty(element, "__frames", { value: frames });
     return element;
   };
-  const root = makeElement({ id: "workbench-root" });
+  const root = makeElement({
+    id: "workbench-root",
+    style: options.hiddenAncestor
+      ? { display: "block", opacity: "0", visibility: "visible" }
+      : { display: "block", opacity: "1", visibility: "visible" }
+  });
   document.documentElement = root;
   const container = makeElement({
     classNames: ["part", options.className ?? "auxiliarybar"],
@@ -275,6 +288,35 @@ describe("Code Preview workbench-container ownership", () => {
     expect(detachedReceipt).toMatchObject({ containerConnected: false, outerConnected: true });
     expect(() => authority.assertReceipt(ownershipReceipt(detachedReceipt), "detached container")).toThrow(
       /requires a connected workbench container/u
+    );
+  });
+
+  it("keeps hidden-container and hidden-ancestor action failures independently reachable", () => {
+    const hiddenContainer = createFixture(authority, { hidden: true });
+    const hiddenAncestor = createFixture(authority, { hiddenAncestor: true });
+    const hiddenContainerReceipt = authority.inspect(
+      hiddenContainer.container,
+      inspectionOptions(authority, hiddenContainer)
+    );
+    const hiddenAncestorReceipt = authority.inspect(
+      hiddenAncestor.container,
+      inspectionOptions(authority, hiddenAncestor)
+    );
+    expect(hiddenContainerReceipt).toMatchObject({
+      containerAncestorsConnectedAndVisible: true,
+      containerAncestorsExact: true,
+      containerVisible: false
+    });
+    expect(hiddenAncestorReceipt).toMatchObject({
+      containerAncestorsConnectedAndVisible: false,
+      containerAncestorsExact: true,
+      containerVisible: true
+    });
+    expect(() => authority.assertActionReceipt(hiddenContainerReceipt, 2, "hidden exact container")).toThrow(
+      /requires the exact workbench container to remain visible at action time/u
+    );
+    expect(() => authority.assertActionReceipt(hiddenAncestorReceipt, 2, "hidden container ancestor")).toThrow(
+      /requires every bounded workbench-container ancestor to remain connected, laid out, and visible/u
     );
   });
 
