@@ -142,7 +142,33 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["р", "p"],
   ["с", "c"],
   ["ѕ", "s"],
-  ["х", "x"]
+  ["х", "x"],
+  ["օ", "o"]
+]);
+const RENDERED_NAMED_ENTITIES = new Map([
+  ["amp", "&"],
+  ["apos", "'"],
+  ["gt", ">"],
+  ["invisiblecomma", "\u2063"],
+  ["invisibleplus", "\u2064"],
+  ["invisibletimes", "\u2062"],
+  ["lt", "<"],
+  ["lrm", "\u200e"],
+  ["newline", "\n"],
+  ["nbsp", " "],
+  ["nobreak", "\u2060"],
+  ["negativemediumspace", "\u200b"],
+  ["negativethickspace", "\u200b"],
+  ["negativethinspace", "\u200b"],
+  ["negativeverythinspace", "\u200b"],
+  ["omicron", "ο"],
+  ["quot", '"'],
+  ["rlm", "\u200f"],
+  ["shy", "\u00ad"],
+  ["tab", "\t"],
+  ["zerowidthspace", "\u200b"],
+  ["zwj", "\u200d"],
+  ["zwnj", "\u200c"]
 ]);
 const FORBIDDEN_OWNER_ENVIRONMENT_KEYS = new Set([
   "BASHOPTS",
@@ -156,7 +182,7 @@ const FORBIDDEN_OWNER_ENVIRONMENT_KEYS = new Set([
   "SHELLOPTS"
 ]);
 const EXECUTABLE_AFFECTING_ENVIRONMENT_KEY =
-  /^(?:DYLD_(?:INSERT_LIBRARIES|LIBRARY_PATH)|LD_(?:AUDIT|LIBRARY_PATH|PRELOAD)|NODE_PATH|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONPATH|R_ENVIRON(?:_USER)?|R_PROFILE(?:_USER)?|RUBYLIB|RUBYOPT)$/u;
+  /^(?:CDPATH|COMSPEC|IFS|PATH|PATHEXT|SHELL|ZDOTDIR|(?:GEM|NPM_CONFIG|DYLD|LD|NODE)(?:_[A-Z0-9_]*)?|PERL(?:5LIB|5OPT|LIB|OPT)(?:_[A-Z0-9_]*)?|PYTHON(?:HOME|PATH)(?:_[A-Z0-9_]*)?|R_(?:ENVIRON|PROFILE)(?:_[A-Z0-9_]*)?|RUBY(?:LIB|OPT)(?:_[A-Z0-9_]*)?)$/u;
 const EXPECTED_EXECUTION_JOB_DIGESTS = new Map([
   ["candidate-acceptance.yml#contract", "edcefd5a94ea835fcc17302f60855c21c5fd7fb573e4767b67790a122870339d"],
   ["candidate-acceptance.yml#platform", "5135e7b27c3f84e2e64b8fc8e90972d362dd25244d0a1961d520ddb9730a513f"],
@@ -1597,7 +1623,7 @@ function hiddenHtmlContainer(tag, attributes, label, problems) {
     problems.push(`${label} contains an oversized HTML attribute list.`);
     return true;
   }
-  const renderedAttributes = decodeRenderedEntities(attributes);
+  const renderedAttributes = decodeRenderedEntities(attributes).replace(/\/\s*$/u, "");
   const style = /(?:^|\s)style\s*=\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)'|(?<bare>[^\s]+))/iu.exec(
     renderedAttributes
   );
@@ -1612,9 +1638,8 @@ function hiddenHtmlContainer(tag, attributes, label, problems) {
 
 function matchingHiddenContainerEnd(source, opening, state, label, problems) {
   const tag = opening.groups.tag.toLowerCase();
-  const attributes = opening.groups.attributes;
   const openingEnd = opening.index + opening[0].length;
-  if (VOID_HTML_TAGS.has(tag) || /\/\s*$/u.test(attributes)) return openingEnd;
+  if (VOID_HTML_TAGS.has(tag)) return openingEnd;
   const pattern = htmlTagPattern();
   pattern.lastIndex = openingEnd;
   let depth = 1;
@@ -1629,7 +1654,7 @@ function matchingHiddenContainerEnd(source, opening, state, label, problems) {
     if (candidate.groups.closing) {
       depth -= 1;
       if (depth === 0) return candidate.index + candidate[0].length;
-    } else if (!VOID_HTML_TAGS.has(tag) && !/\/\s*$/u.test(candidate.groups.attributes)) {
+    } else if (!VOID_HTML_TAGS.has(tag)) {
       depth += 1;
     }
   }
@@ -1662,7 +1687,11 @@ function visibleMarkdown(source, label, problems) {
   const renderableLines = [];
   let fence;
   for (const line of uncommented.join("").split("\n")) {
-    const fenceMarker = /^ {0,3}(?<marker>`{3,}|~{3,})/u.exec(line)?.groups?.marker;
+    const fenceCandidate = /^ {0,3}(?<marker>`{3,}|~{3,})(?<info>.*)$/u.exec(line)?.groups;
+    const fenceMarker =
+      fenceCandidate && !(fenceCandidate.marker[0] === "`" && fenceCandidate.info.includes("`"))
+        ? fenceCandidate.marker
+        : undefined;
     if (fence) {
       const close = /^ {0,3}(?<marker>`{3,}|~{3,})\s*$/u.exec(line)?.groups?.marker;
       if (close?.[0] === fence.character && close.length >= fence.length) fence = undefined;
@@ -1779,38 +1808,17 @@ function claimTokens(claim) {
 }
 
 function decodeRenderedEntities(claim) {
-  const named = new Map([
-    ["amp", "&"],
-    ["apos", "'"],
-    ["gt", ">"],
-    ["invisiblecomma", "\u2063"],
-    ["invisibleplus", "\u2064"],
-    ["invisibletimes", "\u2062"],
-    ["lt", "<"],
-    ["lrm", "\u200e"],
-    ["newline", "\n"],
-    ["nbsp", " "],
-    ["nobreak", "\u2060"],
-    ["negativemediumspace", "\u200b"],
-    ["negativethickspace", "\u200b"],
-    ["negativethinspace", "\u200b"],
-    ["negativeverythinspace", "\u200b"],
-    ["quot", '"'],
-    ["rlm", "\u200f"],
-    ["shy", "\u00ad"],
-    ["tab", "\t"],
-    ["zerowidthspace", "\u200b"],
-    ["zwj", "\u200d"],
-    ["zwnj", "\u200c"]
-  ]);
-  return claim.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
-    const groups = args.at(-1);
-    if (groups.named) return named.get(groups.named.toLowerCase()) ?? entity;
-    const codePoint = Number.parseInt(groups.hex ?? groups.decimal, groups.hex ? 16 : 10);
-    return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
-      ? String.fromCodePoint(codePoint)
-      : entity;
-  });
+  return claim.replace(
+    /&(?:#(?:(?:[xX](?<hex>[0-9a-fA-F]+))|(?<decimal>[0-9]+));?|(?<named>[A-Za-z][A-Za-z0-9]+);)/gu,
+    (entity, ...args) => {
+      const groups = args.at(-1);
+      if (groups.named) return RENDERED_NAMED_ENTITIES.get(groups.named.toLowerCase()) ?? entity;
+      const codePoint = Number.parseInt(groups.hex ?? groups.decimal, groups.hex ? 16 : 10);
+      return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    }
+  );
 }
 
 function renderedInlineHtml(claim) {
@@ -1832,17 +1840,16 @@ function markdownUnescape(value) {
 }
 
 function normalizedReferenceLabel(value) {
-  return markdownUnescape(value).trim().replace(/\s+/gu, " ").toLowerCase();
+  return decodeRenderedEntities(markdownUnescape(value)).trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function extractMarkdownReferences(source, label, problems) {
   const references = new Map();
   const retained = [];
-  const pattern =
-    /^ {0,3}\[(?<label>(?:\\.|[^\]])+)\]:[\t ]*(?<destination><[^>\n]*>|\S+)(?:[\t ]+(?:"[^"\n]*"|'[^'\n]*'|\([^\n)]*\)))?[\t ]*$/u;
+  const pattern = /^ {0,3}\[(?<label>(?:\\.|[^\]])+)\]:[\t ]*(?<body>.*)$/u;
   for (const line of source.split("\n")) {
     const match = pattern.exec(line);
-    if (!match) {
+    if (!match || match.groups.body.length === 0 || !validMarkdownDestinationAndTitle(match.groups.body)) {
       retained.push(line);
       continue;
     }
@@ -1850,7 +1857,7 @@ function extractMarkdownReferences(source, label, problems) {
     if (
       reference.length === 0 ||
       Buffer.byteLength(match.groups.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
-      Buffer.byteLength(match.groups.destination, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      Buffer.byteLength(match.groups.body, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
       references.size >= MAX_MARKDOWN_REFERENCES ||
       references.has(reference)
     ) {
@@ -1887,12 +1894,22 @@ function closingMarkdownBracket(source, start) {
 function closingMarkdownDestination(source, start) {
   let escaped = false;
   let depth = 1;
+  let angle = false;
+  let quote;
   for (let cursor = start; cursor < source.length; cursor += 1) {
     const character = source[cursor];
     if (escaped) {
       escaped = false;
     } else if (character === "\\") {
       escaped = true;
+    } else if (angle) {
+      if (character === ">") angle = false;
+    } else if (quote) {
+      if (character === quote) quote = undefined;
+    } else if (character === "<") {
+      angle = true;
+    } else if (character === '"' || character === "'") {
+      quote = character;
     } else if (character === "(") {
       depth += 1;
       if (depth > 8) return -1;
@@ -1902,6 +1919,95 @@ function closingMarkdownDestination(source, start) {
     }
   }
   return -1;
+}
+
+function skipMarkdownWhitespace(source, start) {
+  let cursor = start;
+  while (cursor < source.length && /[\t ]/u.test(source[cursor])) cursor += 1;
+  return cursor;
+}
+
+function markdownTitleEnd(source, start) {
+  const opening = source[start];
+  const closing = opening === "(" ? ")" : opening;
+  if (!['"', "'", "("].includes(opening)) return -1;
+  let escaped = false;
+  for (let cursor = start + 1; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === closing) {
+      return cursor + 1;
+    } else if (opening === "(" && character === "(") {
+      return -1;
+    } else if (/[\n\r]/u.test(character)) {
+      return -1;
+    }
+  }
+  return -1;
+}
+
+function validMarkdownDestinationAndTitle(source) {
+  let cursor = skipMarkdownWhitespace(source, 0);
+  const hasLeadingWhitespace = cursor > 0;
+  if (cursor === source.length) return true;
+  let destinationEnd = cursor;
+  if (['"', "'", "("].includes(source[cursor])) {
+    destinationEnd = cursor;
+  } else if (source[cursor] === "<") {
+    let escaped = false;
+    destinationEnd = cursor + 1;
+    for (; destinationEnd < source.length; destinationEnd += 1) {
+      const character = source[destinationEnd];
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === ">") {
+        destinationEnd += 1;
+        break;
+      } else if (character === "<" || /[\n\r]/u.test(character)) {
+        return false;
+      }
+    }
+    if (source[destinationEnd - 1] !== ">") return false;
+  } else {
+    let escaped = false;
+    let depth = 0;
+    for (; destinationEnd < source.length; destinationEnd += 1) {
+      const character = source[destinationEnd];
+      const characterCode = character.charCodeAt(0);
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (/[\t ]/u.test(character)) {
+        break;
+      } else if (character === "(") {
+        depth += 1;
+        if (depth > 8) return false;
+      } else if (character === ")") {
+        if (depth === 0) return false;
+        depth -= 1;
+      } else if (
+        character === "<" ||
+        character === '"' ||
+        character === "'" ||
+        characterCode <= 0x1f ||
+        characterCode === 0x7f
+      ) {
+        return false;
+      }
+    }
+    if (escaped || depth !== 0) return false;
+  }
+  const titleStart = skipMarkdownWhitespace(source, destinationEnd);
+  if (titleStart === source.length) return true;
+  if (titleStart === destinationEnd && !hasLeadingWhitespace) return false;
+  const titleEnd = markdownTitleEnd(source, titleStart);
+  return titleEnd >= 0 && skipMarkdownWhitespace(source, titleEnd) === source.length;
 }
 
 function renderedInlineMarkdown(claim, references) {
@@ -1959,10 +2065,10 @@ function renderedInlineMarkdown(claim, references) {
     let linked = false;
     if (claim[labelEnd + 1] === "(") {
       const destinationEnd = closingMarkdownDestination(claim, labelEnd + 2);
-      if (destinationEnd >= 0) {
+      if (destinationEnd >= 0 && validMarkdownDestinationAndTitle(claim.slice(labelEnd + 2, destinationEnd))) {
         linked = true;
         consumedEnd = destinationEnd + 1;
-      } else {
+      } else if (destinationEnd < 0) {
         unsupported = true;
       }
     } else if (claim[labelEnd + 1] === "[") {

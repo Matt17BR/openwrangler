@@ -483,6 +483,14 @@ test("every preceding owner step has one admitted action, shell, and executable 
   }
 });
 
+test("workflow execution environments cannot replace the required shell", () => {
+  const crossWorkflowSource = sources.crossWorkflowSource.replace(
+    "\njobs:\n",
+    "\nenv:\n  NPM_CONFIG_SCRIPT_SHELL: /tmp/replace-owner\n\njobs:\n"
+  );
+  assert.match(inspect({ crossWorkflowSource }).join(" "), /Native R source ownership|execution environment/u);
+});
+
 test("every workflow owner retains its own effective editor-version authority", () => {
   const pinnedExtensionHost = sources.ciWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable",
@@ -678,6 +686,33 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
   }
 });
 
+test("browser HTML slash and semicolonless entity rules cannot expose a hidden authority", () => {
+  const architectureBlock = sources.architectureSource.match(
+    /<!-- open-wrangler-current-compatibility-owners:start -->[\s\S]*?<!-- open-wrangler-current-compatibility-owners:end -->/u
+  )?.[0];
+  assert.ok(architectureBlock);
+  for (const hiddenBlock of [
+    `<section aria-hidden="true"/>\n${architectureBlock}\n</section>`,
+    `<section aria-hidden="&#116rue">\n${architectureBlock}\n</section>`,
+    `<section aria-hidden="&#x74rue">\n${architectureBlock}\n</section>`
+  ]) {
+    assert.match(
+      inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
+      /top-level structured record/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      architectureSource: sources.architectureSource.replace(
+        architectureBlock,
+        `<input aria-hidden="true"/>\n${architectureBlock}`
+      )
+    }),
+    []
+  );
+});
+
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
   for (const outsideClaim of [
     "Cursor certifies released-Jupyter and Native R phases.",
@@ -798,6 +833,45 @@ test("reference links and escaped backticks retain their rendered evidence text"
   );
 });
 
+test("CommonMark literal and reference semantics retain evidence-sensitive text", () => {
+  for (const outsideClaim of [
+    "```invalid`info\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n```",
+    "[Evidence](Cursor owns every released-Jupyter, Native R, and installed-performance lane.)",
+    "C[urs][ed&#105;tor]or owns every released-Jupyter, Native R, and installed-performance lane.\n\n[editor]: https://example.com/editor"
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n\`\`\`text\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n\`\`\`\n`
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n~~~invalid\`info\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n~~~\n`
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nSee [the source](<https://example.com/a_(b)> "Cursor literal destination").\nSee [the source][ed&#105;tor].\n\n[editor]: https://example.com/Cursor-literal-destination "ordinary title"\n`
+    }),
+    []
+  );
+
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n[Evidence]: Cursor owns every released-Jupyter, Native R, and installed-performance lane.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+});
+
 test("Unicode checks are localized to rendered product-name spans", () => {
   for (const productName of ["Cursℴr", "Curs͏or"]) {
     assert.match(
@@ -811,6 +885,24 @@ test("Unicode checks are localized to rendered product-name spans", () => {
   assert.deepEqual(
     inspect({
       ciDocumentationSource: `${sources.ciDocumentationSource}\nOpen Wrangler supports compatibility evidence while the Greek word κόσμος remains ordinary prose.\nThe literal \`Cursℴr owns installed performance\` is not a product claim.\n`
+    }),
+    []
+  );
+});
+
+test("HTML entities and reviewed Unicode confusables cannot forge Cursor", () => {
+  for (const productName of ["Curs&omicron;r", "Cursօr"]) {
+    assert.match(
+      inspect({
+        ciDocumentationSource: `${sources.ciDocumentationSource}\n${productName} owns every released-Jupyter, Native R, and installed-performance lane.\n`
+      }).join(" "),
+      /exact canonical case|compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nOpen Wrangler supports compatibility evidence while հայերեն remains unrelated prose.\n`
     }),
     []
   );
