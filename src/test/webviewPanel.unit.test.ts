@@ -311,6 +311,69 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.html).toContain('data-fetch-column-block-size="16"');
   });
 
+  it("falls back before malformed bootstrap settings can enter webview markup", () => {
+    const dangerous =
+      '"><script id="configuration-injection">globalThis.compromised = true</script>&\u2028\u2029\ud800';
+    vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+      get: (key: string, fallback?: unknown): unknown =>
+        ["fetchBlockSize", "fetchColumnBlockSize", "defaultColumnWidth", "insightsOnOpen", "filterMode"].includes(key)
+          ? dangerous
+          : fallback
+    } as vscode.WorkspaceConfiguration);
+
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+
+    expect(harness.html).toContain(
+      '<body data-fetch-block-size="200" data-fetch-column-block-size="16" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="basic"'
+    );
+    expect(harness.html).not.toContain(dangerous);
+    expect(harness.html).not.toContain("configuration-injection");
+  });
+
+  it("serializes valid bootstrap settings without changing the nonce CSP", () => {
+    vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+      get: (key: string, fallback?: unknown): unknown =>
+        key === "fetchBlockSize"
+          ? 25
+          : key === "fetchColumnBlockSize"
+            ? 256
+            : key === "defaultColumnWidth"
+              ? 320.5
+              : key === "insightsOnOpen"
+                ? false
+                : key === "filterMode"
+                  ? "advanced"
+                  : fallback
+    } as vscode.WorkspaceConfiguration);
+
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    const nonce = harness.html.match(/<script type="module" nonce="([0-9a-f]{32})"/u)?.[1];
+    expect(harness.html).toContain(
+      '<body data-fetch-block-size="25" data-fetch-column-block-size="256" data-default-column-width="320.5" data-insights-on-open="false" data-filter-mode="advanced" data-can-change-import-options="true">'
+    );
+    expect(harness.html).toContain(
+      `default-src 'none'; img-src mock-webview; style-src mock-webview 'unsafe-inline'; font-src mock-webview; script-src mock-webview 'nonce-${nonce}';`
+    );
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 10_000])(
+    "falls back before numeric bootstrap value %s reaches HTML",
+    (invalid) => {
+      vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+        get: (key: string, fallback?: unknown): unknown =>
+          ["fetchBlockSize", "fetchColumnBlockSize", "defaultColumnWidth", "insightsOnOpen", "filterMode"].includes(key)
+            ? invalid
+            : fallback
+      } as vscode.WorkspaceConfiguration);
+
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      expect(harness.html).toContain(
+        '<body data-fetch-block-size="200" data-fetch-column-block-size="16" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="basic"'
+      );
+      expect(harness.html).not.toContain(`="${String(invalid)}"`);
+    }
+  );
+
   it("brands every workbench tab with theme-specific Open Wrangler action icons", () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
 
@@ -2369,7 +2432,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).not.toHaveBeenCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
-  it("clamps an out-of-range horizontal block setting before exposing or requesting it", async () => {
+  it("falls back from an out-of-range horizontal block setting before exposing or requesting it", async () => {
     vi.spyOn(workspace, "getConfiguration").mockImplementation(
       () =>
         ({
@@ -2379,13 +2442,13 @@ describe("OpenWranglerPanel retained view state", () => {
     const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => openedResponse);
     const harness = createPanelHarness({ request }, { delegateOpen: true });
 
-    expect(harness.html).toContain('data-fetch-column-block-size="256"');
+    expect(harness.html).toContain('data-fetch-column-block-size="16"');
     expect(request).not.toHaveBeenCalled();
     await harness.open();
     expect(request.mock.calls[0]?.[0]).toMatchObject({
       kind: "openSession",
       columnOffset: 0,
-      columnLimit: 256
+      columnLimit: 16
     });
   });
 
@@ -4976,7 +5039,8 @@ describe("OpenWranglerPanel retained view state", () => {
       () =>
         ({
           get: (key: string, fallback?: unknown): unknown => {
-            if (key === "fetchBlockSize" || key === "fetchColumnBlockSize") return 10_000;
+            if (key === "fetchBlockSize") return 2_000;
+            if (key === "fetchColumnBlockSize") return 256;
             return fallback;
           }
         }) as vscode.WorkspaceConfiguration
