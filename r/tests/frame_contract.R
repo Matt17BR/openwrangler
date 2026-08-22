@@ -80,6 +80,83 @@ oracle_compare_signed_decimal_text <- function(left, right) {
   if (carry < 0L) -1L else if (carry > 0L || any(residual != 0L)) 1L else 0L
 }
 
+frame_contract_case_names <- c(
+  "decimal-ordering",
+  "capture-and-export",
+  "custom-code",
+  "group-by",
+  "column-operations",
+  "by-example",
+  "formula",
+  "text",
+  "numeric-and-datetime",
+  "fill-missing",
+  "cast-and-structure",
+  "profiling",
+  "interactive",
+  "validation-and-categorical"
+)
+selected_frame_contract_case <- Sys.getenv("OPEN_WRANGLER_R_FRAME_CASE", unset = NA_character_)
+if (
+  length(selected_frame_contract_case) != 1L || is.na(selected_frame_contract_case) ||
+    !(selected_frame_contract_case %in% frame_contract_case_names)
+) {
+  stop(
+    sprintf(
+      "Select exactly one Native R frame contract case from: %s",
+      paste(frame_contract_case_names, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+frame_contract_case_run_count <- 0L
+run_frame_contract_case <- function(case_name, expression) {
+  if (!identical(selected_frame_contract_case, case_name)) return(invisible(NULL))
+  frame_contract_case_run_count <<- frame_contract_case_run_count + 1L
+  force(expression)
+  invisible(NULL)
+}
+
+frame_contract_base_frame <- function() {
+  data.frame(
+    duplicate = c(TRUE, NA, FALSE),
+    duplicate = c(1L, NA_integer_, -2L),
+    `non syntactic` = c(1.5, NaN, Inf),
+    strings = c("alpha", NA_character_, "café"),
+    category = factor(c("high", NA, "low"), levels = c("low", "high")),
+    ordered = ordered(c("small", "large", NA), levels = c("small", "large")),
+    date = as.Date(c("2026-01-01", NA, "2026-01-03")),
+    instant = as.POSIXct(c("2026-01-01 12:00:00", NA, "2026-01-03 12:00:00"), tz = "Europe/Berlin"),
+    elapsed = as.difftime(c(1, NA, 3), units = "hours"),
+    wide = bit64::as.integer64(c("9223372036854775806", NA, "-9223372036854775807")),
+    check.names = FALSE
+  )
+}
+
+frame_contract_formula_limit_frame <- function() {
+  structure(
+    setNames(rep(list(1L), 2048L), paste0("column ", seq_len(2048L))),
+    row.names = 1L,
+    class = "data.frame"
+  )
+}
+
+frame_contract_collapse_source <- function() {
+  data.frame(
+    row_id = 1:3,
+    group = c("b", "a", "a"),
+    value = c(3L, 1L, 2L),
+    check.names = FALSE
+  )
+}
+
+profile_reference <- function(capture, position) {
+  schema <- capture$descriptor$schema[[position]]
+  list(id = schema$id, name = schema$name)
+}
+
+run_frame_contract_case("decimal-ordering", local({
+
 signed_decimal_cases <- list(
   list(left = "-1", right = "0", expected = -1L, label = "negative versus zero"),
   list(left = "0", right = "+1", expected = -1L, label = "zero versus positive"),
@@ -149,6 +226,9 @@ for (index in seq_along(property_values)) {
     sprintf("canonical signed decimal comparison was not reflexive for property case %d", index)
   )
 }
+
+}))
+run_frame_contract_case("capture-and-export", local({
 
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
@@ -552,6 +632,9 @@ for (case in named_live_table_cases) {
   )
 }
 
+}))
+run_frame_contract_case("custom-code", local({
+
 custom_source_base <- data.frame(
   duplicate = c(10L, 20L, 30L),
   middle = c(1, 2, 3),
@@ -833,6 +916,9 @@ for (case in named_column_cases) {
   )
 }
 
+}))
+run_frame_contract_case("group-by", local({
+
 group_identity_source <- data.frame(
   group = c("b", "a", "b"),
   value = c(1L, 2L, 3L),
@@ -994,6 +1080,9 @@ assert_error(
   ),
   "outside the integer64 range"
 )
+
+}))
+run_frame_contract_case("column-operations", local({
 
 rename_frame <- data.frame(
   duplicate = c(1L, 2L),
@@ -1371,6 +1460,9 @@ assert_error(
   "exceeds 2048 UTF-8 bytes"
 )
 assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
+
+}))
+run_frame_contract_case("by-example", local({
 
 by_example_source <- data.frame(
   label = c("alpha", NA_character_, "gamma"),
@@ -1874,6 +1966,9 @@ assert_error(
   ),
   "positions and semantic kinds"
 )
+
+}))
+run_frame_contract_case("formula", local({
 
 formula_frame <- data.frame(
   duplicate = c(1L, 2L, 3L),
@@ -2390,6 +2485,9 @@ assert_error(
   ),
   "invalid formula output"
 )
+
+}))
+run_frame_contract_case("text", local({
 
 text_length_frame <- data.frame(
   duplicate = c("caf\u00e9", "\U0001F642", NA_character_),
@@ -3190,6 +3288,11 @@ assert_identical(table_replaced$`clean key`, c("A", "b"), "derived findReplace c
 assert_identical(text_cleanup_table, text_cleanup_table_before, "text transforms mutated their source data.table")
 assert_identical(text_cleanup_frame, text_cleanup_before, "text transforms mutated their source data.frame")
 
+}))
+run_frame_contract_case("numeric-and-datetime", local({
+
+formula_limit_frame <- frame_contract_formula_limit_frame()
+
 scale_frame <- data.frame(
   value = c(-2, 0, 2, NA_real_, NaN, Inf, -Inf),
   constant = c(5, NA_real_, 5, NaN, Inf, -Inf, 5),
@@ -3833,6 +3936,9 @@ assert_error(
   ),
   "invalid datetime-format output"
 )
+
+}))
+run_frame_contract_case("fill-missing", local({
 
 fill_frame <- data.frame(
   duplicate = c(1L, NA_integer_, 3L),
@@ -4774,6 +4880,9 @@ grouped_collapse_result <- openwrangler_r_frame_contract$fill_missing_grouped_st
 assert_identical(class(grouped_collapse_result), class(grouped_collapse), "grouped fill changed collapse frame flavor")
 assert_identical(grouped_collapse_result$target, c(TRUE, TRUE, NA), "grouped fill changed collapse values")
 
+}))
+run_frame_contract_case("cast-and-structure", local({
+
 cast_cases <- list(
   list(
     dtype = "string",
@@ -5398,6 +5507,18 @@ assert_error(
 )
 assert_identical(collision_frame, data.frame(first = 1L, second = 2L), "a failed rename mutated its source")
 
+}))
+run_frame_contract_case("profiling", local({
+
+base_frame <- frame_contract_base_frame()
+base_capture <- openwrangler_r_frame_contract$capture_frame(base_frame)
+tibble_frame <- tibble::as_tibble(base_frame, .name_repair = "minimal")
+tibble_capture <- openwrangler_r_frame_contract$capture_frame(tibble_frame)
+table_frame <- data.table::data.table(primary_key = c(2L, 1L), value = c("b", "a"))
+data.table::setkey(table_frame, primary_key)
+table_before <- data.table::copy(table_frame)
+table_capture <- openwrangler_r_frame_contract$capture_frame(table_frame)
+
 profile_reference <- function(capture, position) {
   schema <- capture$descriptor$schema[[position]]
   list(id = schema$id, name = schema$name)
@@ -5869,6 +5990,14 @@ assert_identical(
 profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
 assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
 assert_identical(profile_metrics$datasetProfiles, 1, "dataset profiling ran an unexpected number of times")
+
+}))
+run_frame_contract_case("interactive", local({
+
+table_frame <- data.table::data.table(primary_key = c(2L, 1L), value = c("b", "a"))
+data.table::setkey(table_frame, primary_key)
+table_before <- data.table::copy(table_frame)
+table_capture <- openwrangler_r_frame_contract$capture_frame(table_frame)
 
 sort_rule <- function(id, name, direction = "asc", nulls = "last") {
   list(column = list(id = id, name = name), direction = direction, nulls = nulls)
@@ -7480,6 +7609,13 @@ assert_error(
   "text-too-large"
 )
 
+}))
+run_frame_contract_case("validation-and-categorical", local({
+
+base_frame <- frame_contract_base_frame()
+base_capture <- openwrangler_r_frame_contract$capture_frame(base_frame)
+collapse_source <- frame_contract_collapse_source()
+
 grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
 assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
@@ -8370,4 +8506,11 @@ if (!is.expression(performance_harness_expression) || length(performance_harness
   stop("native R performance harness parsed to an empty expression", call. = FALSE)
 }
 
-message("R frame contract tests passed")
+}))
+
+assert_identical(
+  frame_contract_case_run_count,
+  1L,
+  sprintf("Native R frame contract case %s did not run exactly once", selected_frame_contract_case)
+)
+message(sprintf("R frame contract case %s passed", selected_frame_contract_case))

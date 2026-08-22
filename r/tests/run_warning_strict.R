@@ -1,6 +1,7 @@
 local({
   strict_targets <- c(
     "r/tests/frame_contract.R",
+    "r/tests/interactive_contract.R",
     "r/tests/kernel_agent.R",
     "r/tests/complete_catalog_contract.R"
   )
