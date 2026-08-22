@@ -1,7 +1,8 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { performance } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import {
   excelDependencyGateSource,
@@ -85,6 +86,7 @@ describe("Excel dependency-install fixture", () => {
       expect(call.args).toEqual(["-I", "-c", "pass"]);
       expect(call.options).toEqual({
         encoding: "utf8",
+        killSignal: "SIGKILL",
         maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: PYTHON_PROBE_TIMEOUT_MS,
@@ -92,6 +94,43 @@ describe("Excel dependency-install fixture", () => {
       });
     }
   });
+
+  it("hard-terminates a real Python probe that ignores SIGTERM", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-excel-probe-settlement-"));
+    const ready = path.join(directory, "ready");
+    const timeoutMs = 250;
+    const maximumSettlementMs = 1_500;
+    const source = [
+      "import signal",
+      "import time",
+      "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+      `with open(${JSON.stringify(ready)}, 'x', encoding='utf-8') as stream:`,
+      "    stream.write('ready\\n')",
+      "    stream.flush()",
+      "time.sleep(3)",
+      "print('{}')"
+    ].join("\n");
+
+    try {
+      const startedAt = performance.now();
+      let observed: unknown;
+      try {
+        runPythonProbe(source, executePythonProbe, timeoutMs);
+      } catch (error) {
+        observed = error;
+      }
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(readFileSync(ready, "utf8")).toBe("ready\n");
+      expect(observed).toBeInstanceOf(Error);
+      expect((observed as Error).message).toBe(
+        `The Excel dependency Python probe exceeded its ${timeoutMs} ms deadline.`
+      );
+      expect(elapsedMs).toBeLessThan(maximumSettlementMs);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 5_000);
 
   it.each([
     ["ETIMEDOUT", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_TIMEOUT_MS} ms deadline.`],
@@ -170,14 +209,22 @@ type PythonProbeExecutor = (
 
 const executePythonProbe: PythonProbeExecutor = (file, args, options) => execFileSync(file, [...args], options);
 
-function runPythonProbe(source: string, execute: PythonProbeExecutor = executePythonProbe): Record<string, unknown> {
+function runPythonProbe(
+  source: string,
+  execute: PythonProbeExecutor = executePythonProbe,
+  timeoutMs = PYTHON_PROBE_TIMEOUT_MS
+): Record<string, unknown> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > PYTHON_PROBE_TIMEOUT_MS) {
+    throw new Error("The Excel dependency Python probe needs a positive bounded deadline.");
+  }
   let output: string;
   try {
     output = execute(selectedPython(), ["-I", "-c", source], {
       encoding: "utf8",
+      killSignal: "SIGKILL",
       maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: PYTHON_PROBE_TIMEOUT_MS,
+      timeout: timeoutMs,
       windowsHide: true
     });
   } catch (error) {
@@ -186,7 +233,7 @@ function runPythonProbe(source: string, execute: PythonProbeExecutor = executePy
         ? (error as { readonly code?: unknown }).code
         : undefined;
     if (code === "ETIMEDOUT") {
-      throw new Error(`The Excel dependency Python probe exceeded its ${PYTHON_PROBE_TIMEOUT_MS} ms deadline.`);
+      throw new Error(`The Excel dependency Python probe exceeded its ${timeoutMs} ms deadline.`);
     }
     if (code === "ENOBUFS") {
       throw new Error(
