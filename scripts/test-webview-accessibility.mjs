@@ -1051,15 +1051,42 @@ async function verifyRProfileAccessibility(browser) {
 }
 
 async function verifyGridStatusBar(browser) {
-  for (const { harness, width, expectedDataGridWidth, range, previousDisabled, nextDisabled, expectSecondRow } of [
+  for (const {
+    harness,
+    width,
+    expectedDataGridWidth,
+    range,
+    previousDisabled,
+    nextDisabled,
+    expectSecondRow,
+    openProfilesDrawer = false
+  } of [
     {
-      harness: "wide-view.html",
-      width: 320,
-      expectedDataGridWidth: 320,
-      range: "Rows 1\u2013200 of 1,000",
+      harness: "grid-zoom-0-8.html",
+      width: 1280,
+      expectedDataGridWidth: 1600,
+      range: "Rows 1\u20134 of 4",
       previousDisabled: true,
-      nextDisabled: false,
-      expectSecondRow: true
+      nextDisabled: true,
+      expectSecondRow: false
+    },
+    {
+      harness: "grid-view.html",
+      width: 1280,
+      expectedDataGridWidth: 1280,
+      range: "Rows 1\u20134 of 4",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false
+    },
+    {
+      harness: "grid-zoom-1-5.html",
+      width: 1280,
+      expectedDataGridWidth: 853,
+      range: "Rows 1\u20134 of 4",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false
     },
     {
       harness: "grid-zoom-2.html",
@@ -1069,6 +1096,43 @@ async function verifyGridStatusBar(browser) {
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
+    },
+    {
+      harness: "by-example-preview-dark-zoom-200.html",
+      width: 1280,
+      expectedDataGridWidth: 640,
+      range: "Rows 1\u201310 of 10",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false
+    },
+    {
+      harness: "summary-families-dark-zoom-200.html",
+      width: 1280,
+      expectedDataGridWidth: 640,
+      range: "Rows 1\u20134 of 6",
+      previousDisabled: true,
+      nextDisabled: false,
+      expectSecondRow: false
+    },
+    {
+      harness: "summary-families-dark-zoom-200.html",
+      width: 1280,
+      expectedDataGridWidth: 200,
+      range: "Rows 1\u20134 of 6",
+      previousDisabled: true,
+      nextDisabled: false,
+      expectSecondRow: true,
+      openProfilesDrawer: true
+    },
+    {
+      harness: "wide-view.html",
+      width: 320,
+      expectedDataGridWidth: 320,
+      range: "Rows 1\u2013200 of 1,000",
+      previousDisabled: true,
+      nextDisabled: false,
+      expectSecondRow: true
     },
     {
       harness: "grid-terminal-range-dark-320.html",
@@ -1101,6 +1165,9 @@ async function verifyGridStatusBar(browser) {
     const page = await browser.newPage();
     await page.setViewportSize({ width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+    if (openProfilesDrawer) {
+      await page.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+    }
     const statusBar = page.locator(".gridStatusBar");
     await statusBar.waitFor();
     const visibleRows = statusBar.getByRole("status", { name: "Visible rows" });
@@ -1145,24 +1212,104 @@ async function verifyGridStatusBar(browser) {
       throw new Error(`${harness} did not expose the default pressed Header profiles state.`);
     }
     const layout = await statusBar.evaluate((bar) => {
+      const epsilon = 0.6;
       const bounds = bar.getBoundingClientRect();
       const scroller = bar.previousElementSibling;
       const rangeStatus = bar.querySelector('[role="status"][aria-label="Visible rows"]');
       const headerProfiles = bar.querySelector(".headerProfilesButton");
       const app = bar.closest(".app");
       const dataGrid = bar.closest(".dataGrid");
-      const actions = [
-        bar.querySelector('[aria-label="Previous block"]'),
-        bar.querySelector('[aria-label="Next block"]'),
-        headerProfiles
-      ];
+      const primaryActions = [...bar.querySelectorAll(".gridNavigationButton, .gridClipboardControls button")];
       const rangeBounds = rangeStatus?.getBoundingClientRect();
-      const actionBottom = Math.max(
-        ...actions.map((action) => action?.getBoundingClientRect().bottom ?? Number.POSITIVE_INFINITY)
-      );
+      const visibleRowTextBounds = (() => {
+        if (!rangeStatus) return undefined;
+        const textRange = document.createRange();
+        textRange.selectNodeContents(rangeStatus);
+        const textBounds = textRange.getBoundingClientRect();
+        textRange.detach();
+        return textBounds;
+      })();
+      const primaryActionBottom = Math.max(...primaryActions.map((action) => action.getBoundingClientRect().bottom));
       const headerProfilesBounds = headerProfiles?.getBoundingClientRect();
       const rangeStyle = rangeStatus ? getComputedStyle(rangeStatus) : undefined;
+      const actionableDescendants = [
+        ...bar.querySelectorAll("button, input, select, textarea, summary, a[href], [tabindex]")
+      ]
+        .filter((element) => {
+          const elementBounds = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return (
+            elementBounds.width > epsilon &&
+            elementBounds.height > epsilon &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+          );
+        })
+        .map((element) => {
+          const elementBounds = element.getBoundingClientRect();
+          return {
+            bounds: {
+              bottom: elementBounds.bottom,
+              left: elementBounds.left,
+              right: elementBounds.right,
+              top: elementBounds.top
+            },
+            label:
+              element.getAttribute("aria-label") ?? element.textContent?.replace(/\s+/g, " ").trim() ?? element.tagName
+          };
+        });
+      const actionableDescendantFailures = actionableDescendants.flatMap((action, index) => {
+        const failures = [];
+        if (
+          action.bounds.left < bounds.left - epsilon ||
+          action.bounds.right > bounds.right + epsilon ||
+          action.bounds.top < bounds.top - epsilon ||
+          action.bounds.bottom > bounds.bottom + epsilon
+        ) {
+          failures.push({ action: action.label, reason: "outside-footer" });
+        }
+        for (let otherIndex = index + 1; otherIndex < actionableDescendants.length; otherIndex += 1) {
+          const other = actionableDescendants[otherIndex];
+          const overlapWidth =
+            Math.min(action.bounds.right, other.bounds.right) - Math.max(action.bounds.left, other.bounds.left);
+          const overlapHeight =
+            Math.min(action.bounds.bottom, other.bounds.bottom) - Math.max(action.bounds.top, other.bounds.top);
+          if (overlapWidth > epsilon && overlapHeight > epsilon) {
+            failures.push({
+              action: action.label,
+              other: other.label,
+              overlapHeight,
+              overlapWidth,
+              reason: "overlapping-footer-actions"
+            });
+          }
+        }
+        return failures;
+      });
+      const visibleRowStatusFailures = visibleRowTextBounds
+        ? actionableDescendants.flatMap((action) => {
+            const overlapWidth =
+              Math.min(visibleRowTextBounds.right, action.bounds.right) -
+              Math.max(visibleRowTextBounds.left, action.bounds.left);
+            const overlapHeight =
+              Math.min(visibleRowTextBounds.bottom, action.bounds.bottom) -
+              Math.max(visibleRowTextBounds.top, action.bounds.top);
+            return overlapWidth > epsilon && overlapHeight > epsilon
+              ? [
+                  {
+                    action: action.label,
+                    overlapHeight,
+                    overlapWidth,
+                    reason: "visible-row-status-overlap"
+                  }
+                ]
+              : [];
+          })
+        : [{ reason: "missing-visible-row-status" }];
       return {
+        actionableDescendantCount: actionableDescendants.length,
+        actionableDescendantFailures,
+        visibleRowStatusFailures,
         position: getComputedStyle(bar).position,
         followsScroller: scroller?.matches('[data-testid="data-grid-scroller"]') === true,
         overflow: bar.scrollWidth - bar.clientWidth,
@@ -1173,7 +1320,7 @@ async function verifyGridStatusBar(browser) {
           ? rangeStatus.scrollWidth > rangeStatus.clientWidth + 1 ||
             rangeStatus.scrollHeight > rangeStatus.clientHeight + 1
           : true,
-        rangeOnSecondRow: Boolean(rangeBounds && rangeBounds.top >= actionBottom - 1),
+        rangeOnSecondRow: Boolean(rangeBounds && rangeBounds.top >= primaryActionBottom - 1),
         rangeSingleLine: Boolean(
           rangeStatus && rangeStyle && rangeStatus.clientHeight <= Number.parseFloat(rangeStyle.fontSize) * 1.5
         ),
@@ -1201,6 +1348,9 @@ async function verifyGridStatusBar(browser) {
       layout.dataGridWidth !== expectedDataGridWidth ||
       layout.appOverflow > 1 ||
       layout.documentOverflow > 1 ||
+      layout.actionableDescendantCount < 6 ||
+      layout.actionableDescendantFailures.length > 0 ||
+      layout.visibleRowStatusFailures.length > 0 ||
       layout.rangeClipped ||
       layout.rangeOnSecondRow !== expectSecondRow ||
       !layout.rangeSingleLine ||
