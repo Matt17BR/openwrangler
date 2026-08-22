@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   Dir,
+  closeSync,
   copyFileSync,
   fstatSync,
   mkdirSync,
@@ -106,6 +107,17 @@ function assertDescriptorsClosed(descriptors, message) {
       (error) => error?.code === "EBADF",
       message
     );
+  }
+}
+
+function observeAndReleaseDescriptor(descriptor) {
+  try {
+    fstatSync(descriptor);
+    closeSync(descriptor);
+    return false;
+  } catch (error) {
+    if (error?.code === "EBADF") return true;
+    throw error;
   }
 }
 
@@ -829,6 +841,130 @@ test("cleanup defaults and snapshots never consult inherited after-close getters
       (error) => error?.code === "ERR_DIR_CLOSED",
       "The inherited native-close getter must not prevent closing the directory handle."
     );
+  }
+});
+
+test("post-acquisition Array prototype poisoning cannot intercept ownership or reverse cleanup", () => {
+  for (const property of ["push", Symbol.iterator, "reverse"]) {
+    const label = typeof property === "symbol" ? "iterator" : property;
+    const root = mkdtempSync(join(tmpdir(), `openwrangler-agent-array-${label}-poison-`));
+    temporaryRoots.add(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/AGENTS.md"), "owned\n", "utf8");
+    const descriptors = [];
+    let descriptorCount = 0;
+    let closeCalls = 0;
+    const cleanupFailures = [];
+    let poisonCalls = 0;
+    let result;
+    let failure;
+    const original = Object.getOwnPropertyDescriptor(Array.prototype, property);
+    try {
+      result = readBoundedInstructionFile(root, "src/AGENTS.md", {
+        openDirectory(path, flags) {
+          const descriptor = openSync(path, flags);
+          descriptors[descriptorCount] = descriptor;
+          descriptorCount += 1;
+          if (descriptorCount === 1) {
+            Object.defineProperty(Array.prototype, property, {
+              ...original,
+              value() {
+                poisonCalls += 1;
+                throw new Error(`poisoned Array.prototype.${label}`);
+              }
+            });
+          }
+          return descriptor;
+        },
+        cleanupFaults: {
+          afterAncestorClose() {
+            const cleanupFailure = new Error(`${label} cleanup failure ${closeCalls}`);
+            cleanupFailures[closeCalls] = cleanupFailure;
+            closeCalls += 1;
+            throw cleanupFailure;
+          }
+        },
+        beforeAncestorRevalidation() {
+          if (property !== "push") throw new Error(`${label} primary failure`);
+        }
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      Object.defineProperty(Array.prototype, property, original);
+    }
+    const closed = [];
+    for (let index = 0; index < descriptorCount; index += 1) {
+      closed[index] = observeAndReleaseDescriptor(descriptors[index]);
+    }
+    assert.equal(result, undefined);
+    assert.equal(failure instanceof AggregateError, true, `${label} must retain primary and cleanup failures.`);
+    assert.equal(failure.errors.length, 1 + cleanupFailures.length);
+    assert.match(
+      failure.errors[0]?.message ?? "",
+      property === "push" ? /poisoned Array\.prototype\.push/u : new RegExp(`${label} primary failure`, "u")
+    );
+    for (let index = 0; index < cleanupFailures.length; index += 1) {
+      assert.equal(failure.errors[index + 1].cause, cleanupFailures[index]);
+    }
+    assert.equal(
+      poisonCalls,
+      property === "push" ? 1 : 0,
+      `${label} poisoning must not intercept ownership retention, aggregation, or reverse cleanup.`
+    );
+    assert.equal(closeCalls, descriptorCount, `${label} poisoning must close each acquired descriptor exactly once.`);
+    assert.deepEqual(
+      closed,
+      Array.from({ length: descriptorCount }, () => true)
+    );
+  }
+});
+
+test("native directory claiming ignores mutable global Object ownership primitives", () => {
+  for (const property of ["getPrototypeOf", "hasOwn"]) {
+    const root = mkdtempSync(join(tmpdir(), `openwrangler-agent-object-${property}-poison-`));
+    temporaryRoots.add(root);
+    writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+    const original = Object[property];
+    let opened;
+    let closeCalls = 0;
+    let poisonCalls = 0;
+    let result;
+    let failure;
+    try {
+      result = scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+        openDirectory(path) {
+          opened = opendirSync(path);
+          Object[property] = () => {
+            poisonCalls += 1;
+            throw new Error(`poisoned Object.${property}`);
+          };
+          return opened;
+        },
+        cleanupFaults: {
+          afterNativeDirectoryClose() {
+            closeCalls += 1;
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      Object[property] = original;
+    }
+    let alreadyClosed;
+    try {
+      Dir.prototype.closeSync.call(opened);
+      alreadyClosed = false;
+    } catch (error) {
+      if (error?.code !== "ERR_DIR_CLOSED") throw error;
+      alreadyClosed = true;
+    }
+    assert.equal(failure, undefined, `Object.${property} mutation must not interrupt native ownership.`);
+    assert.deepEqual(result, ["AGENTS.md"]);
+    assert.equal(poisonCalls, 0, `Object.${property} must be captured before an opener can replace it.`);
+    assert.equal(closeCalls, 1, "The exact owned native directory must close exactly once.");
+    assert.equal(alreadyClosed, true, "The native directory must not remain open after successful scanning.");
   }
 });
 

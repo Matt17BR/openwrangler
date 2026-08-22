@@ -29,6 +29,8 @@ const MAX_TRACKED_PREFIX_BYTES = MAX_TRACKED_PATH_OUTPUT_BYTES;
 const MAX_INSTRUCTION_FAILURES = MAX_ANCESTOR_DEPTH + MAX_INSTRUCTION_FILES + 8;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const instructionFailureState = new WeakMap();
+const nativeArrayPush = Array.prototype.push;
+const nativeArraySlice = Array.prototype.slice;
 const nativeMapGet = Map.prototype.get;
 const nativeMapSet = Map.prototype.set;
 const nativeWeakMapGet = WeakMap.prototype.get;
@@ -285,11 +287,51 @@ function retainedInstructionFailures(error) {
   return nativeWeakMapGet.call(instructionFailureState, error);
 }
 
+function instructionFailureIterable(failures) {
+  const iterable = nativeObjectCreate(null);
+  nativeObjectDefineProperty(iterable, Symbol.iterator, {
+    configurable: false,
+    enumerable: false,
+    value() {
+      let index = 0;
+      const iterator = nativeObjectCreate(null);
+      nativeObjectDefineProperty(iterator, "next", {
+        configurable: false,
+        enumerable: false,
+        value() {
+          const result = nativeObjectCreate(null);
+          const done = index >= failures.length;
+          nativeObjectDefineProperty(result, "done", {
+            configurable: false,
+            enumerable: true,
+            value: done,
+            writable: false
+          });
+          if (!done) {
+            nativeObjectDefineProperty(result, "value", {
+              configurable: false,
+              enumerable: true,
+              value: failures[index],
+              writable: false
+            });
+            index += 1;
+          }
+          return nativeObjectFreeze(result);
+        },
+        writable: false
+      });
+      return nativeObjectFreeze(iterator);
+    },
+    writable: false
+  });
+  return nativeObjectFreeze(iterable);
+}
+
 function instructionAggregateError(message, errors) {
   const failures = [];
-  for (const error of errors) appendInstructionFailures(failures, error);
-  const retainedFailures = nativeObjectFreeze([...failures]);
-  const error = new AggregateError(retainedFailures, message);
+  for (let index = 0; index < errors.length; index += 1) appendInstructionFailures(failures, errors[index]);
+  const retainedFailures = nativeObjectFreeze(nativeArraySlice.call(failures));
+  const error = new AggregateError(instructionFailureIterable(retainedFailures), message);
   error.code = "AGENT_INSTRUCTIONS_INVALID";
   nativeWeakMapSet.call(instructionFailureState, error, retainedFailures);
   return error;
@@ -301,10 +343,12 @@ function appendInstructionFailures(failures, error) {
   const available = MAX_INSTRUCTION_FAILURES - failures.length;
   if (available <= 0) return;
   if (additions.length <= available) {
-    failures.push(...additions);
+    for (let index = 0; index < additions.length; index += 1) nativeArrayPush.call(failures, additions[index]);
     return;
   }
-  failures.push(...additions.slice(0, Math.max(0, available - 1)), INSTRUCTION_FAILURE_OVERFLOW);
+  const retainedCount = Math.max(0, available - 1);
+  for (let index = 0; index < retainedCount; index += 1) nativeArrayPush.call(failures, additions[index]);
+  nativeArrayPush.call(failures, INSTRUCTION_FAILURE_OVERFLOW);
 }
 
 function throwInstructionFailures(message, failures) {
@@ -425,8 +469,23 @@ function openVerifiedDirectory(absolutePath, label, openDirectory = openSync, af
   } catch (error) {
     const failures = [error];
     const closeFailure = closeOwnedDescriptor(descriptor, `${label}'s verified descriptor`, afterClose);
-    if (closeFailure) failures.push(closeFailure);
+    if (closeFailure) nativeArrayPush.call(failures, closeFailure);
     throwInstructionFailures(`${label} failed descriptor binding and cleanup.`, failures);
+  }
+}
+
+function retainOpenedDirectory(opened, directory, afterClose) {
+  try {
+    nativeArrayPush.call(opened, directory);
+  } catch (error) {
+    const failures = [error];
+    const closeFailure = closeOwnedDescriptor(
+      directory.descriptor,
+      `${directory.label}'s verified descriptor`,
+      afterClose
+    );
+    if (closeFailure) nativeArrayPush.call(failures, closeFailure);
+    throwInstructionFailures(`${directory.label} failed ownership retention and cleanup.`, failures);
   }
 }
 
@@ -444,21 +503,29 @@ function withVerifiedDirectoryChain(
   let failure;
   try {
     let current = root;
-    opened.push(openVerifiedDirectory(current, "The repository root", openDirectory, cleanupFaults.afterAncestorClose));
-    for (const part of parts) {
+    retainOpenedDirectory(
+      opened,
+      openVerifiedDirectory(current, "The repository root", openDirectory, cleanupFaults.afterAncestorClose),
+      cleanupFaults.afterAncestorClose
+    );
+    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+      const part = parts[partIndex];
       current = join(current, part);
-      opened.push(
+      retainOpenedDirectory(
+        opened,
         openVerifiedDirectory(
           current,
           `Directory ${portableRelativePath(relative(root, current))}`,
           openDirectory,
           cleanupFaults.afterAncestorClose
-        )
+        ),
+        cleanupFaults.afterAncestorClose
       );
     }
-    result = callback(Object.freeze([...opened]));
+    result = callback(nativeObjectFreeze(nativeArraySlice.call(opened)));
     beforeAncestorRevalidation?.();
-    for (const directory of opened) {
+    for (let index = 0; index < opened.length; index += 1) {
+      const directory = opened[index];
       const descriptorSnapshot = fstatSync(directory.descriptor, { bigint: true });
       let pathSnapshot;
       try {
@@ -480,13 +547,14 @@ function withVerifiedDirectoryChain(
   }
   const failures = [];
   if (failure) appendInstructionFailures(failures, failure);
-  for (const directory of [...opened].reverse()) {
+  for (let index = opened.length - 1; index >= 0; index -= 1) {
+    const directory = opened[index];
     const closeFailure = closeOwnedDescriptor(
       directory.descriptor,
       `${directory.label}'s verified descriptor`,
       cleanupFaults.afterAncestorClose
     );
-    if (closeFailure) failures.push(closeFailure);
+    if (closeFailure) nativeArrayPush.call(failures, closeFailure);
   }
   throwInstructionFailures("The verified directory-chain operation and cleanup did not complete.", failures);
   return result;
@@ -516,7 +584,7 @@ function verifyRegularPath(
   const failures = [];
   if (failure) appendInstructionFailures(failures, failure);
   const closeFailure = closeOwnedDescriptor(descriptor, `${label}'s verified descriptor`, cleanupFaults.afterFileClose);
-  if (closeFailure) failures.push(closeFailure);
+  if (closeFailure) nativeArrayPush.call(failures, closeFailure);
   throwInstructionFailures(`${label} verification and cleanup did not complete.`, failures);
   return result;
 }
@@ -588,7 +656,7 @@ export function readBoundedInstructionFile(
         `${relativePath}'s verified descriptor`,
         cleanupFaults.afterFileClose
       );
-      if (closeFailure) failures.push(closeFailure);
+      if (closeFailure) nativeArrayPush.call(failures, closeFailure);
       throwInstructionFailures(`${relativePath} read and cleanup did not complete.`, failures);
       return result;
     },
@@ -633,7 +701,7 @@ function canonicalInvariantBody(rule, text) {
 }
 
 function claimNativeDirectory(directory) {
-  if (utilTypes.isProxy(directory) || Object.getPrototypeOf(directory) !== nativeDirectoryPrototype) {
+  if (utilTypes.isProxy(directory) || nativeObjectGetPrototypeOf(directory) !== nativeDirectoryPrototype) {
     throw instructionError("An opened instruction-scan directory is not an owned native directory handle.");
   }
   return directory;
@@ -642,9 +710,9 @@ function claimNativeDirectory(directory) {
 function bindNativeDirectory(directory) {
   if (
     typeof nativeDirectoryPathGetter !== "function" ||
-    Object.hasOwn(directory, "path") ||
-    Object.hasOwn(directory, "readSync") ||
-    Object.hasOwn(directory, "closeSync")
+    nativeObjectHasOwn(directory, "path") ||
+    nativeObjectHasOwn(directory, "readSync") ||
+    nativeObjectHasOwn(directory, "closeSync")
   ) {
     throw instructionError("An opened instruction-scan directory overrides native directory methods.");
   }
@@ -657,7 +725,7 @@ function bindNativeDirectory(directory) {
   if (typeof path !== "string") {
     throw instructionError("An opened instruction-scan directory could not expose its owned native path.");
   }
-  return Object.freeze({ directory, path });
+  return nativeObjectFreeze({ directory, path });
 }
 
 function readNativeDirectory(directory) {
@@ -744,11 +812,12 @@ export function discoverAgentInstructionPaths(
         verifyRegularPath(absoluteTarget, `Context target ${normalizedTarget}`, { privateFile: true });
       }
       const discovered = [];
-      for (const directory of directories) {
+      for (let index = 0; index < directories.length; index += 1) {
+        const directory = directories[index];
         const candidate = join(directory.absolutePath, "AGENTS.md");
         try {
           verifyRegularPath(candidate, "An ancestor AGENTS.md", { privateFile: true });
-          discovered.push(containedRelativePath(root, candidate));
+          nativeArrayPush.call(discovered, containedRelativePath(root, candidate));
         } catch (error) {
           if (error?.code !== "ENOENT") throw error;
         }
@@ -759,7 +828,7 @@ export function discoverAgentInstructionPaths(
       if (discovered[0] !== "AGENTS.md") {
         throw instructionError("The canonical root AGENTS.md policy is mandatory and must load first.");
       }
-      return Object.freeze(discovered);
+      return nativeObjectFreeze(discovered);
     },
     { beforeAncestorRevalidation }
   );
@@ -969,7 +1038,7 @@ export function scanTrackedAgentInstructionPaths(
           if (found.length >= MAX_INSTRUCTION_FILES) {
             throw instructionError("Too many active AGENTS.md files were discovered.");
           }
-          found.push(containedRelativePath(root, absolutePath));
+          nativeArrayPush.call(found, containedRelativePath(root, absolutePath));
         }
         if (directoryPrefixes.has(relativePath)) {
           const snapshot = lstatSync(absolutePath, { bigint: true });
@@ -981,7 +1050,7 @@ export function scanTrackedAgentInstructionPaths(
           if (directoryCount > maxDirectories || nextDepth > MAX_ANCESTOR_DEPTH) {
             throw instructionError("The instruction scope scan exceeded its directory bound before retention.");
           }
-          pending.push({ path: absolutePath, relativePath, depth: nextDepth, snapshot });
+          nativeArrayPush.call(pending, { path: absolutePath, relativePath, depth: nextDepth, snapshot });
         }
       }
       const afterScan = lstatSync(current.path, { bigint: true });
