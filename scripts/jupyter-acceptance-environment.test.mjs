@@ -2286,32 +2286,90 @@ test(
           terminalPrimary: /OSError: \[Errno 5\] primary raw-close test denial/u
         },
         {
-          name: "add-note-bounds-private-primary-and-cleanup-close-failure",
-          prelude:
-            "import builtins, errno, os, sys\nif not hasattr(BaseException, 'add_note'):\n    _ow_getattr = builtins.getattr\n    def _ow_force_add_note(value, name, default=None):\n        if name == 'add_note' and isinstance(value, OSError):\n            def _ow_record_note(note): value._ow_bounded_note = note\n            return _ow_record_note\n        return _ow_getattr(value, name, default)\n    builtins.getattr = _ow_force_add_note\n    def _ow_print_forced_note(exc_type, exc_value, exc_traceback):\n        sys.__excepthook__(exc_type, exc_value, exc_traceback)\n        note = exc_value.__dict__.get('_ow_bounded_note')\n        if note is not None:\n            sys.stderr.write(note + '\\n')\n            sys.stderr.flush()\n    sys.excepthook = _ow_print_forced_note\n_ow_private_cleanup = type('PRIVATE_CLEANUP_TYPE\\nFORGED_TYPE', (OSError,), {})\ndef _ow_fail_bounded_primary_and_cleanup_close(fd):\n    if fd == 3: raise OSError(errno.EIO, 'bounded primary raw-close test denial')\n    raise _ow_private_cleanup('/private/add-note-cleanup-path\\nFORGED_CLEANUP_EXCEPTION\\n' + 'X' * (2 * 1024 * 1024))\nos.close = _ow_fail_bounded_primary_and_cleanup_close\n",
+          name: "hostile-introspection-and-add-note-primary-and-cleanup-close-failure",
+          prelude: `
+import errno, os, sys
+_ow_system_excepthook = sys.__excepthook__
+_ow_primary = OSError(errno.EIO, "bounded primary raw-close test denial")
+def _ow_hostile_add_note(note):
+    raise RuntimeError("PRIVATE_HOSTILE_ADD_NOTE_OVERRIDE")
+_ow_primary.add_note = _ow_hostile_add_note
+class _OWHostileMeta(type):
+    def __getattribute__(cls, name):
+        if name == "__name__":
+            raise RuntimeError("PRIVATE_HOSTILE_TYPE_ACCESS")
+        return type.__getattribute__(cls, name)
+class _OWHostileCleanup(OSError, metaclass=_OWHostileMeta):
+    def __getattribute__(self, name):
+        if name in ("errno", "__str__", "args", "__dict__"):
+            raise RuntimeError("PRIVATE_HOSTILE_CLEANUP_ACCESS_" + name)
+        return BaseException.__getattribute__(self, name)
+def _ow_identity_excepthook(exc_type, exc_value, exc_traceback):
+    identity = "same" if exc_value is _ow_primary else "different"
+    value = OSError.errno.__get__(exc_value, OSError) if isinstance(exc_value, OSError) else None
+    sys.stderr.write("__OW_PRIMARY_IDENTITY__=" + identity + ";errno=" + str(value) + "\\n")
+    _ow_system_excepthook(exc_type, exc_value, exc_traceback)
+sys.excepthook = _ow_identity_excepthook
+def _ow_fail_bounded_primary_and_cleanup_close(fd):
+    if fd == 3:
+        raise _ow_primary
+    raise _OWHostileCleanup(errno.EBADF, "/private/add-note-cleanup-path\\nFORGED_CLEANUP_EXCEPTION\\n" + "X" * (2 * 1024 * 1024))
+os.close = _ow_fail_bounded_primary_and_cleanup_close
+`.trimStart(),
           sha256: distribution.sha256,
           expected: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
           cleanupExpected:
-            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=BaseException errno=unavailable\)\./u,
+            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
+          identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
           tracebackExpected: /os\.close\(raw_descriptor\)/u,
           maxStderrBytes: 8_192,
           unexpected:
-            /PRIVATE_CLEANUP_TYPE|FORGED_TYPE|\/private\/add-note-cleanup-path|FORGED_CLEANUP_EXCEPTION|X{128}/u
+            /PRIVATE_HOSTILE_ADD_NOTE_OVERRIDE|PRIVATE_HOSTILE_TYPE_ACCESS|PRIVATE_HOSTILE_CLEANUP_ACCESS|\/private\/add-note-cleanup-path|FORGED_CLEANUP_EXCEPTION|X{128}/u
         },
         {
-          name: "python-3.10-primary-and-cleanup-close-failure",
-          prelude:
-            "import builtins, errno, os\n_ow_getattr = builtins.getattr\ndef _ow_without_add_note(value, name, default=None):\n    if name == 'add_note' and isinstance(value, OSError): return None\n    return _ow_getattr(value, name, default)\nbuiltins.getattr = _ow_without_add_note\ndef _ow_fail_python310_primary_and_cleanup_close(fd):\n    if fd == 3: raise OSError(errno.EIO, 'python310 primary raw-close test denial')\n    raise OSError(errno.EBADF, '/private/cleanup-path\\nPRIVATE_PYTHON310_CLEANUP_OUTPUT')\nos.close = _ow_fail_python310_primary_and_cleanup_close\n",
+          name: "python-3.10-hostile-introspection-and-add-note-primary-and-cleanup-close-failure",
+          prelude: `
+import errno, os, sys
+sys.version_info = (3, 10, 0, "final", 0)
+_ow_system_excepthook = sys.__excepthook__
+_ow_primary = OSError(errno.EIO, "python310 primary raw-close test denial")
+def _ow_hostile_add_note(note):
+    raise RuntimeError("PRIVATE_PYTHON310_ADD_NOTE_OVERRIDE")
+_ow_primary.add_note = _ow_hostile_add_note
+class _OWHostileMeta(type):
+    def __getattribute__(cls, name):
+        if name == "__name__":
+            raise RuntimeError("PRIVATE_PYTHON310_TYPE_ACCESS")
+        return type.__getattribute__(cls, name)
+class _OWHostileCleanup(OSError, metaclass=_OWHostileMeta):
+    def __getattribute__(self, name):
+        if name in ("errno", "__str__", "args", "__dict__"):
+            raise RuntimeError("PRIVATE_PYTHON310_CLEANUP_ACCESS_" + name)
+        return BaseException.__getattribute__(self, name)
+def _ow_identity_excepthook(exc_type, exc_value, exc_traceback):
+    identity = "same" if exc_value is _ow_primary else "different"
+    value = OSError.errno.__get__(exc_value, OSError) if isinstance(exc_value, OSError) else None
+    sys.stderr.write("__OW_PRIMARY_IDENTITY__=" + identity + ";errno=" + str(value) + "\\n")
+    _ow_system_excepthook(exc_type, exc_value, exc_traceback)
+sys.__excepthook__ = _ow_identity_excepthook
+def _ow_fail_python310_primary_and_cleanup_close(fd):
+    if fd == 3:
+        raise _ow_primary
+    raise _OWHostileCleanup(errno.EBADF, "/private/cleanup-path\\nPRIVATE_PYTHON310_CLEANUP_OUTPUT")
+os.close = _ow_fail_python310_primary_and_cleanup_close
+`.trimStart(),
           sha256: distribution.sha256,
           expected: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           cleanupExpected:
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
+          identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] python310 primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           tracebackExpected: /os\.close\(raw_descriptor\)/u,
-          unexpected: /\/private\/cleanup-path|PRIVATE_PYTHON310_CLEANUP_OUTPUT/u
+          unexpected:
+            /PRIVATE_PYTHON310_ADD_NOTE_OVERRIDE|PRIVATE_PYTHON310_TYPE_ACCESS|PRIVATE_PYTHON310_CLEANUP_ACCESS|\/private\/cleanup-path|PRIVATE_PYTHON310_CLEANUP_OUTPUT/u
         },
         {
           name: "cleanup-only-close-failure",
@@ -2364,6 +2422,7 @@ test(
           assert.match(result.stderr, scenario.tracebackExpected);
           assert.equal(result.stderr.match(/Traceback \(most recent call last\):/gu)?.length, 1, result.stderr);
         }
+        if (scenario.identityExpected !== undefined) assert.match(result.stderr, scenario.identityExpected);
         assert.doesNotMatch(result.stdout, /__OW_PACKAGE_EXECUTED__/u);
       }
       launch.release();

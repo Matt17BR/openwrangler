@@ -217,34 +217,39 @@ except BaseException as primary_failure:
         os.close(sealed_descriptor)
     except BaseException as cleanup_failure:
         def bounded_cleanup_diagnostic(failure):
-            cleanup_type = type(failure).__name__
-            if (
-                not cleanup_type
-                or len(cleanup_type) > 64
-                or not cleanup_type.isascii()
-                or any(not (character.isalnum() or character == "_") for character in cleanup_type)
-            ):
-                cleanup_type = "BaseException"
-            cleanup_errno = getattr(failure, "errno", None)
-            cleanup_errno_text = (
-                str(cleanup_errno)
-                if type(cleanup_errno) is int and -(2**31) <= cleanup_errno <= 2**31 - 1
-                else "unavailable"
-            )
+            cleanup_type, cleanup_errno_text = "BaseException", "unavailable"
+            try:
+                if isinstance(failure, OSError):
+                    cleanup_type = "OSError"
+                    try:
+                        cleanup_errno = OSError.errno.__get__(failure, OSError)
+                    except BaseException:
+                        cleanup_errno = None
+                    if type(cleanup_errno) is int and -(2**31) <= cleanup_errno <= 2**31 - 1:
+                        cleanup_errno_text = str(cleanup_errno)
+            except BaseException:
+                cleanup_type, cleanup_errno_text = "BaseException", "unavailable"
             return (
                 "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception "
                 "(type=" + cleanup_type + " errno=" + cleanup_errno_text + ")."
             )
 
         cleanup_diagnostic = bounded_cleanup_diagnostic(cleanup_failure)
-        add_note = getattr(primary_failure, "add_note", None)
-        if callable(add_note):
-            add_note(cleanup_diagnostic)
-        else:
+        note_attached = False
+        if sys.version_info >= (3, 11):
+            try:
+                BaseException.add_note(primary_failure, cleanup_diagnostic)
+                note_attached = True
+            except BaseException:
+                pass
+        if not note_attached:
             def report_primary_with_cleanup(exc_type, exc_value, exc_traceback):
                 sys.__excepthook__(exc_type, exc_value, exc_traceback)
-                sys.stderr.write(cleanup_diagnostic + "\n")
-                sys.stderr.flush()
+                try:
+                    sys.stderr.write(cleanup_diagnostic + "\n")
+                    sys.stderr.flush()
+                except BaseException:
+                    pass
 
             sys.excepthook = report_primary_with_cleanup
     raise
