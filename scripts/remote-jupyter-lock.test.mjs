@@ -316,6 +316,8 @@ test("the installer settles escaped descendants after diagnostic inventory overf
 import importlib.util
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -333,10 +335,103 @@ except installer.ContractError as error:
     assert "inventory exceeded its fixed bound" in str(error)
 else:
     raise AssertionError("the lowered diagnostic inventory bound did not overflow")
+
+def current_start_time(process_id):
+    try:
+        payload = Path(f"/proc/{process_id}/stat").read_bytes()
+    except FileNotFoundError:
+        return None
+    marker = payload.rfind(b") ")
+    assert marker >= 0
+    fields = payload[marker + 2 :].split()
+    assert len(fields) >= 20
+    return int(fields[19])
+
+def pin_identity(receipt_path):
+    receipt = receipt_path.read_text(encoding="ascii")
+    fields = receipt.split(":")
+    assert len(fields) == 2 and all(field.isdecimal() for field in fields)
+    process_id, start_time = (int(field) for field in fields)
+    assert process_id > 0 and start_time > 0
+    assert current_start_time(process_id) == start_time
+    descriptor = os.pidfd_open(process_id, 0)
+    if current_start_time(process_id) != start_time:
+        os.close(descriptor)
+        raise AssertionError("descendant identity changed while it was pinned")
+    return process_id, start_time, descriptor
+
+def settle_exact_identities(identities, release):
+    try:
+        for process_id, start_time, descriptor in identities.values():
+            if current_start_time(process_id) != start_time:
+                continue
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, 0)
+            except ProcessLookupError:
+                pass
+        release.touch(exist_ok=True)
+        deadline = time.monotonic() + 2
+        while True:
+            remaining = []
+            for process_id, start_time, descriptor in identities.values():
+                if current_start_time(process_id) != start_time:
+                    continue
+                try:
+                    os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
+                except (ChildProcessError, ProcessLookupError):
+                    pass
+                if current_start_time(process_id) == start_time:
+                    remaining.append((process_id, start_time))
+            if not remaining:
+                return
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"identity-bound fallback did not settle {remaining}")
+            time.sleep(0.005)
+    finally:
+        for _, _, descriptor in identities.values():
+            os.close(descriptor)
+
 with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
     root = Path(directory)
-    descendant = "import os; from pathlib import Path; import sys,time; marker=Path(sys.argv[1]); ready=Path(sys.argv[2]); release=Path(sys.argv[3]); retired=Path(sys.argv[4]); payload=Path('/proc/self/stat').read_bytes(); fields=payload[payload.rfind(b') ')+2:].split(); staged=ready.with_suffix('.staged'); staged.write_text(f'{os.getpid()}:{int(fields[19])}', encoding='ascii'); staged.replace(ready)\nwhile not release.exists(): time.sleep(0.001)\nready.unlink(); retired.touch(); time.sleep(0.6); marker.write_text('survived', encoding='utf8')"
-    parent = "import os,subprocess,sys,time; from pathlib import Path; root=Path(sys.argv[1]); prefix=sys.argv[2]; source=sys.argv[3]; mode=sys.argv[4]; release=root/f'{prefix}-release'; children=[]\nfor index in range(6):\n marker=root/f'{prefix}-marker-{index}'; ready=root/f'{prefix}-pid-{index}'; retired=root/f'{prefix}-retired-{index}'; children.append(subprocess.Popen([sys.executable,'-c',source,str(marker),str(ready),str(release),str(retired)],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True))\nrelease_deadline=time.monotonic()+1.5\nwhile time.monotonic()<release_deadline and not release.exists(): time.sleep(0.001)\nassert release.exists()\nretirement_deadline=time.monotonic()+0.25\nwhile time.monotonic()<retirement_deadline and not all((root/f'{prefix}-retired-{index}').exists() for index in range(6)): time.sleep(0.001)\nassert all((root/f'{prefix}-retired-{index}').exists() for index in range(6))\nif mode == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif mode == 'timeout': time.sleep(10)"
+    descendant = "import os; from pathlib import Path; import sys,time; marker=Path(sys.argv[1]); ready=Path(sys.argv[2]); release=Path(sys.argv[3]); retired=Path(sys.argv[4]); payload=Path('/proc/self/stat').read_bytes(); fields=payload[payload.rfind(b') ')+2:].split(); receipt=f'{os.getpid()}:{int(fields[19])}'; staged=ready.with_suffix('.staged'); staged.write_text(receipt, encoding='ascii'); staged.replace(ready); release_deadline=time.monotonic()+2\nwhile not release.exists():\n if time.monotonic() >= release_deadline: raise SystemExit(70)\n time.sleep(0.001)\nready.unlink(); retired_staged=retired.with_suffix('.staged'); retired_staged.write_text(receipt, encoding='ascii'); retired_staged.replace(retired); time.sleep(0.6); marker.write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; from pathlib import Path; root=Path(sys.argv[1]); prefix=sys.argv[2]; source=sys.argv[3]; mode=sys.argv[4]; release=root/f'{prefix}-release'; children=[]\nfor index in range(6):\n marker=root/f'{prefix}-marker-{index}'; ready=root/f'{prefix}-pid-{index}'; retired=root/f'{prefix}-retired-{index}'; children.append(subprocess.Popen([sys.executable,'-c',source,str(marker),str(ready),str(release),str(retired)],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True))\nrelease_deadline=time.monotonic()+1.5\nwhile time.monotonic()<release_deadline and not release.exists(): time.sleep(0.001)\nassert release.exists()\nretirement_deadline=time.monotonic()+0.25\nwhile time.monotonic()<retirement_deadline and not all((root/f'{prefix}-retired-{index}').exists() for index in range(6)): time.sleep(0.001)\nassert all((root/f'{prefix}-retired-{index}').exists() for index in range(6))\nif mode == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif mode == 'timeout': time.sleep(2)"
+
+    # Exercise the test-owned fallback against a live detached helper, independently of bounded_command.
+    fallback_marker = root / "fallback-marker"
+    fallback_ready = root / "fallback-pid"
+    fallback_release = root / "fallback-release"
+    fallback_retired = root / "fallback-retired"
+    fallback_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            descendant,
+            str(fallback_marker),
+            str(fallback_ready),
+            str(fallback_release),
+            str(fallback_retired),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    fallback_deadline = time.monotonic() + 1.5
+    while time.monotonic() < fallback_deadline and not fallback_ready.exists():
+        time.sleep(0.001)
+    assert fallback_ready.exists(), "fallback descendant identity receipt was unavailable"
+    fallback_identity = pin_identity(fallback_ready)
+    settle_exact_identities({0: fallback_identity}, fallback_release)
+    fallback_process.poll()
+    assert current_start_time(fallback_identity[0]) != fallback_identity[1]
+    assert not fallback_marker.exists(), "fallback descendant mutated before settlement"
+
+    expected_failure = {
+        "success": "isolated R command left a live descendant",
+        "timeout": "isolated R command exceeded its deadline",
+        "overflow": "isolated R command output exceeded its bounded log",
+    }
     for mode in ("success", "timeout", "overflow"):
         # The observer owns every exact identity receipt before releasing producers to withdraw them.
         identities = {}
@@ -351,12 +446,10 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
                         if index in identities:
                             continue
                         try:
-                            receipt = (root / f"{mode}-pid-{index}").read_text(encoding="ascii")
+                            identity = pin_identity(root / f"{mode}-pid-{index}")
                         except FileNotFoundError:
                             continue
-                        fields = receipt.split(":")
-                        assert len(fields) == 2 and all(field.isdecimal() for field in fields)
-                        identities[index] = (int(fields[0]), int(fields[1]))
+                        identities[index] = identity
                     if len(identities) == 6:
                         release.touch()
                         return
@@ -368,38 +461,38 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
 
         observer = threading.Thread(target=observe_identities, name=f"{mode}-identity-observer")
         observer.start()
+        failure = None
         try:
-            installer.bounded_command(
-                [sys.executable, "-c", parent, str(root), mode, descendant, mode],
-                dict(os.environ),
-                root / f"{mode}-command.log",
-            )
-        except installer.ContractError:
-            pass
-        else:
-            raise AssertionError(f"{mode} command with a live escaped descendant unexpectedly succeeded")
-        observer.join(timeout=2)
-        assert not observer.is_alive(), f"{mode} identity observer did not settle"
-        if observer_errors:
-            raise observer_errors[0]
-        assert set(identities) == set(range(6)), f"{mode} descendant identities were incomplete"
-        assert not list(root.glob(f"{mode}-pid-*")), f"{mode} early-removal adversary retained a receipt"
-
-        def current_start_time(process_id):
             try:
-                payload = Path(f"/proc/{process_id}/stat").read_bytes()
-            except FileNotFoundError:
-                return None
-            fields = payload[payload.rfind(b") ") + 2 :].split()
-            assert len(fields) >= 20
-            return int(fields[19])
-
-        assert all(current_start_time(process_id) != start_time for process_id, start_time in identities.values()), (
-            f"{mode} descendants were not reaped"
-        )
-        assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated before settlement"
-        time.sleep(0.7)
-        assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated after settlement"
+                installer.bounded_command(
+                    [sys.executable, "-c", parent, str(root), mode, descendant, mode],
+                    dict(os.environ),
+                    root / f"{mode}-command.log",
+                )
+            except installer.ContractError as error:
+                failure = error
+            observer.join(timeout=2)
+            assert not observer.is_alive(), f"{mode} identity observer did not settle"
+            if observer_errors:
+                raise observer_errors[0]
+            assert set(identities) == set(range(6)), f"{mode} descendant identities were incomplete"
+            assert not list(root.glob(f"{mode}-pid-*")), f"{mode} early-removal adversary retained a receipt"
+            for index, (process_id, start_time, _) in identities.items():
+                retired = (root / f"{mode}-retired-{index}").read_text(encoding="ascii")
+                assert retired == f"{process_id}:{start_time}", (
+                    f"{mode} descendant {index} retirement receipt was not exact"
+                )
+            assert failure is not None, f"{mode} command with a live escaped descendant unexpectedly succeeded"
+            assert expected_failure[mode] in str(failure), f"{mode} failed for an unrelated reason: {failure}"
+            assert all(
+                current_start_time(process_id) != start_time
+                for process_id, start_time, _ in identities.values()
+            ), f"{mode} descendants were not reaped"
+            assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated before settlement"
+            time.sleep(0.7)
+            assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated after settlement"
+        finally:
+            settle_exact_identities(identities, release)
 `);
   assert.equal(probe.status, 0, probe.stderr);
   assert.equal(probe.signal, null);
