@@ -857,6 +857,7 @@ function findInlineRawOutputMatch(
   let scannedBytes = 0;
   let match: InlineRawOutputMatch | undefined;
   const itemSnapshots: InlineRawOutputItemsSnapshot[] = [];
+  const itemIdentities = new Set<vscode.NotebookCellOutputItem>();
   try {
     for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
       const cellSnapshot = snapshot.cells[cellIndex];
@@ -867,6 +868,11 @@ function findInlineRawOutputMatch(
         const itemArray = output.items;
         const items = snapshotBoundedIndexedReferences(itemArray, INLINE_UPGRADE_MAX_OUTPUT_ITEMS - visitedItems);
         if (!items) return undefined;
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+          const item = items[itemIndex];
+          if (!item || itemIdentities.has(item)) return undefined;
+          itemIdentities.add(item);
+        }
         visitedItems += items.length;
         itemSnapshots.push({ output, itemArray, items });
       }
@@ -918,6 +924,7 @@ function snapshotInlineRawOutputContainers(editor: vscode.NotebookEditor): Inlin
     const cellArray = snapshotBoundedIndexedReferences(notebook.getCells(), INLINE_UPGRADE_MAX_CELLS);
     if (!cellArray) return undefined;
     let visitedOutputs = 0;
+    const outputIdentities = new Set<vscode.NotebookCellOutput>();
     const cellSnapshots = new Array<InlineRawOutputCellSnapshot>(cellArray.length);
     for (let cellIndex = 0; cellIndex < cellArray.length; cellIndex += 1) {
       const cell = cellArray[cellIndex];
@@ -929,6 +936,11 @@ function snapshotInlineRawOutputContainers(editor: vscode.NotebookEditor): Inlin
         INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs
       );
       if (!outputs) return undefined;
+      for (let outputIndex = 0; outputIndex < outputs.length; outputIndex += 1) {
+        const output = outputs[outputIndex];
+        if (!output || outputIdentities.has(output)) return undefined;
+        outputIdentities.add(output);
+      }
       visitedOutputs += outputs.length;
       cellSnapshots[cellIndex] = { cell, outputs };
     }
@@ -948,7 +960,7 @@ function isInlineRawOutputSnapshotCurrent(snapshot: InlineRawOutputSnapshot): bo
     const outputArrays = new Array<readonly vscode.NotebookCellOutput[]>(snapshot.cells.length);
     for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
       const cellSnapshot = snapshot.cells[cellIndex];
-      const cell = cells[cellIndex];
+      const cell = snapshot.cellArray[cellIndex];
       if (!cellSnapshot || cell !== cellSnapshot.cell || cell.notebook !== notebook) return false;
       const outputArray = cell.outputs;
       outputArrays[cellIndex] = outputArray;
@@ -1001,25 +1013,43 @@ function areInlineRawOutputItemsSnapshotsCurrent(snapshots: readonly InlineRawOu
   }
 }
 
-function snapshotBoundedIndexedReferences<T>(values: readonly T[], maximumLength: number): readonly T[] | undefined {
-  const length = values.length;
-  if (!Number.isSafeInteger(length) || length < 0 || length > maximumLength) return undefined;
+function snapshotBoundedIndexedReferences<T extends object>(
+  values: readonly T[],
+  maximumLength: number
+): readonly T[] | undefined {
+  const length = denseArrayLength(values);
+  if (length === undefined || length > maximumLength) return undefined;
   const snapshot = new Array<T>(length);
-  for (let index = 0; index < length; index += 1) snapshot[index] = values[index]!;
+  for (let index = 0; index < length; index += 1) {
+    const value = denseOwnIndexedReference(values, index);
+    if (!value) return undefined;
+    snapshot[index] = value;
+  }
+  if (denseArrayLength(values) !== length) return undefined;
   return hasExactIndexedReferences(values, snapshot) ? snapshot : undefined;
 }
 
-function hasExactIndexedReferences<T>(values: readonly T[], expected: readonly T[]): boolean {
-  const length = values.length;
-  if (!Number.isSafeInteger(length) || length < 0 || length !== expected.length) return false;
+function hasExactIndexedReferences<T extends object>(values: readonly T[], expected: readonly T[]): boolean {
+  const length = denseArrayLength(values);
+  if (length === undefined || length !== expected.length) return false;
   for (let index = 0; index < length; index += 1) {
-    if (values[index] !== expected[index]) return false;
+    if (denseOwnIndexedReference(values, index) !== expected[index]) return false;
   }
-  if (values.length !== length) return false;
-  for (let index = 0; index < length; index += 1) {
-    if (values[index] !== expected[index]) return false;
-  }
-  return true;
+  return denseArrayLength(values) === length;
+}
+
+function denseArrayLength(values: readonly object[]): number | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(values, "length");
+  const length = descriptor && "value" in descriptor ? descriptor.value : undefined;
+  return Number.isSafeInteger(length) && length >= 0 ? length : undefined;
+}
+
+function denseOwnIndexedReference<T extends object>(values: readonly T[], index: number): T | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(values, String(index));
+  if (!descriptor || !("value" in descriptor)) return undefined;
+  const value: unknown = descriptor.value;
+  return (typeof value === "object" && value !== null) || typeof value === "function" ? (value as T) : undefined;
 }
 
 function matchesInlineRawOutput(

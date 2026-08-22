@@ -207,7 +207,7 @@ describe("executed notebook cell result tracker", () => {
   );
 
   it.each(["cells", "outputs", "items"] as const)(
-    "fails closed when a %s numeric index grows its charged collection during capture",
+    "rejects an accessor-backed %s index without invoking its growth getter",
     async (level) => {
       const document = notebook(`file:///inline-upgrade-${level}-indexed-growth.ipynb`);
       const bytes = new TextEncoder().encode("<table><tr><td>growing references</td></tr></table>");
@@ -275,8 +275,86 @@ describe("executed notebook cell result tracker", () => {
         })
       ).resolves.toBeUndefined();
 
-      expect(indexReads).toBeGreaterThan(0);
+      expect(indexReads).toBe(0);
       expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["cells", "outputs", "items"] as const)(
+    "rejects %s growth triggered by the last identity comparison in the final currentness sweep",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-${level}-delayed-final-growth.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>final sweep</td></tr></table>");
+      let armed = false;
+      let indexedReads = 0;
+      let descriptorReads = 0;
+      let dataReads = 0;
+      const item = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          armed = true;
+          indexedReads = 0;
+          descriptorReads = 0;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const extraItem = { mime: "text/plain", data: new Uint8Array() };
+      const matchedOutput = { metadata: { outputType: "execute_result" }, items: [item] };
+      const extraOutput = output("extra output");
+      const cell = codeCell(document, 1, [matchedOutput]);
+      const extraCell = codeCell(document, 2, [extraOutput]);
+      const indexedGrowthRead = level === "cells" ? 5 : 4;
+      const delayedGrowth = <T>(first: T, extra: T): T[] => {
+        const target = [first];
+        const grow = (): void => {
+          if (target.length === 1) target.push(extra);
+        };
+        return new Proxy(target, {
+          get: (current, property, receiver) => {
+            if (property === "0" && armed) {
+              indexedReads += 1;
+              if (indexedReads === indexedGrowthRead) grow();
+            }
+            return Reflect.get(current, property, receiver);
+          },
+          getOwnPropertyDescriptor: (current, property) => {
+            if (property === "0" && armed) {
+              descriptorReads += 1;
+              if (descriptorReads === 2) grow();
+            }
+            return Reflect.getOwnPropertyDescriptor(current, property);
+          }
+        });
+      };
+      if (level === "items") matchedOutput.items = delayedGrowth(item, extraItem);
+      if (level === "outputs") {
+        Object.defineProperty(cell, "outputs", {
+          configurable: true,
+          value: delayedGrowth(matchedOutput, extraOutput)
+        });
+      }
+      setCells(document, [cell]);
+      if (level === "cells") {
+        const cells = delayedGrowth(cell, extraCell);
+        Object.defineProperty(document, "getCells", { configurable: true, value: () => cells });
+      }
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(dataReads).toBe(1);
       tracker.dispose();
     }
   );
@@ -504,6 +582,91 @@ describe("executed notebook cell result tracker", () => {
     expect(perItemDataReads.every((reads) => reads <= 1)).toBe(true);
     tracker.dispose();
   });
+
+  it.each(["output", "item"] as const)(
+    "rejects an aliased %s identity before reading its alternating data accessor",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-aliased-${level}.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>aliased identity</td></tr></table>");
+      const emptyBytes = new Uint8Array();
+      let dataReads = 0;
+      const sharedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          return dataReads % 2 === 1 ? bytes : emptyBytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const firstOutput = { metadata: { outputType: "execute_result" }, items: [sharedItem] };
+      const outputs =
+        level === "output"
+          ? [firstOutput, firstOutput]
+          : [firstOutput, { metadata: { outputType: "execute_result" }, items: [sharedItem] }];
+      const cell = codeCell(document, 1, outputs);
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["sparse", "undefined"] as const)(
+    "rejects a %s item slot before reading an earlier matching item",
+    async (slotKind) => {
+      const document = notebook(`file:///inline-upgrade-${slotKind}-item-slot.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>dense items</td></tr></table>");
+      let dataReads = 0;
+      const matchedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const items = new Array<{ mime: string; data: Uint8Array } | undefined>(2);
+      items[0] = matchedItem;
+      if (slotKind === "undefined") items[1] = undefined;
+      let invalidItemsEnabled = false;
+      const outputContainer = {
+        metadata: { outputType: "execute_result" },
+        get items() {
+          return invalidItemsEnabled ? items : [matchedItem];
+        }
+      };
+      const cell = codeCell(document, 1, [outputContainer as never]);
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      invalidItemsEnabled = true;
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
 
   it("retains a first dataframe execution that finishes before commands and providers register", async () => {
     const document = notebook("file:///cold-start.ipynb");
