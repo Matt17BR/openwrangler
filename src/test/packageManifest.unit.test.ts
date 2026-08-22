@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error The executable generator intentionally has no TypeScript declaration file.
-import { notebookMimeTypeRows } from "../../scripts/generate-reference.mjs";
+import { isDirectGeneratorInvocation, notebookMimeTypeRows } from "../../scripts/generate-reference.mjs";
 
 interface CommandContribution {
   command?: string;
@@ -686,6 +688,24 @@ describe("notebook renderer contribution", () => {
     expect(notebookMimeTypeRows(manifest.contributes?.notebookRenderer)).toEqual([`- \`${mimeType}\``]);
   });
 
+  it("executes the same reference check through an aliased generator entrypoint", () => {
+    const aliasRoot = mkdtempSync(join(tmpdir(), "ow-reference-alias-"));
+    try {
+      const scriptsAlias = join(aliasRoot, "scripts");
+      symlinkSync(resolve(process.cwd(), "scripts"), scriptsAlias, process.platform === "win32" ? "junction" : "dir");
+      const generatorAlias = join(scriptsAlias, "generate-reference.mjs");
+      expect(isDirectGeneratorInvocation(generatorAlias)).toBe(true);
+      expect(() =>
+        execFileSync(process.execPath, [generatorAlias, "--check"], {
+          cwd: process.cwd(),
+          stdio: "pipe"
+        })
+      ).not.toThrow();
+    } finally {
+      rmSync(aliasRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     [
       "the direct renderer identity using the extension shape",
@@ -713,6 +733,17 @@ describe("notebook renderer contribution", () => {
     ["an omitted MIME type", [{ ...mimeRenderer, mimeTypes: [] }, htmlExtension]],
     ["a duplicated MIME type", [{ ...mimeRenderer, mimeTypes: [mimeType, mimeType] }, htmlExtension]],
     ["a MIME claim on the HTML extension", [mimeRenderer, { ...htmlExtension, mimeTypes: [mimeType] }]],
+    ["a text/html MIME claim on the HTML extension", [mimeRenderer, { ...htmlExtension, mimeTypes: ["text/html"] }]],
+    [
+      "a changed built-in renderer extension target",
+      [
+        mimeRenderer,
+        {
+          ...htmlExtension,
+          entrypoint: { ...htmlExtension.entrypoint, extends: "openWrangler.renderer" }
+        }
+      ]
+    ],
     ["a duplicate direct renderer", [mimeRenderer, mimeRenderer]],
     ["a duplicate HTML extension", [htmlExtension, htmlExtension]],
     ["a missing direct renderer", [htmlExtension]],

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import prettier from "prettier";
@@ -97,7 +97,7 @@ const output = await prettier.format(
   { parser: "markdown" }
 );
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectGeneratorInvocation(process.argv[1])) {
   if (process.argv.includes("--check")) {
     const existing = readFileSync(outputPath, "utf8");
     if (existing !== output) {
@@ -106,6 +106,13 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   } else {
     writeFileSync(outputPath, output, "utf8");
   }
+}
+
+export function isDirectGeneratorInvocation(invokedPath) {
+  if (invokedPath === undefined) return false;
+  const invokedRealPath = realpathSync.native(resolve(invokedPath));
+  const moduleRealPath = realpathSync.native(fileURLToPath(import.meta.url));
+  return invokedRealPath === moduleRealPath;
 }
 
 function messageKinds(unionName) {
