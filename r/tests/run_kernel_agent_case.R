@@ -12,6 +12,13 @@ case_files <- c(
   rows = "r/tests/kernel_agent_rows.R"
 )
 case_name <- arguments[[1L]]
+kernel_agent_cases <- c(
+  "lifecycle-and-structure",
+  "text-fill-and-cast",
+  "rows-numeric-datetime-and-by-example",
+  "group-pivot-and-export",
+  "custom-code"
+)
 case_file <- unname(case_files[case_name])
 if (length(case_file) != 1L || is.na(case_file)) {
   stop(sprintf("Unknown native R kernel-agent case: %s", case_name), call. = FALSE)
@@ -26,7 +33,22 @@ if (
 }
 
 if (identical(case_name, "full")) {
-  source(case_file, local = FALSE)
+  rscript <- file.path(R.home("bin"), "Rscript")
+  statuses <- vapply(kernel_agent_cases, function(kernel_case) {
+    system2(
+      rscript,
+      c("--vanilla", "r/tests/run_warning_strict.R"),
+      env = c(
+        "OPEN_WRANGLER_R_CONTRACT_TEST=r/tests/kernel_agent.R",
+        sprintf("OPEN_WRANGLER_R_KERNEL_CASE=%s", kernel_case)
+      )
+    )
+  }, integer(1L))
+  if (any(statuses != 0L)) {
+    failed <- kernel_agent_cases[statuses != 0L]
+    stop(sprintf("Native R kernel-agent full alias failed: %s", paste(failed, collapse = ", ")), call. = FALSE)
+  }
+  cat("Native R kernel agent full case passed.\n")
 } else {
   source("r/tests/kernel_agent_support.R", local = FALSE)
   source(case_file, local = FALSE)
