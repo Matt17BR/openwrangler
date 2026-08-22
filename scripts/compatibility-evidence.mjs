@@ -56,6 +56,22 @@ const NON_VISIBLE_HTML_CONTAINERS = new Set([
   "textarea",
   "title"
 ]);
+const VOID_HTML_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr"
+]);
 const EXPECTED_EDITOR_OWNERS = new Map([
   [
     "vscode",
@@ -820,7 +836,9 @@ function ownsRVersion(job, version) {
   );
 }
 
-function inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems) {
+function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, problems) {
+  const ciJobs = ciWorkflow.jobs;
+  const crossJobs = crossWorkflow.jobs;
   const owners = new Map([
     ["ci.yml#r-contract-kernel", ciJobs["r-contract-kernel"]],
     ["ci.yml#r-contract-protocol", ciJobs["r-contract-protocol"]],
@@ -832,11 +850,20 @@ function inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems) {
       job["continue-on-error"] !== true &&
       normalizedCondition(job.if) === EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS.get(owner) &&
       Array.isArray(job.steps) &&
+      job.steps.every((step) => step["continue-on-error"] !== true) &&
       job.steps.some(
         (step) =>
-          normalizedCondition(step.if) === undefined && step.run === EXPECTED_NATIVE_R_SOURCE_COMMANDS.get(owner)
+          normalizedCondition(step.if) === undefined &&
+          step["continue-on-error"] !== true &&
+          step.run === EXPECTED_NATIVE_R_SOURCE_COMMANDS.get(owner)
       )
   );
+  const crossTriggers = crossWorkflow.on;
+  const crossOwnerIsTriggered =
+    record(crossTriggers) &&
+    Object.hasOwn(crossTriggers, "workflow_dispatch") &&
+    (crossTriggers.workflow_dispatch === null || record(crossTriggers.workflow_dispatch)) &&
+    sameArray(crossTriggers.schedule, [{ cron: "17 4 * * 1" }]);
   const validate = ciJobs.validate;
   const resultOwner = validate?.steps?.find(
     (step) => normalizedCondition(step.if) === undefined && step.run === "node scripts/require-ci-results.mjs"
@@ -852,9 +879,12 @@ function inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems) {
     normalizedCondition(validate.if) === "${{ always() && github.event_name == 'pull_request' }}" &&
     Array.isArray(validate.needs) &&
     ["classify", "r-contract-kernel", "r-contract-protocol"].every((owner) => validate.needs.includes(owner)) &&
+    Array.isArray(validate.steps) &&
+    validate.steps.every((step) => step["continue-on-error"] !== true) &&
+    resultOwner?.["continue-on-error"] !== true &&
     record(resultOwner?.env) &&
     Object.entries(requiredResults).every(([key, value]) => resultOwner.env[key] === value);
-  if (!ownersReachable || !hasRequiredFanIn) {
+  if (!ownersReachable || !crossOwnerIsTriggered || !hasRequiredFanIn) {
     problems.push("Native R source ownership must retain enabled owners and the required CI success fan-in.");
   }
 }
@@ -942,27 +972,11 @@ function oneRunnerCommand(job, expectedKind, sequences) {
   return runner?.kind === expectedKind && sequences.every((sequence) => containsTokenSequence(runner.tokens, sequence));
 }
 
-function executableSuccessTest(step, environmentKey) {
-  const analysis = executableShellCommands(step?.run);
-  return (
-    !analysis.error &&
-    !analysis.assignments.some(({ key }) => key === environmentKey) &&
-    !analysis.controls.some((control) => ["|", "||", "&", "&&"].includes(control)) &&
-    analysis.commands.some(({ tokens }) => sameArray(tokens, ["test", `$${environmentKey}`, "=", "success"]))
-  );
-}
-
-function strictShellFailureMode(step) {
-  const analysis = executableShellCommands(step?.run);
-  return !analysis.error && sameArray(analysis.commands[0]?.tokens, ["set", "-euo", "pipefail"]);
-}
-
 function exactSuccessFanIn(step, environmentKeys) {
   const analysis = executableShellCommands(step?.run);
-  const evidenceKeys = new Set(environmentKeys);
   return (
     !analysis.error &&
-    !analysis.assignments.some(({ key }) => evidenceKeys.has(key)) &&
+    analysis.assignments.length === 0 &&
     analysis.controls.every((control) => control === ";") &&
     analysis.commands.length === environmentKeys.length + 1 &&
     sameArray(analysis.commands[0]?.tokens, ["set", "-euo", "pipefail"]) &&
@@ -972,24 +986,64 @@ function exactSuccessFanIn(step, environmentKeys) {
   );
 }
 
+function exactLocalRShardSuccessFanIn(step) {
+  const expectedEnvironment = {
+    SHARD: "${{ matrix.shard }}",
+    CORE_OUTCOME: "${{ steps.packaged_editor_r_core.outcome }}",
+    RESTART_OUTCOME: "${{ steps.packaged_editor_r_restart.outcome }}",
+    INTERACTIVE_OUTCOME: "${{ steps.packaged_editor_r_interactive.outcome }}",
+    LITERATE_OUTCOME: "${{ steps.packaged_editor_r_literate.outcome }}",
+    NATIVE_OUTCOME: "${{ steps.packaged_editor_r_native.outcome }}",
+    VALUES_OUTCOME: "${{ steps.packaged_editor_r_values.outcome }}",
+    CATEGORICAL_OUTCOME: "${{ steps.packaged_editor_r_categorical.outcome }}"
+  };
+  const expectedRun = `set -euo pipefail
+case "$SHARD" in
+  lifecycle)
+    test "$CORE_OUTCOME" = "success"
+    test "$RESTART_OUTCOME" = "success"
+    test "$INTERACTIVE_OUTCOME" = "success"
+    test "$LITERATE_OUTCOME" = "success"
+    ;;
+  editing)
+    test "$NATIVE_OUTCOME" = "success"
+    test "$VALUES_OUTCOME" = "success"
+    test "$CATEGORICAL_OUTCOME" = "success"
+    ;;
+  *) exit 1 ;;
+esac`;
+  return (
+    exactKeys(step.env, Object.keys(expectedEnvironment)) &&
+    Object.entries(expectedEnvironment).every(([key, value]) => step.env[key] === value) &&
+    step.run?.trim() === expectedRun
+  );
+}
+
 function runnerOutcomeIsOwned(job, runnerId) {
   return (job.steps ?? []).some((step) => {
     const condition = normalizedCondition(step.if);
     const commandAnalysis = executableShellCommands(step.run);
     const exactFailureExit =
       condition === `\${{ always() && steps.${runnerId}.outcome == 'failure' }}` &&
+      step["continue-on-error"] !== true &&
       !commandAnalysis.error &&
+      commandAnalysis.assignments.length === 0 &&
+      commandAnalysis.controls.length === 0 &&
       commandAnalysis.commands.length === 1 &&
       sameArray(commandAnalysis.commands[0].tokens, ["exit", "1"]);
     const outcomeEnvironment = record(step.env)
-      ? Object.entries(step.env).find(([, value]) => value === `\${{ steps.${runnerId}.outcome }}`)
-      : undefined;
+      ? Object.entries(step.env).filter(([, value]) => /^\$\{\{ steps\.[a-z0-9_-]+\.outcome \}\}$/u.test(value))
+      : [];
     return (
       exactFailureExit ||
       (normalizedCondition(step.if) === "${{ always() }}" &&
-        strictShellFailureMode(step) &&
-        outcomeEnvironment &&
-        executableSuccessTest(step, outcomeEnvironment[0]))
+        step["continue-on-error"] !== true &&
+        outcomeEnvironment.some(([, value]) => value === `\${{ steps.${runnerId}.outcome }}`) &&
+        (exactSuccessFanIn(
+          step,
+          outcomeEnvironment.map(([key]) => key)
+        ) ||
+          exactLocalRShardSuccessFanIn(step)))
     );
   });
 }
@@ -1095,6 +1149,7 @@ function inspectSemanticCandidateClaims(jobs, problems) {
     normalizedCondition(jobs.acceptance?.if) !== "${{ always() }}" ||
     !sameArray(jobs.acceptance?.needs, expectedNeeds) ||
     jobs.acceptance?.steps?.length !== 1 ||
+    acceptanceStep?.["continue-on-error"] === true ||
     !record(acceptanceStep?.env) ||
     Object.entries(acceptanceResults).some(([key, job]) => acceptanceStep.env[key] !== `\${{ needs.${job}.result }}`) ||
     !exactSuccessFanIn(acceptanceStep, Object.keys(acceptanceResults))
@@ -1141,6 +1196,48 @@ function inspectSemanticCandidateClaims(jobs, problems) {
   }
 }
 
+function htmlTagPattern() {
+  return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
+}
+
+function hiddenHtmlContainer(tag, attributes) {
+  const style = /(?:^|\s)style\s*=\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)'|(?<bare>[^\s]+))/iu.exec(attributes);
+  const styleValue = style?.groups?.double ?? style?.groups?.single ?? style?.groups?.bare ?? "";
+  return (
+    NON_VISIBLE_HTML_CONTAINERS.has(tag) ||
+    /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
+    /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?=\s|$)/iu.test(attributes) ||
+    /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)(?:\s*;|\s*$)/iu.test(styleValue)
+  );
+}
+
+function matchingHiddenContainerEnd(source, opening, state, label, problems) {
+  const tag = opening.groups.tag.toLowerCase();
+  const attributes = opening.groups.attributes;
+  const openingEnd = opening.index + opening[0].length;
+  if (VOID_HTML_TAGS.has(tag) || /\/\s*$/u.test(attributes)) return openingEnd;
+  const pattern = htmlTagPattern();
+  pattern.lastIndex = openingEnd;
+  let depth = 1;
+  for (const candidate of source.matchAll(pattern)) {
+    state.tags += 1;
+    if (state.tags > MAX_VISIBLE_HTML_TAGS) {
+      problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
+      state.saturated = true;
+      return source.length;
+    }
+    if (candidate.groups.tag.toLowerCase() !== tag) continue;
+    if (candidate.groups.closing) {
+      depth -= 1;
+      if (depth === 0) return candidate.index + candidate[0].length;
+    } else if (!VOID_HTML_TAGS.has(tag) && !/\/\s*$/u.test(candidate.groups.attributes)) {
+      depth += 1;
+    }
+  }
+  problems.push(`${label} contains an unterminated hidden or preformatted container.`);
+  return source.length;
+}
+
 function visibleMarkdown(source, label, problems) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 4 * 1024 * 1024) {
     problems.push(`${label} must be bounded documentation text.`);
@@ -1163,76 +1260,56 @@ function visibleMarkdown(source, label, problems) {
     uncommented.push("\n".repeat(source.slice(commentStart, commentEnd + 3).split("\n").length - 1));
     cursor = commentEnd + 3;
   }
-  const visible = [];
+  const renderableLines = [];
   let fence;
-  let suppressedTag;
-  let retainedHtmlTags = 0;
   for (const line of uncommented.join("").split("\n")) {
     const fenceMarker = /^ {0,3}(?<marker>`{3,}|~{3,})/u.exec(line)?.groups?.marker;
     if (fence) {
       const close = /^ {0,3}(?<marker>`{3,}|~{3,})\s*$/u.exec(line)?.groups?.marker;
       if (close?.[0] === fence.character && close.length >= fence.length) fence = undefined;
-      visible.push("");
+      renderableLines.push("");
       continue;
     }
     if (fenceMarker) {
       fence = { character: fenceMarker[0], length: fenceMarker.length };
-      visible.push("");
+      renderableLines.push("");
       continue;
     }
     if (/^(?: {4}|\t)/u.test(line)) {
-      visible.push("");
+      renderableLines.push("");
       continue;
     }
-    let remainder = line;
-    let retained = "";
-    while (remainder.length > 0) {
-      if (suppressedTag) {
-        const close = new RegExp(`</${suppressedTag}\\s*>`, "iu").exec(remainder);
-        if (!close) {
-          remainder = "";
-          continue;
-        }
-        remainder = remainder.slice(close.index + close[0].length);
-        suppressedTag = undefined;
-        continue;
-      }
-      const tagPattern = /<(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>[^>]*)>/gu;
-      let hidden;
-      for (const candidate of remainder.matchAll(tagPattern)) {
-        retainedHtmlTags += 1;
-        if (retainedHtmlTags > MAX_VISIBLE_HTML_TAGS) {
-          problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
-          return visible.join("\n");
-        }
-        const tag = candidate.groups.tag.toLowerCase();
-        const attributes = candidate.groups.attributes;
-        if (
-          NON_VISIBLE_HTML_CONTAINERS.has(tag) ||
-          /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
-          /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?:\s|$)/iu.test(attributes) ||
-          /(?:^|\s)style\s*=\s*(?:"[^"]*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^"]*"|'[^']*(?:display\s*:\s*none|visibility\s*:\s*hidden)[^']*')/iu.test(
-            attributes
-          )
-        ) {
-          hidden = candidate;
-          break;
-        }
-      }
-      if (!hidden) {
-        retained += remainder;
-        remainder = "";
-        continue;
-      }
-      retained += remainder.slice(0, hidden.index);
-      suppressedTag = hidden.groups.tag.toLowerCase();
-      remainder = remainder.slice(hidden.index + hidden[0].length);
-    }
-    visible.push(retained);
+    renderableLines.push(line);
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
-  if (suppressedTag) problems.push(`${label} contains an unterminated hidden or preformatted container.`);
-  return visible.join("\n");
+  const renderable = renderableLines.join("\n");
+  const visible = [];
+  const state = { tags: 0, saturated: false };
+  const pattern = htmlTagPattern();
+  let retainedCursor = 0;
+  let candidate;
+  while ((candidate = pattern.exec(renderable)) !== null) {
+    state.tags += 1;
+    if (state.tags > MAX_VISIBLE_HTML_TAGS) {
+      problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
+      state.saturated = true;
+      break;
+    }
+    if (
+      candidate.groups.closing ||
+      !hiddenHtmlContainer(candidate.groups.tag.toLowerCase(), candidate.groups.attributes)
+    ) {
+      continue;
+    }
+    visible.push(renderable.slice(retainedCursor, candidate.index));
+    const hiddenEnd = matchingHiddenContainerEnd(renderable, candidate, state, label, problems);
+    visible.push("\n".repeat(renderable.slice(candidate.index, hiddenEnd).split("\n").length - 1));
+    retainedCursor = hiddenEnd;
+    pattern.lastIndex = hiddenEnd;
+    if (state.saturated) break;
+  }
+  if (!state.saturated) visible.push(renderable.slice(retainedCursor));
+  return visible.join("");
 }
 
 function countOccurrences(source, expected) {
@@ -1302,6 +1379,32 @@ function claimTokens(claim) {
   return new Set(claim.toLowerCase().match(/[a-z0-9]+(?:\.[0-9]+)*/gu) ?? []);
 }
 
+function decodeRenderedEntities(claim) {
+  const named = new Map([
+    ["amp", "&"],
+    ["apos", "'"],
+    ["gt", ">"],
+    ["lt", "<"],
+    ["nbsp", " "],
+    ["quot", '"']
+  ]);
+  return claim.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
+    const groups = args.at(-1);
+    if (groups.named) return named.get(groups.named.toLowerCase()) ?? entity;
+    const codePoint = Number.parseInt(groups.hex ?? groups.decimal, groups.hex ? 16 : 10);
+    return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ? String.fromCodePoint(codePoint)
+      : entity;
+  });
+}
+
+function renderedProseClaim(claim) {
+  return decodeRenderedEntities(claim.replace(/(`+)[\s\S]*?\1/gu, " "))
+    .replace(/[*_~]+/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 function hasTokenStem(tokens, stems) {
   return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
 }
@@ -1311,7 +1414,8 @@ function hasNonCanonicalName(claim, canonical, pattern) {
 }
 
 function structuredOwnershipViolation(claim) {
-  const tokens = claimTokens(claim);
+  const renderedClaim = renderedProseClaim(claim);
+  const tokens = claimTokens(renderedClaim);
   const has = (...values) => values.every((value) => tokens.has(value));
   const ownsEvidence = hasTokenStem(tokens, [
     "own",
@@ -1344,21 +1448,24 @@ function structuredOwnershipViolation(claim) {
         has("installed", "performance") ||
         tokens.has("fork"))) ||
     (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
-  if (cursorProductContext && hasNonCanonicalName(claim, "Cursor", /(?<![./_-])\bcursor\b(?![./_-])/giu)) {
+  if (cursorProductContext && hasNonCanonicalName(renderedClaim, "Cursor", /(?<![./_-])\bcursor\b(?![./_-])/giu)) {
     return "named product and editor claims must retain exact canonical case";
   }
   if (
     ownsEvidence &&
     [
       ["VS Code", /\bvs code\b/giu],
+      ["VS Code", /(?<![./_-])\bvscode\b(?![./_-])/giu],
       ["Open Wrangler", /\bopen wrangler\b/giu],
+      ["Open Wrangler", /(?<![./_-])\bopenwrangler\b(?![./_-])/giu],
       ["Antigravity", /(?<![./_?=&-])\bantigravity\b(?![./_?=&-])/giu],
-      ["Open VSX", /\bopen vsx\b/giu]
-    ].some(([canonical, pattern]) => hasNonCanonicalName(claim, canonical, pattern))
+      ["Open VSX", /\bopen vsx\b/giu],
+      ["Open VSX", /(?<![./_-])\bopenvsx\b(?![./_-])/giu]
+    ].some(([canonical, pattern]) => hasNonCanonicalName(renderedClaim, canonical, pattern))
   ) {
     return "named product and editor claims must retain exact canonical case";
   }
-  if (/\bCursor\b/u.test(claim) && cursorRestrictedTarget && ownsEvidence) {
+  if (/\bCursor\b/u.test(renderedClaim) && cursorRestrictedTarget && ownsEvidence) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
   if (
@@ -1835,7 +1942,7 @@ export function inspectCompatibilityEvidence(inputs) {
   ) {
     problems.push("Native R source ownership must retain the two protected R 4.5 jobs and scheduled R 4.4 job.");
   }
-  inspectNativeRSourceOwnerReachability(ciJobs, crossJobs, problems);
+  inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, problems);
   inspectVisiblePublicRecords(inputs, authority, problems);
 
   inspectExactBlock(

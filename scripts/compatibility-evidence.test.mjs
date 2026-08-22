@@ -299,6 +299,18 @@ test("runner commands and success ownership must be executable and active", () =
       '          set +e\n          test "$CORE_OUTCOME" = "success"'
     );
   assert.match(inspect({ candidateWorkflowSource: nonFailingOutcomeOwner }).join(" "), /executable success owner/u);
+
+  for (const injectedCommand of [
+    "readonly CORE_OUTCOME=success",
+    "printf -v CORE_OUTCOME success",
+    "alias test=true"
+  ]) {
+    const nonCanonicalOwner = sources.candidateWorkflowSource.replace(
+      '          test "$CORE_OUTCOME" = "success"',
+      `          ${injectedCommand}\n          test "$CORE_OUTCOME" = "success"`
+    );
+    assert.match(inspect({ candidateWorkflowSource: nonCanonicalOwner }).join(" "), /executable success owner/u);
+  }
 });
 
 test("every workflow owner retains its own effective editor-version authority", () => {
@@ -449,6 +461,17 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
       /top-level structured record/u
     );
   }
+
+  for (const hiddenBlock of [
+    `<section hidden>\n<section>decoy</section>\n${architectureBlock}\n</section>`,
+    `<section\n hidden>\n${architectureBlock}\n</section>`,
+    `<section style=display:none>\n${architectureBlock}\n</section>`
+  ]) {
+    assert.match(
+      inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
+      /top-level structured record/u
+    );
+  }
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -484,6 +507,26 @@ test("named product and editor claims require canonical case", () => {
       /exact canonical case/u
     );
   }
+
+  for (const outsideClaim of [
+    "C&#117;rsor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "C**u**rsor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "VSCode owns installed performance.",
+    "OpenWrangler certifies the editor compatibility matrix.",
+    "OpenVSX supports registry evidence."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /exact canonical case|compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nThe literal \`cursor\` supports no installed performance mode.\n`
+    }),
+    []
+  );
 });
 
 test("Native R source and installed-artifact ownership are independently exact", () => {
@@ -529,6 +572,34 @@ test("Native R source and installed-artifact ownership are independently exact",
     }).join(" "),
     /required CI success fan-in/u
   );
+
+  for (const ciWorkflowSource of [
+    sources.ciWorkflowSource.replace(
+      "      - run: npm run test:r-contract -- --shard kernel-agent\n",
+      "      - continue-on-error: true\n        run: npm run test:r-contract -- --shard kernel-agent\n"
+    ),
+    sources.ciWorkflowSource.replace(
+      "      - name: Run both independent protocol shards fail-complete\n        run: npm run test:r-contract:protocol",
+      "      - name: Run both independent protocol shards fail-complete\n        continue-on-error: true\n        run: npm run test:r-contract:protocol"
+    ),
+    sources.ciWorkflowSource.replace(
+      "      - name: Require every owned CI result\n        run: node scripts/require-ci-results.mjs",
+      "      - name: Require every owned CI result\n        continue-on-error: true\n        run: node scripts/require-ci-results.mjs"
+    )
+  ]) {
+    assert.match(inspect({ ciWorkflowSource }).join(" "), /enabled owners|required CI success fan-in/u);
+  }
+
+  for (const crossWorkflowSource of [
+    sources.crossWorkflowSource.replace("  workflow_dispatch:\n", ""),
+    sources.crossWorkflowSource.replace('  schedule:\n    - cron: "17 4 * * 1"\n', ""),
+    sources.crossWorkflowSource.replace(
+      "      - run: npm run test:r-contract\n",
+      "      - continue-on-error: true\n        run: npm run test:r-contract\n"
+    )
+  ]) {
+    assert.match(inspect({ crossWorkflowSource }).join(" "), /enabled owners|required CI success fan-in/u);
+  }
 });
 
 test("the compatibility authority does not couple PR 802 operation-catalog prose", () => {
