@@ -261,12 +261,25 @@ export function buildGridClipboardPayload({
   };
 }
 
+export type GridClipboardWritePhase =
+  | { readonly kind: "primary" }
+  | { readonly kind: "fallback"; readonly helper?: HTMLTextAreaElement }
+  | { readonly kind: "restoreFocus"; readonly helper: HTMLTextAreaElement };
+
+export class GridClipboardOwnershipChangedError extends Error {
+  override readonly name = "GridClipboardOwnershipChangedError";
+
+  constructor() {
+    super("Clipboard ownership changed before the write completed.");
+  }
+}
+
 const clipboardFallbackFocusOwners = new WeakSet<Element>();
 let activeGridClipboardWrite: object | undefined;
 
 export interface GridClipboardWriteOwner {
   release(): void;
-  write(text: string, ownsAttempt: () => boolean): Promise<void>;
+  write(text: string, ownsPhase: (phase: GridClipboardWritePhase) => boolean): Promise<void>;
 }
 
 export function tryAcquireGridClipboardWrite(): GridClipboardWriteOwner | undefined {
@@ -285,13 +298,13 @@ export function tryAcquireGridClipboardWrite(): GridClipboardWriteOwner | undefi
       released = true;
       if (activeGridClipboardWrite === token) activeGridClipboardWrite = undefined;
     },
-    async write(text: string, ownsAttempt: () => boolean): Promise<void> {
+    async write(text: string, ownsPhase: (phase: GridClipboardWritePhase) => boolean): Promise<void> {
       if (released || writeStarted || activeGridClipboardWrite !== token) {
         throw new Error("The clipboard write owner is no longer current.");
       }
       writeStarted = true;
       try {
-        await writeGridClipboardText(text, ownsAttempt);
+        await writeGridClipboardText(text, ownsPhase);
       } finally {
         writeSettled = true;
       }
@@ -303,21 +316,29 @@ export function gridClipboardFallbackOwnsFocus(element: Element | null): boolean
   return element !== null && clipboardFallbackFocusOwners.has(element);
 }
 
-async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
-  try {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+export async function writeGridClipboardText(
+  text: string,
+  ownsPhase: (phase: GridClipboardWritePhase) => boolean = () => true
+): Promise<void> {
+  requireClipboardOwnership(ownsPhase, { kind: "primary" });
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    let primaryFailed = false;
+    try {
       await navigator.clipboard.writeText(text);
+    } catch {
+      primaryFailed = true;
+    }
+    if (!primaryFailed) {
+      requireClipboardOwnership(ownsPhase, { kind: "primary" });
       return;
     }
-  } catch {
-    // VS Code-like hosts differ in Clipboard API permission handling. Keep the
-    // user-gesture-scoped DOM copy path as a compatibility fallback.
   }
+
+  requireClipboardOwnership(ownsPhase, { kind: "fallback" });
 
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     throw new Error("Clipboard access is unavailable in this editor.");
   }
-  if (!ownsAttempt()) throw new Error("Clipboard ownership changed before the fallback attempt.");
   const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const input = document.createElement("textarea");
   input.value = text;
@@ -328,23 +349,33 @@ async function writeGridClipboardText(text: string, ownsAttempt: () => boolean):
   clipboardFallbackFocusOwners.add(input);
   document.body.append(input);
   try {
+    requireClipboardOwnership(ownsPhase, { kind: "fallback" });
+    input.focus({ preventScroll: true });
     input.select();
-    const copied = document.execCommand("copy");
-    const activeAfterCopy = document.activeElement;
-    if (activeAfterCopy !== input && activeAfterCopy !== activeElement) {
-      throw new Error("Clipboard focus ownership changed during the fallback attempt.");
-    }
-    if (!ownsAttempt()) throw new Error("Clipboard ownership changed during the fallback attempt.");
-    if (!copied) throw new Error("Clipboard access is unavailable in this editor.");
+    requireClipboardOwnership(ownsPhase, { kind: "fallback", helper: input });
+    if (!document.execCommand("copy")) throw new Error("Clipboard access is unavailable in this editor.");
   } finally {
-    const inputRetainsFocus = document.activeElement === input;
     try {
-      if (inputRetainsFocus && ownsAttempt()) activeElement?.focus({ preventScroll: true });
+      if (
+        activeElement?.isConnected &&
+        document.hasFocus() &&
+        document.activeElement === input &&
+        ownsPhase({ kind: "restoreFocus", helper: input })
+      ) {
+        activeElement.focus({ preventScroll: true });
+      }
     } finally {
       input.remove();
       clipboardFallbackFocusOwners.delete(input);
     }
   }
+}
+
+function requireClipboardOwnership(
+  ownsPhase: (phase: GridClipboardWritePhase) => boolean,
+  phase: GridClipboardWritePhase
+): void {
+  if (!ownsPhase(phase)) throw new GridClipboardOwnershipChangedError();
 }
 
 function spreadsheetFormulaCanExecute(cell: CellValue): boolean {
