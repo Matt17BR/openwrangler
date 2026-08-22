@@ -1,5 +1,22 @@
 source("r/tests/kernel_agent_support.R", local = FALSE)
-source("r/tests/kernel_agent_viewing.R", local = FALSE)
+kernel_agent_cases <- c(
+  "lifecycle-and-structure",
+  "text-fill-and-cast",
+  "rows-numeric-datetime-and-by-example",
+  "group-pivot-and-export",
+  "custom-code"
+)
+selected_kernel_agent_case <- Sys.getenv("OPEN_WRANGLER_R_KERNEL_CASE", unset = NA_character_)
+Sys.unsetenv("OPEN_WRANGLER_R_KERNEL_CASE")
+if (
+  length(selected_kernel_agent_case) != 1L ||
+    is.na(selected_kernel_agent_case) ||
+    !(selected_kernel_agent_case %in% kernel_agent_cases)
+) {
+  stop("The Native R kernel-agent case is missing or invalid", call. = FALSE)
+}
+kernel_agent_case_run_count <- 0L
+
 rename_step <- function(old_name, new_name, kind = "renameColumn") {
   list(
     id = "rename-step",
@@ -7,6 +24,18 @@ rename_step <- function(old_name, new_name, kind = "renameColumn") {
     params = list(column = list(id = "r:c:1", name = old_name), newName = new_name)
   )
 }
+
+fill_step <- function(id, column_id, column_name, replacement) {
+  list(
+    id = id,
+    kind = "fillMissingValues",
+    params = list(column = list(id = column_id, name = column_name), replacement = replacement)
+  )
+}
+
+if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+source("r/tests/kernel_agent_viewing.R", local = FALSE)
 rename_preview <- dispatch(
   "previewStep",
   list(
@@ -2712,16 +2741,11 @@ assert_identical(
 )
 clone_table_closed <- dispatch("closeSession", list(sessionId = clone_table_session_id))
 assert_identical(clone_table_closed$kind, "closed", "the R data.table clone session did not close")
-
-source("r/tests/kernel_agent_text.R", local = FALSE)
-
-fill_step <- function(id, column_id, column_name, replacement) {
-  list(
-    id = id,
-    kind = "fillMissingValues",
-    params = list(column = list(id = column_id, name = column_name), replacement = replacement)
-  )
 }
+
+if (identical(selected_kernel_agent_case, "text-fill-and-cast")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+source("r/tests/kernel_agent_text.R", local = FALSE)
 fill_open <- dispatch(
   "openSession",
   list(sessionId = fill_session_id, variableName = "fill_frame", page = page_window())
@@ -4244,6 +4268,13 @@ large_cells_closed <- dispatch("closeSession", list(sessionId = large_cells_sess
 assert_identical(large_cells_closed$kind, "closed", "the large-cell R session did not close")
 
 oversized_mutation_response <- FALSE
+source_environment$rename_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  label = c("a", "b"),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
 atomic_contract$materialize_view_page <- function(...) {
@@ -4320,7 +4351,11 @@ assert_identical(
   "table key",
   "the native data.table rename changed the source key"
 )
+agent$dispose()
+}
 
+if (identical(selected_kernel_agent_case, "rows-numeric-datetime-and-by-example")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 source("r/tests/kernel_agent_rows.R", local = FALSE)
 
 numeric_step <- function(id, kind, position, name, decimals = NULL, new_column = NULL) {
@@ -13251,6 +13286,21 @@ if (
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
 
+missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
+missing_package <- dispatch_with(
+  missing_package_agent,
+  "openSession",
+  list(sessionId = third_session_id, variableName = "frame", page = page_window())
+)
+assert_identical(missing_package$kind, "error", "a missing package was flattened")
+assert_identical(missing_package$code, "missing_package", "the missing-package diagnostic was not normalized")
+assert_identical(missing_package$recoverable, TRUE, "a missing package was not marked recoverable")
+missing_package_agent$dispose()
+agent$dispose()
+}
+
+if (identical(selected_kernel_agent_case, "group-pivot-and-export")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 source("r/tests/kernel_agent_group_by.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_longer.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_wider.R", local = FALSE)
@@ -13596,19 +13646,16 @@ invisible(dispatch_with(
   list(sessionId = unavailable_export_session_id)
 ))
 configured_export_agent$dispose()
+agent$dispose()
+}
 
+if (identical(selected_kernel_agent_case, "custom-code")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 source("r/tests/kernel_agent_custom_code.R", local = FALSE)
+agent$dispose()
+}
 
-missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
-missing_package <- dispatch_with(
-  missing_package_agent,
-  "openSession",
-  list(sessionId = third_session_id, variableName = "frame", page = page_window())
-)
-assert_identical(missing_package$kind, "error", "a missing package was flattened")
-assert_identical(missing_package$code, "missing_package", "the missing-package diagnostic was not normalized")
-assert_identical(missing_package$recoverable, TRUE, "a missing package was not marked recoverable")
-
+if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
 closed <- dispatch("closeSession", list(sessionId = session_id))
 assert_identical(closed$kind, "closed", "the R agent did not close its session")
 assert_identical(closed$sessionId, session_id, "the close response changed session identity")
@@ -13652,6 +13699,11 @@ removed_closed <- dispatch("closeSession", list(sessionId = second_session_id))
 assert_identical(removed_closed$kind, "closed", "a source-changed session did not close")
 
 agent$dispose()
-missing_package_agent$dispose()
+}
 
-cat("Native R kernel agent tests passed.\n")
+assert_identical(
+  kernel_agent_case_run_count,
+  1L,
+  "the Native R kernel-agent runner did not execute exactly one named operation owner"
+)
+cat(sprintf("Native R kernel agent case %s passed.\n", selected_kernel_agent_case))
