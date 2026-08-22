@@ -578,6 +578,49 @@ openwrangler_r_static_analysis <- local({
     }
     call_records <- order_records(call_records)
     assignment_records <- order_records(assignment_records)
+    codetools_cursors <- new.env(hash = TRUE, parent = emptyenv())
+    codetools_operation <- function(rule, symbol, line) {
+      matches <- if (identical(rule, "unqualified-call")) {
+        records <- Filter(function(record) {
+          identical(record$line, as.integer(line)) && identical(record$symbol, symbol)
+        }, call_records)
+        if (length(records) == 0L) {
+          indices <- which(
+            data$line1 == as.integer(line) & data$text == symbol &
+              data$token %in% c("SPECIAL", "LEFT_ASSIGN", "RIGHT_ASSIGN")
+          )
+          records <- lapply(indices, function(index) list(
+            line = as.integer(data$line1[[index]]),
+            column = as.integer(data$col1[[index]]),
+            operation = operation_span(
+              data$parent[[index]], as.integer(data$line1[[index]]), as.integer(data$col1[[index]])
+            )
+          ))
+        }
+        records
+      } else {
+        token <- if (identical(rule, "global-assignment")) "LEFT_ASSIGN" else "SYMBOL"
+        text <- if (identical(rule, "global-assignment")) "<<-" else symbol
+        indices <- which(data$line1 == as.integer(line) & data$text == text & data$token == token)
+        lapply(indices, function(index) list(
+          line = as.integer(data$line1[[index]]),
+          column = as.integer(data$col1[[index]]),
+          operation = operation_span(
+            if (identical(rule, "global-assignment")) data$parent[[index]] else data$id[[index]],
+            as.integer(data$line1[[index]]),
+            as.integer(data$col1[[index]])
+          )
+        ))
+      }
+      matches <- order_records(matches)
+      key <- paste(rule, symbol, as.integer(line), sep = "\t")
+      index <- if (exists(key, envir = codetools_cursors, inherits = FALSE)) {
+        get(key, envir = codetools_cursors, inherits = FALSE) + 1L
+      } else 1L
+      assign(key, index, envir = codetools_cursors)
+      if (index <= length(matches)) return(matches[[index]]$operation)
+      sprintf("line:%d:codetools:%d", as.integer(line), index)
+    }
     annotate <- function(expressions) {
       call_index <- 1L
       assignment_index <- 1L
@@ -652,7 +695,8 @@ openwrangler_r_static_analysis <- local({
           line = as.integer(fallback),
           operation = sprintf("line:%d", as.integer(fallback))
         ) else receipt
-      }
+      },
+      codetools = codetools_operation
     )
   }
 
@@ -754,24 +798,6 @@ openwrangler_r_static_analysis <- local({
       }, logical(1L)))
   }
 
-  current_environment_expression <- function(node, scopes) {
-    owner <- attr(scopes[[1L]], "openwrangler_scope_owner", exact = TRUE)
-    if (is.symbol(node)) {
-      candidates <- lexical_candidates(as.character(node), scopes)
-      return(any(vapply(candidates, function(candidate) {
-        identical(candidate$kind, "environment") && identical(candidate$environment, "current") &&
-          identical(candidate$lexical_owner, owner)
-      }, logical(1L))))
-    }
-    if (!is.call(node) || length(node) != 1L) return(FALSE)
-    identity <- call_identity(node[[1L]])
-    candidates <- callable_candidates(identity, scopes)
-    !is.null(identity) &&
-      any(vapply(candidates, function(candidate) {
-        identical(candidate$namespace, "base") && identical(candidate$symbol, "environment")
-      }, logical(1L)))
-  }
-
   global_member_symbol <- function(node, scopes) {
     if (!is.call(node) || length(node) != 3L || !is.symbol(node[[1L]]) ||
         !(as.character(node[[1L]]) %in% c("$", "[[")) || !global_environment_expression(node[[2L]], scopes)) {
@@ -791,6 +817,38 @@ openwrangler_r_static_analysis <- local({
     matches <- which(argument_names == name)
     if (length(matches) != 1L) return(NULL)
     arguments[[matches]]
+  }
+
+  matched_call_arguments <- function(node, formals) {
+    arguments <- as.list(node)[-1L]
+    argument_names <- names(arguments)
+    if (is.null(argument_names)) argument_names <- rep("", length(arguments))
+    matched <- rep(NA_character_, length(arguments))
+    claimed <- character()
+    for (index in seq_along(arguments)) {
+      name <- argument_names[[index]]
+      if (nzchar(name) && name %in% formals) {
+        matched[[index]] <- name
+        claimed <- c(claimed, name)
+      }
+    }
+    for (index in seq_along(arguments)) {
+      name <- argument_names[[index]]
+      if (!nzchar(name) || !is.na(matched[[index]])) next
+      targets <- setdiff(formals[startsWith(formals, name)], claimed)
+      if (length(targets) == 1L) {
+        matched[[index]] <- targets[[1L]]
+        claimed <- c(claimed, targets[[1L]])
+      }
+    }
+    remaining <- setdiff(formals, claimed)
+    for (index in seq_along(arguments)) {
+      if (nzchar(argument_names[[index]]) || length(remaining) == 0L) next
+      matched[[index]] <- remaining[[1L]]
+      claimed <- c(claimed, remaining[[1L]])
+      remaining <- remaining[-1L]
+    }
+    structure(arguments, names = matched)
   }
 
   call_is <- function(node, symbol, namespace = NULL) {
@@ -831,44 +889,165 @@ openwrangler_r_static_analysis <- local({
     assigned_root_symbol(node[[2L]])
   }
 
-  local_binding_mutations <- function(node, scopes) {
-    if (!is.call(node)) return(character())
-    identity <- call_identity(node[[1L]])
-    if (!is.null(identity) && identical(identity$symbol, "function") && is.null(identity$namespace)) {
-      return(character())
+  seed_snapshot_mutations <- function(statements) {
+    protected <- c("had_random_seed", "previous_random_seed")
+    node_key <- function(node, suffix) {
+      id <- attr(node, "openwrangler_node_id", exact = TRUE)
+      if (length(id) != 1L || is.na(id)) fail("a seed mutation has no exact syntax identity")
+      paste(as.integer(id), suffix, sep = ":")
     }
-    mutations <- character()
-    assignment <- assignment_parts(node)
-    if (!is.null(assignment)) {
-      mutations <- c(mutations, assignment$symbol)
-    } else if (is.symbol(node[[1L]]) && as.character(node[[1L]]) %in% c("<-", "=", "<<-")) {
-      target <- node[[2L]]
-      if (is.call(target) && length(target) == 3L && is.symbol(target[[1L]]) &&
-          as.character(target[[1L]]) %in% c("$", "[[") &&
-          current_environment_expression(target[[2L]], scopes)) {
-        member <- target[[3L]]
-        if (is.symbol(member) || (is.character(member) && length(member) == 1L && !is.na(member))) {
-          mutations <- c(mutations, as.character(member))
+    empty_state <- function() list(
+      aliases = character(),
+      functions = list(),
+      events = list(),
+      active = character()
+    )
+    add_event <- function(state, node, symbol) {
+      key <- node_key(node, symbol)
+      if (is.null(state$events[[key]])) state$events[[key]] <- symbol
+      state
+    }
+    merge_states <- function(states) {
+      charge_work("operations", length(states) + 1L)
+      merged <- empty_state()
+      merged$aliases <- unique(unlist(lapply(states, `[[`, "aliases"), use.names = FALSE))
+      function_names <- unique(unlist(lapply(states, function(state) names(state$functions)), use.names = FALSE))
+      for (name in function_names) {
+        definitions <- unlist(lapply(states, function(state) state$functions[[name]]), recursive = FALSE)
+        keys <- vapply(definitions, function(definition) node_key(definition, "function"), character(1L))
+        merged$functions[[name]] <- definitions[!duplicated(keys)]
+      }
+      for (state in states) {
+        for (key in names(state$events)) if (is.null(merged$events[[key]])) {
+          merged$events[[key]] <- state$events[[key]]
         }
-      } else {
+      }
+      merged$active <- unique(unlist(lapply(states, `[[`, "active"), use.names = FALSE))
+      merged
+    }
+    may_be_current_environment <- function(node, state) {
+      if (is.symbol(node)) return(as.character(node) %in% state$aliases)
+      if (!is.call(node)) return(FALSE)
+      identity <- call_identity(node[[1L]])
+      if (!is.null(identity) && identical(identity$symbol, "environment") &&
+          (is.null(identity$namespace) || identical(identity$namespace, "base")) && length(node) == 1L) {
+        return(TRUE)
+      }
+      if (is.symbol(node[[1L]]) && identical(as.character(node[[1L]]), "{") && length(node) > 1L) {
+        return(may_be_current_environment(node[[length(node)]], state))
+      }
+      if (is.symbol(node[[1L]]) && identical(as.character(node[[1L]]), "if") && length(node) >= 3L) {
+        alternatives <- c(
+          may_be_current_environment(node[[3L]], state),
+          if (length(node) == 4L) may_be_current_environment(node[[4L]], state) else FALSE
+        )
+        return(any(alternatives))
+      }
+      FALSE
+    }
+    scan <- NULL
+    scan <- function(node, state, in_closure = FALSE) {
+      charge_work("operations")
+      if (!is.call(node)) return(state)
+      head <- node[[1L]]
+      head_symbol <- if (is.symbol(head)) as.character(head) else NULL
+      if (identical(head_symbol, "function")) return(state)
+      if (identical(head_symbol, "{")) {
+        for (statement in as.list(node)[-1L]) state <- scan(statement, state, in_closure)
+        return(state)
+      }
+      if (identical(head_symbol, "if") && length(node) >= 3L) {
+        condition <- scan(node[[2L]], state, in_closure)
+        consequent <- scan(node[[3L]], condition, in_closure)
+        alternative <- if (length(node) == 4L) scan(node[[4L]], condition, in_closure) else condition
+        return(merge_states(list(consequent, alternative)))
+      }
+      if (!is.null(head_symbol) && head_symbol %in% c("for", "while", "repeat")) {
+        before <- state
+        body_index <- if (identical(head_symbol, "for")) 4L else if (identical(head_symbol, "while")) 3L else 2L
+        if (identical(head_symbol, "for")) state <- scan(node[[3L]], state, in_closure)
+        if (identical(head_symbol, "while")) state <- scan(node[[2L]], state, in_closure)
+        body <- scan(node[[body_index]], state, in_closure)
+        return(merge_states(list(before, body)))
+      }
+      if (!is.null(head_symbol) && head_symbol %in% c("<-", "=", "<<-") && length(node) == 3L) {
+        target <- node[[2L]]
+        value <- node[[3L]]
+        is_function <- is.call(value) && is.symbol(value[[1L]]) &&
+          identical(as.character(value[[1L]]), "function")
+        if (!is_function) state <- scan(value, state, in_closure)
+        if (is.symbol(target)) {
+          symbol <- as.character(target)
+          if (identical(head_symbol, "<<-")) {
+            if (symbol %in% protected) state <- add_event(state, node, symbol)
+          } else {
+            if (!in_closure && symbol %in% protected) state <- add_event(state, node, symbol)
+            state$aliases <- setdiff(state$aliases, symbol)
+            state$functions[[symbol]] <- NULL
+            if (is_function) {
+              state$functions[[symbol]] <- list(value)
+            } else if (is.symbol(value) && !is.null(state$functions[[as.character(value)]])) {
+              state$functions[[symbol]] <- state$functions[[as.character(value)]]
+            } else if (may_be_current_environment(value, state)) {
+              state$aliases <- unique(c(state$aliases, symbol))
+            }
+          }
+          return(state)
+        }
         root <- assigned_root_symbol(target)
-        if (!is.null(root)) mutations <- c(mutations, root)
+        if (!is.null(root) && root %in% protected) state <- add_event(state, node, root)
+        if (is.call(target) && length(target) == 3L && is.symbol(target[[1L]]) &&
+            as.character(target[[1L]]) %in% c("$", "[[") &&
+            may_be_current_environment(target[[2L]], state)) {
+          member <- target[[3L]]
+          symbol <- if (is.symbol(member) ||
+            (is.character(member) && length(member) == 1L && !is.na(member))) {
+            as.character(member)
+          } else "<unknown-current-environment>"
+          state <- add_event(state, node, symbol)
+        }
+        return(state)
       }
-    }
-    if (!is.null(identity) && identity$symbol %in% c("assign", "rm", "remove")) {
+      identity <- call_identity(head)
       arguments <- as.list(node)[-1L]
-      if (length(arguments) >= 1L && is.character(arguments[[1L]]) && length(arguments[[1L]]) == 1L &&
-          !is.na(arguments[[1L]])) {
-        mutations <- c(mutations, arguments[[1L]])
+      for (argument in arguments) if (!identical(argument, quote(expr = ))) {
+        state <- scan(argument, state, in_closure)
       }
-    }
-    children <- as.list(node)[-1L]
-    for (index in seq_along(children)) {
-      if (!identical(children[index][[1L]], quote(expr = ))) {
-        mutations <- c(mutations, local_binding_mutations(children[[index]], scopes))
+      if (!is.null(identity) && identity$symbol %in% c("assign", "rm", "remove") &&
+          (is.null(identity$namespace) || identical(identity$namespace, "base"))) {
+        formals <- if (identical(identity$symbol, "assign")) {
+          c("x", "value", "pos", "envir", "inherits", "immediate")
+        } else c("...", "list", "pos", "envir", "inherits")
+        matched <- matched_call_arguments(node, formals)
+        environment <- matched[["envir"]]
+        position <- matched[["pos"]]
+        current <- if (!is.null(environment)) may_be_current_environment(environment, state) else
+          if (!is.null(position)) may_be_current_environment(position, state) else TRUE
+        if (current) {
+          target <- if (identical(identity$symbol, "assign")) matched[["x"]] else matched[["list"]]
+          if (is.null(target) && length(arguments) > 0L) target <- arguments[[1L]]
+          symbol <- if (is.character(target) && length(target) == 1L && !is.na(target)) {
+            as.character(target)
+          } else "<unknown-current-environment>"
+          state <- add_event(state, node, symbol)
+        }
       }
+      if (!is.null(identity) && is.null(identity$namespace) && !is.null(state$functions[[identity$symbol]])) {
+        for (definition in state$functions[[identity$symbol]]) {
+          key <- node_key(definition, "closure")
+          if (key %in% state$active) next
+          closure_state <- state
+          closure_state$active <- c(state$active, key)
+          closure_state <- scan(definition[[3L]], closure_state, in_closure = TRUE)
+          state <- merge_states(list(state, closure_state))
+          state$active <- setdiff(state$active, key)
+        }
+      }
+      state
     }
-    mutations
+    state <- empty_state()
+    for (statement in statements) state <- scan(statement, state)
+    unname(unlist(state$events, use.names = FALSE))
   }
 
   exact_random_seed_restoration <- function(node, ancestors, current_function, scopes) {
@@ -926,10 +1105,11 @@ openwrangler_r_static_analysis <- local({
       !is.null(assignment) && identical(assignment$symbol, "previous_random_seed") &&
         exact_seed_environment_call(assignment$value, "get", scopes)
     }, logical(1L)))
-    snapshot_mutations <- unlist(lapply(statements, local_binding_mutations, scopes = scopes), use.names = FALSE)
+    snapshot_mutations <- seed_snapshot_mutations(statements)
     has_presence_snapshot && has_value_snapshot &&
       sum(snapshot_mutations == "had_random_seed") == 1L &&
-      sum(snapshot_mutations == "previous_random_seed") == 1L
+      sum(snapshot_mutations == "previous_random_seed") == 1L &&
+      !("<unknown-current-environment>" %in% snapshot_mutations)
   }
 
   assign_global_environment <- function(node, identity, candidates, ancestors, current_function, scopes) {
@@ -938,39 +1118,12 @@ openwrangler_r_static_analysis <- local({
         }, logical(1L)))) {
       return(FALSE)
     }
-    arguments <- as.list(node)[-1L]
-    argument_names <- names(arguments)
     if (exact_random_seed_restoration(node, ancestors, current_function, scopes)) return(FALSE)
-    if (is.null(argument_names)) argument_names <- rep("", length(arguments))
     formals <- c("x", "value", "pos", "envir", "inherits", "immediate")
-    matched <- rep(NA_character_, length(arguments))
-    claimed <- character()
-    for (index in seq_along(arguments)) {
-      name <- argument_names[[index]]
-      if (nzchar(name) && name %in% formals) {
-        matched[[index]] <- name
-        claimed <- c(claimed, name)
-      }
-    }
-    for (index in seq_along(arguments)) {
-      name <- argument_names[[index]]
-      if (!nzchar(name) || !is.na(matched[[index]])) next
-      targets <- setdiff(formals[startsWith(formals, name)], claimed)
-      if (length(targets) == 1L) {
-        matched[[index]] <- targets[[1L]]
-        claimed <- c(claimed, targets[[1L]])
-      }
-    }
-    remaining <- setdiff(formals, claimed)
-    for (index in seq_along(arguments)) {
-      if (nzchar(argument_names[[index]])) next
-      if (length(remaining) == 0L) break
-      matched[[index]] <- remaining[[1L]]
-      claimed <- c(claimed, remaining[[1L]])
-      remaining <- remaining[-1L]
-    }
+    arguments <- matched_call_arguments(node, formals)
     any(vapply(seq_along(arguments), function(index) {
-      matched[[index]] %in% c("envir", "pos") && global_environment_expression(arguments[[index]], scopes)
+      names(arguments)[[index]] %in% c("envir", "pos") &&
+        global_environment_expression(arguments[[index]], scopes)
     }, logical(1L)))
   }
 
@@ -1154,7 +1307,8 @@ openwrangler_r_static_analysis <- local({
         )
         if (reachable) {
           exits <- merge_result_exits(scopes, exits, result)
-          pending_terminal <- terminal_expression(statement, before)
+          pending_terminal <- if (!is.null(result[["terminal"]])) result[["terminal"]] else
+            terminal_expression(statement, before)
           if (!is.null(pending_terminal)) {
             exits <- add_terminal_exit(scopes, exits, pending_terminal, result$scopes)
           }
@@ -1164,7 +1318,7 @@ openwrangler_r_static_analysis <- local({
       }
       deferred <- context$pop_frame()
       flush_deferred_definitions(deferred, path, collector, current, locator, ancestors, context)
-      return(c(list(line = line, scopes = current), exits))
+      return(c(list(line = line, scopes = current, terminal = pending_terminal), exits))
     }
 
     if (is.symbol(head) && identical(as.character(head), "if") && length(node) >= 3L) {
@@ -1182,14 +1336,16 @@ openwrangler_r_static_analysis <- local({
       exits <- list(break_scopes = NULL, next_scopes = NULL, terminal_scopes = NULL)
       exits <- merge_result_exits(condition$scopes, exits, consequent)
       exits <- merge_result_exits(condition$scopes, exits, alternative)
-      consequent_terminal <- terminal_expression(node[[3L]], condition$scopes)
+      consequent_terminal <- if (!is.null(consequent[["terminal"]])) consequent[["terminal"]] else
+        terminal_expression(node[[3L]], condition$scopes)
       if (is.null(consequent_terminal)) {
         continuing <- c(continuing, list(consequent$scopes))
       } else {
         exits <- add_terminal_exit(condition$scopes, exits, consequent_terminal, consequent$scopes)
       }
       alternative_terminal <- if (length(node) == 4L) {
-        terminal_expression(node[[4L]], condition$scopes)
+        if (!is.null(alternative[["terminal"]])) alternative[["terminal"]] else
+          terminal_expression(node[[4L]], condition$scopes)
       } else NULL
       if (length(node) != 4L || is.null(alternative_terminal)) {
         continuing <- c(continuing, list(alternative$scopes))
@@ -1200,7 +1356,9 @@ openwrangler_r_static_analysis <- local({
         merge_branch_scopes(condition$scopes, continuing)
       return(c(list(
         line = if (is.null(condition$line)) line else condition$line,
-        scopes = merged
+        scopes = merged,
+        terminal = if (length(node) == 4L && !is.null(consequent_terminal) &&
+          !is.null(alternative_terminal)) "if" else NULL
       ), exits))
     }
 
@@ -1223,7 +1381,9 @@ openwrangler_r_static_analysis <- local({
         break_scopes <- merge_exit_scope(sequence_result$scopes, break_scopes, body$break_scopes)
         terminal_scopes <- merge_exit_scope(sequence_result$scopes, terminal_scopes, body$terminal_scopes)
         iteration_alternatives <- list(sequence_result$scopes)
-        if (is.null(terminal_expression(node[[4L]], loop_scopes))) {
+        body_terminal <- if (!is.null(body[["terminal"]])) body[["terminal"]] else
+          terminal_expression(node[[4L]], loop_scopes)
+        if (is.null(body_terminal)) {
           iteration_alternatives <- c(iteration_alternatives, list(body$scopes))
         }
         if (!is.null(body$next_scopes)) iteration_alternatives <- c(iteration_alternatives, list(body$next_scopes))
@@ -1235,9 +1395,12 @@ openwrangler_r_static_analysis <- local({
         loop_scopes <- next_scopes
       }
       output_alternatives <- list(sequence_result$scopes)
-      if (is.null(terminal_expression(node[[4L]], loop_scopes))) {
+      body_terminal <- if (!is.null(body[["terminal"]])) body[["terminal"]] else
+        terminal_expression(node[[4L]], loop_scopes)
+      if (is.null(body_terminal)) {
         output_alternatives <- c(output_alternatives, list(body$scopes))
       }
+      if (!is.null(body$next_scopes)) output_alternatives <- c(output_alternatives, list(body$next_scopes))
       if (!is.null(break_scopes)) output_alternatives <- c(output_alternatives, list(break_scopes))
       return(list(
         line = if (is.null(sequence_result$line)) line else sequence_result$line,
@@ -1264,7 +1427,9 @@ openwrangler_r_static_analysis <- local({
         break_scopes <- merge_exit_scope(scopes, break_scopes, body$break_scopes)
         terminal_scopes <- merge_exit_scope(scopes, terminal_scopes, body$terminal_scopes)
         iteration_alternatives <- list(condition$scopes)
-        if (is.null(terminal_expression(node[[3L]], condition$scopes))) {
+        body_terminal <- if (!is.null(body[["terminal"]])) body[["terminal"]] else
+          terminal_expression(node[[3L]], condition$scopes)
+        if (is.null(body_terminal)) {
           iteration_alternatives <- c(iteration_alternatives, list(body$scopes))
         }
         if (!is.null(body$next_scopes)) iteration_alternatives <- c(iteration_alternatives, list(body$next_scopes))
@@ -1293,33 +1458,28 @@ openwrangler_r_static_analysis <- local({
         )
         break_scopes <- merge_exit_scope(scopes, break_scopes, body$break_scopes)
         terminal_scopes <- merge_exit_scope(scopes, terminal_scopes, body$terminal_scopes)
-        iteration_alternatives <- list(scopes)
-        if (is.null(terminal_expression(node[[2L]], loop_scopes))) {
-          iteration_alternatives <- c(iteration_alternatives, list(body$scopes))
-        }
+        iteration_alternatives <- list()
+        body_terminal <- if (!is.null(body[["terminal"]])) body[["terminal"]] else
+          terminal_expression(node[[2L]], loop_scopes)
+        if (is.null(body_terminal)) iteration_alternatives <- c(iteration_alternatives, list(body$scopes))
         if (!is.null(body$next_scopes)) iteration_alternatives <- c(iteration_alternatives, list(body$next_scopes))
+        if (length(iteration_alternatives) == 0L) break
         next_scopes <- merge_branch_scopes(scopes, iteration_alternatives)
         if (same_scope_bindings(next_scopes, loop_scopes)) break
         loop_scopes <- next_scopes
       }
-      output_scopes <- if (is.null(break_scopes)) body$scopes else break_scopes
+      output_scopes <- if (is.null(break_scopes)) loop_scopes else break_scopes
       return(list(
         line = if (is.null(body$line)) line else body$line,
         scopes = output_scopes,
-        terminal_scopes = terminal_scopes
+        terminal_scopes = terminal_scopes,
+        terminal = if (is.null(break_scopes)) "repeat" else NULL
       ))
     }
 
     if (is.symbol(head) && as.character(head) %in% c("<-", "=") && length(node) == 3L) {
       assignment_receipt <- locator$assignment(node, line)
       line <- assignment_receipt$line
-      member <- global_member_symbol(node[[2L]], scopes)
-      if (!is.null(member)) {
-        collector$add(
-          path, line, "global-assignment", member, "direct assignment mutates .GlobalEnv",
-          assignment_receipt$operation
-        )
-      }
       assignment <- assignment_parts(node)
       binding <- NULL
       if (!is.null(assignment)) {
@@ -1330,6 +1490,15 @@ openwrangler_r_static_analysis <- local({
       result <- if (is_deferred_function) list(scopes = scopes) else inspect_calls(
         node[[3L]], path, collector, scopes, locator, c(ancestors, list(node)), current_function, context
       )
+      if (is.null(terminal_expression(node[[3L]], scopes))) {
+        member <- global_member_symbol(node[[2L]], result$scopes)
+        if (!is.null(member)) {
+          collector$add(
+            path, line, "global-assignment", member, "direct assignment mutates .GlobalEnv",
+            assignment_receipt$operation
+          )
+        }
+      }
       if (!is.null(assignment)) result$scopes <- set_local_binding(result$scopes, assignment$symbol, binding)
       result$line <- line
       return(result)
@@ -1401,7 +1570,7 @@ openwrangler_r_static_analysis <- local({
     list(line = line, scopes = current)
   }
 
-  inspect_codetools <- function(text, path, collector, maximum_diagnostics) {
+  inspect_codetools <- function(text, path, collector, locator, maximum_diagnostics) {
     wrapped_text <- paste("function() {", text, "}", sep = "\n")
     source_file <- srcfilecopy(path, wrapped_text, isFile = FALSE)
     wrapper <- parse(text = wrapped_text, srcfile = source_file, keep.source = TRUE)[[1L]]
@@ -1437,7 +1606,10 @@ openwrangler_r_static_analysis <- local({
         result <- regexec(pattern$regex, body, perl = TRUE)
         captured <- regmatches(body, result)[[1L]]
         if (length(captured) == 2L) {
-          collector$add(path, line, pattern$rule, captured[[2L]], body)
+          collector$add(
+            path, line, pattern$rule, captured[[2L]], body,
+            locator$codetools(pattern$rule, captured[[2L]], line)
+          )
           break
         }
       }
@@ -1470,7 +1642,7 @@ openwrangler_r_static_analysis <- local({
     deferred <- context$root_frame()
     context$clear_root_frame()
     flush_deferred_definitions(deferred, path, collector, scopes, locator, list(), context)
-    inspect_codetools(text, path, collector, limits$diagnostics)
+    inspect_codetools(text, path, collector, locator, limits$diagnostics)
     values <- collector$values()
     attr(values, "work") <- work$used()
     values

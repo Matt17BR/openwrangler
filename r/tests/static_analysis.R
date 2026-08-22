@@ -176,6 +176,28 @@ local({
     ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(".GlobalEnv[['unsafe_target']] <- 1", "global-assignment"),
     "Direct indexed .GlobalEnv member assignment was not detected"
   )
+  replacement_target_after_rhs <- paste(
+    "function() {",
+    "  holder <- new.env()",
+    "  holder$unsafe_target <- { holder <- .GlobalEnv; 1 }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(replacement_target_after_rhs, "global-assignment"),
+    "A replacement target was not resolved after its RHS changed the target environment"
+  )
+  local_replacement_target_after_rhs <- paste(
+    "function() {",
+    "  holder <- .GlobalEnv",
+    "  holder$local_target <- { holder <- new.env(); 1 }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    !("global-assignment" %in% rules(local_replacement_target_after_rhs)),
+    "A replacement target was resolved from the stale pre-RHS global environment"
+  )
   assert_true(
     !("global-assignment" %in% rules(paste(
       "function() {",
@@ -265,6 +287,89 @@ local({
   assert_true(
     "global-assignment" %in% rules(seed_environment_alias_mutation),
     "A current-environment alias mutation spoofed the exact random-seed restoration exemption"
+  )
+  rebound_seed_environment_alias <- sub(
+    "  on.exit({",
+    paste(
+      "  current_environment_alias <- new.env()",
+      "  on.exit({",
+      sep = "\n"
+    ),
+    seed_environment_alias_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(rebound_seed_environment_alias),
+    "A later alias rebind hid an earlier current-environment snapshot mutation"
+  )
+  local_after_seed_environment_rebind <- sub(
+    "  current_environment_alias$previous_random_seed <- replacement_seed",
+    paste(
+      "  current_environment_alias <- new.env()",
+      "  current_environment_alias$previous_random_seed <- replacement_seed",
+      sep = "\n"
+    ),
+    seed_environment_alias_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(local_after_seed_environment_rebind)),
+    "A mutation after a proven local-environment rebind invalidated exact seed restoration"
+  )
+  computed_seed_environment_mutation <- paste(
+    "function(flag) {",
+    "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  current_environment <- base::environment()",
+    "  target_name <- if (flag) 'previous_random_seed' else 'other'",
+    "  base::assign(target_name, replacement_seed, envir = current_environment)",
+    "  on.exit({",
+    "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+    "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+    "  }, add = TRUE)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "global-assignment" %in% rules(computed_seed_environment_mutation),
+    "An unresolved current-environment assign target spoofed the random-seed restoration exemption"
+  )
+  closure_seed_mutation <- paste(
+    "function() {",
+    "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed",
+    "  mutate_snapshot()",
+    "  on.exit({",
+    "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+    "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+    "  }, add = TRUE)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "global-assignment" %in% rules(closure_seed_mutation),
+    "A reachable closure mutation spoofed the random-seed restoration exemption"
+  )
+  aliased_closure_seed_mutation <- sub(
+    "  mutate_snapshot()",
+    paste("  mutate_alias <- mutate_snapshot", "  mutate_alias()", sep = "\n"),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(aliased_closure_seed_mutation),
+    "An aliased reachable closure mutation spoofed the random-seed restoration exemption"
+  )
+  uncalled_closure_seed_mutation <- sub(
+    "  mutate_snapshot()",
+    "  invisible(NULL)",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(uncalled_closure_seed_mutation)),
+    "An unreachable closure mutation invalidated exact seed restoration"
   )
   assert_true(
     !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
@@ -498,6 +603,34 @@ local({
     "target:ga" %in% diagnostic_symbols(multiple_iteration_for, "partial-argument"),
     "A later for iteration did not observe a prior iteration binding"
   )
+  final_next_for <- paste(
+    "function(values) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  for (value in values) { target <- function(gamma, delta) gamma + delta; next }",
+    "  target(ga = 1, delta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(final_next_for, "partial-argument"),
+    "A final-iteration next scope was omitted from the for-loop post-state"
+  )
+  next_or_return_for <- paste(
+    "function(values, flag) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  for (value in values) {",
+    "    if (flag) { target <- function(gamma, delta) gamma + delta; next }",
+    "    else { target <- function(apple, pear) apple + pear; return(NULL) }",
+    "  }",
+    "  target(ga = 1, delta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(next_or_return_for, "partial-argument") &&
+      !("target:ap" %in% diagnostic_symbols(next_or_return_for, "partial-argument")),
+    "A final next scope was dropped or merged with a returning for-loop path"
+  )
   multiple_iteration_while <- paste(
     "function(flag) {",
     "  target <- function(alpha, beta) alpha + beta",
@@ -565,6 +698,16 @@ local({
       !("target:al" %in% diagnostic_symbols(repeat_break_exit, "partial-argument")),
     "A repeat break exit did not become the sole reachable post-loop state"
   )
+  assert_true(
+    "unreachable-expression" %in% rules("function() { repeat { next }; missing_after_repeat() }"),
+    "A repeat loop without a reachable break was treated as falling through"
+  )
+  assert_true(
+    "unreachable-expression" %in% rules(
+      "function() { repeat { return(NULL); break }; missing_after_repeat() }"
+    ),
+    "An unreachable repeat break was treated as a continuing exit"
+  )
 
   same_line_writes <- paste(
     "base::assign('first', 1, envir = .GlobalEnv);",
@@ -574,6 +717,30 @@ local({
   assert_true(
     length(write_operations) == 2L && length(unique(write_operations)) == 2L,
     "Same-line same-symbol writes collapsed to one diagnostic identity"
+  )
+  same_line_codetools_symbols <- "function() { function() missing_value; function() missing_value }"
+  codetools_operations <- diagnostic_operations(
+    same_line_codetools_symbols, "undefined-symbol", "missing_value"
+  )
+  assert_true(
+    length(codetools_operations) == 2L && length(unique(codetools_operations)) == 2L,
+    "Same-line codetools diagnostics collapsed to one suppression identity"
+  )
+  same_line_codetools_calls <- "function() { function() missing_call(); function() missing_call() }"
+  codetools_call_operations <- diagnostic_operations(
+    same_line_codetools_calls, "unqualified-call", "missing_call"
+  )
+  assert_true(
+    length(codetools_call_operations) == 2L && length(unique(codetools_call_operations)) == 2L,
+    "Same-line codetools call diagnostics collapsed to one suppression identity"
+  )
+  same_line_codetools_writes <- "function() { unsafe_target <<- 1; unsafe_target <<- 2 }"
+  codetools_write_operations <- diagnostic_operations(
+    same_line_codetools_writes, "global-assignment", "unsafe_target"
+  )
+  assert_true(
+    length(codetools_write_operations) == 2L && length(unique(codetools_write_operations)) == 2L,
+    "Same-line codetools write diagnostics collapsed to one suppression identity"
   )
 
   shifted_location <- paste(
@@ -725,6 +892,20 @@ local({
   assert_true(
     length(remaining_write) == 1L && identical(remaining_write[[1L]]$operation, write_operations[[2L]]),
     "An exact same-line write suppression consumed a different source operation"
+  )
+  exact_codetools_suppression <- sprintf(
+    "r/openwrangler_runtime/frame_contract.R\t1\t%s\tundefined-symbol\tmissing_value\tExact first codetools symbol only.",
+    codetools_operations[[1L]]
+  )
+  writeLines(c(header, exact_codetools_suppression), suppression_path, useBytes = TRUE)
+  remaining_codetools <- analyzer$test$apply_suppressions(
+    diagnostics(same_line_codetools_symbols),
+    analyzer$test$parse_suppressions(suppression_root, policy)
+  )
+  assert_true(
+    length(remaining_codetools) == 1L &&
+      identical(remaining_codetools[[1L]]$operation, codetools_operations[[2L]]),
+    "An exact same-line codetools suppression consumed a different source operation"
   )
   second <- "r/openwrangler_runtime/frame_contract.R\t2\tline:2\tundefined-symbol\tmissing_two\tExact fixture justification."
   one_suppression_policy <- policy
