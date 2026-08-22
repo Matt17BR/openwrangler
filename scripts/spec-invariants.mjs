@@ -846,21 +846,6 @@ const cleaningHistoryExplicitSubjectAuxiliaries = new Set([
 ]);
 const cleaningHistoryProducesReportRelation =
   /^(?:generate|generated|generates|generating|produce|produced|produces|producing)$/u;
-const cleaningHistoryFiniteAttributionVerbs = new Set([
-  "claim",
-  "claimed",
-  "claims",
-  "note",
-  "noted",
-  "notes",
-  "say",
-  "says",
-  "said",
-  "state",
-  "stated",
-  "states"
-]);
-const cleaningHistoryRollbackModifiers = new Set(["carefully", "slowly"]);
 const cleaningHistoryCapabilityContextPrepositions = new Set([
   "at",
   "from",
@@ -1746,6 +1731,10 @@ function normalizeCleaningHistoryRollbackSpellings(value) {
     .replace(/\broll[\s—-]+back\b/giu, "rollback");
 }
 
+function isCleaningHistoryOrdinaryAdverb(token) {
+  return /^[\p{L}]+ly$/u.test(token);
+}
+
 function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
   const canonical = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -1765,8 +1754,7 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
         (cleaningHistoryClausePunctuationRoles[token] !== undefined &&
           !(
             token === "," &&
-            (cleaningHistoryRollbackModifiers.has(tokens[cursor - 1]) ||
-              cleaningHistoryRollbackModifiers.has(tokens[cursor + 1]))
+            (isCleaningHistoryOrdinaryAdverb(tokens[cursor - 1]) || isCleaningHistoryOrdinaryAdverb(tokens[cursor + 1]))
           )) ||
         cleaningHistoryConnectorRole(token) !== undefined
       ) {
@@ -1783,14 +1771,14 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
       );
     }
-    const targetTokens = betweenTokens.filter((token) => token !== "," && !cleaningHistoryRollbackModifiers.has(token));
+    const targetTokens = betweenTokens.filter((token) => token !== "," && !isCleaningHistoryOrdinaryAdverb(token));
     let targetSubject = cleaningHistorySubject([...targetTokens, "rollback"], targetTokens.length);
     let suffixEnd = backIndex;
     let suffixTokens = [];
     if (
       targetSubject.owner !== "cleaning" &&
       targetTokens.length === 0 &&
-      betweenTokens.every((token) => token === "," || cleaningHistoryRollbackModifiers.has(token))
+      betweenTokens.every((token) => token === "," || isCleaningHistoryOrdinaryAdverb(token))
     ) {
       for (let cursor = backIndex + 1; cursor < tokens.length; cursor += 1) {
         const token = tokens[cursor];
@@ -1808,7 +1796,7 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
         suffixTokens.push(token);
         suffixEnd = cursor;
       }
-      const semanticSuffix = suffixTokens.filter((token) => !cleaningHistoryRollbackModifiers.has(token));
+      const semanticSuffix = suffixTokens.filter((token) => !isCleaningHistoryOrdinaryAdverb(token));
       targetSubject = cleaningHistorySubject([...semanticSuffix, "rollback"], semanticSuffix.length);
     }
     if (targetSubject.owner !== "cleaning") {
@@ -1816,7 +1804,21 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
       index = backIndex;
       continue;
     }
-    canonical.push("rollback", ...betweenTokens.filter((token) => token !== ","), ...suffixTokens);
+    let prefixModifierCount = 0;
+    while (isCleaningHistoryOrdinaryAdverb(canonical.at(-1))) {
+      if (prefixModifierCount >= CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) {
+        throw new Error(
+          `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
+        );
+      }
+      canonical.pop();
+      prefixModifierCount += 1;
+    }
+    canonical.push(
+      "rollback",
+      ...betweenTokens.filter((token) => token !== "," && !isCleaningHistoryOrdinaryAdverb(token)),
+      ...suffixTokens.filter((token) => !isCleaningHistoryOrdinaryAdverb(token))
+    );
     index = suffixEnd;
   }
   return canonical;
@@ -1954,6 +1956,12 @@ function cleaningHistoryStructuralOwnerPair(tokens, hasCapabilityPredicate) {
 
   const relation = tokens.slice(governing.index + 1, embedded.index);
   const suffix = tokens.slice(embedded.index + 1);
+  const nestedRelative = suffix.some((token) => ["that", "which", "whose"].includes(token));
+  const modifierOwnedNestedRelation =
+    owners.length >= 3 &&
+    relation.some((token) => cleaningHistoryReportModifierPrepositions.has(token)) &&
+    nestedRelative;
+  if (modifierOwnedNestedRelation) return governing.owner;
   const possessiveIndex = relation.indexOf("possessive");
   if (possessiveIndex >= 0) {
     const possessedArtifact = relation
@@ -1963,6 +1971,12 @@ function cleaningHistoryStructuralOwnerPair(tokens, hasCapabilityPredicate) {
   }
 
   const relativeIndex = relation.findIndex((token) => ["that", "which", "whose"].includes(token));
+  const relativeTokenIndex = relativeIndex < 0 ? -1 : governing.index + relativeIndex + 1;
+  const nearestOwnerBeforeRelative =
+    relativeTokenIndex < 0
+      ? undefined
+      : owners.filter(({ index }) => index > governing.index && index < relativeTokenIndex).at(-1);
+  if (nearestOwnerBeforeRelative?.owner === governing.owner) return governing.owner;
   const leadingRelative =
     relativeIndex >= 0 &&
     relation
@@ -2148,7 +2162,6 @@ function isCleaningHistoryGrammarToken(token) {
     cleaningHistoryGrammarWords.has(token) ||
     cleaningHistoryIntrinsicNegativeWords.has(token) ||
     cleaningHistoryPredicateKind(token) !== undefined ||
-    cleaningHistoryRollbackModifiers.has(token) ||
     /^(?:allow|allows|allowed|allowing|apply|applies|applied|applying|available|affect|affects|affected|affecting|change|changes|changed|changing|choose|chooses|chosen|choosing|confined|enabled|expose|exposes|exposed|exposing|implement|implemented|impossible|limit|limited|mutable|offer|offered|pick|picked|possible|remove|removes|removed|removing|reserved|restrict|restricted|select|selected|specify|specified|support|supports|supported|target|targets|targeted|targeting)$/u.test(
       token
     )
@@ -2649,12 +2662,15 @@ function rejectCleaningHistoryConditionBranch() {
 function cleaningHistoryFiniteAttributionParenthetical(tokens) {
   if (tokens.length === 0 || tokens.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) return false;
   if (tokens.some((token) => cleaningHistoryPredicateKind(token) !== undefined)) return false;
-  const attributionIndex = tokens.findIndex((token) => cleaningHistoryFiniteAttributionVerbs.has(token));
-  if (attributionIndex < 0) return false;
-  const ownerTokens = tokens.slice(0, attributionIndex);
-  return ownerTokens.some(
-    (token, index) => cleaningHistoryExplicitUnrelatedOwnerWords.has(token) || isCleaningHistoryNoun(ownerTokens, index)
+  const ownerIndex = tokens.findLastIndex(
+    (token, index) => cleaningHistoryExplicitUnrelatedOwnerWords.has(token) || isCleaningHistoryNoun(tokens, index)
   );
+  if (ownerIndex < 0 || ownerIndex === tokens.length - 1) return false;
+  const finiteTail = tokens.slice(ownerIndex + 1);
+  const openVocabularyTokens = finiteTail.filter(
+    (token) => !isCleaningHistoryGrammarToken(token) && !isCleaningHistoryOrdinaryAdverb(token)
+  );
+  return openVocabularyTokens.length === 1;
 }
 
 function cleaningHistoryPredicateRecords(rendered) {
