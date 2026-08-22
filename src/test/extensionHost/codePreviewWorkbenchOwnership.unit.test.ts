@@ -31,6 +31,7 @@ interface WorkbenchOwnershipAuthority {
   readonly assertReceipt: (receipt: Pick<WorkbenchOwnershipReceipt, "reason">, description: string) => void;
   readonly containers: readonly WorkbenchContainerDescriptor[];
   readonly inspect: (element: unknown, options: Record<string, unknown>) => WorkbenchOwnershipReceipt;
+  readonly inspectSoleOverlay: (element: unknown, options: Record<string, unknown>) => unknown | null;
   readonly limits: Readonly<{
     ancestors: number;
     documentElements: number;
@@ -90,6 +91,7 @@ interface FakeElement {
 const LIVE_ACTION_FUNCTION = "assertLiveCodePreviewActionOwnership";
 const CAPTURE_OWNERSHIP_FUNCTION = "captureCodePreviewWorkbenchOwnership";
 const CAPTURE_GENERATION_FUNCTION = "captureCodePreviewWorkbenchGeneration";
+const SOLE_OVERLAY_INSPECTOR = "inspectSoleCodePreviewOverlayFrameElement";
 const LIVE_INVOCATION_FUNCTION = "invokeLiveCodePreviewActionWithOwnership";
 const EDIT_LIVE_INVOCATION_FUNCTION = "editLiveCodePreviewAndInvoke";
 const OWNERSHIP_ASSERTION_HELPER = "assertCodePreviewWorkbenchOwnershipReceipt";
@@ -115,6 +117,41 @@ function replaceTopLevelFunctionBody(source: string, name: string, replacement: 
   );
   nodeAssert.ok(declaration?.body, `Missing ${name} function body.`);
   return `${source.slice(0, declaration.body.getStart(syntax))}${replacement}${source.slice(declaration.body.end)}`;
+}
+
+function replaceWithinTopLevelFunction(source: string, name: string, from: string, to: string): string {
+  const syntax = ts.createSourceFile("extensionHost/index.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const declaration = syntax.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name
+  );
+  nodeAssert.ok(declaration?.body, `Missing ${name} function body.`);
+  const body = declaration.body.getText(syntax);
+  nodeAssert.equal(body.split(from).length - 1, 1, `Expected exactly one ${name} fragment: ${from}`);
+  const replacement = body.replace(from, to);
+  return `${source.slice(0, declaration.body.getStart(syntax))}${replacement}${source.slice(declaration.body.end)}`;
+}
+
+function replaceCallArgumentInTopLevelFunction(
+  source: string,
+  functionName: string,
+  calleeName: string,
+  argumentIndex: number,
+  replacement: string
+): string {
+  const syntax = ts.createSourceFile("extensionHost/index.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const declaration = syntax.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === functionName
+  );
+  nodeAssert.ok(declaration?.body, `Missing ${functionName} function body.`);
+  const calls = descendantCalls(declaration.body).filter(
+    (call) => ts.isIdentifier(call.expression) && call.expression.text === calleeName
+  );
+  nodeAssert.equal(calls.length, 1, `Expected one ${calleeName} call in ${functionName}.`);
+  const argument = calls[0].arguments[argumentIndex];
+  nodeAssert.ok(argument, `Missing argument ${argumentIndex} on ${calleeName}.`);
+  return `${source.slice(0, argument.getStart(syntax))}${replacement}${source.slice(argument.end)}`;
 }
 
 function directVariable(
@@ -231,6 +268,48 @@ function assertLiveOwnershipBinding(source: string): void {
     Array.from(expectedOptions.entries()).sort(([left], [right]) => left.localeCompare(right)),
     "The action guard must retain every exact generation, topology, and bound option."
   );
+
+  const editorEvaluations = descendantCalls(liveAction.body).filter(
+    (call) =>
+      ts.isPropertyAccessExpression(call.expression) &&
+      call.expression.expression.getText(syntax) === "target.preview" &&
+      call.expression.name.text === "evaluate"
+  );
+  nodeAssert.equal(editorEvaluations.length, 1, "The final action guard must execute one editor ownership probe.");
+  const editorProbe = editorEvaluations[0].arguments[0];
+  nodeAssert.ok(
+    editorProbe && (ts.isArrowFunction(editorProbe) || ts.isFunctionExpression(editorProbe)),
+    "The final editor ownership probe must remain an explicit bounded renderer callback."
+  );
+  const unboundedSelectorInventories = descendantCalls(editorProbe).filter(
+    (call) => ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "querySelectorAll"
+  );
+  nodeAssert.equal(
+    unboundedSelectorInventories.length,
+    0,
+    "The final editor ownership probe must not materialize a selector inventory."
+  );
+  nodeAssert.ok(
+    editorProbe.getText(syntax).includes("visited.size >= options.maximumElements || visited.has(active)"),
+    "The final editor ownership probe must enforce its cap before inspecting the overflow witness."
+  );
+  const editorOptions = editorEvaluations[0].arguments[1];
+  nodeAssert.ok(ts.isObjectLiteralExpression(editorOptions), "The final editor inventory bounds must be explicit.");
+  const editorOptionMap = new Map<string, string>();
+  for (const property of editorOptions.properties) {
+    nodeAssert.ok(ts.isPropertyAssignment(property), "Final editor options must use explicit assignments.");
+    editorOptionMap.set(property.name.getText(syntax), property.initializer.getText(syntax));
+  }
+  nodeAssert.deepEqual(
+    Array.from(editorOptionMap.entries()).sort(([left], [right]) => left.localeCompare(right)),
+    [
+      ["exactScroller", "target.scroller"],
+      ["maximumAncestors", "MAX_CODE_PREVIEW_DOM_ANCESTORS"],
+      ["maximumElements", "MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS"],
+      ["selector", "selector"]
+    ].sort(([left], [right]) => left.localeCompare(right)),
+    "The final editor probe must bind its exact scroller, ancestor cap, selector cap, and selector."
+  );
 }
 
 function assertAcquisitionOwnershipBinding(source: string): void {
@@ -306,8 +385,30 @@ function assertAcquisitionOwnershipBinding(source: string): void {
     ["overlayContent", "outerFrame", "bounded", "description"],
     "Sole-overlay cardinality must bind the exact captured content and outer iframe."
   );
+  const ownershipInspector = findFunction(OWNERSHIP_INSPECTOR);
+  const containerPushes = descendantCalls(ownershipInspector.body!).filter(
+    (call) =>
+      ts.isPropertyAccessExpression(call.expression) &&
+      ts.isIdentifier(call.expression.expression) &&
+      call.expression.expression.text === "containerCandidates" &&
+      call.expression.name.text === "push"
+  );
+  nodeAssert.equal(containerPushes.length, 1, "Container admission must retain one explicit bounded push.");
+  const containerPushStatement = containerPushes[0].parent;
+  nodeAssert.ok(ts.isExpressionStatement(containerPushStatement), "Container retention must be one statement.");
+  const containerPushBlock = containerPushStatement.parent;
+  nodeAssert.ok(ts.isBlock(containerPushBlock), "Container retention must remain inside its admission block.");
+  const containerPushIndex = containerPushBlock.statements.indexOf(containerPushStatement);
+  const containerCap = containerPushBlock.statements[containerPushIndex - 1];
+  nodeAssert.ok(
+    containerCap &&
+      ts.isIfStatement(containerCap) &&
+      containerCap.expression.getText(syntax) === "containerCandidates.length >= options.maximumContainers",
+    "The container cap must reject before retaining its overflow witness."
+  );
   const soleOverlayCapture = findFunction("captureSoleCodePreviewOverlayFrameElement");
-  const materializedInventories = descendantCalls(soleOverlayCapture.body!).filter(
+  const soleOverlayInspector = findFunction(SOLE_OVERLAY_INSPECTOR);
+  const materializedInventories = descendantCalls(soleOverlayInspector.body!).filter(
     (call) => ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "querySelectorAll"
   );
   nodeAssert.equal(
@@ -323,12 +424,22 @@ function assertAcquisitionOwnershipBinding(source: string): void {
       call.expression.name.text === "evaluateHandle"
   );
   nodeAssert.equal(boundedCaptures.length, 1, "Sole-overlay acquisition must retain one bounded renderer operation.");
+  nodeAssert.ok(
+    ts.isIdentifier(boundedCaptures[0].arguments[0]) && boundedCaptures[0].arguments[0].text === SOLE_OVERLAY_INSPECTOR,
+    "Sole-overlay acquisition must execute the reviewed bounded inspector."
+  );
   const captureOptions = boundedCaptures[0].arguments[1];
   nodeAssert.ok(ts.isObjectLiteralExpression(captureOptions), "Sole-overlay acquisition bounds must remain explicit.");
   nodeAssert.deepEqual(
     captureOptions.properties.map((property) => property.getText(syntax)),
     ["expected: expectedOuterFrame", "maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS"],
     "Sole-overlay acquisition must bind its exact frame and element cap."
+  );
+  nodeAssert.ok(
+    soleOverlayInspector
+      .body!.getText(syntax)
+      .includes("visited.size >= options.maximumElements || visited.has(active)"),
+    "Sole-overlay traversal must enforce its cap before inspecting the overflow witness."
   );
 }
 
@@ -387,6 +498,14 @@ function assertLiveInvocationBinding(source: string): void {
   );
 
   const editInvocation = findFunction(EDIT_LIVE_INVOCATION_FUNCTION);
+  const directActionCalls = descendantCalls(editInvocation.body!).filter(
+    (call) => ts.isIdentifier(call.expression) && call.expression.text === "action"
+  );
+  nodeAssert.equal(
+    directActionCalls.length,
+    0,
+    "The packaged edit path must not call the production action outside its settlement dispatch owner."
+  );
   const callSites = descendantCalls(editInvocation.body!).filter(
     (call) => ts.isIdentifier(call.expression) && call.expression.text === LIVE_INVOCATION_FUNCTION
   );
@@ -402,9 +521,91 @@ function assertLiveInvocationBinding(source: string): void {
     "`${description} authoritative final live action ownership`",
     "The packaged call site must preserve the final ownership diagnostic."
   );
+  const actionCallback = callSite.arguments[8];
+  nodeAssert.ok(ts.isArrowFunction(actionCallback), "The packaged call site must own one bounded action callback.");
   nodeAssert.ok(
-    ts.isArrowFunction(callSite.arguments[8]),
-    "The packaged call site must own one bounded action callback."
+    actionCallback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword),
+    "The packaged action callback must retain asynchronous settlement ownership."
+  );
+  nodeAssert.ok(ts.isBlock(actionCallback.body), "The packaged action callback must retain its settlement block.");
+  const actionStatements = Array.from(actionCallback.body.statements);
+  nodeAssert.equal(actionStatements.length, 9, "The packaged action callback must retain its exact settlement steps.");
+  nodeAssert.equal(
+    actionStatements[0].getText(syntax),
+    "options.assertProductionOwner?.();",
+    "The packaged action callback must first assert its production owner."
+  );
+  const actionTimeoutBinding = directVariable(actionStatements, "actionTimeoutMs");
+  nodeAssert.equal(
+    actionStatements.indexOf(actionTimeoutBinding.statement),
+    1,
+    "The action deadline must immediately follow the production-owner assertion."
+  );
+  const actionTimeout = actionTimeoutBinding.declaration;
+  nodeAssert.equal(
+    actionTimeout.initializer?.getText(syntax),
+    'remainingMs("invoking the production action")',
+    "The packaged action callback must derive its bounded remaining deadline before dispatch."
+  );
+  const actionOwnerBinding = directVariable(actionStatements, "actionOwner");
+  nodeAssert.equal(
+    actionStatements.indexOf(actionOwnerBinding.statement),
+    2,
+    "The one-shot settlement owner must be created before it is registered."
+  );
+  const actionOwner = actionOwnerBinding.declaration;
+  nodeAssert.ok(
+    actionOwner.initializer?.getText(syntax).startsWith("createCodePreviewActionSettlementOwner("),
+    "The packaged action callback must create its one-shot settlement owner."
+  );
+  nodeAssert.equal(
+    actionStatements[3].getText(syntax),
+    "actionSettlementHandles.set(target, [actionOwner]);",
+    "The settlement owner must be registered before the production action can dispatch."
+  );
+  nodeAssert.equal(
+    actionStatements[4].getText(syntax),
+    "actionInvoked = true;",
+    "The exactly-once action latch must precede dispatch."
+  );
+  const actionSettlementBinding = directVariable(actionStatements, "actionSettlement");
+  nodeAssert.equal(
+    actionStatements.indexOf(actionSettlementBinding.statement),
+    5,
+    "The production action must dispatch only after owner registration and the exactly-once latch."
+  );
+  const actionSettlement = actionSettlementBinding.declaration;
+  nodeAssert.equal(
+    actionSettlement.initializer?.getText(syntax),
+    "actionOwner.dispatch(action)",
+    "Only the registered settlement owner may dispatch the production action."
+  );
+  const outcomeBinding = directVariable(actionStatements, "outcome");
+  nodeAssert.equal(
+    actionStatements.indexOf(outcomeBinding.statement),
+    6,
+    "The bounded action await must immediately own the dispatched settlement."
+  );
+  const outcome = outcomeBinding.declaration;
+  nodeAssert.ok(
+    outcome.initializer &&
+      ts.isAwaitExpression(outcome.initializer) &&
+      outcome.initializer.expression.getText(syntax).startsWith("withAcceptanceOperationDeadline("),
+    "The production action result must remain owned by the bounded settlement await."
+  );
+  nodeAssert.equal(
+    actionStatements[8].getText(syntax),
+    "return outcome;",
+    "The packaged callback must return only the bounded non-undefined settlement result."
+  );
+  const nonUndefinedAssertions = descendantCalls(actionStatements[7]).filter(
+    (call) => call.expression.getText(syntax) === "assert.notEqual"
+  );
+  nodeAssert.equal(nonUndefinedAssertions.length, 1, "The bounded action outcome must reject undefined exactly once.");
+  nodeAssert.deepEqual(
+    nonUndefinedAssertions[0].arguments.slice(0, 2).map((argument) => argument.getText(syntax)),
+    ["outcome", "undefined"],
+    "The callback must validate the exact bounded action outcome."
   );
   nodeAssert.ok(ts.isReturnStatement(callSite.parent), "The final live invocation must remain the returned action.");
   const actionBlock = callSite.parent.parent;
@@ -422,6 +623,7 @@ function assertLiveInvocationBinding(source: string): void {
 function loadAuthority(): WorkbenchOwnershipAuthority {
   const path = resolve(process.cwd(), "src/test/extensionHost/index.ts");
   const source = readFileSync(path, "utf8");
+  assertAcquisitionOwnershipBinding(source);
   assertLiveOwnershipBinding(source);
   assertLiveInvocationBinding(source);
   const syntax = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
@@ -435,7 +637,11 @@ function loadAuthority(): WorkbenchOwnershipAuthority {
     "MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS",
     "CODE_PREVIEW_WORKBENCH_CONTAINERS"
   ]);
-  const functions = new Set(["assertCodePreviewWorkbenchOwnershipReceipt", "inspectCodePreviewWorkbenchOwnership"]);
+  const functions = new Set([
+    "assertCodePreviewWorkbenchOwnershipReceipt",
+    "inspectCodePreviewWorkbenchOwnership",
+    SOLE_OVERLAY_INSPECTOR
+  ]);
   const selected = syntax.statements.filter((statement) => {
     if (ts.isVariableStatement(statement)) {
       return statement.declarationList.declarations.some(
@@ -444,13 +650,14 @@ function loadAuthority(): WorkbenchOwnershipAuthority {
     }
     return ts.isFunctionDeclaration(statement) && statement.name !== undefined && functions.has(statement.name.text);
   });
-  expect(selected).toHaveLength(10);
+  expect(selected).toHaveLength(11);
   const compiled = ts.transpileModule(
     `${selected.map((statement) => statement.getText(syntax)).join("\n")}\n` +
       "globalThis.__openWranglerWorkbenchOwnershipAuthority = {" +
       "assertReceipt: assertCodePreviewWorkbenchOwnershipReceipt," +
       "containers: CODE_PREVIEW_WORKBENCH_CONTAINERS," +
       "inspect: inspectCodePreviewWorkbenchOwnership," +
+      "inspectSoleOverlay: inspectSoleCodePreviewOverlayFrameElement," +
       "limits: {" +
       "ancestors: MAX_CODE_PREVIEW_DOM_ANCESTORS," +
       "documentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS," +
@@ -811,11 +1018,70 @@ describe("Code Preview split-overlay workbench ownership", () => {
 
     const materializedSoleInventory = replaceExactlyOnce(
       source,
-      "          const root = element as unknown as Candidate;",
-      '          void (element as unknown as { querySelectorAll(selector: string): unknown }).querySelectorAll("iframe");\n' +
-        "          const root = element as unknown as Candidate;"
+      "  const root = element as Candidate;",
+      '  void (element as { querySelectorAll(selector: string): unknown }).querySelectorAll("iframe");\n' +
+        "  const root = element as Candidate;"
     );
     expect(() => assertAcquisitionOwnershipBinding(materializedSoleInventory)).toThrow(/must not materialize/u);
+
+    const removedSoleOverlayCap = replaceWithinTopLevelFunction(
+      source,
+      SOLE_OVERLAY_INSPECTOR,
+      "if (visited.size >= options.maximumElements || visited.has(active)) return null;",
+      "if (visited.has(active)) return null;"
+    );
+    expect(() => assertAcquisitionOwnershipBinding(removedSoleOverlayCap)).toThrow(/enforce its cap/u);
+
+    const retainBeforeContainerCap = replaceWithinTopLevelFunction(
+      source,
+      OWNERSHIP_INSPECTOR,
+      "              if (containerCandidates.length >= options.maximumContainers) {\n" +
+        '                return "supported-container-inventory-over-bound";\n' +
+        "              }\n" +
+        "              containerCandidates.push(candidate);",
+      "              containerCandidates.push(candidate);\n" +
+        "              if (containerCandidates.length > options.maximumContainers) {\n" +
+        '                return "supported-container-inventory-over-bound";\n' +
+        "              }"
+    );
+    expect(() => assertAcquisitionOwnershipBinding(retainBeforeContainerCap)).toThrow(/before retaining/u);
+
+    const unboundedFinalSelectorInventory = replaceWithinTopLevelFunction(
+      source,
+      LIVE_ACTION_FUNCTION,
+      "        const view = preview.cmTile?.view;",
+      "        const view = preview.cmTile?.view;\n" +
+        "        void (preview.ownerDocument as unknown as { querySelectorAll(selector: string): unknown })" +
+        ".querySelectorAll(options.selector);"
+    );
+    expect(() => assertLiveOwnershipBinding(unboundedFinalSelectorInventory)).toThrow(/must not materialize/u);
+
+    const directPreOwnershipAction = replaceWithinTopLevelFunction(
+      source,
+      EDIT_LIVE_INVOCATION_FUNCTION,
+      "          options.assertProductionOwner?.();",
+      "          await action();\n          options.assertProductionOwner?.();"
+    );
+    expect(() => assertLiveInvocationBinding(directPreOwnershipAction)).toThrow(/must not call the production action/u);
+
+    const droppedSettlementOwner = replaceWithinTopLevelFunction(
+      source,
+      EDIT_LIVE_INVOCATION_FUNCTION,
+      "          actionSettlementHandles.set(target, [actionOwner]);\n",
+      ""
+    );
+    expect(() => assertLiveInvocationBinding(droppedSettlementOwner)).toThrow(/exact settlement steps/u);
+
+    const unownedExpressionCallback = replaceCallArgumentInTopLevelFunction(
+      source,
+      EDIT_LIVE_INVOCATION_FUNCTION,
+      LIVE_INVOCATION_FUNCTION,
+      8,
+      "async () => action()"
+    );
+    expect(() => assertLiveInvocationBinding(unownedExpressionCallback)).toThrow(
+      /must not call the production action/u
+    );
   });
 
   it.each(SUPPORTED_WORKBENCH_CONTAINERS)(
@@ -1161,7 +1427,46 @@ describe("Code Preview split-overlay workbench ownership", () => {
     );
   });
 
+  it("executes sole-overlay acquisition at the exact cap and stops before its overflow witness", () => {
+    const exact = createFixture(authority);
+    const exactFiller = exact.makeElement({ parent: exact.overlayContent });
+    expect(
+      authority.inspectSoleOverlay(exact.overlayContent, {
+        expected: exact.outerFrame,
+        maximumElements: 3
+      })
+    ).toBe(exact.outerFrame);
+    expect(exact.traversalReads(exact.outerFrame)).toBeGreaterThan(0);
+    expect(exact.traversalReads(exactFiller)).toBeGreaterThan(0);
+
+    const overBound = createFixture(authority);
+    overBound.makeElement({ parent: overBound.overlayContent });
+    const overflowWitness = overBound.makeElement({ parent: overBound.overlayContent });
+    const sentinel = overBound.makeElement({ parent: overBound.overlayContent });
+    expect(
+      authority.inspectSoleOverlay(overBound.overlayContent, {
+        expected: overBound.outerFrame,
+        maximumElements: 3
+      })
+    ).toBeNull();
+    expect(overBound.traversalReads(overflowWitness)).toBe(0);
+    expect(overBound.traversalReads(sentinel)).toBe(0);
+  });
+
   it("stops every ownership inventory at its exact cap before traversing later elements", () => {
+    const exactContainerInventory = createFixture(authority);
+    exactContainerInventory.makeElement({
+      classNames: ["part", "panel"],
+      id: "workbench.parts.panel",
+      parent: exactContainerInventory.root
+    });
+    exactContainerInventory.makeElement({
+      classNames: ["part", "sidebar"],
+      id: "workbench.parts.sidebar",
+      parent: exactContainerInventory.root
+    });
+    expect(captureOwnership(authority, exactContainerInventory).reason).toBe("owned");
+
     const anchorInventory = createFixture(authority);
     anchorInventory.makeElement({
       parent: anchorInventory.anchorParent,

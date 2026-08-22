@@ -10001,10 +10001,10 @@ function inspectCodePreviewWorkbenchOwnership(
               candidate.id === descriptor.id &&
               candidate.classList.contains(descriptor.className)
             ) {
-              containerCandidates.push(candidate);
-              if (containerCandidates.length > options.maximumContainers) {
+              if (containerCandidates.length >= options.maximumContainers) {
                 return "supported-container-inventory-over-bound";
               }
+              containerCandidates.push(candidate);
               descriptorCounts[descriptorIndex] += 1;
             }
           }
@@ -11572,6 +11572,55 @@ async function captureCodePreviewWorkbenchOwnership(
   }
 }
 
+function inspectSoleCodePreviewOverlayFrameElement(
+  element: unknown,
+  options: Readonly<{ expected: unknown; maximumElements: number }>
+): unknown | null {
+  type Candidate = {
+    readonly firstElementChild: Candidate | null;
+    readonly nextElementSibling: Candidate | null;
+    readonly parentElement: Candidate | null;
+    readonly tagName: string;
+  };
+  if (!Number.isSafeInteger(options.maximumElements) || options.maximumElements < 1) return null;
+  const root = element as Candidate;
+  const expected = options.expected as Candidate;
+  const visited = new Set<Candidate>();
+  let current: Candidate | null = root;
+  let exactCount = 0;
+  let frameCount = 0;
+  while (current !== null) {
+    const active: Candidate = current;
+    if (visited.size >= options.maximumElements || visited.has(active)) return null;
+    visited.add(active);
+    if (active !== root && active.tagName === "IFRAME") {
+      frameCount += 1;
+      if (active === expected) exactCount += 1;
+      if (frameCount > 1) return null;
+    }
+    const child: Candidate | null = active.firstElementChild;
+    if (child !== null) {
+      if (child.parentElement !== active) return null;
+      current = child;
+      continue;
+    }
+    let branch: Candidate = active;
+    while (branch !== root && branch.nextElementSibling === null) {
+      const parent: Candidate | null = branch.parentElement;
+      if (parent === null) return null;
+      branch = parent;
+    }
+    if (branch === root) {
+      current = null;
+    } else {
+      const sibling: Candidate | null = branch.nextElementSibling;
+      if (sibling === null || sibling.parentElement !== branch.parentElement) return null;
+      current = sibling;
+    }
+  }
+  return frameCount === 1 && exactCount === 1 ? expected : null;
+}
+
 async function captureSoleCodePreviewOverlayFrameElement(
   overlayContent: CodePreviewWorkbenchHandle,
   expectedOuterFrame: CodePreviewWorkbenchHandle,
@@ -11580,53 +11629,10 @@ async function captureSoleCodePreviewOverlayFrameElement(
 ): Promise<CodePreviewWorkbenchHandle> {
   const candidate = await acquireCodePreviewOwnedHandle(
     () =>
-      overlayContent.evaluateHandle(
-        (element, options) => {
-          type Candidate = {
-            readonly firstElementChild: Candidate | null;
-            readonly nextElementSibling: Candidate | null;
-            readonly parentElement: Candidate | null;
-            readonly tagName: string;
-          };
-          const root = element as unknown as Candidate;
-          const expected = options.expected as unknown as Candidate;
-          const visited = new Set<Candidate>();
-          let current: Candidate | null = root;
-          let exactCount = 0;
-          let frameCount = 0;
-          while (current !== null) {
-            const active: Candidate = current;
-            if (visited.size >= options.maximumElements || visited.has(active)) return null;
-            visited.add(active);
-            if (active !== root && active.tagName === "IFRAME") {
-              frameCount += 1;
-              if (active === expected) exactCount += 1;
-              if (frameCount > 1) return null;
-            }
-            const child: Candidate | null = active.firstElementChild;
-            if (child !== null) {
-              if (child.parentElement !== active) return null;
-              current = child;
-              continue;
-            }
-            let branch: Candidate = active;
-            while (branch !== root && branch.nextElementSibling === null) {
-              const parent: Candidate | null = branch.parentElement;
-              if (parent === null) return null;
-              branch = parent;
-            }
-            if (branch === root) {
-              current = null;
-            } else {
-              const sibling: Candidate | null = branch.nextElementSibling;
-              if (sibling === null || sibling.parentElement !== branch.parentElement) return null;
-              current = sibling;
-            }
-          }
-          return frameCount === 1 && exactCount === 1 ? expected : null;
-        },
-        { expected: expectedOuterFrame, maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS }
-      ),
+      overlayContent.evaluateHandle(inspectSoleCodePreviewOverlayFrameElement, {
+        expected: expectedOuterFrame,
+        maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS
+      }),
     bounded,
     "atomically pinning the sole Code Preview webview-overlay iframe",
     description
@@ -11793,9 +11799,11 @@ async function assertLiveCodePreviewActionOwnership(
           readonly width: number;
         };
         type VisibleElement = {
+          readonly firstElementChild: VisibleElement | null;
           readonly isConnected: boolean;
+          readonly nextElementSibling: VisibleElement | null;
           readonly ownerDocument: {
-            readonly documentElement: unknown;
+            readonly documentElement: VisibleElement;
             readonly defaultView: null | {
               readonly innerHeight: number;
               readonly innerWidth: number;
@@ -11805,10 +11813,10 @@ async function assertLiveCodePreviewActionOwnership(
                 readonly visibility: string;
               };
             };
-            querySelectorAll(selector: string): { readonly [index: number]: unknown; readonly length: number };
           };
           readonly parentElement: VisibleElement | null;
           getBoundingClientRect(): Rectangle;
+          matches(selector: string): boolean;
         };
         type PreviewElement = VisibleElement & {
           readonly isContentEditable: boolean;
@@ -11842,7 +11850,52 @@ async function assertLiveCodePreviewActionOwnership(
         const preview = element as unknown as PreviewElement;
         const scroller = options.exactScroller as unknown as VisibleElement;
         const view = preview.cmTile?.view;
-        const matches = preview.ownerDocument.querySelectorAll(options.selector);
+        let selectorCount = 0;
+        let selectorOwnsPreview = false;
+        let selectorInventoryWithinBound = Number.isSafeInteger(options.maximumElements) && options.maximumElements > 0;
+        const visited = new Set<VisibleElement>();
+        let candidate: VisibleElement | null = preview.ownerDocument.documentElement;
+        while (selectorInventoryWithinBound && candidate !== null) {
+          const active: VisibleElement = candidate;
+          if (visited.size >= options.maximumElements || visited.has(active)) {
+            selectorInventoryWithinBound = false;
+            break;
+          }
+          visited.add(active);
+          if (active.matches(options.selector)) {
+            selectorCount += 1;
+            if (active === preview) selectorOwnsPreview = true;
+            if (selectorCount > 1) break;
+          }
+          const child: VisibleElement | null = active.firstElementChild;
+          if (child !== null) {
+            if (child.parentElement !== active) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            candidate = child;
+            continue;
+          }
+          let branch: VisibleElement = active;
+          while (branch !== preview.ownerDocument.documentElement && branch.nextElementSibling === null) {
+            const parent: VisibleElement | null = branch.parentElement;
+            if (parent === null) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            branch = parent;
+          }
+          if (!selectorInventoryWithinBound || branch === preview.ownerDocument.documentElement) {
+            candidate = null;
+          } else {
+            const sibling: VisibleElement | null = branch.nextElementSibling;
+            if (sibling === null || sibling.parentElement !== branch.parentElement) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            candidate = sibling;
+          }
+        }
         let ancestor: VisibleElement | null = preview;
         let ancestorCount = 0;
         let ancestorsConnectedAndVisible = true;
@@ -11873,12 +11926,18 @@ async function assertLiveCodePreviewActionOwnership(
           scrollerConnected: scroller.isConnected,
           scrollerExact: view?.scrollDOM === scroller,
           scrollerVisible: visible(scroller),
-          selectorCount: matches.length,
-          selectorOwnsPreview: matches.length === 1 && matches[0] === preview,
+          selectorCount,
+          selectorInventoryWithinBound,
+          selectorOwnsPreview: selectorCount === 1 && selectorOwnsPreview,
           reachedDocumentBoundary
         };
       },
-      { exactScroller: target.scroller, maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS, selector }
+      {
+        exactScroller: target.scroller,
+        maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
+        maximumElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
+        selector: selector
+      }
     );
     return Promise.all([ownership, frameChain, generationCounts, editor] as const).then(
       ([ownershipReceipt, frameChainReceipt, counts, editorReceipt]) => ({
@@ -11944,7 +12003,9 @@ async function assertLiveCodePreviewActionOwnership(
     `${description} requires the exact CodeMirror preview and scroller to remain visible.`
   );
   assert.equal(
-    receipt.editor.selectorCount === 1 && receipt.editor.selectorOwnsPreview,
+    receipt.editor.selectorInventoryWithinBound &&
+      receipt.editor.selectorCount === 1 &&
+      receipt.editor.selectorOwnsPreview,
     true,
     `${description} requires one exact selector-owned Code Preview element in the selected renderer.`
   );
