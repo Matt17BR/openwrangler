@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { EditorActionMessage } from "../webviews/appState";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -1678,13 +1679,6 @@ function dispatch(
   data: OpenWranglerResponse | EditorActionMessage | ViewStateMessage | StepInspectionClearedMessage
 ): void {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
-}
-
-interface EditorActionMessage {
-  kind: "editorAction";
-  action: "undoStep" | "openOperation" | "selectStep";
-  operationKind?: "customCode";
-  stepId?: string;
 }
 
 interface ViewStateMessage {
