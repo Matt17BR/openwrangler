@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { load as parseYaml } from "js-yaml";
 import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
@@ -15,7 +14,7 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
-import { inspectNodeToolchainContract, isGithubWorkflowFile } from "./node-toolchain-contract.mjs";
+import { inspectNodeToolchainContract, loadBoundedNodeToolchainWorkflowDocuments } from "./node-toolchain-contract.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -52,13 +51,7 @@ if (typeof packageLock !== "object" || packageLock === null || Array.isArray(pac
 }
 const contributingSource = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8");
 const releasingSource = readFileSync(resolve(root, "docs/releasing.md"), "utf8");
-const workflowRoot = resolve(root, ".github/workflows");
-const workflowDocuments = Object.fromEntries(
-  readdirSync(workflowRoot)
-    .filter(isGithubWorkflowFile)
-    .sort()
-    .map((name) => [name, parseYaml(readFileSync(resolve(workflowRoot, name), "utf8"))])
-);
+const workflowDocuments = loadBoundedNodeToolchainWorkflowDocuments({ root });
 const nodeToolchainProblems = inspectNodeToolchainContract({
   azureSource: readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8"),
   changelogSource: readFileSync(resolve(root, "CHANGELOG.md"), "utf8"),
