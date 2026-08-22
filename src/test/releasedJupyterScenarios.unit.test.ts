@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PACKAGED_EVIDENCE_SCENES } from "./extensionHost/evidenceScenes";
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   RELEASED_JUPYTER_SCENARIOS,
   releasedJupyterScenario,
   type ExtensionHostTestSelector
@@ -23,6 +24,7 @@ describe("released Jupyter scenarios", () => {
       "jupyter-allow:default",
       "jupyter-allow:candidate-compatibility-seam",
       "jupyter-pyspark:default",
+      "jupyter-pyspark:pyspark-prerelease-denial",
       "jupyter-remote:default",
       "jupyter-r:default",
       "jupyter-r:core-operations",
@@ -55,6 +57,11 @@ describe("released Jupyter scenarios", () => {
     );
     expect(scenario("jupyter-allow", CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, "vscode")).toBeUndefined();
     expect(scenario("jupyter-deny", CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, "cursor")).toBeUndefined();
+    expect(scenario("jupyter-pyspark", PYSPARK_PRERELEASE_DENIAL_SELECTOR, "vscode")?.runnerKey).toBe(
+      "released-jupyter"
+    );
+    expect(scenario("jupyter-pyspark", PYSPARK_PRERELEASE_DENIAL_SELECTOR, "cursor")).toBeUndefined();
+    expect(scenario("jupyter-allow", PYSPARK_PRERELEASE_DENIAL_SELECTOR, "vscode")).toBeUndefined();
     expect(scenario("jupyter-r", "interactive-terminal")?.runnerKey).toBe("focused-r-interactive");
     expect(scenario("jupyter-r", "literate-documents")?.runnerKey).toBe("focused-r-literate");
     expect(scenario("jupyter-r-remote", "native-frames")).toBeUndefined();

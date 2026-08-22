@@ -1,11 +1,12 @@
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   EXTENSION_HOST_TEST_SELECTORS,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   releasedJupyterScenario
 } from "./releasedJupyterScenarios";
 import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./releasedJupyterScenarios";
 
-export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, EXTENSION_HOST_TEST_SELECTORS };
+export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, EXTENSION_HOST_TEST_SELECTORS, PYSPARK_PRERELEASE_DENIAL_SELECTOR };
 export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
 export type DataWranglerCoexistencePhase =
@@ -35,16 +36,19 @@ export interface ExtensionHostPhaseHandlers {
   readonly focusedRLiterateDocuments: () => Promise<void>;
   readonly platformSmoke: () => Promise<void>;
   readonly pythonEnvironment: () => Promise<void>;
-  readonly releasedJupyter: (phase: ReleasedJupyterDispatchPhase) => Promise<void>;
+  readonly releasedJupyter: (
+    phase: ReleasedJupyterDispatchPhase,
+    selector: ExtensionHostTestSelector | undefined
+  ) => Promise<void>;
   readonly remoteWorkspace: () => Promise<void>;
   readonly seed: () => Promise<void>;
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
-  "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r.";
+  "candidate-compatibility-seam requires jupyter-allow in Cursor; pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r.";
 
 const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
 
@@ -110,7 +114,7 @@ export async function dispatchExtensionHostPhase(
     return true;
   }
   if (releasedJupyter?.runnerKey === "released-jupyter") {
-    await handlers.releasedJupyter(releasedJupyter.phaseId);
+    await handlers.releasedJupyter(releasedJupyter.phaseId, releasedJupyter.selector);
     return true;
   }
   if (selection.phase === "python-environment") {

@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.</p>
+<p align="center">Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png" width="960"></a>
 
@@ -95,7 +95,7 @@ Windows extension host rejects it. IRkernel notebooks work on Windows.
 
 ## Why Open Wrangler
 
-- View and clean Pandas, Polars, R, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.
+- View and clean Pandas, Polars, R, or file-backed DuckDB data without conversion. DuckDB notebook relations and local stable/final PySpark 4.2.x Classic/Connect dataframes are view-only.
 - Each cleaning step previews changed values and generated code before you apply it.
 - Filters and multi-column sorts change only the view. Active typed filters stay above the grid, where each rule can
   be removed, all filters can be cleared without dropping sorts, and the latest confirmed filter change can be
@@ -247,11 +247,11 @@ Choose Notebook Preview Provider**.
   </tr>
   <tr>
     <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Local PySpark 4.2.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles.</td>
+    <td>Local stable/final PySpark 4.2.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
-PySpark support is notebook-only and view-only. It uses an existing local 4.2 Classic or Connect session; Open
+PySpark support is notebook-only and view-only. It uses an existing local stable/final PySpark 4.2.x Classic or Connect session; Open
 Wrangler does not install or configure Spark. Streaming DataFrames and remote or authenticated clusters are not
 supported.
 
@@ -356,17 +356,17 @@ also shows the variable picker, profiles, and generated code inserted into a not
 
 ## Engines and formats
 
-| Engine               | Files                                     | Notebook data                         | How it runs                                                |
-| -------------------- | ----------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; LazyFrame sessions stay lazy                       |
-| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                  |
-| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only                |
-| PySpark 4.2.x        | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles  |
-| R (1.99 preview)     | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel, selected VS Code R terminal, or document Rscript |
+| Engine                      | Files                                     | Notebook data                         | How it runs                                                |
+| --------------------------- | ----------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
+| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; LazyFrame sessions stay lazy                       |
+| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                  |
+| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only                |
+| PySpark 4.2.x, stable/final | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles  |
+| R (1.99 preview)            | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel, selected VS Code R terminal, or document Rscript |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
-PySpark 4.2 Classic/Connect batch DataFrames. Polars LazyFrames remain lazy when opened from a notebook. Pages and
+stable/final PySpark 4.2.x Classic/Connect batch DataFrames. Polars LazyFrames remain lazy when opened from a notebook. Pages and
 profiles collect only bounded results. One-hot encode and Multi-label binarize materialize a lazy result when you
 preview those operations because their output columns depend on the values in the dataframe. Custom Polars code can
 also choose to return an eager DataFrame.
