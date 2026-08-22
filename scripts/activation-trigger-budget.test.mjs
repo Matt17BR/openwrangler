@@ -78,7 +78,7 @@ test("production activation trigger classes stay within their closed runtime-sou
     }
   }
   assert.equal(report.activationEvents.discovered.length, Object.keys(activationEventClassifications).length);
-  assert.equal(report.activationEvents.explicit.length, 51);
+  assert.equal(report.activationEvents.explicit.length, 52);
   assert.equal(report.activationEvents.contributedCommands.length, 43);
   assert.deepEqual(report.activationEvents.contributedViews, [
     "openWrangler.cleaningSteps",
@@ -116,6 +116,7 @@ test("one trigger contract owns both activation events and runtime closures", ()
   );
   assert.deepEqual(activationTriggerContract["test-api"].events, []);
   assert.deepEqual(activationTriggerContract["test-api"].roots, ["src/extension/activate.ts"]);
+  assert.equal(activationEventClassifications["onRenderer:openWrangler.inlineHtmlUpgrade"], "notebook");
 });
 
 test("production lazy loaders emit only deferred literal CommonJS requires", async () => {

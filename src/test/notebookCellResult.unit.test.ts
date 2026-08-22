@@ -79,6 +79,63 @@ describe("executed notebook cell result action", () => {
     expect(await trackedStatusItem(codeCell(document, 4, [output("DataFrame[id: bigint]")]))).toBeDefined();
   });
 
+  it("rejects an over-limit output-container cell before reading a trailing output", async () => {
+    const document = notebook("file:///status-output-container-cap.ipynb");
+    const matchedOutput = output("DataFrame[id: bigint]");
+    const cell = codeCell(document, 4, [matchedOutput]);
+    setCells(document, [cell]);
+    let trailingItemsRead = 0;
+    const trailingOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        trailingItemsRead += 1;
+        return [{ mime: "text/html", data: new Uint8Array(1) }];
+      }
+    });
+    Object.defineProperty(cell, "outputs", {
+      configurable: true,
+      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
+    });
+
+    expect(await trackedStatusItem(cell)).toBeUndefined();
+    expect(trailingItemsRead).toBe(0);
+  });
+
+  it("rejects an initial cross-cell candidate before reading an early output getter", async () => {
+    const document = notebook("file:///initial-cross-cell-output-container-cap.ipynb");
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
+      }
+    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const matchedCell = codeCell(document, 3, [output("<table><tr><td>candidate</td></tr></table>", "text/html")]);
+    const overLimitCell = codeCell(document, 4, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    const earlyOutputs = earlyCell.outputs;
+    const matchedOutputs = matchedCell.outputs;
+    const overLimitOutputs = overLimitCell.outputs;
+    Object.defineProperty(earlyCell, "outputs", { configurable: true, get: () => earlyOutputs.slice() });
+    Object.defineProperty(matchedCell, "outputs", { configurable: true, get: () => matchedOutputs.slice() });
+    Object.defineProperty(overLimitCell, "outputs", {
+      configurable: true,
+      get: () => overLimitOutputs.slice()
+    });
+    setCells(document, [earlyCell, matchedCell, overLimitCell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    await expect(
+      tracker.bindInlineUpgrade(exactEditor, { byteLength: 1, sha256: "a".repeat(64) })
+    ).resolves.toBeUndefined();
+
+    expect(earlyItemsRead).toBe(0);
+    tracker.dispose();
+  });
+
   it("publishes an eligible status item without waiting for another kernel lookup", async () => {
     const document = notebook("file:///synchronous-status-item.ipynb");
     const cell = codeCell(document, 4);

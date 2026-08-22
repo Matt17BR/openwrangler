@@ -60,6 +60,7 @@ export const activationTriggerContract = defineActivationTriggerContract({
       "onCommand:openWrangler.openCachedNotebookVariable",
       "onCommand:openWrangler.checkJupyterIntegration",
       "onRenderer:openWrangler.renderer",
+      "onRenderer:openWrangler.inlineHtmlUpgrade",
       "onNotebook:jupyter-notebook",
       "onNotebook:interactive"
     ],

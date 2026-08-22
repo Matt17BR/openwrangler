@@ -96,7 +96,8 @@ export class KernelBridge implements OpenWranglerBridge {
     private readonly context: vscode.ExtensionContext,
     private readonly notebookDocument: vscode.NotebookDocument,
     private readonly registerNotebookFormatters = true,
-    private readonly fileOperations: KernelBridgeFileOperations = {}
+    private readonly fileOperations: KernelBridgeFileOperations = {},
+    private readonly requiredKernelBinding?: ExecutedNotebookCellResultBinding
   ) {
     this.notebookUri = notebookDocument.uri;
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
@@ -251,17 +252,29 @@ export class KernelBridge implements OpenWranglerBridge {
     const completion = (async () => {
       await this.lifecycle.run(
         async (acquired) => {
-          this.observeKernelStatus(acquired);
+          this.assertRequiredKernelBinding(acquired);
+          const observation = this.observeKernelStatus(acquired);
           await this.ensureKernelAgent(acquired.kernel, true);
+          if (this.requiredKernelBinding) await this.assertKernelStillSelected(acquired, observation);
         },
         async () => undefined,
         {
           retryAfterDispatch: true,
-          shouldRetry: (_error, phase) => phase !== "acquire" && phase !== "beforeDispatch",
-          beforeDispatch: () => this.assertNotebookProvenance()
+          shouldRetry: (error, phase) =>
+            !(this.requiredKernelBinding && error instanceof SelectedKernelChangedError) &&
+            phase !== "acquire" &&
+            phase !== "beforeDispatch",
+          beforeDispatch: async (acquired) => {
+            this.assertNotebookProvenance();
+            this.assertRequiredKernelBinding(acquired);
+            if (this.requiredKernelBinding) {
+              await this.assertKernelStillSelected(acquired, this.requireKernelObservation(acquired));
+            }
+          }
         }
       );
       this.assertNotebookProvenance();
+      this.assertRequiredKernelBinding();
     })();
     const settlement = Promise.race([
       completion.then<NotebookFormatterPreparationSettlement, NotebookFormatterPreparationSettlement>(
@@ -372,6 +385,7 @@ export class KernelBridge implements OpenWranglerBridge {
       }
     }
     const assertRequiredKernel = (acquired: AcquiredKernel): void => {
+      this.assertRequiredKernelBinding(acquired);
       if (requiredKernel && acquired.kernel !== requiredKernel) {
         throw new SelectedKernelChangedError(
           "The notebook kernel changed before Open Wrangler could recover the live variable on its originating kernel."
@@ -394,7 +408,10 @@ export class KernelBridge implements OpenWranglerBridge {
       }
     };
     const isCleanup = runtimeRequest.kind === "closeSession";
-    if (!isCleanup) this.assertNotebookProvenance();
+    if (!isCleanup) {
+      this.assertNotebookProvenance();
+      this.assertRequiredKernelBinding();
+    }
     const reportsNotebookOpenProgress =
       runtimeRequest.kind === "openSession" && runtimeRequest.source.kind === "notebookVariable";
     if (runtimeRequest.kind === "openSession") {
@@ -403,6 +420,7 @@ export class KernelBridge implements OpenWranglerBridge {
     let framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
     const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     let requestObservation: KernelObservation | undefined;
+    let requestAcquired: AcquiredKernel | undefined;
     const requestLifecycleVersion = this.lifecycleVersion;
     let requestDispatched = false;
     let bootstrapSettlement: Promise<void> | undefined;
@@ -426,6 +444,7 @@ export class KernelBridge implements OpenWranglerBridge {
       operation = this.lifecycle.run(
         async (acquired) => {
           assertRequiredKernel(acquired);
+          requestAcquired = acquired;
           const observation = this.observeKernelStatus(acquired);
           requestObservation = observation;
           try {
@@ -438,6 +457,7 @@ export class KernelBridge implements OpenWranglerBridge {
         },
         async (acquired) => {
           assertRequiredKernel(acquired);
+          requestAcquired = acquired;
           const observation = this.requireKernelObservation(acquired);
           requestObservation = observation;
           try {
@@ -472,7 +492,7 @@ export class KernelBridge implements OpenWranglerBridge {
           retryAfterDispatch: isIdempotentKernelReadRequest(runtimeRequest),
           shouldRetry: (error, phase) =>
             hostDetachReason === undefined &&
-            !(requiredKernel && error instanceof SelectedKernelChangedError) &&
+            !((requiredKernel || this.requiredKernelBinding) && error instanceof SelectedKernelChangedError) &&
             phase !== "acquire" &&
             (phase !== "beforeDispatch" || error instanceof SelectedKernelChangedError),
           onBootstrapPending: (settlement) => {
@@ -494,10 +514,14 @@ export class KernelBridge implements OpenWranglerBridge {
             // inspecting the replacement generation.
             framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
             assertRequiredKernel(acquired);
+            requestAcquired = acquired;
             const observation = this.requireKernelObservation(acquired);
             requestObservation = observation;
             if (hostDetachReason) throw new KernelRequestCancelledError();
             if (!isCleanup) this.assertNotebookProvenance();
+            if (this.requiredKernelBinding) {
+              await assertKernelStillSelectedForRequest(acquired, observation);
+            }
             if (reportsNotebookOpenProgress && runtimeRequest.kind === "openSession") {
               let isPySpark = runtimeRequest.backend === "pyspark";
               if (runtimeRequest.backend === undefined || runtimeRequest.backend === "pyspark") {
@@ -539,7 +563,15 @@ export class KernelBridge implements OpenWranglerBridge {
         options.cancellation,
         () => detach("cancellation")
       );
-      if (!isCleanup) this.assertNotebookProvenance();
+      if (!isCleanup) {
+        this.assertNotebookProvenance();
+        if (this.requiredKernelBinding) {
+          if (!requestAcquired || !requestObservation) {
+            throw new SelectedKernelChangedError();
+          }
+          await assertKernelStillSelectedForRequest(requestAcquired, requestObservation);
+        }
+      }
       if (runtimeRequest.kind === "openSession") {
         if (response.kind !== "sessionOpened") {
           // A logical error or cancellation is not proof that the open never
@@ -740,9 +772,11 @@ export class KernelBridge implements OpenWranglerBridge {
   private async assertKernelStillSelected(acquired: AcquiredKernel, observation: KernelObservation): Promise<void> {
     this.requireKernelObservation(acquired);
     this.assertNotebookProvenance();
+    this.assertRequiredKernelBinding(acquired);
     const selected = await acquired.jupyter.kernels.getKernel(this.notebookUri);
     this.assertNotebookProvenance();
     this.requireKernelObservation(acquired);
+    this.assertRequiredKernelBinding(acquired);
     if (selected === acquired.kernel) return;
     this.invalidateLifecycle(observation);
     throw new SelectedKernelChangedError();
@@ -776,6 +810,7 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
 
   private async acquireKernel(): Promise<AcquiredKernel> {
     this.assertNotebookProvenance();
+    this.assertRequiredKernelBinding();
     if (!vscode.workspace.isTrusted) {
       throw new Error("Trust this workspace before Open Wrangler accesses a notebook kernel.");
     }
@@ -786,17 +821,29 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
     }
     const api = await jupyter.activate();
     this.assertNotebookProvenance();
-    const kernel = await api.kernels.getKernel(this.notebookUri);
+    this.assertRequiredKernelBinding();
+    const selectedKernel = await api.kernels.getKernel(this.notebookUri);
     this.assertNotebookProvenance();
-    if (!kernel) {
+    this.assertRequiredKernelBinding();
+    if (!selectedKernel) {
       throw new Error(
         "Select or start a Python kernel, run the cell that defines the dataframe, and choose Open in Open Wrangler again."
       );
     }
+    const kernel = this.requiredKernelBinding?.kernel ?? selectedKernel;
+    if (selectedKernel !== kernel) throw new SelectedKernelChangedError();
     if (kernel.language.toLowerCase() !== "python") {
       throw new Error(`Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`);
     }
     return { jupyter: api, kernel };
+  }
+
+  private assertRequiredKernelBinding(acquired?: AcquiredKernel): void {
+    const binding = this.requiredKernelBinding;
+    if (!binding) return;
+    if (!binding.isValid() || (acquired && acquired.kernel !== binding.kernel)) {
+      throw new SelectedKernelChangedError();
+    }
   }
 
   private observeKernelStatus(acquired: AcquiredKernel): KernelObservation {
