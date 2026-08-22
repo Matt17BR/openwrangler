@@ -182,6 +182,13 @@ otherwise run `npm run check:pr`, the focused tests for the changed owner, and t
 pull-request CI requires every lane selected by its path classifier before merge. Release-only consumers run later
 against the protected release candidate; they are not default pull-request jobs.
 
+Concurrent agent qualification must use `npm run qualification:isolate` with one sealed assignment per task. Each
+assignment names a distinct canonical worktree, authoritative Git metadata owner and executable, exact base/head/tree,
+and absent task-owned state root. Never alias or reuse another task's Git metadata, Python environment,
+`node_modules`, tool path, cache, browser profile, process tree, temporary directory, or artifact directory. The runner
+binds worktree Git commands to that exact metadata owner, receipts every effective config source, validates and
+records ownership, and does not create, delete, or recycle worktrees or state roots.
+
 ```bash
 npm run check:pr
 npm test

@@ -24,9 +24,99 @@ points.
 Use `npm run check:pr` as the authoritative local gate for an ordinary change. It runs the complete static
 `check` branch and ordinary `test` branch concurrently, caps top-level parallelism at two, labels both branches, and
 waits for both to report even when one fails. Do not run another memory-intensive command alongside it. The
-repository cannot coordinate separate clones or worktrees, so cross-worktree resource isolation remains an operator
-responsibility. Use a narrower focused command while iterating, and reserve the complete editor/platform/release
-matrix for release candidates or changes that cross those boundaries.
+qualification-isolation runner keeps separately assigned worktrees from sharing mutable environments, caches,
+profiles, temporary files, or artifacts. Use a narrower focused command while iterating, and reserve the complete
+editor/platform/release matrix for release candidates or changes that cross those boundaries.
+
+### Concurrent task qualification
+
+Run concurrent agent checks through a sealed assignment:
+
+```bash
+npm run qualification:isolate -- \
+  --assignment /absolute/path/to/qualification-assignment.json -- \
+  /absolute/path/to/task-qualification-command
+```
+
+The assignment is a regular, singly linked JSON file with this exact shape:
+
+```json
+{
+  "protocol": "openwrangler-qualification-assignment-v1",
+  "taskId": "opaque-task-id",
+  "issue": 728,
+  "worktree": "/absolute/canonical/task-worktree",
+  "gitDirectory": "/absolute/canonical/task-git-metadata",
+  "gitExecutable": "/absolute/canonical/git-executable",
+  "base": "0000000000000000000000000000000000000000",
+  "head": "1111111111111111111111111111111111111111",
+  "tree": "2222222222222222222222222222222222222222",
+  "branch": "fix/example",
+  "stateRoot": "/absolute/canonical/absent-task-state-root",
+  "runId": "opaque-run-id"
+}
+```
+
+The coordinator supplies the task, issue, branch, base, worktree, authoritative Git metadata directory, canonical Git
+executable, and state-root ownership. The owner seals `head` and `tree` immediately before the run. This explicit Git
+owner supports task metadata overlays without falling back to a stale linked `.git` entry. Worktree, Git, and
+state-root paths must be absolute, canonical, and free of symbolic-link aliases; worktree and state root are
+disjoint. The source must start clean at the exact branch, head, tree, and base ancestry through that sealed Git
+owner. A state root is single use: the runner creates it exclusively and rejects a pre-existing path.
+
+The state root contains all mutable qualification state:
+
+```text
+<stateRoot>/
+  assignment.json
+  artifacts/qualification-receipt.json
+  browser/{playwright,profile}/
+  home/
+  node/{corepack,npm-cache,npm-prefix,npm-userconfig,tool-shims}
+  python/{bytecode,pip-cache,pytest-cache,pytest-temp,ruff-cache,venv}/
+  r/{cache,library,user}/
+  runs/<runId>/
+  temp/
+  xdg/{cache,config,data,runtime,state}/
+```
+
+`node_modules` and Vite/Vitest transform caches remain inside the unique worktree. The runner rejects a linked
+`node_modules`, assigns npm and Corepack caches to the state root, and sets Python, pytest, Ruff, Playwright, browser,
+home, XDG, R, temporary, and artifact variables to the listed task-owned paths. A command that needs Python creates
+and installs its interpreter in the assigned `python/venv` before invoking commands such as `npm run check:pr`; it
+must not fall back to another task's environment. `PATH` is runner-owned and contains only the task venv, a pinned
+private Git launcher, and canonical directories that own the sealed Git, Node, and operating-system tools; the
+caller's mutable `PATH` is never inherited. The private launcher binds Git commands issued from the assigned
+worktree to the sealed metadata overlay, while Git commands inside a task-owned nested fixture remain local to that
+fixture and receive no authoritative-checkout overrides.
+
+Pytest receives one randomized, initially absent `--basetemp` below a pinned private parent. The final receipt
+streams that complete parent without retaining or sorting an unbounded directory listing, permits no sibling beside
+the assigned basetemp, and binds its entry, path-byte, file-byte, link, and mount inventory. Linux uses descriptor
+mount IDs so a same-device bind mount still fails; Windows rejects reparse aliases while retaining the pinned volume
+owner. An absent basetemp is receipted explicitly when a qualification command does not invoke pytest.
+
+The receipt records the assignment digest, command, worktree, authoritative Git-directory/executable filesystem
+identities, every effective system, global, included, worktree, and local Git config source with its exact bytes and
+scope, exact
+base/head/tree/branch, environment layout, result, and post-command identity. It is eligible only when the assignment,
+source, Git metadata, and state-root directories retain their identities and the command succeeds. Source or
+assignment mutation produces a nonzero result and an explicitly ineligible receipt. Invalid aliases fail before a
+state root or receipt is created. Linux execution uses an inherited descriptor for the verified executable snapshot
+and a subreaper that repeatedly adopts, signals, and reaps new sessions or process groups through its bounded
+termination phases. Other POSIX hosts are explicitly unsupported: the runner launches no qualification command and
+publishes a terminal ineligible receipt. Windows derives its system tools from the Node executable's installation
+drive instead of inherited `SYSTEMROOT` or `WINDIR`, pins that PowerShell owner, uses the existing kill-on-close Job
+Object supervisor, and revalidates the private target snapshot immediately before launch. PowerShell receives the
+Job Object script through an encoded loader that waits on a private pre-load control barrier, opens the verified
+snapshot with write/delete sharing denied, checks its exact size and SHA-256, and keeps that handle open while the
+script runs. A missing load marker or final Job Object empty attestation leaves process ownership unverified and
+withholds qualification eligibility.
+
+The runner performs no cleanup and never reuses a root. After the receipt is handed off and all owned processes have
+ended, the assigned task may remove only its exact worktree and state root under the portfolio cleanup policy. An
+uncertain, missing, aliased, or identity-changed path is left in place for the coordinator; no sibling is inspected or
+removed.
 
 - `npm run check:pr` is the fail-complete default PR command. It preserves every invariant in `npm run check` and
   `npm test`; concurrency changes wall time, not the test inventory. The two-branch ceiling is the local resource
