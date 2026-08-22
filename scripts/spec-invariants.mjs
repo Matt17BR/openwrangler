@@ -718,6 +718,8 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
+const cleaningHistoryDecodedBoundarySentinel = "\u{10fffd}";
+const cleaningHistoryDecodedBoundarySentinelCodePoint = cleaningHistoryDecodedBoundarySentinel.codePointAt(0);
 const cleaningHistorySentenceTerminal = /\p{Sentence_Terminal}/u;
 const cleaningHistoryRenderedBoundaryCodePoints = new Set([
   0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x0589, 0x061b, 0x061f, 0x06d4, 0x0964, 0x0965, 0x1362, 0x1367, 0x1368, 0x2028, 0x2029,
@@ -791,7 +793,9 @@ const cleaningHistoryNominalizedCapabilities = new Set([
   "editing",
   "edits",
   "inspection",
-  "inspections"
+  "inspections",
+  "modification",
+  "modifications"
 ]);
 const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
 const cleaningHistoryCapabilityContextPrepositions = new Set([
@@ -805,6 +809,10 @@ const cleaningHistoryCapabilityContextPrepositions = new Set([
   "within"
 ]);
 const cleaningHistoryCapabilityOwnerTransferVerbs = new Set([
+  "cause",
+  "caused",
+  "causes",
+  "causing",
   "keep",
   "keeps",
   "kept",
@@ -898,7 +906,12 @@ function assertValidVisibleEntityShapes(source, label) {
     const digits = entity.slice(entity[2]?.toLowerCase() === "x" ? 3 : 2, -1);
     const radix = entity[2]?.toLowerCase() === "x" ? 16 : 10;
     const codePoint = Number.parseInt(digits, radix);
-    if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+    if (
+      codePoint === 0 ||
+      codePoint === cleaningHistoryDecodedBoundarySentinelCodePoint ||
+      codePoint > 0x10ffff ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff)
+    ) {
       throw new Error(`${label} contains a malformed visible numeric Markdown entity.`);
     }
   }
@@ -970,7 +983,7 @@ function normalizeVisibleBoundaryEntitySource(source) {
       const digits = numericEntity.slice(hexadecimal ? 3 : 2, -1);
       const codePoint = Number.parseInt(digits, hexadecimal ? 16 : 10);
       if (cleaningHistoryRenderedBoundaryCodePoints.has(codePoint)) {
-        normalized += "\n";
+        normalized += cleaningHistoryDecodedBoundarySentinel;
         index += numericEntity.length;
         continue;
       }
@@ -991,6 +1004,9 @@ function normalizeCleaningHistoryRenderedBoundaries(value) {
 
 function parseCleaningHistoryMarkdown(source, label) {
   try {
+    if (source.includes(cleaningHistoryDecodedBoundarySentinel)) {
+      throw new Error(`${label} contains a reserved rendered-boundary marker.`);
+    }
     const parsed = cleaningHistoryMarkdown.parse(maskMarkdownComments(source.replace(/\r\n?/gu, "\n")), {});
     for (const token of parsed) {
       if (token.type === "inline") {
@@ -1020,7 +1036,10 @@ function parseCleaningHistoryMarkdown(source, label) {
 function normalizeVisibleMarkdownText(value, label, { validateEntities = true } = {}) {
   if (validateEntities) assertValidVisibleEntityShapes(value, label);
   const normalized = normalizeCleaningHistoryRenderedBoundaries(
-    value.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    value
+      .normalize("NFKC")
+      .replaceAll(cleaningHistoryDecodedBoundarySentinel, "\n")
+      .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
   )
     .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
     .replace(/[\u2010\u2011\ufe63\uff0d]/gu, "-")
@@ -1062,7 +1081,7 @@ function flattenVisibleInlineChildren(children, label) {
           text: normalizeVisibleMarkdownText(child.content, label, { validateEntities: false })
         });
       } else if (child.type === "softbreak" || child.type === "hardbreak") {
-        fragments.push({ type: "text", text: "\n" });
+        fragments.push({ type: "text", text: " " });
       }
     }
   };
@@ -1608,6 +1627,8 @@ const cleaningHistoryGrammarWords = new Set([
 
 function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBudget) {
   const normalized = value
+    .replace(/\bif(?:[ -]+and[ -]+only[ -]+if)\b/giu, "only if")
+    .replace(/\bonly-(if|when)\b/giu, "only $1")
     .replace(/\bcan't\b/giu, "cannot")
     .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
     .replace(/\bcleaning-(plan|steps?|operations?|history|workflow)\b/giu, "cleaning $1")
@@ -1778,7 +1799,7 @@ function isCleaningHistoryGrammarToken(token) {
   );
 }
 
-function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
+function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidateIndex = predicateIndex) {
   const before = tokens.slice(0, predicateIndex);
   const after = tokens.slice(predicateIndex + 1);
   const cleaningBefore = before.findIndex((_, index) => isCleaningHistoryNoun(before, index));
@@ -1789,6 +1810,27 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
       !isCleaningHistoryNoun(before, index) &&
       !(["step", "steps"].includes(token) && before.some((candidate) => ["this", "that"].includes(candidate)))
   );
+  let completedOwnerDescription = false;
+  let introducedLaterOwner = false;
+  let laterExplicitOwner = false;
+  for (let index = cleaningBefore + 1; index < before.length; index += 1) {
+    const token = before[index];
+    if (["listed", "remain", "remains", "visible"].includes(token)) {
+      completedOwnerDescription = true;
+      continue;
+    }
+    if (
+      completedOwnerDescription &&
+      ["a", "an", "any", "every", "neither", "no", "some", "the", "this", "that", "these", "those"].includes(token)
+    ) {
+      introducedLaterOwner = true;
+      continue;
+    }
+    if (!isCleaningHistoryGrammarToken(token) && !isCleaningHistoryNoun(before, index)) {
+      laterExplicitOwner = introducedLaterOwner;
+      break;
+    }
+  }
   const personalActorOnly = unrelatedBefore < 0 && before.some((token) => ["i", "we", "you"].includes(token));
   const actorFirst =
     before.some((token) => cleaningHistoryActorWords.has(token) || ["i", "we", "you"].includes(token)) &&
@@ -1802,6 +1844,19 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
     cleaningAfter >= 0 &&
     after.slice(0, cleaningAfter).every((token) => isCleaningHistoryGrammarToken(token)) &&
     actorFirst;
+  const nominalizedCleaningSubject =
+    cleaningAfter >= 0 &&
+    candidateIndex < predicateIndex &&
+    cleaningHistoryNominalizedCapabilities.has(tokens[candidateIndex]) &&
+    after.slice(0, cleaningAfter).every((token) => isCleaningHistoryGrammarToken(token));
+  const candidateSuffix = tokens.slice(candidateIndex + 1, predicateIndex);
+  const candidateCleaningObject = candidateSuffix.findIndex((_, index) =>
+    isCleaningHistoryNoun(candidateSuffix, index)
+  );
+  const nominalizedCandidateSubject =
+    candidateCleaningObject >= 0 &&
+    cleaningHistoryNominalizedCapabilities.has(tokens[candidateIndex]) &&
+    candidateSuffix.slice(0, candidateCleaningObject).every((token) => isCleaningHistoryGrammarToken(token));
   const statusModifier = ["readonly", "unable", "unavailable", "unsupported"].includes(tokens[predicateIndex]);
   if (statusModifier) {
     const unrelatedAfter = after.findIndex(
@@ -1811,10 +1866,11 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
       return { owner: "unrelated", scope: "unknown", explicit: true };
     }
   }
+  if (laterExplicitOwner) return { owner: "unrelated", scope: "unknown", explicit: true };
   if (cleaningBefore >= 0 && (unrelatedBefore < 0 || unrelatedBefore > cleaningBefore)) {
     return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
   }
-  if (directCleaningObject) {
+  if (directCleaningObject || nominalizedCleaningSubject || nominalizedCandidateSubject) {
     return { owner: "cleaning", scope: cleaningHistoryScope(after), explicit: true };
   }
   if (unrelatedBefore >= 0) return { owner: "unrelated", scope: "unknown", explicit: true };
@@ -1913,7 +1969,15 @@ function cleaningHistoryPostPredicateHasExplicitUnrelatedOwner(tokens, predicate
   let contextOwned = false;
   for (let index = 0; index < between.length; index += 1) {
     const token = between[index];
-    if (cleaningHistoryCapabilityOwnerTransferVerbs.has(token)) return true;
+    if (cleaningHistoryCapabilityOwnerTransferVerbs.has(token)) {
+      const relation = between.slice(index + 1);
+      return relation.some(
+        (candidate, candidateIndex) =>
+          !isCleaningHistoryGrammarToken(candidate) &&
+          !isCleaningHistoryNoun(relation, candidateIndex) &&
+          !cleaningHistoryPostPredicateAnaphors.has(candidate)
+      );
+    }
     if (cleaningHistoryCapabilityContextPrepositions.has(token)) {
       contextOwned = true;
       continue;
@@ -2194,13 +2258,19 @@ function cleaningHistoryPredicateRecords(rendered) {
       let atomicExceptionForPredicate;
       if (pendingAtomicException !== undefined) {
         const pendingExceptionIndex = cleaningHistoryExceptionIndex(pendingAtomicException.tokens);
+        const pendingExclusiveCondition =
+          pendingAtomicException.position === "prefix" &&
+          cleaningHistoryHasExclusiveConditionAt(pendingAtomicException.tokens, pendingExceptionIndex);
         const extendsPrefixCondition =
           predicates.length === 0 &&
-          pendingAtomicException.position === "prefix" &&
-          cleaningHistoryCoordinateConnectors.has(segment.separatorBefore) &&
-          cleaningHistoryHasExclusiveConditionAt(pendingAtomicException.tokens, pendingExceptionIndex);
+          pendingExclusiveCondition &&
+          (cleaningHistoryCoordinateConnectors.has(segment.separatorBefore) ||
+            cleaningHistoryClausePunctuationRoles[segment.separatorBefore] === "segment");
         if (extendsPrefixCondition) {
-          const extendedTokens = [...pendingAtomicException.tokens, segment.separatorBefore, ...segment.tokens];
+          const continuation = cleaningHistoryCoordinateConnectors.has(segment.separatorBefore)
+            ? [segment.separatorBefore, ...segment.tokens]
+            : segment.tokens;
+          const extendedTokens = [...pendingAtomicException.tokens, ...continuation];
           if (extendedTokens.length > CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX) {
             throw new Error(
               `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX}-token atomic condition or exception bound.`
@@ -2214,6 +2284,11 @@ function cleaningHistoryPredicateRecords(rendered) {
             pendingAtomicException.tokens.length + segment.tokens.length >
             CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX
           ) {
+            if (pendingExclusiveCondition) {
+              throw new Error(
+                `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX}-token atomic condition or exception bound.`
+              );
+            }
             pendingAtomicException = undefined;
           } else {
             pendingAtomicException.tokens.push(...segment.tokens);
@@ -2338,7 +2413,7 @@ function cleaningHistoryPredicateRecords(rendered) {
       const inlineExclusiveConditionTokens = cleaningHistoryInlineExclusiveConditionTokens(segment.tokens);
       for (const predicate of predicates.filter(Boolean)) {
         const predicateIndex = cleaningHistorySemanticPredicateIndex(predicate.kind, segment.tokens, predicate.index);
-        let recordSubject = cleaningHistorySubject(segment.tokens, predicateIndex);
+        let recordSubject = cleaningHistorySubject(segment.tokens, predicateIndex, predicate.index);
         const explicitUnrelatedOwner =
           recordSubject.owner === "unrelated" &&
           cleaningHistoryPostPredicateHasExplicitUnrelatedOwner(segment.tokens, predicateIndex);
