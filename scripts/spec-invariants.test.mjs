@@ -1928,6 +1928,63 @@ test("cleaning-history owner phrases use the latest explicit bounded owner", () 
   }
 });
 
+test("cleaning-history report relations bind objects, subjects, and recognized compounds", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "A report about committed steps says they cannot be edited.",
+    "Reports about committed steps say the steps are unavailable for editing.",
+    "A report of committed steps says they can be reordered.",
+    "A report on committed steps says they cannot be inspected.",
+    "Committed steps in the report cannot be edited.",
+    "Committed steps in reports are unavailable for editing.",
+    "Committed steps in the report can be reordered.",
+    "Committed steps remain visible. Editing them in the report is unavailable.",
+    "A report lists committed steps: they cannot be edited.",
+    "A report about committed steps remains visible. They cannot be edited.",
+    "A report lists committed steps, but committed steps can be reordered.",
+    "Committed steps can be re-ordered.",
+    "Re-ordering committed steps is supported.",
+    "Roll-back applies to every committed step.",
+    "Roll-backs apply to two committed steps."
+  ];
+  const truthful = [
+    "A report lists committed steps and cannot be edited.",
+    "Reports list committed steps and are unavailable for editing.",
+    "A report lists committed steps, but cannot be edited.",
+    "A report lists committed steps: it cannot be edited.",
+    "A report lists committed steps; it cannot be edited.",
+    "A report about committed steps remains visible and cannot be edited.",
+    "Reports about committed steps remain visible. They cannot be edited.",
+    "A report lists committed steps, and the report cannot be reordered.",
+    "Committed steps cannot be re-ordered.",
+    "Roll-back removes only the latest committed step."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history rendered soft and hard breaks preserve claim continuity and block boundaries", () => {
   const model = cleaningHistoryModel();
   const contradictions = [

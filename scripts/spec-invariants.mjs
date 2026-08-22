@@ -802,7 +802,11 @@ const cleaningHistoryNominalizedCapabilities = new Set([
 ]);
 const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
 const cleaningHistoryExplicitUnrelatedOwnerWords = new Set(["report", "reports"]);
-const cleaningHistoryExplicitUnrelatedOwnerContextPrepositions = new Set(["about", "of", "on"]);
+const cleaningHistoryReportModifierPrepositions = new Set(["about", "of", "on"]);
+const cleaningHistoryReportObjectDemonstratives = new Set(["these", "those"]);
+const cleaningHistoryPluralPersonalAnaphors = new Set(["them", "they"]);
+const cleaningHistoryReportObjectRelation =
+  /^(?:contain|contained|containing|contains|describe|described|describes|describing|include|included|includes|including|list|listed|listing|lists)$/u;
 const cleaningHistoryCapabilityContextPrepositions = new Set([
   "at",
   "from",
@@ -1650,7 +1654,8 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
     .replace(/\bread-only\b/giu, "readonly")
     .replace(/\b(?:non)-(current|deletable|editable|inspectable|latest|modifiable)\b/giu, "non$1")
     .replace(/\b(?:un)-(deletable|editable|inspectable|modifiable)\b/giu, "un$1")
-    .replace(/\bre-(arrange|arranged|arranges|arranging)\b/giu, "re$1")
+    .replace(/\bre-(arrange|arranged|arranges|arranging|order|ordered|ordering|orders)\b/giu, "re$1")
+    .replace(/\broll-(back|backs)\b/giu, "roll$1")
     .replace(/([\p{L}])-(?=[\p{L}])/gu, "$1 ")
     .toLowerCase();
   const tokens = [];
@@ -1744,6 +1749,54 @@ function isCleaningHistoryNoun(tokens, index) {
   return false;
 }
 
+function cleaningHistoryReportRelationSubject(tokens) {
+  const reportIndices = tokens.flatMap((token, index) =>
+    cleaningHistoryExplicitUnrelatedOwnerWords.has(token) ? [index] : []
+  );
+  if (reportIndices.length === 0) return undefined;
+  const cleaningIndices = tokens.flatMap((_, index) => (isCleaningHistoryNoun(tokens, index) ? [index] : []));
+  const latestReportIndex = reportIndices.at(-1);
+  const latestCleaningIndex = cleaningIndices.at(-1) ?? -1;
+  const cleaningSubject = {
+    owner: "cleaning",
+    scope: cleaningHistoryScope(tokens),
+    explicit: true
+  };
+  const reportPlural = tokens[latestReportIndex] === "reports";
+  const reportSubject = (reportObject = undefined) => ({
+    owner: "unrelated",
+    scope: "unknown",
+    explicit: true,
+    reportSubject: true,
+    reportPlural,
+    reportObject
+  });
+  if (latestCleaningIndex < 0) return reportSubject();
+  if (latestCleaningIndex < latestReportIndex) {
+    const reportIsCleaningContext = tokens
+      .slice(latestCleaningIndex + 1, latestReportIndex)
+      .some((token) => cleaningHistoryCapabilityContextPrepositions.has(token));
+    return reportIsCleaningContext ? cleaningSubject : reportSubject();
+  }
+
+  const firstCleaningAfterReport = cleaningIndices.find((index) => index > latestReportIndex);
+  const relation = tokens.slice(latestReportIndex + 1, firstCleaningAfterReport);
+  const cleaningIsReportModifier = relation.some((token) => cleaningHistoryReportModifierPrepositions.has(token));
+  const cleaningIsReportObject = relation.some((token) => cleaningHistoryReportObjectRelation.test(token));
+  const laterCleaningSubject = cleaningIndices.some((index) => index > firstCleaningAfterReport);
+  const cleaningObjectAnaphor = tokens
+    .slice(firstCleaningAfterReport + 1)
+    .some(
+      (token) =>
+        cleaningHistoryReportObjectDemonstratives.has(token) ||
+        (!reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
+    );
+  if ((cleaningIsReportModifier || cleaningIsReportObject) && !laterCleaningSubject && !cleaningObjectAnaphor) {
+    return reportSubject(cleaningSubject);
+  }
+  return cleaningSubject;
+}
+
 function cleaningHistoryScope(tokens) {
   const latest =
     tokens.some((token) => cleaningHistoryLatestWords.has(token)) ||
@@ -1828,16 +1881,7 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
   const after = tokens.slice(predicateIndex + 1);
   const cleaningBefore = before.findIndex((_, index) => isCleaningHistoryNoun(before, index));
   const cleaningAfter = after.findIndex((_, index) => isCleaningHistoryNoun(after, index));
-  const latestCleaningBefore = before.findLastIndex((_, index) => isCleaningHistoryNoun(before, index));
-  const latestExplicitUnrelatedBefore = before.findLastIndex((token) =>
-    cleaningHistoryExplicitUnrelatedOwnerWords.has(token)
-  );
-  const latestCleaningDescribesUnrelatedOwner =
-    latestExplicitUnrelatedBefore >= 0 &&
-    latestCleaningBefore > latestExplicitUnrelatedBefore &&
-    before
-      .slice(latestExplicitUnrelatedBefore + 1, latestCleaningBefore)
-      .some((token) => cleaningHistoryExplicitUnrelatedOwnerContextPrepositions.has(token));
+  const reportRelationSubject = cleaningHistoryReportRelationSubject(before);
   const unrelatedBefore = before.findIndex(
     (token, index) =>
       !isCleaningHistoryGrammarToken(token) &&
@@ -1900,15 +1944,7 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
       return { owner: "unrelated", scope: "unknown", explicit: true };
     }
   }
-  if (latestCleaningDescribesUnrelatedOwner) {
-    return { owner: "unrelated", scope: "unknown", explicit: true };
-  }
-  if (latestCleaningBefore > latestExplicitUnrelatedBefore && latestExplicitUnrelatedBefore >= 0) {
-    return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
-  }
-  if (latestExplicitUnrelatedBefore > latestCleaningBefore) {
-    return { owner: "unrelated", scope: "unknown", explicit: true };
-  }
+  if (reportRelationSubject !== undefined) return reportRelationSubject;
   if (laterExplicitOwner) return { owner: "unrelated", scope: "unknown", explicit: true };
   if (cleaningBefore >= 0 && (unrelatedBefore < 0 || unrelatedBefore > cleaningBefore)) {
     return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
@@ -2022,6 +2058,10 @@ function cleaningHistoryPostPredicateHasExplicitUnrelatedOwner(tokens, predicate
   for (let index = 0; index < between.length; index += 1) {
     const token = between[index];
     if (cleaningHistoryExplicitUnrelatedOwnerWords.has(token)) {
+      if (contextOwned) {
+        contextObjectSeen = true;
+        continue;
+      }
       latestUnrelatedOwner = index;
       contextOwned = false;
       contextObjectSeen = false;
@@ -2435,7 +2475,19 @@ function cleaningHistoryPredicateRecords(rendered) {
       }
       if (subject.owner === "anaphor") {
         const inherited = cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject);
-        subject = inherited?.owner === "cleaning" ? { ...inherited, explicit: false } : subject;
+        const reportObjectAnaphor = segment.tokens
+          .slice(0, subjectProbeIndex)
+          .some(
+            (token) =>
+              cleaningHistoryReportObjectDemonstratives.has(token) ||
+              (!inherited?.reportPlural && cleaningHistoryPluralPersonalAnaphors.has(token))
+          );
+        subject =
+          inherited?.reportSubject && reportObjectAnaphor && inherited.reportObject !== undefined
+            ? { ...inherited.reportObject, explicit: false }
+            : inherited?.owner === "cleaning" || inherited?.reportSubject
+              ? { ...inherited, explicit: false }
+              : subject;
         if (subject.owner === "cleaning") {
           const localScope = cleaningHistoryScope(segment.tokens.slice(0, subjectProbeIndex));
           if (localScope !== "single" || segment.tokens.some((token) => ["this", "that"].includes(token))) {
@@ -2444,7 +2496,7 @@ function cleaningHistoryPredicateRecords(rendered) {
         }
       } else if (
         subject.owner === "none" &&
-        currentSubject?.owner === "cleaning" &&
+        (currentSubject?.owner === "cleaning" || currentSubject?.reportSubject) &&
         (cleaningHistoryPassiveCapabilityContinuation(segment.tokens, subjectProbeIndex) || coordinatedBarePassive) &&
         (cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined ||
           cleaningHistoryClausePunctuationRoles[segment.separatorBefore] === "segment")
