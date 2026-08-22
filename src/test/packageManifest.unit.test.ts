@@ -1,6 +1,10 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error The reference generator core intentionally has no TypeScript declaration file.
+import { notebookMimeTypeRows } from "../../scripts/generate-reference-core.mjs";
 
 interface CommandContribution {
   command?: string;
@@ -52,7 +56,10 @@ interface PackageManifest {
     }>;
     notebookRenderer?: Array<{
       id?: string;
+      displayName?: string;
       requiresMessaging?: string;
+      mimeTypes?: string[];
+      entrypoint?: string | { extends?: string; path?: string };
     }>;
     walkthroughs?: Array<{
       id?: string;
@@ -648,11 +655,160 @@ describe("runtime dependency recovery contributions", () => {
 });
 
 describe("notebook renderer contribution", () => {
+  const mimeType = "application/vnd.openwrangler.viewer.v2+json";
+  const mimeRenderer = {
+    id: "openWrangler.renderer",
+    displayName: "Open Wrangler Renderer",
+    entrypoint: "./media/notebookRenderer.js",
+    requiresMessaging: "optional",
+    mimeTypes: [mimeType]
+  };
+  const htmlExtension = {
+    id: "openWrangler.inlineHtmlUpgrade",
+    displayName: "Open Wrangler Inline HTML Upgrade",
+    entrypoint: {
+      extends: "vscode.builtin-renderer",
+      path: "./media/notebookRenderer.js"
+    },
+    requiresMessaging: "always"
+  };
+
   it("keeps static output portable while always activating desktop messaging", () => {
     expect(manifest.activationEvents).toContain("onRenderer:openWrangler.renderer");
-    expect(manifest.contributes?.notebookRenderer).toContainEqual(
-      expect.objectContaining({ id: "openWrangler.renderer", requiresMessaging: "optional" })
-    );
+    expect(manifest.contributes?.notebookRenderer).toContainEqual(mimeRenderer);
     expect(manifest.contributes?.configuration?.properties).not.toHaveProperty("openWrangler.renderer.enabled");
   });
+
+  it("extends the built-in HTML renderer without replacing ordinary HTML ownership", () => {
+    expect(manifest.activationEvents).toContain("onRenderer:openWrangler.inlineHtmlUpgrade");
+    expect(manifest.contributes?.notebookRenderer).toContainEqual(htmlExtension);
+  });
+
+  it("binds the generated reference to one exact MIME renderer and one exact HTML extension", () => {
+    expect(notebookMimeTypeRows(manifest.contributes?.notebookRenderer)).toEqual([`- \`${mimeType}\``]);
+  });
+
+  it("rejects stale reference bytes through canonical and aliased executable entrypoints", () => {
+    const fixtureRoot = createStaleReferenceFixture();
+    const aliasRoot = mkdtempSync(join(tmpdir(), "ow-reference-alias-"));
+    try {
+      const scriptsAlias = join(aliasRoot, "scripts");
+      symlinkSync(join(fixtureRoot, "scripts"), scriptsAlias, process.platform === "win32" ? "junction" : "dir");
+      expectReferenceCheckToRejectStale(join(fixtureRoot, "scripts", "generate-reference.mjs"), fixtureRoot);
+      const generatorAlias = join(scriptsAlias, "generate-reference.mjs");
+      expectReferenceCheckToRejectStale(generatorAlias, fixtureRoot);
+    } finally {
+      rmSync(aliasRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "rejects stale reference bytes after a proc-self-cwd entrypoint is rebound before evaluation",
+    () => {
+      const fixtureRoot = createStaleReferenceFixture();
+      const replacementRoot = mkdtempSync(join(tmpdir(), "ow-reference-replacement-"));
+      try {
+        mkdirSync(join(replacementRoot, "scripts"));
+        copyFileSync(
+          join(fixtureRoot, "scripts", "generate-reference.mjs"),
+          join(replacementRoot, "scripts", "generate-reference.mjs")
+        );
+        const preload = `data:text/javascript,process.chdir(${JSON.stringify(replacementRoot)})`;
+        expectReferenceCheckToRejectStale("/proc/self/cwd/scripts/generate-reference.mjs", fixtureRoot, [
+          "--import",
+          preload
+        ]);
+      } finally {
+        rmSync(replacementRoot, { recursive: true, force: true });
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    [
+      "the direct renderer identity using the extension shape",
+      [
+        {
+          id: mimeRenderer.id,
+          displayName: mimeRenderer.displayName,
+          entrypoint: htmlExtension.entrypoint,
+          requiresMessaging: mimeRenderer.requiresMessaging
+        },
+        htmlExtension
+      ]
+    ],
+    ["a direct renderer using the extension identity", [{ ...mimeRenderer, id: htmlExtension.id }, htmlExtension]],
+    ["an extension using the direct renderer identity", [mimeRenderer, { ...htmlExtension, id: mimeRenderer.id }]],
+    ["a changed direct display name", [{ ...mimeRenderer, displayName: "Open Wrangler" }, htmlExtension]],
+    ["a changed extension display name", [mimeRenderer, { ...htmlExtension, displayName: "Open Wrangler HTML" }]],
+    ["a changed direct messaging mode", [{ ...mimeRenderer, requiresMessaging: "always" }, htmlExtension]],
+    ["a changed extension messaging mode", [mimeRenderer, { ...htmlExtension, requiresMessaging: "optional" }]],
+    ["an empty direct entrypoint", [{ ...mimeRenderer, entrypoint: "" }, htmlExtension]],
+    [
+      "a changed extension entrypoint",
+      [mimeRenderer, { ...htmlExtension, entrypoint: { ...htmlExtension.entrypoint, path: "" } }]
+    ],
+    ["an omitted MIME type", [{ ...mimeRenderer, mimeTypes: [] }, htmlExtension]],
+    ["a duplicated MIME type", [{ ...mimeRenderer, mimeTypes: [mimeType, mimeType] }, htmlExtension]],
+    ["a MIME claim on the HTML extension", [mimeRenderer, { ...htmlExtension, mimeTypes: [mimeType] }]],
+    ["a text/html MIME claim on the HTML extension", [mimeRenderer, { ...htmlExtension, mimeTypes: ["text/html"] }]],
+    [
+      "a changed built-in renderer extension target",
+      [
+        mimeRenderer,
+        {
+          ...htmlExtension,
+          entrypoint: { ...htmlExtension.entrypoint, extends: "openWrangler.renderer" }
+        }
+      ]
+    ],
+    ["a duplicate direct renderer", [mimeRenderer, mimeRenderer]],
+    ["a duplicate HTML extension", [htmlExtension, htmlExtension]],
+    ["a missing direct renderer", [htmlExtension]],
+    ["a missing HTML extension", [mimeRenderer]],
+    ["an unexpected extra contribution", [mimeRenderer, htmlExtension, { ...mimeRenderer, id: "other" }]],
+    ["an unexpected direct property", [{ ...mimeRenderer, unexpected: true }, htmlExtension]],
+    ["an unexpected extension property", [mimeRenderer, { ...htmlExtension, unexpected: true }]]
+  ])("rejects %s", (_name, renderers) => {
+    expect(() => notebookMimeTypeRows(renderers)).toThrow(
+      "Notebook renderer contributions must contain exactly the canonical MIME-v2 renderer and built-in HTML extension."
+    );
+  });
 });
+
+function createStaleReferenceFixture(): string {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "ow-reference-stale-"));
+  mkdirSync(join(fixtureRoot, "scripts"));
+  mkdirSync(join(fixtureRoot, "protocol"));
+  mkdirSync(join(fixtureRoot, "docs"));
+  for (const path of [
+    "scripts/generate-reference.mjs",
+    "scripts/generate-reference-core.mjs",
+    "scripts/operation-catalog.mjs",
+    "package.json",
+    "protocol/openwrangler.v2.schema.json"
+  ]) {
+    copyFileSync(resolve(process.cwd(), path), join(fixtureRoot, path));
+  }
+  symlinkSync(
+    resolve(process.cwd(), "node_modules"),
+    join(fixtureRoot, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  writeFileSync(join(fixtureRoot, "docs", "reference.md"), "stale reference\n", "utf8");
+  return fixtureRoot;
+}
+
+function expectReferenceCheckToRejectStale(entrypoint: string, cwd: string, nodeArguments: string[] = []): void {
+  let diagnostic = "";
+  try {
+    execFileSync(process.execPath, [...nodeArguments, entrypoint, "--check"], { cwd, stdio: "pipe" });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const stderr = "stderr" in error && Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : "";
+    diagnostic = `${error.message}\n${stderr}`;
+  }
+  expect(diagnostic).toContain("Generated interface reference is stale. Run npm run generate:reference.");
+}

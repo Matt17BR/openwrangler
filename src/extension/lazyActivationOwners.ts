@@ -619,7 +619,7 @@ export class LazyActivationOwners implements vscode.Disposable {
         cellResults.start();
         jupyter.registerNotebookCommands(this.context, session.coordinator);
         cellResult.registerNotebookCellResultAction(this.context, session.coordinator, cellResults);
-        renderer.registerNotebookRendererMessaging(this.context, session.coordinator);
+        renderer.registerNotebookRendererMessaging(this.context, session.coordinator, cellResults);
       });
       if (!variables) throw new Error("Notebook variable registration completed without an owner.");
       this.constructedOwners.push("notebook");

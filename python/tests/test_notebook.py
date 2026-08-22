@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from datetime import date, datetime, timedelta, tzinfo
@@ -35,6 +36,16 @@ def _assert_shared_row_labels(rows, expected_rows):
         assert ("rowLabel" in row) is expects_label
         if expects_label:
             assert row["rowLabel"] == expected["rowLabel"]
+
+
+def test_default_capture_rows_matches_the_shared_notebook_output_contract():
+    contract_path = Path(__file__).resolve().parents[2] / "fixtures" / "notebook-output-contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    assert contract == {"defaultCaptureRows": 200}
+    assert contract["defaultCaptureRows"] == notebook.DEFAULT_CAPTURE_ROWS
+    assert inspect.signature(notebook.show).parameters["page_size"].default == contract["defaultCaptureRows"]
+    assert inspect.signature(notebook.build_payload).parameters["page_size"].default == contract["defaultCaptureRows"]
 
 
 @pytest.mark.parametrize(

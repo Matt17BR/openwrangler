@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, NotebookEditor } from "vscode";
 import {
@@ -29,6 +30,811 @@ describe("executed notebook cell result tracker", () => {
   beforeEach(() => {
     resetNotebookCellResultTest();
   });
+
+  it("binds one exact current HTML output and rejects byte-identical ambiguity", async () => {
+    const document = notebook("file:///inline-upgrade.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>1</td></tr></table>");
+    const first = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [first]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(first);
+    const candidate = {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    };
+
+    const binding = await tracker.bindInlineUpgrade(exactEditor, candidate);
+
+    expect(binding?.cell).toBe(first);
+    expect(binding?.isCurrent()).toBe(true);
+    const invalidated = vi.fn();
+    binding?.onDidInvalidate(invalidated);
+
+    const replacementEditor = { notebook: document } as NotebookEditor;
+    mocks.visibleEditors.splice(0, 1, replacementEditor);
+    expect(binding?.isCurrent()).toBe(false);
+    mocks.visibleEditors.splice(0, 1, exactEditor);
+    expect(binding?.isCurrent()).toBe(true);
+
+    const duplicate = codeCell(document, 2, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [first, duplicate]);
+    await recordExecutionAndWait(duplicate);
+    expect(await tracker.bindInlineUpgrade(exactEditor, candidate)).toBeUndefined();
+    mocks.bindings[0]?.invalidate();
+    expect(binding?.isCurrent()).toBe(false);
+    expect(invalidated).toHaveBeenCalledOnce();
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("accepts VS Code's fresh outputs facade while retaining the exact ordered output objects", async () => {
+    const document = notebook("file:///inline-upgrade-fresh-output-facade.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>fresh facade</td></tr></table>");
+    const storedOutputs = [output(new TextDecoder().decode(bytes), "text/html")];
+    const cell = codeCell(document, 1, storedOutputs);
+    Object.defineProperty(cell, "outputs", {
+      configurable: true,
+      get: () => storedOutputs.slice()
+    });
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+
+    expect(binding?.isCurrent()).toBe(true);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it.each(["replacement", "reordering", "length"] as const)(
+    "fails closed when a fresh outputs facade hides an underlying %s change between snapshot passes",
+    async (mutation) => {
+      const document = notebook(`file:///inline-upgrade-fresh-output-${mutation}.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>changing facade</td></tr></table>");
+      const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+      const matchedItems = matchedOutput.items;
+      let itemReads = 0;
+      Object.defineProperty(matchedOutput, "items", {
+        configurable: true,
+        get: () => {
+          itemReads += 1;
+          return matchedItems;
+        }
+      });
+      const otherOutput = output("other output");
+      let storedOutputs = [matchedOutput, otherOutput];
+      let outputReads = 0;
+      let mutateDuringSnapshot = false;
+      const cell = codeCell(document, 1, storedOutputs);
+      Object.defineProperty(cell, "outputs", {
+        configurable: true,
+        get: () => {
+          outputReads += 1;
+          if (mutateDuringSnapshot && outputReads === 2) {
+            if (mutation === "replacement") {
+              storedOutputs = [output(new TextDecoder().decode(bytes), "text/html"), otherOutput];
+            } else if (mutation === "reordering") {
+              storedOutputs = [otherOutput, matchedOutput];
+            } else {
+              storedOutputs = [matchedOutput, otherOutput, output("additional output")];
+            }
+          }
+          return storedOutputs.slice();
+        }
+      });
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      itemReads = 0;
+      outputReads = 0;
+      mutateDuringSnapshot = true;
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(itemReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["cells", "outputs", "items"] as const)(
+    "copies %s by bounded numeric index without consuming an over-yielding iterator",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-${level}-iterator.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>numeric references</td></tr></table>");
+      const item = { mime: "text/html", data: bytes };
+      let iteratorReads = 0;
+      const overYielding = <T>(value: T): T[] => {
+        const values = [value];
+        Object.defineProperty(values, Symbol.iterator, {
+          configurable: true,
+          value: function* () {
+            iteratorReads += 1;
+            yield values[0]!;
+            yield values[0]!;
+          }
+        });
+        return values;
+      };
+      const matchedOutput = { metadata: { outputType: "execute_result" }, items: [item] };
+      if (level === "items") matchedOutput.items = overYielding(item);
+      const cell = codeCell(document, 1, [matchedOutput]);
+      if (level === "outputs") {
+        Object.defineProperty(cell, "outputs", { configurable: true, value: overYielding(matchedOutput) });
+      }
+      setCells(document, [cell]);
+      if (level === "cells") {
+        const cells = overYielding(cell);
+        Object.defineProperty(document, "getCells", { configurable: true, value: () => cells });
+      }
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+
+      const binding = await tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex")
+      });
+
+      expect(binding?.isCurrent()).toBe(true);
+      expect(iteratorReads).toBe(0);
+      binding?.dispose();
+      tracker.dispose();
+    }
+  );
+
+  it.each(["cells", "outputs", "items"] as const)(
+    "rejects an accessor-backed %s index without invoking its growth getter",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-${level}-indexed-growth.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>growing references</td></tr></table>");
+      let dataReads = 0;
+      const item = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const extraItem = { mime: "text/plain", data: new Uint8Array() };
+      const matchedOutput = { metadata: { outputType: "execute_result" }, items: [item] };
+      const extraOutput = output("extra output");
+      const cell = codeCell(document, 1, [matchedOutput]);
+      const extraCell = codeCell(document, 2, [extraOutput]);
+      let growthEnabled = false;
+      let indexReads = 0;
+      const growing = <T>(first: T, extra: T): T[] => {
+        const values: T[] = [];
+        Object.defineProperty(values, "0", {
+          configurable: true,
+          enumerable: true,
+          get: () => {
+            indexReads += 1;
+            if (growthEnabled && values.length === 1) {
+              Object.defineProperty(values, "1", {
+                configurable: true,
+                enumerable: true,
+                writable: true,
+                value: extra
+              });
+            }
+            return first;
+          }
+        });
+        return values;
+      };
+      if (level === "items") matchedOutput.items = growing(item, extraItem);
+      if (level === "outputs") {
+        Object.defineProperty(cell, "outputs", {
+          configurable: true,
+          value: growing(matchedOutput, extraOutput)
+        });
+      }
+      setCells(document, [cell]);
+      if (level === "cells") {
+        const cells = growing(cell, extraCell);
+        Object.defineProperty(document, "getCells", { configurable: true, value: () => cells });
+      }
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      dataReads = 0;
+      indexReads = 0;
+      growthEnabled = true;
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(indexReads).toBe(0);
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["cells", "outputs", "items"] as const)(
+    "rejects a proxy-backed %s collection before delayed final-sweep growth reaches mutable data",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-${level}-delayed-final-growth.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>final sweep</td></tr></table>");
+      let armed = false;
+      let indexedReads = 0;
+      let descriptorReads = 0;
+      let dataReads = 0;
+      const item = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          armed = true;
+          indexedReads = 0;
+          descriptorReads = 0;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const extraItem = { mime: "text/plain", data: new Uint8Array() };
+      const matchedOutput = { metadata: { outputType: "execute_result" }, items: [item] };
+      const extraOutput = output("extra output");
+      const cell = codeCell(document, 1, [matchedOutput]);
+      const extraCell = codeCell(document, 2, [extraOutput]);
+      const indexedGrowthRead = level === "cells" ? 5 : 4;
+      const delayedGrowth = <T>(first: T, extra: T): T[] => {
+        const target = [first];
+        const grow = (): void => {
+          if (target.length === 1) target.push(extra);
+        };
+        return new Proxy(target, {
+          get: (current, property, receiver) => {
+            if (property === "0" && armed) {
+              indexedReads += 1;
+              if (indexedReads === indexedGrowthRead) grow();
+            }
+            return Reflect.get(current, property, receiver);
+          },
+          getOwnPropertyDescriptor: (current, property) => {
+            if (property === "0" && armed) {
+              descriptorReads += 1;
+              if (descriptorReads === 2) grow();
+            }
+            return Reflect.getOwnPropertyDescriptor(current, property);
+          }
+        });
+      };
+      if (level === "items") matchedOutput.items = delayedGrowth(item, extraItem);
+      if (level === "outputs") {
+        Object.defineProperty(cell, "outputs", {
+          configurable: true,
+          value: delayedGrowth(matchedOutput, extraOutput)
+        });
+      }
+      setCells(document, [cell]);
+      if (level === "cells") {
+        const cells = delayedGrowth(cell, extraCell);
+        Object.defineProperty(document, "getCells", { configurable: true, value: () => cells });
+      }
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(indexedReads).toBe(0);
+      expect(descriptorReads).toBe(0);
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["cells", "outputs", "items"] as const)(
+    "rejects a proxy-backed %s collection before a same-length prior-slot replacement can re-enter",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-${level}-same-length-replacement.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>same length</td></tr></table>");
+      let armed = false;
+      let descriptorReads = 0;
+      let iteratorReads = 0;
+      let dataReads = 0;
+      const matchedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          armed = true;
+          descriptorReads = 0;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const otherItem = { mime: "text/plain", data: new Uint8Array() };
+      const replacementItem = { mime: "text/plain", data: new Uint8Array([1]) };
+      const matchedOutput = { metadata: { outputType: "execute_result" }, items: [matchedItem, otherItem] };
+      const otherOutput = output("other output");
+      const replacementOutput = output("replacement output");
+      const cell = codeCell(document, 1, [matchedOutput, otherOutput]);
+      const otherCell = codeCell(document, 2, [output("other cell")]);
+      const replacementCell = codeCell(document, 3, [output("replacement cell")]);
+      const reentrantCollection = <T extends object>(first: T, second: T, replacement: T): T[] => {
+        const target = [first, second];
+        Object.defineProperty(target, Symbol.iterator, {
+          configurable: true,
+          value: function* () {
+            iteratorReads += 1;
+            yield target[0]!;
+            yield target[1]!;
+          }
+        });
+        return new Proxy(target, {
+          getOwnPropertyDescriptor: (current, property) => {
+            if (property === "1" && armed) {
+              descriptorReads += 1;
+              if (descriptorReads === 2) current[0] = replacement;
+            }
+            return Reflect.getOwnPropertyDescriptor(current, property);
+          }
+        });
+      };
+      if (level === "items") {
+        matchedOutput.items = reentrantCollection(matchedItem, otherItem, replacementItem);
+      }
+      if (level === "outputs") {
+        Object.defineProperty(cell, "outputs", {
+          configurable: true,
+          value: reentrantCollection(matchedOutput, otherOutput, replacementOutput)
+        });
+      }
+      setCells(document, [cell, otherCell]);
+      if (level === "cells") {
+        const cells = reentrantCollection(cell, otherCell, replacementCell);
+        Object.defineProperty(document, "getCells", { configurable: true, value: () => cells });
+      }
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      descriptorReads = 0;
+      iteratorReads = 0;
+      dataReads = 0;
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(descriptorReads).toBe(0);
+      expect(iteratorReads).toBe(0);
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it("queues the first HTML candidate until its exact eligibility inspection settles", async () => {
+    const document = notebook("file:///inline-upgrade-before-eligibility.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>first</td></tr></table>");
+    const cell = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    const queued = tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    await recordExecutionAndWait(cell);
+
+    const binding = await queued;
+    expect(binding?.cell).toBe(cell);
+    expect(binding?.isCurrent()).toBe(true);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("rejects a pending inline candidate before an early cross-cell items getter", async () => {
+    const document = notebook("file:///inline-upgrade-pending-output-expansion.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>pending</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [matchedOutput]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    const queued = tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
+      }
+    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const overLimitCell = codeCell(document, 3, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    const earlyOutputs = earlyCell.outputs;
+    const currentOutputs = cell.outputs;
+    const overLimitOutputs = overLimitCell.outputs;
+    Object.defineProperty(earlyCell, "outputs", { configurable: true, get: () => earlyOutputs.slice() });
+    Object.defineProperty(cell, "outputs", { configurable: true, get: () => currentOutputs.slice() });
+    Object.defineProperty(overLimitCell, "outputs", {
+      configurable: true,
+      get: () => overLimitOutputs.slice()
+    });
+    setCells(document, [earlyCell, cell, overLimitCell]);
+
+    await recordExecutionAndWait(cell);
+
+    expect(await queued).toBeUndefined();
+    expect(earlyItemsRead).toBe(0);
+    tracker.dispose();
+  });
+
+  it("rejects a published inline binding before an early cross-cell items getter", async () => {
+    const document = notebook("file:///inline-upgrade-published-output-expansion.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>published</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [matchedOutput]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+    expect(binding?.isCurrent()).toBe(true);
+
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
+      }
+    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const overLimitCell = codeCell(document, 3, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    const earlyOutputs = earlyCell.outputs;
+    const currentOutputs = cell.outputs;
+    const overLimitOutputs = overLimitCell.outputs;
+    Object.defineProperty(earlyCell, "outputs", { configurable: true, get: () => earlyOutputs.slice() });
+    Object.defineProperty(cell, "outputs", { configurable: true, get: () => currentOutputs.slice() });
+    Object.defineProperty(overLimitCell, "outputs", {
+      configurable: true,
+      get: () => overLimitOutputs.slice()
+    });
+    setCells(document, [earlyCell, cell, overLimitCell]);
+
+    expect(binding?.isCurrent()).toBe(false);
+    expect(earlyItemsRead).toBe(0);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("accepts the exact one-cell output-container boundary", async () => {
+    const document = notebook("file:///inline-upgrade-output-container-boundary.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>boundary</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [
+      matchedOutput,
+      ...Array.from({ length: 99_999 }, () => ({ items: [] }))
+    ] as never);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+
+    expect(binding?.isCurrent()).toBe(true);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("rejects a byte-identical raw HTML output that is ineligible for a live result", async () => {
+    const document = notebook("file:///inline-upgrade-ineligible-duplicate.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>same</td></tr></table>");
+    const eligible = codeCell(document, 1, [output(new TextDecoder().decode(bytes), "text/html")]);
+    const ordinary = codeCell(document, 2, [output(new TextDecoder().decode(bytes), "text/html", "display_data")]);
+    setCells(document, [eligible, ordinary]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(eligible);
+
+    expect(
+      await tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex")
+      })
+    ).toBeUndefined();
+    tracker.dispose();
+  });
+
+  it("fails closed before hashing more than the bounded HTML candidate budget", async () => {
+    const document = notebook("file:///inline-upgrade-scan-bound.ipynb");
+    const bytes = new Uint8Array(32 * 1024);
+    const items = Array.from({ length: 513 }, (_, index) => {
+      const data = new Uint8Array(bytes);
+      new DataView(data.buffer).setUint32(0, index);
+      return { mime: "text/html", data };
+    });
+    const first = codeCell(document, 1, [{ metadata: { outputType: "execute_result" }, items }]);
+    setCells(document, [first]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(first);
+
+    expect(
+      await tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: items[0]!.data.byteLength,
+        sha256: createHash("sha256").update(items[0]!.data).digest("hex")
+      })
+    ).toBeUndefined();
+    tracker.dispose();
+  });
+
+  it("reads each HTML item data accessor once and charges that exact reference against the scan budget", async () => {
+    const document = notebook("file:///inline-upgrade-changing-item-data.ipynb");
+    const candidateBytes = new Uint8Array(32 * 1024).fill(1);
+    const scannedBytes = new Uint8Array(candidateBytes.byteLength);
+    const emptyBytes = new Uint8Array();
+    let totalDataReads = 0;
+    const perItemDataReads = new Array<number>(513).fill(0);
+    const items = Array.from({ length: perItemDataReads.length }, (_, index) =>
+      Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          totalDataReads += 1;
+          perItemDataReads[index] = (perItemDataReads[index] ?? 0) + 1;
+          const read = perItemDataReads[index];
+          return read === 1 || read === 4 ? scannedBytes : emptyBytes;
+        }
+      })
+    ) as Array<{ mime: string; data: Uint8Array }>;
+    const cell = codeCell(document, 1, [{ metadata: { outputType: "execute_result" }, items }]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+
+    await expect(
+      tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: candidateBytes.byteLength,
+        sha256: createHash("sha256").update(candidateBytes).digest("hex")
+      })
+    ).resolves.toBeUndefined();
+
+    expect(totalDataReads).toBe(513);
+    expect(perItemDataReads.every((reads) => reads <= 1)).toBe(true);
+    tracker.dispose();
+  });
+
+  it.each([
+    { candidateState: "before", binds: false },
+    { candidateState: "after", binds: true }
+  ] as const)(
+    "$candidateState mutation digest uses a non-zero-offset view only after every data accessor settles",
+    async ({ candidateState, binds }) => {
+      const document = notebook(`file:///inline-upgrade-cross-item-${candidateState}-mutation.ipynb`);
+      const initialBytes = new TextEncoder().encode("<table><tr><td>mutable view</td></tr></table>");
+      const backing = new Uint8Array(initialBytes.byteLength + 8);
+      const mutableView = backing.subarray(4, 4 + initialBytes.byteLength);
+      mutableView.set(initialBytes);
+      const finalBytes = new Uint8Array(initialBytes);
+      finalBytes[0] = finalBytes[0]! ^ 0xff;
+      let matchedReads = 0;
+      let mutatorReads = 0;
+      const matchedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          matchedReads += 1;
+          return mutableView;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const mutatorItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          mutatorReads += 1;
+          mutableView.set(finalBytes);
+          return new Uint8Array();
+        }
+      }) as { mime: string; data: Uint8Array };
+      const cell = codeCell(document, 1, [
+        { metadata: { outputType: "execute_result" }, items: [matchedItem, mutatorItem] }
+      ]);
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      const candidateBytes = candidateState === "before" ? initialBytes : finalBytes;
+
+      const binding = await tracker.bindInlineUpgrade(exactEditor, {
+        byteLength: candidateBytes.byteLength,
+        sha256: createHash("sha256").update(candidateBytes).digest("hex")
+      });
+
+      expect(binding !== undefined).toBe(binds);
+      expect(matchedReads).toBe(1);
+      expect(mutatorReads).toBe(1);
+      binding?.dispose();
+      tracker.dispose();
+    }
+  );
+
+  it("accepts one unique match at the exact 16 MiB immutable scan boundary", async () => {
+    const document = notebook("file:///inline-upgrade-exact-immutable-scan-bound.ipynb");
+    const itemBytes = 32 * 1024;
+    const items = Array.from({ length: 512 }, (_, index) => {
+      const data = new Uint8Array(itemBytes);
+      new DataView(data.buffer).setUint32(0, index);
+      return { mime: "text/html", data };
+    });
+    const cell = codeCell(document, 1, [{ metadata: { outputType: "execute_result" }, items }]);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: items[0]!.data.byteLength,
+      sha256: createHash("sha256").update(items[0]!.data).digest("hex")
+    });
+
+    expect(binding).toBeDefined();
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it.each(["output", "item"] as const)(
+    "rejects an aliased %s identity before reading its alternating data accessor",
+    async (level) => {
+      const document = notebook(`file:///inline-upgrade-aliased-${level}.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>aliased identity</td></tr></table>");
+      const emptyBytes = new Uint8Array();
+      let dataReads = 0;
+      const sharedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          return dataReads % 2 === 1 ? bytes : emptyBytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const firstOutput = { metadata: { outputType: "execute_result" }, items: [sharedItem] };
+      const outputs =
+        level === "output"
+          ? [firstOutput, firstOutput]
+          : [firstOutput, { metadata: { outputType: "execute_result" }, items: [sharedItem] }];
+      const cell = codeCell(document, 1, outputs);
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
+
+  it.each(["sparse", "undefined"] as const)(
+    "rejects a %s item slot before reading an earlier matching item",
+    async (slotKind) => {
+      const document = notebook(`file:///inline-upgrade-${slotKind}-item-slot.ipynb`);
+      const bytes = new TextEncoder().encode("<table><tr><td>dense items</td></tr></table>");
+      let dataReads = 0;
+      const matchedItem = Object.defineProperty({ mime: "text/html" }, "data", {
+        configurable: true,
+        get: () => {
+          dataReads += 1;
+          return bytes;
+        }
+      }) as { mime: string; data: Uint8Array };
+      const items = new Array<{ mime: string; data: Uint8Array } | undefined>(2);
+      items[0] = matchedItem;
+      if (slotKind === "undefined") items[1] = undefined;
+      let invalidItemsEnabled = false;
+      const outputContainer = {
+        metadata: { outputType: "execute_result" },
+        get items() {
+          return invalidItemsEnabled ? items : [matchedItem];
+        }
+      };
+      const cell = codeCell(document, 1, [outputContainer as never]);
+      setCells(document, [cell]);
+      const exactEditor = { notebook: document } as NotebookEditor;
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push(exactEditor);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+      await recordExecutionAndWait(cell);
+      invalidItemsEnabled = true;
+
+      await expect(
+        tracker.bindInlineUpgrade(exactEditor, {
+          byteLength: bytes.byteLength,
+          sha256: createHash("sha256").update(bytes).digest("hex")
+        })
+      ).resolves.toBeUndefined();
+
+      expect(dataReads).toBe(0);
+      tracker.dispose();
+    }
+  );
 
   it("retains a first dataframe execution that finishes before commands and providers register", async () => {
     const document = notebook("file:///cold-start.ipynb");
