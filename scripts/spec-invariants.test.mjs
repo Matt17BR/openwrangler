@@ -1034,6 +1034,10 @@ test("cleaning-history predicates keep ownership, polarity, cardinality, and exc
 
 test("cleaning-history Undo continuations and subordinate connectors share exact clause ownership", () => {
   const model = cleaningHistoryModel();
+  const connectors = ["because", "whenever", "since", "when", "if", "as", "where", "therefore", "so"];
+  const joinClauses = (left, boundary, right) =>
+    boundary === "—" ? `${left}—${right}` : `${left} ${boundary} ${right}`;
+  const boundaries = [...connectors, "—"];
   const contradictions = [
     "Undo targets the latest committed step, and the previous step.",
     "Undo targets the latest committed step; previous step.",
@@ -1041,20 +1045,28 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
     "Undo targets the latest committed step, plus a prior step.",
     "Undo targets the latest committed step, or an older step.",
     "Undo targets the latest committed step, and another step.",
-    "Reports can be edited because committed steps cannot be edited.",
-    "Committed steps cannot be edited because reports can be edited.",
-    "Reports can be edited whenever committed steps cannot be edited.",
-    "Committed steps cannot be edited whenever reports can be edited.",
+    "Undo targets the latest committed step. Committed steps.",
+    "Undo targets the latest committed step; applied operations.",
+    "Undo targets the latest committed step. Cleaning transformations.",
+    ...boundaries.flatMap((boundary) => [
+      `${joinClauses("Reports can be edited", boundary, "committed steps cannot be edited")}.`,
+      `${joinClauses("Committed steps cannot be edited", boundary, "reports can be edited")}.`
+    ]),
+    "Reports can be edited except when committed steps cannot be edited.",
     "Use this sample because `Committed steps cannot be edited`.",
     "Use this sample whenever `Committed steps cannot be edited`."
   ];
   const truthful = [
     "Undo targets only the latest committed step. The previous troubleshooting step explains clipboard recovery.",
     "Undo targets only the latest committed step; the prior troubleshooting step remains documented.",
-    "Reports cannot be edited because committed steps can be edited.",
-    "Committed steps can be edited because reports cannot be edited.",
-    "Reports cannot be edited whenever committed steps can be edited.",
-    "Committed steps can be edited whenever reports cannot be edited.",
+    "Undo targets only the latest committed step. Previous troubleshooting steps explain clipboard recovery.",
+    "Undo targets only the latest committed step; prior troubleshooting operations remain documented.",
+    "Undo targets only the latest committed step. Older troubleshooting transformations remain documented.",
+    "Undo is unavailable for older committed steps except when the latest committed step is selected.",
+    ...boundaries.flatMap((boundary) => [
+      `${joinClauses("Reports cannot be edited", boundary, "committed steps can be edited")}.`,
+      `${joinClauses("Committed steps can be edited", boundary, "reports cannot be edited")}.`
+    ]),
     "Use `Committed steps cannot be edited` as a rejected-input example because committed steps can be edited."
   ];
 
@@ -1112,9 +1124,15 @@ test("cleaning-history predicate work is explicitly bounded before clause analys
 
 test("cleaning-history inline fragment context has a deterministic operation bound", () => {
   const model = cleaningHistoryModel();
-  const emphasisFragments = [`*${"a".repeat(24_074)}*`, ...Array.from({ length: 999 }, () => `*${"a".repeat(74)}*`)];
-  const reviewedAdversary = emphasisFragments.join(" ");
+  const inlineCodeFragments = [
+    `${"a".repeat(7_075)} because \`literal\``,
+    ...Array.from({ length: 999 }, () => `${"a".repeat(75)} because \`literal\``)
+  ];
+  const reviewedAdversary = inlineCodeFragments.join(" ");
   let fragmentContextOperations = 0;
+  let scannedCodeSpans = 0;
+  let scannedFragments = 0;
+  let scannedVisibleCodeUnits = 0;
   assert.equal(Buffer.byteLength(reviewedAdversary), 100_999);
 
   assert.doesNotThrow(() =>
@@ -1123,16 +1141,21 @@ test("cleaning-history inline fragment context has a deterministic operation bou
       productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
       documents: cleaningHistoryDocumentsWithReadmeClaim(model, reviewedAdversary),
       testHooks: {
-        recordInlineFragmentContextOperations(operations) {
+        recordInlineFragmentContextOperations(operations, metrics) {
           fragmentContextOperations += operations;
+          scannedCodeSpans += metrics.codeSpanCount;
+          scannedFragments += metrics.fragmentCount;
+          scannedVisibleCodeUnits += metrics.visibleCodeUnits;
         }
       }
     })
   );
-  assert.ok(fragmentContextOperations >= 1_999, `expected fragment work, observed ${fragmentContextOperations}`);
+  assert.equal(scannedCodeSpans, 1_000);
+  assert.ok(scannedFragments >= 2_000, `expected real inline fragments, observed ${scannedFragments}`);
+  const proportionalOperationCap = scannedVisibleCodeUnits * 48 + scannedFragments * 4;
   assert.ok(
-    fragmentContextOperations <= 4_096,
-    `inline fragment context exceeded its deterministic operation bound: ${fragmentContextOperations}`
+    fragmentContextOperations <= proportionalOperationCap,
+    `inline fragment context exceeded its proportional operation bound: ${fragmentContextOperations} > ${proportionalOperationCap}`
   );
 });
 

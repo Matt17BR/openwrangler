@@ -715,32 +715,71 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
-const cleaningHistoryClauseBoundaryAuthority = Object.freeze({
-  connectors: Object.freeze([
-    "and",
-    "or",
-    "plus",
-    "but",
-    "because",
-    "whenever",
-    "however",
-    "whereas",
-    "while",
-    "although",
-    "though",
-    "yet"
-  ]),
-  inlinePunctuationPattern: "[.!?;,:\\n]",
-  segmentPunctuation: Object.freeze([",", ":"]),
-  statementPunctuationPattern: "[.!?;\\n]+"
+const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
+  connectorRoles: Object.freeze({
+    although: "subordinate",
+    and: "coordinate",
+    as: "designation-sensitive",
+    because: "subordinate",
+    but: "coordinate",
+    however: "coordinate",
+    if: "subordinate",
+    or: "coordinate",
+    plus: "coordinate",
+    since: "subordinate",
+    so: "coordinate",
+    therefore: "coordinate",
+    though: "subordinate",
+    whenever: "subordinate",
+    when: "exception-sensitive",
+    whereas: "subordinate",
+    where: "subordinate",
+    while: "subordinate",
+    yet: "coordinate"
+  }),
+  punctuationRoles: Object.freeze({
+    ".": "statement",
+    "!": "statement",
+    "?": "statement",
+    ";": "statement",
+    "\n": "statement",
+    ",": "segment",
+    ":": "segment",
+    "—": "segment"
+  })
 });
-const cleaningHistoryClauseConnectors = new Set(cleaningHistoryClauseBoundaryAuthority.connectors);
-const cleaningHistorySegmentPunctuation = new Set(cleaningHistoryClauseBoundaryAuthority.segmentPunctuation);
-const cleaningHistoryStatementBoundary = new RegExp(
-  cleaningHistoryClauseBoundaryAuthority.statementPunctuationPattern,
+const cleaningHistoryClauseConnectorRoles = cleaningHistoryClauseBoundaryGrammar.connectorRoles;
+const cleaningHistoryClausePunctuationRoles = cleaningHistoryClauseBoundaryGrammar.punctuationRoles;
+const cleaningHistoryStatementPunctuationSource = Object.entries(cleaningHistoryClausePunctuationRoles)
+  .filter(([, role]) => role === "statement")
+  .map(([punctuation]) => (punctuation === "\n" ? "\\n" : punctuation))
+  .join("");
+const cleaningHistoryStatementBoundary = new RegExp(`[${cleaningHistoryStatementPunctuationSource}]+`, "gu");
+const cleaningHistoryClausePunctuationSource = Object.keys(cleaningHistoryClausePunctuationRoles)
+  .map((punctuation) => (punctuation === "\n" ? "\\n" : punctuation))
+  .join("");
+const cleaningHistoryClauseLexemePattern = new RegExp(
+  `[\\p{L}\\p{N}']+|[${cleaningHistoryClausePunctuationSource}]`,
   "gu"
 );
-const cleaningHistoryInlineClauseBoundarySource = `(?:${cleaningHistoryClauseBoundaryAuthority.inlinePunctuationPattern}|\\b(?:${cleaningHistoryClauseBoundaryAuthority.connectors.join("|")})\\b)`;
+const cleaningHistoryExampleNounTokens = new Set(["example", "literal", "sample", "snippet"]);
+const cleaningHistoryPredicatePhraseAuxiliaries = new Set([
+  "are",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "is",
+  "may",
+  "might",
+  "must",
+  "should",
+  "was",
+  "were",
+  "will",
+  "would"
+]);
 const cleaningHistoryPriorWords = Object.freeze([
   "earlier",
   "older",
@@ -848,7 +887,7 @@ function normalizeVisibleMarkdownText(value, label, { validateEntities = true } 
     .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
     .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
     .replace(/[\u2010\u2011\ufe63\uff0d]/gu, "-")
-    .replace(/[\u2012-\u2015\u2212\u2e3a\u2e3b\ufe58]/gu, " ");
+    .replace(/[\u2012\u2013\u2015\u2212\u2e3a\u2e3b\ufe58]/gu, " ");
   if (validateEntities && unresolvedVisibleNamedEntity.test(normalized)) {
     throw new Error(`${label} contains an unresolved visible named Markdown entity.`);
   }
@@ -884,6 +923,105 @@ function flattenVisibleInlineChildren(children, label) {
   return fragments;
 }
 
+function cleaningHistoryConnectorRole(token) {
+  return Object.hasOwn(cleaningHistoryClauseConnectorRoles, token)
+    ? cleaningHistoryClauseConnectorRoles[token]
+    : undefined;
+}
+
+function cleaningHistoryAsIntroducesExampleDesignation(tokens, index, operationCounter) {
+  if (["same", "such"].includes(tokens[index - 1])) return true;
+  const maximum = Math.min(tokens.length, index + 33);
+  let designation = false;
+  for (let cursor = index + 1; cursor < maximum; cursor += 1) {
+    if (operationCounter !== undefined) operationCounter.value += 1;
+    const token = tokens[cursor];
+    if (
+      cleaningHistoryClausePunctuationRoles[token] !== undefined ||
+      cleaningHistoryConnectorRole(token) !== undefined
+    ) {
+      return designation;
+    }
+    if (
+      cleaningHistoryExampleNounTokens.has(token) ||
+      token === "rejectedinput" ||
+      (token === "rejected" && tokens[cursor + 1] === "input")
+    ) {
+      designation = true;
+    }
+    if (cleaningHistoryPredicateKind(token) !== undefined || isCleaningHistoryNoun(tokens, cursor)) return false;
+  }
+  return designation;
+}
+
+function cleaningHistoryEmDashJoinsPredicatePhrase(tokens, index) {
+  return (
+    cleaningHistoryPredicateKind(tokens[index - 1]) !== undefined &&
+    cleaningHistoryPredicatePhraseAuxiliaries.has(tokens[index + 1])
+  );
+}
+
+function cleaningHistoryWhenContinuesUndoException(tokens, index, operationCounter) {
+  if (tokens[index - 1] !== "except") return false;
+  const minimum = Math.max(0, index - 34);
+  let hasUndo = false;
+  let hasCleaningNoun = false;
+  for (let cursor = index - 2; cursor >= minimum; cursor -= 1) {
+    if (operationCounter !== undefined) operationCounter.value += 1;
+    const token = tokens[cursor];
+    if (
+      cleaningHistoryClausePunctuationRoles[token] !== undefined ||
+      cleaningHistoryConnectorRole(token) !== undefined
+    ) {
+      break;
+    }
+    hasUndo ||= cleaningHistoryPredicateKind(token) === "undo";
+    hasCleaningNoun ||= isCleaningHistoryNoun(tokens, cursor);
+  }
+  return hasUndo && hasCleaningNoun;
+}
+
+function cleaningHistoryClauseBoundaryKind(tokens, index, operationCounter = undefined) {
+  if (operationCounter !== undefined) operationCounter.value += 1;
+  const token = tokens[index];
+  const punctuationRole = cleaningHistoryClausePunctuationRoles[token];
+  if (punctuationRole !== undefined) {
+    return token === "—" && cleaningHistoryEmDashJoinsPredicatePhrase(tokens, index) ? undefined : punctuationRole;
+  }
+  const connectorRole = cleaningHistoryConnectorRole(token);
+  if (connectorRole === undefined) return undefined;
+  if (
+    connectorRole === "designation-sensitive" &&
+    cleaningHistoryAsIntroducesExampleDesignation(tokens, index, operationCounter)
+  ) {
+    return undefined;
+  }
+  if (
+    connectorRole === "exception-sensitive" &&
+    cleaningHistoryWhenContinuesUndoException(tokens, index, operationCounter)
+  ) {
+    return undefined;
+  }
+  return "connector";
+}
+
+function cleaningHistoryClauseBoundaryRecords(value) {
+  const lexemes = [...value.matchAll(cleaningHistoryClauseLexemePattern)].map((match) => ({
+    end: match.index + match[0].length,
+    start: match.index,
+    token: match[0].toLowerCase()
+  }));
+  const tokens = lexemes.map(({ token }) => token);
+  const operationCounter = { value: 0 };
+  const boundaries = [];
+  for (let index = 0; index < lexemes.length; index += 1) {
+    if (cleaningHistoryClauseBoundaryKind(tokens, index, operationCounter) !== undefined) {
+      boundaries.push({ end: lexemes[index].end, start: lexemes[index].start });
+    }
+  }
+  return { boundaries, grammarOperations: operationCounter.value };
+}
+
 function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
   let operations = fragments.length;
   const chunks = [];
@@ -901,18 +1039,19 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
     }
   }
   if (codeSpans.length === 0) {
-    testHooks?.recordInlineFragmentContextOperations?.(operations);
+    testHooks?.recordInlineFragmentContextOperations?.(operations, {
+      codeSpanCount: 0,
+      fragmentCount: fragments.length,
+      visibleCodeUnits: offset
+    });
     return new Set();
   }
 
   const visible = chunks.join("");
   operations += visible.length;
-  const boundaries = [];
-  const boundaryPattern = new RegExp(cleaningHistoryInlineClauseBoundarySource, "giu");
-  for (const match of visible.matchAll(boundaryPattern)) {
-    boundaries.push({ end: match.index + match[0].length, start: match.index });
-    operations += match[0].length;
-  }
+  const boundaryRecords = cleaningHistoryClauseBoundaryRecords(visible);
+  const { boundaries } = boundaryRecords;
+  operations += visible.length + boundaryRecords.grammarOperations;
 
   const before = new Map();
   let boundaryIndex = 0;
@@ -922,10 +1061,11 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
     while (boundaryIndex < boundaries.length && boundaries[boundaryIndex].end <= codeSpan.start) {
       previousBarrierEnd = boundaries[boundaryIndex].end;
       boundaryIndex += 1;
+      operations += 1;
     }
     const start = Math.max(previousBarrierEnd, previousCodeEnd);
     before.set(codeSpan.index, visible.slice(start, codeSpan.start));
-    operations += codeSpan.start - start;
+    operations += codeSpan.start - start + 1;
     previousCodeEnd = codeSpan.end;
   }
 
@@ -938,26 +1078,34 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
     while (boundaryIndex >= 0 && boundaries[boundaryIndex].start >= codeSpan.end) {
       nextBarrierStart = boundaries[boundaryIndex].start;
       boundaryIndex -= 1;
+      operations += 1;
     }
     const end = Math.min(nextBarrierStart, nextCodeStart);
     after.set(codeSpan.index, visible.slice(codeSpan.end, end));
-    operations += end - codeSpan.end;
+    operations += end - codeSpan.end + 1;
     nextCodeStart = codeSpan.start;
   }
-  testHooks?.recordInlineFragmentContextOperations?.(operations);
 
   const exampleNoun = /\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu;
   const presentationVerb =
     /\b(?:use|uses|used|show|shows|shown|write|writes|written|quote|quotes|quoted|present|presents|presented|label|labels|labeled|call|calls|called|read|reads|say|says)\b/iu;
   const designation =
     /^\s*(?:(?:only\s+)?as|is|was|serves?\s+as)\b[^.!?;,\n]{0,256}\b(?:example|literal|sample|snippet|rejected[ -]?input)\b/iu;
-  return new Set(
-    [...before.keys()].filter((index) => {
-      const preceding = before.get(index) ?? "";
-      const following = after.get(index) ?? "";
-      return (exampleNoun.test(preceding) && presentationVerb.test(preceding)) || designation.test(following);
-    })
-  );
+  const examples = new Set();
+  for (const { index } of codeSpans) {
+    const preceding = before.get(index) ?? "";
+    const following = after.get(index) ?? "";
+    operations += preceding.length * 2 + following.length + 1;
+    if ((exampleNoun.test(preceding) && presentationVerb.test(preceding)) || designation.test(following)) {
+      examples.add(index);
+    }
+  }
+  testHooks?.recordInlineFragmentContextOperations?.(operations, {
+    codeSpanCount: codeSpans.length,
+    fragmentCount: fragments.length,
+    visibleCodeUnits: visible.length
+  });
+  return examples;
 }
 
 function renderedInlineText(token, label, { excludeExampleCode = false, testHooks = undefined } = {}) {
@@ -1272,6 +1420,7 @@ const cleaningHistoryGrammarWords = new Set([
   "you",
   "your",
   ...cleaningHistoryPriorWords,
+  ...Object.keys(cleaningHistoryClauseConnectorRoles),
   ...cleaningHistorySetCardinalityWords,
   ...cleaningHistoryMultiWords
 ]);
@@ -1285,7 +1434,7 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
     .toLowerCase();
   const tokens = [];
   let predicateCount = 0;
-  for (const match of normalized.matchAll(/[\p{L}\p{N}']+|[:,]/gu)) {
+  for (const match of normalized.matchAll(/[\p{L}\p{N}']+|[,:—]/gu)) {
     if (tokens.length >= remainingTokenBudget) {
       throw new Error(
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_WORD_TOKEN_MAX}-word-token work limit.`
@@ -1334,11 +1483,12 @@ function cleaningHistorySegments(tokens) {
   };
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (cleaningHistorySegmentPunctuation.has(token) || cleaningHistoryClauseConnectors.has(token)) {
+    const boundaryKind = cleaningHistoryClauseBoundaryKind(tokens, index);
+    if (boundaryKind !== undefined) {
       finish();
       separatorBefore = token;
       startIndex = index + 1;
-    } else {
+    } else if (cleaningHistoryClausePunctuationRoles[token] === undefined) {
       if (current.length === 0) startIndex = index;
       current.push(token);
     }
@@ -1625,6 +1775,7 @@ function isCleaningHistoryBareUndoContinuation(record, tokens) {
     tokens.some((token) => cleaningHistoryBareHistoryNouns.has(token) || cleaningHistoryAnaphors.has(token));
   const hasBoundedReference =
     (tokens.includes("most") && tokens.some((token) => ["recent", "recently"].includes(token))) ||
+    cleaningHistoryHasMultiTarget(tokens) ||
     tokens.some(
       (token) =>
         cleaningHistoryLatestWords.has(token) ||
@@ -1682,7 +1833,7 @@ function cleaningHistoryPredicateRecords(rendered) {
       } else if (
         subject.owner === "none" &&
         currentSubject?.owner === "cleaning" &&
-        cleaningHistoryClauseConnectors.has(segment.separatorBefore)
+        cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined
       ) {
         subject = { ...currentSubject, explicit: false };
       }
