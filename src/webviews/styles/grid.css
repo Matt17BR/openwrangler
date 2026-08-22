@@ -193,6 +193,7 @@
 .visibleRowsStatus {
   flex: 1 0 auto;
   min-width: max-content;
+  overflow-wrap: anywhere;
   padding: 0 4px;
   white-space: nowrap;
 }

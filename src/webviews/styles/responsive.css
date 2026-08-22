@@ -183,9 +183,19 @@
     min-width: 24px;
     padding: 2px;
   }
+}
 
-  .gridClipboardButtonLabel {
-    display: none;
+@container (max-width: 700px) {
+  .gridClipboardButton,
+  .gridProfileControls,
+  .profileValueToggle.compact button,
+  .headerProfilesButton {
+    font-size: 10px;
+  }
+
+  .profileValueToggle.compact button,
+  .headerProfilesButton {
+    padding-inline: 2px;
   }
 }
 
@@ -206,16 +216,14 @@
     grid-row: 1;
   }
 
+  .gridClipboardButtonLabel {
+    display: none;
+  }
+
   .gridProfileControls {
     grid-column: 4;
     grid-row: 1;
     justify-self: end;
-  }
-
-  .profileValueToggle.compact button,
-  .headerProfilesButton {
-    font-size: 10px;
-    padding-inline: 2px;
   }
 
   .headerProfilesButton {
@@ -225,11 +233,14 @@
 
 @container (max-width: 240px) {
   .visibleRowsStatus {
-    grid-column: 1 / 4;
+    grid-column: 1 / -1;
+    white-space: normal;
   }
 
   .gridProfileControls {
-    grid-row: 2;
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: end;
   }
 }
 
