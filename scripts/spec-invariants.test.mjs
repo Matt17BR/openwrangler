@@ -409,6 +409,57 @@ test("cleaning-history claims use rendered inline Markdown and decoded entity te
   }
 });
 
+test("cleaning-history rendered line separators preserve statement ownership after entity decoding", () => {
+  const model = cleaningHistoryModel();
+  const separators = [
+    "\n",
+    "\r",
+    "\u0085",
+    "\u2028",
+    "\u2029",
+    "&#13;",
+    "&#x0D;",
+    "&#10;",
+    "&#x0A;",
+    "&#8232;",
+    "&#x2028;",
+    "&#8233;",
+    "&#x2029;"
+  ];
+
+  for (const separator of separators) {
+    for (const example of [
+      `Reports can be edited${separator}committed steps cannot be edited.`,
+      `Committed steps cannot be edited${separator}reports can be edited.`
+    ]) {
+      assert.throws(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        /contradictory cleaning-history capability claim/u,
+        example
+      );
+    }
+    for (const example of [
+      `Reports cannot be edited${separator}committed steps can be edited.`,
+      `Committed steps can be edited${separator}reports cannot be edited.`
+    ]) {
+      assert.doesNotThrow(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        example
+      );
+    }
+  }
+});
+
 test("cleaning-history claims accept truthful prose about unrelated editable and ordered surfaces", () => {
   const model = cleaningHistoryModel();
   const documents = cleaningHistoryDocuments(model);
@@ -1023,7 +1074,7 @@ test("cleaning-history predicates keep ownership, polarity, cardinality, and exc
 
 test("cleaning-history Undo continuations and subordinate connectors share exact clause ownership", () => {
   const model = cleaningHistoryModel();
-  const connectors = ["because", "whenever", "since", "when", "if", "as", "where", "therefore", "so"];
+  const connectors = ["because", "whenever", "since", "when", "if", "as", "where", "therefore", "so", "unless"];
   const joinClauses = (left, boundary, right) =>
     boundary === "—" ? `${left}—${right}` : `${left} ${boundary} ${right}`;
   const boundaries = [...connectors, "—"];
@@ -1042,6 +1093,12 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
       `${joinClauses("Committed steps cannot be edited", boundary, "reports can be edited")}.`
     ]),
     "Reports can be edited except when committed steps cannot be edited.",
+    "Undo is unavailable for every committed step, except the previous.",
+    "Undo is unavailable for every committed step—except the previous.",
+    "Undo is unavailable for every committed step, except the previous one.",
+    "Undo is unavailable for every committed step—except the previous one.",
+    "Undo is available for every committed step, except the latest one.",
+    "Undo is available for every committed step—except the latest one.",
     "Use this sample because `Committed steps cannot be edited`.",
     "Use this sample whenever `Committed steps cannot be edited`."
   ];
@@ -1052,6 +1109,13 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
     "Undo targets only the latest committed step; prior troubleshooting operations remain documented.",
     "Undo targets only the latest committed step. Older troubleshooting transformations remain documented.",
     "Undo is unavailable for older committed steps except when the latest committed step is selected.",
+    "Undo cannot remove any committed step unless it is the most recent one.",
+    "Undo is unavailable for every committed step, except the latest.",
+    "Undo is unavailable for every committed step—except the latest.",
+    "Undo is unavailable for every committed step, except the latest one.",
+    "Undo is unavailable for every committed step—except the latest one.",
+    "Except for the latest committed step, Undo is unavailable.",
+    "Except for the latest committed step—Undo is unavailable.",
     ...boundaries.flatMap((boundary) => [
       `${joinClauses("Reports cannot be edited", boundary, "committed steps can be edited")}.`,
       `${joinClauses("Committed steps can be edited", boundary, "reports cannot be edited")}.`
@@ -1111,41 +1175,71 @@ test("cleaning-history predicate work is explicitly bounded before clause analys
   }
 });
 
-test("cleaning-history inline fragment context has a deterministic operation bound", () => {
+test("cleaning-history inline fragment context has independently exact bounded operation accounting", () => {
   const model = cleaningHistoryModel();
-  const inlineCodeFragments = [
-    `${"a".repeat(7_075)} because \`literal\``,
-    ...Array.from({ length: 999 }, () => `${"a".repeat(75)} because \`literal\``)
-  ];
-  const reviewedAdversary = inlineCodeFragments.join(" ");
-  let fragmentContextOperations = 0;
-  let scannedCodeSpans = 0;
-  let scannedFragments = 0;
-  let scannedVisibleCodeUnits = 0;
-  assert.equal(Buffer.byteLength(reviewedAdversary), 100_999);
-
-  assert.doesNotThrow(() =>
-    assertCleaningHistoryClaimsCurrent({
-      modelSource: JSON.stringify(model),
-      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
-      documents: cleaningHistoryDocumentsWithReadmeClaim(model, reviewedAdversary),
-      testHooks: {
-        recordInlineFragmentContextOperations(operations, metrics) {
-          fragmentContextOperations += operations;
-          scannedCodeSpans += metrics.codeSpanCount;
-          scannedFragments += metrics.fragmentCount;
-          scannedVisibleCodeUnits += metrics.visibleCodeUnits;
+  const measure = (source) => {
+    const receipts = [];
+    assert.doesNotThrow(() =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, source),
+        testHooks: {
+          recordInlineFragmentContextOperations(operations, metrics) {
+            receipts.push({ operations, ...metrics });
+          }
         }
-      }
-    })
-  );
-  assert.equal(scannedCodeSpans, 1_000);
-  assert.ok(scannedFragments >= 2_000, `expected real inline fragments, observed ${scannedFragments}`);
-  const proportionalOperationCap = scannedVisibleCodeUnits * 48 + scannedFragments * 4;
-  assert.ok(
-    fragmentContextOperations <= proportionalOperationCap,
-    `inline fragment context exceeded its proportional operation bound: ${fragmentContextOperations} > ${proportionalOperationCap}`
-  );
+      })
+    );
+    assert.equal(receipts.length, 1);
+    return receipts[0];
+  };
+
+  const asRepetitions = 100;
+  const asClause = `Use \`literal\` as an example ${"context ".repeat(30)};`;
+  const asAdversary = Array.from({ length: asRepetitions }, () => asClause).join(" ");
+  const asReceipt = measure(asAdversary);
+  assert.equal(asReceipt.codeSpanCount, asRepetitions);
+  assert.equal(asReceipt.fragmentCount, asRepetitions * 2 + 1);
+  assert.equal(asReceipt.visibleCodeUnits, asAdversary.length - asRepetitions * 2);
+  assert.equal(asReceipt.designationLookaheadOperations, asRepetitions * 32);
+  assert.equal(asReceipt.exceptionLookbehindOperations, 0);
+  assert.equal(asReceipt.grammarOperations, asRepetitions * (35 + 32));
+  assert.equal(asReceipt.operations, 201 + 2 * 26_799 + 6_700 + 698 + 25_700 + 26_598);
+
+  const whenRepetitions = 80;
+  const whenPrefix = [
+    "Undo",
+    "is",
+    "unavailable",
+    "for",
+    "every",
+    "committed",
+    "step",
+    ...Array.from({ length: 26 }, () => "context")
+  ].join(" ");
+  const whenClause = `${whenPrefix} except when the latest committed step is selected;`;
+  const whenAdversary = `${Array.from({ length: whenRepetitions }, () => whenClause).join(" ")} Use \`literal\`.`;
+  const whenReceipt = measure(whenAdversary);
+  assert.equal(whenReceipt.codeSpanCount, 1);
+  assert.equal(whenReceipt.fragmentCount, 3);
+  assert.equal(whenReceipt.visibleCodeUnits, whenAdversary.length - 2);
+  assert.equal(whenReceipt.designationLookaheadOperations, 0);
+  assert.equal(whenReceipt.exceptionLookbehindOperations, whenRepetitions * 33);
+  assert.equal(whenReceipt.grammarOperations, whenRepetitions * (42 + 33) + 2);
+  assert.equal(whenReceipt.operations, 3 + 2 * 24_332 + 6_002 + 86 + 2 + 11);
+
+  for (const receipt of [asReceipt, whenReceipt]) {
+    assert.ok(
+      receipt.operations >= receipt.visibleCodeUnits * 2 + receipt.grammarOperations + receipt.fragmentCount,
+      "inline fragment accounting must include the independently verified grammar and input work"
+    );
+    const proportionalOperationCap = receipt.visibleCodeUnits * 48 + receipt.fragmentCount * 4;
+    assert.ok(
+      receipt.operations <= proportionalOperationCap,
+      `inline fragment context exceeded its proportional operation bound: ${receipt.operations} > ${proportionalOperationCap}`
+    );
+  }
 });
 
 test("a code example cannot hide a separate rendered inline contradiction", () => {
