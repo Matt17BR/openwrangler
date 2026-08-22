@@ -427,7 +427,12 @@ test("cleaning-history rendered line separators preserve statement ownership aft
     "\u000b",
     "\u000c",
     "\r",
+    "\u0589",
+    "\u061b",
+    "\u061f",
+    "\u0964",
     "\u0085",
+    "\u1362",
     "\u2028",
     "\u2029",
     "\u3002",
@@ -441,6 +446,16 @@ test("cleaning-history rendered line separators preserve statement ownership aft
     "&#x0A;",
     "&#133;",
     "&#x85;",
+    "&#1417;",
+    "&#x589;",
+    "&#1563;",
+    "&#x61B;",
+    "&#1567;",
+    "&#x61F;",
+    "&#2404;",
+    "&#x964;",
+    "&#4962;",
+    "&#x1362;",
     "&#8232;",
     "&#x2028;",
     "&#8233;",
@@ -1172,6 +1187,7 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
 
 test("cleaning-history punctuation binds one atomic exception or explicit subject to its exact predicate", () => {
   const model = cleaningHistoryModel();
+  const exceptionPunctuation = [",", ":", "—"];
   const contradictions = [
     "Undo is unavailable for every committed step, reports except the latest one.",
     "Undo is unavailable for every committed step—reports unless the latest one is selected.",
@@ -1185,6 +1201,11 @@ test("cleaning-history punctuation binds one atomic exception or explicit subjec
     `Except—${"the ".repeat(34)}latest committed step—Undo is unavailable for every committed step.`,
     `Undo is unavailable for every committed step, except—${"the ".repeat(34)}latest committed step.`,
     `Except—${"the ".repeat(34)}committed steps—cannot be edited.`,
+    ...exceptionPunctuation.flatMap((separator) => [
+      `Unless the latest report is selected${separator} Undo is unavailable for every committed step.`,
+      `Unless the latest committed step is selected${separator} Undo is available for every committed step.`,
+      `Reports remain visible unless the latest committed step is selected${separator} Undo is unavailable for every committed step.`
+    ]),
     ...[",", ":", "—"].flatMap((separator) => [
       `Committed steps${separator} cannot be edited.`,
       `Every committed step${separator} can be undone.`
@@ -1198,6 +1219,12 @@ test("cleaning-history punctuation binds one atomic exception or explicit subjec
     "Except—the latest committed step—Undo is unavailable for every committed step.",
     "Undo is unavailable for every committed step, except—the latest committed step.",
     "Undo targets only the latest committed step, reports except the latest one remain visible.",
+    "Undo targets only the latest committed step. Unless the latest committed step is selected, Undo is unavailable for every committed step.",
+    ...exceptionPunctuation.flatMap((separator) => [
+      `Unless the latest committed step is selected${separator} Undo is unavailable for every committed step.`,
+      `Undo is unavailable for every committed step${separator} unless the latest committed step is selected.`,
+      `Unless the latest committed step is selected${separator} reports cannot be edited.`
+    ]),
     ...[",", ":", "—"].flatMap((separator) => [
       `Committed steps${separator} can be edited.`,
       `The latest committed step${separator} can be undone.`,

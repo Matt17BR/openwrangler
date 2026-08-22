@@ -716,7 +716,9 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
-const cleaningHistoryRenderedBoundaryCodePoints = new Set([0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x2028, 0x2029, 0x3002]);
+const cleaningHistoryRenderedBoundaryCodePoints = new Set([
+  0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x0589, 0x061b, 0x061f, 0x0964, 0x1362, 0x2028, 0x2029, 0x3002
+]);
 const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
   connectorRoles: Object.freeze({
     although: "subordinate",
@@ -1981,24 +1983,31 @@ function cleaningHistoryPredicateRecords(rendered) {
       }
       if (subject.owner !== "none" && subject.owner !== "anaphor") currentSubject = subject;
       if (predicates.length === 0) {
-        const atomicExceptionIndex = cleaningHistoryAtomicExceptionIndex(segment.tokens);
+        const connectorExceptionTokens =
+          segment.separatorBefore === "unless" ? [segment.separatorBefore, ...segment.tokens] : undefined;
+        const atomicExceptionTokens = connectorExceptionTokens ?? segment.tokens;
+        const atomicExceptionIndex = cleaningHistoryAtomicExceptionIndex(atomicExceptionTokens);
         if (atomicExceptionIndex >= 0) {
           const punctuationRole = cleaningHistoryClausePunctuationRoles[segment.separatorBefore];
           if (
             priorRecord?.kind === "undo" &&
             priorRecord.subject.owner === "cleaning" &&
-            punctuationRole === "segment"
+            (punctuationRole === "segment" || (connectorExceptionTokens !== undefined && segment.startIndex > 1))
           ) {
-            priorRecord.exceptionTokens = [...segment.tokens];
-            if (cleaningHistoryAtomicExceptionNeedsTarget(segment.tokens)) {
+            priorRecord.exceptionTokens = [...atomicExceptionTokens];
+            if (cleaningHistoryAtomicExceptionNeedsTarget(atomicExceptionTokens)) {
               pendingAtomicException = {
                 position: "suffix",
                 record: priorRecord,
-                tokens: [...segment.tokens]
+                tokens: [...atomicExceptionTokens]
               };
             }
-          } else if (subject.owner !== "unrelated" && currentSubject?.owner !== "unrelated") {
-            pendingAtomicException = { position: "prefix", tokens: [...segment.tokens] };
+          } else if (
+            subject.owner !== "unrelated" &&
+            currentSubject?.owner !== "unrelated" &&
+            (connectorExceptionTokens === undefined || segment.startIndex === 1)
+          ) {
+            pendingAtomicException = { position: "prefix", tokens: [...atomicExceptionTokens] };
           }
         } else {
           const exceptionContinuation =
