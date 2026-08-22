@@ -430,9 +430,13 @@ test("cleaning-history rendered line separators preserve statement ownership aft
     "\u0589",
     "\u061b",
     "\u061f",
+    "\u06d4",
     "\u0964",
+    "\u0965",
     "\u0085",
     "\u1362",
+    "\u1367",
+    "\u1368",
     "\u2028",
     "\u2029",
     "\u3002",
@@ -452,10 +456,18 @@ test("cleaning-history rendered line separators preserve statement ownership aft
     "&#x61B;",
     "&#1567;",
     "&#x61F;",
+    "&#1748;",
+    "&#x6D4;",
     "&#2404;",
     "&#x964;",
+    "&#2405;",
+    "&#x965;",
     "&#4962;",
     "&#x1362;",
+    "&#4967;",
+    "&#x1367;",
+    "&#4968;",
+    "&#x1368;",
     "&#8232;",
     "&#x2028;",
     "&#8233;",
@@ -494,6 +506,20 @@ test("cleaning-history rendered line separators preserve statement ownership aft
         example
       );
     }
+  }
+
+  for (const unsupportedSeparator of ["\u203d", "&#8253;", "&#x203D;"]) {
+    const example = `Reports cannot be edited${unsupportedSeparator}committed steps can be edited.`;
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /unsupported visible sentence terminal/u,
+      example
+    );
   }
 });
 
@@ -1188,6 +1214,11 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
 test("cleaning-history punctuation binds one atomic exception or explicit subject to its exact predicate", () => {
   const model = cleaningHistoryModel();
   const exceptionPunctuation = [",", ":", "—"];
+  const capabilityVerbs = [
+    { active: "inspect", passive: "inspected" },
+    { active: "edit", passive: "edited" },
+    { active: "delete", passive: "deleted" }
+  ];
   const contradictions = [
     "Undo is unavailable for every committed step, reports except the latest one.",
     "Undo is unavailable for every committed step—reports unless the latest one is selected.",
@@ -1206,6 +1237,17 @@ test("cleaning-history punctuation binds one atomic exception or explicit subjec
       `Unless the latest committed step is selected${separator} Undo is available for every committed step.`,
       `Reports remain visible unless the latest committed step is selected${separator} Undo is unavailable for every committed step.`
     ]),
+    ...exceptionPunctuation.flatMap((separator) =>
+      capabilityVerbs
+        .flatMap(({ passive }) => [
+          `Unless the latest committed step is selected${separator} committed steps can be ${passive}.`,
+          `Committed steps can be ${passive}${separator} unless the latest committed step is selected.`
+        ])
+        .concat(
+          `Unless the latest committed step is selected${separator} committed steps cannot be reordered.`,
+          `Committed steps cannot be reordered${separator} unless the latest committed step is selected.`
+        )
+    ),
     ...[",", ":", "—"].flatMap((separator) => [
       `Committed steps${separator} cannot be edited.`,
       `Every committed step${separator} can be undone.`
@@ -1225,6 +1267,17 @@ test("cleaning-history punctuation binds one atomic exception or explicit subjec
       `Undo is unavailable for every committed step${separator} unless the latest committed step is selected.`,
       `Unless the latest committed step is selected${separator} reports cannot be edited.`
     ]),
+    ...exceptionPunctuation.flatMap((separator) =>
+      capabilityVerbs
+        .flatMap(({ passive }) => [
+          `Unless the latest committed step is selected${separator} the report can be ${passive}.`,
+          `The report can be ${passive}${separator} unless the latest committed step is selected.`
+        ])
+        .concat(
+          `Unless the latest committed step is selected${separator} the report cannot be reordered.`,
+          `The report cannot be reordered${separator} unless the latest committed step is selected.`
+        )
+    ),
     ...[",", ":", "—"].flatMap((separator) => [
       `Committed steps${separator} can be edited.`,
       `The latest committed step${separator} can be undone.`,
@@ -1254,6 +1307,43 @@ test("cleaning-history punctuation binds one atomic exception or explicit subjec
         }),
       example
     );
+  }
+});
+
+test("cleaning-history punctuation inherits only passive capability continuations", () => {
+  const model = cleaningHistoryModel();
+  const capabilityVerbs = [
+    { active: "inspect", passive: "inspected" },
+    { active: "edit", passive: "edited" },
+    { active: "delete", passive: "deleted" }
+  ];
+  const punctuation = [",", ":", "—"];
+
+  for (const separator of punctuation) {
+    for (const { active, passive } of capabilityVerbs) {
+      const contradiction = `Committed steps${separator} cannot be ${passive}.`;
+      assert.throws(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, contradiction)
+          }),
+        /contradictory cleaning-history capability claim/u,
+        contradiction
+      );
+
+      const unrelatedImperative = `Committed steps${separator} do not ${active} the report.`;
+      assert.doesNotThrow(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, unrelatedImperative)
+          }),
+        unrelatedImperative
+      );
+    }
   }
 });
 
