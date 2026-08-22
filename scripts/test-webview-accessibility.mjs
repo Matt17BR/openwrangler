@@ -1693,18 +1693,47 @@ async function verifyColumnHeaderControlLayout(browser) {
           if (control.classList.contains("columnResizeHandle")) {
             const settlementDeadline = performance.now() + 500;
             let settledFrames = 0;
-            while (settledFrames < 2 && performance.now() < settlementDeadline) {
-              await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+            while (settledFrames < 2) {
+              const remaining = settlementDeadline - performance.now();
+              if (remaining <= 0) break;
+              let deadlineTimer;
+              let frameRequest;
+              const frameCompleted = await Promise.race([
+                new Promise((resolveFrame) => {
+                  frameRequest = requestAnimationFrame(() => {
+                    resolveFrame(performance.now() <= settlementDeadline);
+                  });
+                }),
+                new Promise((resolveFrame) => {
+                  deadlineTimer = setTimeout(() => resolveFrame(false), remaining);
+                })
+              ]);
+              clearTimeout(deadlineTimer);
+              if (!frameCompleted) {
+                cancelAnimationFrame(frameRequest);
+                break;
+              }
               settledFrames = getComputedStyle(control).opacity === "1" ? settledFrames + 1 : 0;
             }
+            const isCurrentResizeHandle =
+              control.isConnected && header.querySelector(".columnResizeHandle") === control;
             const gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
             const opacity = getComputedStyle(control).opacity;
-            if (!Number.isFinite(gripperWidth) || gripperWidth <= 0 || gripperWidth >= target || opacity !== "1") {
+            if (
+              settledFrames !== 2 ||
+              !isCurrentResizeHandle ||
+              !Number.isFinite(gripperWidth) ||
+              gripperWidth <= 0 ||
+              gripperWidth >= target ||
+              opacity !== "1"
+            ) {
               failures.push({
                 gripperWidth,
                 header: header.getAttribute("data-column"),
+                isCurrentResizeHandle,
                 opacity,
                 reason: "invalid-resize-gripper",
+                settledFrames,
                 target
               });
             }
