@@ -1,4 +1,3 @@
-import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -9,6 +8,18 @@ import {
   excelDependencyPipSource,
   packagedExcelDependencyWorkbookSource
 } from "./extensionHost/excelDependencyInstallFixture";
+import {
+  PYTHON_PROBE_MAX_OUTPUT_BYTES,
+  PYTHON_PROBE_MAX_TIMEOUT_MS,
+  PythonProbeProcessError,
+  pythonProbeSpawnContract,
+  runOwnedPythonProbe,
+  terminateOwnedPythonProbeTree,
+  windowsPythonProbeTreeKillCommand,
+  type PythonProbeReadiness,
+  type PythonProbeTreeTerminator,
+  type RunOwnedPythonProbeOptions
+} from "./pythonProbeProcessOwner";
 
 describe("Excel dependency-install fixture", () => {
   it("builds the exact bounded workbook schema and deterministic row family", () => {
@@ -37,7 +48,7 @@ describe("Excel dependency-install fixture", () => {
     expect(source.endsWith("\n")).toBe(true);
   });
 
-  it("blocks the production-shaped module probe only until the install marker exists", () => {
+  it("blocks the production-shaped module probe only until the install marker exists", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-excel-gate-"));
     const marker = path.join(directory, 'openpyxl "installed"');
     const gate = excelDependencyGateSource(marker);
@@ -59,12 +70,12 @@ describe("Excel dependency-install fixture", () => {
     ].join("\n");
 
     try {
-      const before = runPythonProbe(probe);
+      const before = await runPythonProbe(probe);
       expect(before).toMatchObject({ find_spec: false, missing: "openpyxl", module: null, other: "json" });
       expect(before.version).toEqual(expect.any(String));
 
       writeFileSync(marker, "openpyxl installed\n", { encoding: "utf8", flag: "wx" });
-      const after = runPythonProbe(probe);
+      const after = await runPythonProbe(probe);
       expect(after).toMatchObject({ find_spec: true, module: "openpyxl", other: "json", version: before.version });
       expect(after).not.toHaveProperty("missing");
     } finally {
@@ -72,84 +83,144 @@ describe("Excel dependency-install fixture", () => {
     }
   });
 
-  it("owns a finite deadline and output bound for both synchronous Python probes", () => {
-    const calls: { readonly args: readonly string[]; readonly options: ExecFileSyncOptionsWithStringEncoding }[] = [];
-    const execute: PythonProbeExecutor = (_file, args, options) => {
-      calls.push({ args, options });
+  it("owns the production deadline and one owner for both Python probes", async () => {
+    const calls: RunOwnedPythonProbeOptions[] = [];
+    const execute: PythonProbeRunner = async (options) => {
+      calls.push(options);
       return "{}";
     };
 
-    expect(runPythonProbe("pass", execute)).toEqual({});
-    expect(runPythonProbe("pass", execute)).toEqual({});
+    await expect(runPythonProbe("pass", execute)).resolves.toEqual({});
+    await expect(runPythonProbe("pass", execute)).resolves.toEqual({});
     expect(calls).toHaveLength(2);
     for (const call of calls) {
-      expect(call.args).toEqual(["-I", "-c", "pass"]);
-      expect(call.options).toEqual({
-        encoding: "utf8",
-        killSignal: "SIGKILL",
-        maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: PYTHON_PROBE_TIMEOUT_MS,
-        windowsHide: true
-      });
+      expect(call.executable).toBe(selectedPython());
+      expect(call.source).toBe("pass");
+      expect(call.timeoutMs).toBe(PYTHON_PROBE_MAX_TIMEOUT_MS);
+      expect(call.readiness).toBeUndefined();
     }
   });
 
-  it("hard-terminates a real Python probe that ignores SIGTERM", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-excel-probe-settlement-"));
-    const ready = path.join(directory, "ready");
+  it("binds ignored stdin, bounded pipes, isolated POSIX groups, and Windows tree termination", () => {
+    expect(pythonProbeSpawnContract("linux")).toEqual({
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    expect(pythonProbeSpawnContract("win32")).toEqual({
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    expect(windowsPythonProbeTreeKillCommand("C:\\Windows", 4217)).toEqual({
+      executable: "C:\\Windows\\System32\\taskkill.exe",
+      args: ["/PID", "4217", "/T", "/F"]
+    });
+  });
+
+  it("starts the short canary only after readiness and settles a real descendant tree", async () => {
+    const fixture = createTreeFixture("delayed-ready", { readinessDelaySeconds: 0.5 });
     const timeoutMs = 250;
-    const maximumSettlementMs = 1_500;
-    const source = [
-      "import signal",
-      "import time",
-      "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
-      `with open(${JSON.stringify(ready)}, 'x', encoding='utf-8') as stream:`,
-      "    stream.write('ready\\n')",
-      "    stream.flush()",
-      "time.sleep(3)",
-      "print('{}')"
-    ].join("\n");
 
     try {
       const startedAt = performance.now();
-      let observed: unknown;
-      try {
-        runPythonProbe(source, executePythonProbe, timeoutMs);
-      } catch (error) {
-        observed = error;
-      }
+      const observed = await captureFailure(
+        runPythonProbe(fixture.source, runOwnedPythonProbe, {
+          readiness: PROBE_READINESS,
+          timeoutMs
+        })
+      );
       const elapsedMs = performance.now() - startedAt;
 
-      expect(readFileSync(ready, "utf8")).toBe("ready\n");
-      expect(observed).toBeInstanceOf(Error);
-      expect((observed as Error).message).toBe(
-        `The Excel dependency Python probe exceeded its ${timeoutMs} ms deadline.`
-      );
-      expect(elapsedMs).toBeLessThan(maximumSettlementMs);
+      expect(observed.message).toBe(`The Excel dependency Python probe exceeded its ${timeoutMs} ms deadline.`);
+      expect(elapsedMs).toBeGreaterThanOrEqual(500);
+      expect(elapsedMs).toBeLessThan(10_000);
+      expectFixtureTreeGone(fixture);
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      fixture.dispose();
     }
-  }, 5_000);
+  }, 15_000);
+
+  it("fails missing readiness and settles the owned process tree without starting the canary", async () => {
+    const fixture = createTreeFixture("missing-ready", { emitReadiness: false });
+    const readiness = { ...PROBE_READINESS, timeoutMs: 1_000 };
+    try {
+      const observed = await captureFailure(
+        runPythonProbe(fixture.source, runOwnedPythonProbe, { readiness, timeoutMs: 250 })
+      );
+
+      expect(observed.message).toBe(
+        `The Excel dependency Python probe did not become ready within its ${readiness.timeoutMs} ms deadline.`
+      );
+      expectFixtureTreeGone(fixture);
+    } finally {
+      fixture.dispose();
+    }
+  }, 15_000);
+
+  it.each(["stdout", "stderr"] as const)(
+    "settles the real descendant tree after independent %s overflow",
+    async (stream) => {
+      const fixture = createTreeFixture(`${stream}-overflow`, { overflowStream: stream });
+      try {
+        const observed = await captureFailure(
+          runPythonProbe(fixture.source, runOwnedPythonProbe, {
+            readiness: PROBE_READINESS,
+            timeoutMs: 5_000
+          })
+        );
+
+        expect(observed.message).toBe(
+          `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_OUTPUT_BYTES}-byte output limit.`
+        );
+        expectFixtureTreeGone(fixture);
+      } finally {
+        fixture.dispose();
+      }
+    },
+    15_000
+  );
+
+  it("reports cleanup uncertainty after still settling the real descendant tree exactly once", async () => {
+    const fixture = createTreeFixture("uncertain-cleanup");
+    let terminationCalls = 0;
+    const terminateTree: PythonProbeTreeTerminator = async (request) => {
+      terminationCalls += 1;
+      await terminateOwnedPythonProbeTree(request);
+      throw new Error("private process-tree receipt");
+    };
+    try {
+      const observed = await captureFailure(
+        runPythonProbe(fixture.source, runOwnedPythonProbe, {
+          readiness: PROBE_READINESS,
+          terminateTree,
+          timeoutMs: 250
+        })
+      );
+
+      expect(observed.message).toBe("The Excel dependency Python probe process tree could not be verified empty.");
+      expect(observed.message).not.toContain("private");
+      expect(terminationCalls).toBe(1);
+      expectFixtureTreeGone(fixture);
+    } finally {
+      fixture.dispose();
+    }
+  }, 15_000);
 
   it.each([
-    ["ETIMEDOUT", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_TIMEOUT_MS} ms deadline.`],
-    ["ENOBUFS", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_BUFFER_BYTES}-byte output limit.`]
-  ])("classifies a bounded %s child-process failure without private diagnostics", (code, expected) => {
-    const execute: PythonProbeExecutor = () => {
-      throw Object.assign(new Error("private interpreter and marker path"), { code });
+    ["ETIMEDOUT", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_TIMEOUT_MS} ms deadline.`],
+    ["ENOBUFS", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_OUTPUT_BYTES}-byte output limit.`],
+    ["ETREE", "The Excel dependency Python probe process tree could not be verified empty."],
+    ["EPROBE", "The Excel dependency Python probe failed."]
+  ] as const)("classifies a bounded %s child-process failure without private diagnostics", async (code, expected) => {
+    const execute: PythonProbeRunner = async () => {
+      throw new PythonProbeProcessError(code);
     };
 
-    let observed: unknown;
-    try {
-      runPythonProbe("pass", execute);
-    } catch (error) {
-      observed = error;
-    }
-    expect(observed).toBeInstanceOf(Error);
-    expect((observed as Error).message).toBe(expected);
-    expect((observed as Error).message.length).toBeLessThanOrEqual(128);
-    expect((observed as Error).message).not.toContain("private");
+    const observed = await captureFailure(runPythonProbe("pass", execute));
+    expect(observed.message).toBe(expected);
+    expect(observed.message.length).toBeLessThanOrEqual(128);
+    expect(observed.message).not.toContain("private");
   });
 
   it("builds an exact isolated pip invocation and publishes evidence before installation", () => {
@@ -198,47 +269,61 @@ function selectedPython(): string {
   );
 }
 
-const PYTHON_PROBE_TIMEOUT_MS = 30_000;
-const PYTHON_PROBE_MAX_BUFFER_BYTES = 64 * 1024;
+type PythonProbeRunner = (options: RunOwnedPythonProbeOptions) => Promise<string>;
 
-type PythonProbeExecutor = (
-  file: string,
-  args: readonly string[],
-  options: ExecFileSyncOptionsWithStringEncoding
-) => string;
+interface PythonProbeRunOverrides {
+  readonly readiness?: PythonProbeReadiness;
+  readonly terminateTree?: PythonProbeTreeTerminator;
+  readonly timeoutMs?: number;
+}
 
-const executePythonProbe: PythonProbeExecutor = (file, args, options) => execFileSync(file, [...args], options);
+interface TreeFixture {
+  readonly directory: string;
+  readonly pidsPath: string;
+  readonly source: string;
+  readonly dispose: () => void;
+}
 
-function runPythonProbe(
+const PROBE_READINESS: PythonProbeReadiness = {
+  marker: "OPEN_WRANGLER_PYTHON_PROBE_READY_V1\n",
+  timeoutMs: 5_000
+};
+
+async function runPythonProbe(
   source: string,
-  execute: PythonProbeExecutor = executePythonProbe,
-  timeoutMs = PYTHON_PROBE_TIMEOUT_MS
-): Record<string, unknown> {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > PYTHON_PROBE_TIMEOUT_MS) {
+  execute: PythonProbeRunner = runOwnedPythonProbe,
+  overrides: PythonProbeRunOverrides = {}
+): Promise<Record<string, unknown>> {
+  const timeoutMs = overrides.timeoutMs ?? PYTHON_PROBE_MAX_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > PYTHON_PROBE_MAX_TIMEOUT_MS) {
     throw new Error("The Excel dependency Python probe needs a positive bounded deadline.");
   }
   let output: string;
   try {
-    output = execute(selectedPython(), ["-I", "-c", source], {
-      encoding: "utf8",
-      killSignal: "SIGKILL",
-      maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-      windowsHide: true
+    output = await execute({
+      executable: selectedPython(),
+      source,
+      timeoutMs,
+      readiness: overrides.readiness,
+      terminateTree: overrides.terminateTree
     });
   } catch (error) {
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { readonly code?: unknown }).code
-        : undefined;
+    const code = error instanceof PythonProbeProcessError ? error.code : undefined;
     if (code === "ETIMEDOUT") {
       throw new Error(`The Excel dependency Python probe exceeded its ${timeoutMs} ms deadline.`);
     }
     if (code === "ENOBUFS") {
       throw new Error(
-        `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_BUFFER_BYTES}-byte output limit.`
+        `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_OUTPUT_BYTES}-byte output limit.`
       );
+    }
+    if (code === "EREADINESS") {
+      throw new Error(
+        `The Excel dependency Python probe did not become ready within its ${overrides.readiness?.timeoutMs ?? 0} ms deadline.`
+      );
+    }
+    if (code === "ETREE") {
+      throw new Error("The Excel dependency Python probe process tree could not be verified empty.");
     }
     throw new Error("The Excel dependency Python probe failed.");
   }
@@ -248,4 +333,77 @@ function runPythonProbe(
   } catch {
     throw new Error("The Excel dependency Python probe returned malformed output.");
   }
+}
+
+function createTreeFixture(
+  label: string,
+  options: {
+    readonly emitReadiness?: boolean;
+    readonly overflowStream?: "stderr" | "stdout";
+    readonly readinessDelaySeconds?: number;
+  } = {}
+): TreeFixture {
+  const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-excel-probe-${label}-`));
+  const pidsPath = path.join(directory, "pids");
+  const emitReadiness = options.emitReadiness ?? true;
+  const source = [
+    "import os",
+    "import signal",
+    "import subprocess",
+    "import sys",
+    "import time",
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+    `time.sleep(${options.readinessDelaySeconds ?? 0})`,
+    'descendant_source = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"',
+    "descendant = subprocess.Popen([sys.executable, '-I', '-c', descendant_source])",
+    `with open(${JSON.stringify(pidsPath)}, 'x', encoding='utf-8') as stream:`,
+    "    stream.write(f'{os.getpid()}\\n{descendant.pid}\\n')",
+    "    stream.flush()",
+    ...(emitReadiness ? [`sys.stderr.write(${JSON.stringify(PROBE_READINESS.marker)})`, "sys.stderr.flush()"] : []),
+    ...(options.overflowStream
+      ? [
+          `sys.${options.overflowStream}.write('x' * ${PYTHON_PROBE_MAX_OUTPUT_BYTES + 1})`,
+          `sys.${options.overflowStream}.flush()`
+        ]
+      : []),
+    "time.sleep(30)",
+    "print('{}')"
+  ].join("\n");
+  return {
+    directory,
+    pidsPath,
+    source,
+    dispose: () => rmSync(directory, { force: true, recursive: true })
+  };
+}
+
+function expectFixtureTreeGone(fixture: TreeFixture): void {
+  const pids = readFileSync(fixture.pidsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((value) => Number.parseInt(value, 10));
+  expect(pids).toHaveLength(2);
+  for (const pid of pids) {
+    expect(Number.isSafeInteger(pid)).toBe(true);
+    expect(processExists(pid)).toBe(false);
+  }
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return typeof error !== "object" || error === null || !("code" in error) || error.code !== "ESRCH";
+  }
+}
+
+async function captureFailure(value: Promise<unknown>): Promise<Error> {
+  try {
+    await value;
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    return error as Error;
+  }
+  throw new Error("Expected the Python probe to fail.");
 }
