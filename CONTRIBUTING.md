@@ -6,8 +6,8 @@ Open Wrangler welcomes bug fixes, tests, documentation, and product improvements
 ## Prerequisites
 
 - Git.
-- Node.js 22.17 or newer in the Node 22 release line. The development and release workflows use Node 22, and the
-  locked development dependencies require Node 22.17 or newer.
+- Node.js `24.19.0` with its bundled npm `11.17.0` is the canonical development, CI, and packaging pair. The
+  supported development engine range is `^22.22.0 || ^24.0.0`; Node 23 is intentionally unsupported.
 - VS Code 1.106 or newer for the Extension Development Host.
 - Python 3.10 through 3.14. Python 3.12 is the recommended development version and is the reference version in the
   main CI workflow.
@@ -26,7 +26,8 @@ node --version
 npm ci --ignore-scripts
 ```
 
-The Node version should start with `v22.` and be at least `v22.17.0`.
+`node --version` should report `v24.19.0`, and `npm --version` should report `11.17.0`. The bounded compatibility
+smoke uses Node `22.23.2` with its bundled npm `10.9.8`; it is not the canonical packaging pair.
 
 Dependency lifecycle scripts are disabled by `.npmrc` and every automation owner repeats `--ignore-scripts`
 explicitly. `npm run check:install-policy` verifies the lock, all install owners, and the local script-free shims used
