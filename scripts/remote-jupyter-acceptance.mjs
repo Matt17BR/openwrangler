@@ -6,6 +6,8 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { readRemoteRPackageLockFile } from "./remote-r-package-lock.mjs";
+
 export const REAL_REMOTE_JUPYTER_ENV = "OPEN_WRANGLER_REAL_REMOTE_JUPYTER";
 export const REMOTE_JUPYTER_OWNERSHIP_UNCERTAIN_CODE = "REMOTE_JUPYTER_OWNERSHIP_UNCERTAIN";
 export const REMOTE_JUPYTER_SETUP_TIMEOUT_MS = 300_000;
@@ -19,6 +21,7 @@ export const REMOTE_R_JUPYTER_BASE_IMAGE =
 const MODULE_DIRECTORY = fileURLToPath(new URL(".", import.meta.url));
 const DEFAULT_BUILD_CONTEXT = resolve(MODULE_DIRECTORY, "remote-jupyter");
 const OWNER_LABEL = "io.openwrangler.remote-jupyter.owner";
+const REMOTE_R_LOCK_LABEL = "io.openwrangler.remote-jupyter.r-lock-sha256";
 const CONTAINER_PORT = 8888;
 const REMOTE_FIXTURE_DEFINITIONS = Object.freeze({
   python: Object.freeze({
@@ -322,6 +325,8 @@ export async function startRemoteJupyterAcceptanceFixture(
   ) {
     throw new Error("Remote Jupyter phase deadlines exceed their fixed acceptance bounds.");
   }
+  const remoteRPackageLock =
+    fixtureKind === "r" ? await readRemoteRPackageLockFile(resolve(buildContext, "r-packages.lock.json")) : undefined;
   const createPhaseBudget = (stage) =>
     createRemoteJupyterSetupBudget({
       now: monotonicNow,
@@ -347,7 +352,12 @@ export async function startRemoteJupyterAcceptanceFixture(
     dockerTimeoutMs,
     token
   });
-  const runtimeImage = createOwnedImageResource("runtime", fixtureDefinition.imageName, runtimeOwnerId);
+  const runtimeImage = createOwnedImageResource(
+    "runtime",
+    fixtureDefinition.imageName,
+    runtimeOwnerId,
+    remoteRPackageLock?.digest
+  );
   const baseImage =
     fixtureKind === "r" ? createOwnedImageResource("base", fixtureDefinition.baseImageName, ownerIds[0]) : undefined;
   const resources = {
@@ -389,7 +399,10 @@ export async function startRemoteJupyterAcceptanceFixture(
       await revalidateRemoteJupyterHandoff(runtimeDocker, initialEngine, [baseReceipt], "base-to-runtime build");
       await assertImageOwnerLabelAvailable(runtimeDocker, runtimeImage.ownerId);
       runtimeReceipt = await buildOwnedImage(runtimeDocker, runtimeImage, {
-        buildArguments: [`OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${baseReceipt.imageTag}`],
+        buildArguments: [
+          `OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${baseReceipt.imageTag}`,
+          `OPEN_WRANGLER_REMOTE_R_COMPLETE_LOCK_SHA256=${remoteRPackageLock.digest}`
+        ],
         buildContext,
         dockerfile: fixtureDefinition.dockerfile,
         label: "Remote R Jupyter runtime image build",
@@ -915,13 +928,17 @@ async function assertOwnerLabelAvailable(docker, ownerId) {
   await assertImageOwnerLabelAvailable(docker, ownerId);
 }
 
-function createOwnedImageResource(role, imageName, ownerId) {
+function createOwnedImageResource(role, imageName, ownerId, completeLockDigest) {
+  if (completeLockDigest !== undefined && !/^[0-9a-f]{64}$/u.test(completeLockDigest)) {
+    throw new Error("Remote R package lock identity is unavailable.");
+  }
   const compactOwner = ownerId.replaceAll("-", "").toLowerCase();
   return {
     role,
     ownerId,
     imageTag: `${imageName}:${compactOwner}`,
     imageId: undefined,
+    completeLockDigest,
     mutationStarted: false,
     buildOwnershipUncertain: false
   };
@@ -934,7 +951,8 @@ function captureOwnedImageReceipt(image) {
     !UUID.test(image.ownerId ?? "") ||
     typeof image.imageTag !== "string" ||
     !/^[a-z0-9][a-z0-9._/-]{0,127}:[0-9a-f]{32}$/u.test(image.imageTag) ||
-    !IMAGE_ID.test(image.imageId ?? "")
+    !IMAGE_ID.test(image.imageId ?? "") ||
+    (image.completeLockDigest !== undefined && !/^[0-9a-f]{64}$/u.test(image.completeLockDigest))
   ) {
     throw new Error("Remote Jupyter image identity is unavailable.");
   }
@@ -942,7 +960,8 @@ function captureOwnedImageReceipt(image) {
     role: image.role,
     ownerId: image.ownerId,
     imageTag: image.imageTag,
-    imageId: image.imageId
+    imageId: image.imageId,
+    completeLockDigest: image.completeLockDigest
   });
 }
 
@@ -988,11 +1007,22 @@ async function buildOwnedImage(docker, image, { buildArguments = [], buildContex
 async function assertOwnedImageReceipt(docker, receipt) {
   for (const reference of [receipt.imageId, receipt.imageTag]) {
     const inspected = await docker.required(
-      ["image", "inspect", "--format", `{{.Id}}\t{{index .Config.Labels "${OWNER_LABEL}"}}`, reference],
+      [
+        "image",
+        "inspect",
+        "--format",
+        `{{.Id}}\t{{index .Config.Labels "${OWNER_LABEL}"}}\t{{with index .Config.Labels "${REMOTE_R_LOCK_LABEL}"}}{{.}}{{end}}`,
+        reference
+      ],
       `Remote Jupyter owned ${receipt.role} image inspection`
     );
     const fields = oneLine(inspected.stdout, "Remote Jupyter image inspection").split("\t");
-    if (fields.length !== 2 || fields[0] !== receipt.imageId || fields[1] !== receipt.ownerId) {
+    if (
+      fields.length !== 3 ||
+      fields[0] !== receipt.imageId ||
+      fields[1] !== receipt.ownerId ||
+      fields[2] !== (receipt.completeLockDigest ?? "")
+    ) {
       throw new Error(`Remote Jupyter ${receipt.role} image ownership could not be proven.`);
     }
   }

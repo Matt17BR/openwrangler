@@ -1,0 +1,396 @@
+{
+  "protocol": "openwrangler-remote-r-package-lock-v1",
+  "target": {
+    "rVersion": "4.5.2",
+    "os": "linux",
+    "distribution": "ubuntu",
+    "codename": "noble",
+    "architecture": "x86_64"
+  },
+  "repositories": [
+    {
+      "id": "primary",
+      "snapshotDate": "2026-03-10",
+      "url": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib"
+    },
+    {
+      "id": "supplemental",
+      "snapshotDate": "2026-06-01",
+      "url": "https://p3m.dev/cran/__linux__/noble/2026-06-01/src/contrib"
+    }
+  ],
+  "roots": {
+    "runtime": [
+      {
+        "name": "IRkernel",
+        "repository": "primary"
+      },
+      {
+        "name": "jsonlite",
+        "repository": "primary"
+      },
+      {
+        "name": "rlang",
+        "repository": "primary"
+      },
+      {
+        "name": "tibble",
+        "repository": "primary"
+      },
+      {
+        "name": "data.table",
+        "repository": "primary"
+      },
+      {
+        "name": "nanoparquet",
+        "repository": "supplemental"
+      }
+    ],
+    "fixtures": [
+      {
+        "name": "collapse",
+        "repository": "supplemental"
+      }
+    ]
+  },
+  "packages": [
+    {
+      "name": "base64enc",
+      "version": "0.1-6",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/base64enc_0.1-6.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/3c7e9d22f7409fa2989008fa6e980c3dd8e2693eb20676acf2470ae7addb0816.tar.gz",
+      "bytes": 9472,
+      "sha256": "fcf9e148f85d39690493c158cf966f88f223d26e7a546487026c7c8372c34dcc",
+      "dependencies": [],
+      "installOrder": 1
+    },
+    {
+      "name": "digest",
+      "version": "0.6.39",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/digest_0.6.39.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/8bf048b49b2d17077138fae758bda56bbd53278d9437f2fdeaedf979c90a13c9.tar.gz",
+      "bytes": 236391,
+      "sha256": "9376a3a438097e11048c37c71a14b633ac6c0a286bca068f32c86769f434d5ab",
+      "dependencies": [],
+      "installOrder": 2
+    },
+    {
+      "name": "fastmap",
+      "version": "1.2.0",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/fastmap_1.2.0.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/b1da04a2915d1d057f3c2525e295ef15016a64e6667eac83a14641bbd83b9246.tar.gz",
+      "bytes": 47093,
+      "sha256": "460e2a3c423df89851f98f43de95827fd7c6b767366fb6cc23492834cf7171a2",
+      "dependencies": [],
+      "installOrder": 3
+    },
+    {
+      "name": "rlang",
+      "version": "1.1.7",
+      "category": "runtime",
+      "direct": true,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/rlang_1.1.7.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/123c91e7eaacd3514a368a31c30617d36a874def37f6cafdacc0c7d1409be373.tar.gz",
+      "bytes": 768418,
+      "sha256": "7bdb4e4b20294fd6db4e29a11cc4952b36824a65febffcd422b9197309bf15b4",
+      "dependencies": [],
+      "installOrder": 4
+    },
+    {
+      "name": "htmltools",
+      "version": "0.5.9",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/htmltools_0.5.9.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/19308618da485818f69dcfeeadd2ddc81d43a736a74519df7b3fd98e13128afd.tar.gz",
+      "bytes": 134004,
+      "sha256": "b2f92a5a12ab4f5920cc09d3b56e83891017dc401f803df0f394285c6bbd8739",
+      "dependencies": ["base64enc", "digest", "fastmap", "rlang"],
+      "installOrder": 5
+    },
+    {
+      "name": "jsonlite",
+      "version": "2.0.0",
+      "category": "runtime",
+      "direct": true,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/jsonlite_2.0.0.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/75eb910c82b350ec33f094779da0f87bff154c232e4ae39c9896a9b89f3ac82d.tar.gz",
+      "bytes": 1051719,
+      "sha256": "887344a4c87300b3756614a2c403f6e00b0ad95ddd3b671dcbe0e8e9a1103841",
+      "dependencies": [],
+      "installOrder": 6
+    },
+    {
+      "name": "cli",
+      "version": "3.6.5",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/cli_3.6.5.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/8ebe3146e66a285d8ad6ddcff87e2a9790ea7c9cdfce7fdd8bf13095fa459679.tar.gz",
+      "bytes": 638229,
+      "sha256": "cb00c5c8f27da52a7aa832c82103c149097258e2370585e27356d5ad5f452fb1",
+      "dependencies": [],
+      "installOrder": 7
+    },
+    {
+      "name": "glue",
+      "version": "1.8.0",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/glue_1.8.0.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/c86f364ba899b8662f5da3e1a75f43ae081ab04e0d51171d052356e7ee4b72a0.tar.gz",
+      "bytes": 126536,
+      "sha256": "ae611639812740ce2dcea47f1e25a65802fce60e994a7d6e8518f7820c157897",
+      "dependencies": [],
+      "installOrder": 8
+    },
+    {
+      "name": "lifecycle",
+      "version": "1.0.5",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/lifecycle_1.0.5.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/61841e3e6edba056a88355a3f1d6698ab8d5d9cb3c05f2af0ec5a44ab516f8ee.tar.gz",
+      "bytes": 107156,
+      "sha256": "3ca2451dc1a4957832cb8d8dc9823b23378b5a1d9bb0c9cbc212d14849d83ab7",
+      "dependencies": ["cli", "rlang"],
+      "installOrder": 9
+    },
+    {
+      "name": "utf8",
+      "version": "1.2.6",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/utf8_1.2.6.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/4589f8b72291329e70b7f3a8c20f2feb4e7764eebad2e6976bc9a3eee7686ce9.tar.gz",
+      "bytes": 243469,
+      "sha256": "564a322d61db9dcd1fa7ee13434297f971665ab5177f716bcac34405aa55037c",
+      "dependencies": [],
+      "installOrder": 10
+    },
+    {
+      "name": "vctrs",
+      "version": "0.7.1",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/vctrs_0.7.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/2f93519dfcffabc08bc508c2f47b5c23151cc667250b08a8b90be367ef1317c0.tar.gz",
+      "bytes": 1077666,
+      "sha256": "8e11b01c437d239671377dff78373c46df873bf7a11af5038a46ba35ac803206",
+      "dependencies": ["cli", "glue", "lifecycle", "rlang"],
+      "installOrder": 11
+    },
+    {
+      "name": "pillar",
+      "version": "1.11.1",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/pillar_1.11.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/056ce154238c9b5b8d5dcbcb52e1bc51d33870ce08c8a9ca9496478bd59f4653.tar.gz",
+      "bytes": 409134,
+      "sha256": "d67a3746698206b56c2f8e5457e48343ade87e86cbbf77d564931aa4f9cc0e4e",
+      "dependencies": ["cli", "glue", "lifecycle", "rlang", "utf8", "vctrs"],
+      "installOrder": 12
+    },
+    {
+      "name": "repr",
+      "version": "1.1.7",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/repr_1.1.7.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/73bd696b4d4211096e0d1e382d5ce6591527d2ff400cc7ae8230f0235eed021b.tar.gz",
+      "bytes": 32965,
+      "sha256": "affd4aaf75e654dfc2691c96befcfa893fc61254f4b39a87521fd10e1b33e6a9",
+      "dependencies": ["base64enc", "htmltools", "jsonlite", "pillar"],
+      "installOrder": 13
+    },
+    {
+      "name": "IRdisplay",
+      "version": "1.1",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/IRdisplay_1.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/83eb030ff91f546cb647899f8aa3f5dc9fe163a89a981696447ea49cc98e8d2b.tar.gz",
+      "bytes": 8230,
+      "sha256": "b88727cc29995585d2ac2473f1659cc26774ad8f1ed074a0cadceed4866c7bf2",
+      "dependencies": ["repr"],
+      "installOrder": 14
+    },
+    {
+      "name": "crayon",
+      "version": "1.5.3",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/crayon_1.5.3.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/3e74a0685541efb5ea763b92cfd5c859df71c46b0605967a0b5dbb7326e9da69.tar.gz",
+      "bytes": 40503,
+      "sha256": "54d0c5414dd95d9d7f1a70b9e0d5f79a72b6104f55582cfecc1bd30b7d2eef60",
+      "dependencies": [],
+      "installOrder": 15
+    },
+    {
+      "name": "evaluate",
+      "version": "1.0.5",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/evaluate_1.0.5.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/47aac79f889a828a5f8b4756cb972d7c2966bb984cbae17a4bd2389a73270794.tar.gz",
+      "bytes": 39325,
+      "sha256": "63b1bfa40e1c35066354d2eb93ac93decc0845b4150fd8867d0d40b775851b46",
+      "dependencies": [],
+      "installOrder": 16
+    },
+    {
+      "name": "pbdZMQ",
+      "version": "0.3-14",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/pbdZMQ_0.3-14.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/60154f66db9378655d7c39c8c2e02e74ac6bd801a9aac1bc73003c7eeeb23223.tar.gz",
+      "bytes": 1216765,
+      "sha256": "cb03432cd9de05df458d4c7d33a66b7c4a2e8de62208671296f63bcda299c64b",
+      "dependencies": [],
+      "installOrder": 17
+    },
+    {
+      "name": "uuid",
+      "version": "1.2-2",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/uuid_1.2-2.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/b1b73b87180d7b15095e6b33092ccf9dbd7ed3177791682711b8151ebbe9025f.tar.gz",
+      "bytes": 82024,
+      "sha256": "4614a4fc7e2a652e8ac3afb6207544393a64e410563096e74e33cac5e4e11af9",
+      "dependencies": [],
+      "installOrder": 18
+    },
+    {
+      "name": "IRkernel",
+      "version": "1.3.2",
+      "category": "runtime",
+      "direct": true,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/IRkernel_1.3.2.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/e1c6d8bddc23e5039dd9c537feb371f937d60028fb753b90345698c58ae424a6.tar.gz",
+      "bytes": 45146,
+      "sha256": "9e55d729121461d8f2eed2c2ff60b0a61b92b9335e53f8551662a8f30782dcd7",
+      "dependencies": ["IRdisplay", "crayon", "digest", "evaluate", "jsonlite", "pbdZMQ", "repr", "uuid"],
+      "installOrder": 19
+    },
+    {
+      "name": "Rcpp",
+      "version": "1.1.1-1.1",
+      "category": "fixture",
+      "direct": false,
+      "repository": "supplemental",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-06-01/src/contrib/Rcpp_1.1.1-1.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/32e5d5fee4080c8ca315f31b74c3eaa6367a1900e92e860e00390c9565f5fbe1.tar.gz",
+      "bytes": 1884700,
+      "sha256": "f93d03cd1da62bfec6f01fc17baf562a34cc24640457a598507b1c47729d9e4f",
+      "dependencies": [],
+      "installOrder": 20
+    },
+    {
+      "name": "collapse",
+      "version": "2.1.7",
+      "category": "fixture",
+      "direct": false,
+      "repository": "supplemental",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-06-01/src/contrib/collapse_2.1.7.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/f8fa9e493a5d94d20e51cc3919daf180ecc447efddf3a33e237690e98caa2e79.tar.gz",
+      "bytes": 3753678,
+      "sha256": "045da0c486667079d2a546507052f1c8547955abf657d5663d16f10fac12398e",
+      "dependencies": ["Rcpp"],
+      "installOrder": 21
+    },
+    {
+      "name": "data.table",
+      "version": "1.18.2.1",
+      "category": "runtime",
+      "direct": true,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/data.table_1.18.2.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/7663893a84b3e22ff23efb4658bf7809ea4ff5551659cae96f264ae1a2b815a2.tar.gz",
+      "bytes": 5954408,
+      "sha256": "c98db6db4f582edc94fcd699ae243a1ab294dd01ab3a50e5d0a1d1e7a083ef29",
+      "dependencies": [],
+      "installOrder": 22
+    },
+    {
+      "name": "magrittr",
+      "version": "2.0.4",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/magrittr_2.0.4.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/6aba790c40de70d8fb4d2db4bebb377418971761b0da7df2141b5d4ad95981f3.tar.gz",
+      "bytes": 282630,
+      "sha256": "a34c94c5475f42a5e69ab53a649479753c0c0f2699e42a6b603bf4c875eb3b1d",
+      "dependencies": [],
+      "installOrder": 23
+    },
+    {
+      "name": "nanoparquet",
+      "version": "0.5.1",
+      "category": "runtime",
+      "direct": true,
+      "repository": "supplemental",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-06-01/src/contrib/nanoparquet_0.5.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/4189514992ee1b61a23a2d116f3c44ccfb0caf85b98e84e2452658c752689571.tar.gz",
+      "bytes": 1202290,
+      "sha256": "d2525a29676bb6f0a0e6de18297ef3f9ab6d4d8a26278966ed0de63a83416e86",
+      "dependencies": [],
+      "installOrder": 24
+    },
+    {
+      "name": "pkgconfig",
+      "version": "2.0.3",
+      "category": "runtime",
+      "direct": false,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/pkgconfig_2.0.3.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/330fef440ffeb842a7dcfffc8303743f1feae83e8d6131078b5a44ff11bc3850.tar.gz",
+      "bytes": 6102,
+      "sha256": "fffe5625fb6912f3c4bb068561ec3025b15645fc0e4007b8e43ab78f87e4f8af",
+      "dependencies": [],
+      "installOrder": 25
+    },
+    {
+      "name": "tibble",
+      "version": "3.3.1",
+      "category": "runtime",
+      "direct": true,
+      "repository": "primary",
+      "sourceUrl": "https://p3m.dev/cran/__linux__/noble/2026-03-10/src/contrib/tibble_3.3.1.tar.gz",
+      "url": "https://rspm-sync.rstudio.com/v4/1/packages/fb309f8a1939021b237c7e85ff7ad6e8ff5acd57a6230d220a452094b492b28f.tar.gz",
+      "bytes": 553525,
+      "sha256": "ec7db482744b3f37ec31d4533417173a43a37d2da15f3c72b6aa286d27d97164",
+      "dependencies": ["cli", "lifecycle", "magrittr", "pillar", "pkgconfig", "rlang", "vctrs"],
+      "installOrder": 26
+    }
+  ]
+}

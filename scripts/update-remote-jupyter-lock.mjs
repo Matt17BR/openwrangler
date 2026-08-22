@@ -16,6 +16,11 @@ import {
   validateRemoteJupyterLock,
   validateRemoteRJupyterLock
 } from "./remote-jupyter-lock.mjs";
+import {
+  REMOTE_R_PACKAGE_LOCK_PATH,
+  generateRemoteRPackageLock,
+  validateRemoteRPackageLock
+} from "./remote-r-package-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 const mode = process.argv[2];
@@ -83,6 +88,18 @@ try {
     ]);
     fixture.validate(inputText, candidateText);
     if (candidateText !== currentText) changed.push({ fixture, candidateText });
+  }
+
+  const [currentRPackageLock, candidateRPackageLock] = await Promise.all([
+    readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8"),
+    generateRemoteRPackageLock()
+  ]);
+  validateRemoteRPackageLock(candidateRPackageLock);
+  if (candidateRPackageLock !== currentRPackageLock) {
+    changed.push({
+      fixture: { label: "R package", lockPath: REMOTE_R_PACKAGE_LOCK_PATH },
+      candidateText: candidateRPackageLock
+    });
   }
 
   if (changed.length === 0) {

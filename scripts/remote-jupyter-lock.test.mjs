@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 
 import {
   REMOTE_JUPYTER_INPUT_PATH,
@@ -21,8 +25,43 @@ import {
   validateRemoteJupyterLock,
   validateRemoteRJupyterLock
 } from "./remote-jupyter-lock.mjs";
+import {
+  REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES,
+  REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES,
+  REMOTE_R_PACKAGE_LOCK_PATH,
+  REMOTE_R_PACKAGE_LOCK_PROTOCOL,
+  generateRemoteRPackageLock,
+  readRemoteRPackageLockFile,
+  remoteRPackageLockDigest,
+  validateRemoteRPackageLock
+} from "./remote-r-package-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
+const R_PACKAGE_INSTALLER = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "install-r-packages.py");
+
+function runInstallerProbe(source, timeout = 10_000) {
+  return spawnSync("python3", ["-I", "-c", source, R_PACKAGE_INSTALLER], {
+    cwd: REPOSITORY_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout
+  });
+}
+
+async function expectBoundedDeadline(promise, pattern) {
+  let timer;
+  const result = await Promise.race([
+    promise.then(
+      () => ({ state: "resolved" }),
+      (error) => ({ error, state: "rejected" })
+    ),
+    new Promise((resolvePromise) => {
+      timer = setTimeout(() => resolvePromise({ state: "stalled" }), 1_000);
+    })
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(result.state, "rejected", `expected a bounded rejection, received ${result.state}`);
+  assert.match(String(result.error), pattern);
+}
 
 test("the remote Jupyter lock is complete, canonical, and above its security floor", async () => {
   const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
@@ -43,6 +82,678 @@ test("the R fixture has a separate server-only lock without Python dataframe eng
   for (const forbidden of ["duckdb", "fsspec", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
     assert.equal(names.has(forbidden), false);
   }
+});
+
+test("the remote R archive lock is complete, canonical, bounded, and category-exact", async () => {
+  const result = await readRemoteRPackageLockFile();
+  assert.equal(result.lock.protocol, REMOTE_R_PACKAGE_LOCK_PROTOCOL);
+  assert.equal(result.lock.target.rVersion, "4.5.2");
+  assert.equal(result.lock.target.codename, "noble");
+  assert.equal(result.lock.target.architecture, "x86_64");
+  assert.equal(result.digest, remoteRPackageLockDigest(await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8")));
+  assert.equal(result.packageCount, 26);
+  assert.ok(result.aggregateBytes > 0 && result.aggregateBytes <= REMOTE_R_PACKAGE_AGGREGATE_MAX_BYTES);
+  assert.deepEqual(
+    result.lock.roots.runtime.map(({ name }) => name),
+    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]
+  );
+  assert.deepEqual(result.lock.roots.fixtures, [{ name: "collapse", repository: "supplemental" }]);
+  const packages = new Map(result.lock.packages.map((entry) => [entry.name, entry]));
+  assert.equal(packages.get("collapse").direct, false);
+  assert.equal(packages.get("collapse").category, "fixture");
+  assert.equal(packages.get("Rcpp").category, "fixture");
+  for (const name of ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]) {
+    assert.equal(packages.get(name)?.direct, true);
+    assert.equal(packages.get(name)?.category, "runtime");
+  }
+  for (const entry of result.lock.packages) {
+    assert.ok(entry.bytes <= REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES);
+    for (const dependency of entry.dependencies) {
+      assert.ok(packages.get(dependency).installOrder < entry.installOrder);
+    }
+  }
+});
+
+test("the remote R archive lock rejects closure, category, URL, bound, duplicate, and canonical drift", async () => {
+  const text = await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8");
+  const lock = JSON.parse(text);
+  const mutate = (callback) => {
+    const candidate = structuredClone(lock);
+    callback(candidate);
+    return `${JSON.stringify(candidate, null, 2)}\n`;
+  };
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages.find(({ name }) => name === "collapse").direct = true))
+      ),
+    /runtime-direct classification/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages.find(({ name }) => name === "Rcpp").category = "runtime"))
+      ),
+    /category reachability/u
+  );
+  assert.throws(
+    () => validateRemoteRPackageLock(mutate((candidate) => candidate.packages.pop())),
+    /missing dependency|root or dependency/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          const packageEntry = candidate.packages.find(({ name }) => name === "IRkernel");
+          packageEntry.sourceUrl = packageEntry.sourceUrl.replace("IRkernel_", "IRdisplay_");
+        })
+      ),
+    /source URL/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          candidate.packages[0].url = candidate.packages[0].url.replace("https://", "http://");
+        })
+      ),
+    /archive URL/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => {
+          const packageEntry = candidate.packages.find(({ name }) => name === "Rcpp");
+          packageEntry.repository = "primary";
+          packageEntry.sourceUrl = candidate.repositories[0].url + `/Rcpp_${packageEntry.version}.tar.gz`;
+        })
+      ),
+    /crossed its canonical repository/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteRPackageLock(
+        mutate((candidate) => (candidate.packages[0].bytes = REMOTE_R_PACKAGE_ARCHIVE_MAX_BYTES + 1))
+      ),
+    /archive bounds/u
+  );
+  assert.throws(
+    () => validateRemoteRPackageLock(text.replace('  "protocol":', '  "protocol": "duplicate",\n  "protocol":')),
+    /strict JSON/u
+  );
+  assert.throws(() => validateRemoteRPackageLock(text.replace('  "target"', ' "target"')), /not canonical/u);
+});
+
+test("the dependency-free Python installer independently validates the exact complete lock", async (t) => {
+  const lockText = await readFile(REMOTE_R_PACKAGE_LOCK_PATH, "utf8");
+  const digest = remoteRPackageLockDigest(lockText);
+  const installer = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "install-r-packages.py");
+  const exact = spawnSync(
+    "python3",
+    ["-I", installer, "--manifest", REMOTE_R_PACKAGE_LOCK_PATH, "--expected-lock-sha256", digest, "--validate-only"],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  assert.equal(exact.status, 0, exact.stderr);
+  assert.equal(exact.signal, null);
+  assert.match(exact.stdout, new RegExp(`validated remote R package lock ${digest}`, "u"));
+
+  const directory = await mkdtemp(join(tmpdir(), "ow-r-lock-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const mutated = join(directory, "lock.json");
+  await writeFile(mutated, lockText.replace('"bytes": 9472', '"bytes": 9473'), "utf8");
+  const rejected = spawnSync(
+    "python3",
+    ["-I", installer, "--manifest", mutated, "--expected-lock-sha256", digest, "--validate-only"],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /digest does not match/u);
+});
+
+test("the installer bounds owned logs without truncating package-created files", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-output-") as directory:
+    root = Path(directory)
+    package_output = root / "package-output.bin"
+    size = installer.COMMAND_LOG_MAX_BYTES + 4096
+    installer.bounded_command(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'x' * int(sys.argv[2])); print('ok')",
+            str(package_output),
+            str(size),
+        ],
+        dict(os.environ),
+        root / "command.log",
+    )
+    assert package_output.stat().st_size == size
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer settles a timed-out owned process tree before descendants can mutate", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+installer.COMMAND_TIMEOUT_SECONDS = 0.2
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-timeout-") as directory:
+    root = Path(directory)
+    marker = root / "descendant-survived"
+    descendant = "from pathlib import Path; import sys,time; time.sleep(0.4); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); time.sleep(10)"
+    try:
+        installer.bounded_command(
+            [sys.executable, "-c", parent, str(marker), descendant],
+            dict(os.environ),
+            root / "command.log",
+        )
+    except installer.ContractError:
+        pass
+    else:
+        raise AssertionError("the timed-out command unexpectedly succeeded")
+    time.sleep(0.7)
+    assert not marker.exists(), "a timed-out descendant remained alive"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer settles an output-overflow owned process tree before descendants can mutate", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-overflow-") as directory:
+    root = Path(directory)
+    marker = root / "descendant-survived"
+    descendant = "from pathlib import Path; import sys,time; time.sleep(0.4); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); os.write(1, b'x' * (1048576 + 65536)); time.sleep(10)"
+    try:
+        installer.bounded_command(
+            [sys.executable, "-c", parent, str(marker), descendant],
+            dict(os.environ),
+            root / "command.log",
+        )
+    except installer.ContractError:
+        pass
+    else:
+        raise AssertionError("the overflowing command unexpectedly succeeded")
+    time.sleep(0.7)
+    assert not marker.exists(), "an overflowing descendant remained alive"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer settles escaped descendants after diagnostic inventory overflow", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+installer.COMMAND_TIMEOUT_SECONDS = 0.2
+installer.COMMAND_TERMINATION_GRACE_SECONDS = 0.5
+installer.COMMAND_PROCESS_SCAN_MAX_ENTRIES = 1
+try:
+    installer.linux_process_snapshot()
+except installer.ContractError as error:
+    assert "inventory exceeded its fixed bound" in str(error)
+else:
+    raise AssertionError("the lowered diagnostic inventory bound did not overflow")
+
+def current_start_time(process_id):
+    try:
+        payload = Path(f"/proc/{process_id}/stat").read_bytes()
+    except FileNotFoundError:
+        return None
+    marker = payload.rfind(b") ")
+    assert marker >= 0
+    fields = payload[marker + 2 :].split()
+    assert len(fields) >= 20
+    return int(fields[19])
+
+def pin_identity(receipt_path):
+    receipt = receipt_path.read_text(encoding="ascii")
+    fields = receipt.split(":")
+    assert len(fields) == 2 and all(field.isdecimal() for field in fields)
+    process_id, start_time = (int(field) for field in fields)
+    assert process_id > 0 and start_time > 0
+    assert current_start_time(process_id) == start_time
+    descriptor = os.pidfd_open(process_id, 0)
+    if current_start_time(process_id) != start_time:
+        os.close(descriptor)
+        raise AssertionError("descendant identity changed while it was pinned")
+    return process_id, start_time, descriptor
+
+def settle_exact_identities(identities, release):
+    try:
+        for process_id, start_time, descriptor in identities.values():
+            if current_start_time(process_id) != start_time:
+                continue
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, 0)
+            except ProcessLookupError:
+                pass
+        release.touch(exist_ok=True)
+        deadline = time.monotonic() + 2
+        while True:
+            remaining = []
+            for process_id, start_time, descriptor in identities.values():
+                if current_start_time(process_id) != start_time:
+                    continue
+                try:
+                    os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
+                except (ChildProcessError, ProcessLookupError):
+                    pass
+                if current_start_time(process_id) == start_time:
+                    remaining.append((process_id, start_time))
+            if not remaining:
+                return
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"identity-bound fallback did not settle {remaining}")
+            time.sleep(0.005)
+    finally:
+        for _, _, descriptor in identities.values():
+            os.close(descriptor)
+
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
+    root = Path(directory)
+    descendant = "import os; from pathlib import Path; import sys,time; marker=Path(sys.argv[1]); ready=Path(sys.argv[2]); release=Path(sys.argv[3]); retired=Path(sys.argv[4]); expired=Path(sys.argv[5]) if len(sys.argv) > 5 else None; payload=Path('/proc/self/stat').read_bytes(); fields=payload[payload.rfind(b') ')+2:].split(); receipt=f'{os.getpid()}:{int(fields[19])}'; release_limit_seconds=2; release_started=time.monotonic(); release_deadline=release_started+release_limit_seconds; staged=ready.with_suffix('.staged'); staged.write_text(receipt, encoding='ascii'); staged.replace(ready)\nwhile not release.exists():\n if time.monotonic() >= release_deadline:\n  if expired is not None:\n   expiry_finished=time.monotonic(); expired_staged=expired.with_suffix('.staged'); expired_staged.write_text(f'{release_started}:{release_deadline}:{expiry_finished}:{release_limit_seconds}', encoding='ascii'); expired_staged.replace(expired)\n  raise SystemExit(70)\n time.sleep(0.001)\nready.unlink(); retired_staged=retired.with_suffix('.staged'); retired_staged.write_text(receipt, encoding='ascii'); retired_staged.replace(retired); time.sleep(0.6); marker.write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; from pathlib import Path; root=Path(sys.argv[1]); prefix=sys.argv[2]; source=sys.argv[3]; mode=sys.argv[4]; release=root/f'{prefix}-release'; children=[]\nfor index in range(6):\n marker=root/f'{prefix}-marker-{index}'; ready=root/f'{prefix}-pid-{index}'; retired=root/f'{prefix}-retired-{index}'; children.append(subprocess.Popen([sys.executable,'-c',source,str(marker),str(ready),str(release),str(retired)],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True))\nrelease_deadline=time.monotonic()+1.5\nwhile time.monotonic()<release_deadline and not release.exists(): time.sleep(0.001)\nassert release.exists()\nretirement_deadline=time.monotonic()+0.25\nwhile time.monotonic()<retirement_deadline and not all((root/f'{prefix}-retired-{index}').exists() for index in range(6)): time.sleep(0.001)\nassert all((root/f'{prefix}-retired-{index}').exists() for index in range(6))\nif mode == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif mode == 'timeout': time.sleep(2)"
+
+    # Exercise the test-owned fallback against a live detached helper, independently of bounded_command.
+    fallback_marker = root / "fallback-marker"
+    fallback_ready = root / "fallback-pid"
+    fallback_release = root / "fallback-release"
+    fallback_retired = root / "fallback-retired"
+    fallback_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            descendant,
+            str(fallback_marker),
+            str(fallback_ready),
+            str(fallback_release),
+            str(fallback_retired),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    fallback_deadline = time.monotonic() + 1.5
+    while time.monotonic() < fallback_deadline and not fallback_ready.exists():
+        time.sleep(0.001)
+    assert fallback_ready.exists(), "fallback descendant identity receipt was unavailable"
+    fallback_identity = pin_identity(fallback_ready)
+    settle_exact_identities({0: fallback_identity}, fallback_release)
+    fallback_process.poll()
+    assert current_start_time(fallback_identity[0]) != fallback_identity[1]
+    assert not fallback_marker.exists(), "fallback descendant mutated before settlement"
+
+    expected_failure = {
+        "success": "isolated R command left a live descendant",
+        "timeout": "isolated R command exceeded its deadline",
+        "overflow": "isolated R command output exceeded its bounded log",
+    }
+
+    # Prove the helper's own deadline without a release marker, pidfd signal, or cleanup implementation.
+    expiry_marker = root / "self-expiry-marker"
+    expiry_ready = root / "self-expiry-pid"
+    expiry_release = root / "self-expiry-release"
+    expiry_retired = root / "self-expiry-retired"
+    expiry_receipt = root / "self-expiry-timing"
+    expiry_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            descendant,
+            str(expiry_marker),
+            str(expiry_ready),
+            str(expiry_release),
+            str(expiry_retired),
+            str(expiry_receipt),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    expiry_cleanup_used = False
+    try:
+        expiry_ready_deadline = time.monotonic() + 1.5
+        while time.monotonic() < expiry_ready_deadline and not expiry_ready.exists():
+            time.sleep(0.001)
+        assert expiry_ready.exists(), "self-expiring descendant identity receipt was unavailable"
+        expiry_identity_fields = expiry_ready.read_text(encoding="ascii").split(":")
+        assert len(expiry_identity_fields) == 2 and all(field.isdecimal() for field in expiry_identity_fields)
+        expiry_process_id, expiry_start_time = (int(field) for field in expiry_identity_fields)
+        assert expiry_process_id == expiry_process.pid
+        assert current_start_time(expiry_process_id) == expiry_start_time
+        assert not expiry_release.exists(), "self-expiry proof unexpectedly supplied a release marker"
+        assert expiry_process.wait(timeout=2.75) == 70, "detached helper did not report its self-expiry"
+        assert expiry_receipt.exists(), "detached helper did not publish its self-expiry timing"
+        expiry_timing_fields = expiry_receipt.read_text(encoding="ascii").split(":")
+        assert len(expiry_timing_fields) == 4
+        expiry_started, expiry_deadline, expiry_finished, expiry_limit = (
+            float(field) for field in expiry_timing_fields
+        )
+        assert expiry_limit == 2
+        assert expiry_deadline == expiry_started + expiry_limit
+        assert expiry_finished >= expiry_deadline
+        assert expiry_finished < expiry_deadline + 0.75
+        assert current_start_time(expiry_process_id) != expiry_start_time
+        assert not expiry_retired.exists(), "self-expiring descendant falsely reported release retirement"
+        assert not expiry_marker.exists(), "self-expiring descendant mutated before terminal settlement"
+        time.sleep(0.7)
+        assert not expiry_marker.exists(), "self-expiring descendant mutated after terminal settlement"
+    finally:
+        if expiry_process.poll() is None:
+            expiry_cleanup_used = True
+            expiry_process.kill()
+            expiry_process.wait(timeout=1)
+    assert not expiry_cleanup_used, "self-expiry proof required external process cleanup"
+
+    for mode in ("success", "timeout", "overflow"):
+        # The observer owns every exact identity receipt before releasing producers to withdraw them.
+        identities = {}
+        observer_errors = []
+        release = root / f"{mode}-release"
+
+        def observe_identities():
+            try:
+                deadline = time.monotonic() + 1.5
+                while len(identities) < 6:
+                    for index in range(6):
+                        if index in identities:
+                            continue
+                        try:
+                            identity = pin_identity(root / f"{mode}-pid-{index}")
+                        except FileNotFoundError:
+                            continue
+                        identities[index] = identity
+                    if len(identities) == 6:
+                        release.touch()
+                        return
+                    if time.monotonic() >= deadline:
+                        raise AssertionError(f"{mode} descendant identity receipts were incomplete")
+                    time.sleep(0.001)
+            except BaseException as error:
+                observer_errors.append(error)
+
+        observer = threading.Thread(target=observe_identities, name=f"{mode}-identity-observer")
+        observer.start()
+        failure = None
+        try:
+            try:
+                installer.bounded_command(
+                    [sys.executable, "-c", parent, str(root), mode, descendant, mode],
+                    dict(os.environ),
+                    root / f"{mode}-command.log",
+                )
+            except installer.ContractError as error:
+                failure = error
+            observer.join(timeout=2)
+            assert not observer.is_alive(), f"{mode} identity observer did not settle"
+            if observer_errors:
+                raise observer_errors[0]
+            assert set(identities) == set(range(6)), f"{mode} descendant identities were incomplete"
+            assert not list(root.glob(f"{mode}-pid-*")), f"{mode} early-removal adversary retained a receipt"
+            for index, (process_id, start_time, _) in identities.items():
+                retired = (root / f"{mode}-retired-{index}").read_text(encoding="ascii")
+                assert retired == f"{process_id}:{start_time}", (
+                    f"{mode} descendant {index} retirement receipt was not exact"
+                )
+            assert failure is not None, f"{mode} command with a live escaped descendant unexpectedly succeeded"
+            assert expected_failure[mode] in str(failure), f"{mode} failed for an unrelated reason: {failure}"
+            assert all(
+                current_start_time(process_id) != start_time
+                for process_id, start_time, _ in identities.values()
+            ), f"{mode} descendants were not reaped"
+            assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated before settlement"
+            time.sleep(0.7)
+            assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated after settlement"
+        finally:
+            settle_exact_identities(identities, release)
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer fails closed before dispatch rather than claiming an unrelated child", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-exclusive-") as directory:
+    root = Path(directory)
+    marker = root / "command-dispatched"
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], start_new_session=True)
+    try:
+        try:
+            installer.bounded_command(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)],
+                dict(os.environ),
+                root / "command.log",
+            )
+        except installer.ContractError as error:
+            assert "was not exclusive before dispatch" in str(error)
+        else:
+            raise AssertionError("command dispatched without an exclusive descendant owner")
+        assert unrelated.poll() is None, "the unrelated child was affected"
+        assert not marker.exists(), "the command ran before descendant ownership was established"
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=2)
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("changed same-version archive bytes reject before install dispatch", () => {
+  const probe = runInstallerProbe(String.raw`
+import hashlib
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+expected = b"expected archive bytes"
+changed = b"changed! archive bytes"
+assert len(expected) == len(changed)
+package = {
+    "name": "fixture",
+    "version": "1.0.0",
+    "bytes": len(expected),
+    "sha256": hashlib.sha256(expected).hexdigest(),
+}
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-drift-") as directory:
+    root = Path(directory)
+    dispatched = []
+    installer.bounded_command = lambda *arguments, **options: dispatched.append((arguments, options))
+    for index, archive_bytes in enumerate((changed, changed + b"!")):
+        archive = root / f"fixture_1.0.0-{index}.tar.gz"
+        archive.write_bytes(archive_bytes)
+        try:
+            installer.install_verified_archive(
+                package,
+                archive,
+                ["/usr/local/bin/R", "CMD", "INSTALL", str(archive)],
+                dict(os.environ),
+                root / f"command-{index}.log",
+            )
+        except installer.ContractError:
+            pass
+        else:
+            raise AssertionError("changed same-version bytes were accepted")
+    assert dispatched == [], "install dispatch occurred before archive identity rejection"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("lock generation has request-header, body-progress, and aggregate deadlines", async () => {
+  const headerSignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 100, requestHeaderMs: 25 },
+      fetchImpl: (_url, { signal }) => {
+        headerSignals.push(signal);
+        return new Promise(() => {});
+      }
+    }),
+    /request-header deadline/u
+  );
+  assert.equal(headerSignals.length, 1);
+  assert.equal(headerSignals[0].aborted, true);
+
+  const stalledBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => new Promise(() => {}) };
+    }
+  };
+  const bodySignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 25, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        bodySignals.push(signal);
+        return { body: stalledBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /body-progress deadline/u
+  );
+  assert.equal(bodySignals.length, 1);
+  assert.equal(bodySignals[0].aborted, true);
+
+  const aggregateSignals = [];
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 25, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        aggregateSignals.push(signal);
+        await delay(100);
+        return { body: [], headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /aggregate deadline/u
+  );
+  assert.equal(aggregateSignals.length, 1);
+  assert.equal(aggregateSignals[0].aborted, true);
+
+  const zeroByteSignals = [];
+  const zeroByteBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => Promise.resolve({ done: false, value: new Uint8Array(0) }) };
+    }
+  };
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 25, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        zeroByteSignals.push(signal);
+        return { body: zeroByteBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /zero-byte body chunk/u
+  );
+  assert.equal(zeroByteSignals.length, 1);
+  assert.equal(zeroByteSignals[0].aborted, true);
+
+  const microtaskSignals = [];
+  const endlessPositiveBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => Promise.resolve({ done: false, value: Uint8Array.of(1) }) };
+    }
+  };
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 5, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        microtaskSignals.push(signal);
+        return { body: endlessPositiveBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /aggregate deadline/u
+  );
+  assert.equal(microtaskSignals.length, 1);
+  assert.equal(microtaskSignals[0].aborted, true);
+
+  const boundedMetadata = gzipSync("Package: bounded\nVersion: 1.0.0\n\n");
+  let boundedBodyReads = 0;
+  await assert.rejects(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url) => ({
+        body: {
+          [Symbol.asyncIterator]() {
+            let emitted = false;
+            return {
+              next: () => {
+                boundedBodyReads += 1;
+                if (emitted) return Promise.resolve({ done: true });
+                emitted = true;
+                return Promise.resolve({ done: false, value: boundedMetadata });
+              }
+            };
+          }
+        },
+        headers: { get: () => String(boundedMetadata.byteLength) },
+        status: 200,
+        url
+      })
+    }),
+    /does not contain required package/u
+  );
+  assert.equal(boundedBodyReads, 4);
 });
 
 test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
