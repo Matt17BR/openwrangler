@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  cpSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -260,7 +270,10 @@ test("the manifest consumer inventory is complete and every consumer names its c
   );
 
   const unlisted = new Map(sources);
-  unlisted.set("scripts/unlisted-release-consumer.mjs", 'releaseCutover("public-media-render-verification");\n');
+  unlisted.set(
+    "scripts/unlisted-release-consumer.mjs",
+    'import { releaseCutover } from "./release-cutovers.mjs";\nreleaseCutover("public-media-render-verification");\n'
+  );
   assert.throws(() => assertReleaseCutoverConsumerInventory(unlisted), /exactly match the independent inventory/u);
 
   const omittedManifest = changedManifest((value) => {
@@ -277,6 +290,33 @@ test("the manifest consumer inventory is complete and every consumer names its c
   assert.deepEqual([...discoverReleaseCutoverConsumers(sources).keys()], paths);
 });
 
+test("JavaScript consumers require a live call through the imported release authority", () => {
+  const path = "scripts/example-release-consumer.mjs";
+  const discoveredIds = (source) => discoverReleaseCutoverConsumers(new Map([[path, source]])).get(path) ?? [];
+  assert.deepEqual(
+    discoveredIds(
+      'import { releaseCutover } from "./release-cutovers.mjs";\nreleaseCutover("public-media-render-verification");\n'
+    ),
+    ["public-media-render-verification"]
+  );
+  assert.deepEqual(
+    discoveredIds(
+      'import { releaseCutoverVersion as boundary } from "./release-cutovers.mjs";\nboundary("public-media-prepublication");\n'
+    ),
+    ["public-media-prepublication"]
+  );
+  assert.deepEqual(discoveredIds("const decoration = 'releaseCutover(\"public-media-render-verification\")';\n"), []);
+  for (const source of [
+    'import { releaseCutover } from "./release-cutovers.mjs";\nfunction inspect(releaseCutover) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nif (false) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nwhile (false) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nfalse && releaseCutover("public-media-render-verification");\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nreleaseCutover("public-media-render-verification", forgedManifest);\n'
+  ]) {
+    assert.throws(() => discoveredIds(source), /could not prove its bounded release-cutover semantics/u);
+  }
+});
+
 test("the release-cutover owner runs in the canonical portable package inventory", () => {
   const source = readFileSync(new URL("../package.json", import.meta.url), "utf8");
   assert.doesNotThrow(() => assertReleaseCutoverTestInventory(source));
@@ -289,6 +329,18 @@ test("the release-cutover owner runs in the canonical portable package inventory
   packageJson.scripts["test:scripts:portable:run"] +=
     " scripts/release-cutovers.test.mjs scripts/release-cutovers.test.mjs";
   assert.throws(() => assertReleaseCutoverTestInventory(`${JSON.stringify(packageJson)}\n`), /exactly once/u);
+
+  for (const command of [
+    "echo scripts/release-cutovers.test.mjs",
+    "printf '%s\\n' scripts/release-cutovers.test.mjs",
+    "node -e 'console.log(\"scripts/release-cutovers.test.mjs\")'"
+  ]) {
+    packageJson.scripts["test:scripts:portable:run"] = command;
+    assert.throws(
+      () => assertReleaseCutoverTestInventory(`${JSON.stringify(packageJson)}\n`),
+      /exact node --test argument/u
+    );
+  }
 });
 
 test("release-cutover file reads are bounded, fatal UTF-8, and identity stable", (context) => {
@@ -353,12 +405,130 @@ test("one repository-root identity owns both bounded source-scan passes", (conte
           };
         }
       }),
-    /repository root changed|repository view changed/u
+    /repository root changed|repository namespace changed|repository view changed/u
   );
   assert.equal(
     readFileSync(join(root, "scripts", "consumer.mjs"), "utf8"),
     'releaseCutover("public-media-render-verification");\n'
   );
+});
+
+test("the complete repository namespace remains bound during file reads", (context) => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-release-read-namespace-"));
+  context.after(() => rmSync(parent, { recursive: true }));
+  const root = join(parent, "repository");
+  const replacement = join(parent, "replacement");
+  const displaced = join(parent, "displaced");
+  for (const directory of [root, replacement]) {
+    mkdirSync(join(directory, "scripts"), { recursive: true });
+    writeFileSync(join(directory, "scripts", "consumer.mjs"), 'releaseCutover("public-media-render-verification");\n');
+  }
+  let replaced = false;
+  assert.throws(
+    () =>
+      readStableReleaseCutoverSources(root, ["scripts/consumer.mjs"], {
+        afterOpenForTest: () => {
+          if (replaced) return;
+          replaced = true;
+          renameSync(root, displaced);
+          renameSync(replacement, root);
+          renameSync(root, replacement);
+          renameSync(displaced, root);
+        }
+      }),
+    /repository namespace changed/u
+  );
+  assert.equal(replaced, true);
+});
+
+test("directory discovery remains bound to the complete repository namespace", (context) => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-release-discovery-namespace-"));
+  context.after(() => rmSync(parent, { recursive: true }));
+  const root = join(parent, "repository");
+  const replacement = join(parent, "replacement");
+  const displaced = join(parent, "displaced");
+  mkdirSync(root);
+  for (const path of [".github", "docs", "fixtures", "scripts"]) {
+    cpSync(new URL(`../${path}`, import.meta.url), join(root, path), { recursive: true });
+  }
+  for (const path of ["azure-pipelines-marketplace.yml", "package.json"]) {
+    cpSync(new URL(`../${path}`, import.meta.url), join(root, path));
+  }
+  cpSync(root, replacement, { recursive: true });
+  let replaced = false;
+  assert.throws(
+    () =>
+      checkReleaseCutoverRepository({
+        root,
+        afterDirectoryOpenForTest: () => {
+          if (replaced) return;
+          replaced = true;
+          renameSync(root, displaced);
+          renameSync(replacement, root);
+          renameSync(root, replacement);
+          renameSync(displaced, root);
+        }
+      }),
+    /repository namespace changed/u
+  );
+  assert.equal(replaced, true);
+
+  const primary = new Error("directory discovery failure");
+  let directoryCloses = 0;
+  let error;
+  try {
+    checkReleaseCutoverRepository({
+      root,
+      afterDirectoryOpenForTest: ({ handle }) => {
+        if (directoryCloses > 0) return;
+        directoryCloses += 1;
+        handle.closeSync();
+        throw primary;
+      }
+    });
+  } catch (failure) {
+    error = failure;
+  }
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.errors[0], primary);
+  assert.match(error.errors[1].message, /closed|directory handle/u);
+  assert.equal(directoryCloses, 1);
+});
+
+test("repository cleanup is exact-once, fail-complete, and primary-first", (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-cleanup-"));
+  context.after(() => rmSync(root, { recursive: true }));
+  mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "scripts", "consumer.mjs"), 'releaseCutover("public-media-render-verification");\n');
+  const primary = new Error("primary scan failure");
+  const restoreFailure = new Error("restore failure");
+  let restoreCalls = 0;
+  let openCalls = 0;
+  let error;
+  try {
+    readStableReleaseCutoverSources(root, ["scripts/consumer.mjs"], {
+      afterOpenForTest: () => {
+        openCalls += 1;
+        if (openCalls === 2) throw primary;
+      },
+      betweenPassesForTest:
+        ({ rootDescriptor }) =>
+        () => {
+          restoreCalls += 1;
+          closeSync(rootDescriptor);
+          throw restoreFailure;
+        }
+    });
+  } catch (failure) {
+    error = failure;
+  }
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.errors[0].cause, primary);
+  assert.equal(error.errors[1], restoreFailure);
+  assert.equal(error.errors.length, 4);
+  assert.equal(error.errors[2].syscall, "fstat");
+  assert.equal(error.errors[3].syscall, "close");
+  assert.equal(restoreCalls, 1);
 });
 
 test("canonical repository paths and file identities cannot alias the scan", (context) => {

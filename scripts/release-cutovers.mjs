@@ -8,7 +8,7 @@ import {
   realpathSync,
   writeFileSync
 } from "node:fs";
-import { posix, resolve } from "node:path";
+import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 import { readBoundedRegularFile } from "./bounded-file-read.mjs";
@@ -28,6 +28,7 @@ const MAX_TEXT_BYTES = 1_024;
 const MAX_REPOSITORY_PATH_BYTES = 256;
 const MAX_REPOSITORY_SCAN_ENTRIES = 4_096;
 const MAX_REPOSITORY_SCAN_BYTES = 64 * 1024 * 1024;
+const MAX_JAVASCRIPT_TOKENS = 262_144;
 const MAX_SEMVER_COMPONENT_DIGITS = 128;
 const STABLE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
@@ -343,10 +344,76 @@ function sameRepositoryMetadata(left, right) {
   return Object.keys(left).every((key) => left[key] === right[key]);
 }
 
+function throwReleaseCutoverFailures(failures) {
+  if (failures.length === 0) return;
+  if (failures.length === 1) throw failures[0];
+  throw new AggregateError(failures, failures[0].message, { cause: failures[0] });
+}
+
+function attemptReleaseCutoverStep(failures, step) {
+  try {
+    return step();
+  } catch (error) {
+    failures.push(error);
+    return undefined;
+  }
+}
+
+function repositoryNamespacePaths(root) {
+  const paths = [];
+  for (let path = root; ; path = dirname(path)) {
+    paths.push(path);
+    if (dirname(path) === path) break;
+  }
+  return paths.reverse();
+}
+
+function captureRepositoryNamespace(root) {
+  return Object.freeze(
+    repositoryNamespacePaths(root).map((path) => {
+      const metadata = repositoryMetadataSnapshot(lstatSync(path, { bigint: true }), "Repository namespace", {
+        directory: true
+      });
+      if (realpathSync(path) !== path) {
+        throw new Error("The release-cutover repository namespace must be byte-canonical and symlink-free.");
+      }
+      return Object.freeze({ metadata, path });
+    })
+  );
+}
+
+function assertRepositoryNamespaceCurrent(rootHandle) {
+  try {
+    for (const entry of rootHandle.namespace) {
+      const current = repositoryMetadataSnapshot(lstatSync(entry.path, { bigint: true }), "Repository namespace", {
+        directory: true
+      });
+      if (realpathSync(entry.path) !== entry.path || !sameRepositoryMetadata(entry.metadata, current)) {
+        throw new Error(
+          `The release-cutover repository namespace changed during its bounded scan at ${JSON.stringify(entry.path)}.`
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && /repository namespace changed/u.test(error.message)) throw error;
+    throw new Error("The release-cutover repository namespace changed during its bounded scan.", { cause: error });
+  }
+}
+
+function withRepositoryNamespace(rootHandle, operation) {
+  assertRepositoryNamespaceCurrent(rootHandle);
+  const failures = [];
+  const result = attemptReleaseCutoverStep(failures, operation);
+  attemptReleaseCutoverStep(failures, () => assertRepositoryNamespaceCurrent(rootHandle));
+  throwReleaseCutoverFailures(failures);
+  return result;
+}
+
 function openRepositoryRoot(root) {
-  if (typeof root !== "string" || resolve(root) !== root || realpathSync(root) !== root) {
+  if (typeof root !== "string" || resolve(root) !== root) {
     throw new Error("The release-cutover repository root must be one canonical absolute directory.");
   }
+  const namespace = captureRepositoryNamespace(root);
   const descriptor = openSync(
     root,
     constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0)
@@ -358,17 +425,21 @@ function openRepositoryRoot(root) {
     const named = repositoryMetadataSnapshot(lstatSync(root, { bigint: true }), "Repository root", {
       directory: true
     });
-    if (!sameRepositoryMetadata(opened, named)) {
+    if (!sameRepositoryMetadata(opened, named) || !sameRepositoryMetadata(opened, namespace.at(-1).metadata)) {
       throw new Error("The release-cutover repository root changed before its scan.");
     }
-    return Object.freeze({ descriptor, opened });
+    const rootHandle = Object.freeze({ descriptor, namespace, opened });
+    assertRepositoryNamespaceCurrent(rootHandle);
+    return rootHandle;
   } catch (error) {
-    closeSync(descriptor);
-    throw error;
+    const failures = [error];
+    attemptReleaseCutoverStep(failures, () => closeSync(descriptor));
+    throwReleaseCutoverFailures(failures);
   }
 }
 
 function assertRepositoryRootCurrent(root, rootHandle) {
+  assertRepositoryNamespaceCurrent(rootHandle);
   const opened = repositoryMetadataSnapshot(fstatSync(rootHandle.descriptor, { bigint: true }), "Repository root", {
     directory: true
   });
@@ -385,9 +456,9 @@ function assertRepositoryRootCurrent(root, rootHandle) {
   return named;
 }
 
-function captureRepositorySources(root, rootHandle, discoverPaths) {
+function captureRepositorySources(root, rootHandle, discoverPaths, options = {}) {
   const rootBefore = assertRepositoryRootCurrent(root, rootHandle);
-  const discovered = discoverPaths();
+  const discovered = withRepositoryNamespace(rootHandle, () => discoverPaths(rootHandle));
   if (!Array.isArray(discovered) || discovered.length === 0 || discovered.length > MAX_REPOSITORY_SCAN_ENTRIES) {
     throw new Error(`The release-cutover repository scan must contain 1..${MAX_REPOSITORY_SCAN_ENTRIES} paths.`);
   }
@@ -402,11 +473,13 @@ function captureRepositorySources(root, rootHandle, discoverPaths) {
   const identities = new Set();
   for (const path of paths) {
     const absolutePath = resolve(root, path);
-    if (realpathSync(absolutePath) !== absolutePath) {
-      throw new Error(`${path} is not byte-canonical beneath the release-cutover repository root.`);
-    }
     const maximumBytes = path === MANIFEST_PATH ? MAX_MANIFEST_BYTES : MAX_CONSUMER_BYTES;
-    const metadata = repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
+    const metadata = withRepositoryNamespace(rootHandle, () => {
+      if (realpathSync(absolutePath) !== absolutePath) {
+        throw new Error(`${path} is not byte-canonical beneath the release-cutover repository root.`);
+      }
+      return repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
+    });
     const identity = `${metadata.dev}:${metadata.ino}`;
     if (identities.has(identity)) {
       throw new Error(`${path} aliases another release-cutover repository file identity.`);
@@ -423,14 +496,20 @@ function captureRepositorySources(root, rootHandle, discoverPaths) {
   const receipts = new Map();
   for (const path of paths) {
     const { absolutePath, maximumBytes, metadata } = preflight.get(path);
-    const source = readReleaseCutoverUtf8File(absolutePath, maximumBytes, {
-      containedBy: root,
-      label: "Release-cutover repository source"
+    const source = withRepositoryNamespace(rootHandle, () =>
+      readReleaseCutoverUtf8File(absolutePath, maximumBytes, {
+        afterOpenForTest: options.afterOpenForTest,
+        containedBy: root,
+        label: "Release-cutover repository source"
+      })
+    );
+    const completed = withRepositoryNamespace(rootHandle, () => {
+      const snapshot = repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
+      if (realpathSync(absolutePath) !== absolutePath || !sameRepositoryMetadata(metadata, snapshot)) {
+        throw new Error(`${path} changed across its release-cutover repository read.`);
+      }
+      return snapshot;
     });
-    const completed = repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
-    if (realpathSync(absolutePath) !== absolutePath || !sameRepositoryMetadata(metadata, completed)) {
-      throw new Error(`${path} changed across its release-cutover repository read.`);
-    }
     sources.set(path, source);
     receipts.set(path, completed);
   }
@@ -452,34 +531,48 @@ function sameRepositoryView(left, right) {
   );
 }
 
-function readStableRepositorySources(root, discoverPaths, { betweenPassesForTest } = {}) {
+function readStableRepositorySources(root, discoverPaths, options = {}) {
+  const { afterDirectoryOpenForTest, afterOpenForTest, betweenPassesForTest } = options;
   if (betweenPassesForTest !== undefined && typeof betweenPassesForTest !== "function") {
     throw new TypeError("The release-cutover between-pass hook must be a function.");
   }
+  if (afterOpenForTest !== undefined && typeof afterOpenForTest !== "function") {
+    throw new TypeError("The release-cutover after-open hook must be a function.");
+  }
+  if (afterDirectoryOpenForTest !== undefined && typeof afterDirectoryOpenForTest !== "function") {
+    throw new TypeError("The release-cutover after-directory-open hook must be a function.");
+  }
   const rootHandle = openRepositoryRoot(root);
   let restore;
-  try {
-    const first = captureRepositorySources(root, rootHandle, discoverPaths);
-    restore = betweenPassesForTest?.();
-    if (restore !== undefined && typeof restore !== "function") {
-      throw new TypeError("The release-cutover between-pass hook must return a restore function.");
-    }
-    let second;
-    try {
-      second = captureRepositorySources(root, rootHandle, discoverPaths);
-    } finally {
-      restore?.();
+  let first;
+  let second;
+  const failures = [];
+  first = attemptReleaseCutoverStep(failures, () => captureRepositorySources(root, rootHandle, discoverPaths, options));
+  if (failures.length === 0) {
+    restore = attemptReleaseCutoverStep(failures, () =>
+      betweenPassesForTest?.(Object.freeze({ rootDescriptor: rootHandle.descriptor }))
+    );
+    if (failures.length === 0 && restore !== undefined && typeof restore !== "function") {
+      failures.push(new TypeError("The release-cutover between-pass hook must return a restore function."));
       restore = undefined;
     }
-    assertRepositoryRootCurrent(root, rootHandle);
-    if (!sameRepositoryView(first, second)) {
-      throw new Error("The release-cutover repository view changed between its two bounded scan passes.");
-    }
-    return first.sources;
-  } finally {
-    restore?.();
-    closeSync(rootHandle.descriptor);
   }
+  if (failures.length === 0) {
+    second = attemptReleaseCutoverStep(failures, () =>
+      captureRepositorySources(root, rootHandle, discoverPaths, options)
+    );
+  }
+  if (restore !== undefined) {
+    attemptReleaseCutoverStep(failures, restore);
+    restore = undefined;
+  }
+  attemptReleaseCutoverStep(failures, () => assertRepositoryRootCurrent(root, rootHandle));
+  if (first !== undefined && second !== undefined && !sameRepositoryView(first, second)) {
+    failures.push(new Error("The release-cutover repository view changed between its two bounded scan passes."));
+  }
+  attemptReleaseCutoverStep(failures, () => closeSync(rootHandle.descriptor));
+  throwReleaseCutoverFailures(failures);
+  return first.sources;
 }
 
 export function readStableReleaseCutoverSources(root, paths, options = {}) {
@@ -487,7 +580,7 @@ export function readStableReleaseCutoverSources(root, paths, options = {}) {
   return readStableRepositorySources(root, () => [...paths], options);
 }
 
-function discoverRepositoryAuditPaths(root) {
+function discoverRepositoryAuditPaths(root, rootHandle, { afterDirectoryOpenForTest } = {}) {
   const paths = new Set([MANIFEST_PATH, "package.json", "azure-pipelines-marketplace.yml"]);
   let entries = 0;
   const roots = Object.freeze([
@@ -500,33 +593,39 @@ function discoverRepositoryAuditPaths(root) {
     while (pending.length > 0) {
       const relativeDirectory = pending.pop();
       const absoluteDirectory = resolve(root, relativeDirectory);
-      const metadata = lstatSync(absoluteDirectory, { bigint: true });
-      repositoryMetadataSnapshot(metadata, relativeDirectory, { directory: true });
-      if (realpathSync(absoluteDirectory) !== absoluteDirectory) {
-        throw new Error(`${relativeDirectory} is not a canonical release-cutover scan directory.`);
-      }
-      const handle = opendirSync(absoluteDirectory);
-      try {
-        for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
-          entries += 1;
-          if (entries > MAX_REPOSITORY_SCAN_ENTRIES) {
-            throw new Error(`The release-cutover tree scan exceeds ${MAX_REPOSITORY_SCAN_ENTRIES} entries.`);
-          }
-          const path = canonicalRepositoryPath(`${relativeDirectory}/${entry.name}`, "Repository tree entry");
-          const absolutePath = resolve(root, path);
-          const entryMetadata = lstatSync(absolutePath, { bigint: true });
-          if (entryMetadata.isSymbolicLink()) {
-            throw new Error(`${path} is a symbolic link inside the release-cutover scan tree.`);
-          }
-          if (entryMetadata.isDirectory()) {
-            pending.push(path);
-          } else if (entryMetadata.isFile() && extensions.some((extension) => path.endsWith(extension))) {
-            paths.add(path);
-          }
+      withRepositoryNamespace(rootHandle, () => {
+        const metadata = lstatSync(absoluteDirectory, { bigint: true });
+        repositoryMetadataSnapshot(metadata, relativeDirectory, { directory: true });
+        if (realpathSync(absoluteDirectory) !== absoluteDirectory) {
+          throw new Error(`${relativeDirectory} is not a canonical release-cutover scan directory.`);
         }
-      } finally {
-        handle.closeSync();
-      }
+        const handle = opendirSync(absoluteDirectory);
+        const failures = [];
+        try {
+          afterDirectoryOpenForTest?.(Object.freeze({ handle, path: relativeDirectory }));
+          for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+            entries += 1;
+            if (entries > MAX_REPOSITORY_SCAN_ENTRIES) {
+              throw new Error(`The release-cutover tree scan exceeds ${MAX_REPOSITORY_SCAN_ENTRIES} entries.`);
+            }
+            const path = canonicalRepositoryPath(`${relativeDirectory}/${entry.name}`, "Repository tree entry");
+            const absolutePath = resolve(root, path);
+            const entryMetadata = lstatSync(absolutePath, { bigint: true });
+            if (entryMetadata.isSymbolicLink()) {
+              throw new Error(`${path} is a symbolic link inside the release-cutover scan tree.`);
+            }
+            if (entryMetadata.isDirectory()) {
+              pending.push(path);
+            } else if (entryMetadata.isFile() && extensions.some((extension) => path.endsWith(extension))) {
+              paths.add(path);
+            }
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+        attemptReleaseCutoverStep(failures, () => handle.closeSync());
+        throwReleaseCutoverFailures(failures);
+      });
     }
   }
   return [...paths].sort();
@@ -657,54 +756,360 @@ export function releaseCutoverConsumerPaths(manifest = RELEASE_CUTOVER_MANIFEST)
   return Object.freeze(validated.consumerInventory.map(({ path }) => path));
 }
 
-function stripJavaScriptComments(source) {
-  let result = "";
-  let quote;
-  for (let index = 0; index < source.length; index += 1) {
+function tokenizeJavaScript(source) {
+  const tokens = [];
+  const append = (kind, value, start, end, plain = true) => {
+    tokens.push(Object.freeze({ end, kind, plain, start, value }));
+    if (tokens.length > MAX_JAVASCRIPT_TOKENS) {
+      throw new Error(`A release-cutover JavaScript source exceeds ${MAX_JAVASCRIPT_TOKENS} tokens.`);
+    }
+  };
+  for (let index = 0; index < source.length;) {
     const character = source[index];
     const next = source[index + 1];
-    if (quote !== undefined) {
-      result += character;
-      if (character === "\\") {
-        if (next !== undefined) {
-          result += next;
-          index += 1;
-        }
-      } else if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      result += character;
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      result += "  ";
-      index += 2;
-      while (index < source.length && source[index] !== "\n") {
-        result += " ";
-        index += 1;
-      }
-      if (index < source.length) result += "\n";
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      result += "  ";
-      index += 2;
-      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
-        result += source[index] === "\n" ? "\n" : " ";
-        index += 1;
-      }
-      if (index >= source.length) throw new Error("A release-cutover source contains an unterminated comment.");
-      result += "  ";
+    if (/\s/u.test(character)) {
       index += 1;
       continue;
     }
-    result += character;
+    if (character === "/" && next === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      const start = index;
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) index += 1;
+      if (index >= source.length) {
+        throw new Error(`A release-cutover JavaScript source has an unterminated comment at byte ${start}.`);
+      }
+      index += 2;
+      continue;
+    }
+    if (
+      character === "/" &&
+      (tokens.length === 0 ||
+        ["(", "[", "{", "=", ":", ",", ";", "!", "&&", "||", "?", "=>", "return"].includes(tokens.at(-1).value))
+    ) {
+      const start = index;
+      let escaped = false;
+      let characterClass = false;
+      index += 1;
+      while (index < source.length) {
+        const candidate = source[index];
+        if (escaped) escaped = false;
+        else if (candidate === "\\") escaped = true;
+        else if (candidate === "[") characterClass = true;
+        else if (candidate === "]") characterClass = false;
+        else if (candidate === "/" && !characterClass) break;
+        index += 1;
+      }
+      if (index >= source.length) {
+        throw new Error(`A release-cutover JavaScript source has an unterminated regular expression at byte ${start}.`);
+      }
+      index += 1;
+      while (index < source.length && /[A-Za-z]/u.test(source[index])) index += 1;
+      append("regular-expression", source.slice(start, index), start, index, false);
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      const quote = character;
+      const start = index;
+      let plain = true;
+      let value = "";
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        if (source[index] === "\\") {
+          plain = false;
+          if (index + 1 >= source.length) break;
+          value += source[index];
+          value += source[index + 1];
+          index += 2;
+          continue;
+        }
+        if (quote === "`" && source[index] === "$" && source[index + 1] === "{") plain = false;
+        value += source[index];
+        index += 1;
+      }
+      if (index >= source.length) {
+        throw new Error(`A release-cutover JavaScript source has an unterminated string at byte ${start}.`);
+      }
+      index += 1;
+      append("string", value, start, index, plain);
+      continue;
+    }
+    if (/[A-Za-z_$]/u.test(character)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && /[A-Za-z0-9_$]/u.test(source[index])) index += 1;
+      append("identifier", source.slice(start, index), start, index);
+      continue;
+    }
+    const operator = ["===", "!==", "=>", "&&", "||", "?.", "==", "!=", "<=", ">="].find((value) =>
+      source.startsWith(value, index)
+    );
+    if (operator !== undefined) {
+      append("punctuator", operator, index, index + operator.length);
+      index += operator.length;
+      continue;
+    }
+    append("punctuator", character, index, index + 1);
+    index += 1;
   }
-  return result;
+  return Object.freeze(tokens);
+}
+
+function javascriptPairs(tokens) {
+  const opening = new Map([
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"]
+  ]);
+  const pairs = new Map();
+  const stack = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].kind !== "punctuator") continue;
+    const value = tokens[index].value;
+    if (opening.has(value)) stack.push(Object.freeze({ index, value }));
+    else if ([")", "]", "}"].includes(value)) {
+      const entry = stack.pop();
+      if (entry === undefined || opening.get(entry.value) !== value) {
+        throw new Error(
+          `A release-cutover JavaScript source has unbalanced syntax near byte ${tokens[index].start} (${entry?.value ?? "empty"} at ${entry === undefined ? "none" : tokens[entry.index].start} before ${value}).`
+        );
+      }
+      pairs.set(entry.index, index);
+      pairs.set(index, entry.index);
+    }
+  }
+  if (stack.length > 0) {
+    throw new Error(
+      `A release-cutover JavaScript source has unbalanced syntax near byte ${tokens[stack.at(-1).index].start}.`
+    );
+  }
+  return pairs;
+}
+
+function importedJavaScriptBindings(tokens, moduleNames, importedNames) {
+  const bindings = new Map();
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].value !== "import" || tokens[index + 1]?.value !== "{") continue;
+    let close = index + 2;
+    while (close < tokens.length && !(tokens[close].kind === "punctuator" && tokens[close].value === "}")) {
+      close += 1;
+    }
+    if (close >= tokens.length || tokens[close + 1]?.value !== "from" || tokens[close + 2]?.kind !== "string") {
+      continue;
+    }
+    const moduleName = tokens[close + 2];
+    if (!moduleName.plain || !moduleNames.has(moduleName.value)) continue;
+    for (let cursor = index + 2; cursor < close;) {
+      const imported = tokens[cursor];
+      if (imported?.kind !== "identifier") {
+        cursor += 1;
+        continue;
+      }
+      let local = imported;
+      let localIndex = cursor;
+      if (tokens[cursor + 1]?.value === "as" && tokens[cursor + 2]?.kind === "identifier") {
+        local = tokens[cursor + 2];
+        localIndex = cursor + 2;
+        cursor += 3;
+      } else {
+        cursor += 1;
+      }
+      if (importedNames(imported.value)) {
+        bindings.set(local.value, Object.freeze({ imported: imported.value, tokenIndex: localIndex }));
+      }
+      if (tokens[cursor]?.value === ",") cursor += 1;
+    }
+    index = close + 2;
+  }
+  return bindings;
+}
+
+function hasShadowingJavaScriptBinding(tokens, pairs, name, importTokenIndex) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].value !== name || index === importTokenIndex) continue;
+    const previous = tokens[index - 1]?.value;
+    if (
+      ["const", "let", "var", "class", "function"].includes(previous) ||
+      tokens[index + 1]?.value === "=>" ||
+      ["=", "++", "--"].includes(tokens[index + 1]?.value)
+    ) {
+      return true;
+    }
+    if (["{", "[", ":", ","].includes(previous)) {
+      for (let cursor = index - 1; cursor >= 0 && ![";", "="].includes(tokens[cursor].value); cursor -= 1) {
+        if (["const", "let", "var"].includes(tokens[cursor].value)) return true;
+      }
+    }
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!["function", "catch"].includes(tokens[index].value)) continue;
+    let open = index + 1;
+    if (tokens[index].value === "function" && tokens[open]?.kind === "identifier") open += 1;
+    if (tokens[open]?.value !== "(") continue;
+    const close = pairs.get(open);
+    if (close !== undefined && tokens.slice(open + 1, close).some((token) => token.value === name)) return true;
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].value !== "=>") continue;
+    const previous = tokens[index - 1];
+    if (previous?.value === name) return true;
+    if (previous?.value === ")") {
+      const open = pairs.get(index - 1);
+      if (open !== undefined && tokens.slice(open + 1, index - 1).some((token) => token.value === name)) return true;
+    }
+  }
+  return false;
+}
+
+function statementTokenRange(tokens, pairs, start) {
+  if (tokens[start]?.value === "{") return Object.freeze([start, pairs.get(start)]);
+  let end = start;
+  while (end < tokens.length && ![";", "}"].includes(tokens[end].value)) end += 1;
+  return Object.freeze([start, end]);
+}
+
+function isStaticallyDeadJavaScriptToken(tokens, pairs, tokenIndex) {
+  for (let index = 0; index < tokenIndex; index += 1) {
+    if (!["if", "while"].includes(tokens[index].value) || tokens[index + 1]?.value !== "(") continue;
+    const conditionClose = pairs.get(index + 1);
+    if (conditionClose === undefined) continue;
+    const condition = tokens.slice(index + 2, conditionClose);
+    if (condition.length !== 1 || !["false", "true"].includes(condition[0].value)) continue;
+    const consequent = statementTokenRange(tokens, pairs, conditionClose + 1);
+    if (condition[0].value === "false" && tokenIndex >= consequent[0] && tokenIndex <= consequent[1]) return true;
+    const elseIndex = consequent[1] + 1;
+    if (tokens[index].value === "if" && condition[0].value === "true" && tokens[elseIndex]?.value === "else") {
+      const alternative = statementTokenRange(tokens, pairs, elseIndex + 1);
+      if (tokenIndex >= alternative[0] && tokenIndex <= alternative[1]) return true;
+    }
+  }
+  let boundary = tokenIndex - 1;
+  while (boundary >= 0 && ![";", "{", "}"].includes(tokens[boundary].value)) boundary -= 1;
+  const prefix = tokens.slice(boundary + 1, tokenIndex).map(({ value }) => value);
+  if (
+    prefix.some((value, index) => value === "false" && prefix[index + 1] === "&&") ||
+    prefix.some((value, index) => value === "true" && prefix[index + 1] === "||")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const RELEASE_AUTHORITY_EXPORTS = new Set(["releaseCutover", "releaseCutoverApplies", "releaseCutoverVersion"]);
+const RELEASE_AUTHORITY_MODULES = new Set(["./release-cutovers.mjs", "./scripts/release-cutovers.mjs"]);
+
+function javascriptCallArgumentCount(tokens, pairs, open) {
+  const close = pairs.get(open);
+  if (close === undefined || close === open + 1) return close === undefined ? undefined : 0;
+  let count = 1;
+  for (let index = open + 1; index < close; index += 1) {
+    const nestedClose = pairs.get(index);
+    if (nestedClose !== undefined && nestedClose > index) {
+      index = nestedClose;
+    } else if (tokens[index].value === ",") count += 1;
+  }
+  return count;
+}
+
+function authorityBoundJavaScriptCutoverIds(source, cutoverIds) {
+  const tokens = tokenizeJavaScript(source);
+  const pairs = javascriptPairs(tokens);
+  const bindings = importedJavaScriptBindings(tokens, RELEASE_AUTHORITY_MODULES, (name) =>
+    RELEASE_AUTHORITY_EXPORTS.has(name)
+  );
+  const consumed = new Set();
+  for (const [local, binding] of bindings) {
+    if (hasShadowingJavaScriptBinding(tokens, pairs, local, binding.tokenIndex)) continue;
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (
+        tokens[index].value !== local ||
+        tokens[index + 1]?.value !== "(" ||
+        [".", "?."].includes(tokens[index - 1]?.value) ||
+        isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+      ) {
+        continue;
+      }
+      const expectedArguments = binding.imported === "releaseCutoverApplies" ? 2 : 1;
+      if (javascriptCallArgumentCount(tokens, pairs, index + 1) !== expectedArguments) continue;
+      const id = tokens[index + 2];
+      if (id?.kind === "string" && id.plain && cutoverIds.has(id.value)) consumed.add(id.value);
+    }
+  }
+  return Object.freeze({ consumed, pairs, tokens });
+}
+
+function inlineNodeModulePrograms(source) {
+  const marker = "node --input-type=module -e '";
+  const programs = [];
+  let offset = 0;
+  while (offset < source.length) {
+    const start = source.indexOf(marker, offset);
+    if (start < 0) break;
+    const programStart = start + marker.length;
+    const end = source.indexOf("'", programStart);
+    if (end < 0) throw new Error("A release-cutover inline Node module command is unterminated.");
+    programs.push(source.slice(programStart, end));
+    offset = end + 1;
+  }
+  return Object.freeze(programs);
+}
+
+function executableReplacementCutoverIds(tokens, pairs, cutoverIds) {
+  const inspectorImports = importedJavaScriptBindings(
+    tokens,
+    new Set(["./marketplace-promotion-workflow.mjs", "./open-vsx-promotion-workflow.mjs"]),
+    (name) => name.startsWith("inspect")
+  );
+  let hasInspectorCall = false;
+  for (const [local, binding] of inspectorImports) {
+    if (hasShadowingJavaScriptBinding(tokens, pairs, local, binding.tokenIndex)) continue;
+    hasInspectorCall ||= tokens.some(
+      (token, index) =>
+        token.value === local &&
+        tokens[index + 1]?.value === "(" &&
+        !isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+    );
+  }
+  if (!hasInspectorCall) return Object.freeze([]);
+  const consumed = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (
+      tokens[index].value !== "replace" ||
+      tokens[index - 1]?.value !== "." ||
+      tokens[index + 1]?.value !== "(" ||
+      isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+    ) {
+      continue;
+    }
+    const argument = tokens[index + 2];
+    if (argument?.kind !== "string" || !argument.plain) continue;
+    for (const id of cutoverIds) {
+      if (argument.value === `releaseCutoverVersion("${id}")`) {
+        consumed.push(id);
+      }
+    }
+  }
+  return Object.freeze(consumed);
+}
+
+function semanticJavaScriptCutoverIds(source, cutoverIds) {
+  const direct = authorityBoundJavaScriptCutoverIds(source, cutoverIds);
+  const consumed = new Set(direct.consumed);
+  for (let index = 0; index < direct.tokens.length; index += 1) {
+    const token = direct.tokens[index];
+    if (token.kind !== "string") continue;
+    const programs = inlineNodeModulePrograms(token.value);
+    if (programs.length === 0 || isStaticallyDeadJavaScriptToken(direct.tokens, direct.pairs, index)) continue;
+    for (const program of programs) {
+      for (const id of authorityBoundJavaScriptCutoverIds(program, cutoverIds).consumed) consumed.add(id);
+    }
+  }
+  for (const id of executableReplacementCutoverIds(direct.tokens, direct.pairs, cutoverIds)) consumed.add(id);
+  return Object.freeze([...consumed].sort());
 }
 
 function stripHashComments(source) {
@@ -730,26 +1135,32 @@ function stripHashComments(source) {
 
 function semanticCutoverIds(path, source, cutoverIds) {
   if (NON_CONSUMER_AUTHORITY_PATHS.has(path)) return Object.freeze([]);
-  const semanticSource = path.endsWith(".md")
-    ? source.replaceAll(/<!--[\s\S]*?-->/gu, "")
-    : path.endsWith(".mjs")
-      ? stripJavaScriptComments(source)
-      : stripHashComments(source);
-  const consumed = [];
-  for (const id of cutoverIds) {
-    const found = path.endsWith(".md")
-      ? semanticSource.includes(`\`${id}\``)
-      : new RegExp(`\\breleaseCutover(?:Version|Applies)?\\s*\\(\\s*(["'])${id}\\1`, "u").test(semanticSource);
-    if (found) consumed.push(id);
+  if (!cutoverIds.some((id) => source.includes(id)) && !source.includes("release-cutovers.mjs")) {
+    return Object.freeze([]);
+  }
+  const ids = new Set(cutoverIds);
+  let consumed;
+  if (path.endsWith(".md")) {
+    const semanticSource = source.replaceAll(/<!--[\s\S]*?-->/gu, "");
+    consumed = cutoverIds.filter((id) => semanticSource.includes(`\`${id}\``));
+  } else if (path.endsWith(".mjs")) {
+    consumed = semanticJavaScriptCutoverIds(source, ids);
+  } else {
+    const semanticSource = stripHashComments(source);
+    consumed = [];
+    for (const program of inlineNodeModulePrograms(semanticSource)) {
+      for (const id of authorityBoundJavaScriptCutoverIds(program, ids).consumed) consumed.push(id);
+    }
+    consumed = [...new Set(consumed)].sort();
   }
   if (
     !path.endsWith(".md") &&
-    semanticSource.includes("release-cutovers.mjs") &&
-    cutoverIds.some((id) => semanticSource.includes(id) && !consumed.includes(id))
+    source.includes("release-cutovers.mjs") &&
+    cutoverIds.some((id) => source.includes(id) && !consumed.includes(id))
   ) {
-    throw new Error(`${path} references a release cutover without one canonical semantic invocation.`);
+    throw new Error(`${path} references a release cutover without one authority-bound executable invocation.`);
   }
-  return Object.freeze(consumed.sort());
+  return Object.freeze([...consumed].sort());
 }
 
 export function discoverReleaseCutoverConsumers(sources, manifest = RELEASE_CUTOVER_MANIFEST) {
@@ -765,7 +1176,12 @@ export function discoverReleaseCutoverConsumers(sources, manifest = RELEASE_CUTO
     if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_CONSUMER_BYTES) {
       throw new TypeError(`${path} must supply one bounded string release-cutover source.`);
     }
-    const consumed = semanticCutoverIds(path, source, cutoverIds);
+    let consumed;
+    try {
+      consumed = semanticCutoverIds(path, source, cutoverIds);
+    } catch (error) {
+      throw new Error(`${path} could not prove its bounded release-cutover semantics.`, { cause: error });
+    }
     if (consumed.length > 0) {
       canonicalRepositoryPath(path, "Discovered release-cutover consumer path", { consumer: true });
       discovered.set(path, consumed);
@@ -785,6 +1201,56 @@ export function assertReleaseCutoverConsumerInventory(sources, manifest = RELEAS
   return discovered;
 }
 
+function tokenizePortableShellCommands(command) {
+  const commands = [];
+  let currentCommand = [];
+  let currentToken = "";
+  let quote;
+  const pushToken = () => {
+    if (currentToken.length > 0) currentCommand.push(currentToken);
+    currentToken = "";
+  };
+  const pushCommand = () => {
+    pushToken();
+    if (currentCommand.length > 0) commands.push(Object.freeze(currentCommand));
+    currentCommand = [];
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else if (character === "\\" && quote === '"' && index + 1 < command.length) {
+        index += 1;
+        currentToken += command[index];
+      } else currentToken += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "\\") {
+      if (index + 1 >= command.length) throw new Error("The portable script-test inventory has a dangling escape.");
+      index += 1;
+      currentToken += command[index];
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      pushToken();
+      continue;
+    }
+    if ([";", "|", "&"].includes(character)) {
+      if ((character === "|" || character === "&") && command[index + 1] === character) index += 1;
+      pushCommand();
+      continue;
+    }
+    currentToken += character;
+  }
+  if (quote !== undefined) throw new Error("The portable script-test inventory has an unterminated quote.");
+  pushCommand();
+  return Object.freeze(commands);
+}
+
 export function assertReleaseCutoverTestInventory(packageSource) {
   if (typeof packageSource !== "string" || Buffer.byteLength(packageSource, "utf8") > MAX_CONSUMER_BYTES) {
     throw new TypeError("The release-cutover package inventory must be one bounded string.");
@@ -795,14 +1261,25 @@ export function assertReleaseCutoverTestInventory(packageSource) {
     throw new Error("package.json must declare the canonical portable script-test inventory.");
   }
   const owner = "scripts/release-cutovers.test.mjs";
-  if (command.split(/\s+/u).filter((token) => token === owner).length !== 1) {
-    throw new Error(`The canonical portable script-test inventory must contain ${owner} exactly once.`);
+  const commands = tokenizePortableShellCommands(command);
+  const owningCommands = commands.filter(
+    (arguments_) => arguments_[0] === "node" && arguments_[1] === "--test" && arguments_.includes(owner)
+  );
+  const ownerArguments = owningCommands.flatMap((arguments_) => arguments_.filter((argument) => argument === owner));
+  if (owningCommands.length !== 1 || ownerArguments.length !== 1) {
+    throw new Error(
+      `The canonical portable script-test inventory must contain ${owner} exactly once as one exact node --test argument.`
+    );
   }
 }
 
 export function checkReleaseCutoverRepository(options = {}) {
   const root = options.root ?? ROOT;
-  const sources = readStableRepositorySources(root, () => discoverRepositoryAuditPaths(root), options);
+  const sources = readStableRepositorySources(
+    root,
+    (rootHandle) => discoverRepositoryAuditPaths(root, rootHandle, options),
+    options
+  );
   const currentManifestSource = sources.get(MANIFEST_PATH);
   const manifest = parseReleaseCutoverManifest(currentManifestSource);
   if (currentManifestSource !== renderReleaseCutoverManifest(manifest)) {
