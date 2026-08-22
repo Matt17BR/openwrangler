@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
+import { CODE_PREVIEW_MAX_UTF8_BYTES } from "../shared/codePreviewLimits";
 import {
   appliedStep,
   command,
@@ -186,6 +187,113 @@ describe("native state and presentation commands", () => {
     expect(script).not.toBeNull();
     expect(webview.html).toContain(`font-src test-csp; script-src 'nonce-${script?.[1]}' test-csp`);
     expect(script?.[2]).toBe("file:///tmp/openwrangler/media/codePreview.js");
+  });
+
+  it("never retains or reposts oversized generated code and recovers on a bounded snapshot", () => {
+    const active = noDraftSnapshot();
+    active.code = `${"é".repeat(CODE_PREVIEW_MAX_UTF8_BYTES / 2)}é`;
+    const registered = register(active);
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+    const posted: unknown[] = [];
+    let receive: ((message: unknown) => void) | undefined;
+    provider.resolveWebviewView({
+      description: undefined,
+      webview: {
+        html: "",
+        options: {},
+        cspSource: "test-csp",
+        asWebviewUri: (uri: unknown) => uri,
+        postMessage: vi.fn(async (message: unknown) => {
+          posted.push(message);
+          return true;
+        }),
+        onDidReceiveMessage: (listener: (message: unknown) => void) => {
+          receive = listener;
+          return { dispose: () => undefined };
+        }
+      }
+    });
+
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreviewInvalid",
+      generation: 1,
+      acknowledgedSequence: 0,
+      reason: "utf8Bytes",
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "pandas",
+        codeDialect: "python.pandas"
+      }
+    });
+    expect(posted.at(-1)).not.toHaveProperty("code");
+
+    active.code = "def clean_data(df):\n    return df\n";
+    registered.setActiveSession(active);
+    expect(posted.at(-1)).toMatchObject({
+      kind: "codePreview",
+      generation: 2,
+      code: active.code,
+      editable: true
+    });
+  });
+
+  it("disposes replaced view listeners and ignores their delayed edits", () => {
+    register(noDraftSnapshot());
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+
+    const createView = () => {
+      const posted: unknown[] = [];
+      let receive: ((message: unknown) => void) | undefined;
+      let disposed = false;
+      const view = {
+        description: undefined as string | undefined,
+        webview: {
+          html: "",
+          options: {},
+          cspSource: "test-csp",
+          asWebviewUri: (uri: unknown) => uri,
+          postMessage: vi.fn(async (message: unknown) => {
+            posted.push(message);
+            return true;
+          }),
+          onDidReceiveMessage: (listener: (message: unknown) => void) => {
+            receive = listener;
+            return {
+              dispose: () => {
+                disposed = true;
+              }
+            };
+          }
+        }
+      };
+      return { view, posted, receive: () => receive, disposed: () => disposed };
+    };
+
+    const first = createView();
+    provider.resolveWebviewView(first.view);
+    first.receive()?.({ kind: "ready" });
+    const second = createView();
+    provider.resolveWebviewView(second.view);
+    second.receive()?.({ kind: "ready" });
+
+    expect(first.disposed()).toBe(true);
+    first.receive()?.({
+      kind: "codeChanged",
+      generation: 1,
+      sequence: 999,
+      code: "raise RuntimeError('late replaced view')"
+    });
+    second.receive()?.({ kind: "ready" });
+    expect(second.posted.at(-1)).toMatchObject({
+      kind: "codePreview",
+      generation: 1,
+      acknowledgedSequence: 0,
+      code: "def clean_data(df):\n    return df\n"
+    });
   });
 
   it("offers a file entry point before a dataframe is open", () => {
@@ -941,6 +1049,8 @@ describe("native state and presentation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      generation: 1,
+      acknowledgedSequence: 0,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -951,10 +1061,12 @@ describe("native state and presentation commands", () => {
     });
     expect(codePreviewView.description).toBe("Python");
 
-    receive?.({ kind: "codeChanged", code: "raise RuntimeError('should be ignored')" });
+    receive?.({ kind: "codeChanged", generation: 1, sequence: 1, code: "raise RuntimeError('should be ignored')" });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      generation: 1,
+      acknowledgedSequence: 0,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -969,6 +1081,8 @@ describe("native state and presentation commands", () => {
     expect(treeChildren("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      generation: 2,
+      acknowledgedSequence: 0,
       code: editable.code,
       editable: true,
       runtimeIdentity: {
@@ -978,18 +1092,64 @@ describe("native state and presentation commands", () => {
       }
     });
 
-    receive?.({ kind: "codeChanged", code: "raise RuntimeError('unknown field')", unexpected: true });
+    receive?.({
+      kind: "codeChanged",
+      generation: 2,
+      sequence: 1,
+      code: "raise RuntimeError('unknown field')",
+      unexpected: true
+    });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: editable.code });
 
-    receive?.({ kind: "codeChanged", code: "def clean_data(df):\n    return df.dropna()\n" });
+    receive?.({
+      kind: "codeChanged",
+      generation: 2,
+      sequence: 1,
+      code: "def clean_data(df):\n    return df.dropna()\n"
+    });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
+
+    receive?.({ kind: "codeInvalid", generation: 2, sequence: 2, reason: "utf8Bytes" });
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreviewInvalid",
+      generation: 2,
+      acknowledgedSequence: 2,
+      reason: "utf8Bytes",
+      editable: true,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "pandas",
+        codeDialect: "python.pandas"
+      }
+    });
+    expect(posted.at(-1)).not.toHaveProperty("code");
+
+    registered.setActiveSession(editable);
+    expect(posted.at(-1)).toMatchObject({ kind: "codePreviewInvalid", generation: 2, reason: "utf8Bytes" });
+
+    receive?.({ kind: "codeChanged", generation: 2, sequence: 3, code: "def clean_data(df):\n    return df\n" });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({
+      kind: "codePreview",
+      generation: 2,
+      code: "def clean_data(df):\n    return df\n"
+    });
+
+    editable.code = "def clean_data(df):\n    return df.fillna(0)\n";
+    registered.setActiveSession(editable);
+    expect(posted.at(-1)).toMatchObject({ kind: "codePreview", generation: 3, code: editable.code });
+    receive?.({ kind: "codeChanged", generation: 2, sequence: 999, code: "stale <- true" });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ generation: 3, code: editable.code });
 
     const rEditable = rNotebookSnapshot();
     registered.setActiveSession(rEditable);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      generation: 4,
+      acknowledgedSequence: 0,
       code: rEditable.code,
       editable: true,
       runtimeIdentity: {
@@ -1006,6 +1166,8 @@ describe("native state and presentation commands", () => {
     registered.setActiveSession(viewingOnly);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      generation: 5,
+      acknowledgedSequence: 0,
       code: viewingOnly.code,
       editable: false,
       runtimeIdentity: {

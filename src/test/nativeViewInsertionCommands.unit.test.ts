@@ -1,4 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  CODE_PREVIEW_EMPTY_ACTION_MESSAGE,
+  CODE_PREVIEW_INVALID_EXPORT_MESSAGE,
+  CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS,
+  CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE
+} from "../shared/codePreviewLimits";
 import {
   command,
   nativeMocks,
@@ -28,6 +34,83 @@ describe("native notebook and document insertion commands", () => {
       "def clean_data(df):\n    return df\n",
       { source: "frame", backend: "pandas", languageId: "python" }
     );
+  });
+
+  it("inserts the acknowledged pending edit instead of the prior generated buffer", async () => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    nativeMocks.notebookDocuments.push(origin);
+    const registered = register(notebookVariableSnapshot(), origin);
+    const latest = "def clean_data(df):\n    return df.dropna()\n";
+    registered.codePreview.edit(latest);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(origin, 3, latest, {
+      source: "frame",
+      backend: "pandas",
+      languageId: "python"
+    });
+  });
+
+  it.each(["utf8Bytes", "invalidUnicode"] as const)(
+    "reports a %s current edit exactly and never relabels it as missing generated code",
+    async (reason) => {
+      const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+      nativeMocks.notebookDocuments.push(origin);
+      const registered = register(notebookVariableSnapshot(), origin);
+      registered.codePreview.editInvalid(reason);
+
+      await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
+
+      expect(registered.notebookInsertionStatus()).toBe("invalid-code");
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_INVALID_EXPORT_MESSAGE);
+      expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+        "Add a cleaning step before inserting generated code."
+      );
+      expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+    }
+  );
+
+  it("distinguishes an acknowledged empty edit from absent generated code", async () => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    nativeMocks.notebookDocuments.push(origin);
+    const registered = register(notebookVariableSnapshot(), origin);
+    registered.codePreview.edit("");
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
+
+    expect(registered.notebookInsertionStatus()).toBe("empty-code");
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_EMPTY_ACTION_MESSAGE);
+    expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      "Add a cleaning step before inserting generated code."
+    );
+    expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+  });
+
+  it("reports a current-edit timeout exactly and never relabels it as missing generated code", async () => {
+    vi.useFakeTimers();
+    try {
+      const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+      nativeMocks.notebookDocuments.push(origin);
+      const registered = register(notebookVariableSnapshot(), origin);
+      registered.codePreview.setAutoRespond(false);
+      const insertion = command("openWrangler.insertNotebookCode")();
+
+      await vi.advanceTimersByTimeAsync(CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS);
+      await expect(insertion).resolves.toBe(false);
+
+      expect(registered.notebookInsertionStatus()).toBe("code-timeout");
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledTimes(1);
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(CODE_PREVIEW_TIMEOUT_ACTION_MESSAGE);
+      expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
+        "Add a cleaning step before inserting generated code."
+      );
+      expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("inserts generated R into its originating notebook with the R cell language", async () => {

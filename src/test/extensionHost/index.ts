@@ -27,6 +27,7 @@ import {
   type ConsoleMessage,
   type ElementHandle,
   type Frame,
+  type JSHandle,
   type Locator,
   type Page,
   type Request,
@@ -64,6 +65,7 @@ import {
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
+  codePreviewDocumentReceipt,
   diagnoseThenReacquireAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -71,9 +73,16 @@ import {
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
+  runReplaceableCodePreviewGeneration,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
-import { revealCodePreviewOperationLine, revealCodePreviewText, waitForCodePreview } from "./codePreview";
+import {
+  acquireCurrentExactCodePreviewGeneration,
+  assertExactCodePreviewReceipt,
+  revealCodePreviewOperationLine,
+  revealCodePreviewText,
+  waitForCodePreview
+} from "./codePreview";
 import { findCurrentWebviewAction, waitForReplaceableWebviewAction } from "./webviewActionDiscovery";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
 import { exactSessionApp, sameRendererSynchronizationReceipt } from "./acknowledgedRenderer";
@@ -529,6 +538,7 @@ const exercisePackagedFirstUseInteractionJourney = createPackagedFirstUseInterac
 
 export async function run(): Promise<void> {
   exerciseBoundedExactByteAssertionContract();
+  await exerciseLiveCodePreviewWorkbenchOwnershipContract();
   recordAcceptanceProgress("preflight:start");
   recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
@@ -9648,6 +9658,4170 @@ async function connectToEditorWorkbenchOnce(): Promise<Page> {
   return workbench;
 }
 
+type CodePreviewWorkbenchHandle = ElementHandle<unknown>;
+type CodePreviewElementHandle = ElementHandle;
+type CodePreviewElementValue = CodePreviewElementHandle extends ElementHandle<infer Value> ? Value : never;
+
+const MAX_CODE_PREVIEW_WORKBENCH_FRAMES = 64;
+const MAX_CODE_PREVIEW_DOM_ANCESTORS = 64;
+const MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS = 16_384;
+const MAX_CODE_PREVIEW_OVERLAY_ELEMENTS = 256;
+const MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES = 256;
+const MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS = 128;
+const MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES = 8192;
+const MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS = 256;
+const CODE_PREVIEW_WORKBENCH_CONTAINERS = Object.freeze([
+  Object.freeze({ className: "panel", id: "workbench.parts.panel" }),
+  Object.freeze({ className: "auxiliarybar", id: "workbench.parts.auxiliarybar" }),
+  Object.freeze({ className: "sidebar", id: "workbench.parts.sidebar" })
+]);
+
+interface CodePreviewWorkbenchContainerDescriptor {
+  readonly className: string;
+  readonly id: string;
+}
+
+interface CodePreviewWorkbenchOwnershipRelation {
+  readonly anchorName?: string;
+  readonly flowOwnerId?: string;
+  readonly kind: "flow" | "parent";
+}
+
+interface CodePreviewWorkbenchOwnershipReceipt {
+  readonly chain: readonly unknown[];
+  readonly chainLength: number;
+  readonly containerIndex: number;
+  readonly flowLinkCount: number;
+  readonly overlayChain: readonly unknown[];
+  readonly overlayChainLength: number;
+  readonly reason: string;
+  readonly relations: readonly CodePreviewWorkbenchOwnershipRelation[];
+}
+
+function inspectCodePreviewWorkbenchOwnership(
+  element: unknown,
+  options: Readonly<{
+    expectedChain?: readonly unknown[];
+    expectedOuterFrame?: unknown;
+    expectedOverlayChain?: readonly unknown[];
+    expectedRelations?: readonly CodePreviewWorkbenchOwnershipRelation[];
+    maximumFlowAnchorCandidates: number;
+    maximumFlowAnchorNameCodeUnits: number;
+    maximumFlowOwnerIdCandidates: number;
+    maximumFlowOwnerIdCodeUnits: number;
+    maximumDocumentElements: number;
+    maximumAncestors: number;
+    maximumContainers: number;
+    maximumOverlayElements: number;
+    retainElements: boolean;
+    supportedContainers: readonly CodePreviewWorkbenchContainerDescriptor[];
+  }>
+): CodePreviewWorkbenchOwnershipReceipt {
+  type Rectangle = {
+    readonly bottom: number;
+    readonly height: number;
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
+    readonly width: number;
+  };
+  type Candidate = {
+    readonly classList: { contains(className: string): boolean };
+    readonly dataset?: { readonly parentFlowToElementId?: string };
+    readonly firstElementChild: Candidate | null;
+    readonly id: string;
+    readonly isConnected: boolean;
+    readonly nextElementSibling: Candidate | null;
+    readonly ownerDocument: {
+      readonly documentElement: Candidate;
+      readonly defaultView: null | {
+        readonly innerHeight: number;
+        readonly innerWidth: number;
+        getComputedStyle(target: unknown): {
+          readonly display: string;
+          readonly opacity: string;
+          readonly visibility: string;
+        };
+      };
+    };
+    readonly parentElement: Candidate | null;
+    readonly style: { getPropertyValue(name: string): string };
+    readonly tagName: string;
+    contains(target: unknown): boolean;
+    getBoundingClientRect(): Rectangle;
+    hasAttribute(name: string): boolean;
+  };
+  const visibility = (candidate: Candidate): "detached" | "hidden" | "outside-viewport" | "visible" | "zero-layout" => {
+    if (!candidate.isConnected) return "detached";
+    const bounds = candidate.getBoundingClientRect();
+    const view = candidate.ownerDocument.defaultView;
+    const style = view?.getComputedStyle(candidate);
+    if (
+      view === null ||
+      style?.display === "none" ||
+      style?.visibility === "hidden" ||
+      style?.visibility === "collapse" ||
+      !(Number(style?.opacity) > 0)
+    ) {
+      return "hidden";
+    }
+    if (!(bounds.width > 0) || !(bounds.height > 0)) return "zero-layout";
+    if (
+      !(bounds.left < view.innerWidth) ||
+      !(bounds.top < view.innerHeight) ||
+      !(bounds.right > 0) ||
+      !(bounds.bottom > 0)
+    ) {
+      return "outside-viewport";
+    }
+    return "visible";
+  };
+  const overlayChain: Candidate[] = [];
+  const fail = (
+    reason: string,
+    chain: readonly Candidate[] = [],
+    relations: readonly CodePreviewWorkbenchOwnershipRelation[] = [],
+    containerIndex = -1,
+    flowLinkCount = 0
+  ): CodePreviewWorkbenchOwnershipReceipt => ({
+    chain: options.retainElements ? chain : [],
+    chainLength: chain.length,
+    containerIndex,
+    flowLinkCount,
+    overlayChain: options.retainElements ? overlayChain : [],
+    overlayChainLength: overlayChain.length,
+    reason,
+    relations
+  });
+  const walkElements = (
+    root: Candidate,
+    maximumElements: number,
+    overBoundReason: string,
+    visit: (candidate: Candidate) => string | undefined
+  ): string | undefined => {
+    const visited = new Set<Candidate>();
+    let candidate: Candidate | null = root;
+    while (candidate !== null) {
+      const active: Candidate = candidate;
+      if (visited.size >= maximumElements) return overBoundReason;
+      if (visited.has(active)) return "element-inventory-cycle";
+      visited.add(active);
+      const rejected = visit(active);
+      if (rejected !== undefined) return rejected;
+      const child: Candidate | null = active.firstElementChild;
+      if (child !== null) {
+        if (child.parentElement !== active) return "element-inventory-parent-mismatch";
+        candidate = child;
+        continue;
+      }
+      let branch: Candidate = active;
+      while (branch !== root && branch.nextElementSibling === null) {
+        const parent: Candidate | null = branch.parentElement;
+        if (parent === null) return "element-inventory-truncated";
+        branch = parent;
+      }
+      if (branch === root) {
+        candidate = null;
+      } else {
+        const sibling: Candidate | null = branch.nextElementSibling;
+        if (sibling === null || sibling.parentElement !== branch.parentElement) {
+          return "element-inventory-parent-mismatch";
+        }
+        candidate = sibling;
+      }
+    }
+    return undefined;
+  };
+  if (
+    !Number.isSafeInteger(options.maximumAncestors) ||
+    options.maximumAncestors < 1 ||
+    !Number.isSafeInteger(options.maximumContainers) ||
+    options.maximumContainers < 1 ||
+    !Number.isSafeInteger(options.maximumFlowAnchorCandidates) ||
+    options.maximumFlowAnchorCandidates < 1 ||
+    !Number.isSafeInteger(options.maximumFlowAnchorNameCodeUnits) ||
+    options.maximumFlowAnchorNameCodeUnits < 1 ||
+    !Number.isSafeInteger(options.maximumFlowOwnerIdCandidates) ||
+    options.maximumFlowOwnerIdCandidates < 1 ||
+    !Number.isSafeInteger(options.maximumFlowOwnerIdCodeUnits) ||
+    options.maximumFlowOwnerIdCodeUnits < 1 ||
+    !Number.isSafeInteger(options.maximumDocumentElements) ||
+    options.maximumDocumentElements < 1 ||
+    !Number.isSafeInteger(options.maximumOverlayElements) ||
+    options.maximumOverlayElements < 1 ||
+    options.supportedContainers.length < 1 ||
+    options.supportedContainers.length > options.maximumContainers
+  ) {
+    return fail("invalid-bounds");
+  }
+  const outerFrame = element as Candidate;
+  if (options.expectedOuterFrame !== undefined && outerFrame !== options.expectedOuterFrame) {
+    return fail("outer-frame-replaced");
+  }
+  const outerVisibility = visibility(outerFrame);
+  if (outerVisibility !== "visible") return fail(`outer-frame-${outerVisibility}`);
+  const overlayContent = outerFrame.parentElement;
+  if (!overlayContent || !overlayContent.classList.contains("webview-overlay-content")) {
+    return fail("missing-webview-overlay-content");
+  }
+  if (overlayContent.dataset?.parentFlowToElementId === undefined) {
+    return fail("missing-webview-overlay-flow-binding");
+  }
+  const overlayRoot = overlayContent.parentElement;
+  if (!overlayRoot || overlayRoot.firstElementChild !== overlayContent || overlayContent.nextElementSibling !== null) {
+    return fail("invalid-webview-overlay-root");
+  }
+  const workbenchRoot = overlayRoot.parentElement;
+  if (!workbenchRoot || !workbenchRoot.classList.contains("monaco-workbench")) {
+    return fail("missing-monaco-workbench-root");
+  }
+  const overlayRootVisibility = visibility(overlayRoot);
+  if (overlayRootVisibility !== "visible") return fail(`overlay-root-${overlayRootVisibility}`);
+  const workbenchRootVisibility = visibility(workbenchRoot);
+  if (workbenchRootVisibility !== "visible") return fail(`workbench-root-${workbenchRootVisibility}`);
+  let overlayFrameCount = 0;
+  let exactOuterFrameCount = 0;
+  const overlayInventoryFailure = walkElements(
+    overlayContent,
+    options.maximumOverlayElements,
+    "overlay-element-inventory-over-bound",
+    (candidate) => {
+      if (candidate !== overlayContent && candidate.tagName === "IFRAME") {
+        overlayFrameCount += 1;
+        if (candidate === outerFrame) exactOuterFrameCount += 1;
+        if (overlayFrameCount > 1) return "overlay-outer-frame-not-exact";
+      }
+      return undefined;
+    }
+  );
+  if (overlayInventoryFailure !== undefined) return fail(overlayInventoryFailure);
+  if (overlayFrameCount !== 1 || exactOuterFrameCount !== 1) {
+    return fail("overlay-outer-frame-not-exact");
+  }
+  let overlayCurrent = overlayContent;
+  for (let count = 0; count < options.maximumAncestors; count += 1) {
+    if (overlayCurrent === outerFrame.ownerDocument.documentElement) break;
+    const next = overlayCurrent.parentElement;
+    if (!next) return fail("overlay-chain-truncated");
+    if (next.ownerDocument !== outerFrame.ownerDocument) return fail("overlay-chain-cross-document");
+    if (overlayChain.includes(next)) return fail("overlay-chain-cycle");
+    overlayChain.push(next);
+    overlayCurrent = next;
+  }
+  if (
+    overlayCurrent !== outerFrame.ownerDocument.documentElement ||
+    overlayCurrent.parentElement !== null ||
+    overlayChain.length > options.maximumAncestors
+  ) {
+    return fail("overlay-chain-over-bound");
+  }
+  if (options.expectedOverlayChain !== undefined) {
+    if (
+      options.expectedOverlayChain.length !== overlayChain.length ||
+      overlayChain.some((ancestor, index) => ancestor !== options.expectedOverlayChain![index])
+    ) {
+      return fail("overlay-chain-replaced");
+    }
+  }
+
+  const chain: Candidate[] = [];
+  const relations: CodePreviewWorkbenchOwnershipRelation[] = [];
+  const visited = new Set<Candidate>([outerFrame]);
+  const containerCandidates: Candidate[] = [];
+  const descriptorCounts = options.supportedContainers.map(() => 0);
+  let current = outerFrame;
+  let containerIndex = -1;
+  let flowLinkCount = 0;
+  let reachedDocumentBoundary = false;
+  for (let count = 0; count < options.maximumAncestors; count += 1) {
+    const flowOwnerId = current.dataset?.parentFlowToElementId;
+    let next: Candidate | null;
+    let relation: CodePreviewWorkbenchOwnershipRelation;
+    if (flowOwnerId !== undefined) {
+      if (flowOwnerId.length > options.maximumFlowOwnerIdCodeUnits || flowLinkCount > 0) {
+        return fail("invalid-flow-owner-link", chain, relations, containerIndex, flowLinkCount);
+      }
+      const anchorName = current.style.getPropertyValue("position-anchor");
+      if (
+        anchorName.length < 1 ||
+        anchorName.length > options.maximumFlowAnchorNameCodeUnits ||
+        !anchorName.startsWith("--overlay-anchor-")
+      ) {
+        return fail("invalid-flow-anchor-name", chain, relations, containerIndex, flowLinkCount);
+      }
+      let anchored: Candidate | null = null;
+      let anchoredCount = 0;
+      let anchorCandidateCount = 0;
+      let identified: Candidate | null = null;
+      let identifiedCount = 0;
+      let identifiedCandidateCount = 0;
+      let exactOverlayContentCount = 0;
+      let targetOverlayFlowCount = 0;
+      let targetOverlayOwnerCount = 0;
+      let exactWorkbenchRootCount = 0;
+      const inventoryFailure = walkElements(
+        current.ownerDocument.documentElement,
+        options.maximumDocumentElements,
+        "document-element-inventory-over-bound",
+        (candidate) => {
+          if (candidate.classList.contains("monaco-workbench")) {
+            exactWorkbenchRootCount += 1;
+            if (exactWorkbenchRootCount > 1) return "workbench-root-not-unique";
+            if (candidate !== workbenchRoot) return "workbench-root-not-exact";
+          }
+          if (
+            candidate.classList.contains("webview-overlay-content") &&
+            candidate.parentElement?.parentElement === workbenchRoot
+          ) {
+            if (candidate === overlayContent) exactOverlayContentCount += 1;
+            if (candidate.style.getPropertyValue("position-anchor") === anchorName) {
+              targetOverlayFlowCount += 1;
+              if (targetOverlayFlowCount > 1) return "webview-overlay-flow-not-unique";
+            }
+            if (flowOwnerId.length > 0 && candidate.dataset?.parentFlowToElementId === flowOwnerId) {
+              targetOverlayOwnerCount += 1;
+              if (targetOverlayOwnerCount > 1) return "webview-overlay-flow-owner-not-unique";
+            }
+          }
+          const candidateAnchorName = candidate.style.getPropertyValue("anchor-name");
+          if (candidateAnchorName.length > 0) {
+            anchorCandidateCount += 1;
+            if (anchorCandidateCount > options.maximumFlowAnchorCandidates) {
+              return "flow-anchor-inventory-over-bound";
+            }
+            if (candidateAnchorName === anchorName) {
+              anchored = candidate;
+              anchoredCount += 1;
+            }
+          }
+          if (flowOwnerId.length > 0 && candidate.hasAttribute("id")) {
+            identifiedCandidateCount += 1;
+            if (identifiedCandidateCount > options.maximumFlowOwnerIdCandidates) {
+              return "flow-owner-id-inventory-over-bound";
+            }
+            if (candidate.id === flowOwnerId) {
+              identified = candidate;
+              identifiedCount += 1;
+            }
+          }
+          for (let descriptorIndex = 0; descriptorIndex < options.supportedContainers.length; descriptorIndex += 1) {
+            const descriptor = options.supportedContainers[descriptorIndex];
+            if (
+              candidate.classList.contains("part") &&
+              candidate.id === descriptor.id &&
+              candidate.classList.contains(descriptor.className)
+            ) {
+              if (containerCandidates.length >= options.maximumContainers) {
+                return "supported-container-inventory-over-bound";
+              }
+              containerCandidates.push(candidate);
+              descriptorCounts[descriptorIndex] += 1;
+            }
+          }
+          return undefined;
+        }
+      );
+      if (inventoryFailure !== undefined) {
+        return fail(inventoryFailure, chain, relations, containerIndex, flowLinkCount);
+      }
+      if (exactWorkbenchRootCount !== 1) {
+        return fail("workbench-root-not-exact", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (exactOverlayContentCount !== 1) {
+        return fail("webview-overlay-content-not-exact", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (targetOverlayFlowCount !== 1) {
+        return fail("webview-overlay-flow-not-unique", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (flowOwnerId.length > 0 && targetOverlayOwnerCount !== 1) {
+        return fail("webview-overlay-flow-owner-not-unique", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (anchoredCount !== 1 || !anchored) {
+        return fail("flow-anchor-not-unique", chain, relations, containerIndex, flowLinkCount);
+      }
+      if (flowOwnerId.length > 0) {
+        const exactIdentified = identified as Candidate | null;
+        if (
+          identifiedCount !== 1 ||
+          exactIdentified === null ||
+          exactIdentified.id !== flowOwnerId ||
+          exactIdentified !== anchored
+        ) {
+          return fail("flow-owner-anchor-mismatch", chain, relations, containerIndex, flowLinkCount);
+        }
+      }
+      next = anchored;
+      flowLinkCount += 1;
+      relation = { anchorName, flowOwnerId, kind: "flow" };
+    } else {
+      next = current.parentElement;
+      relation = { kind: "parent" };
+    }
+    if (!next) return fail("ownership-chain-truncated", chain, relations, containerIndex, flowLinkCount);
+    if (next.ownerDocument !== outerFrame.ownerDocument) {
+      return fail("ownership-chain-cross-document", chain, relations, containerIndex, flowLinkCount);
+    }
+    if (visited.has(next)) return fail("ownership-chain-cycle", chain, relations, containerIndex, flowLinkCount);
+    visited.add(next);
+    chain.push(next);
+    relations.push(relation);
+    current = next;
+    if (containerIndex < 0 && current.classList.contains("part")) containerIndex = chain.length - 1;
+    if (current === outerFrame.ownerDocument.documentElement) {
+      reachedDocumentBoundary = true;
+      break;
+    }
+  }
+  if (!reachedDocumentBoundary)
+    return fail("ownership-chain-over-bound", chain, relations, containerIndex, flowLinkCount);
+  if (current.parentElement !== null) {
+    return fail("document-boundary-has-parent", chain, relations, containerIndex, flowLinkCount);
+  }
+  if (flowLinkCount !== 1) return fail("flow-owner-link-count", chain, relations, containerIndex, flowLinkCount);
+  if (containerIndex < 0)
+    return fail("missing-nearest-workbench-part", chain, relations, containerIndex, flowLinkCount);
+  const container = chain[containerIndex];
+  const containerIsSupported = options.supportedContainers.some(
+    ({ className, id }) => container.id === id && container.classList.contains(className)
+  );
+  if (!containerIsSupported) {
+    return fail("unsupported-nearest-workbench-part", chain, relations, containerIndex, flowLinkCount);
+  }
+  const workbenchRootIndex = chain.indexOf(workbenchRoot);
+  if (workbenchRootIndex <= containerIndex) {
+    return fail("workbench-root-not-shared", chain, relations, containerIndex, flowLinkCount);
+  }
+  const containerVisibility = visibility(container);
+  if (containerVisibility !== "visible") {
+    return fail(`container-${containerVisibility}`, chain, relations, containerIndex, flowLinkCount);
+  }
+  for (let index = 0; index < containerIndex; index += 1) {
+    const state = visibility(chain[index]);
+    if (state !== "visible") return fail(`ownership-chain-${state}`, chain, relations, containerIndex, flowLinkCount);
+  }
+  for (let index = containerIndex + 1; index < chain.length; index += 1) {
+    const state = visibility(chain[index]);
+    if (state !== "visible")
+      return fail(`workbench-ancestor-${state}`, chain, relations, containerIndex, flowLinkCount);
+  }
+  for (const ancestor of overlayChain) {
+    const state = visibility(ancestor);
+    if (state !== "visible") return fail(`overlay-chain-${state}`, chain, relations, containerIndex, flowLinkCount);
+  }
+  if (options.expectedChain !== undefined) {
+    if (options.expectedChain.length !== chain.length) {
+      return fail("ownership-chain-replaced", chain, relations, containerIndex, flowLinkCount);
+    }
+    for (let index = 0; index < chain.length; index += 1) {
+      if (chain[index] !== options.expectedChain[index]) {
+        return fail("ownership-chain-replaced", chain, relations, containerIndex, flowLinkCount);
+      }
+    }
+  }
+  if (options.expectedRelations !== undefined) {
+    if (options.expectedRelations.length !== relations.length) {
+      return fail("ownership-link-replaced", chain, relations, containerIndex, flowLinkCount);
+    }
+    for (let index = 0; index < relations.length; index += 1) {
+      const actual = relations[index];
+      const expected = options.expectedRelations[index];
+      if (
+        actual.kind !== expected.kind ||
+        actual.anchorName !== expected.anchorName ||
+        actual.flowOwnerId !== expected.flowOwnerId
+      ) {
+        return fail("ownership-link-replaced", chain, relations, containerIndex, flowLinkCount);
+      }
+    }
+  }
+
+  let exactContainerCount = 0;
+  let visibleOwningContainerCount = 0;
+  const flowRelationIndex = relations.findIndex((relation) => relation.kind === "flow");
+  const anchor = flowRelationIndex >= 0 ? chain[flowRelationIndex] : undefined;
+  if (!anchor) return fail("missing-flow-anchor", chain, relations, containerIndex, flowLinkCount);
+  for (const candidate of containerCandidates) {
+    if (candidate === container) exactContainerCount += 1;
+    if (visibility(candidate) === "visible" && candidate.contains(anchor)) visibleOwningContainerCount += 1;
+  }
+  if (descriptorCounts.some((count) => count > 1)) {
+    return fail("supported-container-identity-duplicate", chain, relations, containerIndex, flowLinkCount);
+  }
+  if (exactContainerCount !== 1) {
+    return fail("exact-container-not-in-inventory", chain, relations, containerIndex, flowLinkCount);
+  }
+  if (visibleOwningContainerCount !== 1 || !container.contains(anchor)) {
+    return fail("visible-container-owner-not-unique", chain, relations, containerIndex, flowLinkCount);
+  }
+  return {
+    chain: options.retainElements ? chain : [],
+    chainLength: chain.length,
+    containerIndex,
+    flowLinkCount,
+    overlayChain: options.retainElements ? overlayChain : [],
+    overlayChainLength: overlayChain.length,
+    reason: "owned",
+    relations
+  };
+}
+
+function assertCodePreviewWorkbenchOwnershipReceipt(
+  receipt: Pick<CodePreviewWorkbenchOwnershipReceipt, "reason">,
+  description: string
+): void {
+  assert.equal(
+    receipt.reason,
+    "owned",
+    `${description} rejects the bounded Code Preview workbench ownership receipt: ${receipt.reason}.`
+  );
+}
+
+interface CodePreviewWorkbenchVisibilityReceipt {
+  readonly frameElementCount: number;
+  readonly frameElementsConnected: boolean;
+  readonly frameElementsVisible: boolean;
+  readonly ownershipReason: string;
+}
+
+interface CodePreviewWorkbenchGeneration {
+  readonly frame: Frame;
+  readonly frameElements: readonly CodePreviewWorkbenchHandle[];
+  readonly frameElementParents: readonly CodePreviewWorkbenchHandle[];
+  readonly overlayElements: readonly CodePreviewWorkbenchHandle[];
+  readonly overlayFrameElement: CodePreviewWorkbenchHandle;
+  readonly ownershipElements: readonly CodePreviewWorkbenchHandle[];
+  readonly ownershipRelations: readonly CodePreviewWorkbenchOwnershipRelation[];
+  readonly panel: CodePreviewWorkbenchHandle;
+  readonly panelAncestors: readonly CodePreviewWorkbenchHandle[];
+}
+
+interface CodePreviewAuthoritativeActionReceipt {
+  consumed: boolean;
+  readonly codeReceipt: ReturnType<typeof codePreviewDocumentReceipt>;
+  readonly generation: CodePreviewWorkbenchGeneration;
+  readonly preview: CodePreviewWorkbenchHandle;
+  readonly scroller: CodePreviewWorkbenchHandle;
+  readonly selectedFrame: Frame;
+  readonly workbench: Page;
+}
+
+type BoundedCodePreviewWorkbenchOperation = <T>(operation: () => PromiseLike<T>, stage: string) => Promise<T>;
+
+interface CodePreviewOwnedHandle {
+  dispose(): Promise<void>;
+}
+
+interface CodePreviewMutationRestorationOwner extends CodePreviewOwnedHandle {
+  runMutation<T>(mutation: () => Promise<T>): Promise<T>;
+}
+
+interface CodePreviewResultMutationRestorationOwner<T> extends CodePreviewOwnedHandle {
+  runMutation(mutation: () => Promise<T>): Promise<T>;
+}
+
+interface CodePreviewHandleAcquisition<T> extends CodePreviewOwnedHandle {
+  take(bounded: BoundedCodePreviewWorkbenchOperation, stage: string): Promise<T>;
+}
+
+interface CodePreviewActionSettlementOwner extends CodePreviewOwnedHandle {
+  dispatch<T>(action: () => Thenable<T>): Promise<T>;
+}
+
+function createCodePreviewRestorationOwner(
+  restore: () => Promise<void>,
+  release: () => Promise<void>,
+  description: string
+): CodePreviewOwnedHandle {
+  return {
+    dispose: async () => {
+      const errors: unknown[] = [];
+      try {
+        await restore();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await release();
+      } catch (error) {
+        errors.push(error);
+      }
+      throwCodePreviewOwnershipCleanupErrors(errors, description);
+    }
+  };
+}
+
+function createCodePreviewMutationRestorationOwner(
+  restore: () => Promise<void>,
+  release: () => Promise<void>,
+  description: string
+): CodePreviewMutationRestorationOwner {
+  let mutationStarted = false;
+  let mutationSettlement = Promise.resolve();
+  return {
+    runMutation: <T>(mutation: () => Promise<T>): Promise<T> => {
+      assert.equal(mutationStarted, false, `${description} may start its mutation only once.`);
+      mutationStarted = true;
+      let outcome: Promise<T>;
+      try {
+        outcome = Promise.resolve(mutation());
+      } catch (error) {
+        outcome = Promise.reject(error);
+      }
+      mutationSettlement = outcome.then(
+        () => undefined,
+        () => undefined
+      );
+      return outcome;
+    },
+    dispose: async () => {
+      const errors: unknown[] = [];
+      try {
+        await mutationSettlement;
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await restore();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await release();
+      } catch (error) {
+        errors.push(error);
+      }
+      throwCodePreviewOwnershipCleanupErrors(errors, description);
+    }
+  };
+}
+
+function createCodePreviewResultMutationRestorationOwner<T>(
+  restore: (result: T) => Promise<void>,
+  release: (result: T | undefined) => Promise<void>,
+  description: string
+): CodePreviewResultMutationRestorationOwner<T> {
+  let mutationStarted = false;
+  let mutationResult: Promise<T> | undefined;
+  return {
+    runMutation: (mutation: () => Promise<T>): Promise<T> => {
+      assert.equal(mutationStarted, false, `${description} may start its mutation only once.`);
+      mutationStarted = true;
+      try {
+        mutationResult = Promise.resolve(mutation());
+      } catch (error) {
+        mutationResult = Promise.reject(error);
+      }
+      return mutationResult;
+    },
+    dispose: async () => {
+      const errors: unknown[] = [];
+      let result: T | undefined;
+      if (mutationResult) {
+        try {
+          result = await mutationResult;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (result !== undefined) {
+        try {
+          await restore(result);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        await release(result);
+      } catch (error) {
+        errors.push(error);
+      }
+      throwCodePreviewOwnershipCleanupErrors(errors, description);
+    }
+  };
+}
+
+function createCodePreviewLateHandleRestorationOwner<T extends CodePreviewOwnedHandle>(
+  restore: (result: T) => Promise<void>,
+  releasePrivateHandles: () => Promise<void>,
+  description: string
+): CodePreviewResultMutationRestorationOwner<T> {
+  let mutationStarted = false;
+  let mutationSettlement: Promise<T> | undefined;
+  return {
+    runMutation: (mutation: () => Promise<T>): Promise<T> => {
+      assert.equal(mutationStarted, false, `${description} may start its mutation only once.`);
+      mutationStarted = true;
+      try {
+        mutationSettlement = Promise.resolve(mutation());
+      } catch (error) {
+        mutationSettlement = Promise.reject(error);
+      }
+      return mutationSettlement;
+    },
+    dispose: async () => {
+      const errors: unknown[] = [];
+      let result: T | undefined;
+      if (mutationSettlement) {
+        try {
+          result = await mutationSettlement;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (result) {
+        try {
+          await restore(result);
+        } catch (error) {
+          errors.push(error);
+        }
+        const cleanup = startCodePreviewOwnershipCleanup([result, { dispose: releasePrivateHandles }]);
+        await cleanup.settlement;
+        errors.push(...codePreviewOwnershipCleanupErrors(cleanup));
+      } else {
+        const privateCleanup = startCodePreviewOwnershipCleanup([{ dispose: releasePrivateHandles }]);
+        await privateCleanup.settlement;
+        errors.push(...codePreviewOwnershipCleanupErrors(privateCleanup));
+      }
+      throwCodePreviewOwnershipCleanupErrors(errors, description);
+    }
+  };
+}
+
+function createCodePreviewHandleAcquisition<T extends CodePreviewOwnedHandle | null | undefined>(
+  acquisition: () => PromiseLike<T>
+): CodePreviewHandleAcquisition<T> {
+  let transferred = false;
+  let takeFailure: unknown;
+  let settlement: Promise<T>;
+  try {
+    settlement = Promise.resolve(acquisition());
+  } catch (error) {
+    settlement = Promise.reject(error);
+  }
+  return {
+    take: async (bounded, stage) => {
+      try {
+        const result = await bounded(() => settlement, stage);
+        transferred = true;
+        return result;
+      } catch (error) {
+        takeFailure = error;
+        throw error;
+      }
+    },
+    dispose: async () => {
+      try {
+        const result = await settlement;
+        if (!transferred && result) await result.dispose();
+      } catch (error) {
+        if (error !== takeFailure) throw error;
+      }
+    }
+  };
+}
+
+function createCodePreviewActionSettlementOwner(description: string): CodePreviewActionSettlementOwner {
+  let dispatched = false;
+  let settlement = Promise.resolve();
+  return {
+    dispatch: <T>(action: () => Thenable<T>): Promise<T> => {
+      assert.equal(dispatched, false, `${description} may dispatch its production command only once.`);
+      dispatched = true;
+      let result: Promise<T>;
+      try {
+        result = Promise.resolve(action());
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      settlement = result.then(
+        () => undefined,
+        () => undefined
+      );
+      return result;
+    },
+    dispose: () => settlement
+  };
+}
+
+interface CodePreviewOwnershipCleanupAttempt {
+  readonly settlement: Promise<void>;
+  readonly observedErrors: readonly { readonly observed: boolean; readonly reason?: unknown }[];
+}
+
+function startCodePreviewOwnershipCleanup(
+  handles: readonly CodePreviewOwnedHandle[]
+): CodePreviewOwnershipCleanupAttempt {
+  const observedErrors: { observed: boolean; reason?: unknown }[] = Array.from({ length: handles.length }, () => ({
+    observed: false
+  }));
+  const attempts = handles.map((handle, index) => {
+    try {
+      return Promise.resolve(handle.dispose()).then(
+        () => undefined,
+        (reason: unknown) => {
+          observedErrors[index] = { observed: true, reason };
+        }
+      );
+    } catch (reason) {
+      observedErrors[index] = { observed: true, reason };
+      return Promise.resolve();
+    }
+  });
+  return { settlement: Promise.all(attempts).then(() => undefined), observedErrors };
+}
+
+function codePreviewOwnershipCleanupErrors(attempt: CodePreviewOwnershipCleanupAttempt): unknown[] {
+  return attempt.observedErrors.flatMap((error) => (error.observed ? [error.reason] : []));
+}
+
+function throwCodePreviewOwnershipCleanupErrors(errors: readonly unknown[], description: string): void {
+  if (errors.length === 1 && errors[0] === undefined) {
+    throw new AggregateError(errors, `${description} rejected without a cleanup reason.`);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, description);
+}
+
+async function disposeCodePreviewOwnershipHandles(
+  handles: readonly CodePreviewOwnedHandle[],
+  description: string
+): Promise<void> {
+  const attempt = startCodePreviewOwnershipCleanup(handles);
+  await attempt.settlement;
+  const errors = codePreviewOwnershipCleanupErrors(attempt);
+  throwCodePreviewOwnershipCleanupErrors(errors, description);
+}
+
+async function disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+  handles: readonly CodePreviewOwnedHandle[],
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  description: string
+): Promise<void> {
+  const attempt = startCodePreviewOwnershipCleanup(handles);
+  let settlementError: unknown;
+  try {
+    await bounded(() => attempt.settlement, description);
+  } catch (error) {
+    settlementError = error;
+  }
+  await Promise.resolve();
+  const observedErrors = codePreviewOwnershipCleanupErrors(attempt);
+  if (settlementError !== undefined && observedErrors.length > 0) {
+    throw new AggregateError(
+      [settlementError, ...observedErrors],
+      `${description} failed after retaining its observed cleanup failures.`
+    );
+  }
+  if (settlementError !== undefined) throw settlementError;
+  throwCodePreviewOwnershipCleanupErrors(observedErrors, description);
+}
+
+async function acquireCodePreviewOwnedHandle<T extends CodePreviewOwnedHandle | null | undefined>(
+  acquisition: () => PromiseLike<T>,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  stage: string,
+  description: string
+): Promise<T> {
+  const owner = createCodePreviewHandleAcquisition(acquisition);
+  try {
+    return await owner.take(bounded, stage);
+  } catch (error) {
+    try {
+      await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+        [owner],
+        bounded,
+        `${description}: settling the rejected handle acquisition`
+      );
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${description} failed and its late handle acquisition cleanup also failed.`
+      );
+    }
+    throw error;
+  }
+}
+
+async function disposeCodePreviewOwnershipHandlesBeforeDeadline(
+  handles: readonly CodePreviewOwnedHandle[],
+  deadline: number,
+  description: string
+): Promise<void> {
+  const attempt = startCodePreviewOwnershipCleanup(handles);
+  const settlementBudgetMs = Math.max(0, deadline - Date.now());
+  let settlementError: unknown;
+  try {
+    await withAcceptanceOperationDeadline(attempt.settlement, settlementBudgetMs, description);
+  } catch (error) {
+    settlementError = error;
+  }
+  await Promise.resolve();
+  const observedErrors = codePreviewOwnershipCleanupErrors(attempt);
+  if (settlementError !== undefined && observedErrors.length > 0) {
+    throw new AggregateError(
+      [settlementError, ...observedErrors],
+      `${description} timed out after retaining its observed cleanup failures.`
+    );
+  }
+  if (settlementError !== undefined) throw settlementError;
+  throwCodePreviewOwnershipCleanupErrors(observedErrors, description);
+}
+
+async function disposeCodePreviewActionThenOwnershipBeforeDeadline(
+  actionOwners: readonly CodePreviewOwnedHandle[],
+  ownershipHandles: readonly CodePreviewOwnedHandle[],
+  deadline: number,
+  description: string
+): Promise<void> {
+  if (actionOwners.length === 0) {
+    await disposeCodePreviewOwnershipHandlesBeforeDeadline(ownershipHandles, deadline, description);
+    return;
+  }
+  const orderedOwner: CodePreviewOwnedHandle = {
+    dispose: async () => {
+      const errors: unknown[] = [];
+      const actionAttempt = startCodePreviewOwnershipCleanup(actionOwners);
+      await actionAttempt.settlement;
+      errors.push(...codePreviewOwnershipCleanupErrors(actionAttempt));
+      const ownershipAttempt = startCodePreviewOwnershipCleanup(ownershipHandles);
+      await ownershipAttempt.settlement;
+      errors.push(...codePreviewOwnershipCleanupErrors(ownershipAttempt));
+      throwCodePreviewOwnershipCleanupErrors(errors, `${description}: ordered action and ownership cleanup`);
+    }
+  };
+  await disposeCodePreviewOwnershipHandlesBeforeDeadline([orderedOwner], deadline, description);
+}
+
+function invokeCodePreviewActionAfterDispatchBoundary<T>(
+  receipt: CodePreviewAuthoritativeActionReceipt,
+  expected: Omit<CodePreviewAuthoritativeActionReceipt, "consumed">,
+  action: () => Promise<T>
+): Promise<T> {
+  assert.equal(receipt.consumed, false, "The authoritative Code Preview action receipt may be consumed only once.");
+  assert.equal(receipt.workbench, expected.workbench);
+  assert.equal(receipt.selectedFrame, expected.selectedFrame);
+  assert.equal(receipt.generation, expected.generation);
+  assert.equal(receipt.preview, expected.preview);
+  assert.equal(receipt.scroller, expected.scroller);
+  assertExactCodePreviewReceipt(receipt.codeReceipt, expected.codeReceipt, "The authoritative Code Preview action");
+  receipt.consumed = true;
+  return action();
+}
+
+function assertVisibleCodePreviewWorkbenchOwnership(
+  receipt: CodePreviewWorkbenchVisibilityReceipt,
+  description: string
+): void {
+  assert.ok(receipt.frameElementCount > 0, `${description} requires a renderer owned by a workbench iframe.`);
+  assert.equal(
+    receipt.frameElementsConnected,
+    true,
+    `${description} requires every renderer iframe in its workbench ownership chain to remain connected.`
+  );
+  assert.equal(
+    receipt.frameElementsVisible,
+    true,
+    `${description} rejects a Code Preview renderer hidden by its workbench iframe chain.`
+  );
+  assertCodePreviewWorkbenchOwnershipReceipt({ reason: receipt.ownershipReason }, description);
+}
+
+function assertExactCodePreviewGenerationSet<T extends object>(
+  expected: readonly T[],
+  current: readonly T[],
+  selected: T,
+  description: string
+): void {
+  assert.equal(expected.length, 1, `${description} requires one selected Code Preview generation receipt.`);
+  assert.equal(current.length, expected.length, `${description} rejects a changed Code Preview generation set.`);
+  assert.equal(expected[0], selected, `${description} requires the selected generation in its exact receipt.`);
+  assert.equal(current[0], expected[0], `${description} rejects a replaced or reordered Code Preview generation.`);
+}
+
+async function exerciseLiveCodePreviewWorkbenchOwnershipContract(): Promise<void> {
+  const visibleReceipt: CodePreviewWorkbenchVisibilityReceipt = {
+    frameElementCount: 2,
+    frameElementsConnected: true,
+    frameElementsVisible: true,
+    ownershipReason: "owned"
+  };
+  assert.doesNotThrow(() =>
+    assertVisibleCodePreviewWorkbenchOwnership(visibleReceipt, "The Code Preview ownership regression")
+  );
+  let hiddenWorkbenchDispatches = 0;
+  assert.throws(() => {
+    assertVisibleCodePreviewWorkbenchOwnership(
+      { ...visibleReceipt, ownershipReason: "container-hidden" },
+      "The hidden-workbench Code Preview regression"
+    );
+    hiddenWorkbenchDispatches += 1;
+  }, /container-hidden/u);
+  assert.equal(hiddenWorkbenchDispatches, 0, "A hidden workbench container must prevent the CodeMirror dispatch.");
+  let delayedPanelGenerationDispatches = 0;
+  assert.throws(() => {
+    assertVisibleCodePreviewWorkbenchOwnership(
+      { ...visibleReceipt, ownershipReason: "ownership-chain-replaced" },
+      "The delayed-panel-generation Code Preview regression"
+    );
+    delayedPanelGenerationDispatches += 1;
+  }, /ownership-chain-replaced/u);
+  assert.equal(
+    delayedPanelGenerationDispatches,
+    0,
+    "A second workbench-container generation must prevent the CodeMirror dispatch."
+  );
+
+  const selectedGeneration = {};
+  const delayedGeneration = {};
+  let editDispatches = 0;
+  const dispatchAtAtomicBoundary = (current: readonly object[]) => {
+    assertExactCodePreviewGenerationSet(
+      [selectedGeneration],
+      current,
+      selectedGeneration,
+      "The Code Preview atomic-boundary regression"
+    );
+    editDispatches += 1;
+  };
+  assert.throws(
+    () => dispatchAtAtomicBoundary([selectedGeneration, delayedGeneration]),
+    /changed Code Preview generation set/u
+  );
+  assert.equal(editDispatches, 0, "A second Code Preview generation must prevent the CodeMirror dispatch.");
+
+  const receiptWorkbench = {} as Page;
+  const receiptFrame = {} as Frame;
+  const receiptHandle = {} as CodePreviewWorkbenchHandle;
+  const receiptGeneration = selectedGeneration as CodePreviewWorkbenchGeneration;
+  const exactReceipt = codePreviewDocumentReceipt("exact action bytes");
+  const authoritativeReceipt: CodePreviewAuthoritativeActionReceipt = {
+    consumed: false,
+    codeReceipt: exactReceipt,
+    generation: receiptGeneration,
+    preview: receiptHandle,
+    scroller: receiptHandle,
+    selectedFrame: receiptFrame,
+    workbench: receiptWorkbench
+  };
+  let productionActions = 0;
+  await invokeCodePreviewActionAfterDispatchBoundary(
+    authoritativeReceipt,
+    {
+      codeReceipt: exactReceipt,
+      generation: receiptGeneration,
+      preview: receiptHandle,
+      scroller: receiptHandle,
+      selectedFrame: receiptFrame,
+      workbench: receiptWorkbench
+    },
+    async () => {
+      productionActions += 1;
+      return true;
+    }
+  );
+  assert.equal(productionActions, 1);
+  assert.throws(
+    () =>
+      invokeCodePreviewActionAfterDispatchBoundary(
+        authoritativeReceipt,
+        {
+          codeReceipt: exactReceipt,
+          generation: receiptGeneration,
+          preview: receiptHandle,
+          scroller: receiptHandle,
+          selectedFrame: receiptFrame,
+          workbench: receiptWorkbench
+        },
+        async () => {
+          productionActions += 1;
+          return true;
+        }
+      ),
+    /may be consumed only once/u
+  );
+  assert.equal(productionActions, 1, "An authoritative action receipt must never dispatch twice.");
+
+  const disposalStarts: string[] = [];
+  const neverSettles = new Promise<void>(() => {});
+  await assert.rejects(
+    () =>
+      disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        [
+          {
+            dispose: () => {
+              disposalStarts.push("never-settling-first");
+              return neverSettles;
+            }
+          },
+          {
+            dispose: async () => {
+              disposalStarts.push("settled-second");
+            }
+          }
+        ],
+        Date.now() + 1,
+        "the never-settling Code Preview ownership cleanup regression"
+      ),
+    /Timed out waiting/u
+  );
+  assert.deepEqual(
+    disposalStarts,
+    ["never-settling-first", "settled-second"],
+    "All owned Code Preview cleanup attempts must start before bounded settlement."
+  );
+
+  const exhaustedDeadlineStarts: string[] = [];
+  await assert.rejects(
+    () =>
+      disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        [
+          {
+            dispose: () => {
+              exhaustedDeadlineStarts.push("first");
+              return neverSettles;
+            }
+          },
+          {
+            dispose: async () => {
+              exhaustedDeadlineStarts.push("second");
+            }
+          }
+        ],
+        Date.now() - 1,
+        "the exhausted-primary-deadline Code Preview cleanup regression"
+      ),
+    /Timed out waiting/u
+  );
+  assert.deepEqual(
+    exhaustedDeadlineStarts,
+    ["first", "second"],
+    "An exhausted primary deadline must not suppress any owned Code Preview cleanup start."
+  );
+
+  const observedCleanupError = new Error("observed cleanup rejection");
+  await assert.rejects(
+    () =>
+      disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        [{ dispose: () => neverSettles }, { dispose: async () => Promise.reject(observedCleanupError) }],
+        Date.now() + 1,
+        "the hanging-and-rejected Code Preview cleanup regression"
+      ),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.errors[0] instanceof Error &&
+      /Timed out waiting/u.test(error.errors[0].message) &&
+      error.errors[1] === observedCleanupError
+  );
+
+  const firstCleanupError = new Error("first cleanup error");
+  const secondCleanupError = new Error("second cleanup error");
+  await assert.rejects(
+    () =>
+      disposeCodePreviewOwnershipHandles(
+        [
+          { dispose: async () => Promise.reject(firstCleanupError) },
+          { dispose: async () => Promise.reject(secondCleanupError) }
+        ],
+        "The ordered Code Preview cleanup regression"
+      ),
+    (error) =>
+      error instanceof AggregateError && isDeepStrictEqual(error.errors, [firstCleanupError, secondCleanupError])
+  );
+
+  const undefinedSentinel = Symbol("undefined cleanup rejection not observed");
+  let undefinedCleanupRejection: unknown = undefinedSentinel;
+  await disposeCodePreviewOwnershipHandles(
+    [{ dispose: async () => Promise.reject(undefined) }],
+    "The undefined Code Preview cleanup rejection regression"
+  ).then(
+    () => assert.fail("An undefined cleanup rejection must remain a terminal rejection."),
+    (error: unknown) => {
+      undefinedCleanupRejection = error;
+    }
+  );
+  assert.ok(undefinedCleanupRejection instanceof AggregateError);
+  assert.deepEqual(
+    undefinedCleanupRejection.errors,
+    [undefined],
+    "The bounded cleanup wrapper must preserve the exact undefined rejection reason."
+  );
+
+  const assertExactGenerationHandleDisposal = async (description: string): Promise<void> => {
+    const disposalCounts = new Map<string, number>();
+    const owned = (label: string): CodePreviewWorkbenchHandle =>
+      ({
+        dispose: async () => {
+          disposalCounts.set(label, (disposalCounts.get(label) ?? 0) + 1);
+        }
+      }) as CodePreviewWorkbenchHandle;
+    const ownershipElements = [
+      owned("overlay-content"),
+      owned("flow-anchor"),
+      owned("panel"),
+      owned("panel-parent"),
+      owned("document-element")
+    ];
+    const generation: CodePreviewWorkbenchGeneration = {
+      frame: {} as Frame,
+      frameElements: [owned("frame")],
+      frameElementParents: [owned("frame-parent")],
+      overlayElements: [owned("overlay-parent"), owned("overlay-document")],
+      overlayFrameElement: owned("overlay-frame"),
+      ownershipElements,
+      ownershipRelations: [
+        { kind: "parent" },
+        { anchorName: "--overlay-anchor-fixture", flowOwnerId: "workbench-flow-anchor", kind: "flow" },
+        { kind: "parent" },
+        { kind: "parent" },
+        { kind: "parent" }
+      ],
+      panel: ownershipElements[2],
+      panelAncestors: ownershipElements.slice(3)
+    };
+    await disposeCodePreviewWorkbenchGenerations([generation], Date.now() + 1_000, description);
+    assert.deepEqual(
+      Object.fromEntries([...disposalCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      {
+        "document-element": 1,
+        "flow-anchor": 1,
+        frame: 1,
+        "frame-parent": 1,
+        "overlay-document": 1,
+        "overlay-content": 1,
+        "overlay-frame": 1,
+        "overlay-parent": 1,
+        panel: 1,
+        "panel-parent": 1
+      },
+      `${description} must release every generation handle exactly once.`
+    );
+  };
+  await assertExactGenerationHandleDisposal("The normal Code Preview generation release regression");
+  await assertExactGenerationHandleDisposal("The rejected Code Preview generation release regression");
+
+  const restorationOrder: string[] = [];
+  let independentRestorationHandleValid = true;
+  const restorationOwner = createCodePreviewRestorationOwner(
+    async () => {
+      restorationOrder.push("restore-start");
+      await Promise.resolve();
+      assert.equal(independentRestorationHandleValid, true);
+      restorationOrder.push("restore-complete");
+    },
+    async () => {
+      restorationOrder.push("restoration-handle-release");
+      independentRestorationHandleValid = false;
+    },
+    "The independent Code Preview restoration owner regression"
+  );
+  await disposeCodePreviewOwnershipHandles(
+    [
+      restorationOwner,
+      {
+        dispose: async () => {
+          restorationOrder.push("generic-panel-handle-release");
+        }
+      }
+    ],
+    "The concurrent Code Preview restoration owner regression"
+  );
+  assert.deepEqual(restorationOrder, [
+    "restore-start",
+    "generic-panel-handle-release",
+    "restore-complete",
+    "restoration-handle-release"
+  ]);
+
+  let releaseLateMutation!: () => void;
+  let lateMutationApplied = false;
+  let lateMutationRestored = false;
+  let lateMutationHandleReleased = false;
+  const lateMutationOwner = createCodePreviewMutationRestorationOwner(
+    async () => {
+      lateMutationRestored = true;
+    },
+    async () => {
+      lateMutationHandleReleased = true;
+    },
+    "The late Code Preview mutation restoration regression"
+  );
+  const lateMutation = lateMutationOwner.runMutation(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseLateMutation = () => {
+          lateMutationApplied = true;
+          resolve();
+        };
+      })
+  );
+  const lateCleanup = startCodePreviewOwnershipCleanup([lateMutationOwner]);
+  await assert.rejects(
+    () =>
+      withAcceptanceOperationDeadline(lateCleanup.settlement, 0, "the deliberately late Code Preview mutation cleanup"),
+    /Timed out waiting/u
+  );
+  assert.equal(lateMutationRestored, false, "A pending mutation must not be restored before it settles.");
+  releaseLateMutation();
+  await Promise.all([lateMutation, lateCleanup.settlement]);
+  assert.equal(lateMutationApplied, true);
+  assert.equal(lateMutationRestored, true, "The already-owned late mutation must restore after settlement.");
+  assert.equal(lateMutationHandleReleased, true, "The already-owned late mutation must release its handle.");
+
+  let releaseLateReparentHandle!: (handle: CodePreviewOwnedHandle) => void;
+  let lateReparentApplied = false;
+  let lateReparentRestoreCalls = 0;
+  let lateReparentWrapperDisposals = 0;
+  let lateReparentPrivateReleases = 0;
+  const exactLateReparentWrapper: CodePreviewOwnedHandle = {
+    dispose: async () => {
+      lateReparentWrapperDisposals += 1;
+    }
+  };
+  const lateReparentEvaluateHandle = {
+    evaluateHandle: () =>
+      new Promise<CodePreviewOwnedHandle>((resolve) => {
+        lateReparentApplied = true;
+        releaseLateReparentHandle = resolve;
+      })
+  };
+  const lateReparentOwner = createCodePreviewLateHandleRestorationOwner<CodePreviewOwnedHandle>(
+    async (createdWrapper) => {
+      assert.equal(createdWrapper, exactLateReparentWrapper);
+      if (lateReparentApplied) {
+        lateReparentApplied = false;
+        lateReparentRestoreCalls += 1;
+      }
+    },
+    async () => {
+      lateReparentPrivateReleases += 1;
+    },
+    "The late reparent evaluateHandle ownership regression"
+  );
+  const lateReparentMutation = lateReparentOwner.runMutation(() => lateReparentEvaluateHandle.evaluateHandle());
+  const lateReparentCleanup = startCodePreviewOwnershipCleanup([lateReparentOwner]);
+  await assert.rejects(
+    () => withAcceptanceOperationDeadline(lateReparentCleanup.settlement, 0, "the late reparent cleanup regression"),
+    /Timed out waiting/u
+  );
+  assert.equal(lateReparentApplied, true, "The late wrapper mutation must be in flight before cleanup times out.");
+  assert.equal(lateReparentRestoreCalls, 0, "A late handle settlement must retain restoration ownership.");
+  assert.equal(
+    lateReparentPrivateReleases,
+    0,
+    "Private restoration handles must remain owned while settlement is late."
+  );
+  releaseLateReparentHandle(exactLateReparentWrapper);
+  await Promise.all([lateReparentMutation, lateReparentCleanup.settlement]);
+  assert.equal(lateReparentRestoreCalls, 1, "The exact late wrapper must restore after its handle settles.");
+  assert.equal(lateReparentWrapperDisposals, 1, "The late created-wrapper handle must be released exactly once.");
+  assert.equal(lateReparentPrivateReleases, 1, "Private restoration handles must release after late settlement.");
+
+  const rejectedReparentMutationFailure = new Error("synthetic rejected reparent mutation");
+  const rejectedReparentPrivateReleases: string[] = [];
+  let rejectedReparentRestoreCalls = 0;
+  const rejectedReparentPrivatePanel: CodePreviewOwnedHandle = {
+    dispose: async () => {
+      rejectedReparentPrivateReleases.push("panel");
+    }
+  };
+  const rejectedReparentPrivateParent: CodePreviewOwnedHandle = {
+    dispose: async () => {
+      rejectedReparentPrivateReleases.push("parent");
+    }
+  };
+  const rejectedReparentOwner = createCodePreviewLateHandleRestorationOwner<CodePreviewOwnedHandle>(
+    async () => {
+      rejectedReparentRestoreCalls += 1;
+    },
+    async () => {
+      await disposeCodePreviewOwnershipHandles(
+        [rejectedReparentPrivateParent, rejectedReparentPrivatePanel],
+        "The rejected reparent mutation private-handle release regression"
+      );
+    },
+    "The rejected reparent mutation ownership regression"
+  );
+  await assert.rejects(
+    () =>
+      rejectedReparentOwner.runMutation(async () => {
+        throw rejectedReparentMutationFailure;
+      }),
+    (error) => error === rejectedReparentMutationFailure
+  );
+  const rejectedReparentCleanup = startCodePreviewOwnershipCleanup([rejectedReparentOwner]);
+  await rejectedReparentCleanup.settlement;
+  assert.deepEqual(codePreviewOwnershipCleanupErrors(rejectedReparentCleanup), [rejectedReparentMutationFailure]);
+  assert.equal(rejectedReparentRestoreCalls, 0, "A rejected mutation has no created wrapper to restore.");
+  assert.deepEqual(
+    rejectedReparentPrivateReleases,
+    ["parent", "panel"],
+    "A rejected mutation must still release its exact independent parent and panel handles."
+  );
+
+  const exactWrapperMismatch = new Error("The exact created wrapper no longer owns the panel.");
+  const exactWrapperDisposeFailure = new Error("synthetic exact-wrapper disposal failure");
+  const exactWrapperPrivateReleaseFailure = new Error("synthetic exact-wrapper private-handle release failure");
+  let exactCreatedWrapperDisposals = 0;
+  let exactWrapperPrivateReleases = 0;
+  let lookalikeWrapperMutations = 0;
+  const exactCreatedWrapper: CodePreviewOwnedHandle = {
+    dispose: async () => {
+      exactCreatedWrapperDisposals += 1;
+      throw exactWrapperDisposeFailure;
+    }
+  };
+  const lookalikeReplacementWrapper = { marker: "reparented-panel", shape: "panel-child" };
+  let currentWrapper: CodePreviewOwnedHandle | typeof lookalikeReplacementWrapper = exactCreatedWrapper;
+  let releaseExactWrapperReplacement!: () => void;
+  const exactWrapperOwner = createCodePreviewLateHandleRestorationOwner<CodePreviewOwnedHandle>(
+    async (createdWrapper) => {
+      if (createdWrapper !== currentWrapper) throw exactWrapperMismatch;
+      lookalikeWrapperMutations += 1;
+    },
+    async () => {
+      exactWrapperPrivateReleases += 1;
+      throw exactWrapperPrivateReleaseFailure;
+    },
+    "The exact created-wrapper replacement regression"
+  );
+  const exactWrapperMutation = exactWrapperOwner.runMutation(
+    () =>
+      new Promise<CodePreviewOwnedHandle>((resolve) => {
+        releaseExactWrapperReplacement = () => {
+          currentWrapper = lookalikeReplacementWrapper;
+          resolve(exactCreatedWrapper);
+        };
+      })
+  );
+  const exactWrapperCleanup = startCodePreviewOwnershipCleanup([exactWrapperOwner]);
+  await assert.rejects(
+    () =>
+      withAcceptanceOperationDeadline(
+        exactWrapperCleanup.settlement,
+        0,
+        "the deliberately late exact created-wrapper replacement cleanup regression"
+      ),
+    /Timed out waiting/u
+  );
+  assert.equal(lookalikeWrapperMutations, 0);
+  assert.equal(exactCreatedWrapperDisposals, 0);
+  assert.equal(exactWrapperPrivateReleases, 0);
+  releaseExactWrapperReplacement();
+  await Promise.all([exactWrapperMutation, exactWrapperCleanup.settlement]);
+  const [exactWrapperCleanupFailure] = codePreviewOwnershipCleanupErrors(exactWrapperCleanup);
+  assert.ok(exactWrapperCleanupFailure instanceof AggregateError);
+  assert.deepEqual(exactWrapperCleanupFailure.errors, [
+    exactWrapperMismatch,
+    exactWrapperDisposeFailure,
+    exactWrapperPrivateReleaseFailure
+  ]);
+  assert.equal(lookalikeWrapperMutations, 0, "A same-marker, same-shape W2 replacement must remain untouched.");
+  assert.equal(exactCreatedWrapperDisposals, 1, "Only the exact created W handle must dispose, exactly once.");
+  assert.equal(exactWrapperPrivateReleases, 1, "Private handles must release after the exact W mismatch.");
+  assert.equal(currentWrapper, lookalikeReplacementWrapper, "Cleanup must preserve the unowned W2 replacement.");
+
+  const hangingWrapperCleanupStarts: string[] = [];
+  let signalHangingWrapperPrivateRelease!: () => void;
+  const hangingWrapperPrivateRelease = new Promise<void>((resolve) => {
+    signalHangingWrapperPrivateRelease = resolve;
+  });
+  const hangingExactWrapper: CodePreviewOwnedHandle = {
+    dispose: () => {
+      hangingWrapperCleanupStarts.push("wrapper");
+      return new Promise<void>(() => {});
+    }
+  };
+  const hangingWrapperOwner = createCodePreviewLateHandleRestorationOwner<CodePreviewOwnedHandle>(
+    async (createdWrapper) => {
+      assert.equal(createdWrapper, hangingExactWrapper);
+      hangingWrapperCleanupStarts.push("restore");
+    },
+    async () => {
+      hangingWrapperCleanupStarts.push("private");
+      signalHangingWrapperPrivateRelease();
+    },
+    "The never-settling exact-wrapper disposal regression"
+  );
+  assert.equal(
+    await hangingWrapperOwner.runMutation(async () => hangingExactWrapper),
+    hangingExactWrapper,
+    "The hanging-wrapper regression must retain exact W identity."
+  );
+  const hangingWrapperCleanup = startCodePreviewOwnershipCleanup([hangingWrapperOwner]);
+  await withAcceptanceOperationDeadline(
+    hangingWrapperPrivateRelease,
+    1_000,
+    "the never-settling exact-wrapper private-handle release regression"
+  );
+  assert.deepEqual(
+    hangingWrapperCleanupStarts,
+    ["restore", "wrapper", "private"],
+    "Exact W disposal and private release must both start after restoration without awaiting W settlement."
+  );
+  let hangingWrapperCleanupSettled = false;
+  void hangingWrapperCleanup.settlement.then(() => {
+    hangingWrapperCleanupSettled = true;
+  });
+  await Promise.resolve();
+  assert.equal(
+    hangingWrapperCleanupSettled,
+    false,
+    "The private release regression must not forge settlement for a still-owned hanging wrapper."
+  );
+
+  let neverSettlingReparentApplied = false;
+  let neverSettlingReparentRestored = false;
+  let neverSettlingPrivateReleased = false;
+  const neverSettlingEvaluateHandle = {
+    evaluateHandle: () => {
+      neverSettlingReparentApplied = true;
+      return new Promise<CodePreviewOwnedHandle>(() => {});
+    }
+  };
+  const neverSettlingReparentOwner = createCodePreviewLateHandleRestorationOwner<CodePreviewOwnedHandle>(
+    async () => {
+      if (neverSettlingReparentApplied) {
+        neverSettlingReparentApplied = false;
+        neverSettlingReparentRestored = true;
+      }
+    },
+    async () => {
+      neverSettlingPrivateReleased = true;
+    },
+    "The never-settling reparent evaluateHandle ownership regression"
+  );
+  void neverSettlingReparentOwner.runMutation(() => neverSettlingEvaluateHandle.evaluateHandle());
+  await assert.rejects(
+    () =>
+      disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        [neverSettlingReparentOwner],
+        Date.now(),
+        "the never-settling reparent cleanup regression"
+      ),
+    /Timed out waiting/u
+  );
+  assert.equal(
+    neverSettlingReparentApplied,
+    true,
+    "The never-settling wrapper mutation must be in flight before cleanup fails."
+  );
+  assert.equal(
+    neverSettlingReparentRestored,
+    false,
+    "A never-settling mutation must fail explicitly instead of guessing which wrapper to restore."
+  );
+  assert.equal(
+    neverSettlingPrivateReleased,
+    false,
+    "A never-settling mutation must retain its private restoration ownership after explicit failure."
+  );
+
+  let fulfillLateHandle!: (handle: CodePreviewOwnedHandle) => void;
+  let lateHandleDisposed = false;
+  const lateHandleAcquisition = acquireCodePreviewOwnedHandle(
+    () =>
+      new Promise<CodePreviewOwnedHandle>((resolve) => {
+        fulfillLateHandle = resolve;
+      }),
+    async (operation) => {
+      void operation();
+      throw new Error("synthetic exhausted handle-acquisition deadline");
+    },
+    "acquiring a deliberately late regression handle",
+    "The late Playwright handle regression"
+  );
+  await assert.rejects(
+    () => lateHandleAcquisition,
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.errors.every(
+        (reason) => reason instanceof Error && /synthetic exhausted handle-acquisition deadline/u.test(reason.message)
+      )
+  );
+  fulfillLateHandle({
+    dispose: async () => {
+      lateHandleDisposed = true;
+    }
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(lateHandleDisposed, true, "A handle fulfilled after timeout must be disposed by its settlement owner.");
+
+  let settleLateCommand!: () => void;
+  let lateCommandDispatches = 0;
+  let lateCommandRendererReleased = false;
+  let signalLateRendererRelease!: () => void;
+  const lateRendererReleased = new Promise<void>((resolve) => {
+    signalLateRendererRelease = resolve;
+  });
+  const lateCommandOwner = createCodePreviewActionSettlementOwner("The late production command regression");
+  const lateCommand = lateCommandOwner.dispatch(
+    () =>
+      new Promise<boolean>((resolve) => {
+        lateCommandDispatches += 1;
+        settleLateCommand = () => resolve(true);
+      })
+  );
+  await assert.rejects(
+    () => withAcceptanceOperationDeadline(lateCommand, 0, "the deliberately late production command"),
+    /Timed out waiting/u
+  );
+  await assert.rejects(
+    () =>
+      disposeCodePreviewActionThenOwnershipBeforeDeadline(
+        [lateCommandOwner],
+        [
+          {
+            dispose: async () => {
+              lateCommandRendererReleased = true;
+              signalLateRendererRelease();
+            }
+          }
+        ],
+        Date.now(),
+        "the deliberately late production command ownership"
+      ),
+    /Timed out waiting/u
+  );
+  assert.equal(lateCommandRendererReleased, false, "Renderer ownership must survive a still-pending command.");
+  settleLateCommand();
+  assert.equal(await lateCommand, true);
+  await lateRendererReleased;
+  assert.equal(lateCommandRendererReleased, true, "Renderer ownership must release after the command settles.");
+  assert.equal(lateCommandDispatches, 1, "A timed-out production command must never dispatch twice.");
+
+  const boundedFrames = Array.from({ length: MAX_CODE_PREVIEW_WORKBENCH_FRAMES }, () => ({}) as Frame);
+  assert.equal(
+    boundedCodePreviewWorkbenchFrames(
+      { frames: () => boundedFrames } as unknown as Page,
+      "The exact workbench frame-bound regression"
+    ).length,
+    MAX_CODE_PREVIEW_WORKBENCH_FRAMES
+  );
+  assert.throws(
+    () =>
+      boundedCodePreviewWorkbenchFrames(
+        { frames: () => [...boundedFrames, {} as Frame] } as unknown as Page,
+        "The over-bound workbench frame regression"
+      ),
+    /rejects more than 64 raw workbench frames/u
+  );
+  let overBoundAcquisitionCalls = 0;
+  const boundedAcquisitionWorkbench = createBoundedCodePreviewWorkbenchPage(
+    {
+      frames: () =>
+        [...boundedFrames, {} as Frame].map(
+          () =>
+            ({
+              locator: () => {
+                overBoundAcquisitionCalls += 1;
+              }
+            }) as unknown as Frame
+        )
+    } as unknown as Page,
+    "The over-bound initial and replacement acquisition regression"
+  );
+  assert.throws(() => {
+    for (const frame of boundedAcquisitionWorkbench.frames()) frame.locator("ignored");
+  }, /rejects more than 64 raw workbench frames/u);
+  assert.equal(overBoundAcquisitionCalls, 0, "Over-cap acquisition must reject before touching any frame locator.");
+
+  let atomicOverlayFrameOperations = 0;
+  let rejectedOverlayCandidateReleases = 0;
+  const directBounded: BoundedCodePreviewWorkbenchOperation = (operation) => Promise.resolve(operation());
+  await assert.rejects(
+    () =>
+      captureSoleCodePreviewOverlayFrameElement(
+        {
+          evaluateHandle: async () => {
+            atomicOverlayFrameOperations += 1;
+            return {
+              asElement: () => null,
+              dispose: async () => {
+                rejectedOverlayCandidateReleases += 1;
+              }
+            };
+          }
+        } as unknown as CodePreviewWorkbenchHandle,
+        {} as CodePreviewWorkbenchHandle,
+        directBounded,
+        "The over-cardinality webview-overlay iframe regression"
+      ),
+    /requires exactly one Code Preview webview-overlay iframe/u
+  );
+  assert.equal(
+    atomicOverlayFrameOperations,
+    1,
+    "Webview-overlay iframe cardinality and acquisition require one operation."
+  );
+  assert.equal(rejectedOverlayCandidateReleases, 1, "A rejected atomic iframe candidate must be released.");
+  const soleOverlayFrame = {} as CodePreviewWorkbenchHandle;
+  const replacementOverlayFrame = {} as CodePreviewWorkbenchHandle;
+  let currentOverlayFrame = soleOverlayFrame;
+  assert.equal(
+    await captureSoleCodePreviewOverlayFrameElement(
+      {
+        evaluateHandle: async () => {
+          atomicOverlayFrameOperations += 1;
+          const selected = currentOverlayFrame;
+          currentOverlayFrame = replacementOverlayFrame;
+          return { asElement: () => selected };
+        }
+      } as unknown as CodePreviewWorkbenchHandle,
+      soleOverlayFrame,
+      directBounded,
+      "The atomic sole webview-overlay iframe regression"
+    ),
+    soleOverlayFrame
+  );
+  assert.equal(currentOverlayFrame, replacementOverlayFrame);
+  assert.equal(
+    atomicOverlayFrameOperations,
+    2,
+    "Each webview-overlay iframe acquisition must use exactly one renderer operation."
+  );
+}
+
+function codePreviewWorkbenchGenerationHandles(
+  generation: CodePreviewWorkbenchGeneration
+): readonly CodePreviewOwnedHandle[] {
+  return [
+    generation.overlayFrameElement,
+    ...generation.overlayElements,
+    ...generation.ownershipElements,
+    ...generation.frameElementParents,
+    ...generation.frameElements
+  ].reverse();
+}
+
+async function disposeCodePreviewWorkbenchGenerations(
+  generations: readonly CodePreviewWorkbenchGeneration[],
+  deadline: number,
+  description: string
+): Promise<void> {
+  const handles: CodePreviewOwnedHandle[] = [];
+  for (const generation of [...generations].reverse()) {
+    handles.push(...codePreviewWorkbenchGenerationHandles(generation));
+  }
+  await disposeCodePreviewOwnershipHandlesBeforeDeadline(handles, deadline, description);
+}
+
+function boundedCodePreviewWorkbenchFrames(workbench: Page, description: string): readonly Frame[] {
+  const frames = workbench.frames();
+  assert.ok(
+    frames.length <= MAX_CODE_PREVIEW_WORKBENCH_FRAMES,
+    `${description} rejects more than ${MAX_CODE_PREVIEW_WORKBENCH_FRAMES} raw workbench frames.`
+  );
+  return frames;
+}
+
+function createBoundedCodePreviewWorkbenchPage(workbench: Page, description: string): Page {
+  return {
+    context: () => workbench.context(),
+    frames: () => boundedCodePreviewWorkbenchFrames(workbench, description),
+    isClosed: () => workbench.isClosed(),
+    mainFrame: () => workbench.mainFrame(),
+    waitForTimeout: (timeout: number) => workbench.waitForTimeout(timeout)
+  } as unknown as Page;
+}
+
+interface CapturedCodePreviewWorkbenchOwnership {
+  readonly containerIndex: number;
+  readonly elements: readonly CodePreviewWorkbenchHandle[];
+  readonly overlayElements: readonly CodePreviewWorkbenchHandle[];
+  readonly receipt: Omit<CodePreviewWorkbenchOwnershipReceipt, "chain" | "overlayChain">;
+  readonly relations: readonly CodePreviewWorkbenchOwnershipRelation[];
+}
+
+async function captureCodePreviewWorkbenchOwnership(
+  outerFrame: CodePreviewWorkbenchHandle,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  deadline: number,
+  description: string
+): Promise<CapturedCodePreviewWorkbenchOwnership> {
+  const elements: CodePreviewWorkbenchHandle[] = [];
+  const overlayElements: CodePreviewWorkbenchHandle[] = [];
+  let receiptHandle: JSHandle<unknown> | undefined;
+  try {
+    receiptHandle = await acquireCodePreviewOwnedHandle(
+      () =>
+        outerFrame.evaluateHandle(inspectCodePreviewWorkbenchOwnership, {
+          maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
+          maximumContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS.length,
+          maximumDocumentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
+          maximumFlowAnchorCandidates: MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES,
+          maximumFlowAnchorNameCodeUnits: MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS,
+          maximumFlowOwnerIdCandidates: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES,
+          maximumFlowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS,
+          maximumOverlayElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS,
+          retainElements: true,
+          supportedContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS
+        }),
+      bounded,
+      "atomically inspecting the Code Preview workbench ownership topology",
+      description
+    );
+    const receipt = await bounded(
+      () =>
+        receiptHandle!.evaluate((value) => {
+          const inspected = value as CodePreviewWorkbenchOwnershipReceipt;
+          return {
+            chainLength: inspected.chainLength,
+            containerIndex: inspected.containerIndex,
+            flowLinkCount: inspected.flowLinkCount,
+            overlayChainLength: inspected.overlayChainLength,
+            reason: inspected.reason,
+            relations: inspected.relations
+          };
+        }),
+      "reading the bounded Code Preview workbench ownership receipt"
+    );
+    assertCodePreviewWorkbenchOwnershipReceipt(receipt, description);
+    assert.ok(
+      Number.isSafeInteger(receipt.chainLength) &&
+        receipt.chainLength > 0 &&
+        receipt.chainLength <= MAX_CODE_PREVIEW_DOM_ANCESTORS,
+      `${description} requires a non-empty bounded Code Preview workbench ownership chain.`
+    );
+    assert.ok(
+      Number.isSafeInteger(receipt.containerIndex) &&
+        receipt.containerIndex >= 0 &&
+        receipt.containerIndex < receipt.chainLength,
+      `${description} requires one exact supported workbench part in its ownership chain.`
+    );
+    assert.equal(
+      receipt.relations.length,
+      receipt.chainLength,
+      `${description} requires one exact relation for every workbench ownership element.`
+    );
+    assert.ok(
+      Number.isSafeInteger(receipt.overlayChainLength) &&
+        receipt.overlayChainLength > 0 &&
+        receipt.overlayChainLength <= MAX_CODE_PREVIEW_DOM_ANCESTORS,
+      `${description} requires a non-empty bounded physical webview-overlay chain.`
+    );
+    for (let index = 0; index < receipt.chainLength; index += 1) {
+      const candidate = await acquireCodePreviewOwnedHandle(
+        () =>
+          receiptHandle!.evaluateHandle(
+            (value, elementIndex) => (value as CodePreviewWorkbenchOwnershipReceipt).chain[elementIndex],
+            index
+          ),
+        bounded,
+        "pinning the exact Code Preview workbench ownership chain",
+        description
+      );
+      const element = candidate.asElement() as CodePreviewWorkbenchHandle | null;
+      if (!element) {
+        await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+          [candidate],
+          bounded,
+          `${description}: releasing a rejected workbench ownership element`
+        );
+      }
+      assert.ok(element, `${description} requires every workbench ownership receipt entry to be an element.`);
+      elements.push(element);
+    }
+    for (let index = 0; index < receipt.overlayChainLength; index += 1) {
+      const candidate = await acquireCodePreviewOwnedHandle(
+        () =>
+          receiptHandle!.evaluateHandle(
+            (value, elementIndex) => (value as CodePreviewWorkbenchOwnershipReceipt).overlayChain[elementIndex],
+            index
+          ),
+        bounded,
+        "pinning the exact physical Code Preview webview-overlay chain",
+        description
+      );
+      const element = candidate.asElement() as CodePreviewWorkbenchHandle | null;
+      if (!element) {
+        await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+          [candidate],
+          bounded,
+          `${description}: releasing a rejected physical webview-overlay element`
+        );
+      }
+      assert.ok(element, `${description} requires every physical webview-overlay receipt entry to be an element.`);
+      overlayElements.push(element);
+    }
+    await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+      [receiptHandle],
+      bounded,
+      `${description}: releasing the transferred workbench ownership receipt`
+    );
+    receiptHandle = undefined;
+    return {
+      containerIndex: receipt.containerIndex,
+      elements,
+      overlayElements,
+      receipt: {
+        chainLength: receipt.chainLength,
+        containerIndex: receipt.containerIndex,
+        flowLinkCount: receipt.flowLinkCount,
+        overlayChainLength: receipt.overlayChainLength,
+        reason: receipt.reason,
+        relations: receipt.relations
+      },
+      relations: receipt.relations
+    };
+  } catch (error) {
+    const cleanup = [receiptHandle, ...overlayElements, ...elements]
+      .filter((handle): handle is JSHandle<unknown> => handle !== undefined)
+      .reverse();
+    try {
+      await disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        cleanup,
+        deadline,
+        `${description}: releasing rejected Code Preview workbench ownership receipt handles`
+      );
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${description} rejected its workbench ownership receipt and its handle cleanup also failed.`
+      );
+    }
+    throw error;
+  }
+}
+
+function inspectSoleCodePreviewOverlayFrameElement(
+  element: unknown,
+  options: Readonly<{ expected: unknown; maximumElements: number }>
+): unknown | null {
+  type Candidate = {
+    readonly firstElementChild: Candidate | null;
+    readonly nextElementSibling: Candidate | null;
+    readonly parentElement: Candidate | null;
+    readonly tagName: string;
+  };
+  if (!Number.isSafeInteger(options.maximumElements) || options.maximumElements < 1) return null;
+  const root = element as Candidate;
+  const expected = options.expected as Candidate;
+  const visited = new Set<Candidate>();
+  let current: Candidate | null = root;
+  let exactCount = 0;
+  let frameCount = 0;
+  while (current !== null) {
+    const active: Candidate = current;
+    if (visited.size >= options.maximumElements || visited.has(active)) return null;
+    visited.add(active);
+    if (active !== root && active.tagName === "IFRAME") {
+      frameCount += 1;
+      if (active === expected) exactCount += 1;
+      if (frameCount > 1) return null;
+    }
+    const child: Candidate | null = active.firstElementChild;
+    if (child !== null) {
+      if (child.parentElement !== active) return null;
+      current = child;
+      continue;
+    }
+    let branch: Candidate = active;
+    while (branch !== root && branch.nextElementSibling === null) {
+      const parent: Candidate | null = branch.parentElement;
+      if (parent === null) return null;
+      branch = parent;
+    }
+    if (branch === root) {
+      current = null;
+    } else {
+      const sibling: Candidate | null = branch.nextElementSibling;
+      if (sibling === null || sibling.parentElement !== branch.parentElement) return null;
+      current = sibling;
+    }
+  }
+  return frameCount === 1 && exactCount === 1 ? expected : null;
+}
+
+async function captureSoleCodePreviewOverlayFrameElement(
+  overlayContent: CodePreviewWorkbenchHandle,
+  expectedOuterFrame: CodePreviewWorkbenchHandle,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  description: string
+): Promise<CodePreviewWorkbenchHandle> {
+  const candidate = await acquireCodePreviewOwnedHandle(
+    () =>
+      overlayContent.evaluateHandle(inspectSoleCodePreviewOverlayFrameElement, {
+        expected: expectedOuterFrame,
+        maximumElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS
+      }),
+    bounded,
+    "atomically pinning the sole Code Preview webview-overlay iframe",
+    description
+  );
+  const frameElement = candidate.asElement() as CodePreviewWorkbenchHandle | null;
+  if (!frameElement) {
+    const cardinalityError = new Error(`${description} requires exactly one Code Preview webview-overlay iframe.`);
+    try {
+      await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+        [candidate],
+        bounded,
+        "releasing a rejected webview-overlay iframe candidate"
+      );
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [cardinalityError, cleanupError],
+        `${description} rejected webview-overlay iframe cardinality and failed to release its candidate handle.`
+      );
+    }
+    throw cardinalityError;
+  }
+  return frameElement;
+}
+
+async function assertLiveCodePreviewActionOwnership(
+  workbench: Page,
+  generation: CodePreviewWorkbenchGeneration,
+  selectedFrame: Frame,
+  target: { readonly preview: CodePreviewWorkbenchHandle; readonly scroller: CodePreviewWorkbenchHandle },
+  selector: string,
+  currentReceipt: ReturnType<typeof codePreviewDocumentReceipt>,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  description: string
+): Promise<CodePreviewAuthoritativeActionReceipt> {
+  const frames = boundedCodePreviewWorkbenchFrames(workbench, description);
+  assert.equal(
+    frames.filter((frame) => frame === selectedFrame).length,
+    1,
+    `${description} requires the exact selected renderer in the bounded live workbench frame set.`
+  );
+  const outerFrame = generation.frameElements[generation.frameElements.length - 1];
+  assert.ok(outerFrame, `${description} requires the exact outer Code Preview iframe.`);
+  assert.equal(
+    generation.frameElements.length,
+    generation.frameElementParents.length,
+    `${description} requires one pinned parent for every Code Preview iframe.`
+  );
+  assert.ok(
+    generation.panelAncestors.length + 1 <= MAX_CODE_PREVIEW_DOM_ANCESTORS,
+    `${description} rejects an over-bound pinned panel ancestor chain.`
+  );
+  const receipt = await bounded(() => {
+    const ownership = outerFrame.evaluate(inspectCodePreviewWorkbenchOwnership, {
+      expectedChain: generation.ownershipElements,
+      expectedOuterFrame: outerFrame,
+      expectedOverlayChain: generation.overlayElements,
+      expectedRelations: generation.ownershipRelations,
+      maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
+      maximumContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS.length,
+      maximumDocumentElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
+      maximumFlowAnchorCandidates: MAX_CODE_PREVIEW_FLOW_ANCHOR_CANDIDATES,
+      maximumFlowAnchorNameCodeUnits: MAX_CODE_PREVIEW_FLOW_ANCHOR_NAME_CODE_UNITS,
+      maximumFlowOwnerIdCandidates: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CANDIDATES,
+      maximumFlowOwnerIdCodeUnits: MAX_CODE_PREVIEW_FLOW_OWNER_ID_CODE_UNITS,
+      maximumOverlayElements: MAX_CODE_PREVIEW_OVERLAY_ELEMENTS,
+      retainElements: false,
+      supportedContainers: CODE_PREVIEW_WORKBENCH_CONTAINERS
+    });
+    const frameChain = Promise.all(
+      generation.frameElements.map((frameElement, index) =>
+        frameElement.evaluate(
+          (element, options) => {
+            type VisibleElement = {
+              readonly isConnected: boolean;
+              readonly ownerDocument: {
+                readonly documentElement: unknown;
+                readonly defaultView: null | {
+                  readonly innerHeight: number;
+                  readonly innerWidth: number;
+                  getComputedStyle(target: unknown): {
+                    readonly display: string;
+                    readonly opacity: string;
+                    readonly visibility: string;
+                  };
+                };
+              };
+              readonly parentElement: VisibleElement | null;
+              getBoundingClientRect(): {
+                readonly bottom: number;
+                readonly height: number;
+                readonly left: number;
+                readonly right: number;
+                readonly top: number;
+                readonly width: number;
+              };
+            };
+            const visible = (candidate: VisibleElement): boolean => {
+              const bounds = candidate.getBoundingClientRect();
+              const view = candidate.ownerDocument.defaultView;
+              const style = view?.getComputedStyle(candidate);
+              return (
+                candidate.isConnected &&
+                bounds.width > 0 &&
+                bounds.height > 0 &&
+                view !== null &&
+                bounds.left < view.innerWidth &&
+                bounds.top < view.innerHeight &&
+                bounds.right > 0 &&
+                bounds.bottom > 0 &&
+                style?.display !== "none" &&
+                style?.visibility !== "hidden" &&
+                style?.visibility !== "collapse" &&
+                Number(style?.opacity) > 0
+              );
+            };
+            const frame = element as unknown as VisibleElement;
+            const expectedParent = options.expectedParent as unknown as VisibleElement;
+            const expectedBoundary = options.expectedBoundary as unknown as VisibleElement | null;
+            const documentBoundary = frame.ownerDocument.documentElement;
+            let ancestor: VisibleElement | null = frame;
+            let ancestorCount = 0;
+            let ancestorsConnectedAndVisible = true;
+            let reachedBoundary = false;
+            while (ancestor !== null) {
+              ancestorCount += 1;
+              if (ancestorCount > options.maximumAncestors) {
+                ancestorsConnectedAndVisible = false;
+                break;
+              }
+              if (!visible(ancestor)) ancestorsConnectedAndVisible = false;
+              if (expectedBoundary ? ancestor === expectedBoundary : ancestor === documentBoundary) {
+                reachedBoundary = true;
+                break;
+              }
+              ancestor = ancestor.parentElement;
+            }
+            return {
+              ancestorCount,
+              ancestorsConnectedAndVisible,
+              connected: frame.isConnected,
+              parentConnected: expectedParent.isConnected,
+              parentExact: frame.parentElement === expectedParent,
+              reachedBoundary,
+              visible: visible(frame)
+            };
+          },
+          {
+            expectedBoundary: null,
+            expectedParent: generation.frameElementParents[index],
+            maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS
+          }
+        )
+      )
+    );
+    const generationCounts = Promise.all(frames.map((frame) => frame.locator(selector).count()));
+    const editor = target.preview.evaluate(
+      (element, options) => {
+        type Rectangle = {
+          readonly bottom: number;
+          readonly height: number;
+          readonly left: number;
+          readonly right: number;
+          readonly top: number;
+          readonly width: number;
+        };
+        type VisibleElement = {
+          readonly firstElementChild: VisibleElement | null;
+          readonly isConnected: boolean;
+          readonly nextElementSibling: VisibleElement | null;
+          readonly ownerDocument: {
+            readonly documentElement: VisibleElement;
+            readonly defaultView: null | {
+              readonly innerHeight: number;
+              readonly innerWidth: number;
+              getComputedStyle(target: unknown): {
+                readonly display: string;
+                readonly opacity: string;
+                readonly visibility: string;
+              };
+            };
+          };
+          readonly parentElement: VisibleElement | null;
+          getBoundingClientRect(): Rectangle;
+          matches(selector: string): boolean;
+        };
+        type PreviewElement = VisibleElement & {
+          readonly isContentEditable: boolean;
+          cmTile?: {
+            view?: {
+              readonly contentDOM: unknown;
+              readonly scrollDOM: unknown;
+              readonly state: { readonly doc: { toString(): string } };
+            };
+          };
+        };
+        const visible = (candidate: VisibleElement): boolean => {
+          const bounds = candidate.getBoundingClientRect();
+          const view = candidate.ownerDocument.defaultView;
+          const style = view?.getComputedStyle(candidate);
+          return (
+            candidate.isConnected &&
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            view !== null &&
+            bounds.left < view.innerWidth &&
+            bounds.top < view.innerHeight &&
+            bounds.right > 0 &&
+            bounds.bottom > 0 &&
+            style?.display !== "none" &&
+            style?.visibility !== "hidden" &&
+            style?.visibility !== "collapse" &&
+            Number(style?.opacity) > 0
+          );
+        };
+        const preview = element as unknown as PreviewElement;
+        const scroller = options.exactScroller as unknown as VisibleElement;
+        const view = preview.cmTile?.view;
+        let selectorCount = 0;
+        let selectorOwnsPreview = false;
+        let selectorInventoryWithinBound = Number.isSafeInteger(options.maximumElements) && options.maximumElements > 0;
+        const visited = new Set<VisibleElement>();
+        let candidate: VisibleElement | null = preview.ownerDocument.documentElement;
+        while (selectorInventoryWithinBound && candidate !== null) {
+          const active: VisibleElement = candidate;
+          if (visited.size >= options.maximumElements || visited.has(active)) {
+            selectorInventoryWithinBound = false;
+            break;
+          }
+          visited.add(active);
+          if (active.matches(options.selector)) {
+            selectorCount += 1;
+            if (active === preview) selectorOwnsPreview = true;
+            if (selectorCount > 1) break;
+          }
+          const child: VisibleElement | null = active.firstElementChild;
+          if (child !== null) {
+            if (child.parentElement !== active) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            candidate = child;
+            continue;
+          }
+          let branch: VisibleElement = active;
+          while (branch !== preview.ownerDocument.documentElement && branch.nextElementSibling === null) {
+            const parent: VisibleElement | null = branch.parentElement;
+            if (parent === null) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            branch = parent;
+          }
+          if (!selectorInventoryWithinBound || branch === preview.ownerDocument.documentElement) {
+            candidate = null;
+          } else {
+            const sibling: VisibleElement | null = branch.nextElementSibling;
+            if (sibling === null || sibling.parentElement !== branch.parentElement) {
+              selectorInventoryWithinBound = false;
+              break;
+            }
+            candidate = sibling;
+          }
+        }
+        let ancestor: VisibleElement | null = preview;
+        let ancestorCount = 0;
+        let ancestorsConnectedAndVisible = true;
+        let reachedDocumentBoundary = false;
+        while (ancestor !== null) {
+          ancestorCount += 1;
+          if (ancestorCount > options.maximumAncestors) {
+            ancestorsConnectedAndVisible = false;
+            break;
+          }
+          if (!visible(ancestor)) ancestorsConnectedAndVisible = false;
+          if (ancestor === preview.ownerDocument.documentElement) {
+            reachedDocumentBoundary = true;
+            break;
+          }
+          ancestor = ancestor.parentElement;
+        }
+        return {
+          ancestorCount,
+          ancestorsConnectedAndVisible,
+          code: view?.state.doc.toString(),
+          contentExact: view?.contentDOM === preview,
+          editable: preview.isContentEditable,
+          previewConnected: preview.isConnected,
+          previewOwnsScroller: preview.parentElement === scroller,
+          previewVisible: visible(preview),
+          sameDocument: preview.ownerDocument === scroller.ownerDocument,
+          scrollerConnected: scroller.isConnected,
+          scrollerExact: view?.scrollDOM === scroller,
+          scrollerVisible: visible(scroller),
+          selectorCount,
+          selectorInventoryWithinBound,
+          selectorOwnsPreview: selectorCount === 1 && selectorOwnsPreview,
+          reachedDocumentBoundary
+        };
+      },
+      {
+        exactScroller: target.scroller,
+        maximumAncestors: MAX_CODE_PREVIEW_DOM_ANCESTORS,
+        maximumElements: MAX_CODE_PREVIEW_WORKBENCH_DOCUMENT_ELEMENTS,
+        selector: selector
+      }
+    );
+    return Promise.all([ownership, frameChain, generationCounts, editor] as const).then(
+      ([ownershipReceipt, frameChainReceipt, counts, editorReceipt]) => ({
+        editor: editorReceipt,
+        frameChain: frameChainReceipt,
+        generationCounts: counts,
+        ownership: ownershipReceipt
+      })
+    );
+  }, "performing the final complete live Code Preview action ownership probe");
+  assertCodePreviewWorkbenchOwnershipReceipt(receipt.ownership, description);
+  assert.equal(
+    receipt.frameChain.every(
+      (frame) =>
+        frame.ancestorCount <= MAX_CODE_PREVIEW_DOM_ANCESTORS &&
+        frame.ancestorsConnectedAndVisible &&
+        frame.connected &&
+        frame.parentConnected &&
+        frame.parentExact &&
+        frame.reachedBoundary &&
+        frame.visible
+    ),
+    true,
+    `${description} requires every exact iframe and parent in the complete chain to remain connected and visible.`
+  );
+  assert.equal(
+    receipt.generationCounts.reduce((total, count) => total + count, 0),
+    1,
+    `${description} requires one unique complete Code Preview generation at action time.`
+  );
+  assert.equal(
+    receipt.generationCounts[frames.indexOf(selectedFrame)],
+    1,
+    `${description} requires the unique Code Preview generation in the exact selected frame.`
+  );
+  assert.equal(receipt.editor.previewConnected, true, `${description} requires the exact preview to remain connected.`);
+  assert.equal(
+    receipt.editor.ancestorCount <= MAX_CODE_PREVIEW_DOM_ANCESTORS &&
+      receipt.editor.ancestorsConnectedAndVisible &&
+      receipt.editor.reachedDocumentBoundary,
+    true,
+    `${description} requires every bounded renderer ancestor to remain connected, laid out, and visible.`
+  );
+  assert.equal(
+    receipt.editor.scrollerConnected,
+    true,
+    `${description} requires the exact scroller to remain connected.`
+  );
+  assert.equal(receipt.editor.editable, true, `${description} requires the exact preview to remain editable.`);
+  assert.equal(
+    receipt.editor.previewOwnsScroller && receipt.editor.sameDocument,
+    true,
+    `${description} requires exact preview/scroller ownership in one renderer document.`
+  );
+  assert.equal(
+    receipt.editor.contentExact && receipt.editor.scrollerExact,
+    true,
+    `${description} requires the exact CodeMirror content and scroller owners.`
+  );
+  assert.equal(
+    receipt.editor.previewVisible && receipt.editor.scrollerVisible,
+    true,
+    `${description} requires the exact CodeMirror preview and scroller to remain visible.`
+  );
+  assert.equal(
+    receipt.editor.selectorInventoryWithinBound &&
+      receipt.editor.selectorCount === 1 &&
+      receipt.editor.selectorOwnsPreview,
+    true,
+    `${description} requires one exact selector-owned Code Preview element in the selected renderer.`
+  );
+  assert.equal(typeof receipt.editor.code, "string", `${description} requires the exact CodeMirror document bytes.`);
+  const authoritativeCodeReceipt = codePreviewDocumentReceipt(receipt.editor.code as string);
+  assertExactCodePreviewReceipt(
+    authoritativeCodeReceipt,
+    currentReceipt,
+    `${description} exact final Code Preview document`
+  );
+  const finalFrames = boundedCodePreviewWorkbenchFrames(workbench, `${description} final frame-set boundary`);
+  assert.equal(
+    finalFrames.length === frames.length && finalFrames.every((frame, index) => frame === frames[index]),
+    true,
+    `${description} rejects a workbench frame-set change during the complete final ownership probe.`
+  );
+  return {
+    consumed: false,
+    codeReceipt: authoritativeCodeReceipt,
+    generation,
+    preview: target.preview,
+    scroller: target.scroller,
+    selectedFrame,
+    workbench
+  };
+}
+
+async function invokeLiveCodePreviewActionWithOwnership<T>(
+  workbench: Page,
+  generation: CodePreviewWorkbenchGeneration,
+  selectedFrame: Frame,
+  target: { readonly preview: CodePreviewWorkbenchHandle; readonly scroller: CodePreviewWorkbenchHandle },
+  selector: string,
+  currentReceipt: ReturnType<typeof codePreviewDocumentReceipt>,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  description: string,
+  action: () => Promise<T>
+): Promise<T> {
+  const receipt = await assertLiveCodePreviewActionOwnership(
+    workbench,
+    generation,
+    selectedFrame,
+    target,
+    selector,
+    currentReceipt,
+    bounded,
+    description
+  );
+  return invokeCodePreviewActionAfterDispatchBoundary(
+    receipt,
+    {
+      codeReceipt: currentReceipt,
+      generation,
+      preview: target.preview,
+      scroller: target.scroller,
+      selectedFrame,
+      workbench
+    },
+    action
+  );
+}
+
+async function captureCodePreviewWorkbenchGeneration(
+  workbench: Page,
+  frame: Frame,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  deadline: number,
+  description: string
+): Promise<CodePreviewWorkbenchGeneration> {
+  const frameElements: CodePreviewWorkbenchHandle[] = [];
+  const frameElementParents: CodePreviewWorkbenchHandle[] = [];
+  let overlayElements: readonly CodePreviewWorkbenchHandle[] = [];
+  let overlayFrameElement: CodePreviewWorkbenchHandle | undefined;
+  let ownershipElements: readonly CodePreviewWorkbenchHandle[] = [];
+  let ownershipRelations: readonly CodePreviewWorkbenchOwnershipRelation[] = [];
+  let panelAncestors: CodePreviewWorkbenchHandle[] = [];
+  let panel: CodePreviewWorkbenchHandle | undefined;
+  try {
+    let currentFrame = frame;
+    while (currentFrame !== workbench.mainFrame()) {
+      const frameElement = (await acquireCodePreviewOwnedHandle(
+        () => currentFrame.frameElement(),
+        bounded,
+        "pinning the Code Preview workbench iframe chain",
+        description
+      )) as CodePreviewWorkbenchHandle;
+      frameElements.push(frameElement);
+      const parentCandidate = await acquireCodePreviewOwnedHandle(
+        () => frameElement.evaluateHandle((element) => (element as { readonly parentElement: unknown }).parentElement),
+        bounded,
+        "pinning the Code Preview workbench iframe parent chain",
+        description
+      );
+      const parentElement = parentCandidate.asElement() as CodePreviewWorkbenchHandle | null;
+      if (!parentElement) {
+        await disposeCodePreviewOwnershipHandlesBeforeDeadline(
+          [parentCandidate],
+          deadline,
+          `${description}: releasing a rejected Code Preview workbench iframe parent handle`
+        );
+      }
+      assert.ok(parentElement, `${description} requires every Code Preview iframe to retain one exact parent.`);
+      frameElementParents.push(parentElement);
+      const parentFrame = currentFrame.parentFrame();
+      assert.ok(parentFrame, `${description} requires the Code Preview renderer to terminate at the workbench page.`);
+      currentFrame = parentFrame;
+    }
+
+    assert.ok(frameElements.length > 0, `${description} requires a Code Preview renderer iframe.`);
+    const outerFrame = frameElements[frameElements.length - 1];
+    const ownership = await captureCodePreviewWorkbenchOwnership(outerFrame, bounded, deadline, description);
+    overlayElements = ownership.overlayElements;
+    ownershipElements = ownership.elements;
+    ownershipRelations = ownership.relations;
+    const overlayContent = ownershipElements[0];
+    assert.ok(overlayContent, `${description} requires the exact Code Preview webview-overlay content owner.`);
+    overlayFrameElement = await captureSoleCodePreviewOverlayFrameElement(
+      overlayContent,
+      outerFrame,
+      bounded,
+      description
+    );
+    panel = ownershipElements[ownership.containerIndex];
+    assert.ok(panel, `${description} requires one exact supported Code Preview workbench part.`);
+    panelAncestors = ownershipElements.slice(ownership.containerIndex + 1);
+    assertVisibleCodePreviewWorkbenchOwnership(
+      {
+        frameElementCount: frameElements.length,
+        frameElementsConnected: await bounded(
+          () =>
+            Promise.all(
+              frameElements.map((frameElement) =>
+                frameElement.evaluate((element) => (element as { readonly isConnected: boolean }).isConnected)
+              )
+            ).then((connected) => connected.every(Boolean)),
+          "revalidating the Code Preview workbench iframe connections"
+        ),
+        frameElementsVisible: await bounded(
+          () =>
+            Promise.all(frameElements.map((frameElement) => frameElement.isVisible())).then((visible) =>
+              visible.every(Boolean)
+            ),
+          "revalidating the Code Preview workbench iframe visibility"
+        ),
+        ownershipReason: ownership.receipt.reason
+      },
+      description
+    );
+    return {
+      frame,
+      frameElements,
+      frameElementParents,
+      overlayElements,
+      overlayFrameElement,
+      ownershipElements,
+      ownershipRelations,
+      panel,
+      panelAncestors
+    };
+  } catch (error) {
+    const cleanupHandles = [
+      overlayFrameElement,
+      ...overlayElements,
+      ...ownershipElements,
+      ...frameElementParents,
+      ...frameElements
+    ].filter((handle): handle is CodePreviewWorkbenchHandle => handle !== undefined);
+    try {
+      await disposeCodePreviewOwnershipHandlesBeforeDeadline(
+        cleanupHandles.reverse(),
+        deadline,
+        `${description}: releasing rejected Code Preview workbench ownership handles`
+      );
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${description} failed and its workbench ownership handle cleanup also failed.`
+      );
+    }
+    throw error;
+  }
+}
+
+async function captureCurrentCodePreviewWorkbenchGenerations(
+  workbench: Page,
+  selector: string,
+  currentReceipt: ReturnType<typeof codePreviewDocumentReceipt>,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  deadline: number,
+  description: string
+): Promise<CodePreviewWorkbenchGeneration[]> {
+  const generations: CodePreviewWorkbenchGeneration[] = [];
+  try {
+    for (const frame of boundedCodePreviewWorkbenchFrames(workbench, description)) {
+      if (isRetiredRendererTarget(workbench, frame.page(), frame)) continue;
+      const locator = frame.locator(selector);
+      const count = await bounded(() => locator.count(), "enumerating the complete Code Preview generation set");
+      if (count === 0) continue;
+      assert.equal(count, 1, `${description} rejects duplicate Code Preview elements in one live frame.`);
+      const probe = await bounded(
+        () =>
+          locator.evaluate((element) => {
+            type Rectangle = {
+              readonly left: number;
+              readonly top: number;
+              readonly width: number;
+              readonly height: number;
+            };
+            const content = element as unknown as {
+              readonly isConnected: boolean;
+              readonly isContentEditable: boolean;
+              readonly ownerDocument: {
+                readonly defaultView: null | {
+                  readonly innerWidth: number;
+                  readonly innerHeight: number;
+                  getComputedStyle(target: unknown): {
+                    readonly display: string;
+                    readonly opacity: string;
+                    readonly visibility: string;
+                  };
+                };
+              };
+              cmTile?: {
+                view?: {
+                  readonly contentDOM: unknown;
+                  readonly state: { readonly doc: { toString(): string } };
+                };
+              };
+              getBoundingClientRect(): Rectangle;
+            };
+            const view = content.cmTile?.view;
+            const bounds = content.getBoundingClientRect();
+            const rendererWindow = content.ownerDocument.defaultView;
+            const style = rendererWindow?.getComputedStyle(content);
+            return {
+              code: view?.state.doc.toString(),
+              connected: content.isConnected,
+              contentIsExact: view?.contentDOM === content,
+              editable: content.isContentEditable,
+              visible:
+                bounds.width > 0 &&
+                bounds.height > 0 &&
+                rendererWindow !== null &&
+                bounds.left < rendererWindow.innerWidth &&
+                bounds.top < rendererWindow.innerHeight &&
+                bounds.left + bounds.width > 0 &&
+                bounds.top + bounds.height > 0 &&
+                style?.display !== "none" &&
+                style?.visibility !== "hidden" &&
+                style?.opacity !== "0"
+            };
+          }),
+        "reading the complete Code Preview generation set"
+      );
+      assert.equal(probe.connected, true, `${description} rejects disconnected Code Preview elements.`);
+      assert.equal(probe.editable, true, `${description} requires one editable Code Preview element.`);
+      assert.equal(probe.contentIsExact, true, `${description} requires the exact CodeMirror contentDOM.`);
+      assert.equal(probe.visible, true, `${description} rejects hidden or zero-layout Code Preview elements.`);
+      assert.equal(typeof probe.code, "string", `${description} requires the current CodeMirror document.`);
+      assertExactCodePreviewReceipt(
+        codePreviewDocumentReceipt(probe.code as string),
+        currentReceipt,
+        `${description} live Code Preview document`
+      );
+      generations.push(await captureCodePreviewWorkbenchGeneration(workbench, frame, bounded, deadline, description));
+    }
+    return generations;
+  } catch (error) {
+    try {
+      await disposeCodePreviewWorkbenchGenerations(
+        generations,
+        deadline,
+        `${description}: releasing a rejected Code Preview generation set`
+      );
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${description} failed and its rejected generation-set cleanup also failed.`
+      );
+    }
+    throw error;
+  }
+}
+
+async function assertSameCodePreviewWorkbenchGenerations(
+  expected: readonly CodePreviewWorkbenchGeneration[],
+  current: readonly CodePreviewWorkbenchGeneration[],
+  selected: Frame,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  description: string
+): Promise<void> {
+  assertExactCodePreviewGenerationSet(
+    expected.map((generation) => generation.frame),
+    current.map((generation) => generation.frame),
+    selected,
+    description
+  );
+  for (let generationIndex = 0; generationIndex < expected.length; generationIndex += 1) {
+    const expectedGeneration = expected[generationIndex];
+    const currentGeneration = current[generationIndex];
+    assert.equal(
+      currentGeneration.frameElements.length,
+      expectedGeneration.frameElements.length,
+      `${description} rejects a changed Code Preview workbench iframe chain.`
+    );
+    assert.equal(
+      currentGeneration.frameElementParents.length,
+      expectedGeneration.frameElementParents.length,
+      `${description} rejects a changed Code Preview workbench iframe parent chain.`
+    );
+    for (let frameIndex = 0; frameIndex < expectedGeneration.frameElements.length; frameIndex += 1) {
+      const sameFrameElement = await bounded(
+        () =>
+          currentGeneration.frameElements[frameIndex].evaluate(
+            (element, expectedElement) => element === expectedElement,
+            expectedGeneration.frameElements[frameIndex]
+          ),
+        "revalidating the exact Code Preview workbench iframe chain"
+      );
+      assert.equal(
+        sameFrameElement,
+        true,
+        `${description} rejects a replaced Code Preview workbench iframe before edit dispatch.`
+      );
+      const sameFrameParent = await bounded(
+        () =>
+          currentGeneration.frameElementParents[frameIndex].evaluate(
+            (element, expectedElement) => element === expectedElement,
+            expectedGeneration.frameElementParents[frameIndex]
+          ),
+        "revalidating the exact Code Preview workbench iframe parent chain"
+      );
+      assert.equal(
+        sameFrameParent,
+        true,
+        `${description} rejects a reparented Code Preview workbench iframe before edit dispatch.`
+      );
+    }
+    assert.equal(
+      currentGeneration.overlayElements.length,
+      expectedGeneration.overlayElements.length,
+      `${description} rejects a changed physical Code Preview webview-overlay chain before edit dispatch.`
+    );
+    for (let overlayIndex = 0; overlayIndex < expectedGeneration.overlayElements.length; overlayIndex += 1) {
+      const sameOverlayElement = await bounded(
+        () =>
+          currentGeneration.overlayElements[overlayIndex].evaluate(
+            (element, expectedElement) => element === expectedElement,
+            expectedGeneration.overlayElements[overlayIndex]
+          ),
+        "revalidating the exact physical Code Preview webview-overlay chain"
+      );
+      assert.equal(
+        sameOverlayElement,
+        true,
+        `${description} rejects a replaced or reparented physical Code Preview webview-overlay chain before edit dispatch.`
+      );
+    }
+    const sameOverlayFrame = await bounded(
+      () =>
+        currentGeneration.overlayFrameElement.evaluate(
+          (element, expectedElement) => element === expectedElement,
+          expectedGeneration.overlayFrameElement
+        ),
+      "revalidating the exact sole Code Preview webview-overlay iframe"
+    );
+    assert.equal(
+      sameOverlayFrame,
+      true,
+      `${description} rejects a replaced sole Code Preview webview-overlay iframe before edit dispatch.`
+    );
+    assert.equal(
+      currentGeneration.ownershipElements.length,
+      expectedGeneration.ownershipElements.length,
+      `${description} rejects a changed logical Code Preview workbench ownership chain before edit dispatch.`
+    );
+    for (let ownerIndex = 0; ownerIndex < expectedGeneration.ownershipElements.length; ownerIndex += 1) {
+      const sameOwnershipElement = await bounded(
+        () =>
+          currentGeneration.ownershipElements[ownerIndex].evaluate(
+            (element, expectedElement) => element === expectedElement,
+            expectedGeneration.ownershipElements[ownerIndex]
+          ),
+        "revalidating the exact logical Code Preview workbench ownership chain"
+      );
+      assert.equal(
+        sameOwnershipElement,
+        true,
+        `${description} rejects a replaced or reparented logical Code Preview workbench owner before edit dispatch.`
+      );
+    }
+    assert.deepEqual(
+      currentGeneration.ownershipRelations,
+      expectedGeneration.ownershipRelations,
+      `${description} rejects changed Code Preview workbench ownership links before edit dispatch.`
+    );
+    const samePanel = await bounded(
+      () =>
+        currentGeneration.panel.evaluate(
+          (element, expectedElement) => element === expectedElement,
+          expectedGeneration.panel
+        ),
+      "revalidating the exact Code Preview supported workbench part"
+    );
+    assert.equal(samePanel, true, `${description} rejects changed workbench part ownership before edit dispatch.`);
+    assert.equal(
+      currentGeneration.panelAncestors.length,
+      expectedGeneration.panelAncestors.length,
+      `${description} rejects a changed workbench part ancestor suffix before edit dispatch.`
+    );
+  }
+}
+
+async function captureAtomicCodePreviewWorkbenchGenerations(
+  expected: readonly CodePreviewWorkbenchGeneration[],
+  workbench: Page,
+  selector: string,
+  currentReceipt: ReturnType<typeof codePreviewDocumentReceipt>,
+  selected: Frame,
+  bounded: BoundedCodePreviewWorkbenchOperation,
+  deadline: number,
+  description: string
+): Promise<CodePreviewWorkbenchGeneration[]> {
+  const current = await captureCurrentCodePreviewWorkbenchGenerations(
+    workbench,
+    selector,
+    currentReceipt,
+    bounded,
+    deadline,
+    description
+  );
+  try {
+    await assertSameCodePreviewWorkbenchGenerations(expected, current, selected, bounded, description);
+    return current;
+  } catch (error) {
+    try {
+      await disposeCodePreviewWorkbenchGenerations(
+        current,
+        deadline,
+        `${description}: releasing the rejected atomic Code Preview generation set`
+      );
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${description} rejected its atomic generation set and its handle cleanup also failed.`
+      );
+    }
+    throw error;
+  }
+}
+
+interface CodePreviewActionBoundaryMutation {
+  readonly owner: CodePreviewOwnedHandle;
+  mutate(): Promise<void>;
+}
+
+interface CodePreviewActionBoundaryTestHook {
+  prepareActionBoundaryMutation(
+    workbench: Page,
+    generation: CodePreviewWorkbenchGeneration,
+    bounded: BoundedCodePreviewWorkbenchOperation,
+    target: { readonly preview: CodePreviewWorkbenchHandle; readonly scroller: CodePreviewWorkbenchHandle },
+    registerOwner: (owner: CodePreviewOwnedHandle) => void
+  ): Promise<CodePreviewActionBoundaryMutation>;
+}
+
+interface CodePreviewActionOptions {
+  readonly assertProductionOwner?: () => void;
+  readonly boundaryTestHook?: CodePreviewActionBoundaryTestHook;
+}
+
+async function editLiveCodePreviewAndInvoke<T>(
+  currentGeneratedCode: string,
+  replacementCode: string,
+  description: string,
+  action: () => Thenable<T>,
+  options: CodePreviewActionOptions = {}
+): Promise<T> {
+  assert.ok(currentGeneratedCode.length > 0, `${description} requires the current generated code.`);
+  const deadline = Date.now() + WORKBENCH_OPERATION_TIMEOUT_MS;
+  const remainingMs = (stage: string): number => {
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, `${description} exhausted its absolute deadline before ${stage}.`);
+    return remaining;
+  };
+  const bounded = <R>(operation: () => PromiseLike<R>, stage: string): Promise<R> => {
+    const timeoutMs = remainingMs(stage);
+    return withAcceptanceOperationDeadline(operation(), timeoutMs, `${description}: ${stage}`);
+  };
+
+  await bounded(() => vscode.commands.executeCommand("openWrangler.codePreview.focus"), "focusing Code Preview");
+  const workbench = await bounded(() => connectToEditorWorkbench(), "connecting to the editor workbench");
+  const acquisitionWorkbench = createBoundedCodePreviewWorkbenchPage(
+    workbench,
+    `${description} Code Preview acquisition`
+  );
+  const selector = '[aria-label="Editable generated Python code preview"]';
+  const currentReceipt = codePreviewDocumentReceipt(currentGeneratedCode);
+  const replacementReceipt = codePreviewDocumentReceipt(replacementCode);
+  const initial = await acquireCurrentExactCodePreviewGeneration(
+    acquisitionWorkbench,
+    "Python",
+    currentReceipt,
+    deadline
+  );
+  type ExactTarget = Awaited<ReturnType<typeof acquireCurrentExactCodePreviewGeneration>>;
+  let editAttempted = false;
+  let actionInvoked = false;
+  const workbenchGenerations = new Map<ExactTarget, CodePreviewWorkbenchGeneration[][]>();
+  const boundaryRegressionHandles = new Map<ExactTarget, CodePreviewOwnedHandle[]>();
+  const actionSettlementHandles = new Map<ExactTarget, CodePreviewOwnedHandle[]>();
+  const release = (target: ExactTarget): Promise<void> => {
+    const ownedGenerations = workbenchGenerations.get(target) ?? [];
+    workbenchGenerations.delete(target);
+    const handles: CodePreviewOwnedHandle[] = [...(boundaryRegressionHandles.get(target) ?? [])].reverse();
+    boundaryRegressionHandles.delete(target);
+    for (const generations of [...ownedGenerations].reverse()) {
+      for (const generation of [...generations].reverse()) {
+        handles.push(...codePreviewWorkbenchGenerationHandles(generation));
+      }
+    }
+    handles.push(target.preview, target.scroller);
+    const actionOwners = [...(actionSettlementHandles.get(target) ?? [])].reverse();
+    actionSettlementHandles.delete(target);
+    return disposeCodePreviewActionThenOwnershipBeforeDeadline(
+      actionOwners,
+      handles,
+      deadline,
+      `${description}: releasing the exact Code Preview and workbench ownership handles`
+    );
+  };
+  const flowTimeoutMs = deadline - Date.now();
+  if (flowTimeoutMs <= 0) {
+    const timeoutError = new Error(
+      `${description} exhausted its absolute deadline after exact generation acquisition.`
+    );
+    try {
+      await release(initial);
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+      throw new AggregateError(
+        [timeoutError, ...cleanupErrors],
+        `${description} exhausted its deadline and its exact Code Preview handle cleanup also failed.`
+      );
+    }
+    throw timeoutError;
+  }
+
+  return runReplaceableCodePreviewGeneration({
+    initial,
+    operate: async (target) => {
+      assert.equal(editAttempted, false, `${description} must not retry after attempting the CodeMirror edit.`);
+      assert.equal(actionInvoked, false, `${description} must invoke its production action exactly once.`);
+      const selectedFrame = target.frame;
+      assert.ok(selectedFrame, `${description} requires exact renderer-frame provenance.`);
+      assert.equal(target.workbench, acquisitionWorkbench, `${description} must retain the bounded editor workbench.`);
+
+      const acquiredGenerations = await captureCurrentCodePreviewWorkbenchGenerations(
+        workbench,
+        selector,
+        currentReceipt,
+        bounded,
+        deadline,
+        description
+      );
+      try {
+        assertExactCodePreviewGenerationSet(
+          [selectedFrame],
+          acquiredGenerations.map((generation) => generation.frame),
+          selectedFrame,
+          description
+        );
+      } catch (error) {
+        try {
+          await disposeCodePreviewWorkbenchGenerations(
+            acquiredGenerations,
+            deadline,
+            `${description}: releasing a rejected acquired Code Preview generation set`
+          );
+        } catch (cleanupError) {
+          const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+          throw new AggregateError(
+            [error, ...cleanupErrors],
+            `${description} rejected its acquired generation set and its cleanup also failed.`
+          );
+        }
+        throw error;
+      }
+      workbenchGenerations.set(target, [acquiredGenerations]);
+      assert.equal(
+        isRetiredRendererTarget(acquisitionWorkbench, selectedFrame.page(), selectedFrame),
+        false,
+        `${description} rejects a retired pinned Code Preview renderer.`
+      );
+
+      const atomicGenerations = await captureAtomicCodePreviewWorkbenchGenerations(
+        acquiredGenerations,
+        workbench,
+        selector,
+        currentReceipt,
+        selectedFrame,
+        bounded,
+        deadline,
+        description
+      );
+      workbenchGenerations.get(target)!.push(atomicGenerations);
+
+      const editTimeoutMs = remainingMs("dispatching the exact CodeMirror replacement");
+      editAttempted = true;
+      const editedCode = await withAcceptanceOperationDeadline(
+        target.preview.evaluate(
+          (element, options) => {
+            type Rectangle = {
+              readonly left: number;
+              readonly top: number;
+              readonly width: number;
+              readonly height: number;
+            };
+            type CodePreviewContent = {
+              readonly isConnected: boolean;
+              readonly isContentEditable: boolean;
+              readonly ownerDocument: {
+                readonly defaultView: null | {
+                  readonly innerWidth: number;
+                  readonly innerHeight: number;
+                  getComputedStyle(target: unknown): {
+                    readonly display: string;
+                    readonly opacity: string;
+                    readonly visibility: string;
+                  };
+                };
+              };
+              readonly parentElement: unknown;
+              cmTile?: {
+                view?: {
+                  readonly contentDOM: unknown;
+                  readonly scrollDOM: unknown;
+                  readonly state: { readonly doc: { readonly length: number; toString(): string } };
+                  dispatch(transaction: { changes: { from: number; to: number; insert: string } }): void;
+                };
+              };
+              getBoundingClientRect(): Rectangle;
+            };
+            const content = element as unknown as CodePreviewContent;
+            const scroller = options.exactScroller as unknown as {
+              readonly isConnected: boolean;
+              readonly ownerDocument: unknown;
+            };
+            const view = content.cmTile?.view;
+            const bounds = content.getBoundingClientRect();
+            const rendererWindow = content.ownerDocument.defaultView;
+            const style = rendererWindow?.getComputedStyle(content);
+            if (
+              !content.isConnected ||
+              !content.isContentEditable ||
+              !scroller.isConnected ||
+              content.parentElement !== scroller ||
+              content.ownerDocument !== scroller.ownerDocument ||
+              !view ||
+              view.contentDOM !== content ||
+              view.scrollDOM !== scroller ||
+              bounds.width <= 0 ||
+              bounds.height <= 0 ||
+              rendererWindow === null ||
+              bounds.left >= rendererWindow.innerWidth ||
+              bounds.top >= rendererWindow.innerHeight ||
+              bounds.left + bounds.width <= 0 ||
+              bounds.top + bounds.height <= 0 ||
+              style?.display === "none" ||
+              style?.visibility === "hidden" ||
+              style?.opacity === "0" ||
+              view.state.doc.toString() !== options.currentCode
+            ) {
+              throw new Error("The pinned Code Preview was not the exact connected visible current CodeMirror view.");
+            }
+            view.dispatch({
+              changes: { from: 0, to: view.state.doc.length, insert: options.replacement }
+            });
+            const updated = view.state.doc.toString();
+            if (updated !== options.replacement) {
+              throw new Error("The live Code Preview did not apply the exact acceptance document replacement.");
+            }
+            return updated;
+          },
+          { currentCode: currentGeneratedCode, exactScroller: target.scroller, replacement: replacementCode }
+        ),
+        editTimeoutMs,
+        `${description}: dispatching the exact CodeMirror replacement`
+      );
+      assertExactCodePreviewReceipt(
+        codePreviewDocumentReceipt(editedCode),
+        replacementReceipt,
+        `${description} edited Code Preview document`
+      );
+
+      const postDispatchGenerations = await captureAtomicCodePreviewWorkbenchGenerations(
+        atomicGenerations,
+        workbench,
+        selector,
+        replacementReceipt,
+        selectedFrame,
+        bounded,
+        deadline,
+        `${description} post-dispatch ownership`
+      );
+      workbenchGenerations.get(target)!.push(postDispatchGenerations);
+
+      const actionBoundaryGenerations = await captureAtomicCodePreviewWorkbenchGenerations(
+        postDispatchGenerations,
+        workbench,
+        selector,
+        replacementReceipt,
+        selectedFrame,
+        bounded,
+        deadline,
+        `${description} production-action boundary ownership`
+      );
+      workbenchGenerations.get(target)!.push(actionBoundaryGenerations);
+      const selectedGeneration = actionBoundaryGenerations.find((generation) => generation.frame === selectedFrame);
+      assert.ok(selectedGeneration, `${description} requires its selected action-boundary workbench generation.`);
+      await assertLiveCodePreviewActionOwnership(
+        workbench,
+        selectedGeneration,
+        selectedFrame,
+        target,
+        selector,
+        replacementReceipt,
+        bounded,
+        `${description} pre-dispatch live action ownership`
+      );
+      if (options.boundaryTestHook) {
+        let registeredOwner: CodePreviewOwnedHandle | undefined;
+        const mutation = await options.boundaryTestHook.prepareActionBoundaryMutation(
+          workbench,
+          selectedGeneration,
+          bounded,
+          target,
+          (owner) => {
+            assert.equal(
+              registeredOwner,
+              undefined,
+              `${description} may register exactly one action-boundary restoration owner.`
+            );
+            registeredOwner = owner;
+            boundaryRegressionHandles.set(target, [owner]);
+          }
+        );
+        assert.equal(
+          registeredOwner,
+          mutation.owner,
+          `${description} requires the returned mutation to retain its pre-await restoration owner.`
+        );
+        await mutation.mutate();
+      }
+      return invokeLiveCodePreviewActionWithOwnership(
+        workbench,
+        selectedGeneration,
+        selectedFrame,
+        target,
+        selector,
+        replacementReceipt,
+        bounded,
+        `${description} authoritative final live action ownership`,
+        async () => {
+          options.assertProductionOwner?.();
+          const actionTimeoutMs = remainingMs("invoking the production action");
+          const actionOwner = createCodePreviewActionSettlementOwner(
+            `${description} one-shot production command settlement`
+          );
+          actionSettlementHandles.set(target, [actionOwner]);
+          actionInvoked = true;
+          const actionSettlement = actionOwner.dispatch(action);
+          const outcome = await withAcceptanceOperationDeadline(
+            actionSettlement,
+            actionTimeoutMs,
+            `${description}: invoking the production action`
+          );
+          assert.notEqual(outcome, undefined, `${description} must not accept an undefined production action result.`);
+          return outcome;
+        }
+      );
+    },
+    proveRetired: async (target) => {
+      if (editAttempted || actionInvoked || !target.frame) return false;
+      if (isRetiredRendererTarget(acquisitionWorkbench, target.frame.page(), target.frame)) return true;
+      try {
+        const lifecycle = await bounded(
+          () =>
+            target.preview.evaluate((element, exactScroller) => {
+              const content = element as unknown as {
+                readonly isConnected: boolean;
+                readonly ownerDocument: unknown;
+                readonly parentElement: unknown;
+              };
+              const scroller = exactScroller as unknown as {
+                readonly isConnected: boolean;
+                readonly ownerDocument: unknown;
+              };
+              return {
+                previewConnected: content.isConnected,
+                previewOwnsScroller: content.parentElement === scroller,
+                sameDocument: content.ownerDocument === scroller.ownerDocument,
+                scrollerConnected: scroller.isConnected
+              };
+            }, target.scroller),
+          "proving exact renderer retirement"
+        );
+        return (
+          !lifecycle.previewConnected ||
+          !lifecycle.previewOwnsScroller ||
+          !lifecycle.sameDocument ||
+          !lifecycle.scrollerConnected
+        );
+      } catch (error) {
+        if (isRetiredRendererTarget(acquisitionWorkbench, target.frame.page(), target.frame)) return true;
+        throw error;
+      }
+    },
+    acquireReplacement: (_generation, replacementDeadline) =>
+      acquireCurrentExactCodePreviewGeneration(
+        acquisitionWorkbench,
+        "Python",
+        currentReceipt,
+        Math.min(deadline, replacementDeadline)
+      ),
+    dispose: release,
+    maximumGenerations: 4,
+    timeoutMs: flowTimeoutMs,
+    description: `${description} exact Code Preview edit and action`
+  });
+}
+
+async function exerciseLiveCodePreviewProductionActionBoundaryRegressions(currentGeneratedCode: string): Promise<void> {
+  let addedFrameActions = 0;
+  let addedFrameMutations = 0;
+  let addedFrameRemoved = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real post-edit added-frame Code Preview regression",
+        async () => {
+          addedFrameActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  generation.ownershipElements[0].evaluateHandle<CodePreviewElementValue>(
+                    (element) => element as CodePreviewElementValue
+                  ),
+                bounded,
+                "pinning the exact webview-overlay content for added-frame restoration",
+                "The added-frame regression"
+              );
+              const restorationOverlayContent: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const markerState: { priorMarkerCount?: number } = {};
+              const owner = createCodePreviewResultMutationRestorationOwner<CodePreviewElementHandle>(
+                async (createdFrame): Promise<void> => {
+                  assert.notEqual(
+                    markerState.priorMarkerCount,
+                    undefined,
+                    "The added-frame restoration requires its exact pre-mutation marker count."
+                  );
+                  const expectedPriorMarkerCount = markerState.priorMarkerCount as number;
+                  const restoration = await createdFrame.evaluate((element, expectedCount: number) => {
+                    const frame = element as unknown as {
+                      readonly dataset: Record<string, string>;
+                      readonly isConnected: boolean;
+                      readonly parentElement: null | {
+                        querySelectorAll(selector: string): { readonly length: number };
+                      };
+                      remove(): void;
+                    };
+                    const overlayContent = frame.parentElement;
+                    if (!overlayContent) {
+                      throw new Error("The exact created regression iframe lost its overlay owner before cleanup.");
+                    }
+                    const markerSelector = 'iframe[data-openwrangler-action-boundary-regression="added-frame"]';
+                    const before = overlayContent.querySelectorAll(markerSelector).length;
+                    const exactMarker = frame.dataset.openwranglerActionBoundaryRegression;
+                    frame.remove();
+                    return {
+                      after: overlayContent.querySelectorAll(markerSelector).length,
+                      before,
+                      exactMarker,
+                      removed: !frame.isConnected,
+                      expectedPriorMarkerCount: expectedCount
+                    };
+                  }, expectedPriorMarkerCount);
+                  assert.deepEqual(restoration, {
+                    after: expectedPriorMarkerCount,
+                    before: expectedPriorMarkerCount + 1,
+                    exactMarker: "added-frame",
+                    removed: true,
+                    expectedPriorMarkerCount
+                  });
+                  addedFrameRemoved = true;
+                },
+                async (createdFrame): Promise<void> => {
+                  await disposeCodePreviewOwnershipHandles(
+                    [...(createdFrame ? [createdFrame] : []), restorationCandidate],
+                    "The added-frame regression exact created-frame and overlay-content release"
+                  );
+                },
+                "The added-frame regression must restore only its exact created iframe."
+              );
+              registerOwner(owner);
+              if (!restorationOverlayContent) {
+                throw new Error("The added-frame regression requires the exact webview-overlay content handle.");
+              }
+              markerState.priorMarkerCount = await bounded(
+                () =>
+                  restorationOverlayContent.evaluate(
+                    (element): number =>
+                      (
+                        element as unknown as { querySelectorAll(selector: string): { readonly length: number } }
+                      ).querySelectorAll('iframe[data-openwrangler-action-boundary-regression="added-frame"]').length
+                  ),
+                "counting pre-existing added-frame markers"
+              );
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  addedFrameMutations += 1;
+                  const mutation = owner.runMutation(() =>
+                    restorationOverlayContent.evaluateHandle<CodePreviewElementValue>((element) => {
+                      const overlayContent = element as unknown as {
+                        readonly ownerDocument: {
+                          createElement(name: "iframe"): { dataset: Record<string, string> };
+                        };
+                        appendChild(child: unknown): void;
+                      };
+                      const frame = overlayContent.ownerDocument.createElement("iframe");
+                      frame.dataset.openwranglerActionBoundaryRegression = "added-frame";
+                      overlayContent.appendChild(frame);
+                      return frame as unknown as CodePreviewElementValue;
+                    })
+                  );
+                  const createdFrame: CodePreviewElementHandle = await bounded(
+                    () => mutation,
+                    "injecting and pinning the exact post-edit workbench iframe regression"
+                  );
+                  assert.ok(createdFrame.asElement(), "The added-frame mutation must return its exact iframe handle.");
+                }
+              };
+            }
+          }
+        }
+      ),
+    /overlay-outer-frame-not-exact/u
+  );
+  assert.equal(addedFrameActions, 0, "A post-edit added frame must prevent the production action.");
+  assert.equal(addedFrameMutations, 1, "The post-edit added-frame regression must not retry its edit path.");
+  assert.equal(addedFrameRemoved, true, "The post-edit added-frame regression must restore the workbench DOM.");
+
+  let setupFailureActions = 0;
+  let setupFailureHandleDisposals = 0;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real post-acquisition setup-failure Code Preview regression",
+        async () => {
+          setupFailureActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  generation.panel.evaluateHandle<CodePreviewElementValue>(
+                    (element) => element as CodePreviewElementValue
+                  ),
+                bounded,
+                "pinning the setup-failure restoration owner",
+                "The setup-failure regression"
+              );
+              const owner = createCodePreviewRestorationOwner(
+                async (): Promise<void> => {},
+                async (): Promise<void> => {
+                  await restorationCandidate.dispose();
+                  setupFailureHandleDisposals += 1;
+                },
+                "The setup-failure regression must release its exact panel handle."
+              );
+              registerOwner(owner);
+              await bounded(
+                () => Promise.reject(new Error("synthetic post-handle setup failure")),
+                "rejecting after registering the exact setup handle"
+              );
+              throw new Error("The setup-failure regression must not continue after its rejection.");
+            }
+          }
+        }
+      ),
+    /synthetic post-handle setup failure/u
+  );
+  assert.equal(setupFailureActions, 0, "A rejected post-handle setup must not dispatch the production action.");
+  assert.equal(setupFailureHandleDisposals, 1, "A rejected post-handle setup must dispose its exact handle once.");
+
+  let hiddenAncestorActions = 0;
+  let hiddenAncestorMutations = 0;
+  let hiddenAncestorRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real opacity-zero intermediate-ancestor Code Preview regression",
+        async () => {
+          hiddenAncestorActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, _generation, bounded, target, registerOwner) => {
+              const directParent = target.scroller;
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  directParent.evaluateHandle<CodePreviewElementValue>((element) => element as CodePreviewElementValue),
+                bounded,
+                "pinning the hidden-ancestor renderer scroller",
+                "The hidden-ancestor regression"
+              );
+              const restorationParent: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const owner = createCodePreviewResultMutationRestorationOwner<CodePreviewElementHandle>(
+                async (wrapper): Promise<void> => {
+                  const restored = await wrapper.evaluate((element): boolean => {
+                    const exactWrapper = element as unknown as {
+                      readonly firstChild: unknown;
+                      readonly parentElement: null | {
+                        insertBefore(child: unknown, reference: unknown): void;
+                      };
+                      readonly isConnected: boolean;
+                      remove(): void;
+                    };
+                    const parent = exactWrapper.parentElement;
+                    const child = exactWrapper.firstChild;
+                    if (!parent || !child) {
+                      throw new Error("The exact hidden-ancestor wrapper lost its owned parent or child.");
+                    }
+                    parent.insertBefore(child, exactWrapper);
+                    exactWrapper.remove();
+                    return !exactWrapper.isConnected;
+                  });
+                  assert.equal(restored, true, "The hidden-ancestor regression must remove its exact wrapper.");
+                  hiddenAncestorRestored = true;
+                },
+                async (wrapper): Promise<void> => {
+                  await disposeCodePreviewOwnershipHandles(
+                    [...(wrapper ? [wrapper] : []), restorationCandidate],
+                    "The hidden-ancestor regression exact wrapper and direct-parent release"
+                  );
+                },
+                "The hidden-ancestor regression must restore only its exact wrapper."
+              );
+              registerOwner(owner);
+              if (!restorationParent) {
+                throw new Error("The hidden-ancestor regression requires an independent exact scroller handle.");
+              }
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  hiddenAncestorMutations += 1;
+                  const wrapper = await bounded(
+                    () =>
+                      owner.runMutation(() =>
+                        restorationParent.evaluateHandle<CodePreviewElementValue>((element) => {
+                          const direct = element as unknown as {
+                            readonly ownerDocument: {
+                              createElement(name: "div"): {
+                                readonly style: {
+                                  display: string;
+                                  height: string;
+                                  opacity: string;
+                                  width: string;
+                                };
+                                appendChild(child: unknown): void;
+                              };
+                            };
+                            readonly parentElement: null | {
+                              insertBefore(child: unknown, reference: unknown): void;
+                            };
+                          };
+                          const parent = direct.parentElement;
+                          if (!parent) throw new Error("The pinned renderer scroller requires an intermediate parent.");
+                          const directBounds = (
+                            direct as unknown as {
+                              getBoundingClientRect(): { readonly height: number; readonly width: number };
+                            }
+                          ).getBoundingClientRect();
+                          const wrapperElement = direct.ownerDocument.createElement("div");
+                          wrapperElement.style.display = "block";
+                          wrapperElement.style.height = `${directBounds.height}px`;
+                          wrapperElement.style.opacity = "0";
+                          wrapperElement.style.width = `${directBounds.width}px`;
+                          parent.insertBefore(wrapperElement, direct);
+                          wrapperElement.appendChild(direct);
+                          return wrapperElement as unknown as CodePreviewElementValue;
+                        })
+                      ),
+                    "injecting and pinning the opacity-zero intermediate ancestor"
+                  );
+                  const visibility = await bounded(
+                    () =>
+                      wrapper.evaluate((element) => {
+                        const wrapperElement = element as unknown as {
+                          readonly firstChild: null | {
+                            getBoundingClientRect(): { readonly height: number; readonly width: number };
+                            readonly ownerDocument: {
+                              readonly defaultView: null | {
+                                getComputedStyle(target: unknown): { readonly opacity: string };
+                              };
+                            };
+                          };
+                          getBoundingClientRect(): { readonly height: number; readonly width: number };
+                          readonly ownerDocument: {
+                            readonly defaultView: null | {
+                              getComputedStyle(target: unknown): { readonly opacity: string };
+                            };
+                          };
+                        };
+                        const child = wrapperElement.firstChild;
+                        const childBounds = child?.getBoundingClientRect();
+                        const wrapperBounds = wrapperElement.getBoundingClientRect();
+                        return {
+                          childOwnOpacityPositive:
+                            Number(child?.ownerDocument.defaultView?.getComputedStyle(child).opacity) > 0,
+                          childVisibleGeometry:
+                            childBounds !== undefined && childBounds.width > 0 && childBounds.height > 0,
+                          wrapperOpacity:
+                            wrapperElement.ownerDocument.defaultView?.getComputedStyle(wrapperElement).opacity,
+                          wrapperVisibleGeometry: wrapperBounds.width > 0 && wrapperBounds.height > 0
+                        };
+                      }),
+                    "proving the hidden intermediate ancestor has otherwise live geometry"
+                  );
+                  assert.deepEqual(visibility, {
+                    childOwnOpacityPositive: true,
+                    childVisibleGeometry: true,
+                    wrapperOpacity: "0",
+                    wrapperVisibleGeometry: true
+                  });
+                }
+              };
+            }
+          }
+        }
+      ),
+    /requires every bounded renderer ancestor to remain connected, laid out, and visible/u
+  );
+  assert.equal(hiddenAncestorActions, 0, "An opacity-zero intermediate ancestor must prevent the action.");
+  assert.equal(hiddenAncestorMutations, 1, "The hidden-ancestor regression must mutate only once.");
+  assert.equal(hiddenAncestorRestored, true, "The hidden-ancestor regression must restore its exact wrapper.");
+
+  let hiddenPanelActions = 0;
+  let hiddenPanelMutations = 0;
+  let hiddenPanelRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real post-edit hidden-panel Code Preview regression",
+        async () => {
+          hiddenPanelActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  generation.panel.evaluateHandle<CodePreviewElementValue>(
+                    (element) => element as CodePreviewElementValue
+                  ),
+                bounded,
+                "pinning an independent hidden-panel restoration owner",
+                "The hidden-panel regression"
+              );
+              const restorationPanel: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const visibilityState: { priorVisibility?: string } = {};
+              const owner = createCodePreviewMutationRestorationOwner(
+                async (): Promise<void> => {
+                  if (visibilityState.priorVisibility === undefined || !restorationPanel) return;
+                  await restorationPanel.evaluate((element, visibility: string) => {
+                    const panel = element as unknown as { style: { visibility: string } };
+                    panel.style.visibility = visibility;
+                  }, visibilityState.priorVisibility);
+                  hiddenPanelRestored = true;
+                },
+                () => restorationCandidate.dispose(),
+                "The hidden-panel regression must restore and release its independent panel handle."
+              );
+              registerOwner(owner);
+              if (!restorationPanel) {
+                throw new Error("The hidden-panel regression requires an independent exact panel handle.");
+              }
+              visibilityState.priorVisibility = await bounded(
+                () =>
+                  restorationPanel.evaluate(
+                    (element): string => (element as unknown as { style: { visibility: string } }).style.visibility
+                  ),
+                "reading the exact panel visibility before its owned mutation"
+              );
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  hiddenPanelMutations += 1;
+                  const mutation = owner.runMutation(async (): Promise<void> => {
+                    await restorationPanel.evaluate((element) => {
+                      (element as unknown as { style: { visibility: string } }).style.visibility = "hidden";
+                    });
+                  });
+                  await bounded(() => mutation, "hiding the exact post-snapshot workbench panel");
+                }
+              };
+            }
+          }
+        }
+      ),
+    /container-hidden/u
+  );
+  assert.equal(hiddenPanelActions, 0, "A post-edit hidden panel must prevent the production action.");
+  assert.equal(hiddenPanelMutations, 1, "The post-edit hidden-panel regression must not retry its edit path.");
+  assert.equal(hiddenPanelRestored, true, "The post-edit hidden-panel regression must restore panel visibility.");
+
+  let hiddenPanelAncestorActions = 0;
+  let hiddenPanelAncestorMutations = 0;
+  let hiddenPanelAncestorRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real opacity-zero ancestor-above-panel Code Preview regression",
+        async () => {
+          hiddenPanelAncestorActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  generation.panel.evaluateHandle<CodePreviewElementValue>((element) => {
+                    const panel = element as unknown as { readonly parentElement: unknown };
+                    return panel.parentElement as CodePreviewElementValue;
+                  }),
+                bounded,
+                "pinning the exact ancestor above the workbench panel",
+                "The hidden panel-ancestor regression"
+              );
+              const restorationAncestor: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const opacityState: { priorOpacity?: string } = {};
+              const owner = createCodePreviewMutationRestorationOwner(
+                async (): Promise<void> => {
+                  if (opacityState.priorOpacity === undefined || !restorationAncestor) return;
+                  const restoredOpacity = await restorationAncestor.evaluate((element, opacity: string): string => {
+                    const ancestor = element as unknown as { readonly style: { opacity: string } };
+                    ancestor.style.opacity = opacity;
+                    return ancestor.style.opacity;
+                  }, opacityState.priorOpacity);
+                  assert.equal(
+                    restoredOpacity,
+                    opacityState.priorOpacity,
+                    "The hidden panel-ancestor regression must restore the exact prior opacity."
+                  );
+                  hiddenPanelAncestorRestored = true;
+                },
+                () => restorationCandidate.dispose(),
+                "The hidden panel-ancestor regression must restore and release its exact ancestor handle."
+              );
+              registerOwner(owner);
+              if (!restorationAncestor) {
+                throw new Error("The hidden panel-ancestor regression requires an exact ancestor above the panel.");
+              }
+              opacityState.priorOpacity = await bounded(
+                () =>
+                  restorationAncestor.evaluate(
+                    (element): string => (element as unknown as { readonly style: { opacity: string } }).style.opacity
+                  ),
+                "reading the exact panel-ancestor opacity before its owned mutation"
+              );
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  hiddenPanelAncestorMutations += 1;
+                  const mutation = owner.runMutation(() =>
+                    restorationAncestor.evaluate((element, exactPanel) => {
+                      const ancestor = element as unknown as {
+                        contains(target: unknown): boolean;
+                        getBoundingClientRect(): { readonly height: number; readonly width: number };
+                        readonly ownerDocument: {
+                          readonly defaultView: null | {
+                            getComputedStyle(target: unknown): { readonly opacity: string };
+                          };
+                        };
+                        readonly style: { opacity: string };
+                      };
+                      const panel = exactPanel as unknown as {
+                        getBoundingClientRect(): { readonly height: number; readonly width: number };
+                        readonly ownerDocument: {
+                          readonly defaultView: null | {
+                            getComputedStyle(target: unknown): { readonly opacity: string };
+                          };
+                        };
+                        readonly parentElement: unknown;
+                      };
+                      ancestor.style.opacity = "0";
+                      const ancestorBounds = ancestor.getBoundingClientRect();
+                      const panelBounds = panel.getBoundingClientRect();
+                      return {
+                        ancestorContainsPanel: ancestor.contains(panel),
+                        ancestorOpacity: ancestor.ownerDocument.defaultView?.getComputedStyle(ancestor).opacity,
+                        ancestorVisibleGeometry: ancestorBounds.width > 0 && ancestorBounds.height > 0,
+                        panelHasExactParent: panel.parentElement === ancestor,
+                        panelOwnOpacityPositive:
+                          Number(panel.ownerDocument.defaultView?.getComputedStyle(panel).opacity) > 0,
+                        panelVisibleGeometry: panelBounds.width > 0 && panelBounds.height > 0
+                      };
+                    }, generation.panel)
+                  );
+                  const visibility = await bounded(
+                    () => mutation,
+                    "hiding and proving the exact ancestor above the workbench panel"
+                  );
+                  assert.deepEqual(visibility, {
+                    ancestorContainsPanel: true,
+                    ancestorOpacity: "0",
+                    ancestorVisibleGeometry: true,
+                    panelHasExactParent: true,
+                    panelOwnOpacityPositive: true,
+                    panelVisibleGeometry: true
+                  });
+                }
+              };
+            }
+          }
+        }
+      ),
+    /workbench-ancestor-hidden/u
+  );
+  assert.equal(
+    hiddenPanelAncestorActions,
+    0,
+    "An opacity-zero ancestor above the panel must prevent the production action."
+  );
+  assert.equal(hiddenPanelAncestorMutations, 1, "The hidden panel-ancestor regression must mutate only once.");
+  assert.equal(
+    hiddenPanelAncestorRestored,
+    true,
+    "The hidden panel-ancestor regression must restore the exact ancestor opacity."
+  );
+
+  let reparentedPanelActions = 0;
+  let reparentedPanelMutations = 0;
+  let reparentedPanelRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real visible reparented-panel Code Preview regression",
+        async () => {
+          reparentedPanelActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const originalParent = generation.panelAncestors[0];
+              assert.ok(originalParent, "The reparented-panel regression requires the panel's exact pinned parent.");
+              const markerSelector = '[data-openwrangler-action-boundary-regression="reparented-panel"]';
+              const originalState: { childIndex?: number; markerCount?: number } = {};
+              const privateHandles: CodePreviewOwnedHandle[] = [];
+              let privatePanelCandidate: CodePreviewOwnedHandle & {
+                asElement(): CodePreviewElementHandle | null;
+              };
+              let privateParentCandidate: CodePreviewOwnedHandle & {
+                asElement(): CodePreviewElementHandle | null;
+              };
+              try {
+                privatePanelCandidate = (await acquireCodePreviewOwnedHandle(
+                  () =>
+                    generation.panel.evaluateHandle<CodePreviewElementValue>(
+                      (element) => element as CodePreviewElementValue
+                    ),
+                  bounded,
+                  "pinning the reparent restoration's independent panel",
+                  "The reparented-panel regression"
+                )) as typeof privatePanelCandidate;
+                privateHandles.push(privatePanelCandidate);
+                const privatePanel = privatePanelCandidate.asElement();
+                assert.ok(privatePanel, "The reparented-panel regression requires an independent panel handle.");
+                privateParentCandidate = (await acquireCodePreviewOwnedHandle(
+                  () =>
+                    privatePanel.evaluateHandle<CodePreviewElementValue>(
+                      (element) => element.parentElement as CodePreviewElementValue
+                    ),
+                  bounded,
+                  "pinning the reparent restoration's independent parent",
+                  "The reparented-panel regression"
+                )) as typeof privateParentCandidate;
+                privateHandles.push(privateParentCandidate);
+              } catch (error) {
+                try {
+                  await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+                    [...privateHandles].reverse(),
+                    bounded,
+                    "The reparented-panel regression rejected private-handle release"
+                  );
+                } catch (cleanupError) {
+                  const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+                  throw new AggregateError(
+                    [error, ...cleanupErrors],
+                    "The reparented-panel regression failed to acquire and release its private handles."
+                  );
+                }
+                throw error;
+              }
+              const privatePanel = privatePanelCandidate.asElement();
+              const privateParent = privateParentCandidate.asElement();
+              if (!privatePanel || !privateParent) {
+                const privateHandleError = new Error(
+                  "The reparented-panel regression requires independent exact panel and parent handles."
+                );
+                try {
+                  await disposeCodePreviewOwnershipHandlesWithBoundedOperation(
+                    [...privateHandles].reverse(),
+                    bounded,
+                    "The reparented-panel regression invalid private-handle release"
+                  );
+                } catch (cleanupError) {
+                  const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
+                  throw new AggregateError(
+                    [privateHandleError, ...cleanupErrors],
+                    "The reparented-panel regression rejected invalid private handles and cleanup also failed."
+                  );
+                }
+                throw privateHandleError;
+              }
+              const owner = createCodePreviewLateHandleRestorationOwner<CodePreviewElementHandle>(
+                async (createdWrapper): Promise<void> => {
+                  assert.ok(
+                    originalState.childIndex !== undefined && originalState.markerCount !== undefined,
+                    "The reparented-panel regression requires its exact pre-mutation state."
+                  );
+                  const restored = await createdWrapper.evaluate(
+                    (element, options) => {
+                      const wrapper = element as unknown as {
+                        readonly firstElementChild: unknown;
+                        readonly isConnected: boolean;
+                        readonly parentElement: unknown;
+                        remove(): void;
+                      };
+                      const panel = options.exactPanel as unknown as { readonly parentElement: unknown };
+                      const parent = options.exactParent as unknown as {
+                        readonly children: { readonly [index: number]: unknown; readonly length: number };
+                        insertBefore(child: unknown, reference: unknown): void;
+                        querySelectorAll(selector: string): { readonly length: number };
+                      };
+                      if (
+                        !wrapper.isConnected ||
+                        wrapper.parentElement !== parent ||
+                        wrapper.firstElementChild !== panel ||
+                        panel.parentElement !== wrapper
+                      ) {
+                        throw new Error(
+                          "The reparented-panel regression lost the exact created wrapper identity before restoration."
+                        );
+                      }
+                      const markerCountBefore = parent.querySelectorAll(options.markerSelector).length;
+                      parent.insertBefore(panel, wrapper);
+                      wrapper.remove();
+                      let childIndex = -1;
+                      for (let index = 0; index < parent.children.length; index += 1) {
+                        if (parent.children[index] === panel) childIndex = index;
+                      }
+                      return {
+                        childIndex,
+                        markerCountAfter: parent.querySelectorAll(options.markerSelector).length,
+                        markerCountBefore,
+                        panelRestored: panel.parentElement === parent,
+                        restoredWrapper: true
+                      };
+                    },
+                    { exactPanel: privatePanel, exactParent: privateParent, markerSelector }
+                  );
+                  assert.equal(restored.childIndex, originalState.childIndex);
+                  assert.equal(restored.markerCountAfter, originalState.markerCount);
+                  assert.ok(
+                    restored.markerCountBefore === originalState.markerCount ||
+                      restored.markerCountBefore === originalState.markerCount + 1,
+                    "The reparented-panel restoration rejects an unowned marker change."
+                  );
+                  assert.equal(restored.panelRestored, true);
+                  reparentedPanelRestored = true;
+                },
+                async (): Promise<void> => {
+                  await disposeCodePreviewOwnershipHandles(
+                    [privateParentCandidate, privatePanelCandidate],
+                    "The reparented-panel regression independent parent and panel release"
+                  );
+                },
+                "The reparented-panel regression must restore before releasing its independent handles."
+              );
+              registerOwner(owner);
+              const state = await bounded(
+                () =>
+                  privatePanel.evaluate(
+                    (element, options) => {
+                      const panel = element as unknown as {
+                        readonly parentElement: null | {
+                          readonly children: { readonly [index: number]: unknown; readonly length: number };
+                          querySelectorAll(selector: string): { readonly length: number };
+                        };
+                      };
+                      const parent = panel.parentElement;
+                      const exactParent = options.exactParent as unknown;
+                      const expectedOriginalParent = options.expectedOriginalParent as unknown;
+                      if (!parent || parent !== exactParent || parent !== expectedOriginalParent) {
+                        throw new Error("The reparented-panel regression requires the exact pinned parent.");
+                      }
+                      let childIndex = -1;
+                      for (let index = 0; index < parent.children.length; index += 1) {
+                        if (parent.children[index] === panel) childIndex = index;
+                      }
+                      return {
+                        childIndex,
+                        markerCount: parent.querySelectorAll(options.markerSelector).length
+                      };
+                    },
+                    { exactParent: privateParent, expectedOriginalParent: originalParent, markerSelector }
+                  ),
+                "recording the exact panel position before its owned reparenting"
+              );
+              assert.ok(state.childIndex >= 0, "The reparented-panel regression requires an exact original position.");
+              originalState.childIndex = state.childIndex;
+              originalState.markerCount = state.markerCount;
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  reparentedPanelMutations += 1;
+                  const wrapper = await bounded(
+                    () =>
+                      owner.runMutation(() =>
+                        privatePanel.evaluateHandle<CodePreviewElementValue, { readonly exactParent: unknown }>(
+                          (element, options: { readonly exactParent: unknown }) => {
+                            const panel = element as unknown as {
+                              getBoundingClientRect(): { readonly height: number; readonly width: number };
+                              readonly ownerDocument: {
+                                createElement(name: "div"): {
+                                  readonly dataset: Record<string, string>;
+                                  readonly style: {
+                                    display: string;
+                                    height: string;
+                                    opacity: string;
+                                    visibility: string;
+                                    width: string;
+                                  };
+                                  appendChild(child: unknown): void;
+                                };
+                              };
+                              readonly parentElement: null | {
+                                insertBefore(child: unknown, reference: unknown): void;
+                              };
+                            };
+                            const parent = panel.parentElement;
+                            if (!parent || parent !== options.exactParent) {
+                              throw new Error("The exact panel parent changed before the owned reparenting.");
+                            }
+                            const bounds = panel.getBoundingClientRect();
+                            const wrapperElement = panel.ownerDocument.createElement("div");
+                            wrapperElement.dataset.openwranglerActionBoundaryRegression = "reparented-panel";
+                            wrapperElement.style.display = "block";
+                            wrapperElement.style.height = `${bounds.height}px`;
+                            wrapperElement.style.opacity = "1";
+                            wrapperElement.style.visibility = "visible";
+                            wrapperElement.style.width = `${bounds.width}px`;
+                            parent.insertBefore(wrapperElement, panel);
+                            wrapperElement.appendChild(panel);
+                            return wrapperElement as unknown as CodePreviewElementValue;
+                          },
+                          { exactParent: privateParent }
+                        )
+                      ),
+                    "reparenting the exact panel beneath a pinned visible wrapper"
+                  );
+                  const visibility = await bounded(
+                    () =>
+                      wrapper.evaluate((element, exactPanel) => {
+                        type VisibleElement = {
+                          readonly isConnected: boolean;
+                          readonly ownerDocument: {
+                            readonly defaultView: null | {
+                              getComputedStyle(target: unknown): {
+                                readonly display: string;
+                                readonly opacity: string;
+                                readonly visibility: string;
+                              };
+                            };
+                          };
+                          readonly parentElement: unknown;
+                          getBoundingClientRect(): { readonly height: number; readonly width: number };
+                        };
+                        const visible = (candidate: VisibleElement): boolean => {
+                          const bounds = candidate.getBoundingClientRect();
+                          const style = candidate.ownerDocument.defaultView?.getComputedStyle(candidate);
+                          return (
+                            candidate.isConnected &&
+                            bounds.width > 0 &&
+                            bounds.height > 0 &&
+                            style?.display !== "none" &&
+                            style?.visibility !== "hidden" &&
+                            style?.visibility !== "collapse" &&
+                            Number(style?.opacity) > 0
+                          );
+                        };
+                        const wrapperElement = element as unknown as VisibleElement;
+                        const panel = exactPanel as unknown as VisibleElement;
+                        return {
+                          panelHasVisibleWrapper: panel.parentElement === wrapperElement,
+                          panelVisible: visible(panel),
+                          wrapperVisible: visible(wrapperElement)
+                        };
+                      }, privatePanel),
+                    "proving the replacement panel wrapper remains visible"
+                  );
+                  assert.deepEqual(visibility, {
+                    panelHasVisibleWrapper: true,
+                    panelVisible: true,
+                    wrapperVisible: true
+                  });
+                }
+              };
+            }
+          }
+        }
+      ),
+    /ownership-chain-replaced/u
+  );
+  assert.equal(reparentedPanelActions, 0, "A visibly reparented exact panel must prevent the production action.");
+  assert.equal(reparentedPanelMutations, 1, "The reparented-panel regression must mutate only once.");
+  assert.equal(reparentedPanelRestored, true, "The reparented-panel regression must restore the exact original tree.");
+
+  let hiddenInnerFrameActions = 0;
+  let hiddenInnerFrameMutations = 0;
+  let hiddenInnerFrameRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real post-edit hidden-inner-frame Code Preview regression",
+        async () => {
+          hiddenInnerFrameActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const pinnedInnerFrame = generation.frameElements[0];
+              assert.ok(pinnedInnerFrame, "The hidden-inner-frame regression requires a pinned iframe chain.");
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  pinnedInnerFrame.evaluateHandle<CodePreviewElementValue>(
+                    (element) => element as CodePreviewElementValue
+                  ),
+                bounded,
+                "pinning an independent inner-frame restoration owner",
+                "The hidden-inner-frame regression"
+              );
+              const restorationFrame: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const visibilityState: { priorVisibility?: string } = {};
+              const owner = createCodePreviewMutationRestorationOwner(
+                async (): Promise<void> => {
+                  if (visibilityState.priorVisibility === undefined || !restorationFrame) return;
+                  await restorationFrame.evaluate((element, visibility: string) => {
+                    (element as unknown as { style: { visibility: string } }).style.visibility = visibility;
+                  }, visibilityState.priorVisibility);
+                  hiddenInnerFrameRestored = true;
+                },
+                () => restorationCandidate.dispose(),
+                "The hidden-inner-frame regression must restore and release its independent iframe handle."
+              );
+              registerOwner(owner);
+              if (!restorationFrame) {
+                throw new Error("The hidden-inner-frame regression requires an independent exact iframe handle.");
+              }
+              visibilityState.priorVisibility = await bounded(
+                () =>
+                  restorationFrame.evaluate(
+                    (element): string => (element as unknown as { style: { visibility: string } }).style.visibility
+                  ),
+                "reading exact inner-frame visibility before its owned mutation"
+              );
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  hiddenInnerFrameMutations += 1;
+                  const mutation = owner.runMutation(async (): Promise<void> => {
+                    await restorationFrame.evaluate((element) => {
+                      (element as unknown as { style: { visibility: string } }).style.visibility = "hidden";
+                    });
+                  });
+                  await bounded(() => mutation, "hiding the exact post-snapshot inner iframe");
+                }
+              };
+            }
+          }
+        }
+      ),
+    /outer-frame-hidden/u
+  );
+  assert.equal(hiddenInnerFrameActions, 0, "A hidden inner iframe must prevent the production action.");
+  assert.equal(hiddenInnerFrameMutations, 1, "The hidden-inner-frame regression must not retry its edit path.");
+  assert.equal(hiddenInnerFrameRestored, true, "The hidden-inner-frame regression must restore iframe visibility.");
+
+  let hiddenParentActions = 0;
+  let hiddenParentMutations = 0;
+  let hiddenParentRestored = false;
+  await assert.rejects(
+    () =>
+      editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        currentGeneratedCode,
+        "the real post-probe hidden-iframe-parent Code Preview regression",
+        async () => {
+          hiddenParentActions += 1;
+          return true;
+        },
+        {
+          boundaryTestHook: {
+            prepareActionBoundaryMutation: async (_workbench, generation, bounded, _target, registerOwner) => {
+              const pinnedParent = generation.frameElementParents[0];
+              assert.ok(pinnedParent, "The hidden-parent regression requires a pinned iframe parent chain.");
+              const restorationCandidate = await acquireCodePreviewOwnedHandle(
+                () =>
+                  pinnedParent.evaluateHandle<CodePreviewElementValue>((element) => element as CodePreviewElementValue),
+                bounded,
+                "pinning an independent iframe-parent restoration owner",
+                "The hidden-parent regression"
+              );
+              const restorationParent: CodePreviewElementHandle | null = restorationCandidate.asElement();
+              const opacityState: { priorOpacity?: string } = {};
+              const owner = createCodePreviewMutationRestorationOwner(
+                async (): Promise<void> => {
+                  if (opacityState.priorOpacity === undefined || !restorationParent) return;
+                  await restorationParent.evaluate((element, opacity: string) => {
+                    (element as unknown as { style: { opacity: string } }).style.opacity = opacity;
+                  }, opacityState.priorOpacity);
+                  hiddenParentRestored = true;
+                },
+                () => restorationCandidate.dispose(),
+                "The hidden-parent regression must restore and release its exact parent handle."
+              );
+              registerOwner(owner);
+              if (!restorationParent) {
+                throw new Error("The hidden-parent regression requires an independent exact parent handle.");
+              }
+              opacityState.priorOpacity = await bounded(
+                () =>
+                  restorationParent.evaluate(
+                    (element): string => (element as unknown as { style: { opacity: string } }).style.opacity
+                  ),
+                "reading exact iframe-parent opacity before its owned mutation"
+              );
+              return {
+                owner,
+                mutate: async (): Promise<void> => {
+                  hiddenParentMutations += 1;
+                  const mutation = owner.runMutation(async (): Promise<void> => {
+                    await restorationParent.evaluate((element) => {
+                      (element as unknown as { style: { opacity: string } }).style.opacity = "0";
+                    });
+                  });
+                  await bounded(() => mutation, "hiding the exact post-probe iframe parent");
+                }
+              };
+            }
+          }
+        }
+      ),
+    /ownership-chain-hidden/u
+  );
+  assert.equal(hiddenParentActions, 0, "A hidden pinned iframe parent must prevent the production action.");
+  assert.equal(hiddenParentMutations, 1, "The hidden-parent regression must not retry its edit path.");
+  assert.equal(hiddenParentRestored, true, "The hidden-parent regression must restore parent visibility.");
+}
+
 async function waitForVisibleEditorDialog(workbench: Page, text: string): Promise<{ page: Page; dialog: Locator }> {
   const deadline = Date.now() + 10_000;
   do {
@@ -15190,7 +19364,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:document-open");
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
-    await vscode.window.showNotebookDocument(notebook);
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook);
     const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
 
@@ -15294,11 +19468,29 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     assert.equal(applied.kind, "planUpdated");
     if (applied.kind !== "planUpdated") throw new Error("Pandas notebook step did not apply.");
+    await exerciseLiveCodePreviewProductionActionBoundaryRegressions(applied.code);
     const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
-    testing.setCodeForExport(editedNotebookCode);
     const insertionIndex = notebook.cellCount;
     recordAcceptanceProgress("verify:notebook:pandas-basic:insert");
-    await vscode.commands.executeCommand("openWrangler.insertNotebookCode");
+    const insertionResult = await editLiveCodePreviewAndInvoke(
+      applied.code,
+      editedNotebookCode,
+      "the live edited Code Preview notebook insertion",
+      () => vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"),
+      {
+        assertProductionOwner: () => {
+          assertExactOpenNotebookDocument(notebook, "at exact Code Preview notebook-insertion dispatch");
+          assert.equal(
+            vscode.window.visibleNotebookEditors.filter(
+              (candidate) => candidate === notebookEditor && candidate.notebook === notebook
+            ).length,
+            1,
+            "The Code Preview insertion must retain its exact visible NotebookDocument/editor owner."
+          );
+        }
+      }
+    );
+    assert.equal(insertionResult, true, "The live edited Code Preview notebook insertion must report success.");
     await waitFor(
       () => notebook.cellCount === insertionIndex + 1,
       10_000,
@@ -20060,16 +24252,23 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         active?.metadata.schema.map((column) => column.name),
         ["active", "total_sales"]
       );
-      assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
+      assert.ok(active, `${backend} must retain an active operation-group session.`);
+      const currentGeneratedCode = active.code;
+      assert.ok(currentGeneratedCode, `${backend} must retain executable generated code.`);
+      assert.match(currentGeneratedCode, /def clean_data/u, `${backend} must retain executable generated code.`);
       if (backend === "duckdb") {
-        assert.match(active?.code ?? "", /\bimport duckdb\b/u);
-        assert.doesNotMatch(active?.code ?? "", DUCKDB_FOREIGN_ENGINE_CONVERSION);
+        assert.match(currentGeneratedCode, /\bimport duckdb\b/u);
+        assert.doesNotMatch(currentGeneratedCode, DUCKDB_FOREIGN_ENGINE_CONVERSION);
       }
 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
       const priorClipboard = await vscode.env.clipboard.readText();
-      testing.setCodeForExport(editedCode);
-      const copiedCode = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+      const copiedCode = await editLiveCodePreviewAndInvoke(
+        currentGeneratedCode,
+        editedCode,
+        `the live edited ${backend} Code Preview copy`,
+        () => vscode.commands.executeCommand<string>("openWrangler.copyCode")
+      );
       assert.equal(copiedCode, editedCode, `${backend} must copy the edited code buffer.`);
       if ((await vscode.env.clipboard.readText()) === editedCode) {
         await vscode.env.clipboard.writeText(priorClipboard);

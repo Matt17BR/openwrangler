@@ -1,27 +1,415 @@
+import {
+  CODE_PREVIEW_EDIT_COALESCE_MS,
+  CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS,
+  CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES,
+  CODE_PREVIEW_MAX_UTF8_BYTES,
+  type CodePreviewInvalidReason,
+  type CodePreviewTextResult,
+  validateCodePreviewText
+} from "./codePreviewLimits";
 import { isRuntimeIdentity, type RuntimeIdentity } from "./runtimeIdentity";
 
-export interface CodePreviewHostMessage {
-  readonly kind: "codePreview";
-  readonly code: string;
+export type CodePreviewUnavailableReason =
+  "disposed" | "generationExhausted" | "generationMismatch" | "sequenceExhausted";
+
+interface CodePreviewHostState {
+  readonly generation: number;
+  readonly acknowledgedSequence: number;
   readonly editable: boolean;
   readonly runtimeIdentity: RuntimeIdentity | null;
 }
 
+export type CodePreviewHostMessage =
+  | (CodePreviewHostState & { readonly kind: "codePreview"; readonly code: string })
+  | (CodePreviewHostState & { readonly kind: "codePreviewInvalid"; readonly reason: CodePreviewInvalidReason })
+  | (CodePreviewHostState & {
+      readonly kind: "codePreviewUnavailable";
+      readonly reason: "generationExhausted";
+      readonly editable: false;
+    })
+  | {
+      readonly kind: "codePreviewSnapshotRequest";
+      readonly generation: number;
+      readonly requestId: string;
+    };
+
 export type CodePreviewWebviewMessage =
-  { readonly kind: "ready" } | { readonly kind: "codeChanged"; readonly code: string };
+  | { readonly kind: "ready" }
+  | { readonly kind: "codePending"; readonly generation: number; readonly sequence: number }
+  | { readonly kind: "codeChanged"; readonly generation: number; readonly sequence: number; readonly code: string }
+  | {
+      readonly kind: "codeInvalid";
+      readonly generation: number;
+      readonly sequence: number;
+      readonly reason: CodePreviewInvalidReason;
+    }
+  | {
+      readonly kind: "codeSnapshot";
+      readonly generation: number;
+      readonly sequence: number;
+      readonly requestId: string;
+      readonly code: string;
+    }
+  | {
+      readonly kind: "codeSnapshotInvalid";
+      readonly generation: number;
+      readonly sequence: number;
+      readonly requestId: string;
+      readonly reason: CodePreviewInvalidReason;
+    }
+  | {
+      readonly kind: "codeSnapshotUnavailable";
+      readonly generation: number;
+      readonly requestId: string;
+      readonly reason: "disposed" | "generationMismatch" | "sequenceExhausted";
+    }
+  | {
+      readonly kind: "codePreviewUnavailable";
+      readonly generation: number;
+      readonly reason: "disposed" | "sequenceExhausted";
+    };
+
+export interface CodePreviewEditScheduler {
+  schedule(callback: () => void, delayMs: number): unknown;
+  cancel(handle: unknown): void;
+}
+
+export type NextCodePreviewGeneration =
+  | { readonly available: true; readonly generation: number }
+  | { readonly available: false; readonly generation: typeof Number.MAX_SAFE_INTEGER };
+
+export function nextCodePreviewGeneration(current: number): NextCodePreviewGeneration {
+  if (!isNonNegativeSafeInteger(current) || current >= Number.MAX_SAFE_INTEGER - 1) {
+    return { available: false, generation: Number.MAX_SAFE_INTEGER };
+  }
+  return { available: true, generation: current + 1 };
+}
+
+export type CodePreviewHostAcceptance = "rejected" | "sameGeneration" | "newGeneration";
+
+export interface CodePreviewHistoryBudgetReceipt {
+  readonly generation: number;
+  readonly localEdits: number;
+  readonly retainedUtf8Bytes: number;
+  readonly resetPending: boolean;
+}
+
+export class CodePreviewHistoryBudget {
+  private generation = 0;
+  private localEdits = 0;
+  private retainedUtf8Bytes = 0;
+  private resetPending = false;
+
+  acceptGeneration(generation: number): void {
+    if (!isPositiveSafeInteger(generation) || generation === this.generation) return;
+    this.generation = generation;
+    this.latchReset();
+  }
+
+  recordEdit(beforeUtf8Bytes: number, afterUtf8Bytes: number): "retain" | "reset" {
+    if (this.resetPending) return "reset";
+    if (
+      !isNonNegativeSafeInteger(beforeUtf8Bytes) ||
+      !isNonNegativeSafeInteger(afterUtf8Bytes) ||
+      beforeUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES ||
+      afterUtf8Bytes > CODE_PREVIEW_MAX_UTF8_BYTES
+    ) {
+      this.latchReset();
+      return "reset";
+    }
+    const charge = beforeUtf8Bytes + afterUtf8Bytes;
+    if (
+      this.localEdits >= CODE_PREVIEW_HISTORY_MAX_LOCAL_EDITS ||
+      charge > CODE_PREVIEW_HISTORY_MAX_RETAINED_UTF8_BYTES - this.retainedUtf8Bytes
+    ) {
+      this.latchReset();
+      return "reset";
+    }
+    this.localEdits += 1;
+    this.retainedUtf8Bytes += charge;
+    return "retain";
+  }
+
+  latchReset(): void {
+    this.resetPending = true;
+  }
+
+  completeReset(): void {
+    this.localEdits = 0;
+    this.retainedUtf8Bytes = 0;
+    this.resetPending = false;
+  }
+
+  isResetPending(): boolean {
+    return this.resetPending;
+  }
+
+  receipt(): CodePreviewHistoryBudgetReceipt {
+    return {
+      generation: this.generation,
+      localEdits: this.localEdits,
+      retainedUtf8Bytes: this.retainedUtf8Bytes,
+      resetPending: this.resetPending
+    };
+  }
+}
+
+export class CodePreviewEditCoalescer {
+  private generation = 0;
+  private sequence = 0;
+  private acknowledgedSequence = 0;
+  private pending = false;
+  private invalidated = false;
+  private acceptedInvalidReason: CodePreviewInvalidReason | undefined;
+  private timerScheduled = false;
+  private timer: unknown;
+
+  constructor(
+    private readonly readCode: () => CodePreviewTextResult,
+    private readonly publish: (message: CodePreviewWebviewMessage) => void,
+    private readonly scheduler: CodePreviewEditScheduler
+  ) {}
+
+  acceptHostState(
+    generation: number,
+    acknowledgedSequence: number,
+    acceptedInvalidReason?: CodePreviewInvalidReason
+  ): CodePreviewHostAcceptance {
+    if (
+      this.invalidated ||
+      !isPositiveSafeInteger(generation) ||
+      !isNonNegativeSafeInteger(acknowledgedSequence) ||
+      generation < this.generation
+    ) {
+      return "rejected";
+    }
+    if (generation > this.generation) {
+      this.cancelPending();
+      this.generation = generation;
+      this.sequence = acknowledgedSequence;
+      this.acknowledgedSequence = acknowledgedSequence;
+      this.acceptedInvalidReason = acceptedInvalidReason;
+      return "newGeneration";
+    }
+    if (acknowledgedSequence < this.acknowledgedSequence || acknowledgedSequence > this.sequence) return "rejected";
+    this.acknowledgedSequence = acknowledgedSequence;
+    this.acceptedInvalidReason = acceptedInvalidReason;
+    return !this.pending && this.sequence === this.acknowledgedSequence ? "sameGeneration" : "rejected";
+  }
+
+  schedule(): void {
+    if (this.generation === 0 || this.invalidated) return;
+    if (!this.pending) {
+      if (this.sequence === Number.MAX_SAFE_INTEGER) {
+        this.invalidate("sequenceExhausted");
+        return;
+      }
+      this.sequence += 1;
+      this.pending = true;
+      this.publish({ kind: "codePending", generation: this.generation, sequence: this.sequence });
+    }
+    if (this.timerScheduled) return;
+    this.timerScheduled = true;
+    this.timer = this.scheduler.schedule(() => this.flush(), CODE_PREVIEW_EDIT_COALESCE_MS);
+  }
+
+  respondToSnapshotRequest(generation: number, requestId: string): void {
+    if (!isPositiveSafeInteger(generation) || !isCodePreviewRequestId(requestId)) return;
+    if (this.invalidated) {
+      this.publish({ kind: "codeSnapshotUnavailable", generation, requestId, reason: "disposed" });
+      return;
+    }
+    if (generation !== this.generation) {
+      this.publish({ kind: "codeSnapshotUnavailable", generation, requestId, reason: "generationMismatch" });
+      return;
+    }
+    const hasLocalEdit = this.pending || this.sequence > this.acknowledgedSequence;
+    this.cancelTimer();
+    this.pending = false;
+    const result =
+      !hasLocalEdit && this.acceptedInvalidReason
+        ? ({ valid: false, reason: this.acceptedInvalidReason } as const)
+        : this.readCode();
+    this.publish(
+      result.valid
+        ? { kind: "codeSnapshot", generation, sequence: this.sequence, requestId, code: result.code }
+        : {
+            kind: "codeSnapshotInvalid",
+            generation,
+            sequence: this.sequence,
+            requestId,
+            reason: result.reason
+          }
+    );
+  }
+
+  invalidate(reason: "disposed" | "sequenceExhausted" = "disposed"): void {
+    if (this.invalidated) return;
+    this.cancelPending();
+    this.invalidated = true;
+    if (this.generation > 0) {
+      this.publish({ kind: "codePreviewUnavailable", generation: this.generation, reason });
+    }
+  }
+
+  hasUnacknowledgedEdit(): boolean {
+    return this.pending || this.sequence > this.acknowledgedSequence;
+  }
+
+  dispose(): void {
+    if (this.invalidated) return;
+    let failure: unknown;
+    if (this.pending) {
+      this.cancelTimer();
+      try {
+        this.publishPendingEdit();
+      } catch (error) {
+        failure = error;
+      }
+    }
+    try {
+      this.invalidate("disposed");
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== undefined) throw failure;
+  }
+
+  private flush(): void {
+    this.timerScheduled = false;
+    this.timer = undefined;
+    this.publishPendingEdit();
+  }
+
+  private publishPendingEdit(): void {
+    if (!this.pending || this.generation === 0 || this.invalidated) return;
+    this.pending = false;
+    const result = this.readCode();
+    this.publish(
+      result.valid
+        ? { kind: "codeChanged", generation: this.generation, sequence: this.sequence, code: result.code }
+        : { kind: "codeInvalid", generation: this.generation, sequence: this.sequence, reason: result.reason }
+    );
+  }
+
+  private cancelTimer(): void {
+    if (this.timerScheduled) this.scheduler.cancel(this.timer);
+    this.timerScheduled = false;
+    this.timer = undefined;
+  }
+
+  private cancelPending(): void {
+    this.cancelTimer();
+    this.pending = false;
+  }
+}
 
 export function isCodePreviewHostMessage(value: unknown): value is CodePreviewHostMessage {
-  if (!hasExactKeys(value, ["kind", "code", "editable", "runtimeIdentity"])) return false;
-  if (value.kind !== "codePreview" || typeof value.code !== "string" || typeof value.editable !== "boolean") {
-    return false;
+  if (hasExactKeys(value, ["kind", "generation", "requestId"])) {
+    return (
+      value.kind === "codePreviewSnapshotRequest" &&
+      isPositiveSafeInteger(value.generation) &&
+      isCodePreviewRequestId(value.requestId)
+    );
   }
-  if (value.runtimeIdentity !== null && !isRuntimeIdentity(value.runtimeIdentity)) return false;
-  return !value.editable || (value.runtimeIdentity !== null && value.runtimeIdentity.codeDialect !== null);
+  if (!hasValidHostState(value)) return false;
+  if (hasExactKeys(value, ["kind", "generation", "acknowledgedSequence", "code", "editable", "runtimeIdentity"])) {
+    return value.kind === "codePreview" && typeof value.code === "string" && validateCodePreviewText(value.code).valid;
+  }
+  if (hasExactKeys(value, ["kind", "generation", "acknowledgedSequence", "reason", "editable", "runtimeIdentity"])) {
+    if (value.kind === "codePreviewInvalid") return isCodePreviewInvalidReason(value.reason);
+    return (
+      value.kind === "codePreviewUnavailable" && value.reason === "generationExhausted" && value.editable === false
+    );
+  }
+  return false;
 }
 
 export function isCodePreviewWebviewMessage(value: unknown): value is CodePreviewWebviewMessage {
   if (hasExactKeys(value, ["kind"])) return value.kind === "ready";
-  return hasExactKeys(value, ["kind", "code"]) && value.kind === "codeChanged" && typeof value.code === "string";
+  if (hasExactKeys(value, ["kind", "generation", "sequence"])) {
+    return value.kind === "codePending" && hasValidEditIdentity(value);
+  }
+  if (hasExactKeys(value, ["kind", "generation", "sequence", "code"])) {
+    return (
+      value.kind === "codeChanged" &&
+      hasValidEditIdentity(value) &&
+      typeof value.code === "string" &&
+      validateCodePreviewText(value.code).valid
+    );
+  }
+  if (hasExactKeys(value, ["kind", "generation", "sequence", "reason"])) {
+    return value.kind === "codeInvalid" && hasValidEditIdentity(value) && isCodePreviewInvalidReason(value.reason);
+  }
+  if (hasExactKeys(value, ["kind", "generation", "sequence", "requestId", "code"])) {
+    return (
+      value.kind === "codeSnapshot" &&
+      isPositiveSafeInteger(value.generation) &&
+      isNonNegativeSafeInteger(value.sequence) &&
+      isCodePreviewRequestId(value.requestId) &&
+      typeof value.code === "string" &&
+      validateCodePreviewText(value.code).valid
+    );
+  }
+  if (hasExactKeys(value, ["kind", "generation", "sequence", "requestId", "reason"])) {
+    return (
+      value.kind === "codeSnapshotInvalid" &&
+      isPositiveSafeInteger(value.generation) &&
+      isNonNegativeSafeInteger(value.sequence) &&
+      isCodePreviewRequestId(value.requestId) &&
+      isCodePreviewInvalidReason(value.reason)
+    );
+  }
+  if (hasExactKeys(value, ["kind", "generation", "requestId", "reason"])) {
+    return (
+      value.kind === "codeSnapshotUnavailable" &&
+      isPositiveSafeInteger(value.generation) &&
+      isCodePreviewRequestId(value.requestId) &&
+      (value.reason === "disposed" || value.reason === "generationMismatch" || value.reason === "sequenceExhausted")
+    );
+  }
+  return (
+    hasExactKeys(value, ["kind", "generation", "reason"]) &&
+    value.kind === "codePreviewUnavailable" &&
+    isPositiveSafeInteger(value.generation) &&
+    (value.reason === "disposed" || value.reason === "sequenceExhausted")
+  );
+}
+
+function hasValidHostState(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (
+    !isPositiveSafeInteger((value as Record<string, unknown>).generation) ||
+    !isNonNegativeSafeInteger((value as Record<string, unknown>).acknowledgedSequence) ||
+    typeof (value as Record<string, unknown>).editable !== "boolean"
+  ) {
+    return false;
+  }
+  const identity = (value as Record<string, unknown>).runtimeIdentity;
+  if (identity !== null && !isRuntimeIdentity(identity)) return false;
+  return !(value as Record<string, unknown>).editable || (identity !== null && identity.codeDialect !== null);
+}
+
+function hasValidEditIdentity(value: Record<string, unknown>): boolean {
+  return isPositiveSafeInteger(value.generation) && isPositiveSafeInteger(value.sequence);
+}
+
+function isCodePreviewInvalidReason(value: unknown): value is CodePreviewInvalidReason {
+  return value === "codePoints" || value === "invalidUnicode" || value === "utf8Bytes";
+}
+
+function isCodePreviewRequestId(value: unknown): value is string {
+  return (
+    typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
+  );
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

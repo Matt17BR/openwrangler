@@ -45,6 +45,7 @@ function releaseEntries({ includeRFrameContract = true } = {}) {
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
     ["extension/media/codePreview.js", "export {};"],
+    ["extension/media/protocolLimits.generated.js", "export {};"],
     ["extension/media/notebookRenderer.js", "export function activate() {}"],
     ["extension/media/action-icon-dark.svg", "<svg></svg>"],
     ["extension/media/action-icon-light.svg", "<svg></svg>"],

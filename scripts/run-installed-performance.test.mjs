@@ -983,6 +983,15 @@ test("guarded packaging treats the pinned extension vendor asset as build-owned 
   assert.match(source, /new Set\(\[\.\.\.GENERATED_MEDIA_PACKAGE_FILES, \.\.\.GENERATED_EXTENSION_PACKAGE_FILES\]\)/u);
 });
 
+test("guarded packaging pins the generated Code Preview protocol-limit chunk", () => {
+  const source = readFileSync(new URL("./run-installed-performance.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /const GENERATED_MEDIA_PACKAGE_FILES = Object\.freeze\(\[[\s\S]*"media\/codePreview\.js",[\s\S]*"media\/protocolLimits\.generated\.js",[\s\S]*\]\);/u
+  );
+  assert.equal((source.match(/"media\/protocolLimits\.generated\.js"/gu) ?? []).length, 1);
+});
+
 test("pinned package inventory rejects a source file that appears only while createVSIX runs", () => {
   const pinnedBeforePackaging = ["package.json", "README.md", "LICENSE", "python/openwrangler_runtime/server.py"];
   const packageSource = packageSourceReceipt(pinnedBeforePackaging);
