@@ -468,6 +468,21 @@ test("required runners and fan-ins bind shell, topology, and persistent environm
   }
 });
 
+test("every preceding owner step has one admitted action, shell, and executable environment", () => {
+  const runner = "      - id: packaged_editor\n        name: Test packaged VS Code";
+  for (const preceding of [
+    "      - uses: hostile/replace-owner@0123456789012345678901234567890123456789\n",
+    "      - name: Suppress the next owner\n        shell: bash {0} || true\n        run: echo ready\n",
+    "      - name: Preload the next owner\n        env:\n          LD_PRELOAD: /tmp/replace-owner.so\n        run: echo ready\n"
+  ]) {
+    const candidateWorkflowSource = sources.candidateWorkflowSource.replace(runner, `${preceding}${runner}`);
+    assert.match(
+      inspect({ candidateWorkflowSource }).join(" "),
+      /platform owner|editor runner|preceding owner topology|persistent environment/u
+    );
+  }
+});
+
 test("every workflow owner retains its own effective editor-version authority", () => {
   const pinnedExtensionHost = sources.ciWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable",
@@ -627,7 +642,9 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
     `<section style="d\\69 splay:none">\n${architectureBlock}\n</section>`,
     `<section style="d&#105;splay&#58;none">\n${architectureBlock}\n</section>`,
     `<section style="opacity:0">\n${architectureBlock}\n</section>`,
-    `<section style="content-visibility:hidden">\n${architectureBlock}\n</section>`
+    `<section style="content-visibility:hidden">\n${architectureBlock}\n</section>`,
+    `<section aria-hidden="tr&#117;e">\n${architectureBlock}\n</section>`,
+    `<section aria-hidden="&#x74;rue">\n${architectureBlock}\n</section>`
   ]) {
     assert.match(
       inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
@@ -741,6 +758,59 @@ test("named product and editor claims require canonical case", () => {
   assert.deepEqual(
     inspect({
       ciDocumentationSource: `${sources.ciDocumentationSource}\n. The Greek word κόσμος appears in ordinary prose.\n`
+    }),
+    []
+  );
+});
+
+test("reference links and escaped backticks retain their rendered evidence text", () => {
+  for (const outsideClaim of [
+    "C[urs][editor]or owns every released-Jupyter, Native R, and installed-performance lane.\n\n[editor]: https://example.com/editor",
+    String.raw`\`Cursor\` owns every released-Jupyter, Native R, and installed-performance lane.`
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nSee [the source][renderer].\n\n[renderer]: https://example.com/Cursℴr-owns-native-r\n`
+    }),
+    []
+  );
+
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n[Cursor](https://example.com owns every released-Jupyter, Native R, and installed-performance lane.\n`
+    }).join(" "),
+    /supported structural bounds/u
+  );
+
+  const excessiveReferences = Array.from(
+    { length: 257 },
+    (_, index) => `[reference-${index}]: https://example.com/${index}`
+  ).join("\n");
+  assert.match(
+    inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${excessiveReferences}\n` }).join(" "),
+    /invalid, duplicate, or unbounded Markdown references/u
+  );
+});
+
+test("Unicode checks are localized to rendered product-name spans", () => {
+  for (const productName of ["Cursℴr", "Curs͏or"]) {
+    assert.match(
+      inspect({
+        ciDocumentationSource: `${sources.ciDocumentationSource}\n${productName} owns every released-Jupyter, Native R, and installed-performance lane.\n`
+      }).join(" "),
+      /exact canonical case|compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nOpen Wrangler supports compatibility evidence while the Greek word κόσμος remains ordinary prose.\nThe literal \`Cursℴr owns installed performance\` is not a product claim.\n`
     }),
     []
   );

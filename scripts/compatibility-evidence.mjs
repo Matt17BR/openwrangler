@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
@@ -44,6 +45,9 @@ const MAX_VISIBLE_HTML_TAGS = 4_096;
 const MAX_INLINE_HTML_ATTRIBUTE_BYTES = 16 * 1024;
 const MAX_CSS_DECLARATIONS = 64;
 const MAX_CSS_DECLARATION_BYTES = 2 * 1024;
+const MAX_MARKDOWN_REFERENCES = 256;
+const MAX_MARKDOWN_CONSTRUCTS = 4_096;
+const MAX_MARKDOWN_LABEL_BYTES = 4 * 1024;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const NON_VISIBLE_HTML_CONTAINERS = new Set([
@@ -150,6 +154,26 @@ const FORBIDDEN_OWNER_ENVIRONMENT_KEYS = new Set([
   "NPM_CONFIG_NODE_OPTIONS",
   "PATH",
   "SHELLOPTS"
+]);
+const EXECUTABLE_AFFECTING_ENVIRONMENT_KEY =
+  /^(?:DYLD_(?:INSERT_LIBRARIES|LIBRARY_PATH)|LD_(?:AUDIT|LIBRARY_PATH|PRELOAD)|NODE_PATH|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONPATH|R_ENVIRON(?:_USER)?|R_PROFILE(?:_USER)?|RUBYLIB|RUBYOPT)$/u;
+const EXPECTED_EXECUTION_JOB_DIGESTS = new Map([
+  ["candidate-acceptance.yml#contract", "edcefd5a94ea835fcc17302f60855c21c5fd7fb573e4767b67790a122870339d"],
+  ["candidate-acceptance.yml#platform", "5135e7b27c3f84e2e64b8fc8e90972d362dd25244d0a1961d520ddb9730a513f"],
+  ["candidate-acceptance.yml#r_platform", "c860354a5531502f874ad84dd6f8ab5467d6840a1ad9a8c67377bb47a1056b19"],
+  ["candidate-acceptance.yml#linux", "0d05d37d31c8db550f6656cfd7bdf87c64fc8e2ee1dca16bf87bcbcdd8aa49b4"],
+  ["candidate-acceptance.yml#performance", "742208d3e12c0e457982057e9597c61199603dc514d635e94d05ab986580813c"],
+  ["candidate-acceptance.yml#jupyter", "040e3c444c21df73b1a8fcae346f5313d37f1423c108594e0a1155183f2628f4"],
+  ["candidate-acceptance.yml#r_local", "bff916b54b6c77d4837bc0286de75af26609c1f9db2bad780b418a871753cbb8"],
+  ["candidate-acceptance.yml#acceptance", "be30a397772893af48880ecb9e02cf25f64337101087e1b75c82f775dee74ed0"],
+  ["ci.yml#canonical-editor", "f95b4ee15b7577fa12b8b6efed5f81a7d6368365e7f71bf6f8dc2813142f232d"],
+  ["ci.yml#r-contract-kernel", "7b35dea16f9052c1e87b70e95d3e73b0f78902774efededbe844c96ec2803abd"],
+  ["ci.yml#r-contract-protocol", "9c2fe55df6ea0269e1e24ac016df2e9098dda6ee9a94c6113d7e8175519e2244"],
+  ["ci.yml#validate", "8b643b91a6cdc6f0dae97703820bac61717351ffe822cdfa13667d67597c5548"],
+  [
+    "cross-platform.yml#r-4-4-scheduled-qualification",
+    "24c279583751f909e7302de68c7c0e7bf5b49bd8d4e06a9a23fa8868e1b3d8a1"
+  ]
 ]);
 const VISIBILITY_NEUTRAL_DISPLAY_VALUES = new Set([
   "block",
@@ -649,6 +673,26 @@ function exactKeys(value, expected) {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!record(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .filter((key) => !(key === "continue-on-error" && value[key] === false))
+      .sort()
+      .map((key) => [key, canonicalJsonValue(value[key])])
+  );
+}
+
+function exactExecutionJobTopology(workflowName, jobId, job) {
+  const expected = EXPECTED_EXECUTION_JOB_DIGESTS.get(`${workflowName}#${jobId}`);
+  if (expected === undefined || !record(job)) return false;
+  const digest = createHash("sha256")
+    .update(JSON.stringify(canonicalJsonValue(job)))
+    .digest("hex");
+  return digest === expected;
+}
+
 function continueOnErrorIsDisabled(owner) {
   return record(owner) && (!Object.hasOwn(owner, "continue-on-error") || owner["continue-on-error"] === false);
 }
@@ -673,7 +717,10 @@ function exactShell(step, expected) {
 function environmentCanReplaceOwner(environment) {
   if (environment === undefined) return false;
   if (!record(environment)) return true;
-  return Object.keys(environment).some((key) => FORBIDDEN_OWNER_ENVIRONMENT_KEYS.has(key.toUpperCase()));
+  return Object.keys(environment).some((key) => {
+    const normalized = key.toUpperCase();
+    return FORBIDDEN_OWNER_ENVIRONMENT_KEYS.has(normalized) || EXECUTABLE_AFFECTING_ENVIRONMENT_KEY.test(normalized);
+  });
 }
 
 function commandCanPersistentlyReplaceOwner(command) {
@@ -1052,6 +1099,7 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
   const ownersReachable = [...owners].every(
     ([owner, job]) =>
       record(job) &&
+      exactExecutionJobTopology(owner.slice(0, owner.indexOf("#")), owner.slice(owner.indexOf("#") + 1), job) &&
       canonicalJobExecutionEnvelope(owner.startsWith("ci.yml#") ? ciWorkflow : crossWorkflow, job) &&
       continueOnErrorIsDisabled(job) &&
       normalizedCondition(job.if) === EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS.get(owner) &&
@@ -1089,6 +1137,7 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
     resultOwner === validate.steps[2];
   const hasRequiredFanIn =
     record(validate) &&
+    exactExecutionJobTopology("ci.yml", "validate", validate) &&
     continueOnErrorIsDisabled(validate) &&
     normalizedCondition(validate.if) === "${{ always() && github.event_name == 'pull_request' }}" &&
     Array.isArray(validate.needs) &&
@@ -1283,6 +1332,9 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
     const job = workflow.jobs[jobId];
     if (!job) continue;
     const owner = `${workflowName}#${jobId}`;
+    if (!exactExecutionJobTopology(workflowName, jobId, job)) {
+      problems.push(`Compatibility owner ${owner} must retain its exact preceding owner topology.`);
+    }
     if (!continueOnErrorIsDisabled(job) || normalizedCondition(job.if) !== EXPECTED_OWNER_JOB_CONDITIONS.get(owner)) {
       problems.push(`Compatibility owner ${owner} must retain its exact effective condition.`);
     }
@@ -1545,12 +1597,15 @@ function hiddenHtmlContainer(tag, attributes, label, problems) {
     problems.push(`${label} contains an oversized HTML attribute list.`);
     return true;
   }
-  const style = /(?:^|\s)style\s*=\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)'|(?<bare>[^\s]+))/iu.exec(attributes);
+  const renderedAttributes = decodeRenderedEntities(attributes);
+  const style = /(?:^|\s)style\s*=\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)'|(?<bare>[^\s]+))/iu.exec(
+    renderedAttributes
+  );
   const styleValue = style?.groups?.double ?? style?.groups?.single ?? style?.groups?.bare ?? "";
   return (
     NON_VISIBLE_HTML_CONTAINERS.has(tag) ||
-    /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
-    /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?=\s|$)/iu.test(attributes) ||
+    /(?:^|\s)hidden(?:\s|=|$)/iu.test(renderedAttributes) ||
+    /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?=\s|$)/iu.test(renderedAttributes) ||
     styleHidesContainer(styleValue, label, problems)
   );
 }
@@ -1728,6 +1783,9 @@ function decodeRenderedEntities(claim) {
     ["amp", "&"],
     ["apos", "'"],
     ["gt", ">"],
+    ["invisiblecomma", "\u2063"],
+    ["invisibleplus", "\u2064"],
+    ["invisibletimes", "\u2062"],
     ["lt", "<"],
     ["lrm", "\u200e"],
     ["newline", "\n"],
@@ -1747,7 +1805,7 @@ function decodeRenderedEntities(claim) {
   ]);
   return claim.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
     const groups = args.at(-1);
-    if (groups.named) return named.get(groups.named.toLowerCase()) ?? "";
+    if (groups.named) return named.get(groups.named.toLowerCase()) ?? entity;
     const codePoint = Number.parseInt(groups.hex ?? groups.decimal, groups.hex ? 16 : 10);
     return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
       ? String.fromCodePoint(codePoint)
@@ -1769,63 +1827,172 @@ function renderedInlineHtml(claim) {
   return rendered.join("");
 }
 
-function renderedInlineMarkdown(claim) {
+function markdownUnescape(value) {
+  return value.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/gu, "$1");
+}
+
+function normalizedReferenceLabel(value) {
+  return markdownUnescape(value).trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+function extractMarkdownReferences(source, label, problems) {
+  const references = new Map();
+  const retained = [];
+  const pattern =
+    /^ {0,3}\[(?<label>(?:\\.|[^\]])+)\]:[\t ]*(?<destination><[^>\n]*>|\S+)(?:[\t ]+(?:"[^"\n]*"|'[^'\n]*'|\([^\n)]*\)))?[\t ]*$/u;
+  for (const line of source.split("\n")) {
+    const match = pattern.exec(line);
+    if (!match) {
+      retained.push(line);
+      continue;
+    }
+    const reference = normalizedReferenceLabel(match.groups.label);
+    if (
+      reference.length === 0 ||
+      Buffer.byteLength(match.groups.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      Buffer.byteLength(match.groups.destination, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      references.size >= MAX_MARKDOWN_REFERENCES ||
+      references.has(reference)
+    ) {
+      problems.push(`${label} contains invalid, duplicate, or unbounded Markdown references.`);
+      retained.push(line);
+      continue;
+    }
+    references.set(reference, true);
+    retained.push("");
+  }
+  return { source: retained.join("\n"), references };
+}
+
+function closingMarkdownBracket(source, start) {
+  let escaped = false;
+  let depth = 1;
+  for (let cursor = start; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "[") {
+      depth += 1;
+      if (depth > 8) return -1;
+    } else if (character === "]") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+  }
+  return -1;
+}
+
+function closingMarkdownDestination(source, start) {
+  let escaped = false;
+  let depth = 1;
+  for (let cursor = start; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "(") {
+      depth += 1;
+      if (depth > 8) return -1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+  }
+  return -1;
+}
+
+function renderedInlineMarkdown(claim, references) {
   const rendered = [];
   let cursor = 0;
+  let constructs = 0;
+  let unsupported = false;
   while (cursor < claim.length) {
+    if (
+      claim[cursor] === "\\" &&
+      cursor + 1 < claim.length &&
+      /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/u.test(claim[cursor + 1])
+    ) {
+      rendered.push(claim[cursor + 1]);
+      cursor += 2;
+      continue;
+    }
+    if (claim[cursor] === "`") {
+      constructs += 1;
+      if (constructs > MAX_MARKDOWN_CONSTRUCTS) return { text: rendered.join(""), unsupported: true };
+      let runEnd = cursor + 1;
+      while (claim[runEnd] === "`") runEnd += 1;
+      const marker = claim.slice(cursor, runEnd);
+      let closing = claim.indexOf(marker, runEnd);
+      while (closing >= 0 && (claim[closing - 1] === "`" || claim[closing + marker.length] === "`")) {
+        closing = claim.indexOf(marker, closing + marker.length);
+      }
+      if (closing >= 0) {
+        rendered.push(" ");
+        cursor = closing + marker.length;
+        continue;
+      }
+      rendered.push(marker);
+      cursor = runEnd;
+      continue;
+    }
     const image = claim[cursor] === "!" && claim[cursor + 1] === "[";
     if (claim[cursor] !== "[" && !image) {
       rendered.push(claim[cursor]);
       cursor += 1;
       continue;
     }
+    constructs += 1;
+    if (constructs > MAX_MARKDOWN_CONSTRUCTS) return { text: rendered.join(""), unsupported: true };
     const labelStart = cursor + (image ? 2 : 1);
-    let labelEnd = labelStart;
-    let escaped = false;
-    for (; labelEnd < claim.length; labelEnd += 1) {
-      const character = claim[labelEnd];
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === "]") {
-        break;
-      }
-    }
-    if (labelEnd >= claim.length || claim[labelEnd + 1] !== "(") {
-      rendered.push(claim.slice(cursor, Math.min(labelEnd + 1, claim.length)));
-      cursor = Math.min(labelEnd + 1, claim.length);
+    const labelEnd = closingMarkdownBracket(claim, labelStart);
+    if (labelEnd < 0 || Buffer.byteLength(claim.slice(labelStart, labelEnd), "utf8") > MAX_MARKDOWN_LABEL_BYTES) {
+      unsupported = true;
+      rendered.push(claim[cursor]);
+      cursor += 1;
       continue;
     }
-    let destinationEnd = labelEnd + 2;
-    let destinationDepth = 1;
-    escaped = false;
-    for (; destinationEnd < claim.length; destinationEnd += 1) {
-      const character = claim[destinationEnd];
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === "(") {
-        destinationDepth += 1;
-        if (destinationDepth > 8) break;
-      } else if (character === ")") {
-        destinationDepth -= 1;
-        if (destinationDepth === 0) break;
+    const label = claim.slice(labelStart, labelEnd);
+    let consumedEnd = labelEnd + 1;
+    let linked = false;
+    if (claim[labelEnd + 1] === "(") {
+      const destinationEnd = closingMarkdownDestination(claim, labelEnd + 2);
+      if (destinationEnd >= 0) {
+        linked = true;
+        consumedEnd = destinationEnd + 1;
+      } else {
+        unsupported = true;
       }
+    } else if (claim[labelEnd + 1] === "[") {
+      const referenceEnd = closingMarkdownBracket(claim, labelEnd + 2);
+      if (referenceEnd >= 0) {
+        const explicitReference = claim.slice(labelEnd + 2, referenceEnd);
+        const reference = normalizedReferenceLabel(explicitReference.length === 0 ? label : explicitReference);
+        if (references.has(reference)) {
+          linked = true;
+          consumedEnd = referenceEnd + 1;
+        }
+      } else {
+        unsupported = true;
+      }
+    } else if (references.has(normalizedReferenceLabel(label))) {
+      linked = true;
     }
-    if (destinationDepth !== 0) {
-      rendered.push(claim.slice(cursor));
-      break;
+    if (!linked) {
+      rendered.push(claim[cursor]);
+      cursor += 1;
+      continue;
     }
-    rendered.push(claim.slice(labelStart, labelEnd));
-    cursor = destinationEnd + 1;
+    rendered.push(markdownUnescape(label));
+    cursor = consumedEnd;
   }
-  return rendered.join("");
+  return { text: rendered.join(""), unsupported };
 }
 
 function foldEvidenceConfusables(claim) {
-  return [...claim]
+  return [...claim.normalize("NFKC")]
     .map((character) => {
       const mapped = EVIDENCE_CONFUSABLES.get(character);
       if (mapped !== undefined) return mapped;
@@ -1835,26 +2002,86 @@ function foldEvidenceConfusables(claim) {
     .join("");
 }
 
-function renderedProseClaim(claim) {
-  return decodeRenderedEntities(renderedInlineHtml(renderedInlineMarkdown(claim.replace(/(`+)[\s\S]*?\1/gu, " "))))
-    .replace(/[*_~]+/gu, "")
-    .replace(/[\u00ad\u200b-\u200f\u2060-\u2064\u206a-\u206f\ufeff]/gu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
+function renderedProseClaim(claim, references) {
+  const renderedMarkdown = renderedInlineMarkdown(claim, references);
+  return {
+    text: decodeRenderedEntities(renderedInlineHtml(renderedMarkdown.text))
+      .replace(/[*_~]+/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim(),
+    unsupportedMarkdown: renderedMarkdown.unsupported
+  };
+}
+
+function evidenceProductCandidates(claim) {
+  const words = [...claim.matchAll(/[\p{L}\p{N}\p{M}\p{Default_Ignorable_Code_Point}]+/gu)].map((match) => {
+    const visible = match[0].replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+    return {
+      raw: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+      normalized: foldEvidenceConfusables(visible).toLowerCase()
+    };
+  });
+  const candidates = [];
+  const single = new Map([
+    ["antigravity", "Antigravity"],
+    ["cursor", "Cursor"],
+    ["openvsx", "Open VSX"],
+    ["openwrangler", "Open Wrangler"],
+    ["vscode", "VS Code"]
+  ]);
+  const ordinaryCursorPredecessors = new Set([
+    "a",
+    "and",
+    "its",
+    "literate",
+    "or",
+    "primary",
+    "same",
+    "source",
+    "the",
+    "under"
+  ]);
+  const ordinaryCursorFollowers = new Set(["chunk", "execution", "is", "position", "selection", "selections"]);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const expected = single.get(word.normalized);
+    const before = claim[word.start - 1] ?? "";
+    const after = claim[word.end] ?? "";
+    const ordinaryCursor =
+      word.raw === "cursor" &&
+      (ordinaryCursorPredecessors.has(words[index - 1]?.normalized) ||
+        ordinaryCursorFollowers.has(words[index + 1]?.normalized));
+    if (expected && !ordinaryCursor && !/[./_?=&-]/u.test(before) && !/[./_?=&-]/u.test(after)) {
+      candidates.push({ name: expected, canonical: word.raw === expected });
+    }
+  }
+  const pairs = new Map([
+    ["open vsx", "Open VSX"],
+    ["open wrangler", "Open Wrangler"],
+    ["vs code", "VS Code"]
+  ]);
+  for (let index = 0; index + 1 < words.length; index += 1) {
+    const first = words[index];
+    const second = words[index + 1];
+    if (!/^\s+$/u.test(claim.slice(first.end, second.start))) continue;
+    const expected = pairs.get(`${first.normalized} ${second.normalized}`);
+    if (!expected) continue;
+    candidates.push({ name: expected, canonical: claim.slice(first.start, second.end) === expected });
+  }
+  return candidates;
 }
 
 function hasTokenStem(tokens, stems) {
   return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
 }
 
-function hasNonCanonicalName(claim, canonical, pattern) {
-  return [...claim.replace(/\s+/gu, " ").matchAll(pattern)].some((match) => match[0] !== canonical);
-}
-
-function structuredOwnershipViolation(claim) {
-  const renderedProse = renderedProseClaim(claim);
-  const renderedClaim = foldEvidenceConfusables(renderedProse);
-  const tokens = claimTokens(renderedClaim);
+function structuredOwnershipViolation(claim, references) {
+  const rendered = renderedProseClaim(claim, references);
+  const renderedProse = rendered.text;
+  const tokens = claimTokens(renderedProse);
+  const products = evidenceProductCandidates(renderedProse);
   const has = (...values) => values.every((value) => tokens.has(value));
   const ownsEvidence = hasTokenStem(tokens, [
     "own",
@@ -1887,29 +2114,15 @@ function structuredOwnershipViolation(claim) {
         has("installed", "performance") ||
         tokens.has("fork"))) ||
     (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
-  const namedProductContext =
-    /\b(?:antigravity|cursor|open vsx|open wrangler|openvsx|openwrangler|vs code|vscode)\b/iu.test(renderedClaim);
-  if (renderedClaim !== renderedProse && ownsEvidence && (cursorProductContext || namedProductContext)) {
+  const namedProductContext = products.length > 0;
+  const cursorProduct = products.some((product) => product.name === "Cursor");
+  if (rendered.unsupportedMarkdown && ownsEvidence) {
+    return "evidence-sensitive Markdown must remain inside the supported structural bounds";
+  }
+  if (ownsEvidence && (cursorProductContext || namedProductContext) && products.some((product) => !product.canonical)) {
     return "named product and editor claims must retain exact canonical case";
   }
-  if (cursorProductContext && hasNonCanonicalName(renderedClaim, "Cursor", /(?<![./_-])\bcursor\b(?![./_-])/giu)) {
-    return "named product and editor claims must retain exact canonical case";
-  }
-  if (
-    ownsEvidence &&
-    [
-      ["VS Code", /\bvs code\b/giu],
-      ["VS Code", /(?<![./_-])\bvscode\b(?![./_-])/giu],
-      ["Open Wrangler", /\bopen wrangler\b/giu],
-      ["Open Wrangler", /(?<![./_-])\bopenwrangler\b(?![./_-])/giu],
-      ["Antigravity", /(?<![./_?=&-])\bantigravity\b(?![./_?=&-])/giu],
-      ["Open VSX", /\bopen vsx\b/giu],
-      ["Open VSX", /(?<![./_-])\bopenvsx\b(?![./_-])/giu]
-    ].some(([canonical, pattern]) => hasNonCanonicalName(renderedClaim, canonical, pattern))
-  ) {
-    return "named product and editor claims must retain exact canonical case";
-  }
-  if (/\bCursor\b/u.test(renderedClaim) && cursorRestrictedTarget && ownsEvidence) {
+  if (cursorProduct && cursorRestrictedTarget && ownsEvidence) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
   if (
@@ -1927,7 +2140,8 @@ function structuredOwnershipViolation(claim) {
 }
 
 function inspectStructuredOwnershipClaims(authority, source, visible, problems) {
-  let outside = normalizedVisibleRecord(visible);
+  const markdown = extractMarkdownReferences(visible, source, problems);
+  let outside = normalizedVisibleRecord(markdown.source);
   for (const record of compatibilityClaimTexts(authority, source, problems)) {
     outside = outside.replace(record, " ");
   }
@@ -1937,7 +2151,7 @@ function inspectStructuredOwnershipClaims(authority, source, visible, problems) 
     return;
   }
   for (const claim of claims) {
-    const violation = structuredOwnershipViolation(claim);
+    const violation = structuredOwnershipViolation(claim, markdown.references);
     if (violation) problems.push(`${source}: ${violation}.`);
   }
 }
