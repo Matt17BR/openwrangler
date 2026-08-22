@@ -1464,6 +1464,183 @@ test("cleaning-history nominalized and infinitive capabilities require bounded o
   );
 });
 
+test("cleaning-history coordinated capabilities use the authoritative connector vocabulary", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = ["and", "but", "however", "or", "plus", "so", "therefore", "yet"].map(
+    (connector) =>
+      `Committed steps cannot be reordered ${connector} reordered unless the latest committed step is selected.`
+  );
+  const truthful = [
+    "Committed steps remain visible plus edit the report unless the latest committed step is selected.",
+    "Committed steps remain visible but delete the report unless the latest committed step is selected.",
+    "Committed steps remain visible yet inspect the report unless the latest committed step is selected."
+  ];
+  const overLimit =
+    "Committed steps can be inspected plus edited but deleted yet reordered unless the latest committed step is selected.";
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overLimit)
+      }),
+    /exceeds the 3-capability coordination limit/u,
+    overLimit
+  );
+});
+
+test("cleaning-history only-conditions bind atomically while bare conditions remain non-exclusive", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps can be inspected and edited only when the latest committed step is selected.",
+    "Only if the latest committed step is selected, committed steps can be inspected and edited.",
+    "Committed steps remain visible. Editing them is available only if the latest committed step is selected.",
+    "Committed steps remain visible. Only when the latest committed step is selected, to edit them is available.",
+    "Committed steps cannot be reordered only when the latest committed step is selected.",
+    "Only if the latest committed step is selected, committed steps cannot be reordered.",
+    `Undo is available only when ${"the ".repeat(34)}latest committed step is selected.`
+  ];
+  const truthful = [
+    "Undo is available only when the latest committed step is selected.",
+    "Undo is available only if the latest committed step is selected.",
+    "Committed steps can be inspected and edited when the latest committed step is selected.",
+    "Committed steps can be inspected and edited if the latest committed step is selected.",
+    "Committed steps cannot be reordered when the latest committed step is selected.",
+    "Committed steps cannot be reordered if the latest committed step is selected."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history post-predicate anaphors survive context and current unrelated subjects mask history", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps remain visible. Editing them in the toolbar is unavailable.",
+    "Committed steps remain visible. Inspection of them in the native interface is unavailable.",
+    "Committed steps remain visible. Deletion of them from the toolbar is unavailable."
+  ];
+  const truthful = [
+    "Committed steps remain visible, reports remain open, editing is unavailable.",
+    "Committed steps remain visible, the report remains open, to edit is unavailable.",
+    "Committed steps remain visible, reports remain open, editing them is unavailable.",
+    "Committed steps remain visible. The report's editing is unavailable."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history singular and plural capability nominalizations are symmetric", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Edit is unavailable.",
+    "Edits are unavailable.",
+    "Inspection is unavailable.",
+    "Inspections are unavailable.",
+    "Deletion is unavailable.",
+    "Deletions are unavailable."
+  ];
+  const truthful = [
+    "The report edit is unavailable.",
+    "Report edits are unavailable.",
+    "The report inspection is unavailable.",
+    "Report inspections are unavailable.",
+    "The report deletion is unavailable.",
+    "Report deletions are unavailable."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history predicate work is explicitly bounded before clause analysis", () => {
   const model = cleaningHistoryModel();
   const atLimit = `Applied ${"edit ".repeat(512)}.`;

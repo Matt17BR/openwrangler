@@ -759,6 +759,11 @@ const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
 });
 const cleaningHistoryClauseConnectorRoles = cleaningHistoryClauseBoundaryGrammar.connectorRoles;
 const cleaningHistoryClausePunctuationRoles = cleaningHistoryClauseBoundaryGrammar.punctuationRoles;
+const cleaningHistoryCoordinateConnectors = new Set(
+  Object.entries(cleaningHistoryClauseConnectorRoles)
+    .filter(([, role]) => role === "coordinate")
+    .map(([connector]) => connector)
+);
 const cleaningHistoryPassiveCapabilityAuxiliaries = new Set(["am", "are", "be", "been", "being", "is", "was", "were"]);
 const cleaningHistoryBarePassiveCapabilities = new Set([
   "amended",
@@ -779,7 +784,15 @@ const cleaningHistoryBarePassiveCapabilities = new Set([
   "shuffled",
   "undone"
 ]);
-const cleaningHistoryNominalizedCapabilities = new Set(["deletion", "editing", "inspection"]);
+const cleaningHistoryNominalizedCapabilities = new Set([
+  "deletion",
+  "deletions",
+  "edit",
+  "editing",
+  "edits",
+  "inspection",
+  "inspections"
+]);
 const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
 const cleaningHistoryCapabilityStatus =
   /^(?:available|blocked|disabled|disallowed|enabled|forbidden|impossible|limited|offered|prohibited|reserved|restricted|supported|unavailable|unsupported)$/u;
@@ -1109,6 +1122,7 @@ function cleaningHistoryClauseBoundaryKind(tokens, index, operationCounter = und
   }
   const connectorRole = cleaningHistoryConnectorRole(token);
   if (connectorRole === undefined) return undefined;
+  if (["if", "when"].includes(token) && tokens[index - 1] === "only") return undefined;
   if (
     connectorRole === "designation-sensitive" &&
     cleaningHistoryAsIntroducesExampleDesignation(tokens, index, operationCounter)
@@ -1668,7 +1682,11 @@ function cleaningHistoryScope(tokens) {
 }
 
 function cleaningHistoryPredicateKind(token) {
-  if (/^(?:inspect|inspects|inspected|inspecting|inspection|inspectable|uninspectable|noninspectable)$/u.test(token)) {
+  if (
+    /^(?:inspect|inspects|inspected|inspecting|inspection|inspections|inspectable|uninspectable|noninspectable)$/u.test(
+      token
+    )
+  ) {
     return "inspect";
   }
   if (
@@ -1793,15 +1811,24 @@ function cleaningHistoryCoordinatedBarePassiveContinuation(tokens, predicateInde
   if (
     predicateIndex !== 0 ||
     !cleaningHistoryBarePassiveCapabilities.has(tokens[predicateIndex]) ||
-    !(separatorBefore === "," || ["and", "or"].includes(separatorBefore))
+    !(separatorBefore === "," || cleaningHistoryCoordinateConnectors.has(separatorBefore))
   ) {
     return false;
   }
   const suffix = tokens.slice(predicateIndex + 1);
   return (
     suffix.length <= CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW &&
-    suffix.every((token) => isCleaningHistoryGrammarToken(token))
+    suffix.every(
+      (token, index) =>
+        isCleaningHistoryGrammarToken(token) ||
+        isCleaningHistoryNoun(suffix, index) ||
+        (["if", "when"].includes(token) && suffix[index - 1] === "only")
+    )
   );
+}
+
+function cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject) {
+  return currentSubject ?? previousStatementSubject;
 }
 
 function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, antecedent) {
@@ -1811,12 +1838,17 @@ function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, a
   if (!nominalized && !infinitive) return undefined;
   const suffix = tokens.slice(predicateIndex + 1);
   const boundedSuffix = suffix.slice(0, CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW + 1);
+  const anaphorIndex = boundedSuffix.findIndex((token) => cleaningHistoryPostPredicateAnaphors.has(token));
+  const statusIndex = boundedSuffix.findIndex((token) => cleaningHistoryCapabilityStatus.test(token));
+  if (anaphorIndex < 0 && statusIndex < 0) return undefined;
+  const ownershipPrefix = anaphorIndex >= 0 ? boundedSuffix.slice(0, anaphorIndex + 1) : boundedSuffix;
   if (
-    boundedSuffix.some(
+    ownershipPrefix.some(
       (token, index) =>
         !isCleaningHistoryGrammarToken(token) &&
-        !isCleaningHistoryNoun(boundedSuffix, index) &&
-        !cleaningHistoryPostPredicateAnaphors.has(token)
+        !isCleaningHistoryNoun(ownershipPrefix, index) &&
+        !cleaningHistoryPostPredicateAnaphors.has(token) &&
+        !(["if", "when"].includes(token) && ownershipPrefix[index - 1] === "only")
     )
   ) {
     return undefined;
@@ -1826,12 +1858,13 @@ function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, a
       `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
     );
   }
-  const anaphorIndex = suffix.findIndex((token) => cleaningHistoryPostPredicateAnaphors.has(token));
-  const statusIndex = suffix.findIndex((token) => cleaningHistoryCapabilityStatus.test(token));
   if (anaphorIndex >= 0) {
-    return antecedent?.owner === "cleaning" ? { ...antecedent, explicit: false } : undefined;
+    return antecedent?.owner === "cleaning"
+      ? { ...antecedent, capabilityObjectEstablished: true, explicit: false }
+      : undefined;
   }
   if (statusIndex < 0) return undefined;
+  if (antecedent?.owner === "unrelated") return undefined;
   return antecedent?.owner === "cleaning"
     ? { ...antecedent, explicit: false }
     : { owner: "cleaning", scope: "single", explicit: false };
@@ -1884,6 +1917,7 @@ function cleaningHistoryExceptionIndex(tokens) {
     if (["all", "every"].includes(token)) universalSeen = true;
     if (
       ["except", "unless", "apart", "save"].includes(token) ||
+      (["if", "when"].includes(token) && tokens[index - 1] === "only") ||
       (token === "than" && ["other", "others"].includes(tokens[index - 1])) ||
       (token === "but" && universalSeen) ||
       (token === "exception" &&
@@ -1898,8 +1932,11 @@ function cleaningHistoryExceptionIndex(tokens) {
 function cleaningHistoryException(record) {
   const sourceTokens = record.exceptionTokens ?? record.clauseTokens;
   const index = cleaningHistoryExceptionIndex(sourceTokens);
-  if (index < 0) return { present: false, validLatest: false };
+  if (index < 0) return { exclusiveCondition: false, present: false, validLatest: false };
   const tokens = sourceTokens.slice(index + 1);
+  const exclusiveCondition = sourceTokens[index - 1] === "only" && ["if", "when"].includes(sourceTokens[index]);
+  const exclusiveConditionBounded =
+    !exclusiveCondition || sourceTokens.length - (index - 1) <= CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX;
   const antecedent = record.antecedent?.owner === "cleaning" ? record.antecedent : record.subject;
   const hasLatest =
     cleaningHistoryScope(tokens) === "latest" ||
@@ -1920,9 +1957,11 @@ function cleaningHistoryException(record) {
       !/^(?:exception|exceptions)$/u.test(token)
   );
   return {
+    exclusiveCondition,
     present: true,
     validLatest:
       hasLatest &&
+      exclusiveConditionBounded &&
       !hasPrior &&
       !hasMulti &&
       !unrelated &&
@@ -1994,6 +2033,7 @@ function cleaningHistoryAtomicExceptionIndex(tokens) {
   if (tokens.length > CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX) return -1;
   const index = cleaningHistoryExceptionIndex(tokens);
   if (index === 0) return index;
+  if (index === 1 && tokens[0] === "only" && ["if", "when"].includes(tokens[index])) return index;
   if (index === 1 && tokens[0] === "other" && tokens[index] === "than") return index;
   if (index === 1 && ["all", "every"].includes(tokens[0]) && tokens[index] === "but") return index;
   if (
@@ -2076,12 +2116,12 @@ function cleaningHistoryPredicateRecords(rendered) {
       const coordinatedBarePassive = coordinatedBarePassiveCandidate;
       let subject = cleaningHistorySubject(segment.tokens, subjectProbeIndex);
       if (subject.owner === "none") {
-        const antecedent = currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject;
+        const antecedent = cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject);
         subject =
           cleaningHistoryPostPredicateCapabilitySubject(segment.tokens, subjectProbeIndex, antecedent) ?? subject;
       }
       if (subject.owner === "anaphor") {
-        const inherited = currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject;
+        const inherited = cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject);
         subject = inherited?.owner === "cleaning" ? { ...inherited, explicit: false } : subject;
         if (subject.owner === "cleaning") {
           const localScope = cleaningHistoryScope(segment.tokens.slice(0, subjectProbeIndex));
@@ -2131,7 +2171,7 @@ function cleaningHistoryPredicateRecords(rendered) {
           const exceptionContinuation =
             priorRecord !== undefined &&
             cleaningHistoryExceptionIndex(priorRecord.clauseTokens) >= 0 &&
-            ["and", "or", "plus"].includes(segment.separatorBefore);
+            cleaningHistoryCoordinateConnectors.has(segment.separatorBefore);
           const cleaningContinuation = isCleaningHistoryBareUndoContinuation(priorRecord, segment.tokens);
           if (exceptionContinuation || cleaningContinuation) {
             priorRecord.clauseTokens.push(
@@ -2144,10 +2184,22 @@ function cleaningHistoryPredicateRecords(rendered) {
           }
         }
       }
+      const inlineExclusiveConditionIndex = segment.tokens.findIndex(
+        (token, index) => ["if", "when"].includes(token) && segment.tokens[index - 1] === "only"
+      );
+      const inlineExclusiveConditionCandidate =
+        inlineExclusiveConditionIndex > 0 ? segment.tokens.slice(inlineExclusiveConditionIndex - 1) : undefined;
+      const inlineExclusiveConditionTokens =
+        inlineExclusiveConditionCandidate !== undefined &&
+        inlineExclusiveConditionCandidate.length <= CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX
+          ? inlineExclusiveConditionCandidate
+          : undefined;
       for (const predicate of predicates.filter(Boolean)) {
         const predicateIndex = cleaningHistorySemanticPredicateIndex(predicate.kind, segment.tokens, predicate.index);
         let recordSubject = cleaningHistorySubject(segment.tokens, predicateIndex);
-        if (["none", "anaphor"].includes(recordSubject.owner)) recordSubject = subject;
+        if (subject.capabilityObjectEstablished === true || ["none", "anaphor"].includes(recordSubject.owner)) {
+          recordSubject = subject;
+        }
         const laterSemanticPredicate = cleaningHistorySemanticPredicateIndex(
           predicate.kind,
           segment.tokens,
@@ -2164,6 +2216,8 @@ function cleaningHistoryPredicateRecords(rendered) {
           recordSubject = { owner: "cleaning", scope: "unknown", explicit: false };
         }
         const inheritedCoordinatedException = coordinatedBarePassive ? priorRecord?.exceptionTokens : undefined;
+        const ownedExceptionTokens =
+          atomicExceptionForPredicate ?? inheritedCoordinatedException ?? inlineExclusiveConditionTokens;
         const record = {
           kind: predicate.kind,
           segmentTokens: segment.tokens,
@@ -2171,16 +2225,18 @@ function cleaningHistoryPredicateRecords(rendered) {
           clausePredicateIndex: clausePrefix.length + predicateIndex,
           predicateIndex,
           subject: recordSubject,
-          antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject,
-          exceptionTokens:
-            recordSubject.owner === "cleaning"
-              ? (atomicExceptionForPredicate ?? inheritedCoordinatedException)
-              : undefined,
+          antecedent: cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject),
+          exceptionTokens: recordSubject.owner === "cleaning" ? ownedExceptionTokens : undefined,
           coordinatedCapabilityPredecessors:
             recordSubject.owner === "cleaning" && coordinatedBarePassive
               ? [...coordinatedCapabilityPredecessors, priorRecord]
               : []
         };
+        if (recordSubject.owner === "cleaning" && inlineExclusiveConditionTokens !== undefined) {
+          for (const predecessor of record.coordinatedCapabilityPredecessors) {
+            predecessor.exceptionTokens = [...inlineExclusiveConditionTokens];
+          }
+        }
         statementRecords.push(record);
         records.push(record);
         immediatelyPriorRecord = record;
@@ -2205,6 +2261,7 @@ function cleaningHistoryRecordContradicts(record) {
   );
   const exception = cleaningHistoryException(record);
   if (record.kind === "undo") {
+    if (exception.exclusiveCondition) return polarity === "negative" || !exception.validLatest;
     const targetTokens = localTokens.slice(record.clausePredicateIndex);
     const noOtherLatest =
       latest && localTokens.includes("no") && localTokens.some((token) => ["other", "others"].includes(token));
