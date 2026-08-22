@@ -12,10 +12,8 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
-  opendirSync,
   readdirSync,
   readFileSync,
-  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -24,26 +22,15 @@ import {
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { performance as nodePerformance } from "node:perf_hooks";
 import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import {
-  CORE_SCHEMA,
-  EVENT_ALIAS,
-  EVENT_DOCUMENT,
-  EVENT_MAPPING,
-  EVENT_POP,
-  EVENT_SCALAR,
-  EVENT_SEQUENCE,
-  SCALAR_STYLE_PLAIN,
-  load as parseYaml,
-  mergeTag,
-  parseEvents as parseYamlEvents
-} from "js-yaml";
+import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import {
   CI_CLASSIFIER_OUTPUTS,
   classifyCiChange,
@@ -61,6 +48,19 @@ import {
 } from "./require-ci-results.mjs";
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
 import { inspectVsixEntries } from "./vsix-contents.mjs";
+import {
+  BOUNDED_WORKFLOW_FILE_OPEN_FLAGS,
+  WORKFLOW_DIRECTORY,
+  WORKFLOW_YAML_DEPTH_LIMIT,
+  WORKFLOW_YAML_LOAD_OPTIONS,
+  WORKFLOW_YAML_NODE_LIMIT,
+  inspectNodeToolchainContract,
+  isGithubWorkflowFile,
+  loadBoundedNodeToolchainWorkflowDocuments,
+  loadRepositoryWorkflowInventory,
+  parseBoundedWorkflowYaml,
+  readBoundedNoFollowFile
+} from "./node-toolchain-contract.mjs";
 
 const workflowPath = (name) => posix.join(".github", "workflows", name);
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -73,7 +73,6 @@ const TESTING_DOCUMENTATION_FILE_LIMIT = 512 * 1024;
 const CAPABILITY_JSON_DEPTH_LIMIT = 64;
 const CAPABILITY_JSON_NODE_LIMIT = 20_000;
 const CAPABILITY_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-const BOUNDED_WORKFLOW_FILE_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const WORKFLOW_FIFO_PROBE_ARGUMENT = "--open-bounded-workflow-fifo";
 const WORKFLOW_LEGACY_FIFO_PROBE_ARGUMENT = "--open-legacy-workflow-fifo";
 const WORKFLOW_FIFO_READY_MARKER = Buffer.from("open-wrangler-fifo-ready-v1\n", "utf8");
@@ -83,24 +82,11 @@ const WORKFLOW_FIFO_PROBE_TIMEOUT_MS = 2_000;
 const WORKFLOW_FIFO_SETTLEMENT_TIMEOUT_MS = 2_000;
 const WORKFLOW_FIFO_TERM_GRACE_MS = 100;
 const WORKFLOW_FIFO_FINAL_DISPOSITION_MS = 100;
-const WORKFLOW_YAML_NODE_LIMIT = 20_000;
-const WORKFLOW_YAML_DEPTH_LIMIT = 64;
-const WORKFLOW_YAML_ALIAS_LIMIT = 0;
-const WORKFLOW_YAML_MERGE_KEY_LIMIT = 0;
 const REQUIRED_CHECK_EXPRESSION_LIMIT = 64;
 const REQUIRED_CHECK_MATCH_WORK_LIMIT = 16 * 1024;
 const REQUIRED_CHECK_EXPRESSION_PATTERN = /\$\{\{[^{}]{1,1024}\}\}/gu;
-const WORKFLOW_YAML_SCHEMA = CORE_SCHEMA.withTags(mergeTag);
-const WORKFLOW_YAML_LOAD_OPTIONS = Object.freeze({
-  maxAliases: WORKFLOW_YAML_ALIAS_LIMIT,
-  maxDepth: WORKFLOW_YAML_DEPTH_LIMIT,
-  maxTotalMergeKeys: WORKFLOW_YAML_MERGE_KEY_LIMIT,
-  schema: WORKFLOW_YAML_SCHEMA
-});
-const WORKFLOW_INVENTORY_LIMIT = 128;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAPABILITY_GRAPH_PATH = "scripts/fixtures/ci-capabilities.json";
-const WORKFLOW_DIRECTORY = ".github/workflows";
 const CAPABILITY_WORKFLOW_FILES = Object.freeze({
   pull_request: ".github/workflows/ci.yml",
   codeql: ".github/workflows/codeql.yml",
@@ -121,34 +107,7 @@ const CAPABILITY_WORKFLOW_TERMINALS = Object.freeze({
 });
 const CAPABILITY_FILES = new Set([CAPABILITY_GRAPH_PATH, ...Object.values(CAPABILITY_WORKFLOW_FILES)]);
 
-function fileIdentity(status) {
-  return Object.freeze({
-    ctimeNs: status.ctimeNs,
-    dev: status.dev,
-    gid: status.gid,
-    ino: status.ino,
-    mode: status.mode,
-    mtimeNs: status.mtimeNs,
-    nlink: status.nlink,
-    size: status.size,
-    uid: status.uid
-  });
-}
-
-function sameFileIdentity(left, right) {
-  return Object.keys(left).every((key) => left[key] === right[key]);
-}
-
-function closeDescriptor(descriptor, primaryError) {
-  try {
-    closeSync(descriptor);
-  } catch (error) {
-    return primaryError ?? error;
-  }
-  return primaryError;
-}
-
-function canonicalContainedPath(root, relativePath, allowedPaths) {
+function readBoundedRepositoryText(relativePath, maxBytes) {
   assert.equal(typeof relativePath, "string", "bounded repository paths must be strings");
   assert.doesNotMatch(relativePath, /[\\\0]/u, `${relativePath} must use a canonical repository-relative path`);
   assert.equal(posix.normalize(relativePath), relativePath, `${relativePath} must be normalized`);
@@ -157,172 +116,15 @@ function canonicalContainedPath(root, relativePath, allowedPaths) {
     false,
     `${relativePath} escapes the root`
   );
-  if (allowedPaths !== undefined) {
-    assert.equal(allowedPaths.has(relativePath), true, `${relativePath} is not an allowlisted repository file`);
-  }
-  const canonicalRoot = realpathSync.native(resolve(root));
-  assert.equal(canonicalRoot, resolve(root), "the repository root must be one canonical directory");
-  const absolutePath = resolve(canonicalRoot, ...relativePath.split("/"));
-  const containedPath = relative(canonicalRoot, absolutePath);
-  assert.equal(isAbsolute(containedPath), false, `${relativePath} must stay below the repository root`);
-  assert.doesNotMatch(containedPath, /^(?:\.\.(?:[/\\]|$))/u, `${relativePath} escapes the repository root`);
-  return { absolutePath, canonicalRoot };
-}
-
-function openDirectoryChain(root, components, hooks = {}) {
-  const receipts = [];
-  let currentPath = root;
-  try {
-    for (const component of [undefined, ...components]) {
-      if (component !== undefined) currentPath = resolve(currentPath, component);
-      let descriptor;
-      try {
-        descriptor = openSync(
-          currentPath,
-          constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
-        );
-        const opened = fstatSync(descriptor, { bigint: true });
-        assert.equal(opened.isDirectory(), true, `${currentPath} must open as a directory`);
-        hooks.afterDirectoryDescriptorOpen?.({ descriptor, path: currentPath });
-        const pathStatus = lstatSync(currentPath, { bigint: true });
-        assert.equal(pathStatus.isDirectory(), true, `${currentPath} must remain a directory`);
-        assert.equal(pathStatus.isSymbolicLink(), false, `${currentPath} must not be a symbolic link`);
-        assert.equal(
-          sameFileIdentity(fileIdentity(pathStatus), fileIdentity(opened)),
-          true,
-          `${currentPath} directory identity changed before use`
-        );
-        receipts.push({ descriptor, identity: fileIdentity(opened), path: currentPath });
-        descriptor = undefined;
-      } catch (error) {
-        if (descriptor !== undefined) throw closeDescriptor(descriptor, error);
-        throw error;
-      }
-    }
-    return receipts;
-  } catch (error) {
-    throw closeDirectoryChain(receipts, error);
-  }
-}
-
-function revalidateDirectoryChain(receipts) {
-  for (const receipt of receipts) {
-    const descriptorStatus = fstatSync(receipt.descriptor, { bigint: true });
-    const pathStatus = lstatSync(receipt.path, { bigint: true });
-    assert.equal(descriptorStatus.isDirectory(), true, `${receipt.path} descriptor must remain a directory`);
-    assert.equal(pathStatus.isDirectory(), true, `${receipt.path} path must remain a directory`);
-    assert.equal(pathStatus.isSymbolicLink(), false, `${receipt.path} path must not become a symbolic link`);
-    assert.equal(
-      sameFileIdentity(fileIdentity(descriptorStatus), receipt.identity) &&
-        sameFileIdentity(fileIdentity(pathStatus), receipt.identity),
-      true,
-      `${receipt.path} directory identity changed while reading`
-    );
-  }
-}
-
-function closeDirectoryChain(receipts, primaryError) {
-  let failure = primaryError;
-  for (const receipt of [...receipts].reverse()) failure = closeDescriptor(receipt.descriptor, failure);
-  return failure;
-}
-
-function readBoundedNoFollowFile(
-  relativePath,
-  { allowedPaths, hooks = {}, maxBytes = CAPABILITY_FILE_LIMIT, root = REPOSITORY_ROOT } = {}
-) {
   assert.ok(
     Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= MAX_BOUNDED_REPOSITORY_FILE_BYTES,
     "bounded repository file limit is invalid"
   );
-  const { absolutePath, canonicalRoot } = canonicalContainedPath(root, relativePath, allowedPaths);
-  const components = relativePath.split("/");
-  const directories = openDirectoryChain(canonicalRoot, components.slice(0, -1), hooks);
-  let descriptor;
-  let failure;
-  let result;
-  try {
-    hooks.afterDirectoryOpen?.({ directories, relativePath });
-    descriptor = openSync(absolutePath, BOUNDED_WORKFLOW_FILE_OPEN_FLAGS);
-    const opened = fstatSync(descriptor, { bigint: true });
-    assert.equal(opened.isFile(), true, `${relativePath} must open as a regular file`);
-    assert.equal(opened.nlink, 1n, `${relativePath} must not have hard-linked aliases`);
-    assert.ok(opened.size <= BigInt(maxBytes), `${relativePath} exceeds the capability file limit`);
-    hooks.afterFileDescriptorOpen?.({ descriptor, relativePath });
-    const pathOpened = lstatSync(absolutePath, { bigint: true });
-    assert.equal(pathOpened.isFile(), true, `${relativePath} path must remain a regular file`);
-    assert.equal(pathOpened.isSymbolicLink(), false, `${relativePath} path must not be a symbolic link`);
-    assert.equal(pathOpened.nlink, 1n, `${relativePath} path must not have hard-linked aliases`);
-    assert.ok(pathOpened.size <= BigInt(maxBytes), `${relativePath} exceeds the capability file limit`);
-    assert.equal(
-      sameFileIdentity(fileIdentity(opened), fileIdentity(pathOpened)),
-      true,
-      `${relativePath} path identity changed before use`
-    );
-    revalidateDirectoryChain(directories);
-    hooks.afterFileOpen?.({ descriptor, relativePath });
-
-    const chunks = [];
-    let total = 0;
-    while (true) {
-      const remaining = maxBytes + 1 - total;
-      if (remaining <= 0) throw new Error(`${relativePath} exceeds the capability file limit`);
-      const chunk = Buffer.allocUnsafe(Math.min(16 * 1024, remaining));
-      const read = readSync(descriptor, chunk, 0, chunk.length, null);
-      if (read === 0) break;
-      chunks.push(chunk.subarray(0, read));
-      total += read;
-      hooks.afterChunk?.({ descriptor, relativePath, total });
-    }
-    assert.ok(total <= maxBytes, `${relativePath} exceeds the capability file limit`);
-    hooks.afterRead?.({ descriptor, relativePath });
-
-    const bytes = Buffer.concat(chunks, total);
-    const verification = Buffer.allocUnsafe(total);
-    let verificationOffset = 0;
-    while (verificationOffset < total) {
-      const read = readSync(
-        descriptor,
-        verification,
-        verificationOffset,
-        total - verificationOffset,
-        verificationOffset
-      );
-      if (read === 0) throw new Error(`${relativePath} changed while its bytes were revalidated`);
-      verificationOffset += read;
-    }
-    assert.equal(bytes.equals(verification), true, `${relativePath} content changed while reading`);
-    const after = fstatSync(descriptor, { bigint: true });
-    const pathAfter = lstatSync(absolutePath, { bigint: true });
-    assert.equal(
-      sameFileIdentity(fileIdentity(after), fileIdentity(opened)),
-      true,
-      `${relativePath} changed while reading`
-    );
-    assert.equal(pathAfter.isFile() && !pathAfter.isSymbolicLink() && pathAfter.nlink === 1n, true);
-    assert.equal(
-      sameFileIdentity(fileIdentity(pathAfter), fileIdentity(after)),
-      true,
-      `${relativePath} path identity changed while reading`
-    );
-    assert.equal(BigInt(total), after.size, `${relativePath} returned incomplete bytes`);
-    revalidateDirectoryChain(directories);
-    result = Object.freeze({ bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
-  } catch (error) {
-    failure = error;
-  } finally {
-    if (descriptor !== undefined) failure = closeDescriptor(descriptor, failure);
-    failure = closeDirectoryChain(directories, failure);
-  }
-  if (failure !== undefined) throw failure;
-  return result;
-}
-
-function readBoundedRepositoryText(relativePath, maxBytes) {
-  const bytes = readBoundedNoFollowFile(relativePath, {
-    allowedPaths: new Set([relativePath]),
-    maxBytes
-  }).bytes;
+  const canonicalRoot = resolve(REPOSITORY_ROOT);
+  const bytes = readBoundedRegularFile(resolve(canonicalRoot, ...relativePath.split("/")), maxBytes, {
+    containedBy: canonicalRoot,
+    label: relativePath
+  });
   try {
     return CAPABILITY_UTF8_DECODER.decode(bytes);
   } catch (cause) {
@@ -607,107 +409,6 @@ if (process.argv[2] === WORKFLOW_FIFO_PROBE_ARGUMENT) {
   throw new Error(`${relativePath} unexpectedly passed the bounded workflow reader`);
 }
 
-function readDirectoryInventory(directoryPath) {
-  const directory = opendirSync(directoryPath);
-  const entries = [];
-  let failure;
-  try {
-    for (;;) {
-      const entry = directory.readSync();
-      if (entry === null) break;
-      assert.ok(entries.length < WORKFLOW_INVENTORY_LIMIT, "workflow inventory exceeds its file-count limit");
-      assert.ok(Buffer.byteLength(entry.name, "utf8") <= 255, "workflow inventory contains an oversized name");
-      entries.push(entry.name);
-    }
-  } catch (error) {
-    failure = error;
-  } finally {
-    try {
-      directory.closeSync();
-    } catch (error) {
-      failure ??= error;
-    }
-  }
-  if (failure !== undefined) throw failure;
-  return entries.filter((name) => /\.ya?ml$/u.test(name)).sort();
-}
-
-function parseBoundedWorkflowYaml(bytes) {
-  let source = bytes;
-  if (Buffer.isBuffer(bytes)) {
-    try {
-      source = CAPABILITY_UTF8_DECODER.decode(bytes);
-    } catch (cause) {
-      throw new Error("workflow YAML is not valid UTF-8", { cause });
-    }
-  }
-  assert.equal(typeof source, "string", "workflow YAML must be text");
-  assert.ok(Buffer.byteLength(source, "utf8") <= CAPABILITY_FILE_LIMIT, "workflow YAML exceeds its byte limit");
-  const stack = [];
-  let depth = 0;
-  let nodes = 0;
-  for (const event of parseYamlEvents(source, { maxDepth: WORKFLOW_YAML_DEPTH_LIMIT })) {
-    assert.notEqual(event.type, EVENT_ALIAS, "workflow YAML aliases are forbidden");
-    assert.equal(event.anchorStart ?? -1, -1, "workflow YAML anchors are forbidden");
-    assert.equal(event.tagStart ?? -1, -1, "workflow YAML explicit tags are forbidden");
-    if ([EVENT_DOCUMENT, EVENT_MAPPING, EVENT_SEQUENCE].includes(event.type)) {
-      stack.push(event.type);
-      if (event.type !== EVENT_DOCUMENT) {
-        depth += 1;
-        nodes += 1;
-      }
-    } else if (event.type === EVENT_SCALAR) {
-      nodes += 1;
-      const scalar = source.slice(event.valueStart, event.valueEnd);
-      assert.equal(
-        event.style === SCALAR_STYLE_PLAIN && scalar === "<<",
-        false,
-        "workflow YAML merge keys are forbidden"
-      );
-    } else if (event.type === EVENT_POP) {
-      const opened = stack.pop();
-      assert.notEqual(opened, undefined, "workflow YAML structure is unbalanced");
-      if (opened !== EVENT_DOCUMENT) depth -= 1;
-    }
-    assert.ok(depth <= WORKFLOW_YAML_DEPTH_LIMIT, "workflow YAML exceeds its depth limit");
-    assert.ok(nodes <= WORKFLOW_YAML_NODE_LIMIT, "workflow YAML exceeds its node limit");
-  }
-  assert.deepEqual(stack, [], "workflow YAML structure is incomplete");
-  return parseYaml(source, WORKFLOW_YAML_LOAD_OPTIONS);
-}
-
-function loadRepositoryWorkflowInventory({ hooks = {}, root = REPOSITORY_ROOT } = {}) {
-  const { absolutePath: directoryPath, canonicalRoot } = canonicalContainedPath(root, WORKFLOW_DIRECTORY);
-  const directories = openDirectoryChain(canonicalRoot, WORKFLOW_DIRECTORY.split("/"));
-  let failure;
-  let result;
-  try {
-    const firstNames = readDirectoryInventory(directoryPath);
-    hooks.afterFirstInventory?.({ directoryPath, firstNames });
-    const secondNames = readDirectoryInventory(directoryPath);
-    assert.deepEqual(secondNames, firstNames, "workflow inventory changed while it was enumerated");
-    revalidateDirectoryChain(directories);
-    const paths = firstNames.map((name) => workflowPath(name));
-    const allowedPaths = new Set(paths);
-    const snapshots = Object.fromEntries(
-      paths.map((path) => {
-        const snapshot = readBoundedNoFollowFile(path, { allowedPaths, hooks: hooks.file, root: canonicalRoot });
-        return [path, Object.freeze({ ...snapshot, document: parseBoundedWorkflowYaml(snapshot.bytes) })];
-      })
-    );
-    hooks.afterFiles?.({ directoryPath, paths, snapshots });
-    assert.deepEqual(readDirectoryInventory(directoryPath), firstNames, "workflow inventory changed after reading");
-    revalidateDirectoryChain(directories);
-    result = Object.freeze(snapshots);
-  } catch (error) {
-    failure = error;
-  } finally {
-    failure = closeDirectoryChain(directories, failure);
-  }
-  if (failure !== undefined) throw failure;
-  return result;
-}
-
 function readBoundedCapabilityFile(relativePath, options = {}) {
   assert.equal(CAPABILITY_FILES.has(relativePath), true, `${relativePath} is not an allowlisted capability file`);
   const bytes = readBoundedNoFollowFile(relativePath, { ...options, allowedPaths: CAPABILITY_FILES }).bytes;
@@ -856,6 +557,30 @@ const codeql = capabilityDocuments.codeql;
 const performance = workflow("performance.yml");
 const releasedJupyter = workflow("released-jupyter.yml");
 
+function nodeToolchainInputs(overrides = {}) {
+  return {
+    azureSource: readFileSync("azure-pipelines-marketplace.yml", "utf8"),
+    changelogSource: readFileSync("CHANGELOG.md", "utf8"),
+    contributingSource: readFileSync("CONTRIBUTING.md", "utf8"),
+    nodeVersionSource: readFileSync(".node-version", "utf8"),
+    packageJson,
+    packageLock,
+    releasingSource: readFileSync("docs/releasing.md", "utf8"),
+    workflows: Object.fromEntries(repositoryWorkflowNames.map((name) => [name, workflow(name)])),
+    ...overrides
+  };
+}
+
+function mutableNodeToolchainInputs() {
+  return structuredClone(nodeToolchainInputs());
+}
+
+function assertNodeToolchainRejected(inputs, pattern, message) {
+  const problems = inspectNodeToolchainContract(inputs);
+  assert.notDeepEqual(problems, [], message);
+  assert.match(problems.join("\n"), pattern, message);
+}
+
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97";
@@ -945,7 +670,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "5233a012766676ecf3ecfa6232544c98b490dfe38fe825213bec93bd1b6f5f3b";
+const WORKFLOW_USE_INVENTORY_SHA256 = "eee8854b6d9b4e9589d84782165b438da210f8e18e50af5359d2020872ab2497";
 const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[2].uses", SETUP_PYTHON],
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[3].uses", SETUP_JAVA],
@@ -1150,7 +875,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 148);
+  assert.equal(external.length, 149);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -3200,7 +2925,10 @@ function assertInvariantCoreTopology(document, scripts = packageJson.scripts) {
   );
   assert.equal(
     job.steps.some(
-      (step) => typeof step.run === "string" && /\b(?:typecheck(?::dependencies)?|test:ts)\b/u.test(step.run)
+      (step) =>
+        step.name !== "Node 22 maintained-LTS compatibility smoke" &&
+        typeof step.run === "string" &&
+        /\b(?:typecheck(?::dependencies)?|test:ts)\b/u.test(step.run)
     ),
     false
   );
@@ -3931,7 +3659,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   const names = repositoryWorkflowNames;
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 148);
+  assert.equal(inventory.external.length, 149);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
   assertReviewedDependencyActionCallsites(rows);
 
@@ -4248,29 +3976,224 @@ test("CI and CodeQL align edited, stacked, readiness, and draft activity semanti
 });
 
 test("automation retains the exact Node and npm toolchain authority", () => {
-  const nodeVersion = readFileSync(".node-version", "utf8").trim();
-  assert.equal(nodeVersion, "22.22.0");
-  assert.equal(packageJson.engines.node, ">=22.22.0 <23");
-  assert.equal(packageJson.packageManager, "npm@10.9.4");
-  let setupNodeCount = 0;
-  for (const name of repositoryWorkflowNames.filter((entry) => entry.endsWith(".yml"))) {
-    const document = workflow(name);
-    for (const [jobId, job] of Object.entries(document.jobs ?? {})) {
-      for (const [stepIndex, step] of (job.steps ?? []).entries()) {
-        if (typeof step?.uses !== "string" || !step.uses.startsWith("actions/setup-node@")) continue;
-        setupNodeCount += 1;
-        assert.equal(step.with?.["node-version-file"], ".node-version", `${name}:${jobId}:${stepIndex}`);
-        assert.equal(Object.hasOwn(step.with ?? {}, "node-version"), false, `${name}:${jobId}:${stepIndex}`);
+  assert.deepEqual(inspectNodeToolchainContract(nodeToolchainInputs()), []);
+});
+
+test("Node toolchain authority rejects the Node 22-only preimage", () => {
+  const inputs = mutableNodeToolchainInputs();
+  inputs.nodeVersionSource = "22.22.0\n";
+  inputs.packageJson.packageManager = "npm@10.9.4";
+  inputs.packageJson.engines.node = ">=22.22.0 <23";
+  inputs.packageLock.packages[""].engines.node = ">=22.22.0 <23";
+  inputs.azureSource = inputs.azureSource.replaceAll("24.19.0", "22.22.0");
+  inputs.workflows["ci.yml"].jobs["invariant-core"].steps.splice(-2);
+  assertNodeToolchainRejected(inputs, /canonical|24\.19\.0|11\.17\.0|compatibility/iu);
+});
+
+test("Node toolchain authority rejects canonical, engine, and type drift", () => {
+  const mutations = [
+    ["version-file drift", (inputs) => (inputs.nodeVersionSource = "24.18.0\n"), /\.node-version/u],
+    ["npm drift", (inputs) => (inputs.packageJson.packageManager = "npm@11.16.0"), /packageManager/u],
+    [
+      "odd-major admission",
+      (inputs) => {
+        inputs.packageJson.engines.node = ">=22.22.0 <25";
+        inputs.packageLock.packages[""].engines.node = ">=22.22.0 <25";
+      },
+      /Node engine/u
+    ],
+    [
+      "extension-host type drift",
+      (inputs) => {
+        inputs.packageJson.devDependencies["@types/node"] = "24.0.0";
+        inputs.packageLock.packages[""].devDependencies["@types/node"] = "24.0.0";
+      },
+      /Node type contract/u
+    ],
+    ["Azure drift", (inputs) => (inputs.azureSource = inputs.azureSource.replace("24.19.0", "24.18.0")), /Azure/u],
+    [
+      "contributor drift",
+      (inputs) =>
+        (inputs.contributingSource = inputs.contributingSource.replace(
+          "Node 23 is intentionally unsupported.",
+          "Node 23 is supported."
+        )),
+      /CONTRIBUTING/u
+    ],
+    [
+      "release drift",
+      (inputs) =>
+        (inputs.releasingSource = inputs.releasingSource.replace(
+          "Node 23 is intentionally excluded.",
+          "Node 23 is included."
+        )),
+      /releasing/u
+    ],
+    [
+      "Unreleased changelog drift",
+      (inputs) =>
+        (inputs.changelogSource = inputs.changelogSource.replace(
+          "Node.js 24.19.0 with npm 11.17.0",
+          "Node.js 24.18.0 with npm 11.16.0"
+        )),
+      /CHANGELOG\.md Unreleased/u
+    ]
+  ];
+  for (const [label, mutate, pattern] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    mutate(inputs);
+    assertNodeToolchainRejected(inputs, pattern, label);
+  }
+});
+
+test("Node toolchain authority structurally owns the exact Azure NodeTool fallbacks", () => {
+  const mutations = [
+    [
+      "missing owner hidden by a free-floating pin",
+      (pipeline) => {
+        const step = pipeline.stages[0].jobs[0].steps[1];
+        step.task = "Bash@3";
+        delete step.inputs.versionSpec;
+        pipeline.decoy = { versionSpec: "24.19.0" };
+      }
+    ],
+    [
+      "duplicate owner",
+      (pipeline) => pipeline.stages[0].jobs[0].steps.push(structuredClone(pipeline.stages[0].jobs[0].steps[1]))
+    ],
+    [
+      "moved owner",
+      (pipeline) => {
+        const steps = pipeline.stages[0].jobs[0].steps;
+        [steps[1], steps[2]] = [steps[2], steps[1]];
+      }
+    ],
+    ["free-floating pin", (pipeline) => (pipeline.versionSpec = "24.19.0")],
+    ["wrong task", (pipeline) => (pipeline.stages[0].jobs[0].steps[1].task = "UseNode@1")]
+  ];
+  for (const [label, mutate] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    const pipeline = parseYaml(inputs.azureSource);
+    mutate(pipeline);
+    inputs.azureSource = dumpYaml(pipeline);
+    assertNodeToolchainRejected(inputs, /Azure/u, label);
+  }
+});
+
+test("Node toolchain callers admit both YAML workflow suffixes and reject hidden YAML drift", () => {
+  assert.equal(isGithubWorkflowFile("owner.yml"), true);
+  assert.equal(isGithubWorkflowFile("owner.yaml"), true);
+  assert.equal(isGithubWorkflowFile("owner.yml.bak"), false);
+  const inputs = mutableNodeToolchainInputs();
+  inputs.workflows["hidden-owner.yaml"] = {
+    jobs: {
+      hidden: {
+        steps: [
+          {
+            uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+            with: { "node-version-file": ".node-version" }
+          }
+        ]
       }
     }
+  };
+  assertNodeToolchainRejected(inputs, /Canonical setup-node inventory/u);
+});
+
+test("Node toolchain docs caller rejects symlinked, oversized, and invalid UTF-8 workflows", (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-node-toolchain-workflows-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const workflowRoot = join(root, WORKFLOW_DIRECTORY);
+  mkdirSync(workflowRoot, { recursive: true });
+  const yml = join(workflowRoot, "owner.yml");
+  const yaml = join(workflowRoot, "secondary.yaml");
+  writeFileSync(yml, "name: owner\non: push\njobs: {}\n");
+  writeFileSync(yaml, "name: secondary\non: push\njobs: {}\n");
+  assert.deepEqual(Object.keys(loadBoundedNodeToolchainWorkflowDocuments({ root })), ["owner.yml", "secondary.yaml"]);
+
+  const outside = join(root, "outside.yml");
+  writeFileSync(outside, "name: outside\non: push\njobs: {}\n");
+  rmSync(yml);
+  symlinkSync("../../outside.yml", yml);
+  assert.throws(() => loadBoundedNodeToolchainWorkflowDocuments({ root }), /regular file|symbolic link|ELOOP/u);
+
+  rmSync(yml);
+  writeFileSync(yml, Buffer.alloc(128 * 1024 + 1, 0x20));
+  assert.throws(() => loadBoundedNodeToolchainWorkflowDocuments({ root }), /capability file limit/u);
+
+  writeFileSync(yml, Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x3a, 0x20, 0xc3, 0x28]));
+  assert.throws(() => loadBoundedNodeToolchainWorkflowDocuments({ root }), /not valid UTF-8/u);
+});
+
+test(
+  "Node toolchain docs caller rejects a workflow FIFO without blocking",
+  { skip: process.platform === "win32", timeout: WORKFLOW_FIFO_PROBE_TIMEOUT_MS },
+  (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-node-toolchain-fifo-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const workflowRoot = join(root, WORKFLOW_DIRECTORY);
+    mkdirSync(workflowRoot, { recursive: true });
+    const fifo = join(workflowRoot, "owner.yml");
+    execFileSync("mkfifo", [fifo]);
+    const startedAt = nodePerformance.now();
+    assert.throws(() => loadBoundedNodeToolchainWorkflowDocuments({ root }), /regular file/u);
+    assert.ok(
+      nodePerformance.now() - startedAt < WORKFLOW_FIFO_PROBE_TIMEOUT_MS,
+      "the docs/toolchain caller must reject a FIFO within its bounded test deadline"
+    );
   }
-  assert.ok(setupNodeCount > 0);
-  const azure = readFileSync("azure-pipelines-marketplace.yml", "utf8");
-  assert.equal((azure.match(/task: NodeTool@0/gu) ?? []).length, 2);
-  assert.deepEqual(
-    [...azure.matchAll(/^\s+versionSpec:\s*(\S+)\s*$/gmu)].map((match) => match[1]),
-    [nodeVersion, nodeVersion]
-  );
+);
+
+test("Node toolchain authority rejects compatibility topology and command drift", () => {
+  const mutations = [
+    [
+      "missing",
+      (inputs) => inputs.workflows["ci.yml"].jobs["invariant-core"].steps.splice(-2),
+      /compatibility exception/u
+    ],
+    [
+      "duplicate",
+      (inputs) => {
+        const steps = inputs.workflows["ci.yml"].jobs["invariant-core"].steps;
+        steps.push(structuredClone(steps.at(-2)), structuredClone(steps.at(-1)));
+      },
+      /compatibility exception/u
+    ],
+    [
+      "wrong owner",
+      (inputs) => {
+        const source = inputs.workflows["ci.yml"].jobs["invariant-core"].steps;
+        inputs.workflows["ci.yml"].jobs["canonical-editor"].steps.push(...source.splice(-2));
+      },
+      /compatibility job/u
+    ],
+    [
+      "condition drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-2).if = "${{ always() }}";
+      },
+      /compatibility condition/u
+    ],
+    [
+      "command drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-1).run = "npm run check:pr";
+      },
+      /compatibility smoke command/u
+    ],
+    [
+      "Node drift",
+      (inputs) => {
+        inputs.workflows["ci.yml"].jobs["invariant-core"].steps.at(-2).with["node-version"] = "23.0.0";
+      },
+      /compatibility Node/u
+    ]
+  ];
+  for (const [label, mutate, pattern] of mutations) {
+    const inputs = mutableNodeToolchainInputs();
+    mutate(inputs);
+    assertNodeToolchainRejected(inputs, pattern, label);
+  }
 });
 
 test("script groups remain pairwise disjoint and exactly cover the script-test inventory", () => {
