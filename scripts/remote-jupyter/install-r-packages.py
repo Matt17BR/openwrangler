@@ -33,6 +33,8 @@ COMMAND_TERMINATION_GRACE_SECONDS = 2
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_PROCESS_SCAN_MAX_ENTRIES = 32 * 1024
 COMMAND_PROCESS_STAT_MAX_BYTES = 4096
+COMMAND_PROCESS_PID_MAX_BYTES = 32
+COMMAND_PROCESS_PID_MAX_LIMIT = 4 * 1024 * 1024
 PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -402,6 +404,75 @@ def linux_process_snapshot() -> dict[int, ProcessRecord]:
     return records
 
 
+def read_linux_pid_max() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open("/proc/sys/kernel/pid_max", flags)
+    except OSError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux process identifier bound was unavailable"
+        ) from error
+    try:
+        payload = os.read(descriptor, COMMAND_PROCESS_PID_MAX_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(payload) > COMMAND_PROCESS_PID_MAX_BYTES:
+        fail("Linux process identifier bound exceeded its fixed size")
+    try:
+        maximum_process_id = int(payload.strip())
+    except ValueError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux process identifier bound was malformed"
+        ) from error
+    if maximum_process_id < 2 or maximum_process_id > COMMAND_PROCESS_PID_MAX_LIMIT:
+        fail("Linux process identifier bound was outside its supported range")
+    return maximum_process_id
+
+
+def read_linux_direct_children(process_id: int, maximum_process_id: int) -> list[int]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(f"/proc/{process_id}/task/{process_id}/children", flags)
+    except OSError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux descendant ownership route was unavailable"
+        ) from error
+    maximum_bytes = maximum_process_id * (len(str(maximum_process_id)) + 1)
+    children: list[int] = []
+    current: int | None = None
+    total = 0
+    try:
+        while True:
+            chunk = os.read(descriptor, COMMAND_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum_bytes:
+                fail("Linux descendant ownership route exceeded its kernel bound")
+            for value in chunk:
+                if 48 <= value <= 57:
+                    current = (current or 0) * 10 + value - 48
+                    if current > maximum_process_id:
+                        fail(
+                            "Linux descendant ownership route contained an invalid process"
+                        )
+                elif value in (9, 10, 13, 32):
+                    if current is not None:
+                        children.append(current)
+                        current = None
+                else:
+                    fail("Linux descendant ownership route was malformed")
+        if current is not None:
+            children.append(current)
+    finally:
+        os.close(descriptor)
+    if len(children) > maximum_process_id or len(set(children)) != len(children):
+        fail("Linux descendant ownership route was malformed")
+    if any(child <= 0 or child == process_id for child in children):
+        fail("Linux descendant ownership route contained an invalid process")
+    return children
+
+
 def enable_linux_child_subreaper() -> None:
     if (
         platform.system() != "Linux"
@@ -433,64 +504,50 @@ def enable_linux_child_subreaper() -> None:
 
 
 class LinuxProcessBoundary:
-    def __init__(self, owner_identity: ProcessIdentity):
+    def __init__(self, owner_identity: ProcessIdentity, maximum_process_id: int):
         self.owner_identity = owner_identity
+        self.maximum_process_id = maximum_process_id
         self.owned: set[ProcessIdentity] = set()
         self.root: ProcessIdentity | None = None
 
     @classmethod
     def establish(cls) -> LinuxProcessBoundary:
         enable_linux_child_subreaper()
-        snapshot = linux_process_snapshot()
         owner_id = os.getpid()
-        owner_record = snapshot.get(owner_id)
+        maximum_process_id = read_linux_pid_max()
+        owner_record = read_linux_process_record(owner_id)
         if owner_record is None:
             fail("Linux descendant owner identity was unavailable")
-        if any(parent_id == owner_id for parent_id, _ in snapshot.values()):
+        if read_linux_direct_children(owner_id, maximum_process_id):
             fail("Linux descendant owner was not exclusive before dispatch")
-        return cls((owner_id, owner_record[1]))
+        confirmed_owner = read_linux_process_record(owner_id)
+        if confirmed_owner is None or confirmed_owner[1] != owner_record[1]:
+            fail("Linux descendant owner identity changed while establishing ownership")
+        return cls((owner_id, owner_record[1]), maximum_process_id)
 
-    def discover(self) -> dict[int, ProcessRecord]:
-        snapshot = linux_process_snapshot()
+    def discover(self) -> None:
         owner_id, owner_start_time = self.owner_identity
-        owner_record = snapshot.get(owner_id)
+        owner_record = read_linux_process_record(owner_id)
         if owner_record is None or owner_record[1] != owner_start_time:
             fail("Linux descendant owner identity changed")
-        children: dict[ProcessIdentity, list[ProcessIdentity]] = {}
-        pending = [
-            identity
-            for identity in self.owned
-            if snapshot.get(identity[0]) is not None
-            and snapshot[identity[0]][1] == identity[1]
-        ]
-        for process_id, (parent_id, start_time) in snapshot.items():
+        for process_id in read_linux_direct_children(owner_id, self.maximum_process_id):
+            record = read_linux_process_record(process_id)
+            if record is None:
+                continue
+            parent_id, start_time = record
             identity = (process_id, start_time)
-            parent_record = snapshot.get(parent_id)
-            if parent_record is not None:
-                children.setdefault((parent_id, parent_record[1]), []).append(identity)
-            if (
-                parent_id == owner_id
-                and start_time >= owner_start_time
-                and identity not in self.owned
-            ):
-                self.owned.add(identity)
-                pending.append(identity)
-                if len(self.owned) > COMMAND_PROCESS_SCAN_MAX_ENTRIES:
-                    fail("Linux descendant ownership exceeded its fixed bound")
-        while pending:
-            parent_identity = pending.pop()
-            for identity in children.get(parent_identity, ()):
-                if identity in self.owned:
-                    continue
-                self.owned.add(identity)
-                pending.append(identity)
-                if len(self.owned) > COMMAND_PROCESS_SCAN_MAX_ENTRIES:
-                    fail("Linux descendant ownership exceeded its fixed bound")
-        return snapshot
+            if parent_id != owner_id or start_time < owner_start_time:
+                fail("Linux descendant ownership route changed unexpectedly")
+            self.owned.add(identity)
+            if len(self.owned) > self.maximum_process_id:
+                fail("Linux descendant ownership exceeded its kernel bound")
+        confirmed_owner = read_linux_process_record(owner_id)
+        if confirmed_owner is None or confirmed_owner[1] != owner_start_time:
+            fail("Linux descendant owner identity changed during discovery")
 
     def attach(self, process: subprocess.Popen[bytes]) -> None:
-        snapshot = self.discover()
-        record = snapshot.get(process.pid)
+        self.discover()
+        record = read_linux_process_record(process.pid)
         if record is None:
             if process.poll() is None:
                 fail("Linux descendant root identity was unavailable after dispatch")
@@ -501,13 +558,13 @@ class LinuxProcessBoundary:
         self.root = identity
 
     def live(self) -> list[ProcessIdentity]:
-        snapshot = self.discover()
-        return sorted(
-            identity
-            for identity in self.owned
-            if snapshot.get(identity[0]) is not None
-            and snapshot[identity[0]][1] == identity[1]
-        )
+        self.discover()
+        live: list[ProcessIdentity] = []
+        for identity in self.owned:
+            record = read_linux_process_record(identity[0])
+            if record is not None and record[1] == identity[1]:
+                live.append(identity)
+        return sorted(live)
 
     def signal(
         self, identity: ProcessIdentity, termination_signal: signal.Signals

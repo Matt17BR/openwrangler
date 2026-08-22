@@ -311,7 +311,7 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-overflow-") as directory
   assert.equal(probe.signal, null);
 });
 
-test("the installer reaps session-escaped closed-fd descendants on every terminal path", () => {
+test("the installer settles escaped descendants after diagnostic inventory overflow", () => {
   const probe = runInstallerProbe(String.raw`
 import importlib.util
 import os
@@ -325,16 +325,21 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 installer.COMMAND_TIMEOUT_SECONDS = 0.2
 installer.COMMAND_TERMINATION_GRACE_SECONDS = 0.5
+installer.COMMAND_PROCESS_SCAN_MAX_ENTRIES = 1
+try:
+    installer.linux_process_snapshot()
+except installer.ContractError as error:
+    assert "inventory exceeded its fixed bound" in str(error)
+else:
+    raise AssertionError("the lowered diagnostic inventory bound did not overflow")
 with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
     root = Path(directory)
-    descendant = "import os; from pathlib import Path; import sys,time; Path(sys.argv[2]).write_text(str(os.getpid()), encoding='ascii'); time.sleep(0.5); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
-    parent = "import os,subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[1], sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True); deadline=time.monotonic()+0.5;\nwhile not os.path.exists(sys.argv[2]) and time.monotonic()<deadline: time.sleep(0.005)\nassert os.path.exists(sys.argv[2])\nif sys.argv[4] == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif sys.argv[4] == 'timeout': time.sleep(10)"
+    descendant = "import os; from pathlib import Path; import sys,time; Path(sys.argv[2]).write_text(str(os.getpid()), encoding='ascii'); time.sleep(0.6); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; from pathlib import Path; root=Path(sys.argv[1]); prefix=sys.argv[2]; source=sys.argv[3]; mode=sys.argv[4]; children=[]\nfor index in range(6):\n marker=root/f'{prefix}-marker-{index}'; ready=root/f'{prefix}-pid-{index}'; children.append(subprocess.Popen([sys.executable,'-c',source,str(marker),str(ready)],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True))\ndeadline=time.monotonic()+0.5\nwhile time.monotonic()<deadline and not all((root/f'{prefix}-pid-{index}').exists() for index in range(6)): time.sleep(0.005)\nassert all((root/f'{prefix}-pid-{index}').exists() for index in range(6))\nif mode == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif mode == 'timeout': time.sleep(10)"
     for mode in ("success", "timeout", "overflow"):
-        marker = root / f"{mode}-descendant-survived"
-        process_id_path = root / f"{mode}-descendant-pid"
         try:
             installer.bounded_command(
-                [sys.executable, "-c", parent, str(marker), str(process_id_path), descendant, mode],
+                [sys.executable, "-c", parent, str(root), mode, descendant, mode],
                 dict(os.environ),
                 root / f"{mode}-command.log",
             )
@@ -342,10 +347,16 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
             pass
         else:
             raise AssertionError(f"{mode} command with a live escaped descendant unexpectedly succeeded")
-        process_id = int(process_id_path.read_text(encoding="ascii"))
-        assert not Path(f"/proc/{process_id}").exists(), f"{mode} descendant was not reaped"
+        process_ids = [
+            int((root / f"{mode}-pid-{index}").read_text(encoding="ascii"))
+            for index in range(6)
+        ]
+        assert all(not Path(f"/proc/{process_id}").exists() for process_id in process_ids), (
+            f"{mode} descendants were not reaped"
+        )
+        assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated before settlement"
         time.sleep(0.7)
-        assert not marker.exists(), f"{mode} escaped descendant mutated after settlement"
+        assert not list(root.glob(f"{mode}-marker-*")), f"{mode} descendants mutated after settlement"
 `);
   assert.equal(probe.status, 0, probe.stderr);
   assert.equal(probe.signal, null);
