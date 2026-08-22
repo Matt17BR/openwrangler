@@ -1717,24 +1717,68 @@ async function verifyColumnHeaderControlLayout(browser) {
             }
             const isCurrentResizeHandle =
               control.isConnected && header.querySelector(".columnResizeHandle") === control;
-            const gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
-            const opacity = getComputedStyle(control).opacity;
+            let postSettlementGeometry;
+            if (isCurrentResizeHandle) {
+              const controlStyle = getComputedStyle(control);
+              const columnHeaderStyle = getComputedStyle(columnHeader);
+              const columnHeaderBounds = columnHeader.getBoundingClientRect();
+              const bounds = control.getBoundingClientRect();
+              const postSettlementTarget = Number.parseFloat(
+                columnHeaderStyle.getPropertyValue("--column-header-control-target")
+              );
+              const postSettlementScale =
+                columnHeader.offsetWidth > 0 ? columnHeaderBounds.width / columnHeader.offsetWidth : 0;
+              postSettlementGeometry = {
+                bottom: bounds.bottom,
+                computedHeight: Number.parseFloat(controlStyle.height),
+                computedWidth: Number.parseFloat(controlStyle.width),
+                gripperWidth: Number.parseFloat(getComputedStyle(control, "::before").width),
+                height: bounds.height,
+                left: bounds.left,
+                minimum: postSettlementTarget * postSettlementScale,
+                opacity: controlStyle.opacity,
+                right: bounds.right,
+                scale: postSettlementScale,
+                target: postSettlementTarget,
+                top: bounds.top,
+                width: bounds.width
+              };
+            }
             if (
               settledFrames !== 2 ||
               !isCurrentResizeHandle ||
-              !Number.isFinite(gripperWidth) ||
-              gripperWidth <= 0 ||
-              gripperWidth >= target ||
-              opacity !== "1"
+              !postSettlementGeometry ||
+              !Number.isFinite(postSettlementGeometry.target) ||
+              postSettlementGeometry.target !== 30 ||
+              !Number.isFinite(postSettlementGeometry.computedWidth) ||
+              postSettlementGeometry.computedWidth !== 30 ||
+              !Number.isFinite(postSettlementGeometry.computedHeight) ||
+              postSettlementGeometry.computedHeight !== 30 ||
+              !Number.isFinite(postSettlementGeometry.scale) ||
+              postSettlementGeometry.scale <= 0 ||
+              !Number.isFinite(postSettlementGeometry.minimum) ||
+              postSettlementGeometry.minimum <= 0 ||
+              !Number.isFinite(postSettlementGeometry.left) ||
+              !Number.isFinite(postSettlementGeometry.right) ||
+              !Number.isFinite(postSettlementGeometry.top) ||
+              !Number.isFinite(postSettlementGeometry.bottom) ||
+              !Number.isFinite(postSettlementGeometry.width) ||
+              !Number.isFinite(postSettlementGeometry.height) ||
+              postSettlementGeometry.width <= 0 ||
+              postSettlementGeometry.height <= 0 ||
+              postSettlementGeometry.width + epsilon < postSettlementGeometry.minimum ||
+              postSettlementGeometry.height + epsilon < postSettlementGeometry.minimum ||
+              !Number.isFinite(postSettlementGeometry.gripperWidth) ||
+              postSettlementGeometry.gripperWidth <= 0 ||
+              postSettlementGeometry.gripperWidth >= postSettlementGeometry.target ||
+              postSettlementGeometry.opacity !== "1"
             ) {
               failures.push({
-                gripperWidth,
                 header: header.getAttribute("data-column"),
                 isCurrentResizeHandle,
-                opacity,
+                postSettlementGeometry,
                 reason: "invalid-resize-gripper",
-                settledFrames,
-                target
+                settledFrames
               });
             }
           }
