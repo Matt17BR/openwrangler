@@ -9728,20 +9728,29 @@ function inspectCodePreviewWorkbenchContainer(
     containerAncestor = expectedParent;
   }
   const candidates = container.ownerDocument.querySelectorAll(options.containerSelector);
+  const candidateCount = candidates.length;
+  const supportedContainerInventoryBounded =
+    Number.isSafeInteger(options.maximumContainers) &&
+    options.maximumContainers >= 1 &&
+    Number.isSafeInteger(candidateCount) &&
+    candidateCount >= 0 &&
+    candidateCount <= options.maximumContainers;
   const descriptorCounts = options.supportedContainers.map(() => 0);
   let containerIsVisibleOwner = false;
   let visibleOwningContainerCount = 0;
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index] as VisibleElement;
-    for (let descriptorIndex = 0; descriptorIndex < options.supportedContainers.length; descriptorIndex += 1) {
-      const descriptor = options.supportedContainers[descriptorIndex];
-      if (candidate.id === descriptor.id && candidate.classList.contains(descriptor.className)) {
-        descriptorCounts[descriptorIndex] += 1;
+  if (supportedContainerInventoryBounded) {
+    for (let index = 0; index < candidateCount; index += 1) {
+      const candidate = candidates[index] as VisibleElement;
+      for (let descriptorIndex = 0; descriptorIndex < options.supportedContainers.length; descriptorIndex += 1) {
+        const descriptor = options.supportedContainers[descriptorIndex];
+        if (candidate.id === descriptor.id && candidate.classList.contains(descriptor.className)) {
+          descriptorCounts[descriptorIndex] += 1;
+        }
       }
+      if (!visible(candidate) || !candidate.contains(outer)) continue;
+      visibleOwningContainerCount += 1;
+      if (candidate === container) containerIsVisibleOwner = true;
     }
-    if (!visible(candidate) || !candidate.contains(outer)) continue;
-    visibleOwningContainerCount += 1;
-    if (candidate === container) containerIsVisibleOwner = true;
   }
   return {
     containerAncestorCount,
@@ -9762,9 +9771,10 @@ function inspectCodePreviewWorkbenchContainer(
     containerVisible: visible(container),
     outerConnected: outer.isConnected,
     outerVisible: visible(outer),
-    supportedContainerCount: candidates.length,
-    supportedContainerIdentitiesUnique: descriptorCounts.every((count) => count <= 1),
-    supportedContainerInventoryBounded: candidates.length <= options.maximumContainers,
+    supportedContainerCount: candidateCount,
+    supportedContainerIdentitiesUnique:
+      supportedContainerInventoryBounded && descriptorCounts.every((count) => count <= 1),
+    supportedContainerInventoryBounded,
     visibleOwningContainerCount,
     withinAncestorBound: containerAncestorCount <= options.maximumAncestors
   };
@@ -12569,7 +12579,7 @@ async function exerciseLiveCodePreviewProductionActionBoundaryRegressions(curren
           }
         }
       ),
-    /requires one live panel iframe at action time/u
+    /requires one live workbench-container iframe at action time/u
   );
   assert.equal(addedFrameActions, 0, "A post-edit added frame must prevent the production action.");
   assert.equal(addedFrameMutations, 1, "The post-edit added-frame regression must not retry its edit path.");
@@ -12843,7 +12853,7 @@ async function exerciseLiveCodePreviewProductionActionBoundaryRegressions(curren
           }
         }
       ),
-    /requires the exact (?:outer iframe|panel) to remain visible at action time/u
+    /requires the exact workbench container to remain visible at action time/u
   );
   assert.equal(hiddenPanelActions, 0, "A post-edit hidden panel must prevent the production action.");
   assert.equal(hiddenPanelMutations, 1, "The post-edit hidden-panel regression must not retry its edit path.");
@@ -12963,7 +12973,7 @@ async function exerciseLiveCodePreviewProductionActionBoundaryRegressions(curren
           }
         }
       ),
-    /requires every bounded panel ancestor to remain connected, laid out, and visible/u
+    /requires every bounded workbench-container ancestor to remain connected, laid out, and visible/u
   );
   assert.equal(
     hiddenPanelAncestorActions,
@@ -13262,7 +13272,7 @@ async function exerciseLiveCodePreviewProductionActionBoundaryRegressions(curren
           }
         }
       ),
-    /requires the exact bounded panel ancestor identities and immediate parent links through documentElement/u
+    /requires exact bounded workbench-container ancestor identities and parent links through documentElement/u
   );
   assert.equal(reparentedPanelActions, 0, "A visibly reparented exact panel must prevent the production action.");
   assert.equal(reparentedPanelMutations, 1, "The reparented-panel regression must mutate only once.");

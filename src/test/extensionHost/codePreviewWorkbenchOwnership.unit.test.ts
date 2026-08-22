@@ -91,15 +91,25 @@ function createFixture(
   authority: WorkbenchContainerAuthority,
   options: Readonly<{
     className?: string;
-    connected?: boolean;
+    containerConnected?: boolean;
     duplicateContainer?: boolean;
     duplicateIframe?: boolean;
+    extraContainers?: number;
     hidden?: boolean;
     id?: string;
     intermediateAncestors?: number;
+    outerFrameConnected?: boolean;
   }> = {}
 ) {
   const parts: FakeElement[] = [];
+  let candidateDescriptorReads = 0;
+  let candidateIndexReads = 0;
+  const candidateList = new Proxy(parts, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && /^(?:0|[1-9][0-9]*)$/u.test(property)) candidateIndexReads += 1;
+      return Reflect.get(target, property, receiver);
+    }
+  });
   const document = {
     defaultView: {
       innerHeight: 768,
@@ -107,7 +117,7 @@ function createFixture(
       getComputedStyle: (target: unknown) => (target as FakeElement).style
     },
     documentElement: undefined as unknown as FakeElement,
-    querySelectorAll: (selector: string) => (selector === authority.selector ? parts : [])
+    querySelectorAll: (selector: string) => (selector === authority.selector ? candidateList : [])
   } satisfies FakeDocument;
   const makeElement = ({
     classNames = [],
@@ -148,7 +158,7 @@ function createFixture(
   document.documentElement = root;
   const container = makeElement({
     classNames: ["part", options.className ?? "auxiliarybar"],
-    connected: options.connected,
+    connected: options.containerConnected,
     id: options.id ?? "workbench.parts.auxiliarybar",
     parent: root,
     style: options.hidden
@@ -165,15 +175,36 @@ function createFixture(
       })
     );
   }
+  for (let index = 0; index < (options.extraContainers ?? 0); index += 1) {
+    const candidate = makeElement({
+      classNames: ["part", "panel"],
+      id: "workbench.parts.panel",
+      parent: root
+    });
+    parts.push(
+      new Proxy(candidate, {
+        get(target, property, receiver) {
+          if (property === "classList" || property === "id") candidateDescriptorReads += 1;
+          return Reflect.get(target, property, receiver);
+        }
+      })
+    );
+  }
   let parent = container;
   for (let index = 0; index < (options.intermediateAncestors ?? 1); index += 1) {
     parent = makeElement({ parent });
   }
-  const outerFrame = makeElement({ connected: options.connected, parent });
+  const outerFrame = makeElement({ connected: options.outerFrameConnected, parent });
   const frames = (container as unknown as { __frames: FakeElement[] }).__frames;
   frames.push(outerFrame);
   if (options.duplicateIframe) frames.push(makeElement({ parent: container }));
-  return { container, outerFrame, root };
+  return {
+    candidateDescriptorReads: () => candidateDescriptorReads,
+    candidateIndexReads: () => candidateIndexReads,
+    container,
+    outerFrame,
+    root
+  };
 }
 
 function selectionOptions(authority: WorkbenchContainerAuthority) {
@@ -234,10 +265,28 @@ describe("Code Preview workbench-container ownership", () => {
   });
 
   it("rejects detached and hidden supported containers", () => {
-    const detached = createFixture(authority, { connected: false });
+    const detached = createFixture(authority, { containerConnected: false, outerFrameConnected: true });
     const hidden = createFixture(authority, { hidden: true });
+    expect(detached.container.isConnected).toBe(false);
+    expect(detached.outerFrame.isConnected).toBe(true);
     expect(authority.select(detached.outerFrame, selectionOptions(authority))).toBeNull();
     expect(authority.select(hidden.outerFrame, selectionOptions(authority))).toBeNull();
+    const detachedReceipt = authority.inspect(detached.container, inspectionOptions(authority, detached));
+    expect(detachedReceipt).toMatchObject({ containerConnected: false, outerConnected: true });
+    expect(() => authority.assertReceipt(ownershipReceipt(detachedReceipt), "detached container")).toThrow(
+      /requires a connected workbench container/u
+    );
+  });
+
+  it("rejects an over-bound container inventory before candidate traversal", () => {
+    const fixture = createFixture(authority, { extraContainers: authority.containers.length });
+    const inspected = authority.inspect(fixture.container, inspectionOptions(authority, fixture));
+    expect(inspected).toMatchObject({ supportedContainerInventoryBounded: false });
+    expect(fixture.candidateIndexReads()).toBe(0);
+    expect(fixture.candidateDescriptorReads()).toBe(0);
+    expect(() => authority.assertReceipt(ownershipReceipt(inspected), "over-bound container inventory")).toThrow(
+      /over-bound supported workbench-container inventory/u
+    );
   });
 
   it("rejects the nearest wrong workbench part without walking through it", () => {
