@@ -23,6 +23,7 @@ const CLEANING_HISTORY_SECTION_MAX_BYTES = 128 * 1024;
 const CLEANING_HISTORY_INLINE_TOKEN_MAX = 4096;
 const CLEANING_HISTORY_WORD_TOKEN_MAX = 4096;
 const CLEANING_HISTORY_PREDICATE_TOKEN_MAX = 512;
+const CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX = 34;
 const CLEANING_HISTORY_JSON_MAX_DEPTH = 8;
 const CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES = 64;
 const CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES = 128;
@@ -715,6 +716,7 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
+const cleaningHistoryRenderedBoundaryCodePoints = new Set([0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x2028, 0x2029, 0x3002]);
 const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
   connectorRoles: Object.freeze({
     although: "subordinate",
@@ -866,12 +868,79 @@ function visibleInlineMarkdownSource(source) {
   return visible;
 }
 
+function normalizeVisibleBoundaryEntitySource(source) {
+  let normalized = "";
+  for (let index = 0; index < source.length;) {
+    if (source[index] === "`") {
+      let end = index + 1;
+      while (source[end] === "`") end += 1;
+      const fence = source.slice(index, end);
+      const close = source.indexOf(fence, end);
+      const next = close < 0 ? end : close + fence.length;
+      normalized += source.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (source[index] === "]" && source[index + 1] === "(") {
+      let depth = 1;
+      const start = index;
+      index += 2;
+      while (index < source.length && depth > 0) {
+        if (source[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (source[index] === "(") depth += 1;
+        if (source[index] === ")") depth -= 1;
+        index += 1;
+      }
+      normalized += source.slice(start, index);
+      continue;
+    }
+    const numericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);/iu.exec(source.slice(index, index + 32))?.[0];
+    if (numericEntity !== undefined) {
+      const hexadecimal = numericEntity[2]?.toLowerCase() === "x";
+      const digits = numericEntity.slice(hexadecimal ? 3 : 2, -1);
+      const codePoint = Number.parseInt(digits, hexadecimal ? 16 : 10);
+      if (cleaningHistoryRenderedBoundaryCodePoints.has(codePoint)) {
+        normalized += "\n";
+        index += numericEntity.length;
+        continue;
+      }
+    }
+    normalized += source[index];
+    index += 1;
+  }
+  return normalized;
+}
+
+function normalizeCleaningHistoryRenderedBoundaries(value) {
+  let normalized = value;
+  for (const codePoint of cleaningHistoryRenderedBoundaryCodePoints) {
+    normalized = normalized.replaceAll(String.fromCodePoint(codePoint), "\n");
+  }
+  return normalized;
+}
+
 function parseCleaningHistoryMarkdown(source, label) {
   try {
     const parsed = cleaningHistoryMarkdown.parse(maskMarkdownComments(source.replace(/\r\n?/gu, "\n")), {});
     for (const token of parsed) {
       if (token.type === "inline") {
         assertValidVisibleEntityShapes(visibleInlineMarkdownSource(token.content), label);
+        const normalizedContent = normalizeVisibleBoundaryEntitySource(token.content);
+        if (normalizedContent !== token.content) {
+          const normalizedInline = cleaningHistoryMarkdown.parseInline(normalizedContent, {});
+          if (
+            normalizedInline.length !== 1 ||
+            normalizedInline[0]?.type !== "inline" ||
+            !Array.isArray(normalizedInline[0].children)
+          ) {
+            throw new Error(`${label} has an invalid rendered boundary structure.`);
+          }
+          token.content = normalizedContent;
+          token.children = normalizedInline[0].children;
+        }
       }
     }
     return parsed;
@@ -883,10 +952,9 @@ function parseCleaningHistoryMarkdown(source, label) {
 
 function normalizeVisibleMarkdownText(value, label, { validateEntities = true } = {}) {
   if (validateEntities) assertValidVisibleEntityShapes(value, label);
-  const normalized = value
-    .normalize("NFKC")
-    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
-    .replace(/[\r\u0085\u2028\u2029]/gu, "\n")
+  const normalized = normalizeCleaningHistoryRenderedBoundaries(
+    value.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+  )
     .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
     .replace(/[\u2010\u2011\ufe63\uff0d]/gu, "-")
     .replace(/[\u2012\u2013\u2015\u2212\u2e3a\u2e3b\ufe58]/gu, " ");
@@ -1730,9 +1798,10 @@ function cleaningHistoryExceptionIndex(tokens) {
 }
 
 function cleaningHistoryException(record) {
-  const index = cleaningHistoryExceptionIndex(record.clauseTokens);
+  const sourceTokens = record.exceptionTokens ?? record.clauseTokens;
+  const index = cleaningHistoryExceptionIndex(sourceTokens);
   if (index < 0) return { present: false, validLatest: false };
-  const tokens = record.clauseTokens.slice(index + 1);
+  const tokens = sourceTokens.slice(index + 1);
   const antecedent = record.antecedent?.owner === "cleaning" ? record.antecedent : record.subject;
   const hasLatest =
     cleaningHistoryScope(tokens) === "latest" ||
@@ -1823,13 +1892,25 @@ function isCleaningHistoryBareUndoContinuation(record, tokens) {
   );
 }
 
-function isCleaningHistoryPunctuatedUndoExceptionContinuation(record, tokens, separator) {
-  return (
-    record?.kind === "undo" &&
-    record.subject.owner === "cleaning" &&
-    [",", "—"].includes(separator) &&
-    cleaningHistoryExceptionIndex(tokens) >= 0
-  );
+function cleaningHistoryAtomicExceptionIndex(tokens) {
+  if (tokens.length > CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX) return -1;
+  const index = cleaningHistoryExceptionIndex(tokens);
+  if (index === 0) return index;
+  if (index === 1 && tokens[0] === "other" && tokens[index] === "than") return index;
+  if (index === 1 && ["all", "every"].includes(tokens[0]) && tokens[index] === "but") return index;
+  if (
+    tokens[index] === "exception" &&
+    ((index === 1 && tokens[0] === "with") || (index === 2 && tokens[0] === "with" && tokens[1] === "the"))
+  ) {
+    return index;
+  }
+  return -1;
+}
+
+function cleaningHistoryAtomicExceptionNeedsTarget(tokens) {
+  const index = cleaningHistoryAtomicExceptionIndex(tokens);
+  if (index < 0) return false;
+  return tokens.slice(index + 1).every((token) => ["for", "from", "of", "the", "when"].includes(token));
 }
 
 function cleaningHistoryPredicateRecords(rendered) {
@@ -1838,13 +1919,14 @@ function cleaningHistoryPredicateRecords(rendered) {
   let immediatelyPriorRecord;
   for (const statementTokens of cleaningHistoryStatements(rendered)) {
     let currentSubject;
+    let pendingAtomicException;
     let pendingClausePrefix;
     const statementRecords = [];
     for (const segment of cleaningHistorySegments(statementTokens)) {
       const priorRecord = immediatelyPriorRecord;
       immediatelyPriorRecord = undefined;
       const clausePrefix =
-        pendingClausePrefix !== undefined && (pendingClausePrefix.exception || segment.separatorBefore === "but")
+        pendingClausePrefix !== undefined && segment.separatorBefore === "but"
           ? [...pendingClausePrefix.tokens, segment.separatorBefore]
           : [];
       pendingClausePrefix = undefined;
@@ -1854,6 +1936,30 @@ function cleaningHistoryPredicateRecords(rendered) {
       });
       const containsUndo = initialPredicates.some(({ kind }) => kind === "undo");
       const predicates = containsUndo ? [initialPredicates.find(({ kind }) => kind === "undo")] : initialPredicates;
+      let atomicExceptionForPredicate;
+      if (pendingAtomicException !== undefined) {
+        if (predicates.length === 0 && cleaningHistoryAtomicExceptionNeedsTarget(pendingAtomicException.tokens)) {
+          if (
+            pendingAtomicException.tokens.length + segment.tokens.length >
+            CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX
+          ) {
+            pendingAtomicException = undefined;
+          } else {
+            pendingAtomicException.tokens.push(...segment.tokens);
+            if (pendingAtomicException.position === "suffix") {
+              pendingAtomicException.record.exceptionTokens = [...pendingAtomicException.tokens];
+              if (!cleaningHistoryAtomicExceptionNeedsTarget(pendingAtomicException.tokens)) {
+                pendingAtomicException = undefined;
+              }
+            }
+            continue;
+          }
+        }
+        if (predicates.length > 0 && pendingAtomicException.position === "prefix") {
+          atomicExceptionForPredicate = [...pendingAtomicException.tokens];
+        }
+        pendingAtomicException = undefined;
+      }
       const subjectProbeIndex = predicates[0]?.index ?? segment.tokens.length;
       let subject = cleaningHistorySubject(segment.tokens, subjectProbeIndex);
       if (subject.owner === "anaphor") {
@@ -1868,34 +1974,47 @@ function cleaningHistoryPredicateRecords(rendered) {
       } else if (
         subject.owner === "none" &&
         currentSubject?.owner === "cleaning" &&
-        cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined
+        (cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined ||
+          cleaningHistoryClausePunctuationRoles[segment.separatorBefore] === "segment")
       ) {
         subject = { ...currentSubject, explicit: false };
       }
       if (subject.owner !== "none" && subject.owner !== "anaphor") currentSubject = subject;
       if (predicates.length === 0) {
-        const exceptionContinuation =
-          priorRecord !== undefined &&
-          cleaningHistoryExceptionIndex(priorRecord.clauseTokens) >= 0 &&
-          ["and", "or", "plus"].includes(segment.separatorBefore);
-        const punctuatedUndoExceptionContinuation = isCleaningHistoryPunctuatedUndoExceptionContinuation(
-          priorRecord,
-          segment.tokens,
-          segment.separatorBefore
-        );
-        const cleaningContinuation = isCleaningHistoryBareUndoContinuation(priorRecord, segment.tokens);
-        if (exceptionContinuation || punctuatedUndoExceptionContinuation || cleaningContinuation) {
-          priorRecord.clauseTokens.push(
-            ...(segment.separatorBefore ? [segment.separatorBefore] : []),
-            ...segment.tokens
-          );
-        }
-        const exceptionPrefix = cleaningHistoryExceptionIndex(segment.tokens) >= 0;
-        if (
-          subject.owner !== "unrelated" &&
-          (exceptionPrefix || segment.tokens.some((token) => ["all", "every"].includes(token)))
-        ) {
-          pendingClausePrefix = { exception: exceptionPrefix, tokens: segment.tokens };
+        const atomicExceptionIndex = cleaningHistoryAtomicExceptionIndex(segment.tokens);
+        if (atomicExceptionIndex >= 0) {
+          const punctuationRole = cleaningHistoryClausePunctuationRoles[segment.separatorBefore];
+          if (
+            priorRecord?.kind === "undo" &&
+            priorRecord.subject.owner === "cleaning" &&
+            punctuationRole === "segment"
+          ) {
+            priorRecord.exceptionTokens = [...segment.tokens];
+            if (cleaningHistoryAtomicExceptionNeedsTarget(segment.tokens)) {
+              pendingAtomicException = {
+                position: "suffix",
+                record: priorRecord,
+                tokens: [...segment.tokens]
+              };
+            }
+          } else if (subject.owner !== "unrelated" && currentSubject?.owner !== "unrelated") {
+            pendingAtomicException = { position: "prefix", tokens: [...segment.tokens] };
+          }
+        } else {
+          const exceptionContinuation =
+            priorRecord !== undefined &&
+            cleaningHistoryExceptionIndex(priorRecord.clauseTokens) >= 0 &&
+            ["and", "or", "plus"].includes(segment.separatorBefore);
+          const cleaningContinuation = isCleaningHistoryBareUndoContinuation(priorRecord, segment.tokens);
+          if (exceptionContinuation || cleaningContinuation) {
+            priorRecord.clauseTokens.push(
+              ...(segment.separatorBefore ? [segment.separatorBefore] : []),
+              ...segment.tokens
+            );
+          }
+          if (subject.owner !== "unrelated" && segment.tokens.some((token) => ["all", "every"].includes(token))) {
+            pendingClausePrefix = { tokens: segment.tokens };
+          }
         }
       }
       for (const predicate of predicates.filter(Boolean)) {
@@ -1924,7 +2043,9 @@ function cleaningHistoryPredicateRecords(rendered) {
           clausePredicateIndex: clausePrefix.length + predicateIndex,
           predicateIndex,
           subject: recordSubject,
-          antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject
+          antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject,
+          exceptionTokens:
+            predicate.kind === "undo" && recordSubject.owner === "cleaning" ? atomicExceptionForPredicate : undefined
         };
         statementRecords.push(record);
         records.push(record);

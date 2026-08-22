@@ -424,18 +424,29 @@ test("cleaning-history rendered line separators preserve statement ownership aft
   const model = cleaningHistoryModel();
   const separators = [
     "\n",
+    "\u000b",
+    "\u000c",
     "\r",
     "\u0085",
     "\u2028",
     "\u2029",
+    "\u3002",
+    "&#11;",
+    "&#x0B;",
+    "&#12;",
+    "&#x0C;",
     "&#13;",
     "&#x0D;",
     "&#10;",
     "&#x0A;",
+    "&#133;",
+    "&#x85;",
     "&#8232;",
     "&#x2028;",
     "&#8233;",
-    "&#x2029;"
+    "&#x2029;",
+    "&#12290;",
+    "&#x3002;"
   ];
 
   for (const separator of separators) {
@@ -1132,6 +1143,66 @@ test("cleaning-history Undo continuations and subordinate connectors share exact
       `${joinClauses("Committed steps can be edited", boundary, "reports cannot be edited")}.`
     ]),
     "Use `Committed steps cannot be edited` as a rejected-input example because committed steps can be edited."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history punctuation binds one atomic exception or explicit subject to its exact predicate", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Undo is unavailable for every committed step, reports except the latest one.",
+    "Undo is unavailable for every committed step—reports unless the latest one is selected.",
+    "Undo is unavailable for every committed step, audits except when the latest one is selected.",
+    "Except for the latest one, Undo is available for every committed step.",
+    "Except for the latest one—Undo is available for every committed step.",
+    "Undo is available for every committed step, except for the latest one.",
+    "Undo is available for every committed step—except for the latest one.",
+    "Except for the previous one, Undo is unavailable for every committed step.",
+    "Undo is unavailable for every committed step, except for the previous one.",
+    `Except—${"the ".repeat(34)}latest committed step—Undo is unavailable for every committed step.`,
+    `Undo is unavailable for every committed step, except—${"the ".repeat(34)}latest committed step.`,
+    `Except—${"the ".repeat(34)}committed steps—cannot be edited.`,
+    ...[",", ":", "—"].flatMap((separator) => [
+      `Committed steps${separator} cannot be edited.`,
+      `Every committed step${separator} can be undone.`
+    ])
+  ];
+  const truthful = [
+    "Except for the latest one, Undo is unavailable for every committed step.",
+    "Except for the latest one—Undo is unavailable for every committed step.",
+    "Undo is unavailable for every committed step, except for the latest one.",
+    "Undo is unavailable for every committed step—except for the latest one.",
+    "Except—the latest committed step—Undo is unavailable for every committed step.",
+    "Undo is unavailable for every committed step, except—the latest committed step.",
+    "Undo targets only the latest committed step, reports except the latest one remain visible.",
+    ...[",", ":", "—"].flatMap((separator) => [
+      `Committed steps${separator} can be edited.`,
+      `The latest committed step${separator} can be undone.`,
+      `Reports${separator} cannot be edited.`
+    ])
   ];
 
   for (const example of contradictions) {
