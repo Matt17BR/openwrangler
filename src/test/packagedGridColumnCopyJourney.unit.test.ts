@@ -97,7 +97,7 @@ describe("packaged whole-column copy journey", () => {
     await expect(journey(testing, fixture as never)).resolves.toBeUndefined();
     expect(testing.updateViewState).toHaveBeenCalledTimes(1);
     expect(active.metadata.filterModel).toEqual(packagedGridColumnCopyFilterModel());
-    expect(surface.activateHeaderCopy).toHaveBeenCalledExactlyOnceWith("city");
+    expect(surface.activateHeaderCopy).toHaveBeenCalledExactlyOnceWith("city", expect.any(Function));
     expect(surface.pressHeaderCopyShortcut).toHaveBeenCalledTimes(1);
     expect(surface.waitForHeaderCopyState).toHaveBeenNthCalledWith(1, "city", "copying", 1_003);
     expect(surface.waitForHeaderCopyState).toHaveBeenNthCalledWith(2, "city", "ready", 1_003);
@@ -240,6 +240,61 @@ describe("packaged whole-column copy journey", () => {
     expect((result.status === "rejected" ? (result.error as AggregateError).errors : [])[0]).toEqual(
       new Error("copying state proof failed")
     );
+    expect(closeAllEditors).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a header write when input dispatch rejects after the write starts", async () => {
+    const fixture = fakeUri("file:///workspace/fixtures/grid-column-copy.csv");
+    const active = activeSession(fixture.toString());
+    let session = false;
+    const writeSettlement = deferred<void>();
+    const dispatchStarted = deferred<void>();
+    const closeAllEditors = vi.fn(async () => {
+      session = false;
+    });
+    const surface = {
+      restoreViewport: vi.fn(async () => undefined),
+      activateHeaderCopy: vi.fn(async (_column, retainReceipt) => {
+        const receipt = { waitForSettlement: () => writeSettlement.promise };
+        retainReceipt(receipt);
+        dispatchStarted.resolve();
+        await Promise.resolve();
+        throw new Error("header click failed after dispatch");
+      }),
+      assertHeaderFocused: vi.fn(async () => undefined),
+      pressHeaderCopyShortcut: vi.fn(async () => settledClipboardWriteReceipt()),
+      waitForColumnValues: vi.fn(async () => undefined),
+      waitForHeaderCopyState: vi.fn(async () => undefined)
+    } as unknown as PackagedGridColumnCopySurface;
+    const journey = createPackagedGridColumnCopyJourney({
+      closeAllEditors,
+      connectToEditorWorkbench: async () => ({}) as never,
+      createSurface: async () => surface,
+      openFixture: async () => {
+        session = true;
+      },
+      readClipboardText: async () => "original",
+      readFixture: async () => new TextEncoder().encode(packagedGridColumnCopyFixtureCsv()),
+      recordProgress: () => undefined,
+      waitFor: async (predicate) => {
+        if (!predicate()) throw new Error("not ready");
+      },
+      writeClipboardText: async () => undefined,
+      sessionTimeoutMs: 1_000
+    });
+
+    const outcome = journey(
+      testingApi(active, () => session),
+      fixture as never
+    ).catch((error: unknown) => error);
+    await dispatchStarted.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closeAllEditors).not.toHaveBeenCalled();
+
+    writeSettlement.resolve();
+    const result = await outcome;
+    expect(result).toBeInstanceOf(AggregateError);
+    expect((result as AggregateError).errors[0]).toEqual(new Error("header click failed after dispatch"));
     expect(closeAllEditors).toHaveBeenCalledTimes(1);
   });
 

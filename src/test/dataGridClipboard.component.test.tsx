@@ -1511,6 +1511,31 @@ describe("DataGrid clipboard interactions", () => {
     expect(within(details!).getByRole("button", { name: "Copy column (header excluded)" })).toBeEnabled();
   });
 
+  it("does not let a prior logical view close or defocus the preserved header menu", async () => {
+    const rendered = renderGrid();
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+
+    const cityHeader = screen.getByRole("columnheader", { name: /^city(?:,|$)/u });
+    const details = cityHeader.querySelector<HTMLDetailsElement>("details.columnMenu");
+    expect(details).not.toBeNull();
+    details!.open = true;
+    fireEvent(details!, new Event("toggle", { bubbles: true }));
+    fireEvent.click(within(details!).getByRole("button", { name: "Copy column when ready (header excluded)" }));
+
+    rendered.rerender(grid("view-b"));
+    const currentDetails = screen
+      .getByRole("columnheader", { name: /^city(?:,|$)/u })
+      .querySelector<HTMLDetailsElement>("details.columnMenu");
+    const currentAction = within(currentDetails!).getByRole("button", { name: "Copy column (header excluded)" });
+    expect(currentDetails).toBe(details);
+    expect(currentDetails).toHaveAttribute("open");
+    act(() => currentAction.focus());
+    await act(async () => Promise.resolve());
+    expect(currentDetails).toHaveAttribute("open");
+    expect(currentAction).toHaveFocus();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it("keeps an initiated header operation pending through the actual adapter settlement", async () => {
     vi.useFakeTimers();
     const delayedWrite = deferred<void>();
