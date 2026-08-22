@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPackagedGridColumnCopyJourney,
+  dispatchAndRetainClipboardWriteSettlement,
   packagedGridColumnCopyExpectedCityText,
   packagedGridColumnCopyExpectedSalesText,
   packagedGridColumnCopyFilterModel,
@@ -297,6 +298,94 @@ describe("packaged whole-column copy journey", () => {
     expect((result as AggregateError).errors[0]).toEqual(new Error("header click failed after dispatch"));
     expect(closeAllEditors).toHaveBeenCalledTimes(1);
   });
+
+  it("owns every receipt from a repeated dispatch callback before rejecting the protocol", async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    let completed = false;
+    const outcome = dispatchAndRetainClipboardWriteSettlement(
+      async (retainReceipt) => {
+        retainReceipt({ waitForSettlement: () => first.promise });
+        const returned = { waitForSettlement: () => second.promise };
+        retainReceipt(returned);
+        return returned;
+      },
+      async () => "attested"
+    ).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ error, status: "rejected" as const })
+    );
+    void outcome.finally(() => {
+      completed = true;
+    });
+
+    second.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    first.resolve();
+    const result = await outcome;
+    expect(result.status).toBe("rejected");
+    expect(result.status === "rejected" ? result.error : undefined).toEqual(
+      new Error("The packaged whole-column clipboard action reported multiple settlement receipts.")
+    );
+  });
+
+  it("owns callback and returned receipts before rejecting their disagreement", async () => {
+    const callbackSettlement = deferred<void>();
+    const returnedSettlement = deferred<void>();
+    let completed = false;
+    const callbackReceipt = { waitForSettlement: () => callbackSettlement.promise };
+    const returnedReceipt = { waitForSettlement: () => returnedSettlement.promise };
+    const outcome = dispatchAndRetainClipboardWriteSettlement(
+      async (retainReceipt) => {
+        retainReceipt(callbackReceipt);
+        return returnedReceipt;
+      },
+      async () => "attested"
+    ).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ error, status: "rejected" as const })
+    );
+    void outcome.finally(() => {
+      completed = true;
+    });
+
+    callbackSettlement.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    returnedSettlement.resolve();
+    const result = await outcome;
+    expect(result.status).toBe("rejected");
+    expect(result.status === "rejected" ? result.error : undefined).toEqual(
+      new Error("The packaged whole-column clipboard action returned a different settlement receipt.")
+    );
+  });
+
+  it.each(["dispatch", "operation", "settlement"] as const)(
+    "retains an undefined %s rejection as an explicit failure",
+    async (phase) => {
+      const operation = vi.fn(async () => {
+        if (phase === "operation") return Promise.reject(undefined);
+        return "attested";
+      });
+      const outcome = dispatchAndRetainClipboardWriteSettlement(async (retainReceipt) => {
+        const receipt = {
+          waitForSettlement: async () => {
+            if (phase === "settlement") return Promise.reject(undefined);
+          }
+        };
+        retainReceipt(receipt);
+        if (phase === "dispatch") return Promise.reject(undefined);
+        return receipt;
+      }, operation).then(
+        () => "fulfilled" as const,
+        () => "rejected" as const
+      );
+
+      await expect(outcome).resolves.toBe("rejected");
+      expect(operation).toHaveBeenCalledTimes(phase === "dispatch" ? 0 : 1);
+    }
+  );
 
   it("preserves a concurrent foreign clipboard value and emits only a fixed interference diagnostic", async () => {
     const fixture = fakeUri("file:///workspace/fixtures/grid-column-copy.csv");

@@ -455,56 +455,105 @@ async function writeOwnedClipboardText(
   }
 }
 
-async function retainClipboardWriteSettlement<T>(
-  receipt: PackagedGridColumnCopyWriteReceipt,
-  operation: () => Promise<T>
+type FailureState = { readonly present: false } | { readonly present: true; readonly value: unknown };
+
+function noFailure(): FailureState {
+  return { present: false };
+}
+
+function capturedFailure(value: unknown): FailureState {
+  return { present: true, value };
+}
+
+async function retainClipboardWriteSettlements<T>(
+  receipts: readonly PackagedGridColumnCopyWriteReceipt[],
+  operation: () => Promise<T>,
+  priorFailures: readonly unknown[]
 ): Promise<T> {
   let result!: T;
-  let operationFailure: unknown;
-  try {
-    result = await operation();
-  } catch (error) {
-    operationFailure = error;
+  let operationFailure = noFailure();
+  if (priorFailures.length === 0) {
+    try {
+      result = await operation();
+    } catch (error) {
+      operationFailure = capturedFailure(error);
+    }
   }
 
-  let settlementFailure: unknown;
-  try {
-    await receipt.waitForSettlement();
-  } catch (error) {
-    settlementFailure = error;
+  const settlementFailures = await Promise.all(
+    receipts.map(async (receipt): Promise<FailureState> => {
+      try {
+        await receipt.waitForSettlement();
+        return noFailure();
+      } catch (error) {
+        return capturedFailure(error);
+      }
+    })
+  );
+  const failures: unknown[] = [...priorFailures];
+  if (operationFailure.present) failures.push(operationFailure.value);
+  for (const failure of settlementFailures) {
+    if (failure.present) failures.push(failure.value);
   }
-  if (operationFailure !== undefined && settlementFailure !== undefined) {
+  if (failures.length > 1) {
     throw new AggregateError(
-      [operationFailure, settlementFailure],
+      failures,
       "The packaged whole-column clipboard action and its settlement proof both failed."
     );
   }
-  if (operationFailure !== undefined) throw operationFailure;
-  if (settlementFailure !== undefined) throw settlementFailure;
+  if (failures.length === 1) throw failures[0];
   return result;
 }
 
-async function dispatchAndRetainClipboardWriteSettlement<T>(
+export async function dispatchAndRetainClipboardWriteSettlement<T>(
   dispatch: (
     retainReceipt: (receipt: PackagedGridColumnCopyWriteReceipt) => void
   ) => Promise<PackagedGridColumnCopyWriteReceipt>,
   operation: () => Promise<T>
 ): Promise<T> {
-  let receipt: PackagedGridColumnCopyWriteReceipt | undefined;
-  let dispatchFailure: unknown;
+  const receipts = new Set<PackagedGridColumnCopyWriteReceipt>();
+  let callbackCount = 0;
+  let callbackReceipt: PackagedGridColumnCopyWriteReceipt | undefined;
+  let returnedReceipt: PackagedGridColumnCopyWriteReceipt | undefined;
+  let dispatchFailure = noFailure();
   try {
-    const returnedReceipt = await dispatch((dispatchedReceipt) => {
-      receipt = dispatchedReceipt;
+    returnedReceipt = await dispatch((dispatchedReceipt) => {
+      callbackCount += 1;
+      callbackReceipt ??= dispatchedReceipt;
+      receipts.add(dispatchedReceipt);
     });
-    receipt ??= returnedReceipt;
+    receipts.add(returnedReceipt);
   } catch (error) {
-    dispatchFailure = error;
+    dispatchFailure = capturedFailure(error);
   }
-  if (!receipt) throw dispatchFailure;
-  return retainClipboardWriteSettlement(receipt, async () => {
-    if (dispatchFailure !== undefined) throw dispatchFailure;
-    return operation();
-  });
+
+  let protocolFailure = noFailure();
+  if (callbackCount > 1) {
+    protocolFailure = capturedFailure(
+      new Error("The packaged whole-column clipboard action reported multiple settlement receipts.")
+    );
+  } else if (callbackCount === 1 && returnedReceipt !== undefined && returnedReceipt !== callbackReceipt) {
+    protocolFailure = capturedFailure(
+      new Error("The packaged whole-column clipboard action returned a different settlement receipt.")
+    );
+  } else if (!dispatchFailure.present && receipts.size === 0) {
+    protocolFailure = capturedFailure(
+      new Error("The packaged whole-column clipboard action did not report a settlement receipt.")
+    );
+  }
+  const priorFailures: unknown[] = [];
+  if (dispatchFailure.present) priorFailures.push(dispatchFailure.value);
+  if (protocolFailure.present) priorFailures.push(protocolFailure.value);
+  if (receipts.size === 0) {
+    if (priorFailures.length > 1) {
+      throw new AggregateError(
+        priorFailures,
+        "The packaged whole-column clipboard action and its settlement proof both failed."
+      );
+    }
+    throw priorFailures[0];
+  }
+  return retainClipboardWriteSettlements([...receipts], operation, priorFailures);
 }
 
 function createMonotonicDeadline(timeoutMs: number): MonotonicDeadline {
