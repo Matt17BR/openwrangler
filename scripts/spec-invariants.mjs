@@ -801,6 +801,8 @@ const cleaningHistoryNominalizedCapabilities = new Set([
   "modifications"
 ]);
 const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
+const cleaningHistoryExplicitUnrelatedOwnerWords = new Set(["report", "reports"]);
+const cleaningHistoryExplicitUnrelatedOwnerContextPrepositions = new Set(["about", "of", "on"]);
 const cleaningHistoryCapabilityContextPrepositions = new Set([
   "at",
   "from",
@@ -1645,7 +1647,11 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
     .replace(/\bcan't\b/giu, "cannot")
     .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
     .replace(/\bcleaning-(plan|steps?|operations?|history|workflow)\b/giu, "cleaning $1")
-    .replace(/([\p{L}])-([\p{L}])/gu, "$1$2")
+    .replace(/\bread-only\b/giu, "readonly")
+    .replace(/\b(?:non)-(current|deletable|editable|inspectable|latest|modifiable)\b/giu, "non$1")
+    .replace(/\b(?:un)-(deletable|editable|inspectable|modifiable)\b/giu, "un$1")
+    .replace(/\bre-(arrange|arranged|arranges|arranging)\b/giu, "re$1")
+    .replace(/([\p{L}])-(?=[\p{L}])/gu, "$1 ")
     .toLowerCase();
   const tokens = [];
   let predicateCount = 0;
@@ -1822,6 +1828,16 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
   const after = tokens.slice(predicateIndex + 1);
   const cleaningBefore = before.findIndex((_, index) => isCleaningHistoryNoun(before, index));
   const cleaningAfter = after.findIndex((_, index) => isCleaningHistoryNoun(after, index));
+  const latestCleaningBefore = before.findLastIndex((_, index) => isCleaningHistoryNoun(before, index));
+  const latestExplicitUnrelatedBefore = before.findLastIndex((token) =>
+    cleaningHistoryExplicitUnrelatedOwnerWords.has(token)
+  );
+  const latestCleaningDescribesUnrelatedOwner =
+    latestExplicitUnrelatedBefore >= 0 &&
+    latestCleaningBefore > latestExplicitUnrelatedBefore &&
+    before
+      .slice(latestExplicitUnrelatedBefore + 1, latestCleaningBefore)
+      .some((token) => cleaningHistoryExplicitUnrelatedOwnerContextPrepositions.has(token));
   const unrelatedBefore = before.findIndex(
     (token, index) =>
       !isCleaningHistoryGrammarToken(token) &&
@@ -1883,6 +1899,15 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
     if (unrelatedAfter >= 0 && (cleaningAfter < 0 || unrelatedAfter < cleaningAfter)) {
       return { owner: "unrelated", scope: "unknown", explicit: true };
     }
+  }
+  if (latestCleaningDescribesUnrelatedOwner) {
+    return { owner: "unrelated", scope: "unknown", explicit: true };
+  }
+  if (latestCleaningBefore > latestExplicitUnrelatedBefore && latestExplicitUnrelatedBefore >= 0) {
+    return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
+  }
+  if (latestExplicitUnrelatedBefore > latestCleaningBefore) {
+    return { owner: "unrelated", scope: "unknown", explicit: true };
   }
   if (laterExplicitOwner) return { owner: "unrelated", scope: "unknown", explicit: true };
   if (cleaningBefore >= 0 && (unrelatedBefore < 0 || unrelatedBefore > cleaningBefore)) {
@@ -1996,6 +2021,13 @@ function cleaningHistoryPostPredicateHasExplicitUnrelatedOwner(tokens, predicate
   let ownerDeterminerPending = false;
   for (let index = 0; index < between.length; index += 1) {
     const token = between[index];
+    if (cleaningHistoryExplicitUnrelatedOwnerWords.has(token)) {
+      latestUnrelatedOwner = index;
+      contextOwned = false;
+      contextObjectSeen = false;
+      ownerDeterminerPending = false;
+      continue;
+    }
     if (isCleaningHistoryNoun(between, index) || cleaningHistoryNominalizedCapabilities.has(token)) {
       latestCleaningOwner = index;
       contextOwned = false;
