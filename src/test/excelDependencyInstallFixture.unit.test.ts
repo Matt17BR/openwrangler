@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -58,23 +58,59 @@ describe("Excel dependency-install fixture", () => {
     ].join("\n");
 
     try {
-      const before = JSON.parse(execFileSync(selectedPython(), ["-I", "-c", probe], { encoding: "utf8" })) as Record<
-        string,
-        unknown
-      >;
+      const before = runPythonProbe(probe);
       expect(before).toMatchObject({ find_spec: false, missing: "openpyxl", module: null, other: "json" });
       expect(before.version).toEqual(expect.any(String));
 
       writeFileSync(marker, "openpyxl installed\n", { encoding: "utf8", flag: "wx" });
-      const after = JSON.parse(execFileSync(selectedPython(), ["-I", "-c", probe], { encoding: "utf8" })) as Record<
-        string,
-        unknown
-      >;
+      const after = runPythonProbe(probe);
       expect(after).toMatchObject({ find_spec: true, module: "openpyxl", other: "json", version: before.version });
       expect(after).not.toHaveProperty("missing");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("owns a finite deadline and output bound for both synchronous Python probes", () => {
+    const calls: { readonly args: readonly string[]; readonly options: ExecFileSyncOptionsWithStringEncoding }[] = [];
+    const execute: PythonProbeExecutor = (_file, args, options) => {
+      calls.push({ args, options });
+      return "{}";
+    };
+
+    expect(runPythonProbe("pass", execute)).toEqual({});
+    expect(runPythonProbe("pass", execute)).toEqual({});
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.args).toEqual(["-I", "-c", "pass"]);
+      expect(call.options).toEqual({
+        encoding: "utf8",
+        maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: PYTHON_PROBE_TIMEOUT_MS,
+        windowsHide: true
+      });
+    }
+  });
+
+  it.each([
+    ["ETIMEDOUT", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_TIMEOUT_MS} ms deadline.`],
+    ["ENOBUFS", `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_BUFFER_BYTES}-byte output limit.`]
+  ])("classifies a bounded %s child-process failure without private diagnostics", (code, expected) => {
+    const execute: PythonProbeExecutor = () => {
+      throw Object.assign(new Error("private interpreter and marker path"), { code });
+    };
+
+    let observed: unknown;
+    try {
+      runPythonProbe("pass", execute);
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(Error);
+    expect((observed as Error).message).toBe(expected);
+    expect((observed as Error).message.length).toBeLessThanOrEqual(128);
+    expect((observed as Error).message).not.toContain("private");
   });
 
   it("builds an exact isolated pip invocation and publishes evidence before installation", () => {
@@ -121,4 +157,48 @@ function selectedPython(): string {
     process.env.OPEN_WRANGLER_PYTHON ??
     (process.platform === "win32" ? "python" : "python3")
   );
+}
+
+const PYTHON_PROBE_TIMEOUT_MS = 30_000;
+const PYTHON_PROBE_MAX_BUFFER_BYTES = 64 * 1024;
+
+type PythonProbeExecutor = (
+  file: string,
+  args: readonly string[],
+  options: ExecFileSyncOptionsWithStringEncoding
+) => string;
+
+const executePythonProbe: PythonProbeExecutor = (file, args, options) => execFileSync(file, [...args], options);
+
+function runPythonProbe(source: string, execute: PythonProbeExecutor = executePythonProbe): Record<string, unknown> {
+  let output: string;
+  try {
+    output = execute(selectedPython(), ["-I", "-c", source], {
+      encoding: "utf8",
+      maxBuffer: PYTHON_PROBE_MAX_BUFFER_BYTES,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: PYTHON_PROBE_TIMEOUT_MS,
+      windowsHide: true
+    });
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { readonly code?: unknown }).code
+        : undefined;
+    if (code === "ETIMEDOUT") {
+      throw new Error(`The Excel dependency Python probe exceeded its ${PYTHON_PROBE_TIMEOUT_MS} ms deadline.`);
+    }
+    if (code === "ENOBUFS") {
+      throw new Error(
+        `The Excel dependency Python probe exceeded its ${PYTHON_PROBE_MAX_BUFFER_BYTES}-byte output limit.`
+      );
+    }
+    throw new Error("The Excel dependency Python probe failed.");
+  }
+
+  try {
+    return JSON.parse(output) as Record<string, unknown>;
+  } catch {
+    throw new Error("The Excel dependency Python probe returned malformed output.");
+  }
 }
