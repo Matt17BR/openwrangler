@@ -41,9 +41,16 @@ local({
     )
     vapply(selected, `[[`, integer(1L), "line")
   }
+  diagnostic_operations <- function(source, rule, symbol) {
+    selected <- Filter(
+      function(item) identical(item$rule, rule) && identical(item$symbol, symbol),
+      diagnostics(source)
+    )
+    vapply(selected, `[[`, character(1L), "operation")
+  }
 
   result <- analyzer$run(".")
-  assert_true(identical(result$protocol, "openwrangler-native-r-static-analysis-v1"), "Analyzer protocol changed")
+  assert_true(identical(result$protocol, "openwrangler-native-r-static-analysis-v2"), "Analyzer protocol changed")
   assert_true(identical(result$diagnostic_count, 13L), "Production diagnostic count changed")
   assert_true(identical(result$suppression_count, 13L), "Production suppression count changed")
 
@@ -91,10 +98,47 @@ local({
   )
   assert_true(
     "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "function() { assign <- assign('unsafe_target', 1, envir = .GlobalEnv) }",
+      "global-assignment"
+    ),
+    "An assignment RHS was analyzed after publishing its LHS binding"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
       "global_environment <- base::globalenv(); base::assign(target_name, 1, envir = global_environment)",
       "global-assignment"
     ),
     "An alias of the global environment bypassed resolved global assignment analysis"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "global_factory <- base::globalenv; base::assign(target_name, 1, en = global_factory())",
+      "global-assignment"
+    ),
+    "A base globalenv callable alias or partial envir argument bypassed global assignment analysis"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(
+      "global_environment <- .GlobalEnv; base::assign(target_name, 1, envir = global_environment)",
+      "global-assignment"
+    ),
+    "A direct .GlobalEnv value alias bypassed global assignment analysis"
+  )
+  assert_true(
+    !("global-assignment" %in% rules(
+      "function() { local_environment <- new.env(); base::assign(envir = local_environment, x = 'target', value = .GlobalEnv) }"
+    )),
+    "A reordered .GlobalEnv value argument was mistaken for an environment argument"
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(paste(
+      "function(flag) {",
+      "  if (flag) globalenv <- function() new.env(parent = emptyenv())",
+      "  base::assign('unsafe_target', 1, envir = globalenv())",
+      "}",
+      sep = "\n"
+    ), "global-assignment"),
+    "A conditionally shadowed globalenv call was treated as certainly local"
   )
   assert_true(
     !("global-assignment" %in% rules(paste(
@@ -203,6 +247,24 @@ local({
       sep = "\n"
     )),
     "A subassignment to a random-seed snapshot spoofed the exact restoration exemption"
+  )
+  seed_environment_alias_mutation <- paste(
+    "function() {",
+    "  had_random_seed <- base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  if (had_random_seed) previous_random_seed <- base::get('.Random.seed', envir = .GlobalEnv, inherits = FALSE)",
+    "  current_environment <- base::environment()",
+    "  current_environment_alias <- current_environment",
+    "  current_environment_alias$previous_random_seed <- replacement_seed",
+    "  on.exit({",
+    "    if (had_random_seed) base::assign('.Random.seed', previous_random_seed, envir = .GlobalEnv)",
+    "    else if (base::exists('.Random.seed', envir = .GlobalEnv, inherits = FALSE)) base::rm('.Random.seed', envir = .GlobalEnv)",
+    "  }, add = TRUE)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "global-assignment" %in% rules(seed_environment_alias_mutation),
+    "A current-environment alias mutation spoofed the exact random-seed restoration exemption"
   )
   assert_true(
     !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
@@ -474,6 +536,45 @@ local({
     ),
     "A terminal branch discarded the only continuing callable state"
   )
+  break_exit_scope <- paste(
+    "function(flag) {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  while (flag) {",
+    "    if (flag) { target <- function(gamma, delta) gamma + delta; break }",
+    "    else { target <- function(apple, pear) apple + pear; return(NULL) }",
+    "  }",
+    "  target(ga = 1, delta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(break_exit_scope, "partial-argument") &&
+      !("target:ap" %in% diagnostic_symbols(break_exit_scope, "partial-argument")),
+    "A reachable break exit was dropped or merged with a returning branch"
+  )
+  repeat_break_exit <- paste(
+    "function() {",
+    "  target <- function(alpha, beta) alpha + beta",
+    "  repeat { target <- function(gamma, delta) gamma + delta; break }",
+    "  target(ga = 1, delta = 2)",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    "target:ga" %in% diagnostic_symbols(repeat_break_exit, "partial-argument") &&
+      !("target:al" %in% diagnostic_symbols(repeat_break_exit, "partial-argument")),
+    "A repeat break exit did not become the sole reachable post-loop state"
+  )
+
+  same_line_writes <- paste(
+    "base::assign('first', 1, envir = .GlobalEnv);",
+    "base::assign('second', 2, envir = .GlobalEnv)"
+  )
+  write_operations <- diagnostic_operations(same_line_writes, "global-assignment", "assign:.GlobalEnv")
+  assert_true(
+    length(write_operations) == 2L && length(unique(write_operations)) == 2L,
+    "Same-line same-symbol writes collapsed to one diagnostic identity"
+  )
 
   shifted_location <- paste(
     "unknown(al = 1)",
@@ -575,6 +676,7 @@ local({
       paste(
         "r/openwrangler_runtime/interactive_agent.R",
         c(311L, 368L, 601L),
+        c("L311:C7-L311:C58", "L368:C7-L368:C58", "L601:C5-L601:C64"),
         "global-assignment",
         "assign:.GlobalEnv",
         sep = "\t"
@@ -587,7 +689,7 @@ local({
   on.exit(unlink(policy_root, recursive = TRUE, force = TRUE), add = TRUE)
   policy_text <- readLines("r/static-analysis-policy.dcf", warn = FALSE, encoding = "UTF-8")
   writeLines(
-    sub("openwrangler-native-r-static-analysis-v1", "openwrangler-native-r-static-analysis-v2", policy_text, fixed = TRUE),
+    sub("openwrangler-native-r-static-analysis-v2", "openwrangler-native-r-static-analysis-v3", policy_text, fixed = TRUE),
     file.path(policy_root, "r/static-analysis-policy.dcf"),
     useBytes = TRUE
   )
@@ -603,8 +705,8 @@ local({
   dir.create(file.path(suppression_root, "r"), recursive = TRUE, mode = "0700")
   on.exit(unlink(suppression_root, recursive = TRUE, force = TRUE), add = TRUE)
   suppression_path <- file.path(suppression_root, "r/static-analysis-suppressions.tsv")
-  header <- "path\tline\trule\tsymbol\tjustification"
-  valid <- "r/openwrangler_runtime/frame_contract.R\t1\tundefined-symbol\tmissing\tExact fixture justification."
+  header <- "path\tline\toperation\trule\tsymbol\tjustification"
+  valid <- "r/openwrangler_runtime/frame_contract.R\t1\tline:1\tundefined-symbol\tmissing\tExact fixture justification."
   writeLines(c(header, valid, valid), suppression_path, useBytes = TRUE)
   expect_error(analyzer$test$parse_suppressions(suppression_root, policy), "duplicates an earlier entry")
   writeLines(c(header, sub("missing", "*", valid, fixed = TRUE)), suppression_path, useBytes = TRUE)
@@ -612,19 +714,32 @@ local({
   writeLines(c(header, valid), suppression_path, useBytes = TRUE)
   parsed <- analyzer$test$parse_suppressions(suppression_root, policy)
   expect_error(analyzer$test$apply_suppressions(list(), parsed), "stale or unused suppression")
-  second <- "r/openwrangler_runtime/frame_contract.R\t2\tundefined-symbol\tmissing_two\tExact fixture justification."
+  exact_write_suppression <- sprintf(
+    "r/openwrangler_runtime/frame_contract.R\t1\t%s\tglobal-assignment\tassign:.GlobalEnv\tExact first write only.",
+    write_operations[[1L]]
+  )
+  writeLines(c(header, exact_write_suppression), suppression_path, useBytes = TRUE)
+  remaining_write <- analyzer$test$apply_suppressions(diagnostics(same_line_writes), analyzer$test$parse_suppressions(
+    suppression_root, policy
+  ))
+  assert_true(
+    length(remaining_write) == 1L && identical(remaining_write[[1L]]$operation, write_operations[[2L]]),
+    "An exact same-line write suppression consumed a different source operation"
+  )
+  second <- "r/openwrangler_runtime/frame_contract.R\t2\tline:2\tundefined-symbol\tmissing_two\tExact fixture justification."
   one_suppression_policy <- policy
   one_suppression_policy$limits$suppressions <- 1L
   writeLines(c(header, valid, second), suppression_path, useBytes = TRUE)
   expect_error(analyzer$test$parse_suppressions(suppression_root, one_suppression_policy), "suppression count exceeds")
   overflow <- c(header, vapply(seq_len(5L), function(index) {
-    sprintf("r/openwrangler_runtime/frame_contract.R\t%d\tundefined-symbol\tmissing_%d\tExact fixture justification.", index, index)
+    sprintf("r/openwrangler_runtime/frame_contract.R\t%d\tline:%d\tundefined-symbol\tmissing_%d\tExact fixture justification.", index, index, index)
   }, character(1L)))
   writeLines(overflow, suppression_path, useBytes = TRUE)
   expect_error(analyzer$test$parse_suppressions(suppression_root, policy), "suppression ratchet exceeded")
   global_overflow <- c(header, vapply(seq_len(4L), function(index) {
     sprintf(
-      "r/openwrangler_runtime/interactive_agent.R\t%d\tglobal-assignment\tassign:.GlobalEnv:%d\tExact fixture justification.",
+      "r/openwrangler_runtime/interactive_agent.R\t%d\tline:%d\tglobal-assignment\tassign:.GlobalEnv:%d\tExact fixture justification.",
+      index,
       index,
       index
     )

@@ -1,4 +1,4 @@
-Protocol: openwrangler-native-r-static-analysis-v1
+Protocol: openwrangler-native-r-static-analysis-v2
 Codetools-Version: 0.2-20
 Supported-R-Minors: 4.4,4.5
 Pinned-CI-R-Version: 4.5.3
