@@ -99,6 +99,37 @@ function replaceAncestor(root, relativePath) {
   mkdirSync(original, { recursive: true });
 }
 
+function assertDescriptorsClosed(descriptors, message) {
+  for (const descriptor of descriptors) {
+    assert.throws(
+      () => fstatSync(descriptor),
+      (error) => error?.code === "EBADF",
+      message
+    );
+  }
+}
+
+function trappingFailure(label, trapCount) {
+  return new Proxy(Object.create(null), {
+    get() {
+      trapCount.value += 1;
+      throw new Error(`${label} property trap ran`);
+    },
+    getOwnPropertyDescriptor() {
+      trapCount.value += 1;
+      throw new Error(`${label} descriptor trap ran`);
+    },
+    getPrototypeOf() {
+      trapCount.value += 1;
+      throw new Error(`${label} prototype trap ran`);
+    },
+    ownKeys() {
+      trapCount.value += 1;
+      throw new Error(`${label} key trap ran`);
+    }
+  });
+}
+
 test("the repository instruction set has one bounded canonical owner for every invariant", () => {
   const result = validateAgentInstructionContext(repositoryRoot);
   assert.equal(result.files, 9);
@@ -604,6 +635,11 @@ test("a bounded read preserves its primary plus file and every reverse-order anc
   assert.equal(received instanceof AggregateError, true);
   assert.equal(received?.code, "AGENT_INSTRUCTIONS_INVALID");
   assert.equal(received?.errors.length, 4);
+  assert.deepEqual(
+    Object.getOwnPropertySymbols(received),
+    [],
+    "Internal aggregate-flattening state must not be discoverable or forgeable from the public error."
+  );
   assert.match(received.errors[0].message, /not strict UTF-8/u);
   assert.equal(received.errors[1].cause, fileCloseFailure);
   assert.equal(received.errors[2].cause, sourceCloseFailure);
@@ -617,6 +653,181 @@ test("a bounded read preserves its primary plus file and every reverse-order anc
       () => fstatSync(descriptor),
       (error) => error?.code === "EBADF",
       "Every descriptor with an injected post-close failure must still be closed exactly once."
+    );
+  }
+});
+
+test("caught proxy failures stay opaque while every already-owned descriptor closes", () => {
+  for (const seam of ["openFile", "openDirectory", "beforeAncestorRevalidation"]) {
+    const root = mkdtempSync(join(tmpdir(), `openwrangler-agent-${seam}-proxy-`));
+    temporaryRoots.add(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/AGENTS.md"), "owned\n", "utf8");
+    const descriptors = [];
+    const cleanupCalls = [];
+    const cleanupFailures = [];
+    const trapCount = { value: 0 };
+    const failure = trappingFailure(seam, trapCount);
+    let directoryOpens = 0;
+    let received;
+    const options = {
+      openFile(path, flags) {
+        if (seam === "openFile") throw failure;
+        const descriptor = openSync(path, flags);
+        descriptors.push(descriptor);
+        return descriptor;
+      },
+      openDirectory(path, flags) {
+        directoryOpens += 1;
+        if (seam === "openDirectory" && directoryOpens === 2) throw failure;
+        const descriptor = openSync(path, flags);
+        descriptors.push(descriptor);
+        return descriptor;
+      },
+      beforeAncestorRevalidation() {
+        if (seam === "beforeAncestorRevalidation") throw failure;
+      },
+      cleanupFaults: {
+        afterFileClose(label) {
+          cleanupCalls.push(`file:${label}`);
+          if (seam === "beforeAncestorRevalidation") return;
+          const cleanupFailure = new Error(`${seam} file cleanup failure`);
+          cleanupFailures.push(cleanupFailure);
+          throw cleanupFailure;
+        },
+        afterAncestorClose(label) {
+          cleanupCalls.push(`ancestor:${label}`);
+          const cleanupFailure = new Error(`${seam} ancestor cleanup failure ${label}`);
+          cleanupFailures.push(cleanupFailure);
+          throw cleanupFailure;
+        }
+      }
+    };
+
+    assert.throws(
+      () => readBoundedInstructionFile(root, "src/AGENTS.md", options),
+      (error) => {
+        received = error;
+        return true;
+      }
+    );
+    assert.equal(trapCount.value, 0, `${seam} must not inspect an arbitrary caught value.`);
+    assert.equal(received instanceof AggregateError, true);
+    assert.equal(received.errors[0], failure, `${seam} must retain the opaque primary failure first.`);
+    assert.deepEqual(
+      received.errors.slice(1).map((error) => error.cause),
+      cleanupFailures,
+      `${seam} must retain every cleanup failure in close order.`
+    );
+    assertDescriptorsClosed(descriptors, `${seam} must close every descriptor acquired before failure.`);
+    assert.equal(
+      cleanupCalls.filter((entry) => entry.startsWith("file:")).length,
+      seam === "beforeAncestorRevalidation" ? 1 : 0,
+      `${seam} must report each owned file close exactly once.`
+    );
+    assert.equal(
+      cleanupCalls.filter((entry) => entry.startsWith("ancestor:")).length,
+      seam === "openFile" || seam === "beforeAncestorRevalidation" ? 2 : 1,
+      `${seam} must report each owned ancestor close exactly once.`
+    );
+  }
+});
+
+test("cleanup defaults and snapshots never consult inherited after-close getters", () => {
+  const installTrap = (name, trapCount) => {
+    Object.defineProperty(Object.prototype, name, {
+      configurable: true,
+      get() {
+        trapCount.value += 1;
+        throw new Error(`inherited ${name} getter ran`);
+      }
+    });
+  };
+
+  {
+    const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-after-file-getter-"));
+    temporaryRoots.add(root);
+    writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+    const descriptors = [];
+    const trapCount = { value: 0 };
+    try {
+      assert.equal(
+        readBoundedInstructionFile(root, "AGENTS.md", {
+          openFile(path, flags) {
+            const descriptor = openSync(path, flags);
+            descriptors.push(descriptor);
+            installTrap("afterFileClose", trapCount);
+            return descriptor;
+          }
+        }).text,
+        "owned\n"
+      );
+    } finally {
+      delete Object.prototype.afterFileClose;
+    }
+    assert.equal(trapCount.value, 0, "The default file-close callback must be own data captured before open.");
+    assertDescriptorsClosed(descriptors, "The inherited file-close getter must not prevent native close.");
+  }
+
+  {
+    const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-after-ancestor-getter-"));
+    temporaryRoots.add(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/AGENTS.md"), "owned\n", "utf8");
+    const descriptors = [];
+    const trapCount = { value: 0 };
+    try {
+      assert.equal(
+        readBoundedInstructionFile(root, "src/AGENTS.md", {
+          openFile(path, flags) {
+            const descriptor = openSync(path, flags);
+            descriptors.push(descriptor);
+            return descriptor;
+          },
+          openDirectory(path, flags) {
+            const descriptor = openSync(path, flags);
+            descriptors.push(descriptor);
+            return descriptor;
+          },
+          beforeAncestorRevalidation() {
+            installTrap("afterAncestorClose", trapCount);
+          },
+          cleanupFaults: { afterFileClose() {} }
+        }).text,
+        "owned\n"
+      );
+    } finally {
+      delete Object.prototype.afterAncestorClose;
+    }
+    assert.equal(trapCount.value, 0, "A missing callback in a supplied record must become frozen own data.");
+    assertDescriptorsClosed(descriptors, "The inherited ancestor-close getter must not prevent native close.");
+  }
+
+  {
+    const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-after-native-getter-"));
+    temporaryRoots.add(root);
+    writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+    const trapCount = { value: 0 };
+    let opened;
+    let result;
+    try {
+      result = scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+        openDirectory(path) {
+          opened = opendirSync(path);
+          installTrap("afterNativeDirectoryClose", trapCount);
+          return opened;
+        },
+        cleanupFaults: { afterFileClose() {} }
+      });
+    } finally {
+      delete Object.prototype.afterNativeDirectoryClose;
+    }
+    assert.deepEqual(result, ["AGENTS.md"]);
+    assert.equal(trapCount.value, 0, "The native-directory cleanup snapshot must not inherit callbacks.");
+    assert.throws(
+      () => Dir.prototype.closeSync.call(opened),
+      (error) => error?.code === "ERR_DIR_CLOSED",
+      "The inherited native-close getter must not prevent closing the directory handle."
     );
   }
 });

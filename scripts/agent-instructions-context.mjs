@@ -26,14 +26,41 @@ const MAX_SCAN_ENTRIES = 65_536;
 const MAX_TRACKED_PATH_BYTES = 4_096;
 const MAX_TRACKED_PATH_OUTPUT_BYTES = 128 * 1_024;
 const MAX_TRACKED_PREFIX_BYTES = MAX_TRACKED_PATH_OUTPUT_BYTES;
+const MAX_INSTRUCTION_FAILURES = MAX_ANCESTOR_DEPTH + MAX_INSTRUCTION_FILES + 8;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
-const INSTRUCTION_FAILURES = Symbol("openwrangler.agentInstructionFailures");
+const instructionFailureState = new WeakMap();
+const nativeMapGet = Map.prototype.get;
+const nativeMapSet = Map.prototype.set;
+const nativeWeakMapGet = WeakMap.prototype.get;
+const nativeWeakMapSet = WeakMap.prototype.set;
+const nativeObjectCreate = Object.create;
+const nativeObjectDefineProperty = Object.defineProperty;
+const nativeObjectFreeze = Object.freeze;
+const nativeObjectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+const nativeObjectGetPrototypeOf = Object.getPrototypeOf;
+const nativeObjectHasOwn = Object.hasOwn;
+const nativeReflectOwnKeys = Reflect.ownKeys;
 const nativeDescriptorClose = closeSync;
 const nativeDirectoryPrototype = Dir.prototype;
 const nativeDirectoryPathGetter = Object.getOwnPropertyDescriptor(nativeDirectoryPrototype, "path")?.get;
 const nativeDirectoryReadSync = nativeDirectoryPrototype.readSync;
 const nativeDirectoryCloseSync = nativeDirectoryPrototype.closeSync;
 const CLEANUP_FAULT_NAMES = Object.freeze(["afterFileClose", "afterAncestorClose", "afterNativeDirectoryClose"]);
+
+function frozenCleanupFaultSnapshot(values) {
+  const snapshot = nativeObjectCreate(null);
+  for (const name of CLEANUP_FAULT_NAMES) {
+    nativeObjectDefineProperty(snapshot, name, {
+      configurable: false,
+      enumerable: true,
+      value: values === undefined ? undefined : nativeMapGet.call(values, name),
+      writable: false
+    });
+  }
+  return nativeObjectFreeze(snapshot);
+}
+
+const EMPTY_CLEANUP_FAULTS = frozenCleanupFaultSnapshot();
 
 function invariantIds(...numbers) {
   return numbers.map((number) => `I${String(number).padStart(2, "0")}`);
@@ -249,19 +276,35 @@ function instructionError(message, options) {
   return error;
 }
 
+const INSTRUCTION_FAILURE_OVERFLOW = nativeObjectFreeze(
+  instructionError("The instruction failure aggregate exceeded its internal bound.")
+);
+
+function retainedInstructionFailures(error) {
+  if ((typeof error !== "object" || error === null) && typeof error !== "function") return undefined;
+  return nativeWeakMapGet.call(instructionFailureState, error);
+}
+
 function instructionAggregateError(message, errors) {
   const failures = [];
   for (const error of errors) appendInstructionFailures(failures, error);
-  const error = new AggregateError(failures, message);
+  const retainedFailures = nativeObjectFreeze([...failures]);
+  const error = new AggregateError(retainedFailures, message);
   error.code = "AGENT_INSTRUCTIONS_INVALID";
-  Object.defineProperty(error, INSTRUCTION_FAILURES, { value: Object.freeze(failures) });
+  nativeWeakMapSet.call(instructionFailureState, error, retainedFailures);
   return error;
 }
 
 function appendInstructionFailures(failures, error) {
-  const nested = error?.[INSTRUCTION_FAILURES];
-  if (Array.isArray(nested)) failures.push(...nested);
-  else failures.push(error);
+  const nested = retainedInstructionFailures(error);
+  const additions = nested ?? [error];
+  const available = MAX_INSTRUCTION_FAILURES - failures.length;
+  if (available <= 0) return;
+  if (additions.length <= available) {
+    failures.push(...additions);
+    return;
+  }
+  failures.push(...additions.slice(0, Math.max(0, available - 1)), INSTRUCTION_FAILURE_OVERFLOW);
 }
 
 function throwInstructionFailures(message, failures) {
@@ -270,30 +313,29 @@ function throwInstructionFailures(message, failures) {
 }
 
 function captureCleanupFaults(value) {
-  if (value === undefined) return Object.freeze({});
+  if (value === undefined) return EMPTY_CLEANUP_FAULTS;
   if (value === null || typeof value !== "object" || utilTypes.isProxy(value)) {
     throw instructionError("The instruction cleanup fault seam must be one plain callback record.");
   }
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = nativeObjectGetPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) {
     throw instructionError("The instruction cleanup fault seam must be one plain callback record.");
   }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of Reflect.ownKeys(descriptors)) {
+  const descriptors = nativeObjectGetOwnPropertyDescriptors(value);
+  const callbacks = new Map();
+  for (const key of nativeReflectOwnKeys(descriptors)) {
+    const descriptor = descriptors[key];
     if (
       typeof key !== "string" ||
       !CLEANUP_FAULT_NAMES.includes(key) ||
-      !Object.hasOwn(descriptors[key], "value") ||
-      typeof descriptors[key].value !== "function"
+      !nativeObjectHasOwn(descriptor, "value") ||
+      typeof descriptor.value !== "function"
     ) {
       throw instructionError("The instruction cleanup fault seam contains an unsupported callback.");
     }
+    nativeMapSet.call(callbacks, key, descriptor.value);
   }
-  return Object.freeze(
-    Object.fromEntries(
-      CLEANUP_FAULT_NAMES.flatMap((name) => (descriptors[name] ? [[name, descriptors[name].value]] : []))
-    )
-  );
+  return frozenCleanupFaultSnapshot(callbacks);
 }
 
 function closeOwnedDescriptor(descriptor, label, afterClose) {
@@ -392,7 +434,7 @@ function withVerifiedDirectoryChain(
   root,
   relativeDirectory,
   callback,
-  { beforeAncestorRevalidation, openDirectory = openSync, cleanupFaults = Object.freeze({}) } = {}
+  { beforeAncestorRevalidation, openDirectory = openSync, cleanupFaults = EMPTY_CLEANUP_FAULTS } = {}
 ) {
   const normalizedDirectory = relativeDirectory === "" ? "" : normalizedRepositoryPath(relativeDirectory, "Directory");
   const parts = normalizedDirectory === "" ? [] : normalizedDirectory.split("/");
@@ -453,7 +495,7 @@ function withVerifiedDirectoryChain(
 function verifyRegularPath(
   absolutePath,
   label,
-  { privateFile = false, openFile = openSync, cleanupFaults = Object.freeze({}) } = {}
+  { privateFile = false, openFile = openSync, cleanupFaults = EMPTY_CLEANUP_FAULTS } = {}
 ) {
   const pathSnapshot = lstatSync(absolutePath, { bigint: true });
   if (!pathSnapshot.isFile() || pathSnapshot.isSymbolicLink() || (privateFile && pathSnapshot.nlink !== 1n)) {
