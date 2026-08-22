@@ -55,6 +55,7 @@ export function releasedPySparkNotebookFixture(
       cell([
         "import json",
         "import os",
+        "import pyspark",
         "import sys",
         "os.environ['PYSPARK_PYTHON'] = sys.executable",
         "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
@@ -116,7 +117,7 @@ export function releasedPySparkNotebookFixture(
         "    _open_wrangler_label(['Active', 'Expansion', 'Renewal review'], _open_wrangler_index).alias('account_status'),",
         ")",
         `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
-        "    'sparkVersion': spark.version,",
+        "    'productVersion': pyspark.__version__,",
         "    'javaVersion': spark.sparkContext._jvm.java.lang.System.getProperty('java.specification.version'),",
         "    'module': type(spark_classic_frame).__module__,",
         "    'pid': os.getpid(),",
@@ -194,6 +195,7 @@ export function releasedPySparkNotebookFixture(
       cell([
         "import json",
         "import os",
+        "import pyspark",
         "import sys",
         "os.environ['PYSPARK_PYTHON'] = sys.executable",
         "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
@@ -210,7 +212,7 @@ export function releasedPySparkNotebookFixture(
         "], 'record_id long, category string, amount double').repartition(2)",
         "_open_wrangler_connect_conversion_traps = _open_wrangler_arm_conversion_traps(spark_connect_frame)",
         `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
-        "    'sparkVersion': connect_spark.version,",
+        "    'productVersion': pyspark.__version__,",
         "    'module': type(spark_connect_frame).__module__,",
         "    'pid': os.getpid(),",
         "    'sessionId': str(id(connect_spark)),",

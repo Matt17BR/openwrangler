@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.",
+  "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.",
   "version": "1.99.7",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -606,7 +606,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only. Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
+        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only. Local stable/final PySpark 4.2.x Classic/Connect batch DataFrames are notebook-only and view-only.",
         "steps": [
           {
             "id": "openData",

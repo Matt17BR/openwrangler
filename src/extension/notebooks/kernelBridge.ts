@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type {
+  DataBackend,
   OpenSessionRequest,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -399,7 +400,7 @@ export class KernelBridge implements OpenWranglerBridge {
     if (runtimeRequest.kind === "openSession") {
       this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
     }
-    const framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
+    let framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
     const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     let requestObservation: KernelObservation | undefined;
     const requestLifecycleVersion = this.lifecycleVersion;
@@ -487,6 +488,11 @@ export class KernelBridge implements OpenWranglerBridge {
             });
           },
           beforeDispatch: async (acquired) => {
+            // Qualification belongs only to this exact observed kernel. A
+            // superseded attempt may have narrowed an automatic open to
+            // PySpark, so always restore the caller's original framing before
+            // inspecting the replacement generation.
+            framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
             assertRequiredKernel(acquired);
             const observation = this.requireKernelObservation(acquired);
             requestObservation = observation;
@@ -500,10 +506,20 @@ export class KernelBridge implements OpenWranglerBridge {
                   throw new Error("Open Wrangler received a notebook-variable source without a variable name.");
                 }
                 await assertKernelStillSelectedForRequest(acquired, observation);
-                const preflight = await this.executePySparkNotebookPreflight(acquired.kernel, variableName);
+                const preflight = await this.executePySparkNotebookPreflight(
+                  acquired.kernel,
+                  variableName,
+                  runtimeRequest.backend
+                );
                 this.requireKernelObservation(acquired);
                 await assertKernelStillSelectedForRequest(acquired, observation);
                 isPySpark = assertSupportedPySparkNotebookPreflight(preflight, runtimeRequest.backend);
+                if (isPySpark && runtimeRequest.backend === undefined) {
+                  framed = frameKernelRequest(
+                    { ...runtimeRequest, backend: "pyspark" },
+                    requestPriority(runtimeRequest, options)
+                  );
+                }
               }
               reportOpenProgress(options, isPySpark ? "preparingSparkView" : "openingNotebookVariable");
             }
@@ -708,9 +724,16 @@ export class KernelBridge implements OpenWranglerBridge {
     return parseKernelResponse(await this.executePython(kernel, framed.code), framed.marker, framed.requestId);
   }
 
-  private async executePySparkNotebookPreflight(kernel: Kernel, variableName: string) {
+  private async executePySparkNotebookPreflight(
+    kernel: Kernel,
+    variableName: string,
+    expectedBackend: DataBackend | undefined
+  ) {
     const marker = randomUUID().replaceAll("-", "");
-    const output = await this.executePython(kernel, buildPySparkNotebookPreflightCode(marker, variableName));
+    const output = await this.executePython(
+      kernel,
+      buildPySparkNotebookPreflightCode(marker, variableName, expectedBackend)
+    );
     return parsePySparkNotebookPreflightOutput(output, marker);
   }
 

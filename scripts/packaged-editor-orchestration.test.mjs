@@ -21,8 +21,12 @@ import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   CANDIDATE_PYTHON_JUPYTER_PROFILE,
   packagedPythonJupyterEditorPlan,
+  packagedPythonJupyterPySparkDistribution,
+  PYSPARK_PRERELEASE_DENIAL_PROFILE,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
+import { RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION } from "./jupyter-acceptance-environment.mjs";
 import {
   CORE_R_JUPYTER_SELECTOR,
   KERNEL_RESTART_R_JUPYTER_SELECTOR,
@@ -46,12 +50,14 @@ test("candidate Python Jupyter gives comprehensive evidence to VS Code and one c
     phases: ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"],
     remote: true,
     allowSelector: undefined,
+    pysparkSelector: undefined,
     integrationOnly: true
   });
   assert.deepEqual(packagedPythonJupyterEditorPlan(candidate, "cursor", true), {
     phases: ["jupyter-allow"],
     remote: false,
     allowSelector: CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+    pysparkSelector: undefined,
     integrationOnly: true
   });
 });
@@ -70,8 +76,60 @@ test("unset Python Jupyter profile preserves complete manual coverage in both ed
       phases: ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"],
       remote: true,
       allowSelector: undefined,
+      pysparkSelector: undefined,
       integrationOnly: false
     });
+  }
+});
+
+test("the explicit PySpark prerelease-denial profile passes only the immutable repository receipt", () => {
+  assert.equal(PYSPARK_PRERELEASE_DENIAL_PROFILE, "pyspark-prerelease-denial");
+  assert.equal(PYSPARK_PRERELEASE_DENIAL_SELECTOR, "pyspark-prerelease-denial");
+  const profile = resolvePackagedPythonJupyterProfile({
+    value: PYSPARK_PRERELEASE_DENIAL_PROFILE,
+    acceptanceMode: "full",
+    jupyterExtensionEnabled: true,
+    dataWranglerCoexistenceEnabled: false,
+    remoteJupyterEnabled: false,
+    requestedEditors: ["vscode"]
+  });
+  assert.deepEqual(packagedPythonJupyterEditorPlan(profile, "vscode", false), {
+    phases: ["jupyter-pyspark"],
+    remote: false,
+    allowSelector: undefined,
+    pysparkSelector: PYSPARK_PRERELEASE_DENIAL_SELECTOR,
+    integrationOnly: true
+  });
+  assert.equal(
+    packagedPythonJupyterPySparkDistribution(profile, RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION),
+    RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION
+  );
+  assert.equal(
+    packagedPythonJupyterPySparkDistribution(undefined, RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION),
+    undefined,
+    "The default packaged profile must retain stable provisioning instead of silently selecting the prerelease."
+  );
+  for (const overrides of [
+    { acceptanceMode: "platform-smoke" },
+    { jupyterExtensionEnabled: false },
+    { dataWranglerCoexistenceEnabled: true },
+    { remoteJupyterEnabled: true },
+    { requestedEditors: ["cursor"] },
+    { requestedEditors: ["vscode", "cursor"] }
+  ]) {
+    assert.throws(
+      () =>
+        resolvePackagedPythonJupyterProfile({
+          value: PYSPARK_PRERELEASE_DENIAL_PROFILE,
+          acceptanceMode: "full",
+          jupyterExtensionEnabled: true,
+          dataWranglerCoexistenceEnabled: false,
+          remoteJupyterEnabled: false,
+          requestedEditors: ["vscode"],
+          ...overrides
+        }),
+      /valid only for the isolated released-PySpark prerelease-denial journey/u
+    );
   }
 });
 
