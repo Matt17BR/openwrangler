@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error The executable generator intentionally has no TypeScript declaration file.
-import { isDirectGeneratorInvocation, notebookMimeTypeRows } from "../../scripts/generate-reference.mjs";
+// @ts-expect-error The reference generator core intentionally has no TypeScript declaration file.
+import { notebookMimeTypeRows } from "../../scripts/generate-reference-core.mjs";
 
 interface CommandContribution {
   command?: string;
@@ -688,23 +688,43 @@ describe("notebook renderer contribution", () => {
     expect(notebookMimeTypeRows(manifest.contributes?.notebookRenderer)).toEqual([`- \`${mimeType}\``]);
   });
 
-  it("executes the same reference check through an aliased generator entrypoint", () => {
+  it("rejects stale reference bytes through canonical and aliased executable entrypoints", () => {
+    const fixtureRoot = createStaleReferenceFixture();
     const aliasRoot = mkdtempSync(join(tmpdir(), "ow-reference-alias-"));
     try {
       const scriptsAlias = join(aliasRoot, "scripts");
-      symlinkSync(resolve(process.cwd(), "scripts"), scriptsAlias, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(join(fixtureRoot, "scripts"), scriptsAlias, process.platform === "win32" ? "junction" : "dir");
+      expectReferenceCheckToRejectStale(join(fixtureRoot, "scripts", "generate-reference.mjs"), fixtureRoot);
       const generatorAlias = join(scriptsAlias, "generate-reference.mjs");
-      expect(isDirectGeneratorInvocation(generatorAlias)).toBe(true);
-      expect(() =>
-        execFileSync(process.execPath, [generatorAlias, "--check"], {
-          cwd: process.cwd(),
-          stdio: "pipe"
-        })
-      ).not.toThrow();
+      expectReferenceCheckToRejectStale(generatorAlias, fixtureRoot);
     } finally {
       rmSync(aliasRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "rejects stale reference bytes after a proc-self-cwd entrypoint is rebound before evaluation",
+    () => {
+      const fixtureRoot = createStaleReferenceFixture();
+      const replacementRoot = mkdtempSync(join(tmpdir(), "ow-reference-replacement-"));
+      try {
+        mkdirSync(join(replacementRoot, "scripts"));
+        copyFileSync(
+          join(fixtureRoot, "scripts", "generate-reference.mjs"),
+          join(replacementRoot, "scripts", "generate-reference.mjs")
+        );
+        const preload = `data:text/javascript,process.chdir(${JSON.stringify(replacementRoot)})`;
+        expectReferenceCheckToRejectStale("/proc/self/cwd/scripts/generate-reference.mjs", fixtureRoot, [
+          "--import",
+          preload
+        ]);
+      } finally {
+        rmSync(replacementRoot, { recursive: true, force: true });
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   it.each([
     [
@@ -757,3 +777,38 @@ describe("notebook renderer contribution", () => {
     );
   });
 });
+
+function createStaleReferenceFixture(): string {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "ow-reference-stale-"));
+  mkdirSync(join(fixtureRoot, "scripts"));
+  mkdirSync(join(fixtureRoot, "protocol"));
+  mkdirSync(join(fixtureRoot, "docs"));
+  for (const path of [
+    "scripts/generate-reference.mjs",
+    "scripts/generate-reference-core.mjs",
+    "scripts/operation-catalog.mjs",
+    "package.json",
+    "protocol/openwrangler.v2.schema.json"
+  ]) {
+    copyFileSync(resolve(process.cwd(), path), join(fixtureRoot, path));
+  }
+  symlinkSync(
+    resolve(process.cwd(), "node_modules"),
+    join(fixtureRoot, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  writeFileSync(join(fixtureRoot, "docs", "reference.md"), "stale reference\n", "utf8");
+  return fixtureRoot;
+}
+
+function expectReferenceCheckToRejectStale(entrypoint: string, cwd: string, nodeArguments: string[] = []): void {
+  let diagnostic = "";
+  try {
+    execFileSync(process.execPath, [...nodeArguments, entrypoint, "--check"], { cwd, stdio: "pipe" });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const stderr = "stderr" in error && Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : "";
+    diagnostic = `${error.message}\n${stderr}`;
+  }
+  expect(diagnostic).toContain("Generated interface reference is stale. Run npm run generate:reference.");
+}
