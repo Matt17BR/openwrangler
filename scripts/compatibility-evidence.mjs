@@ -99,7 +99,72 @@ const INLINE_HTML_TAGS = new Set([
   "sup",
   "time",
   "u",
-  "var"
+  "var",
+  "wbr"
+]);
+const EVIDENCE_CONFUSABLES = new Map([
+  ["Α", "A"],
+  ["Β", "B"],
+  ["Ε", "E"],
+  ["Η", "H"],
+  ["Ι", "I"],
+  ["Κ", "K"],
+  ["Μ", "M"],
+  ["Ν", "N"],
+  ["Ο", "O"],
+  ["Ρ", "P"],
+  ["Τ", "T"],
+  ["Υ", "Y"],
+  ["Χ", "X"],
+  ["ο", "o"],
+  ["ρ", "p"],
+  ["υ", "u"],
+  ["А", "A"],
+  ["В", "B"],
+  ["Е", "E"],
+  ["К", "K"],
+  ["М", "M"],
+  ["Н", "H"],
+  ["О", "O"],
+  ["Р", "P"],
+  ["С", "C"],
+  ["Т", "T"],
+  ["Х", "X"],
+  ["а", "a"],
+  ["е", "e"],
+  ["і", "i"],
+  ["ј", "j"],
+  ["о", "o"],
+  ["р", "p"],
+  ["с", "c"],
+  ["ѕ", "s"],
+  ["х", "x"]
+]);
+const FORBIDDEN_OWNER_ENVIRONMENT_KEYS = new Set([
+  "BASHOPTS",
+  "BASH_ENV",
+  "ENV",
+  "GITHUB_ENV",
+  "GITHUB_PATH",
+  "NODE_OPTIONS",
+  "NPM_CONFIG_NODE_OPTIONS",
+  "PATH",
+  "SHELLOPTS"
+]);
+const VISIBILITY_NEUTRAL_DISPLAY_VALUES = new Set([
+  "block",
+  "contents",
+  "flex",
+  "flow-root",
+  "grid",
+  "inline",
+  "inline-block",
+  "inline-flex",
+  "inline-grid",
+  "list-item",
+  "table",
+  "table-cell",
+  "table-row"
 ]);
 const EXPECTED_EDITOR_OWNERS = new Map([
   [
@@ -601,6 +666,62 @@ function exactEffectiveFanInEnvironment(workflow, job, step, expected) {
   return emptyEnvironment(workflow?.env) && emptyEnvironment(job?.env) && stepEnvironmentIsExact;
 }
 
+function exactShell(step, expected) {
+  return record(step) && (expected === undefined ? !Object.hasOwn(step, "shell") : step.shell === expected);
+}
+
+function environmentCanReplaceOwner(environment) {
+  if (environment === undefined) return false;
+  if (!record(environment)) return true;
+  return Object.keys(environment).some((key) => FORBIDDEN_OWNER_ENVIRONMENT_KEYS.has(key.toUpperCase()));
+}
+
+function commandCanPersistentlyReplaceOwner(command) {
+  if (typeof command !== "string") return false;
+  if (Buffer.byteLength(command, "utf8") > MAX_SHELL_BYTES) return true;
+  const folded = command.replace(/["'\\]/gu, "");
+  return (
+    /(?:^|[^A-Z0-9_])(?:BASHOPTS|BASH_ENV|GITHUB_ENV|GITHUB_PATH|NODE_OPTIONS|NPM_CONFIG_NODE_OPTIONS|SHELLOPTS)(?:[^A-Z0-9_]|$)/iu.test(
+      folded
+    ) ||
+    /(?:^|[;\n]\s*)(?:alias|unalias|function)\b/iu.test(folded) ||
+    /(?:^|[;\n]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{/u.test(folded)
+  );
+}
+
+function canonicalOwnerExecutionBoundary(workflow, job, ownerIndex) {
+  if (
+    !record(workflow) ||
+    !record(job) ||
+    !Array.isArray(job.steps) ||
+    !Number.isInteger(ownerIndex) ||
+    ownerIndex < 0 ||
+    ownerIndex >= job.steps.length ||
+    Object.hasOwn(workflow, "defaults") ||
+    Object.hasOwn(job, "defaults") ||
+    Object.hasOwn(job, "container") ||
+    environmentCanReplaceOwner(workflow.env) ||
+    environmentCanReplaceOwner(job.env)
+  ) {
+    return false;
+  }
+  return job.steps
+    .slice(0, ownerIndex + 1)
+    .every((step) => !environmentCanReplaceOwner(step.env) && !commandCanPersistentlyReplaceOwner(step.run));
+}
+
+function canonicalJobExecutionEnvelope(workflow, job) {
+  return (
+    record(workflow) &&
+    record(job) &&
+    !Object.hasOwn(workflow, "defaults") &&
+    !Object.hasOwn(job, "defaults") &&
+    !Object.hasOwn(job, "container") &&
+    !environmentCanReplaceOwner(workflow.env) &&
+    !environmentCanReplaceOwner(job.env)
+  );
+}
+
 function sameArray(actual, expected) {
   return Array.isArray(actual) && JSON.stringify(actual) === JSON.stringify(expected);
 }
@@ -895,6 +1016,7 @@ function runnerKind(command) {
 }
 
 function analyzedRunner(step) {
+  if (!record(step) || !exactShell(step, undefined)) return undefined;
   const analysis = executableShellCommands(step?.run);
   if (analysis.error || analysis.commands.length !== 1) return undefined;
   const command = analysis.commands[0];
@@ -930,6 +1052,7 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
   const ownersReachable = [...owners].every(
     ([owner, job]) =>
       record(job) &&
+      canonicalJobExecutionEnvelope(owner.startsWith("ci.yml#") ? ciWorkflow : crossWorkflow, job) &&
       continueOnErrorIsDisabled(job) &&
       normalizedCondition(job.if) === EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS.get(owner) &&
       Array.isArray(job.steps) &&
@@ -938,6 +1061,7 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
         (step) =>
           normalizedCondition(step.if) === undefined &&
           continueOnErrorIsDisabled(step) &&
+          exactShell(step, undefined) &&
           step.run === EXPECTED_NATIVE_R_SOURCE_COMMANDS.get(owner)
       )
   );
@@ -951,6 +1075,18 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
   const resultOwner = validate?.steps?.find(
     (step) => normalizedCondition(step.if) === undefined && step.run === "node scripts/require-ci-results.mjs"
   );
+  const resultOwnerIndex = validate?.steps?.indexOf(resultOwner);
+  const exactValidateTopology =
+    Array.isArray(validate?.steps) &&
+    validate.steps.length === 3 &&
+    exactKeys(validate.steps[0], ["uses"]) &&
+    validate.steps[0].uses === "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" &&
+    exactKeys(validate.steps[1], ["uses", "with"]) &&
+    validate.steps[1].uses === "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" &&
+    exactKeys(validate.steps[1].with, ["node-version-file"]) &&
+    validate.steps[1].with["node-version-file"] === ".node-version" &&
+    exactKeys(validate.steps[2], ["name", "run", "env"]) &&
+    resultOwner === validate.steps[2];
   const hasRequiredFanIn =
     record(validate) &&
     continueOnErrorIsDisabled(validate) &&
@@ -958,8 +1094,11 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
     Array.isArray(validate.needs) &&
     ["classify", "r-contract-kernel", "r-contract-protocol"].every((owner) => validate.needs.includes(owner)) &&
     Array.isArray(validate.steps) &&
+    exactValidateTopology &&
     validate.steps.every(continueOnErrorIsDisabled) &&
     continueOnErrorIsDisabled(resultOwner) &&
+    exactShell(resultOwner, undefined) &&
+    canonicalOwnerExecutionBoundary(ciWorkflow, validate, resultOwnerIndex) &&
     exactEffectiveFanInEnvironment(ciWorkflow, validate, resultOwner, EXPECTED_CI_RESULT_FAN_IN);
   if (!ownersReachable || !crossOwnerIsTriggered || !hasRequiredFanIn) {
     problems.push("Native R source ownership must retain enabled owners and the required CI success fan-in.");
@@ -1082,13 +1221,39 @@ esac`;
   return step.run?.trim() === expectedRun;
 }
 
+function exactCandidateContract(workflow, job) {
+  const step = job?.steps?.[0];
+  const expectedRun = `set -euo pipefail
+case "$ARTIFACT_ID" in *[!0-9]*|"") exit 1 ;; esac
+case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
+test "\${#EXPECTED_SHA}" -eq 40
+test -n "$RELEASE_TAG"`;
+  return (
+    record(job) &&
+    Array.isArray(job.steps) &&
+    job.steps.length === 1 &&
+    continueOnErrorIsDisabled(job) &&
+    continueOnErrorIsDisabled(step) &&
+    exactShell(step, undefined) &&
+    canonicalOwnerExecutionBoundary(workflow, job, 0) &&
+    exactEffectiveFanInEnvironment(workflow, job, step, {
+      ARTIFACT_ID: "${{ inputs.artifact_id }}",
+      EXPECTED_SHA: "${{ inputs.expected_sha }}",
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    }) &&
+    step.run?.trim() === expectedRun
+  );
+}
+
 function runnerOutcomeIsOwned(workflow, jobId, job, runnerId) {
-  return (job.steps ?? []).some((step) => {
+  return (job.steps ?? []).some((step, stepIndex) => {
     const condition = normalizedCondition(step.if);
     const commandAnalysis = executableShellCommands(step.run);
     const exactFailureExit =
       condition === `\${{ always() && steps.${runnerId}.outcome == 'failure' }}` &&
       continueOnErrorIsDisabled(step) &&
+      exactShell(step, undefined) &&
+      canonicalOwnerExecutionBoundary(workflow, job, stepIndex) &&
       exactEffectiveFanInEnvironment(workflow, job, step, {}) &&
       !commandAnalysis.error &&
       commandAnalysis.assignments.length === 0 &&
@@ -1100,6 +1265,8 @@ function runnerOutcomeIsOwned(workflow, jobId, job, runnerId) {
       exactFailureExit ||
       (normalizedCondition(step.if) === "${{ always() }}" &&
         continueOnErrorIsDisabled(step) &&
+        exactShell(step, jobId === "r_platform" ? "bash" : undefined) &&
+        canonicalOwnerExecutionBoundary(workflow, job, stepIndex) &&
         expectedEnvironment !== undefined &&
         Object.values(expectedEnvironment).includes(`\${{ steps.${runnerId}.outcome }}`) &&
         exactEffectiveFanInEnvironment(workflow, job, step, expectedEnvironment) &&
@@ -1120,6 +1287,7 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
       problems.push(`Compatibility owner ${owner} must retain its exact effective condition.`);
     }
     for (const step of runnerSteps(job)) {
+      const stepIndex = job.steps.indexOf(step);
       const conditionOwner = `${jobId}#${step.id}`;
       if (
         typeof step.id !== "string" ||
@@ -1127,6 +1295,9 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
         normalizedCondition(step.if) !== EXPECTED_RUNNER_CONDITIONS.get(conditionOwner)
       ) {
         problems.push(`Compatibility runner ${owner} must retain its exact effective condition.`);
+      }
+      if (!canonicalOwnerExecutionBoundary(workflow, job, stepIndex)) {
+        problems.push(`Compatibility runner ${owner} must retain its exact shell and persistent environment.`);
       }
       if (workflowName === "candidate-acceptance.yml") {
         if (step["continue-on-error"] !== true || !runnerOutcomeIsOwned(workflow, jobId, job, step.id)) {
@@ -1142,6 +1313,9 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
 function inspectSemanticCandidateClaims(workflow, problems) {
   if (!workflow) return;
   const jobs = workflow.jobs;
+  if (!exactCandidateContract(workflow, jobs.contract)) {
+    problems.push("Candidate input contract must retain its exact unsuppressible shell owner.");
+  }
   const platformRunners = runnerSteps(jobs.platform);
   if (
     !sameArray(jobs.platform?.strategy?.matrix?.include, [
@@ -1215,6 +1389,8 @@ function inspectSemanticCandidateClaims(workflow, problems) {
     jobs.acceptance?.steps?.length !== 1 ||
     !continueOnErrorIsDisabled(jobs.acceptance) ||
     !continueOnErrorIsDisabled(acceptanceStep) ||
+    !exactShell(acceptanceStep, undefined) ||
+    !canonicalOwnerExecutionBoundary(workflow, jobs.acceptance, 0) ||
     !exactEffectiveFanInEnvironment(
       workflow,
       jobs.acceptance,
@@ -1284,26 +1460,80 @@ function cssDeclarationValue(value) {
   return normalized.toLowerCase();
 }
 
+function normalizedCssSyntax(value, label, problems) {
+  const commentStarts = [...value.matchAll(/\/\*/gu)].length;
+  const comments = [...value.matchAll(/\/\*[\s\S]*?\*\//gu)];
+  if (commentStarts !== comments.length) {
+    problems.push(`${label} contains malformed inline CSS comments.`);
+    return undefined;
+  }
+  const withoutComments = decodeRenderedEntities(value.replace(/\/\*[\s\S]*?\*\//gu, ""));
+  let invalidEscape = false;
+  const decoded = withoutComments.replace(
+    /\\(?:(?<hex>[0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|(?<escaped>[^0-9a-f\r\n\f]))/giu,
+    (escape, ...args) => {
+      const groups = args.at(-1);
+      if (groups.hex) {
+        const codePoint = Number.parseInt(groups.hex, 16);
+        if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          invalidEscape = true;
+          return "";
+        }
+        return String.fromCodePoint(codePoint);
+      }
+      return groups.escaped;
+    }
+  );
+  if (invalidEscape || /\\/u.test(decoded)) {
+    problems.push(`${label} contains malformed inline CSS escapes.`);
+    return undefined;
+  }
+  return decoded;
+}
+
+function visibilityNeutralCssDeclaration(property, value) {
+  if (property === "display") return VISIBILITY_NEUTRAL_DISPLAY_VALUES.has(value);
+  if (property === "visibility" || property === "content-visibility") return value === "visible";
+  if (property === "opacity") return /^(?:1(?:\.0+)?|100%)$/u.test(value);
+  return false;
+}
+
 function styleHidesContainer(styleValue, label, problems) {
   if (Buffer.byteLength(styleValue, "utf8") > MAX_INLINE_HTML_ATTRIBUTE_BYTES) {
     problems.push(`${label} contains an oversized inline style declaration.`);
     return true;
   }
-  const declarations = styleValue.split(";");
+  if (styleValue.trim().length === 0) return false;
+  const normalizedStyle = normalizedCssSyntax(styleValue, label, problems);
+  if (normalizedStyle === undefined) return true;
+  const declarations = normalizedStyle.split(";");
   if (declarations.length > MAX_CSS_DECLARATIONS) {
     problems.push(`${label} contains too many inline style declarations.`);
     return true;
   }
   for (const declaration of declarations) {
+    if (declaration.trim().length === 0) continue;
     if (Buffer.byteLength(declaration, "utf8") > MAX_CSS_DECLARATION_BYTES) {
       problems.push(`${label} contains an oversized inline style declaration.`);
       return true;
     }
     const separator = declaration.indexOf(":");
-    if (separator < 0) continue;
+    if (separator < 0) {
+      problems.push(`${label} contains an unproven inline style declaration.`);
+      return true;
+    }
     const property = declaration.slice(0, separator).trim().toLowerCase();
     const value = cssDeclarationValue(declaration.slice(separator + 1));
-    if ((property === "display" && value === "none") || (property === "visibility" && value === "hidden")) {
+    if (
+      (property === "display" && value === "none") ||
+      (property === "visibility" && ["collapse", "hidden"].includes(value)) ||
+      (property === "content-visibility" && value === "hidden") ||
+      (property === "opacity" && /^(?:0+(?:\.0*)?|\.0+)$/u.test(value))
+    ) {
+      return true;
+    }
+    if (!visibilityNeutralCssDeclaration(property, value)) {
+      problems.push(`${label} contains an unproven inline style declaration.`);
       return true;
     }
   }
@@ -1539,8 +1769,74 @@ function renderedInlineHtml(claim) {
   return rendered.join("");
 }
 
+function renderedInlineMarkdown(claim) {
+  const rendered = [];
+  let cursor = 0;
+  while (cursor < claim.length) {
+    const image = claim[cursor] === "!" && claim[cursor + 1] === "[";
+    if (claim[cursor] !== "[" && !image) {
+      rendered.push(claim[cursor]);
+      cursor += 1;
+      continue;
+    }
+    const labelStart = cursor + (image ? 2 : 1);
+    let labelEnd = labelStart;
+    let escaped = false;
+    for (; labelEnd < claim.length; labelEnd += 1) {
+      const character = claim[labelEnd];
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "]") {
+        break;
+      }
+    }
+    if (labelEnd >= claim.length || claim[labelEnd + 1] !== "(") {
+      rendered.push(claim.slice(cursor, Math.min(labelEnd + 1, claim.length)));
+      cursor = Math.min(labelEnd + 1, claim.length);
+      continue;
+    }
+    let destinationEnd = labelEnd + 2;
+    let destinationDepth = 1;
+    escaped = false;
+    for (; destinationEnd < claim.length; destinationEnd += 1) {
+      const character = claim[destinationEnd];
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "(") {
+        destinationDepth += 1;
+        if (destinationDepth > 8) break;
+      } else if (character === ")") {
+        destinationDepth -= 1;
+        if (destinationDepth === 0) break;
+      }
+    }
+    if (destinationDepth !== 0) {
+      rendered.push(claim.slice(cursor));
+      break;
+    }
+    rendered.push(claim.slice(labelStart, labelEnd));
+    cursor = destinationEnd + 1;
+  }
+  return rendered.join("");
+}
+
+function foldEvidenceConfusables(claim) {
+  return [...claim]
+    .map((character) => {
+      const mapped = EVIDENCE_CONFUSABLES.get(character);
+      if (mapped !== undefined) return mapped;
+      const codePoint = character.codePointAt(0);
+      return codePoint >= 0xff01 && codePoint <= 0xff5e ? String.fromCodePoint(codePoint - 0xfee0) : character;
+    })
+    .join("");
+}
+
 function renderedProseClaim(claim) {
-  return decodeRenderedEntities(renderedInlineHtml(claim.replace(/(`+)[\s\S]*?\1/gu, " ")))
+  return decodeRenderedEntities(renderedInlineHtml(renderedInlineMarkdown(claim.replace(/(`+)[\s\S]*?\1/gu, " "))))
     .replace(/[*_~]+/gu, "")
     .replace(/[\u00ad\u200b-\u200f\u2060-\u2064\u206a-\u206f\ufeff]/gu, "")
     .replace(/\s+/gu, " ")
@@ -1556,7 +1852,8 @@ function hasNonCanonicalName(claim, canonical, pattern) {
 }
 
 function structuredOwnershipViolation(claim) {
-  const renderedClaim = renderedProseClaim(claim);
+  const renderedProse = renderedProseClaim(claim);
+  const renderedClaim = foldEvidenceConfusables(renderedProse);
   const tokens = claimTokens(renderedClaim);
   const has = (...values) => values.every((value) => tokens.has(value));
   const ownsEvidence = hasTokenStem(tokens, [
@@ -1590,6 +1887,11 @@ function structuredOwnershipViolation(claim) {
         has("installed", "performance") ||
         tokens.has("fork"))) ||
     (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
+  const namedProductContext =
+    /\b(?:antigravity|cursor|open vsx|open wrangler|openvsx|openwrangler|vs code|vscode)\b/iu.test(renderedClaim);
+  if (renderedClaim !== renderedProse && ownsEvidence && (cursorProductContext || namedProductContext)) {
+    return "named product and editor claims must retain exact canonical case";
+  }
   if (cursorProductContext && hasNonCanonicalName(renderedClaim, "Cursor", /(?<![./_-])\bcursor\b(?![./_-])/giu)) {
     return "named product and editor claims must retain exact canonical case";
   }

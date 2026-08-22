@@ -393,6 +393,81 @@ test("success fan-ins reject inherited and direct environment additions", () => 
   }
 });
 
+test("required runners and fan-ins bind shell, topology, and persistent environment", () => {
+  for (const shell of ["bash {0} || true", "${{ matrix.shell }}", "bash -c {0}"]) {
+    const candidateWorkflowSource = sources.candidateWorkflowSource.replace(
+      "      - name: Require every candidate acceptance result\n        env:",
+      `      - name: Require every candidate acceptance result\n        shell: ${shell}\n        env:`
+    );
+    assert.match(inspect({ candidateWorkflowSource }).join(" "), /qualification fan-in/u);
+  }
+
+  const customRunnerShell = sources.candidateWorkflowSource.replace(
+    "      - id: packaged_editor\n        name: Test packaged VS Code",
+    "      - id: packaged_editor\n        name: Test packaged VS Code\n        shell: bash {0} || true"
+  );
+  assert.match(inspect({ candidateWorkflowSource: customRunnerShell }).join(" "), /platform owner|editor runner/u);
+
+  const customContractShell = sources.candidateWorkflowSource.replace(
+    "      - name: Require one supported candidate invocation\n        env:",
+    "      - name: Require one supported candidate invocation\n        shell: bash {0} || true\n        env:"
+  );
+  assert.match(inspect({ candidateWorkflowSource: customContractShell }).join(" "), /input contract/u);
+
+  for (const candidateWorkflowSource of [
+    sources.candidateWorkflowSource.replace(
+      "  acceptance:\n    name:",
+      "  acceptance:\n    container:\n      image: ubuntu:24.04\n      env:\n        BASH_ENV: /tmp/replace-owner\n    name:"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "  acceptance:\n    name:",
+      "  acceptance:\n    defaults:\n      run:\n        shell: bash {0} || true\n    name:"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "  platform:\n    name:",
+      "  platform:\n    container:\n      image: ubuntu:24.04\n      env:\n        NODE_OPTIONS: --require=/tmp/replace-owner.cjs\n    name:"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "      - id: packaged_editor\n        name: Test packaged VS Code",
+      '      - name: Persist runner replacement\n        run: echo "NODE_OPTIONS=--require=/tmp/replace-owner.cjs" >> "$GITHUB_ENV"\n      - id: packaged_editor\n        name: Test packaged VS Code'
+    ),
+    sources.candidateWorkflowSource.replace(
+      "      - name: Require successful platform R outcomes\n",
+      '      - name: Persist owner replacement\n        shell: bash\n        run: echo "BASH_ENV=/tmp/replace-owner" >> "$GITHUB_ENV"\n      - name: Require successful platform R outcomes\n'
+    ),
+    sources.candidateWorkflowSource.replace(
+      "      - name: Require successful platform R outcomes\n",
+      '      - name: Persist path replacement\n        shell: bash\n        run: echo "/tmp/replace-owner" >> "$GITHUB_PATH"\n      - name: Require successful platform R outcomes\n'
+    ),
+    sources.candidateWorkflowSource.replace(
+      "      - name: Require successful platform R outcomes\n",
+      "      - name: Persist command replacement\n        shell: bash\n        run: alias test=true\n      - name: Require successful platform R outcomes\n"
+    )
+  ]) {
+    assert.match(
+      inspect({ candidateWorkflowSource }).join(" "),
+      /qualification fan-in|executable success owner|persistent environment/u
+    );
+  }
+
+  for (const ciWorkflowSource of [
+    sources.ciWorkflowSource.replace(
+      "      - name: Require every owned CI result\n",
+      '      - name: Persist CI owner replacement\n        run: echo "BASH_ENV=/tmp/replace-owner" >> "$GITHUB_ENV"\n      - name: Require every owned CI result\n'
+    ),
+    sources.ciWorkflowSource.replace(
+      "  validate:\n    name:",
+      "  validate:\n    container:\n      image: ubuntu:24.04\n    name:"
+    ),
+    sources.ciWorkflowSource.replace(
+      "      - name: Require every owned CI result\n",
+      "      - name: Require every owned CI result\n        shell: bash {0} || true\n"
+    )
+  ]) {
+    assert.match(inspect({ ciWorkflowSource }).join(" "), /required CI success fan-in/u);
+  }
+});
+
 test("every workflow owner retains its own effective editor-version authority", () => {
   const pinnedExtensionHost = sources.ciWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable",
@@ -547,7 +622,12 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
     `<section\n hidden>\n${architectureBlock}\n</section>`,
     `<section style=display:none>\n${architectureBlock}\n</section>`,
     `<section style=" DISPLAY : none !IMPORTANT ">\n${architectureBlock}\n</section>`,
-    `<section style='color: red; visibility : "hidden" ! important'>\n${architectureBlock}\n</section>`
+    `<section style='color: red; visibility : "hidden" ! important'>\n${architectureBlock}\n</section>`,
+    `<section style="display/**/:none">\n${architectureBlock}\n</section>`,
+    `<section style="d\\69 splay:none">\n${architectureBlock}\n</section>`,
+    `<section style="d&#105;splay&#58;none">\n${architectureBlock}\n</section>`,
+    `<section style="opacity:0">\n${architectureBlock}\n</section>`,
+    `<section style="content-visibility:hidden">\n${architectureBlock}\n</section>`
   ]) {
     assert.match(
       inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
@@ -555,15 +635,30 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
     );
   }
 
-  assert.deepEqual(
+  assert.match(
     inspect({
       architectureSource: sources.architectureSource.replace(
         architectureBlock,
-        `<section style="display: block !important">\n${architectureBlock}\n</section>`
+        `<section style="position:absolute">\n${architectureBlock}\n</section>`
       )
-    }),
-    []
+    }).join(" "),
+    /unproven inline style/u
   );
+
+  for (const style of [
+    "display: block !important",
+    "display:block;visibility:visible;opacity:1;content-visibility:visible"
+  ]) {
+    assert.deepEqual(
+      inspect({
+        architectureSource: sources.architectureSource.replace(
+          architectureBlock,
+          `<section style="${style}">\n${architectureBlock}\n</section>`
+        )
+      }),
+      []
+    );
+  }
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -616,6 +711,11 @@ test("named product and editor claims require canonical case", () => {
   for (const outsideClaim of [
     "C<strong>u</strong>rsor owns every released-Jupyter, Native R, and installed-performance lane.",
     "C<span>u</span>rsor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "C<wbr>ursor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "C[urs](https://example.com/editor)or owns every released-Jupyter, Native R, and installed-performance lane.",
+    "Cursοr owns every released-Jupyter, Native R, and installed-performance lane.",
+    "Сursor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "Ｃursor owns every released-Jupyter, Native R, and installed-performance lane.",
     "open&NoBreak;wrangler certifies the editor compatibility matrix.",
     "open&ZeroWidthSpace;wrangler certifies the editor compatibility matrix.",
     "open&InvisibleTimes;wrangler certifies the editor compatibility matrix."
@@ -635,6 +735,12 @@ test("named product and editor claims require canonical case", () => {
   assert.deepEqual(
     inspect({
       ciDocumentationSource: `${sources.ciDocumentationSource}\nThe literal <code>cursor owns installed performance</code> is not a product claim.\nSee [the source](https://example.com/cursor-owns-native-r).\n`
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n. The Greek word κόσμος appears in ordinary prose.\n`
     }),
     []
   );
