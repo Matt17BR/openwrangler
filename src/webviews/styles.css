@@ -4,6 +4,7 @@
 @import "./styles/workspace.css";
 @import "./styles/filters.css";
 @import "./styles/grid.css";
+@import "./styles/grid-column-controls.css";
 @import "./styles/grid-insights.css";
 @import "./styles/summary.css";
 @import "./styles/operations.css";
