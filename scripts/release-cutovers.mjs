@@ -11,6 +11,7 @@ import {
 import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
+import { Script } from "node:vm";
 import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
@@ -29,6 +30,7 @@ const MAX_REPOSITORY_PATH_BYTES = 256;
 const MAX_REPOSITORY_SCAN_ENTRIES = 4_096;
 const MAX_REPOSITORY_SCAN_BYTES = 64 * 1024 * 1024;
 const MAX_JAVASCRIPT_TOKENS = 262_144;
+const MAX_JAVASCRIPT_ANALYSIS_OPERATIONS = MAX_JAVASCRIPT_TOKENS * 64;
 const MAX_SEMVER_COMPONENT_DIGITS = 128;
 const STABLE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
@@ -409,6 +411,59 @@ function withRepositoryNamespace(rootHandle, operation) {
   return result;
 }
 
+function captureRepositoryDescendant(root, relativePath, { directory = false, maximumBytes } = {}) {
+  const segments = canonicalRepositoryPath(relativePath, "Repository descendant").split("/");
+  const entries = [];
+  let absolutePath = root;
+  for (let index = 0; index < segments.length; index += 1) {
+    absolutePath = resolve(absolutePath, segments[index]);
+    const isDirectory = index < segments.length - 1 || directory;
+    const metadata = repositoryMetadataSnapshot(
+      lstatSync(absolutePath, { bigint: true }),
+      `Repository descendant ${relativePath}`,
+      isDirectory ? { directory: true } : { maximumBytes }
+    );
+    if (realpathSync(absolutePath) !== absolutePath) {
+      throw new Error(`${relativePath} has a non-canonical repository descendant component.`);
+    }
+    entries.push(Object.freeze({ absolutePath, metadata, directory: isDirectory }));
+  }
+  return Object.freeze({ entries: Object.freeze(entries), relativePath });
+}
+
+function assertRepositoryDescendantCurrent(capability, maximumBytes) {
+  try {
+    for (const entry of capability.entries) {
+      const current = repositoryMetadataSnapshot(
+        lstatSync(entry.absolutePath, { bigint: true }),
+        `Repository descendant ${capability.relativePath}`,
+        entry.directory ? { directory: true } : { maximumBytes }
+      );
+      if (realpathSync(entry.absolutePath) !== entry.absolutePath || !sameRepositoryMetadata(entry.metadata, current)) {
+        throw new Error(
+          `${capability.relativePath} changed one repository descendant component during its bounded scan.`
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && /repository descendant component/u.test(error.message)) throw error;
+    throw new Error(`${capability.relativePath} changed one repository descendant component during its bounded scan.`, {
+      cause: error
+    });
+  }
+}
+
+function withRepositoryDescendant(rootHandle, capability, maximumBytes, operation) {
+  assertRepositoryNamespaceCurrent(rootHandle);
+  assertRepositoryDescendantCurrent(capability, maximumBytes);
+  const failures = [];
+  const result = attemptReleaseCutoverStep(failures, operation);
+  attemptReleaseCutoverStep(failures, () => assertRepositoryDescendantCurrent(capability, maximumBytes));
+  attemptReleaseCutoverStep(failures, () => assertRepositoryNamespaceCurrent(rootHandle));
+  throwReleaseCutoverFailures(failures);
+  return result;
+}
+
 function openRepositoryRoot(root) {
   if (typeof root !== "string" || resolve(root) !== root) {
     throw new Error("The release-cutover repository root must be one canonical absolute directory.");
@@ -474,12 +529,10 @@ function captureRepositorySources(root, rootHandle, discoverPaths, options = {})
   for (const path of paths) {
     const absolutePath = resolve(root, path);
     const maximumBytes = path === MANIFEST_PATH ? MAX_MANIFEST_BYTES : MAX_CONSUMER_BYTES;
-    const metadata = withRepositoryNamespace(rootHandle, () => {
-      if (realpathSync(absolutePath) !== absolutePath) {
-        throw new Error(`${path} is not byte-canonical beneath the release-cutover repository root.`);
-      }
-      return repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
-    });
+    const capability = withRepositoryNamespace(rootHandle, () =>
+      captureRepositoryDescendant(root, path, { maximumBytes })
+    );
+    const metadata = capability.entries.at(-1).metadata;
     const identity = `${metadata.dev}:${metadata.ino}`;
     if (identities.has(identity)) {
       throw new Error(`${path} aliases another release-cutover repository file identity.`);
@@ -489,21 +542,21 @@ function captureRepositorySources(root, rootHandle, discoverPaths, options = {})
     if (aggregateBytes > MAX_REPOSITORY_SCAN_BYTES) {
       throw new Error(`The release-cutover repository scan exceeds ${MAX_REPOSITORY_SCAN_BYTES} bytes.`);
     }
-    preflight.set(path, Object.freeze({ absolutePath, maximumBytes, metadata }));
+    preflight.set(path, Object.freeze({ absolutePath, capability, maximumBytes, metadata }));
   }
 
   const sources = new Map();
   const receipts = new Map();
   for (const path of paths) {
-    const { absolutePath, maximumBytes, metadata } = preflight.get(path);
-    const source = withRepositoryNamespace(rootHandle, () =>
+    const { absolutePath, capability, maximumBytes, metadata } = preflight.get(path);
+    const source = withRepositoryDescendant(rootHandle, capability, maximumBytes, () =>
       readReleaseCutoverUtf8File(absolutePath, maximumBytes, {
         afterOpenForTest: options.afterOpenForTest,
         containedBy: root,
         label: "Release-cutover repository source"
       })
     );
-    const completed = withRepositoryNamespace(rootHandle, () => {
+    const completed = withRepositoryDescendant(rootHandle, capability, maximumBytes, () => {
       const snapshot = repositoryMetadataSnapshot(lstatSync(absolutePath, { bigint: true }), path, { maximumBytes });
       if (realpathSync(absolutePath) !== absolutePath || !sameRepositoryMetadata(metadata, snapshot)) {
         throw new Error(`${path} changed across its release-cutover repository read.`);
@@ -593,12 +646,10 @@ function discoverRepositoryAuditPaths(root, rootHandle, { afterDirectoryOpenForT
     while (pending.length > 0) {
       const relativeDirectory = pending.pop();
       const absoluteDirectory = resolve(root, relativeDirectory);
-      withRepositoryNamespace(rootHandle, () => {
-        const metadata = lstatSync(absoluteDirectory, { bigint: true });
-        repositoryMetadataSnapshot(metadata, relativeDirectory, { directory: true });
-        if (realpathSync(absoluteDirectory) !== absoluteDirectory) {
-          throw new Error(`${relativeDirectory} is not a canonical release-cutover scan directory.`);
-        }
+      const capability = withRepositoryNamespace(rootHandle, () =>
+        captureRepositoryDescendant(root, relativeDirectory, { directory: true })
+      );
+      withRepositoryDescendant(rootHandle, capability, undefined, () => {
         const handle = opendirSync(absoluteDirectory);
         const failures = [];
         try {
@@ -838,6 +889,13 @@ function tokenizeJavaScript(source) {
       append("string", value, start, index, plain);
       continue;
     }
+    if (/[0-9]/u.test(character)) {
+      const start = index;
+      index += 1;
+      while (index < source.length && /[0-9A-Fa-f_xXobn.]/u.test(source[index])) index += 1;
+      append("number", source.slice(start, index), start, index);
+      continue;
+    }
     if (/[A-Za-z_$]/u.test(character)) {
       const start = index;
       index += 1;
@@ -890,123 +948,462 @@ function javascriptPairs(tokens) {
   return pairs;
 }
 
-function importedJavaScriptBindings(tokens, moduleNames, importedNames) {
+function assertJavaScriptSyntax(source, tokens) {
+  const edits = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].value === "export") {
+      edits.push(Object.freeze({ end: tokens[index].end, replacement: "", start: tokens[index].start }));
+      continue;
+    }
+    if (tokens[index].value !== "import") continue;
+    if (tokens[index + 1]?.value === "." && tokens[index + 2]?.value === "meta") {
+      edits.push(Object.freeze({ end: tokens[index + 2].end, replacement: "({})", start: tokens[index].start }));
+      index += 2;
+      continue;
+    }
+    if (tokens[index + 1]?.value === "(") continue;
+    let end = index + 1;
+    while (end < tokens.length && tokens[end].kind !== "string") end += 1;
+    if (end >= tokens.length) throw new Error("A release-cutover JavaScript source has an incomplete import.");
+    edits.push(Object.freeze({ end: tokens[end].end, replacement: "", start: tokens[index].start }));
+    index = end;
+  }
+  let cursor = 0;
+  const transformed = [];
+  for (const edit of edits) {
+    if (edit.start < cursor) continue;
+    transformed.push(source.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
+  }
+  transformed.push(source.slice(cursor));
+  try {
+    void new Script(`(async () => {\n${transformed.join("")}\n});`, { filename: "release-cutover-consumer.mjs" });
+  } catch (error) {
+    throw new Error("A release-cutover JavaScript consumer is not syntactically valid.", { cause: error });
+  }
+}
+
+function importedJavaScriptBindings(tokens, pairs, moduleNames, importedNames) {
   const bindings = new Map();
   for (let index = 0; index < tokens.length; index += 1) {
-    if (tokens[index].value !== "import" || tokens[index + 1]?.value !== "{") continue;
-    let close = index + 2;
-    while (close < tokens.length && !(tokens[close].kind === "punctuator" && tokens[close].value === "}")) {
-      close += 1;
+    if (tokens[index].value !== "import") continue;
+    if (
+      tokens[index + 1]?.kind === "identifier" &&
+      tokens[index + 2]?.value === "from" &&
+      tokens[index + 3]?.kind === "string"
+    ) {
+      const local = tokens[index + 1];
+      const moduleName = tokens[index + 3];
+      if (moduleName.plain && moduleNames.has(moduleName.value) && importedNames("default")) {
+        bindings.set(local.value, Object.freeze({ imported: "default", tokenIndex: index + 1 }));
+      }
+      index += 3;
+      continue;
     }
-    if (close >= tokens.length || tokens[close + 1]?.value !== "from" || tokens[close + 2]?.kind !== "string") {
+    if (tokens[index + 1]?.value !== "{") continue;
+    const close = pairs.get(index + 1);
+    if (
+      close === undefined ||
+      close >= tokens.length ||
+      tokens[close + 1]?.value !== "from" ||
+      tokens[close + 2]?.kind !== "string"
+    ) {
+      if (tokens.slice(index, close ?? tokens.length).some(({ value }) => RELEASE_AUTHORITY_MODULES.has(value))) {
+        throw new Error("A release-cutover JavaScript source has an invalid authority import.");
+      }
       continue;
     }
     const moduleName = tokens[close + 2];
     if (!moduleName.plain || !moduleNames.has(moduleName.value)) continue;
     for (let cursor = index + 2; cursor < close;) {
+      if (tokens[cursor]?.value === ",") {
+        cursor += 1;
+        if (cursor === close) break;
+      }
       const imported = tokens[cursor];
       if (imported?.kind !== "identifier") {
-        cursor += 1;
-        continue;
+        throw new Error("A release-cutover JavaScript source has an invalid authority import specifier.");
       }
       let local = imported;
       let localIndex = cursor;
-      if (tokens[cursor + 1]?.value === "as" && tokens[cursor + 2]?.kind === "identifier") {
-        local = tokens[cursor + 2];
-        localIndex = cursor + 2;
-        cursor += 3;
-      } else {
-        cursor += 1;
+      cursor += 1;
+      if (tokens[cursor]?.value === "as") {
+        if (tokens[cursor + 1]?.kind !== "identifier") {
+          throw new Error("A release-cutover JavaScript source has an invalid authority import alias.");
+        }
+        local = tokens[cursor + 1];
+        localIndex = cursor + 1;
+        cursor += 2;
       }
       if (importedNames(imported.value)) {
+        if (bindings.has(local.value)) {
+          throw new Error("A release-cutover JavaScript authority import has a duplicate local binding.");
+        }
         bindings.set(local.value, Object.freeze({ imported: imported.value, tokenIndex: localIndex }));
       }
-      if (tokens[cursor]?.value === ",") cursor += 1;
+      if (cursor < close && tokens[cursor]?.value !== ",") {
+        throw new Error("A release-cutover JavaScript source has an invalid authority import separator.");
+      }
     }
     index = close + 2;
   }
   return bindings;
 }
 
-function hasShadowingJavaScriptBinding(tokens, pairs, name, importTokenIndex) {
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (tokens[index].value !== name || index === importTokenIndex) continue;
-    const previous = tokens[index - 1]?.value;
-    if (
-      ["const", "let", "var", "class", "function"].includes(previous) ||
-      tokens[index + 1]?.value === "=>" ||
-      ["=", "++", "--"].includes(tokens[index + 1]?.value)
-    ) {
-      return true;
-    }
-    if (["{", "[", ":", ","].includes(previous)) {
-      for (let cursor = index - 1; cursor >= 0 && ![";", "="].includes(tokens[cursor].value); cursor -= 1) {
-        if (["const", "let", "var"].includes(tokens[cursor].value)) return true;
-      }
-    }
-  }
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (!["function", "catch"].includes(tokens[index].value)) continue;
-    let open = index + 1;
-    if (tokens[index].value === "function" && tokens[open]?.kind === "identifier") open += 1;
-    if (tokens[open]?.value !== "(") continue;
-    const close = pairs.get(open);
-    if (close !== undefined && tokens.slice(open + 1, close).some((token) => token.value === name)) return true;
-  }
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (tokens[index].value !== "=>") continue;
-    const previous = tokens[index - 1];
-    if (previous?.value === name) return true;
-    if (previous?.value === ")") {
-      const open = pairs.get(index - 1);
-      if (open !== undefined && tokens.slice(open + 1, index - 1).some((token) => token.value === name)) return true;
-    }
-  }
-  return false;
-}
-
-function statementTokenRange(tokens, pairs, start) {
+function statementTokenRange(tokens, pairs, start, charge = () => {}) {
   if (tokens[start]?.value === "{") return Object.freeze([start, pairs.get(start)]);
   let end = start;
-  while (end < tokens.length && ![";", "}"].includes(tokens[end].value)) end += 1;
+  while (end < tokens.length && ![";", "}"].includes(tokens[end].value)) {
+    charge();
+    end += 1;
+  }
   return Object.freeze([start, end]);
 }
 
-function isStaticallyDeadJavaScriptToken(tokens, pairs, tokenIndex) {
-  for (let index = 0; index < tokenIndex; index += 1) {
-    if (!["if", "while"].includes(tokens[index].value) || tokens[index + 1]?.value !== "(") continue;
-    const conditionClose = pairs.get(index + 1);
-    if (conditionClose === undefined) continue;
-    const condition = tokens.slice(index + 2, conditionClose);
-    if (condition.length !== 1 || !["false", "true"].includes(condition[0].value)) continue;
-    const consequent = statementTokenRange(tokens, pairs, conditionClose + 1);
-    if (condition[0].value === "false" && tokenIndex >= consequent[0] && tokenIndex <= consequent[1]) return true;
-    const elseIndex = consequent[1] + 1;
-    if (tokens[index].value === "if" && condition[0].value === "true" && tokens[elseIndex]?.value === "else") {
-      const alternative = statementTokenRange(tokens, pairs, elseIndex + 1);
-      if (tokenIndex >= alternative[0] && tokenIndex <= alternative[1]) return true;
+function staticJavaScriptTruth(tokens, start, end) {
+  while (start < end && tokens[start]?.value === "(" && tokens[end]?.value === ")") {
+    start += 1;
+    end -= 1;
+  }
+  if (start !== end) return undefined;
+  const token = tokens[start];
+  if (token === undefined) return undefined;
+  if (["false", "null", "undefined", "NaN"].includes(token.value)) return false;
+  if (token.value === "true") return true;
+  if (token.kind === "string") return token.value.length > 0;
+  if (token.kind === "number") {
+    const normalized = token.value.replaceAll("_", "").replace(/n$/u, "");
+    const value = Number(normalized);
+    return Number.isNaN(value) ? undefined : value !== 0;
+  }
+  return undefined;
+}
+
+function javascriptEnclosingOpen(tokens) {
+  const none = tokens.length;
+  const enclosing = new Uint32Array(tokens.length);
+  enclosing.fill(none);
+  const stack = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const value = tokens[index].value;
+    if ([")", "]", "}"].includes(value)) stack.pop();
+    enclosing[index] = stack.at(-1) ?? none;
+    if (["(", "[", "{"].includes(value)) stack.push(index);
+  }
+  return enclosing;
+}
+
+function javascriptExpressionEnd(tokens, enclosing, start, charge = () => {}) {
+  const owner = enclosing[start];
+  let index = start;
+  while (index + 1 < tokens.length) {
+    charge();
+    const next = index + 1;
+    if (enclosing[next] !== owner || [";", ","].includes(tokens[next].value)) break;
+    index = next;
+  }
+  return index;
+}
+
+function analyzeJavaScriptControlFlow(tokens, pairs, bindings, callbackOwners = new Set()) {
+  let operations = 0;
+  const charge = (count = 1) => {
+    operations += count;
+    if (operations > MAX_JAVASCRIPT_ANALYSIS_OPERATIONS) {
+      throw new Error(
+        `A release-cutover JavaScript analysis exceeds ${MAX_JAVASCRIPT_ANALYSIS_OPERATIONS} operations.`
+      );
+    }
+  };
+  const difference = new Int32Array(tokens.length + 1);
+  const addDead = (start, end) => {
+    if (start === undefined || end === undefined || start > end || start >= tokens.length) return;
+    difference[Math.max(0, start)] += 1;
+    difference[Math.min(tokens.length, end + 1)] -= 1;
+  };
+  const enclosing = javascriptEnclosingOpen(tokens);
+  charge(tokens.length);
+  const ternaryColons = new Map();
+  const pendingTernaries = new Map();
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    const owner = enclosing[index];
+    if (tokens[index].value === "?") {
+      const pending = pendingTernaries.get(owner) ?? [];
+      pending.push(index);
+      pendingTernaries.set(owner, pending);
+    } else if (tokens[index].value === ":") {
+      const pending = pendingTernaries.get(owner);
+      const question = pending?.pop();
+      if (question !== undefined) ternaryColons.set(question, index);
     }
   }
-  let boundary = tokenIndex - 1;
-  while (boundary >= 0 && ![";", "{", "}"].includes(tokens[boundary].value)) boundary -= 1;
-  const prefix = tokens.slice(boundary + 1, tokenIndex).map(({ value }) => value);
-  if (
-    prefix.some((value, index) => value === "false" && prefix[index + 1] === "&&") ||
-    prefix.some((value, index) => value === "true" && prefix[index + 1] === "||")
-  ) {
-    return true;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    if (["if", "while"].includes(tokens[index].value) && tokens[index + 1]?.value === "(") {
+      const conditionClose = pairs.get(index + 1);
+      if (conditionClose !== undefined) {
+        const truth = staticJavaScriptTruth(tokens, index + 2, conditionClose - 1);
+        const consequent = statementTokenRange(tokens, pairs, conditionClose + 1, charge);
+        if (truth === false) addDead(consequent[0], consequent[1]);
+        const elseIndex = consequent[1] + 1;
+        if (tokens[index].value === "if" && truth === true && tokens[elseIndex]?.value === "else") {
+          const alternative = statementTokenRange(tokens, pairs, elseIndex + 1, charge);
+          addDead(alternative[0], alternative[1]);
+        }
+      }
+    }
+    if (tokens[index].value === "for" && tokens[index + 1]?.value === "(") {
+      const conditionClose = pairs.get(index + 1);
+      const separators = [];
+      for (let cursor = index + 2; cursor < conditionClose; cursor += 1) {
+        charge();
+        if (tokens[cursor].value === ";" && enclosing[cursor] === index + 1) separators.push(cursor);
+      }
+      if (separators.length === 2 && staticJavaScriptTruth(tokens, separators[0] + 1, separators[1] - 1) === false) {
+        const consequent = statementTokenRange(tokens, pairs, conditionClose + 1, charge);
+        addDead(consequent[0], consequent[1]);
+      }
+    }
+    if (tokens[index].value === "switch" && tokens[index + 1]?.value === "(") {
+      const conditionClose = pairs.get(index + 1);
+      const bodyOpen = conditionClose === undefined ? undefined : conditionClose + 1;
+      if (tokens[bodyOpen]?.value === "{") addDead(bodyOpen + 1, pairs.get(bodyOpen) - 1);
+    }
+    const truth = staticJavaScriptTruth(tokens, index, index);
+    if (
+      (truth === false && tokens[index + 1]?.value === "&&") ||
+      (truth === true && tokens[index + 1]?.value === "||")
+    ) {
+      addDead(index + 2, javascriptExpressionEnd(tokens, enclosing, index + 2, charge));
+    }
+    if (tokens[index + 1]?.value === "?" && tokens[index + 1]?.kind === "punctuator") {
+      const colon = ternaryColons.get(index + 1);
+      if (colon !== undefined) {
+        if (truth === false) addDead(index + 2, colon - 1);
+        if (truth === true) addDead(colon + 1, javascriptExpressionEnd(tokens, enclosing, colon + 1, charge));
+      }
+    }
+    if (["return", "throw"].includes(tokens[index].value)) {
+      const blockOpen = enclosing[index];
+      if (tokens[blockOpen]?.value !== "{") continue;
+      let statementEnd = index;
+      while (statementEnd < tokens.length && tokens[statementEnd].value !== ";") {
+        charge();
+        statementEnd += 1;
+      }
+      addDead(statementEnd + 1, pairs.get(blockOpen) - 1);
+    }
   }
-  return false;
+
+  const baseDead = new Uint8Array(tokens.length);
+  let depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    depth += difference[index];
+    baseDead[index] = depth > 0 ? 1 : 0;
+  }
+
+  const functionBodies = [];
+  const declarationNameIndices = new Set();
+  const statementExported = new Uint8Array(tokens.length);
+  const statementBindingNames = new Array(tokens.length);
+  let currentStatementExported = false;
+  let currentStatementBinding;
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    if ([";", "{", "}"].includes(tokens[index - 1]?.value)) {
+      currentStatementExported = false;
+      currentStatementBinding = undefined;
+    }
+    if (tokens[index].value === "export") currentStatementExported = true;
+    if (["const", "let", "var"].includes(tokens[index].value) && tokens[index + 1]?.kind === "identifier") {
+      currentStatementBinding = Object.freeze({ index: index + 1, name: tokens[index + 1].value });
+    }
+    statementExported[index] = currentStatementExported ? 1 : 0;
+    statementBindingNames[index] = currentStatementBinding;
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    if (tokens[index].value === "function") {
+      let cursor = index + 1;
+      if (tokens[cursor]?.value === "*") cursor += 1;
+      const nameIndex = tokens[cursor]?.kind === "identifier" ? cursor++ : undefined;
+      if (tokens[cursor]?.value !== "(") continue;
+      const parametersOpen = cursor;
+      const parametersClose = pairs.get(parametersOpen);
+      const bodyOpen = parametersClose === undefined ? undefined : parametersClose + 1;
+      if (tokens[bodyOpen]?.value !== "{") continue;
+      const bodyClose = pairs.get(bodyOpen);
+      const exported = [tokens[index - 1]?.value, tokens[index - 2]?.value].includes("export");
+      const parentOpen = enclosing[index];
+      const callback = tokens[parentOpen]?.value === "(" && callbackOwners.has(tokens[parentOpen - 1]?.value);
+      if (nameIndex !== undefined) declarationNameIndices.add(nameIndex);
+      functionBodies.push({
+        bodyClose,
+        bodyOpen,
+        callback,
+        exported,
+        name: nameIndex === undefined ? undefined : tokens[nameIndex].value,
+        parametersClose,
+        parametersOpen,
+        targets: new Set()
+      });
+      index = parametersClose;
+      continue;
+    }
+    if (tokens[index].value === "=>") {
+      let parametersOpen;
+      let parametersClose;
+      if (tokens[index - 1]?.value === ")") {
+        parametersOpen = pairs.get(index - 1);
+        parametersClose = index - 1;
+      } else if (tokens[index - 1]?.kind === "identifier") {
+        parametersOpen = index - 1;
+        parametersClose = index - 1;
+      }
+      const parentOpen = enclosing[index];
+      const callback = tokens[parentOpen]?.value === "(" && callbackOwners.has(tokens[parentOpen - 1]?.value);
+      const exported = statementExported[index] === 1;
+      const statementBinding = statementBindingNames[index];
+      const name = statementBinding?.name;
+      if (statementBinding !== undefined) declarationNameIndices.add(statementBinding.index);
+      const bodyOpen = index + 1;
+      const bodyClose =
+        tokens[bodyOpen]?.value === "{"
+          ? pairs.get(bodyOpen)
+          : javascriptExpressionEnd(tokens, enclosing, bodyOpen, charge);
+      functionBodies.push({
+        bodyClose,
+        bodyOpen,
+        callback,
+        exported,
+        name,
+        parametersClose,
+        parametersOpen,
+        targets: new Set()
+      });
+    }
+  }
+
+  const starts = new Map();
+  const closes = new Map();
+  const namedFunctions = new Map();
+  for (const body of functionBodies) {
+    charge();
+    const starting = starts.get(body.bodyOpen) ?? [];
+    starting.push(body);
+    starts.set(body.bodyOpen, starting);
+    const closing = closes.get(body.bodyClose) ?? [];
+    closing.push(body);
+    closes.set(body.bodyClose, closing);
+    if (body.name !== undefined) {
+      const owners = namedFunctions.get(body.name) ?? [];
+      owners.push(body);
+      namedFunctions.set(body.name, owners);
+    }
+  }
+  const reachableFunctions = new Set();
+  const activeFunctions = [];
+  const rootTargets = new Set();
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    for (const body of starts.get(index) ?? []) {
+      body.lexicalOwner = activeFunctions.at(-1);
+      activeFunctions.push(body);
+      if (body.exported || (body.callback && body.lexicalOwner === undefined && baseDead[index] === 0)) {
+        reachableFunctions.add(body);
+      } else if (body.callback && body.lexicalOwner !== undefined && baseDead[index] === 0) {
+        body.lexicalOwner.targets.add(body);
+      }
+    }
+    if (
+      baseDead[index] === 0 &&
+      tokens[index].kind === "identifier" &&
+      tokens[index + 1]?.value === "(" &&
+      ![".", "?.", "function"].includes(tokens[index - 1]?.value) &&
+      !declarationNameIndices.has(index)
+    ) {
+      const targets = namedFunctions.get(tokens[index].value);
+      if (targets?.length === 1) {
+        const owner = activeFunctions.at(-1);
+        if (owner === undefined) rootTargets.add(targets[0]);
+        else owner.targets.add(targets[0]);
+      }
+    }
+    for (const body of (closes.get(index) ?? []).reverse()) {
+      if (activeFunctions.at(-1) === body) activeFunctions.pop();
+    }
+  }
+  for (const target of rootTargets) reachableFunctions.add(target);
+  const pendingFunctions = [...reachableFunctions];
+  for (let index = 0; index < pendingFunctions.length; index += 1) {
+    for (const target of pendingFunctions[index].targets) {
+      charge();
+      if (reachableFunctions.has(target)) continue;
+      reachableFunctions.add(target);
+      pendingFunctions.push(target);
+    }
+  }
+  for (const body of functionBodies) {
+    charge();
+    if (!reachableFunctions.has(body)) addDead(body.bodyOpen, body.bodyClose);
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    if (tokens[index].value === "class" && tokens[index + 2]?.value === "{") {
+      addDead(index + 3, pairs.get(index + 2) - 1);
+    }
+  }
+
+  const dead = new Uint8Array(tokens.length);
+  depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    depth += difference[index];
+    dead[index] = depth > 0 ? 1 : 0;
+  }
+
+  const parameterDifference = new Int32Array(tokens.length + 1);
+  for (const body of functionBodies) {
+    charge();
+    if (body.parametersOpen === undefined || body.parametersClose === undefined) continue;
+    parameterDifference[body.parametersOpen] += 1;
+    parameterDifference[body.parametersClose + 1] -= 1;
+  }
+  const invalidBindings = new Set();
+  let parameterDepth = 0;
+  let declaration = false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    charge();
+    parameterDepth += parameterDifference[index];
+    const value = tokens[index].value;
+    if (["const", "let", "var"].includes(value)) declaration = true;
+    if ([";", "="].includes(value)) declaration = false;
+    const binding = bindings.get(value);
+    if (binding === undefined || index === binding.tokenIndex) continue;
+    if (
+      parameterDepth > 0 ||
+      declaration ||
+      ["class", "function", "catch"].includes(tokens[index - 1]?.value) ||
+      ["=", "++", "--", "=>"].includes(tokens[index + 1]?.value)
+    ) {
+      invalidBindings.add(value);
+    }
+  }
+  return Object.freeze({ charge, dead, invalidBindings });
 }
 
 const RELEASE_AUTHORITY_EXPORTS = new Set(["releaseCutover", "releaseCutoverApplies", "releaseCutoverVersion"]);
 const RELEASE_AUTHORITY_MODULES = new Set(["./release-cutovers.mjs", "./scripts/release-cutovers.mjs"]);
 
-function javascriptCallArgumentCount(tokens, pairs, open) {
+function javascriptCallArgumentCount(tokens, pairs, open, charge = () => {}) {
   const close = pairs.get(open);
   if (close === undefined || close === open + 1) return close === undefined ? undefined : 0;
   let count = 1;
   for (let index = open + 1; index < close; index += 1) {
+    charge();
     const nestedClose = pairs.get(index);
     if (nestedClose !== undefined && nestedClose > index) {
       index = nestedClose;
@@ -1018,28 +1415,45 @@ function javascriptCallArgumentCount(tokens, pairs, open) {
 function authorityBoundJavaScriptCutoverIds(source, cutoverIds) {
   const tokens = tokenizeJavaScript(source);
   const pairs = javascriptPairs(tokens);
-  const bindings = importedJavaScriptBindings(tokens, RELEASE_AUTHORITY_MODULES, (name) =>
+  assertJavaScriptSyntax(source, tokens);
+  const bindings = importedJavaScriptBindings(tokens, pairs, RELEASE_AUTHORITY_MODULES, (name) =>
     RELEASE_AUTHORITY_EXPORTS.has(name)
   );
+  const callbackBindings = importedJavaScriptBindings(tokens, pairs, new Set(["node:test"]), (name) =>
+    ["default", "test"].includes(name)
+  );
+  const analysisBindings = new Map(bindings);
+  for (const [local, binding] of callbackBindings) {
+    if (analysisBindings.has(local)) {
+      throw new Error("A release-cutover JavaScript source reuses one imported local authority binding.");
+    }
+    analysisBindings.set(local, binding);
+  }
+  const flow = analyzeJavaScriptControlFlow(tokens, pairs, analysisBindings, new Set(callbackBindings.keys()));
+  if ([...callbackBindings.keys()].some((local) => flow.invalidBindings.has(local))) {
+    throw new Error("A release-cutover JavaScript test callback owner is shadowed or reassigned.");
+  }
   const consumed = new Set();
   for (const [local, binding] of bindings) {
-    if (hasShadowingJavaScriptBinding(tokens, pairs, local, binding.tokenIndex)) continue;
+    flow.charge();
+    if (flow.invalidBindings.has(local)) continue;
     for (let index = 0; index < tokens.length; index += 1) {
+      flow.charge();
       if (
         tokens[index].value !== local ||
         tokens[index + 1]?.value !== "(" ||
         [".", "?."].includes(tokens[index - 1]?.value) ||
-        isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+        flow.dead[index] === 1
       ) {
         continue;
       }
       const expectedArguments = binding.imported === "releaseCutoverApplies" ? 2 : 1;
-      if (javascriptCallArgumentCount(tokens, pairs, index + 1) !== expectedArguments) continue;
+      if (javascriptCallArgumentCount(tokens, pairs, index + 1, flow.charge) !== expectedArguments) continue;
       const id = tokens[index + 2];
       if (id?.kind === "string" && id.plain && cutoverIds.has(id.value)) consumed.add(id.value);
     }
   }
-  return Object.freeze({ consumed, pairs, tokens });
+  return Object.freeze({ consumed, flow, pairs, tokens });
 }
 
 function inlineNodeModulePrograms(source) {
@@ -1058,20 +1472,27 @@ function inlineNodeModulePrograms(source) {
   return Object.freeze(programs);
 }
 
-function executableReplacementCutoverIds(tokens, pairs, cutoverIds) {
+function executableReplacementCutoverIds(tokens, pairs, flow, cutoverIds) {
   const inspectorImports = importedJavaScriptBindings(
     tokens,
+    pairs,
     new Set(["./marketplace-promotion-workflow.mjs", "./open-vsx-promotion-workflow.mjs"]),
     (name) => name.startsWith("inspect")
   );
+  const callbackBindings = importedJavaScriptBindings(tokens, pairs, new Set(["node:test"]), (name) =>
+    ["default", "test"].includes(name)
+  );
+  const analysisBindings = new Map(inspectorImports);
+  for (const [local, binding] of callbackBindings) analysisBindings.set(local, binding);
+  const inspectorFlow = analyzeJavaScriptControlFlow(tokens, pairs, analysisBindings, new Set(callbackBindings.keys()));
+  if ([...callbackBindings.keys()].some((local) => inspectorFlow.invalidBindings.has(local))) {
+    throw new Error("A release-cutover JavaScript test callback owner is shadowed or reassigned.");
+  }
   let hasInspectorCall = false;
-  for (const [local, binding] of inspectorImports) {
-    if (hasShadowingJavaScriptBinding(tokens, pairs, local, binding.tokenIndex)) continue;
+  for (const local of inspectorImports.keys()) {
+    if (inspectorFlow.invalidBindings.has(local)) continue;
     hasInspectorCall ||= tokens.some(
-      (token, index) =>
-        token.value === local &&
-        tokens[index + 1]?.value === "(" &&
-        !isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+      (token, index) => token.value === local && tokens[index + 1]?.value === "(" && inspectorFlow.dead[index] === 0
     );
   }
   if (!hasInspectorCall) return Object.freeze([]);
@@ -1081,7 +1502,7 @@ function executableReplacementCutoverIds(tokens, pairs, cutoverIds) {
       tokens[index].value !== "replace" ||
       tokens[index - 1]?.value !== "." ||
       tokens[index + 1]?.value !== "(" ||
-      isStaticallyDeadJavaScriptToken(tokens, pairs, index)
+      flow.dead[index] === 1
     ) {
       continue;
     }
@@ -1103,12 +1524,14 @@ function semanticJavaScriptCutoverIds(source, cutoverIds) {
     const token = direct.tokens[index];
     if (token.kind !== "string") continue;
     const programs = inlineNodeModulePrograms(token.value);
-    if (programs.length === 0 || isStaticallyDeadJavaScriptToken(direct.tokens, direct.pairs, index)) continue;
+    if (programs.length === 0 || direct.flow.dead[index] === 1) continue;
     for (const program of programs) {
       for (const id of authorityBoundJavaScriptCutoverIds(program, cutoverIds).consumed) consumed.add(id);
     }
   }
-  for (const id of executableReplacementCutoverIds(direct.tokens, direct.pairs, cutoverIds)) consumed.add(id);
+  for (const id of executableReplacementCutoverIds(direct.tokens, direct.pairs, direct.flow, cutoverIds)) {
+    consumed.add(id);
+  }
   return Object.freeze([...consumed].sort());
 }
 
@@ -1205,14 +1628,20 @@ function tokenizePortableShellCommands(command) {
   const commands = [];
   let currentCommand = [];
   let currentToken = "";
+  let connector;
   let quote;
   const pushToken = () => {
     if (currentToken.length > 0) currentCommand.push(currentToken);
     currentToken = "";
   };
-  const pushCommand = () => {
+  const pushCommand = (nextConnector) => {
     pushToken();
-    if (currentCommand.length > 0) commands.push(Object.freeze(currentCommand));
+    if (currentCommand.length > 0) {
+      commands.push(Object.freeze({ arguments: Object.freeze(currentCommand), connector }));
+      connector = nextConnector;
+    } else if (nextConnector !== undefined) {
+      throw new Error("The portable script-test inventory has an empty shell control-flow branch.");
+    }
     currentCommand = [];
   };
   for (let index = 0; index < command.length; index += 1) {
@@ -1235,19 +1664,27 @@ function tokenizePortableShellCommands(command) {
       currentToken += command[index];
       continue;
     }
+    if (character === "\n") {
+      pushCommand(";");
+      continue;
+    }
     if (/\s/u.test(character)) {
       pushToken();
       continue;
     }
     if ([";", "|", "&"].includes(character)) {
-      if ((character === "|" || character === "&") && command[index + 1] === character) index += 1;
-      pushCommand();
+      let operator = character;
+      if ((character === "|" || character === "&") && command[index + 1] === character) {
+        operator += character;
+        index += 1;
+      }
+      pushCommand(operator);
       continue;
     }
     currentToken += character;
   }
   if (quote !== undefined) throw new Error("The portable script-test inventory has an unterminated quote.");
-  pushCommand();
+  pushCommand(undefined);
   return Object.freeze(commands);
 }
 
@@ -1262,9 +1699,20 @@ export function assertReleaseCutoverTestInventory(packageSource) {
   }
   const owner = "scripts/release-cutovers.test.mjs";
   const commands = tokenizePortableShellCommands(command);
-  const owningCommands = commands.filter(
-    (arguments_) => arguments_[0] === "node" && arguments_[1] === "--test" && arguments_.includes(owner)
-  );
+  let terminal = false;
+  const owningCommands = [];
+  for (const commandEntry of commands) {
+    const unconditionallyReachable = !terminal && !["&&", "||", "|", "&"].includes(commandEntry.connector);
+    if (
+      unconditionallyReachable &&
+      commandEntry.arguments[0] === "node" &&
+      commandEntry.arguments[1] === "--test" &&
+      commandEntry.arguments.includes(owner)
+    ) {
+      owningCommands.push(commandEntry.arguments);
+    }
+    if (unconditionallyReachable && commandEntry.arguments[0] === "exit") terminal = true;
+  }
   const ownerArguments = owningCommands.flatMap((arguments_) => arguments_.filter((argument) => argument === owner));
   if (owningCommands.length !== 1 || ownerArguments.length !== 1) {
     throw new Error(

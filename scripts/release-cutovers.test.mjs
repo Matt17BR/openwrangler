@@ -306,15 +306,61 @@ test("JavaScript consumers require a live call through the imported release auth
     ["public-media-prepublication"]
   );
   assert.deepEqual(discoveredIds("const decoration = 'releaseCutover(\"public-media-render-verification\")';\n"), []);
+  assert.deepEqual(
+    discoveredIds(
+      'import { releaseCutover } from "./release-cutovers.mjs";\nexport function inspect() { return releaseCutover("public-media-render-verification"); }\n'
+    ),
+    ["public-media-render-verification"]
+  );
+  assert.deepEqual(
+    discoveredIds(
+      'import { test } from "node:test";\nimport { releaseCutover } from "./release-cutovers.mjs";\ntest("owner", () => releaseCutover("public-media-render-verification"));\n'
+    ),
+    ["public-media-render-verification"]
+  );
+  assert.deepEqual(
+    discoveredIds(
+      'import { releaseCutover } from "./release-cutovers.mjs";\nfunction inspect() { return releaseCutover("public-media-render-verification"); }\ninspect();\n'
+    ),
+    ["public-media-render-verification"]
+  );
   for (const source of [
     'import { releaseCutover } from "./release-cutovers.mjs";\nfunction inspect(releaseCutover) { releaseCutover("public-media-render-verification"); }\n',
     'import { releaseCutover } from "./release-cutovers.mjs";\nif (false) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nif (0) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nif (null) { releaseCutover("public-media-render-verification"); }\n',
     'import { releaseCutover } from "./release-cutovers.mjs";\nwhile (false) { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nfor (; false; ) { releaseCutover("public-media-render-verification"); }\n',
     'import { releaseCutover } from "./release-cutovers.mjs";\nfalse && releaseCutover("public-media-render-verification");\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nfalse ? releaseCutover("public-media-render-verification") : undefined;\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nswitch (1) { case 0: releaseCutover("public-media-render-verification"); break; default: break; }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nfunction neverCalled() { releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nBoolean(() => releaseCutover("public-media-render-verification"));\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nif (() => releaseCutover("public-media-render-verification")) {}\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nconst test = (_name, _owner) => undefined;\ntest("owner", () => releaseCutover("public-media-render-verification"));\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nexport function inspect() { return; releaseCutover("public-media-render-verification"); }\n',
+    'import { releaseCutover as } from "./release-cutovers.mjs";\nreleaseCutover("public-media-render-verification");\n',
+    'import { releaseCutover } from "./release-cutovers.mjs";\nconst = ; releaseCutover("public-media-render-verification");\n',
     'import { releaseCutover } from "./release-cutovers.mjs";\nreleaseCutover("public-media-render-verification", forgedManifest);\n'
   ]) {
     assert.throws(() => discoveredIds(source), /could not prove its bounded release-cutover semantics/u);
   }
+});
+
+test("JavaScript release authority analysis stays bounded and approximately linear", () => {
+  const path = "scripts/scaling-release-consumer.mjs";
+  const source = (count) =>
+    `import { releaseCutover } from "./release-cutovers.mjs";\n${Array.from({ length: count }, () => `releaseCutover("public-media-render-verification");`).join("\n")}\n`;
+  const elapsed = (count) => {
+    const started = performance.now();
+    const discovered = discoverReleaseCutoverConsumers(new Map([[path, source(count)]]));
+    assert.deepEqual(discovered.get(path), ["public-media-render-verification"]);
+    return performance.now() - started;
+  };
+  elapsed(256);
+  const small = elapsed(6_400);
+  const large = elapsed(12_800);
+  assert.ok(large < Math.max(2_000, small * 6), `analysis scaled from ${small}ms to ${large}ms`);
 });
 
 test("the release-cutover owner runs in the canonical portable package inventory", () => {
@@ -333,7 +379,10 @@ test("the release-cutover owner runs in the canonical portable package inventory
   for (const command of [
     "echo scripts/release-cutovers.test.mjs",
     "printf '%s\\n' scripts/release-cutovers.test.mjs",
-    "node -e 'console.log(\"scripts/release-cutovers.test.mjs\")'"
+    "node -e 'console.log(\"scripts/release-cutovers.test.mjs\")'",
+    "false && node --test scripts/release-cutovers.test.mjs",
+    "true || node --test scripts/release-cutovers.test.mjs",
+    "exit 0; node --test scripts/release-cutovers.test.mjs"
   ]) {
     packageJson.scripts["test:scripts:portable:run"] = command;
     assert.throws(
@@ -441,6 +490,68 @@ test("the complete repository namespace remains bound during file reads", (conte
   assert.equal(replaced, true);
 });
 
+test("every descendant component remains bound across file and directory ABA replacement", (context) => {
+  const parent = mkdtempSync(join(tmpdir(), "ow-release-descendant-"));
+  context.after(() => rmSync(parent, { recursive: true }));
+  const root = join(parent, "repository");
+  mkdirSync(join(root, "scripts", "nested"), { recursive: true });
+  const source = 'releaseCutover("public-media-render-verification");\n';
+  const target = join(root, "scripts", "nested", "consumer.mjs");
+  writeFileSync(target, source);
+  const assertDescendantFailure = (operation) => {
+    let failure;
+    try {
+      operation();
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error);
+    const pending = [failure];
+    const messages = [];
+    while (pending.length > 0) {
+      const error = pending.pop();
+      messages.push(error.message);
+      if (error instanceof AggregateError) pending.push(...error.errors);
+      if (error.cause instanceof Error) pending.push(error.cause);
+    }
+    assert.match(messages.join("\n"), /repository descendant component/u);
+  };
+
+  let fileReplaced = false;
+  assertDescendantFailure(() =>
+    readStableReleaseCutoverSources(root, ["scripts/nested/consumer.mjs"], {
+      afterOpenForTest: () => {
+        if (fileReplaced) return;
+        fileReplaced = true;
+        const displaced = `${target}.displaced`;
+        renameSync(target, displaced);
+        writeFileSync(target, source);
+        rmSync(target);
+        renameSync(displaced, target);
+      }
+    })
+  );
+  assert.equal(fileReplaced, true);
+
+  let directoryReplaced = false;
+  assertDescendantFailure(() =>
+    readStableReleaseCutoverSources(root, ["scripts/nested/consumer.mjs"], {
+      afterOpenForTest: () => {
+        if (directoryReplaced) return;
+        directoryReplaced = true;
+        const nested = join(root, "scripts", "nested");
+        const displaced = join(root, "scripts", "nested-displaced");
+        renameSync(nested, displaced);
+        mkdirSync(nested);
+        writeFileSync(join(nested, "consumer.mjs"), source);
+        rmSync(nested, { recursive: true });
+        renameSync(displaced, nested);
+      }
+    })
+  );
+  assert.equal(directoryReplaced, true);
+});
+
 test("directory discovery remains bound to the complete repository namespace", (context) => {
   const parent = mkdtempSync(join(tmpdir(), "ow-release-discovery-namespace-"));
   context.after(() => rmSync(parent, { recursive: true }));
@@ -472,6 +583,26 @@ test("directory discovery remains bound to the complete repository namespace", (
     /repository namespace changed/u
   );
   assert.equal(replaced, true);
+
+  let descendantReplaced = false;
+  assert.throws(
+    () =>
+      checkReleaseCutoverRepository({
+        root,
+        afterDirectoryOpenForTest: ({ path }) => {
+          if (descendantReplaced || path !== "scripts") return;
+          descendantReplaced = true;
+          const nested = join(root, "scripts", "soak");
+          const displacedNested = join(root, "scripts", "soak-displaced");
+          renameSync(nested, displacedNested);
+          mkdirSync(nested);
+          rmSync(nested, { recursive: true });
+          renameSync(displacedNested, nested);
+        }
+      }),
+    /repository descendant component/u
+  );
+  assert.equal(descendantReplaced, true);
 
   const primary = new Error("directory discovery failure");
   let directoryCloses = 0;
