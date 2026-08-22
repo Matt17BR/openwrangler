@@ -730,6 +730,7 @@ const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
     so: "coordinate",
     therefore: "coordinate",
     though: "subordinate",
+    unless: "exception-sensitive",
     whenever: "subordinate",
     when: "exception-sensitive",
     whereas: "subordinate",
@@ -885,6 +886,7 @@ function normalizeVisibleMarkdownText(value, label, { validateEntities = true } 
   const normalized = value
     .normalize("NFKC")
     .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .replace(/[\r\u0085\u2028\u2029]/gu, "\n")
     .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
     .replace(/[\u2010\u2011\ufe63\uff0d]/gu, "-")
     .replace(/[\u2012\u2013\u2015\u2212\u2e3a\u2e3b\ufe58]/gu, " ");
@@ -934,7 +936,10 @@ function cleaningHistoryAsIntroducesExampleDesignation(tokens, index, operationC
   const maximum = Math.min(tokens.length, index + 33);
   let designation = false;
   for (let cursor = index + 1; cursor < maximum; cursor += 1) {
-    if (operationCounter !== undefined) operationCounter.value += 1;
+    if (operationCounter !== undefined) {
+      operationCounter.value += 1;
+      operationCounter.designationLookaheadOperations += 1;
+    }
     const token = tokens[cursor];
     if (
       cleaningHistoryClausePunctuationRoles[token] !== undefined ||
@@ -961,21 +966,27 @@ function cleaningHistoryEmDashJoinsPredicatePhrase(tokens, index) {
   );
 }
 
-function cleaningHistoryWhenContinuesUndoException(tokens, index, operationCounter) {
-  if (tokens[index - 1] !== "except") return false;
+function cleaningHistoryConnectorContinuesUndoException(tokens, index, operationCounter) {
+  const token = tokens[index];
+  const start =
+    token === "when" && tokens[index - 1] === "except" ? index - 2 : token === "unless" ? index - 1 : undefined;
+  if (start === undefined) return false;
   const minimum = Math.max(0, index - 34);
   let hasUndo = false;
   let hasCleaningNoun = false;
-  for (let cursor = index - 2; cursor >= minimum; cursor -= 1) {
-    if (operationCounter !== undefined) operationCounter.value += 1;
-    const token = tokens[cursor];
+  for (let cursor = start; cursor >= minimum; cursor -= 1) {
+    if (operationCounter !== undefined) {
+      operationCounter.value += 1;
+      operationCounter.exceptionLookbehindOperations += 1;
+    }
+    const candidate = tokens[cursor];
     if (
-      cleaningHistoryClausePunctuationRoles[token] !== undefined ||
-      cleaningHistoryConnectorRole(token) !== undefined
+      cleaningHistoryClausePunctuationRoles[candidate] !== undefined ||
+      cleaningHistoryConnectorRole(candidate) !== undefined
     ) {
       break;
     }
-    hasUndo ||= cleaningHistoryPredicateKind(token) === "undo";
+    hasUndo ||= cleaningHistoryPredicateKind(candidate) === "undo";
     hasCleaningNoun ||= isCleaningHistoryNoun(tokens, cursor);
   }
   return hasUndo && hasCleaningNoun;
@@ -998,7 +1009,7 @@ function cleaningHistoryClauseBoundaryKind(tokens, index, operationCounter = und
   }
   if (
     connectorRole === "exception-sensitive" &&
-    cleaningHistoryWhenContinuesUndoException(tokens, index, operationCounter)
+    cleaningHistoryConnectorContinuesUndoException(tokens, index, operationCounter)
   ) {
     return undefined;
   }
@@ -1012,14 +1023,23 @@ function cleaningHistoryClauseBoundaryRecords(value) {
     token: match[0].toLowerCase()
   }));
   const tokens = lexemes.map(({ token }) => token);
-  const operationCounter = { value: 0 };
+  const operationCounter = {
+    designationLookaheadOperations: 0,
+    exceptionLookbehindOperations: 0,
+    value: 0
+  };
   const boundaries = [];
   for (let index = 0; index < lexemes.length; index += 1) {
     if (cleaningHistoryClauseBoundaryKind(tokens, index, operationCounter) !== undefined) {
       boundaries.push({ end: lexemes[index].end, start: lexemes[index].start });
     }
   }
-  return { boundaries, grammarOperations: operationCounter.value };
+  return {
+    boundaries,
+    designationLookaheadOperations: operationCounter.designationLookaheadOperations,
+    exceptionLookbehindOperations: operationCounter.exceptionLookbehindOperations,
+    grammarOperations: operationCounter.value
+  };
 }
 
 function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
@@ -1041,7 +1061,10 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
   if (codeSpans.length === 0) {
     testHooks?.recordInlineFragmentContextOperations?.(operations, {
       codeSpanCount: 0,
+      designationLookaheadOperations: 0,
+      exceptionLookbehindOperations: 0,
       fragmentCount: fragments.length,
+      grammarOperations: 0,
       visibleCodeUnits: offset
     });
     return new Set();
@@ -1102,7 +1125,10 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
   }
   testHooks?.recordInlineFragmentContextOperations?.(operations, {
     codeSpanCount: codeSpans.length,
+    designationLookaheadOperations: boundaryRecords.designationLookaheadOperations,
+    exceptionLookbehindOperations: boundaryRecords.exceptionLookbehindOperations,
     fragmentCount: fragments.length,
+    grammarOperations: boundaryRecords.grammarOperations,
     visibleCodeUnits: visible.length
   });
   return examples;
@@ -1721,7 +1747,7 @@ function cleaningHistoryException(record) {
     tokens.some((token) => ["it", "one", "ones"].includes(token)) && antecedent?.owner === "cleaning";
   const unrelated = tokens.some(
     (token, tokenIndex) =>
-      ![",", ":"].includes(token) &&
+      cleaningHistoryClausePunctuationRoles[token] === undefined &&
       !isCleaningHistoryGrammarToken(token) &&
       !isCleaningHistoryNoun(tokens, tokenIndex) &&
       !/^(?:exception|exceptions)$/u.test(token)
@@ -1797,6 +1823,15 @@ function isCleaningHistoryBareUndoContinuation(record, tokens) {
   );
 }
 
+function isCleaningHistoryPunctuatedUndoExceptionContinuation(record, tokens, separator) {
+  return (
+    record?.kind === "undo" &&
+    record.subject.owner === "cleaning" &&
+    [",", "—"].includes(separator) &&
+    cleaningHistoryExceptionIndex(tokens) >= 0
+  );
+}
+
 function cleaningHistoryPredicateRecords(rendered) {
   const records = [];
   let previousStatementSubject;
@@ -1843,8 +1878,13 @@ function cleaningHistoryPredicateRecords(rendered) {
           priorRecord !== undefined &&
           cleaningHistoryExceptionIndex(priorRecord.clauseTokens) >= 0 &&
           ["and", "or", "plus"].includes(segment.separatorBefore);
+        const punctuatedUndoExceptionContinuation = isCleaningHistoryPunctuatedUndoExceptionContinuation(
+          priorRecord,
+          segment.tokens,
+          segment.separatorBefore
+        );
         const cleaningContinuation = isCleaningHistoryBareUndoContinuation(priorRecord, segment.tokens);
-        if (exceptionContinuation || cleaningContinuation) {
+        if (exceptionContinuation || punctuatedUndoExceptionContinuation || cleaningContinuation) {
           priorRecord.clauseTokens.push(
             ...(segment.separatorBefore ? [segment.separatorBefore] : []),
             ...segment.tokens
