@@ -430,6 +430,16 @@ local({
     "global-assignment" %in% rules(computed_closure_seed_mutation),
     "A computed closure invocation spoofed random-seed restoration"
   )
+  block_callee_seed_mutation <- sub(
+    "  mutate_snapshot()",
+    "  ({ mutate_alias <- mutate_snapshot; mutate_alias })()",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(block_callee_seed_mutation, "global-assignment"),
+    "A block-computed closure invocation spoofed random-seed restoration"
+  )
   callback_seed_mutation <- sub(
     "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
     "  base::lapply(list(1L), function(value) previous_random_seed <<- replacement_seed)",
@@ -453,6 +463,54 @@ local({
   assert_true(
     "global-assignment" %in% rules(uncertain_callback_seed_mutation),
     "An uncertain higher-order callback silently retained the random-seed exemption"
+  )
+  unresolved_callback_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    "  base::lapply(FUN = unknown_callback, X = list(1L))",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(unresolved_callback_seed_mutation, "global-assignment"),
+    "An unresolved known callback capability retained the random-seed exemption"
+  )
+  seed_callback_dispatches <- c(
+    do_call = "base::do.call(args = list(), what = mutate_snapshot)",
+    lapply = "base::lapply(FUN = mutate_snapshot, X = list(1L))",
+    Filter = "base::Filter(x = list(1L), f = mutate_snapshot)",
+    Reduce = "base::Reduce(x = list(1L, 2L), f = mutate_snapshot)",
+    apply = "base::apply(FUN = mutate_snapshot, MARGIN = 1L, X = matrix(1L))",
+    forceAndCall = "base::forceAndCall(FUN = mutate_snapshot, n = 0L)"
+  )
+  for (callback_name in names(seed_callback_dispatches)) {
+    seed_callback_mutation <- sub(
+      "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+      paste(
+        "  mutate_snapshot <- function(...) previous_random_seed <<- replacement_seed",
+        paste0("  ", seed_callback_dispatches[[callback_name]]),
+        sep = "\n"
+      ),
+      closure_seed_mutation,
+      fixed = TRUE
+    )
+    assert_true(
+      "assign:.GlobalEnv" %in% diagnostic_symbols(seed_callback_mutation, "global-assignment"),
+      sprintf("A reordered %s callback spoofed random-seed restoration", callback_name)
+    )
+  }
+  safe_seed_callback <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  mutate_snapshot <- function(...) invisible(NULL)",
+      "  base::lapply(FUN = mutate_snapshot, X = list(1L))",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("assign:.GlobalEnv" %in% diagnostic_symbols(safe_seed_callback, "global-assignment")),
+    "A mutation-free reordered callback invalidated exact random-seed restoration"
   )
   loop_carried_closure_seed_mutation <- sub(
     "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
@@ -655,6 +713,73 @@ local({
     "target:al" %in% diagnostic_symbols(ordered_redefinition, "partial-argument"),
     "A call before a same-scope redefinition did not use the earlier callable"
   )
+  computed_callee_safe <- paste(
+    "target <- function(alpha, beta) 1",
+    "({ target <- function(al, beta) 2; target })()",
+    "target(al = 1, beta = 2)",
+    sep = "\n"
+  )
+  assert_true(
+    !("target:al" %in% diagnostic_symbols(computed_callee_safe, "partial-argument")),
+    "A computed callee block ignored its ordered safe binding effect"
+  )
+  computed_callee_unsafe <- sub(
+    "target <- function(alpha, beta) 1",
+    "target <- function(al, beta) 1",
+    sub("function(al, beta) 2", "function(alpha, beta) 2", computed_callee_safe, fixed = TRUE),
+    fixed = TRUE
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(computed_callee_unsafe, "partial-argument"),
+    "A computed callee block discarded its ordered callable binding effect"
+  )
+  conditional_callee_unsafe <- sub(
+    "({ target <- function(alpha, beta) 2; target })()",
+    "(if ({ target <- function(alpha, beta) 2; flag }) target else target)()",
+    computed_callee_unsafe,
+    fixed = TRUE
+  )
+  assert_true(
+    "target:al" %in% diagnostic_symbols(conditional_callee_unsafe, "partial-argument"),
+    "A computed callee condition discarded its ordered binding effect"
+  )
+
+  callback_dispatches <- c(
+    do_call = "base::do.call(args = list(), what = mutate)",
+    lapply = "base::lapply(FUN = mutate, X = list(1L))",
+    Filter = "base::Filter(x = list(1L), f = mutate)",
+    Reduce = "base::Reduce(x = list(1L, 2L), f = mutate)",
+    apply = "base::apply(FUN = mutate, MARGIN = 1L, X = matrix(1L))",
+    forceAndCall = "base::forceAndCall(FUN = mutate, n = 1L, 1L)"
+  )
+  for (callback_name in names(callback_dispatches)) {
+    safe_callback <- paste(
+      "partial_target <- function(alpha, beta) 1",
+      "exact_target <- function(al, beta) 2",
+      "target <- partial_target",
+      "mutate <- function(...) target <<- exact_target",
+      callback_dispatches[[callback_name]],
+      "target(al = 1, beta = 2)",
+      sep = "\n"
+    )
+    unsafe_callback <- paste(
+      "exact_target <- function(al, beta) 1",
+      "partial_target <- function(alpha, beta) 2",
+      "target <- exact_target",
+      "mutate <- function(...) target <<- partial_target",
+      callback_dispatches[[callback_name]],
+      "target(al = 1, beta = 2)",
+      sep = "\n"
+    )
+    assert_true(
+      !("target:al" %in% diagnostic_symbols(safe_callback, "partial-argument")),
+      sprintf("A safe reordered %s callback retained stale callable state", callback_name)
+    )
+    assert_true(
+      "target:al" %in% diagnostic_symbols(unsafe_callback, "partial-argument"),
+      sprintf("A reordered %s callback discarded its executing closure effect", callback_name)
+    )
+  }
   post_redefinition <- paste(
     "function() {",
     "  target <- function(alpha, beta) alpha + beta",
@@ -904,6 +1029,17 @@ local({
     length(write_operations) == 2L && length(unique(write_operations)) == 2L,
     "Same-line same-symbol writes collapsed to one diagnostic identity"
   )
+  same_line_partials <- paste(
+    "target <- function(alpha, beta) alpha + beta",
+    "target(al = 1, beta = 2); target(al = 2, beta = 3)",
+    sep = "\n"
+  )
+  partial_operations <- diagnostic_operations(same_line_partials, "partial-argument", "target:al")
+  assert_true(
+    length(partial_operations) == 2L && length(unique(partial_operations)) == 2L &&
+      identical(partial_operations, c("L2:C8-L2:C9", "L2:C34-L2:C35")),
+    "Same-line partial arguments did not retain their exact call-owned source spans"
+  )
   same_line_codetools_symbols <- "function() { function() missing_value; function() missing_value }"
   codetools_operations <- diagnostic_operations(
     same_line_codetools_symbols, "undefined-symbol", "missing_value"
@@ -1052,6 +1188,36 @@ local({
       work_1600[["span_lookups"]] <= work_800[["span_lookups"]] * 2.1 &&
       work_1600[["total_work"]] <= work_800[["total_work"]] * 2.1,
     "Analyzer state merging or source-span ownership grew superlinearly from 800 to 1600 branches"
+  )
+  parse_symbol_probe <- function(count) paste(c("value <- 1L", rep("value", count)), collapse = "\n")
+  parse_row_count <- function(source) {
+    source_file <- srcfilecopy("parse-work-probe.R", source, isFile = FALSE)
+    expressions <- parse(text = source, srcfile = source_file, keep.source = TRUE)
+    nrow(getParseData(source_file, includeText = TRUE))
+  }
+  symbol_probe_6400 <- parse_symbol_probe(6400L)
+  symbol_probe_12800 <- parse_symbol_probe(12800L)
+  work_6400 <- attr(diagnostics_with_limits(symbol_probe_6400, performance_limits), "work", exact = TRUE)
+  work_12800 <- attr(diagnostics_with_limits(symbol_probe_12800, performance_limits), "work", exact = TRUE)
+  assert_true(
+    work_12800[["operations"]] <= work_6400[["operations"]] * 2.1 &&
+      work_12800[["span_lookups"]] <= work_6400[["span_lookups"]] * 2.1 &&
+      work_12800[["total_work"]] <= work_6400[["total_work"]] * 2.1,
+    "Analyzer parse-child or source-span work grew superlinearly from 6400 to 12800 symbols"
+  )
+  assert_true(
+    work_6400[["span_lookups"]] >= parse_row_count(symbol_probe_6400) * 8 &&
+      work_12800[["span_lookups"]] >= parse_row_count(symbol_probe_12800) * 8,
+    "Indexed parse-child construction was not charged to the source-span work budget"
+  )
+  analyzer_source <- paste(
+    readLines("r/tools/static_analysis.R", warn = FALSE, encoding = "UTF-8"),
+    collapse = "\n"
+  )
+  assert_true(
+    grepl("child_rows_by_parent <-", analyzer_source, fixed = TRUE) &&
+      !grepl("which(data$parent == parent_id)", analyzer_source, fixed = TRUE),
+    "Source-span child ownership regressed to repeated full parse-data scans"
   )
 
   runner <- paste(readLines("r/tests/run_warning_strict.R", warn = FALSE, encoding = "UTF-8"), collapse = "\n")
