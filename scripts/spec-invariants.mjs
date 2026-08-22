@@ -24,6 +24,8 @@ const CLEANING_HISTORY_INLINE_TOKEN_MAX = 4096;
 const CLEANING_HISTORY_WORD_TOKEN_MAX = 4096;
 const CLEANING_HISTORY_PREDICATE_TOKEN_MAX = 512;
 const CLEANING_HISTORY_ATOMIC_EXCEPTION_TOKEN_MAX = 34;
+const CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW = 12;
+const CLEANING_HISTORY_COORDINATED_CAPABILITY_MAX = 3;
 const CLEANING_HISTORY_JSON_MAX_DEPTH = 8;
 const CLEANING_HISTORY_JSON_MAX_CONTAINER_ENTRIES = 64;
 const CLEANING_HISTORY_JSON_MAX_TOTAL_ENTRIES = 128;
@@ -758,6 +760,29 @@ const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
 const cleaningHistoryClauseConnectorRoles = cleaningHistoryClauseBoundaryGrammar.connectorRoles;
 const cleaningHistoryClausePunctuationRoles = cleaningHistoryClauseBoundaryGrammar.punctuationRoles;
 const cleaningHistoryPassiveCapabilityAuxiliaries = new Set(["am", "are", "be", "been", "being", "is", "was", "were"]);
+const cleaningHistoryBarePassiveCapabilities = new Set([
+  "amended",
+  "altered",
+  "deleted",
+  "edited",
+  "erased",
+  "inspected",
+  "modified",
+  "permuted",
+  "rearranged",
+  "removed",
+  "reordered",
+  "restored",
+  "reverted",
+  "reversed",
+  "revised",
+  "shuffled",
+  "undone"
+]);
+const cleaningHistoryNominalizedCapabilities = new Set(["deletion", "editing", "inspection"]);
+const cleaningHistoryPostPredicateAnaphors = new Set(["it", "them", "these", "they", "this", "those"]);
+const cleaningHistoryCapabilityStatus =
+  /^(?:available|blocked|disabled|disallowed|enabled|forbidden|impossible|limited|offered|prohibited|reserved|restricted|supported|unavailable|unsupported)$/u;
 const cleaningHistoryStatementPunctuationSource = Object.entries(cleaningHistoryClausePunctuationRoles)
   .filter(([, role]) => role === "statement")
   .map(([punctuation]) => (punctuation === "\n" ? "\\n" : punctuation))
@@ -1654,7 +1679,7 @@ function cleaningHistoryPredicateKind(token) {
     return "edit";
   }
   if (
-    /^(?:delete|deletes|deleted|deleting|deletable|undeletable|nondeletable|erase|erases|erased|erasing|remove|removes|removed|removing)$/u.test(
+    /^(?:delete|deletes|deleted|deleting|deletion|deletions|deletable|undeletable|nondeletable|erase|erases|erased|erasing|remove|removes|removed|removing)$/u.test(
       token
     )
   ) {
@@ -1764,14 +1789,63 @@ function cleaningHistoryPassiveCapabilityContinuation(tokens, predicateIndex) {
   );
 }
 
+function cleaningHistoryCoordinatedBarePassiveContinuation(tokens, predicateIndex, separatorBefore) {
+  if (
+    predicateIndex !== 0 ||
+    !cleaningHistoryBarePassiveCapabilities.has(tokens[predicateIndex]) ||
+    !(separatorBefore === "," || ["and", "or"].includes(separatorBefore))
+  ) {
+    return false;
+  }
+  const suffix = tokens.slice(predicateIndex + 1);
+  return (
+    suffix.length <= CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW &&
+    suffix.every((token) => isCleaningHistoryGrammarToken(token))
+  );
+}
+
+function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, antecedent) {
+  const predicate = tokens[predicateIndex];
+  const nominalized = cleaningHistoryNominalizedCapabilities.has(predicate);
+  const infinitive = tokens[predicateIndex - 1] === "to";
+  if (!nominalized && !infinitive) return undefined;
+  const suffix = tokens.slice(predicateIndex + 1);
+  const boundedSuffix = suffix.slice(0, CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW + 1);
+  if (
+    boundedSuffix.some(
+      (token, index) =>
+        !isCleaningHistoryGrammarToken(token) &&
+        !isCleaningHistoryNoun(boundedSuffix, index) &&
+        !cleaningHistoryPostPredicateAnaphors.has(token)
+    )
+  ) {
+    return undefined;
+  }
+  if (suffix.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) {
+    throw new Error(
+      `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
+    );
+  }
+  const anaphorIndex = suffix.findIndex((token) => cleaningHistoryPostPredicateAnaphors.has(token));
+  const statusIndex = suffix.findIndex((token) => cleaningHistoryCapabilityStatus.test(token));
+  if (anaphorIndex >= 0) {
+    return antecedent?.owner === "cleaning" ? { ...antecedent, explicit: false } : undefined;
+  }
+  if (statusIndex < 0) return undefined;
+  return antecedent?.owner === "cleaning"
+    ? { ...antecedent, explicit: false }
+    : { owner: "cleaning", scope: "single", explicit: false };
+}
+
 function cleaningHistorySemanticPredicateIndex(kind, tokens, initialIndex) {
-  const status =
-    /^(?:available|blocked|disabled|disallowed|enabled|forbidden|impossible|limited|offered|prohibited|reserved|restricted|supported|unavailable|unsupported)$/u;
   const undoAction =
     /^(?:affect|affects|affected|apply|applies|available|blocked|disabled|disallowed|enabled|expose|exposes|forbidden|impossible|limit|limited|offer|offered|prohibited|remove|removes|removed|restore|restores|restored|restrict|restricted|support|supports|supported|target|targets|targeted|unavailable|unsupported)$/u;
-  if (kind === "undo" || initialIndex === 0) {
+  const postPredicateCapability =
+    cleaningHistoryNominalizedCapabilities.has(tokens[initialIndex]) || tokens[initialIndex - 1] === "to";
+  if (kind === "undo" || initialIndex === 0 || postPredicateCapability) {
     const later = tokens.findIndex(
-      (token, index) => index > initialIndex && (kind === "undo" ? undoAction : status).test(token)
+      (token, index) =>
+        index > initialIndex && (kind === "undo" ? undoAction : cleaningHistoryCapabilityStatus).test(token)
     );
     if (later >= 0) return later;
   }
@@ -1971,7 +2045,9 @@ function cleaningHistoryPredicateRecords(rendered) {
           } else {
             pendingAtomicException.tokens.push(...segment.tokens);
             if (pendingAtomicException.position === "suffix") {
-              pendingAtomicException.record.exceptionTokens = [...pendingAtomicException.tokens];
+              for (const record of pendingAtomicException.records) {
+                record.exceptionTokens = [...pendingAtomicException.tokens];
+              }
               if (!cleaningHistoryAtomicExceptionNeedsTarget(pendingAtomicException.tokens)) {
                 pendingAtomicException = undefined;
               }
@@ -1985,7 +2061,25 @@ function cleaningHistoryPredicateRecords(rendered) {
         pendingAtomicException = undefined;
       }
       const subjectProbeIndex = predicates[0]?.index ?? segment.tokens.length;
+      const coordinatedCapabilityPredecessors = priorRecord?.coordinatedCapabilityPredecessors ?? [];
+      const coordinatedBarePassiveCandidate =
+        priorRecord?.subject.owner === "cleaning" &&
+        cleaningHistoryCoordinatedBarePassiveContinuation(segment.tokens, subjectProbeIndex, segment.separatorBefore);
+      if (
+        coordinatedBarePassiveCandidate &&
+        coordinatedCapabilityPredecessors.length + 1 >= CLEANING_HISTORY_COORDINATED_CAPABILITY_MAX
+      ) {
+        throw new Error(
+          `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_COORDINATED_CAPABILITY_MAX}-capability coordination limit.`
+        );
+      }
+      const coordinatedBarePassive = coordinatedBarePassiveCandidate;
       let subject = cleaningHistorySubject(segment.tokens, subjectProbeIndex);
+      if (subject.owner === "none") {
+        const antecedent = currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject;
+        subject =
+          cleaningHistoryPostPredicateCapabilitySubject(segment.tokens, subjectProbeIndex, antecedent) ?? subject;
+      }
       if (subject.owner === "anaphor") {
         const inherited = currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject;
         subject = inherited?.owner === "cleaning" ? { ...inherited, explicit: false } : subject;
@@ -1998,7 +2092,7 @@ function cleaningHistoryPredicateRecords(rendered) {
       } else if (
         subject.owner === "none" &&
         currentSubject?.owner === "cleaning" &&
-        cleaningHistoryPassiveCapabilityContinuation(segment.tokens, subjectProbeIndex) &&
+        (cleaningHistoryPassiveCapabilityContinuation(segment.tokens, subjectProbeIndex) || coordinatedBarePassive) &&
         (cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined ||
           cleaningHistoryClausePunctuationRoles[segment.separatorBefore] === "segment")
       ) {
@@ -2017,11 +2111,12 @@ function cleaningHistoryPredicateRecords(rendered) {
             priorRecord.subject.owner === "cleaning" &&
             (punctuationRole === "segment" || (connectorExceptionTokens !== undefined && segment.startIndex > 1))
           ) {
-            priorRecord.exceptionTokens = [...atomicExceptionTokens];
+            const suffixRecords = [...coordinatedCapabilityPredecessors, priorRecord];
+            for (const record of suffixRecords) record.exceptionTokens = [...atomicExceptionTokens];
             if (cleaningHistoryAtomicExceptionNeedsTarget(atomicExceptionTokens)) {
               pendingAtomicException = {
                 position: "suffix",
-                record: priorRecord,
+                records: suffixRecords,
                 tokens: [...atomicExceptionTokens]
               };
             }
@@ -2068,6 +2163,7 @@ function cleaningHistoryPredicateRecords(rendered) {
         ) {
           recordSubject = { owner: "cleaning", scope: "unknown", explicit: false };
         }
+        const inheritedCoordinatedException = coordinatedBarePassive ? priorRecord?.exceptionTokens : undefined;
         const record = {
           kind: predicate.kind,
           segmentTokens: segment.tokens,
@@ -2076,7 +2172,14 @@ function cleaningHistoryPredicateRecords(rendered) {
           predicateIndex,
           subject: recordSubject,
           antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject,
-          exceptionTokens: recordSubject.owner === "cleaning" ? atomicExceptionForPredicate : undefined
+          exceptionTokens:
+            recordSubject.owner === "cleaning"
+              ? (atomicExceptionForPredicate ?? inheritedCoordinatedException)
+              : undefined,
+          coordinatedCapabilityPredecessors:
+            recordSubject.owner === "cleaning" && coordinatedBarePassive
+              ? [...coordinatedCapabilityPredecessors, priorRecord]
+              : []
         };
         statementRecords.push(record);
         records.push(record);
