@@ -48,6 +48,8 @@ describe("released PySpark notebook fixture", () => {
     expect(warmup).toContain(`os.path.exists(${JSON.stringify(hostExtensionPath)})`);
     expect(classic).toContain("os.environ['PYSPARK_PYTHON'] = sys.executable");
     expect(classic).toContain("os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable");
+    expect(classic).toContain("'productVersion': pyspark.__version__");
+    expect(classic).not.toContain("spark.version");
     expect(classic).toContain("for method_name in ('toPandas', 'toArrow', 'mapInPandas', 'mapInArrow'):");
     expect(classic).toContain('parse_json(\'{\\"region\\":\\"eu\\"}\')');
     expect(classic).toContain("spark_orders_frame = spark.range(100000).select(");
@@ -65,8 +67,11 @@ describe("released PySpark notebook fixture", () => {
     expect(cellSource(fixture, 3)).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_SCHEMA_REBIND_RESULT));
     expect(cellSource(fixture, 4)).toContain("len(__ow_kernel_agent._manager.sessions)");
     expect(cellSource(fixture, 4)).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT));
-    expect(cellSource(fixture, 5)).toContain(".remote('local[2]')");
-    expect(cellSource(fixture, 5)).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT));
+    const connect = cellSource(fixture, 5);
+    expect(connect).toContain(".remote('local[2]')");
+    expect(connect).toContain("'productVersion': pyspark.__version__");
+    expect(connect).not.toContain("connect_spark.version");
+    expect(connect).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT));
     expect(cellSource(fixture, 6)).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_REBIND_RESULT));
     expect(cellSource(fixture, 7)).toContain("connect_spark.stop()");
     expect(cellSource(fixture, 7)).toContain(JSON.stringify(RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT));

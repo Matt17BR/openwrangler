@@ -416,6 +416,7 @@ class SessionManager:
             source_kind = str(source.get("kind", ""))
             if clone_from is None:
                 engine = self._engine_for_source(source, backend)
+                engine.validate_runtime()
                 if source_kind not in engine.capabilities.source_kinds:
                     raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
                 source_fingerprint = self._source_fingerprint(source, engine)
@@ -449,6 +450,7 @@ class SessionManager:
                     if requested_mode != source_session.mode:
                         raise EngineError("The clone mode no longer matches the confirmed runtime mode.")
                     engine = self.registry.create(source_session.backend)
+                    engine.validate_runtime()
                     source_fingerprint = source_session.source_fingerprint
                     live_source_value = source_session.live_source_value
                     frame = engine.clone_session_source(source_session.original)

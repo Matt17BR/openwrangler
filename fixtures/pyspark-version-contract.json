@@ -1,30 +1,57 @@
 {
-  "accepted": [
+  "policy": {
+    "schemaVersion": 1,
+    "maxCharacters": 64,
+    "release": {
+      "separator": ".",
+      "components": [
+        { "kind": "normalizedInteger", "equals": 4 },
+        { "kind": "normalizedInteger", "equals": 2 },
+        { "kind": "integer" }
+      ]
+    },
+    "localVersion": {
+      "prefix": "+",
+      "segmentCharacters": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+      "segmentSeparators": "._-"
+    }
+  },
+  "acceptedFinal": [
     "4.2.0",
     "4.2.17",
-    "4.2.0a1",
-    "4.2.0b2",
-    "4.2.0rc3",
-    "4.2.0.dev4",
+    "04.02.000",
     "4.2.0+vendor.1",
-    "4.2.0rc1+vendor-2"
+    "4.2.17+vendor-2",
+    "4.2.0+Vendor_01",
+    "4.2.0+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   ],
-  "rejected": [
-    "",
-    "4.2",
-    "4.2.",
-    "4.2.foo",
-    "4.2.0anything",
-    "4.2.0.",
-    "4.2.0rc",
-    "4.2.0.dev",
-    "4.2.0+",
-    "4.20.0",
-    "4.2.٠",
-    "4.2.0rc١",
-    "4.1.9",
-    "4.3.0",
-    "v4.2.0",
-    "4.2.0\n"
-  ]
+  "acceptancePrereleaseDenial": ["4.2.0.dev5"],
+  "rejected": {
+    "alpha": ["4.2.0a1", "4.2.0alpha1", "4.2.0-alpha1", "4.2.0a1+vendor.1"],
+    "beta": ["4.2.0b2", "4.2.0beta2", "4.2.0-beta2", "4.2.0b2+vendor.1"],
+    "releaseCandidate": ["4.2.0rc3", "4.2.0c3", "4.2.0preview3", "4.2.0-rc3", "4.2.0rc1+vendor-2", "4.2.0rc"],
+    "development": ["4.2.0.dev4", "4.2.0dev4", "4.2.0.dev4+vendor.1", "4.2.0.dev"],
+    "postRelease": ["4.2.0.post1", "4.2.0post1", "4.2.0-1", "4.2.0rev1"],
+    "epoch": ["0!4.2.0", "1!4.2.0"],
+    "outsideCohort": ["4.1.9", "4.3.0", "4.20.0"],
+    "malformed": [
+      "",
+      "4.2",
+      "4.2.",
+      "4.2.foo",
+      "4.2.0anything",
+      "4.2.0.",
+      "4.2.0+",
+      "4.2.0+vendor..1",
+      "4.2.0+vendor!1",
+      "4.2.00000000000000000000000000000000000000000000000000000000000000000",
+      "4.2.0+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "4.2.٠",
+      "4.2.0rc١",
+      "v4.2.0",
+      "4.2.0\n",
+      "4.2.0\t",
+      "4.2.0\u0000"
+    ]
+  }
 }

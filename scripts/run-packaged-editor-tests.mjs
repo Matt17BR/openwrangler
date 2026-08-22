@@ -66,6 +66,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceQuartoPythonKernel,
   probeJupyterAcceptanceRKernel,
+  RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
@@ -78,6 +79,7 @@ import {
 import {
   PACKAGED_PYTHON_JUPYTER_PROFILE_ENV,
   packagedPythonJupyterEditorPlan,
+  packagedPythonJupyterPySparkDistribution,
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
@@ -248,6 +250,10 @@ try {
             remoteJupyterEnabled,
             requestedEditors: requested
           });
+          const pysparkDistribution = packagedPythonJupyterPySparkDistribution(
+            pythonJupyterProfile,
+            RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION
+          );
           const rJupyterSelection = resolvePackagedRJourneySelection({
             acceptanceMode,
             selector: rJourneySelector,
@@ -515,7 +521,7 @@ try {
               jupyterKernelPython = await createJupyterAcceptanceKernelPython(
                 resolve(temporaryRoot, "jv"),
                 testPython,
-                { containedBy: temporaryRoot }
+                { containedBy: temporaryRoot, pysparkDistribution }
               );
             } catch (error) {
               latchPrivateRootIdentityLoss(error, {
@@ -1558,7 +1564,12 @@ try {
                       testModule,
                       python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
                       phase,
-                      testSelector: phase === "jupyter-allow" ? pythonJupyterPlan.allowSelector : undefined,
+                      testSelector:
+                        phase === "jupyter-allow"
+                          ? pythonJupyterPlan.allowSelector
+                          : phase === "jupyter-pyspark"
+                            ? pythonJupyterPlan.pysparkSelector
+                            : undefined,
                       resultPath: resultPaths[phase],
                       runId: runIds[phase],
                       progressPath: progressPaths[phase],
