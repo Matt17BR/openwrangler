@@ -105,6 +105,52 @@ describe("DataGrid clipboard interactions", () => {
     expect(await screen.findByText("Copied row.")).toBeTruthy();
   });
 
+  it("keeps ArrowDown focus owned across a clipboard-result page refresh", async () => {
+    const onPage = vi.fn();
+    const pagedMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 2 },
+      filteredShape: { rows: 4, columns: 2 }
+    };
+    const props = {
+      metadata: pagedMetadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      viewContextId: "view-a",
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const firstPage = { ...page, totalRows: 4 };
+    const rendered = render(<DataGrid {...props} page={firstPage} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const finalCell = screen.getByRole("cell", { name: "Paris" });
+    act(() => finalCell.focus());
+
+    fireEvent.keyDown(finalCell, { key: "ArrowDown" });
+    expect(onPage).toHaveBeenCalledWith(2);
+
+    rendered.rerender(
+      <DataGrid
+        {...props}
+        page={{
+          ...firstPage,
+          offset: 2,
+          rows: firstPage.rows.map((row, index) => ({ ...row, id: `r:${index + 2}`, rowNumber: index + 2 }))
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute("data-grid-row", "2");
+      expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
+    });
+  });
+
   it("writes formula-neutralized strings and row labels while preserving a typed negative", async () => {
     const formulaPage: GridPage = {
       ...page,

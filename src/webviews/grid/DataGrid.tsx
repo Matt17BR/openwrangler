@@ -333,6 +333,7 @@ export function DataGrid({
     viewContextId
   });
   const resetGridClipboardSelection = gridClipboard.resetSelection;
+  const resetGridClipboardSelectionRef = useRef(resetGridClipboardSelection);
   const selectGridClipboardCell = gridClipboard.selectCell;
   const cellFilterMenuTarget = cellActionMenu.target;
   const dismissCellActionMenu = cellActionMenu.dismiss;
@@ -340,6 +341,10 @@ export function DataGrid({
   useLayoutEffect(() => {
     viewStateRef.current = viewState;
   }, [viewState]);
+
+  useLayoutEffect(() => {
+    resetGridClipboardSelectionRef.current = resetGridClipboardSelection;
+  }, [resetGridClipboardSelection]);
 
   useEffect(() => {
     visibleColumnRangeHandler.current = onVisibleColumnRangeChange;
@@ -493,7 +498,7 @@ export function DataGrid({
     dismissCellActionMenu();
     finishPointerSelection(undefined, false);
     setFocusedCell({ row, column });
-    resetGridClipboardSelection({ row, column });
+    resetGridClipboardSelectionRef.current({ row, column });
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
@@ -505,13 +510,7 @@ export function DataGrid({
       height: scroller.clientHeight
     });
     appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
-  }, [
-    dismissCellActionMenu,
-    finishPointerSelection,
-    resetGridClipboardSelection,
-    viewStateRestoreVersion,
-    writeProgrammaticViewport
-  ]);
+  }, [dismissCellActionMenu, finishPointerSelection, viewStateRestoreVersion, writeProgrammaticViewport]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
