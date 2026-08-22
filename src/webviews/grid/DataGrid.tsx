@@ -1336,6 +1336,7 @@ export function DataGrid({
                     width={widths[column.position]}
                     selected={viewState.selectedColumnId === column.id}
                     clipboardSelected={gridClipboard.isColumnSelected(column.id)}
+                    clipboardAction={gridClipboard.columnCopyAction(column)}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
                     compactInsights={compactHeaderProfiles}
@@ -1362,7 +1363,7 @@ export function DataGrid({
                       reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       gridClipboard.selectColumn(column);
                     }}
-                    onCopy={() => void gridClipboard.copyColumn()}
+                    onCopy={() => void gridClipboard.copyColumn(column)}
                     onApplyProfileFilter={onApplyProfileFilter}
                     onBeginResize={beginColumnResize}
                     onResize={(width) =>
@@ -2196,6 +2197,7 @@ function ColumnHeader({
   width,
   selected,
   clipboardSelected,
+  clipboardAction,
   added,
   showInsights,
   compactInsights,
@@ -2226,6 +2228,14 @@ function ColumnHeader({
   width: number;
   selected: boolean;
   clipboardSelected: boolean;
+  clipboardAction: {
+    ariaLabel: string;
+    busy: boolean;
+    disabled: boolean;
+    icon: "check" | "copy" | "loading" | "warning";
+    menuLabel: string;
+    title: string;
+  };
   added: boolean;
   showInsights: boolean;
   compactInsights: boolean;
@@ -2364,6 +2374,15 @@ function ColumnHeader({
             <small>{column.rawType}</small>
           </span>
           <div className="columnHeaderActions">
+            <button
+              type="button"
+              className={`columnSortIndicator codicon codicon-${clipboardAction.icon}${clipboardAction.busy ? " codicon-modifier-spin" : ""}`}
+              aria-label={clipboardAction.ariaLabel}
+              aria-busy={clipboardAction.busy}
+              disabled={clipboardAction.disabled}
+              title={clipboardAction.title}
+              onClick={onCopy}
+            />
             {activeSort && (
               <button
                 type="button"
@@ -2400,6 +2419,14 @@ function ColumnHeader({
                     {sortControlsDisabledReason}
                   </span>
                 )}
+                <button
+                  type="button"
+                  disabled={clipboardAction.disabled}
+                  title={clipboardAction.title}
+                  onClick={() => runMenuAction(onCopy)}
+                >
+                  {clipboardAction.menuLabel}
+                </button>
                 <button
                   type="button"
                   disabled={filterUnavailable}

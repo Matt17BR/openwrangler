@@ -14,12 +14,14 @@ import {
   type GridClipboardSelection
 } from "./gridClipboard";
 import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
+import type { WholeColumnClipboardAction } from "./useWholeColumnClipboard";
 
 export interface GridClipboardController {
+  columnCopyAction(column: ColumnSchema): WholeColumnClipboardAction;
   announcement: string;
   copySettlementReceipt: GridClipboardSettlementReceipt;
   copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<boolean>;
-  copyColumn(ownsResult?: () => boolean): Promise<boolean>;
+  copyColumn(columnOrOwnsResult?: ColumnSchema | (() => boolean)): Promise<boolean>;
   focusCell(coordinate: GridCellCoordinate): void;
   getSelectionGeneration(): number;
   isColumnSelected(columnId: string): boolean;
@@ -286,6 +288,7 @@ export function useGridClipboard({
   }, []);
 
   return {
+    columnCopyAction: wholeColumn.actionForColumn,
     announcement: wholeColumn.selectedColumnId ? wholeColumn.announcement : announcement,
     copy,
     copyColumn: wholeColumn.copy,

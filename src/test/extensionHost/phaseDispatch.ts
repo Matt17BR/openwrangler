@@ -40,6 +40,7 @@ export interface ExtensionHostPhaseHandlers {
   readonly dataWranglerCoexistence: (phase: DataWranglerCoexistencePhase) => Promise<void>;
   readonly focusedRInteractive: () => Promise<void>;
   readonly focusedRLiterateDocuments: () => Promise<void>;
+  readonly packagedGridColumnCopy?: () => Promise<void>;
   readonly platformSmoke: () => Promise<void>;
   readonly pythonEnvironment: () => Promise<void>;
   readonly releasedJupyter: (
@@ -134,6 +135,13 @@ export async function dispatchExtensionHostPhase(
   }
   if (selection.phase === "python-environment") {
     await handlers.pythonEnvironment();
+    return true;
+  }
+  if (selection.phase === "grid-column-copy") {
+    if (!handlers.packagedGridColumnCopy) {
+      throw new Error("The packaged whole-column phase is missing its exact handler.");
+    }
+    await handlers.packagedGridColumnCopy();
     return true;
   }
   if (selection.phase === "platform-smoke") {

@@ -200,7 +200,7 @@ async function exercisePointerRangeClipboard(page, firstCell) {
 
 async function exerciseWholeColumnClipboard(page, harnessDirectory) {
   await page.goto(pathToFileURL(resolve(harnessDirectory, "grid-column-clipboard.html")).href, { waitUntil: "load" });
-  const copyColumn = page.getByRole("button", { name: "Copy column" });
+  const copyColumn = page.getByRole("button", { name: "Copy column", exact: true });
   const headers = page.locator("th[data-grid-column]");
   await headers.first().waitFor();
 
@@ -223,7 +223,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
     !arraysEqual(hostileActual.fallbackAttempts, [hostileExpected]) ||
     !arraysEqual(hostileActual.fallbackWrites, [hostileExpected]) ||
     hostileActual.navigatorAttempts.length !== 0 ||
-    hostileActual.announcement !== "Copied 64 cells from column hostile_text." ||
+    hostileActual.announcement !== "Copied 64 cells from column hostile_text without its header." ||
     hostileActual.fallbackTextareaCount !== 0
   ) {
     throw new Error("Whole-column fallback copy did not preserve the exact hostile TSV and focus contract.");
@@ -271,7 +271,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
     exactCap.attemptLength !== 4 * 1024 * 1024 ||
     exactCap.writeLength !== 4 * 1024 * 1024 ||
     exactCap.fallbackAttemptCount !== 0 ||
-    exactCap.announcement !== "Copied 64 cells from column exact_cap." ||
+    exactCap.announcement !== "Copied 64 cells from column exact_cap without its header." ||
     exactCap.activeAriaLabel !== "Copy column"
   ) {
     throw new Error(`The exact-cap whole-column copy failed: ${JSON.stringify(exactCap)}.`);
