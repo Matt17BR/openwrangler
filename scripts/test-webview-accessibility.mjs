@@ -1715,38 +1715,62 @@ async function verifyColumnHeaderControlLayout(browser) {
               }
               settledFrames = getComputedStyle(control).opacity === "1" ? settledFrames + 1 : 0;
             }
-            const isCurrentResizeHandle =
-              control.isConnected && header.querySelector(".columnResizeHandle") === control;
+            const currentColumnHeader = header.querySelector(".columnHeader");
+            const hasCurrentResizeAncestry =
+              control.isConnected &&
+              header.isConnected &&
+              currentColumnHeader?.isConnected === true &&
+              control.closest("th") === header &&
+              control.closest(".columnHeader") === currentColumnHeader &&
+              currentColumnHeader.contains(control) &&
+              header.querySelector(".columnResizeHandle") === control;
             let postSettlementGeometry;
-            if (isCurrentResizeHandle) {
+            if (hasCurrentResizeAncestry) {
               const controlStyle = getComputedStyle(control);
-              const columnHeaderStyle = getComputedStyle(columnHeader);
-              const columnHeaderBounds = columnHeader.getBoundingClientRect();
-              const bounds = control.getBoundingClientRect();
+              const currentColumnHeaderBounds = currentColumnHeader.getBoundingClientRect();
+              const currentHeaderBounds = header.getBoundingClientRect();
+              const currentHandleBounds = control.getBoundingClientRect();
               const postSettlementTarget = Number.parseFloat(
-                columnHeaderStyle.getPropertyValue("--column-header-control-target")
+                controlStyle.getPropertyValue("--column-header-control-target")
               );
               const postSettlementScale =
-                columnHeader.offsetWidth > 0 ? columnHeaderBounds.width / columnHeader.offsetWidth : 0;
+                currentColumnHeader.offsetWidth > 0
+                  ? currentColumnHeaderBounds.width / currentColumnHeader.offsetWidth
+                  : 0;
+              const centerTarget = document.elementFromPoint(
+                currentHandleBounds.left + currentHandleBounds.width / 2,
+                currentHandleBounds.top + currentHandleBounds.height / 2
+              );
               postSettlementGeometry = {
-                bottom: bounds.bottom,
+                bottom: currentHandleBounds.bottom,
+                centerHitsControl: centerTarget === control || control.contains(centerTarget),
                 computedHeight: Number.parseFloat(controlStyle.height),
                 computedWidth: Number.parseFloat(controlStyle.width),
+                display: controlStyle.display,
+                focused: document.activeElement === control,
                 gripperWidth: Number.parseFloat(getComputedStyle(control, "::before").width),
-                height: bounds.height,
-                left: bounds.left,
+                headerBottom: currentHeaderBounds.bottom,
+                headerHeight: currentHeaderBounds.height,
+                headerLeft: currentHeaderBounds.left,
+                headerRight: currentHeaderBounds.right,
+                headerTop: currentHeaderBounds.top,
+                headerWidth: currentHeaderBounds.width,
+                height: currentHandleBounds.height,
+                left: currentHandleBounds.left,
                 minimum: postSettlementTarget * postSettlementScale,
                 opacity: controlStyle.opacity,
-                right: bounds.right,
+                pointerEvents: controlStyle.pointerEvents,
+                right: currentHandleBounds.right,
                 scale: postSettlementScale,
                 target: postSettlementTarget,
-                top: bounds.top,
-                width: bounds.width
+                top: currentHandleBounds.top,
+                visibility: controlStyle.visibility,
+                width: currentHandleBounds.width
               };
             }
             if (
               settledFrames !== 2 ||
-              !isCurrentResizeHandle ||
+              !hasCurrentResizeAncestry ||
               !postSettlementGeometry ||
               !Number.isFinite(postSettlementGeometry.target) ||
               postSettlementGeometry.target !== 30 ||
@@ -1758,6 +1782,14 @@ async function verifyColumnHeaderControlLayout(browser) {
               postSettlementGeometry.scale <= 0 ||
               !Number.isFinite(postSettlementGeometry.minimum) ||
               postSettlementGeometry.minimum <= 0 ||
+              !Number.isFinite(postSettlementGeometry.headerLeft) ||
+              !Number.isFinite(postSettlementGeometry.headerRight) ||
+              !Number.isFinite(postSettlementGeometry.headerTop) ||
+              !Number.isFinite(postSettlementGeometry.headerBottom) ||
+              !Number.isFinite(postSettlementGeometry.headerWidth) ||
+              !Number.isFinite(postSettlementGeometry.headerHeight) ||
+              postSettlementGeometry.headerWidth <= 0 ||
+              postSettlementGeometry.headerHeight <= 0 ||
               !Number.isFinite(postSettlementGeometry.left) ||
               !Number.isFinite(postSettlementGeometry.right) ||
               !Number.isFinite(postSettlementGeometry.top) ||
@@ -1768,15 +1800,24 @@ async function verifyColumnHeaderControlLayout(browser) {
               postSettlementGeometry.height <= 0 ||
               postSettlementGeometry.width + epsilon < postSettlementGeometry.minimum ||
               postSettlementGeometry.height + epsilon < postSettlementGeometry.minimum ||
+              postSettlementGeometry.left < postSettlementGeometry.headerLeft - epsilon ||
+              postSettlementGeometry.right > postSettlementGeometry.headerRight + epsilon ||
+              postSettlementGeometry.top < postSettlementGeometry.headerTop - epsilon ||
+              postSettlementGeometry.bottom > postSettlementGeometry.headerBottom + epsilon ||
               !Number.isFinite(postSettlementGeometry.gripperWidth) ||
               postSettlementGeometry.gripperWidth <= 0 ||
               postSettlementGeometry.gripperWidth >= postSettlementGeometry.target ||
-              postSettlementGeometry.opacity !== "1"
+              postSettlementGeometry.opacity !== "1" ||
+              postSettlementGeometry.display === "none" ||
+              postSettlementGeometry.visibility !== "visible" ||
+              postSettlementGeometry.pointerEvents === "none" ||
+              !postSettlementGeometry.focused ||
+              !postSettlementGeometry.centerHitsControl
             ) {
               failures.push({
+                ...(postSettlementGeometry ?? {}),
+                hasCurrentResizeAncestry,
                 header: header.getAttribute("data-column"),
-                isCurrentResizeHandle,
-                postSettlementGeometry,
                 reason: "invalid-resize-gripper",
                 settledFrames
               });
