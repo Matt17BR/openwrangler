@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { inspectCompatibilityEvidence } from "./compatibility-evidence.mjs";
 
@@ -491,6 +492,29 @@ test("workflow execution environments cannot replace the required shell", () => 
   assert.match(inspect({ crossWorkflowSource }).join(" "), /Native R source ownership|execution environment/u);
 });
 
+test("workflow execution environments use an exact empty authority and reject imported tools", () => {
+  for (const [key, value] of [
+    ["UNPROVED_OWNER_SETTING", "enabled"],
+    ["R_LIBS_USER", "/tmp/replace-r-library"],
+    ["BASH_FUNC_npm%%", "() { printf hostile-npm; }"]
+  ]) {
+    const candidateWorkflowSource = sources.candidateWorkflowSource.replace(
+      "\njobs:\n",
+      `\nenv:\n  "${key}": "${value}"\n\njobs:\n`
+    );
+    assert.match(inspect({ candidateWorkflowSource }).join(" "), /qualification|execution environment|owner/u);
+  }
+
+  if (process.platform !== "win32") {
+    const resolution = spawnSync("bash", ["--noprofile", "--norc", "-c", "type -t npm; npm"], {
+      encoding: "utf8",
+      env: { "BASH_FUNC_npm%%": "() { printf hostile-npm; }", PATH: process.env.PATH }
+    });
+    assert.equal(resolution.status, 0);
+    assert.equal(resolution.stdout, "function\nhostile-npm");
+  }
+});
+
 test("every workflow owner retains its own effective editor-version authority", () => {
   const pinnedExtensionHost = sources.ciWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable",
@@ -713,6 +737,46 @@ test("browser HTML slash and semicolonless entity rules cannot expose a hidden a
   );
 });
 
+test("raw HTML visibility and final CSS cascade follow rendered browser semantics", () => {
+  const contradiction = "Cursor guarantees released-Jupyter and Native R qualification.";
+  for (const visible of [
+    `<details open><summary>Compatibility evidence</summary>${contradiction}</details>`,
+    `<details><summary>${contradiction}</summary></details>`
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${visible}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u
+    );
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n<script type="text/plain"\n${contradiction}\n</script>\n`
+    }),
+    []
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n<section data-owner=<broken>>${contradiction}</section>\n`
+    }).join(" "),
+    /malformed or unsupported raw HTML/u
+  );
+
+  const architectureBlock = sources.architectureSource.match(
+    /<!-- open-wrangler-current-compatibility-owners:start -->[\s\S]*?<!-- open-wrangler-current-compatibility-owners:end -->/u
+  )?.[0];
+  assert.ok(architectureBlock);
+  assert.deepEqual(
+    inspect({
+      architectureSource: sources.architectureSource.replace(
+        architectureBlock,
+        `<section style="display:none;display:block">\n${architectureBlock}\n</section>`
+      )
+    }),
+    []
+  );
+});
+
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
   for (const outsideClaim of [
     "Cursor certifies released-Jupyter and Native R phases.",
@@ -833,6 +897,21 @@ test("reference links and escaped backticks retain their rendered evidence text"
   );
 });
 
+test("reference definitions are linear and continuation titles remain metadata", () => {
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nSee [the evidence][owner].\n\n[owner]: https://example.com/evidence\n  "Cursor owns Native R only inside this title"\n`
+    }),
+    []
+  );
+
+  const adversary = `[${String.raw`\a`.repeat(2_000)}`;
+  const started = performance.now();
+  const problems = inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${adversary}\n` });
+  assert.ok(performance.now() - started < 2_000, "escaped unterminated reference parsing must stay bounded");
+  assert.deepEqual(problems, []);
+});
+
 test("CommonMark literal and reference semantics retain evidence-sensitive text", () => {
   for (const outsideClaim of [
     "```invalid`info\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n```",
@@ -891,10 +970,19 @@ test("Unicode checks are localized to rendered product-name spans", () => {
 });
 
 test("HTML entities and reviewed Unicode confusables cannot forge Cursor", () => {
-  for (const productName of ["Curs&omicron;r", "Cursօr"]) {
+  for (const productName of [
+    "Curs&omicron;r",
+    "C&upsilon;rsor",
+    "Cursօr",
+    "Ϲursor",
+    "Cυrsor",
+    "Ꮯursor",
+    "CursᎤr",
+    "Curs&#x13A4;r"
+  ]) {
     assert.match(
       inspect({
-        ciDocumentationSource: `${sources.ciDocumentationSource}\n${productName} owns every released-Jupyter, Native R, and installed-performance lane.\n`
+        ciDocumentationSource: `${sources.ciDocumentationSource}\n${productName} guarantees every released-Jupyter, Native R, and installed-performance lane.\n`
       }).join(" "),
       /exact canonical case|compatibility-sensitive Cursor ownership/u
     );
@@ -906,6 +994,18 @@ test("HTML entities and reviewed Unicode confusables cannot forge Cursor", () =>
     }),
     []
   );
+});
+
+test("authority and guarantee wording remains ownership-sensitive", () => {
+  for (const outsideClaim of [
+    "Cursor is the authority for released-Jupyter and Native R phases.",
+    "Cursor guarantees released-Jupyter and Native R qualification."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u
+    );
+  }
 });
 
 test("Native R source and installed-artifact ownership are independently exact", () => {

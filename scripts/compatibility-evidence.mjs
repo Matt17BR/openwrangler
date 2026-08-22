@@ -51,7 +51,6 @@ const MAX_MARKDOWN_LABEL_BYTES = 4 * 1024;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const NON_VISIBLE_HTML_CONTAINERS = new Set([
-  "details",
   "head",
   "iframe",
   "noscript",
@@ -123,6 +122,8 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["ο", "o"],
   ["ρ", "p"],
   ["υ", "u"],
+  ["Σ", "C"],
+  ["ς", "C"],
   ["А", "A"],
   ["В", "B"],
   ["Е", "E"],
@@ -143,7 +144,12 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["с", "c"],
   ["ѕ", "s"],
   ["х", "x"],
-  ["օ", "o"]
+  ["օ", "o"],
+  ["Ꭱ", "R"],
+  ["Ꭴ", "o"],
+  ["Ꮜ", "u"],
+  ["Ꮪ", "S"],
+  ["Ꮯ", "C"]
 ]);
 const RENDERED_NAMED_ENTITIES = new Map([
   ["amp", "&"],
@@ -162,6 +168,7 @@ const RENDERED_NAMED_ENTITIES = new Map([
   ["negativethinspace", "\u200b"],
   ["negativeverythinspace", "\u200b"],
   ["omicron", "ο"],
+  ["upsilon", "υ"],
   ["quot", '"'],
   ["rlm", "\u200f"],
   ["shy", "\u00ad"],
@@ -182,7 +189,7 @@ const FORBIDDEN_OWNER_ENVIRONMENT_KEYS = new Set([
   "SHELLOPTS"
 ]);
 const EXECUTABLE_AFFECTING_ENVIRONMENT_KEY =
-  /^(?:CDPATH|COMSPEC|IFS|PATH|PATHEXT|SHELL|ZDOTDIR|(?:GEM|NPM_CONFIG|DYLD|LD|NODE)(?:_[A-Z0-9_]*)?|PERL(?:5LIB|5OPT|LIB|OPT)(?:_[A-Z0-9_]*)?|PYTHON(?:HOME|PATH)(?:_[A-Z0-9_]*)?|R_(?:ENVIRON|PROFILE)(?:_[A-Z0-9_]*)?|RUBY(?:LIB|OPT)(?:_[A-Z0-9_]*)?)$/u;
+  /^(?:BASH_FUNC_.+%%|CDPATH|COMSPEC|IFS|PATH|PATHEXT|R_LIBS_USER|SHELL|ZDOTDIR|(?:GEM|NPM_CONFIG|DYLD|LD|NODE)(?:_[A-Z0-9_]*)?|PERL(?:5LIB|5OPT|LIB|OPT)(?:_[A-Z0-9_]*)?|PYTHON(?:HOME|PATH)(?:_[A-Z0-9_]*)?|R_(?:ENVIRON|PROFILE)(?:_[A-Z0-9_]*)?|RUBY(?:LIB|OPT)(?:_[A-Z0-9_]*)?)$/u;
 const EXPECTED_EXECUTION_JOB_DIGESTS = new Map([
   ["candidate-acceptance.yml#contract", "edcefd5a94ea835fcc17302f60855c21c5fd7fb573e4767b67790a122870339d"],
   ["candidate-acceptance.yml#platform", "5135e7b27c3f84e2e64b8fc8e90972d362dd25244d0a1961d520ddb9730a513f"],
@@ -773,8 +780,8 @@ function canonicalOwnerExecutionBoundary(workflow, job, ownerIndex) {
     Object.hasOwn(workflow, "defaults") ||
     Object.hasOwn(job, "defaults") ||
     Object.hasOwn(job, "container") ||
-    environmentCanReplaceOwner(workflow.env) ||
-    environmentCanReplaceOwner(job.env)
+    !emptyEnvironment(workflow.env) ||
+    !emptyEnvironment(job.env)
   ) {
     return false;
   }
@@ -790,8 +797,8 @@ function canonicalJobExecutionEnvelope(workflow, job) {
     !Object.hasOwn(workflow, "defaults") &&
     !Object.hasOwn(job, "defaults") &&
     !Object.hasOwn(job, "container") &&
-    !environmentCanReplaceOwner(workflow.env) &&
-    !environmentCanReplaceOwner(job.env)
+    emptyEnvironment(workflow.env) &&
+    emptyEnvironment(job.env)
   );
 }
 
@@ -1589,6 +1596,7 @@ function styleHidesContainer(styleValue, label, problems) {
     problems.push(`${label} contains too many inline style declarations.`);
     return true;
   }
+  const effective = new Map();
   for (const declaration of declarations) {
     if (declaration.trim().length === 0) continue;
     if (Buffer.byteLength(declaration, "utf8") > MAX_CSS_DECLARATION_BYTES) {
@@ -1602,6 +1610,13 @@ function styleHidesContainer(styleValue, label, problems) {
     }
     const property = declaration.slice(0, separator).trim().toLowerCase();
     const value = cssDeclarationValue(declaration.slice(separator + 1));
+    if (!["content-visibility", "display", "opacity", "visibility"].includes(property)) {
+      problems.push(`${label} contains an unproven inline style declaration.`);
+      return true;
+    }
+    effective.set(property, value);
+  }
+  for (const [property, value] of effective) {
     if (
       (property === "display" && value === "none") ||
       (property === "visibility" && ["collapse", "hidden"].includes(value)) ||
@@ -1616,6 +1631,35 @@ function styleHidesContainer(styleValue, label, problems) {
     }
   }
   return false;
+}
+
+function stripRawNonVisibleHtmlBlocks(source, label, problems) {
+  const retained = [];
+  const opening = /^ {0,3}<(?<tag>pre|script|style|textarea)(?=[\t\f />]|$)/gimu;
+  let cursor = 0;
+  let candidate;
+  while ((candidate = opening.exec(source)) !== null) {
+    retained.push(source.slice(cursor, candidate.index));
+    const tag = candidate.groups.tag;
+    const closing = new RegExp(`</${tag}\\s*>`, "iu").exec(source.slice(opening.lastIndex));
+    const end = closing ? opening.lastIndex + closing.index + closing[0].length : source.length;
+    retained.push("\n".repeat(source.slice(candidate.index, end).split("\n").length - 1));
+    if (!closing) problems.push(`${label} contains an unterminated raw HTML container.`);
+    cursor = end;
+    opening.lastIndex = end;
+  }
+  retained.push(source.slice(cursor));
+  return retained.join("");
+}
+
+function inspectMalformedHtmlOpenings(source, label, problems) {
+  const recognized = new Set([...source.matchAll(htmlTagPattern())].map((candidate) => candidate.index));
+  for (const candidate of source.matchAll(/^(?<indent> {0,3})<\/?[A-Za-z]/gmu)) {
+    if (!recognized.has(candidate.index + candidate.groups.indent.length)) {
+      problems.push(`${label} contains malformed or unsupported raw HTML syntax.`);
+      return;
+    }
+  }
 }
 
 function hiddenHtmlContainer(tag, attributes, label, problems) {
@@ -1710,7 +1754,8 @@ function visibleMarkdown(source, label, problems) {
     renderableLines.push(line);
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
-  const renderable = renderableLines.join("\n");
+  const renderable = stripRawNonVisibleHtmlBlocks(renderableLines.join("\n"), label, problems);
+  inspectMalformedHtmlOpenings(renderable, label, problems);
   const visible = [];
   const state = { tags: 0, saturated: false };
   const pattern = htmlTagPattern();
@@ -1843,21 +1888,57 @@ function normalizedReferenceLabel(value) {
   return decodeRenderedEntities(markdownUnescape(value)).trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
+function markdownReferenceDefinition(line) {
+  let cursor = 0;
+  while (cursor < line.length && line[cursor] === " " && cursor < 4) cursor += 1;
+  if (cursor > 3 || line[cursor] !== "[") return undefined;
+  const labelStart = cursor + 1;
+  let escaped = false;
+  for (cursor = labelStart; cursor < line.length; cursor += 1) {
+    const character = line[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "[") {
+      return undefined;
+    } else if (character === "]") {
+      if (line[cursor + 1] !== ":") return undefined;
+      return { label: line.slice(labelStart, cursor), body: line.slice(cursor + 2).replace(/^[\t ]*/u, "") };
+    }
+  }
+  return undefined;
+}
+
+function markdownContinuationTitle(line) {
+  const candidate = /^ {0,3}(?<title>.*)$/u.exec(line)?.groups?.title ?? "";
+  if (!['"', "'", "("].includes(candidate[0])) return undefined;
+  const end = markdownTitleEnd(candidate, 0);
+  return end === candidate.length ? candidate : undefined;
+}
+
 function extractMarkdownReferences(source, label, problems) {
   const references = new Map();
   const retained = [];
-  const pattern = /^ {0,3}\[(?<label>(?:\\.|[^\]])+)\]:[\t ]*(?<body>.*)$/u;
-  for (const line of source.split("\n")) {
-    const match = pattern.exec(line);
-    if (!match || match.groups.body.length === 0 || !validMarkdownDestinationAndTitle(match.groups.body)) {
+  const lines = source.split("\n");
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const match = markdownReferenceDefinition(line);
+    if (!match || match.body.length === 0) {
       retained.push(line);
       continue;
     }
-    const reference = normalizedReferenceLabel(match.groups.label);
+    const continuation = lineIndex + 1 < lines.length ? markdownContinuationTitle(lines[lineIndex + 1]) : undefined;
+    const body = continuation === undefined ? match.body : `${match.body} ${continuation}`;
+    if (!validMarkdownDestinationAndTitle(body)) {
+      retained.push(line);
+      continue;
+    }
+    const reference = normalizedReferenceLabel(match.label);
     if (
       reference.length === 0 ||
-      Buffer.byteLength(match.groups.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
-      Buffer.byteLength(match.groups.body, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      Buffer.byteLength(match.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      Buffer.byteLength(body, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
       references.size >= MAX_MARKDOWN_REFERENCES ||
       references.has(reference)
     ) {
@@ -1867,6 +1948,10 @@ function extractMarkdownReferences(source, label, problems) {
     }
     references.set(reference, true);
     retained.push("");
+    if (continuation !== undefined) {
+      retained.push("");
+      lineIndex += 1;
+    }
   }
   return { source: retained.join("\n"), references };
 }
@@ -2201,10 +2286,12 @@ function structuredOwnershipViolation(claim, references) {
     "attribut",
     "responsib",
     "attest",
+    "authorit",
     "designat",
     "demonstrat",
     "establish",
     "eviden",
+    "guarant",
     "prov",
     "support"
   ]);
