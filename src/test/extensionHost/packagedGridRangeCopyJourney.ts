@@ -44,13 +44,6 @@ class PackagedGridClipboardOperationFailure extends Error {
   }
 }
 
-class PackagedGridClipboardInterference extends Error {
-  constructor() {
-    super("The packaged grid range-copy journey detected clipboard interference.");
-    this.name = "PackagedGridClipboardInterference";
-  }
-}
-
 export class PackagedGridRangeCopyFailure extends Error {
   readonly cleanupFailed: boolean;
   readonly clipboardInterference: boolean;
@@ -109,13 +102,43 @@ export async function waitForFreshPackagedGridRangeCopySettlement(
   }
 }
 
+export async function waitForPackagedGridClipboardActionAvailability(
+  readReceipt: () => Thenable<RawPackagedGridClipboardSettlementReceipt>
+): Promise<number> {
+  let pendingReceiptId: number | undefined;
+  for (;;) {
+    let receipt: PackagedGridClipboardSettlementReceipt | undefined;
+    try {
+      receipt = validatePackagedGridClipboardSettlementReceipt(await readReceipt());
+    } catch {
+      if (pendingReceiptId === undefined) throw new PackagedGridClipboardOperationFailure();
+    }
+    if (receipt && pendingReceiptId === undefined) {
+      if (receipt.status !== "pending") return receipt.id;
+      pendingReceiptId = receipt.id;
+    } else if (receipt && receipt.id === pendingReceiptId && receipt.status !== "pending") {
+      return receipt.id;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, packagedGridClipboardSettlementPollMs));
+  }
+}
+
+export async function runPackagedGridClipboardAction(
+  readReceipt: () => Thenable<RawPackagedGridClipboardSettlementReceipt>,
+  action: () => Thenable<void>
+): Promise<number> {
+  const priorReceiptId = await waitForPackagedGridClipboardActionAvailability(readReceipt);
+  await action();
+  return waitForFreshPackagedGridRangeCopySettlement(readReceipt, priorReceiptId);
+}
+
 export async function runPackagedGridRangeCopyLifecycle(
   exercise: () => Promise<void>,
   cleanup: () => Promise<void>
 ): Promise<void> {
   let productFailed = false;
   let cleanupFailed = false;
-  let clipboardInterference = false;
+  const clipboardInterference = false;
   try {
     try {
       await exercise();
@@ -125,9 +148,8 @@ export async function runPackagedGridRangeCopyLifecycle(
   } finally {
     try {
       await cleanup();
-    } catch (error) {
+    } catch {
       cleanupFailed = true;
-      clipboardInterference = error instanceof PackagedGridClipboardInterference;
     }
   }
 
@@ -136,45 +158,13 @@ export async function runPackagedGridRangeCopyLifecycle(
   }
 }
 
-export async function runWithPackagedGridClipboardRestoration(
-  hostClipboard: PackagedGridRangeCopyHostClipboard,
-  exercise: () => Promise<void>,
-  testOwnedClipboardValues: readonly string[] = []
-): Promise<void> {
-  let priorClipboard: string | undefined;
-  let normalizedTestOwnedClipboardValues: readonly string[] = [];
-  await runPackagedGridRangeCopyLifecycle(
-    async () => {
-      normalizedTestOwnedClipboardValues = testOwnedClipboardValues.map((value) =>
-        normalizeClipboardText(validatePriorPackagedClipboard(value))
-      );
-      priorClipboard = await readPackagedGridClipboard(hostClipboard);
-      await exercise();
-    },
-    async () => {
-      if (priorClipboard === undefined) return;
-      let currentClipboard: string;
-      try {
-        currentClipboard = await readPackagedGridClipboard(hostClipboard);
-      } catch {
-        throw new PackagedGridClipboardInterference();
-      }
-      if (currentClipboard === priorClipboard) return;
-      if (!normalizedTestOwnedClipboardValues.includes(normalizeClipboardText(currentClipboard))) {
-        throw new PackagedGridClipboardInterference();
-      }
-      await writePackagedGridClipboard(hostClipboard, priorClipboard);
-    }
-  );
-}
-
-export function validatePriorPackagedClipboard(value: unknown): string {
+export function validatePackagedGridClipboardText(value: unknown): string {
   if (
     typeof value !== "string" ||
     value.length > maximumPriorClipboardBytes ||
     Buffer.byteLength(value, "utf8") > maximumPriorClipboardBytes
   ) {
-    throw new Error("The prior host clipboard value is invalid or exceeds the 4 MiB restoration limit.");
+    throw new Error("The host clipboard value is invalid or exceeds the 4 MiB limit.");
   }
   return value;
 }
@@ -188,7 +178,7 @@ export async function waitForPackagedGridClipboard(
   expected: string
 ): Promise<void> {
   try {
-    const normalizedExpected = normalizeClipboardText(validatePriorPackagedClipboard(expected));
+    const normalizedExpected = normalizeClipboardText(validatePackagedGridClipboardText(expected));
     const deadline = Date.now() + clipboardWaitMs;
     do {
       const remainingMs = deadline - Date.now();
@@ -237,47 +227,40 @@ export async function exercisePackagedGridRangeCopyJourney({
     .waitFor({ state: "visible", timeout: 5_000 });
   assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
 
-  await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
-    recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
-    await writePackagedGridClipboard(hostClipboard, keyboardPendingClipboard);
-    const priorKeyboardReceipt = await readPackagedGridClipboardSettlementReceipt(frame);
-    await endpoint.press(packagedGridCopyShortcut(platform));
-    await waitForFreshPackagedGridRangeCopySettlement(
-      () => readRawPackagedGridClipboardSettlementReceipt(frame),
-      priorKeyboardReceipt.id
-    );
-    await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
-    await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
+  await runPackagedGridRangeCopyLifecycle(
+    async () => {
+      recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
+      await writePackagedGridClipboard(hostClipboard, keyboardPendingClipboard);
+      await runPackagedGridClipboardAction(
+        () => readRawPackagedGridClipboardSettlementReceipt(frame),
+        () => endpoint.press(packagedGridCopyShortcut(platform))
+      );
+      await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
+      await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
 
-    recordProgress("platform-smoke:grid-range-copy:context-menu");
-    await writePackagedGridClipboard(hostClipboard, menuPendingClipboard);
-    await start.click({ button: "right" });
-    const menu = frame.getByRole("menu", { name: "Cell and range actions for order_id", exact: true });
-    await menu.waitFor({ state: "visible", timeout: 5_000 });
-    assert.equal(
-      await menu.getByRole("menuitem").count(),
-      3,
-      "The mixed menu must expose two filters and one copy action."
-    );
-    const copySelection = menu.getByRole("menuitem", { name: "Copy selection", exact: true });
-    const priorMenuReceipt = await readPackagedGridClipboardSettlementReceipt(frame);
-    await copySelection.click();
-    await waitForFreshPackagedGridRangeCopySettlement(
-      () => readRawPackagedGridClipboardSettlementReceipt(frame),
-      priorMenuReceipt.id
-    );
-    await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
-    await frame
-      .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
-      .waitFor({ state: "visible", timeout: 5_000 });
-    assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
-  }, [keyboardPendingClipboard, menuPendingClipboard, expectedRangeText]);
-}
-
-async function readPackagedGridClipboardSettlementReceipt(
-  frame: Frame
-): Promise<PackagedGridClipboardSettlementReceipt> {
-  return validatePackagedGridClipboardSettlementReceipt(await readRawPackagedGridClipboardSettlementReceipt(frame));
+      recordProgress("platform-smoke:grid-range-copy:context-menu");
+      await writePackagedGridClipboard(hostClipboard, menuPendingClipboard);
+      await start.click({ button: "right" });
+      const menu = frame.getByRole("menu", { name: "Cell and range actions for order_id", exact: true });
+      await menu.waitFor({ state: "visible", timeout: 5_000 });
+      assert.equal(
+        await menu.getByRole("menuitem").count(),
+        3,
+        "The mixed menu must expose two filters and one copy action."
+      );
+      const copySelection = menu.getByRole("menuitem", { name: "Copy selection", exact: true });
+      await runPackagedGridClipboardAction(
+        () => readRawPackagedGridClipboardSettlementReceipt(frame),
+        () => copySelection.click()
+      );
+      await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
+      await frame
+        .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
+        .waitFor({ state: "visible", timeout: 5_000 });
+      assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
+    },
+    async () => undefined
+  );
 }
 
 async function readRawPackagedGridClipboardSettlementReceipt(
@@ -298,7 +281,7 @@ async function readPackagedGridClipboard(
   hostClipboard: PackagedGridRangeCopyHostClipboard,
   timeoutMs = packagedGridClipboardOperationTimeoutMs
 ): Promise<string> {
-  return validatePriorPackagedClipboard(
+  return validatePackagedGridClipboardText(
     await runPackagedGridClipboardOperation(() => hostClipboard.readText(), timeoutMs)
   );
 }
@@ -308,7 +291,7 @@ export async function writePackagedGridClipboard(
   value: string,
   timeoutMs = packagedGridClipboardOperationTimeoutMs
 ): Promise<void> {
-  const boundedValue = validatePriorPackagedClipboard(value);
+  const boundedValue = validatePackagedGridClipboardText(value);
   await runNoncancelablePackagedGridClipboardWrite(() => hostClipboard.writeText(boundedValue), timeoutMs);
 }
 

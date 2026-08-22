@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   packagedGridCopyShortcut,
   packagedGridClipboardOperationTimeoutMs,
+  runPackagedGridClipboardAction,
   runPackagedGridRangeCopyLifecycle,
-  runWithPackagedGridClipboardRestoration,
   validatePackagedGridClipboardSettlementReceipt,
   waitForPackagedGridClipboard,
+  waitForPackagedGridClipboardActionAvailability,
   waitForFreshPackagedGridRangeCopySettlement,
   writePackagedGridClipboard
 } from "./extensionHost/packagedGridRangeCopyJourney";
@@ -117,6 +118,58 @@ describe("packaged grid range-copy journey", () => {
         .mockRejectedValue(new Error("renderer was replaced"));
       let terminal = false;
       void waitForFreshPackagedGridRangeCopySettlement(readReceipt, 15).then(
+        () => {
+          terminal = true;
+        },
+        () => {
+          terminal = true;
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(terminal).toBe(false);
+      expect(readReceipt.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not dispatch over an exact pre-action pending receipt", async () => {
+    vi.useFakeTimers();
+    try {
+      let currentReceipt = settlementReceipt(17, "pending");
+      const readReceipt = vi.fn(async () => currentReceipt);
+      const action = vi.fn(async () => {
+        currentReceipt = settlementReceipt(18, "pending");
+      });
+      const outcome = runPackagedGridClipboardAction(readReceipt, action);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(action).not.toHaveBeenCalled();
+
+      currentReceipt = settlementReceipt(17, "success");
+      await vi.advanceTimersByTimeAsync(25);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(currentReceipt).toEqual(settlementReceipt(18, "pending"));
+
+      currentReceipt = settlementReceipt(18, "success");
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(outcome).resolves.toBe(18);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a pre-action pending receipt owned when later reads become unreadable", async () => {
+    vi.useFakeTimers();
+    try {
+      const readReceipt = vi
+        .fn()
+        .mockResolvedValueOnce(settlementReceipt(19, "pending"))
+        .mockRejectedValue(new Error("renderer was replaced"));
+      let terminal = false;
+      void waitForPackagedGridClipboardActionAvailability(readReceipt).then(
         () => {
           terminal = true;
         },
@@ -278,31 +331,30 @@ describe("packaged grid range-copy journey", () => {
     expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true));
   });
 
-  it("reports product and clipboard restoration failures without retaining either child", async () => {
+  it("does not add a clipboard cleanup failure after a product failure", async () => {
     const productFailure = new Error("context-menu payload assertion failed");
-    const restorationFailure = new Error("host clipboard restoration failed");
     const hostClipboard = {
-      readText: vi.fn().mockResolvedValueOnce("prior clipboard").mockResolvedValueOnce("test-owned clipboard"),
-      writeText: vi.fn(async () => {
-        throw restorationFailure;
-      })
+      readText: vi.fn(async () => "private-prior-clipboard"),
+      writeText: vi.fn(async () => undefined)
     };
 
     let failure: unknown;
     try {
-      await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
-        throw productFailure;
-      }, ["test-owned clipboard"]);
-      expect.unreachable("The production clipboard-restoration helper must report both failures.");
+      await runPackagedGridRangeCopyLifecycle(
+        async () => {
+          throw productFailure;
+        },
+        async () => undefined
+      );
     } catch (error) {
       failure = error;
     }
-    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, true));
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
-    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
+    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("wraps a secret-bearing initial clipboard rejection before it can escape the privacy lifecycle", async () => {
+  it("does not read secret-bearing clipboard state before the product exercise", async () => {
     const clipboardSecret = "private-initial-read-clipboard-sentinel";
     const exercise = vi.fn(async () => undefined);
     const hostClipboard = {
@@ -312,73 +364,62 @@ describe("packaged grid range-copy journey", () => {
       writeText: vi.fn(async () => undefined)
     };
 
-    let failure: unknown;
-    try {
-      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
-    } catch (error) {
-      failure = error;
-    }
+    await runPackagedGridRangeCopyLifecycle(exercise, async () => undefined);
 
-    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
-    expect(diagnosticRetainsAny(failure, [clipboardSecret])).toBe(false);
-    expect(exercise).not.toHaveBeenCalled();
+    expect(exercise).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("restores the prior clipboard after a successful packaged journey", async () => {
-    const exercise = vi.fn(async () => undefined);
+  it("leaves the successful product clipboard value untouched", async () => {
+    let clipboard = "prior clipboard";
+    const exercise = vi.fn(async () => {
+      clipboard = "test-owned clipboard";
+    });
     const hostClipboard = {
-      readText: vi.fn().mockResolvedValueOnce("prior clipboard").mockResolvedValueOnce("test-owned clipboard"),
+      readText: vi.fn(async () => clipboard),
       writeText: vi.fn(async () => undefined)
     };
 
-    await runWithPackagedGridClipboardRestoration(hostClipboard, exercise, ["test-owned clipboard"]);
+    await runPackagedGridRangeCopyLifecycle(exercise, async () => undefined);
 
     expect(exercise).toHaveBeenCalledTimes(1);
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
-    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
+    expect(clipboard).toBe("test-owned clipboard");
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("classifies CRLF-normalized test output as owned while restoring exact prior bytes", async () => {
-    const priorClipboard = "prior\nclipboard\r\nbytes";
+  it("does not normalize or restore exact clipboard bytes during cleanup", async () => {
+    let clipboard = "prior\nclipboard\r\nbytes";
     const hostClipboard = {
-      readText: vi.fn().mockResolvedValueOnce(priorClipboard).mockResolvedValueOnce("owned\r\nclipboard"),
+      readText: vi.fn(async () => clipboard),
       writeText: vi.fn(async () => undefined)
     };
 
-    await runWithPackagedGridClipboardRestoration(hostClipboard, async () => undefined, ["owned\nclipboard"]);
+    await runPackagedGridRangeCopyLifecycle(
+      async () => {
+        clipboard = "owned\r\nclipboard";
+      },
+      async () => undefined
+    );
 
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
-    expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith(priorClipboard);
+    expect(clipboard).toBe("owned\r\nclipboard");
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("bounds a never-settling initial read and ignores its late secret-bearing settlement", async () => {
-    vi.useFakeTimers();
-    try {
-      const lateRead = deferred<string>();
-      const exercise = vi.fn(async () => undefined);
-      const hostClipboard = {
-        readText: vi.fn(() => lateRead.promise),
-        writeText: vi.fn(async () => undefined)
-      };
-      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, exercise).then(
-        () => undefined,
-        (error: unknown) => error
-      );
+  it("does not await an unrelated never-settling clipboard read", async () => {
+    const exercise = vi.fn(async () => undefined);
+    const hostClipboard = {
+      readText: vi.fn(() => new Promise<string>(() => undefined)),
+      writeText: vi.fn(async () => undefined)
+    };
 
-      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
-      const failure = await outcome;
-      const lateSecret = "private-late-read-clipboard-sentinel";
-      lateRead.resolve(lateSecret);
-      await Promise.resolve();
+    await runPackagedGridRangeCopyLifecycle(exercise, async () => undefined);
 
-      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
-      expect(diagnosticRetainsAny(failure, [lateSecret])).toBe(false);
-      expect(exercise).not.toHaveBeenCalled();
-      expect(hostClipboard.writeText).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(exercise).toHaveBeenCalledTimes(1);
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("retains a late product write until its stateful settlement before reporting failure", async () => {
@@ -436,21 +477,16 @@ describe("packaged grid range-copy journey", () => {
         events.push("product-write-applied");
       });
       const hostClipboard = {
-        readText: vi
-          .fn()
-          .mockImplementationOnce(async () => clipboard)
-          .mockImplementationOnce(async () => {
-            clipboard = foreignClipboard;
-            events.push("foreign-update-observed");
-            return clipboard;
-          }),
+        readText: vi.fn(async () => clipboard),
         writeText: vi.fn(() => lateWrite.promise)
       };
       let terminal = false;
-      const outcome = runWithPackagedGridClipboardRestoration(
-        hostClipboard,
+      const outcome = runPackagedGridRangeCopyLifecycle(
         async () => writePackagedGridClipboard(hostClipboard, "test-owned clipboard"),
-        ["test-owned clipboard"]
+        async () => {
+          clipboard = foreignClipboard;
+          events.push("foreign-update-observed");
+        }
       ).then(
         () => {
           terminal = true;
@@ -472,65 +508,38 @@ describe("packaged grid range-copy journey", () => {
       lateWrite.settle();
       const failure = await outcome;
 
-      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, true, true));
+      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
       expect(diagnosticRetainsAny(failure, [foreignClipboard])).toBe(false);
       expect(clipboard).toBe(foreignClipboard);
       expect(terminal).toBe(true);
       expect(events).toEqual(["product-write-applied", "foreign-update-observed", "terminal"]);
+      expect(hostClipboard.readText).not.toHaveBeenCalled();
       expect(hostClipboard.writeText).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("retains a late cleanup restoration until its stateful settlement before terminal", async () => {
-    vi.useFakeTimers();
-    try {
-      let clipboard = "prior clipboard";
-      const events: string[] = [];
-      const lateCleanupWrite = deferredClipboardWrite(() => {
-        clipboard = "prior clipboard";
-        events.push("restoration-applied");
-      });
-      const hostClipboard = {
-        readText: vi.fn(async () => clipboard),
-        writeText: vi.fn(() => lateCleanupWrite.promise)
-      };
-      let terminal = false;
-      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
+  it("never dispatches a cleanup write after a successful product action", async () => {
+    let clipboard = "prior clipboard";
+    const foreignClipboard = "private-post-product-foreign-clipboard";
+    const hostClipboard = {
+      readText: vi.fn(async () => clipboard),
+      writeText: vi.fn(async () => undefined)
+    };
+
+    await runPackagedGridRangeCopyLifecycle(
+      async () => {
         clipboard = "test-owned clipboard";
-      }, ["test-owned clipboard"]).then(
-        () => {
-          terminal = true;
-          events.push("terminal");
-          return undefined;
-        },
-        (error: unknown) => {
-          terminal = true;
-          events.push("terminal");
-          return error;
-        }
-      );
+      },
+      async () => {
+        clipboard = foreignClipboard;
+      }
+    );
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
-      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
-      expect({ clipboard, terminal }).toEqual({ clipboard: "test-owned clipboard", terminal: false });
-
-      lateCleanupWrite.settle();
-      const failure = await outcome;
-      const clipboardAtTerminal = clipboard;
-      await Promise.resolve();
-
-      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true));
-      expect(clipboard).toBe("prior clipboard");
-      expect(clipboard).toBe(clipboardAtTerminal);
-      expect(terminal).toBe(true);
-      expect(events).toEqual(["restoration-applied", "terminal"]);
-      expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("prior clipboard");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(clipboard).toBe(foreignClipboard);
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("keeps a never-settling write owned for the outer process deadline", async () => {
@@ -542,10 +551,9 @@ describe("packaged grid range-copy journey", () => {
         writeText: vi.fn(() => neverSettles)
       };
       let terminal = false;
-      void runWithPackagedGridClipboardRestoration(
-        hostClipboard,
+      void runPackagedGridRangeCopyLifecycle(
         async () => writePackagedGridClipboard(hostClipboard, "test-owned clipboard"),
-        ["test-owned clipboard"]
+        async () => undefined
       ).then(
         () => {
           terminal = true;
@@ -559,43 +567,26 @@ describe("packaged grid range-copy journey", () => {
       await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
 
       expect(terminal).toBe(false);
-      expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
+      expect(hostClipboard.readText).not.toHaveBeenCalled();
       expect(hostClipboard.writeText).toHaveBeenCalledExactlyOnceWith("test-owned clipboard");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("bounds a never-settling cleanup read and preserves its late foreign value", async () => {
-    vi.useFakeTimers();
-    try {
-      const lateCleanupRead = deferred<string>();
-      const foreignClipboard = "private-late-cleanup-foreign-clipboard";
-      const hostClipboard = {
-        readText: vi
-          .fn()
-          .mockResolvedValueOnce("prior clipboard")
-          .mockImplementationOnce(() => lateCleanupRead.promise),
-        writeText: vi.fn(async () => undefined)
-      };
-      const outcome = runWithPackagedGridClipboardRestoration(hostClipboard, async () => undefined, [
-        "test-owned clipboard"
-      ]).then(
-        () => undefined,
-        (error: unknown) => error
-      );
+  it("does not start a cleanup read that could race a foreign clipboard update", async () => {
+    const hostClipboard = {
+      readText: vi.fn(() => new Promise<string>(() => undefined)),
+      writeText: vi.fn(async () => undefined)
+    };
 
-      await vi.advanceTimersByTimeAsync(packagedGridClipboardOperationTimeoutMs);
-      const failure = await outcome;
-      lateCleanupRead.resolve(foreignClipboard);
-      await Promise.resolve();
+    await runPackagedGridRangeCopyLifecycle(
+      async () => undefined,
+      async () => undefined
+    );
 
-      expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true, true));
-      expect(diagnosticRetainsAny(failure, [foreignClipboard])).toBe(false);
-      expect(hostClipboard.writeText).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
+    expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("bounds a never-settling polling read without retaining a late value", async () => {
@@ -625,29 +616,28 @@ describe("packaged grid range-copy journey", () => {
     }
   });
 
-  it("preserves a concurrent foreign clipboard value and reports only structural interference", async () => {
+  it("preserves a foreign update between the former cleanup check and restore window", async () => {
     const foreignClipboard = "private-concurrent-foreign-clipboard-sentinel";
     let currentClipboard = "prior clipboard";
     const hostClipboard = {
       readText: vi.fn(async () => currentClipboard),
       writeText: vi.fn(async (value: string) => {
+        currentClipboard = foreignClipboard;
         currentClipboard = value;
       })
     };
 
-    let failure: unknown;
-    try {
-      await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
+    await runPackagedGridRangeCopyLifecycle(
+      async () => {
+        currentClipboard = "test-owned clipboard";
+      },
+      async () => {
         currentClipboard = foreignClipboard;
-      }, ["test-owned clipboard"]);
-    } catch (error) {
-      failure = error;
-    }
+      }
+    );
 
-    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(false, true, true));
-    expect(diagnosticRetainsAny(failure, [foreignClipboard])).toBe(false);
     expect(currentClipboard).toBe(foreignClipboard);
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
@@ -670,43 +660,29 @@ describe("packaged grid range-copy journey", () => {
     expect(hostClipboard.readText).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a non-string prior clipboard value before the packaged journey can mutate it", async () => {
-    const exercise = vi.fn(async () => undefined);
+  it("rejects a non-string product clipboard value before the host adapter", async () => {
     const hostClipboard = {
-      readText: vi.fn(async () => 42 as unknown as string),
+      readText: vi.fn(async () => "unused"),
       writeText: vi.fn(async () => undefined)
     };
 
-    let failure: unknown;
-    try {
-      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
-    expect(exercise).not.toHaveBeenCalled();
+    await expect(writePackagedGridClipboard(hostClipboard, 42 as unknown as string)).rejects.toThrowError(
+      "The host clipboard value is invalid or exceeds the 4 MiB limit."
+    );
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized prior clipboard value before the packaged journey can mutate it", async () => {
-    const exercise = vi.fn(async () => undefined);
+  it("rejects an oversized product clipboard value before the host adapter", async () => {
     const hostClipboard = {
-      readText: vi.fn(async () => "x".repeat(4 * 1024 * 1024 + 1)),
+      readText: vi.fn(async () => "unused"),
       writeText: vi.fn(async () => undefined)
     };
 
-    let failure: unknown;
-    try {
-      await runWithPackagedGridClipboardRestoration(hostClipboard, exercise);
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(packagedFailureShape(failure)).toEqual(expectedPackagedFailureShape(true, false));
-    expect(hostClipboard.readText).toHaveBeenCalledTimes(1);
-    expect(exercise).not.toHaveBeenCalled();
+    await expect(writePackagedGridClipboard(hostClipboard, "x".repeat(4 * 1024 * 1024 + 1))).rejects.toThrowError(
+      "The host clipboard value is invalid or exceeds the 4 MiB limit."
+    );
+    expect(hostClipboard.readText).not.toHaveBeenCalled();
     expect(hostClipboard.writeText).not.toHaveBeenCalled();
   });
 });

@@ -86,6 +86,7 @@ export function useGridClipboard({
   });
   const contextIdRef = useRef(contextId);
   const expectedResultRefreshRef = useRef<ExpectedResultRefreshReceipt | undefined>(undefined);
+  const activeClipboardWriteRef = useRef<object | undefined>(undefined);
   const copyActionGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -195,6 +196,10 @@ export function useGridClipboard({
   );
   const copy = useCallback(
     async (mode: GridClipboardMode, additionalOwnership?: () => boolean): Promise<boolean> => {
+      if (activeClipboardWriteRef.current !== undefined) {
+        if (mountedRef.current) setAnnouncement("Wait for the current clipboard copy to finish.");
+        return false;
+      }
       const result = results[mode];
       const actionGeneration = ++copyActionGenerationRef.current;
       const actionContextId = contextIdRef.current;
@@ -215,46 +220,52 @@ export function useGridClipboard({
         return ownsResult();
       }
       if (!ownsResult()) return false;
-      const settlementReceiptId = nextGridClipboardSettlementReceipt();
-      flushSync(() => {
-        setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "pending" });
-        setAnnouncement(
-          mode === "cell" ? "Copying cell." : mode === "row" ? "Copying row." : "Copying selected cells."
-        );
-      });
-      const clearSettlementReceipt = (): void => {
-        if (copyActionGenerationRef.current === actionGeneration) setAnnouncement("");
-        setCopySettlementReceipt((current) =>
-          current.id === settlementReceiptId ? { id: current.id, mode: "none", status: "idle" } : current
-        );
-      };
-      if (!ownsResult()) {
-        clearSettlementReceipt();
-        return false;
-      }
+      const activeClipboardWrite = {};
+      activeClipboardWriteRef.current = activeClipboardWrite;
       try {
-        await writeGridClipboardText(result.payload.text, ownsResult);
+        const settlementReceiptId = nextGridClipboardSettlementReceipt();
+        flushSync(() => {
+          setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "pending" });
+          setAnnouncement(
+            mode === "cell" ? "Copying cell." : mode === "row" ? "Copying row." : "Copying selected cells."
+          );
+        });
+        const clearSettlementReceipt = (): void => {
+          if (copyActionGenerationRef.current === actionGeneration) setAnnouncement("");
+          setCopySettlementReceipt((current) =>
+            current.id === settlementReceiptId ? { id: current.id, mode: "none", status: "idle" } : current
+          );
+        };
         if (!ownsResult()) {
           clearSettlementReceipt();
           return false;
         }
-        setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "success" });
-        setAnnouncement(
-          mode === "cell"
-            ? "Copied cell."
-            : mode === "row"
-              ? `Copied ${result.payload.completeRow ? "row" : "loaded row columns"}${result.payload.includesRowLabel ? " with its row label" : ""}.`
-              : `Copied ${result.payload.rowCount.toLocaleString()} by ${result.payload.columnCount.toLocaleString()} cell range.`
-        );
-        return true;
-      } catch {
-        if (ownsResult()) {
-          setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "failure" });
-          setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+        try {
+          await writeGridClipboardText(result.payload.text, ownsResult);
+          if (!ownsResult()) {
+            clearSettlementReceipt();
+            return false;
+          }
+          setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "success" });
+          setAnnouncement(
+            mode === "cell"
+              ? "Copied cell."
+              : mode === "row"
+                ? `Copied ${result.payload.completeRow ? "row" : "loaded row columns"}${result.payload.includesRowLabel ? " with its row label" : ""}.`
+                : `Copied ${result.payload.rowCount.toLocaleString()} by ${result.payload.columnCount.toLocaleString()} cell range.`
+          );
           return true;
+        } catch {
+          if (ownsResult()) {
+            setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "failure" });
+            setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+            return true;
+          }
+          clearSettlementReceipt();
+          return false;
         }
-        clearSettlementReceipt();
-        return false;
+      } finally {
+        if (activeClipboardWriteRef.current === activeClipboardWrite) activeClipboardWriteRef.current = undefined;
       }
     },
     [results]

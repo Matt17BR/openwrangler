@@ -544,7 +544,7 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.queryByText(/Could not write|Copied 2 by 2/u)).toBeNull();
   });
 
-  it("lets only the latest action from one menu publish and restore focus", async () => {
+  it("keeps repeated menu and keyboard copies behind one noncancellable write", async () => {
     const firstWrite = deferred<void>();
     const secondWrite = deferred<void>();
     writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
@@ -560,21 +560,24 @@ describe("DataGrid clipboard interactions", () => {
 
     fireEvent.click(copySelection);
     const firstReceipt = clipboardSettlementReceipt();
-    fireEvent.click(copySelection);
-    const secondReceipt = clipboardSettlementReceipt();
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
     expect(firstReceipt).toMatchObject({ mode: "range", status: "pending" });
-    expect(secondReceipt).toMatchObject({ mode: "range", status: "pending" });
-    expect(secondReceipt.id).toBeGreaterThan(firstReceipt.id);
+    expect(clipboardSettlementReceipt()).toEqual(firstReceipt);
+    expect(writeText).toHaveBeenCalledTimes(1);
     await act(async () => firstWrite.resolve());
 
-    expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
-    expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
-    expect(clipboardSettlementReceipt()).toEqual(secondReceipt);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(clipboardSettlementReceipt()).toEqual({ ...firstReceipt, status: "success" });
+    expect(document.activeElement).toBe(emptySales);
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    const secondReceipt = clipboardSettlementReceipt();
+    expect(secondReceipt).toMatchObject({ mode: "range", status: "pending" });
+    expect(secondReceipt.id).toBeGreaterThan(firstReceipt.id);
 
     await act(async () => secondWrite.resolve());
 
-    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(document.activeElement).toBe(emptySales);
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
@@ -661,10 +664,18 @@ describe("DataGrid clipboard interactions", () => {
 
       fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
       const pending = clipboardSettlementReceipt();
+      openClipboardMenu(milan, 71);
+      fireEvent.click(
+        within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+          name: "Copy selection"
+        })
+      );
+      fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
       await vi.advanceTimersByTimeAsync(30_000);
 
       expect(clipboardSettlementReceipt()).toEqual(pending);
       expect(pending).toMatchObject({ mode: "range", status: "pending" });
+      expect(writeText).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -786,7 +797,7 @@ describe("DataGrid clipboard interactions", () => {
     }
   );
 
-  it("keeps a newer menu action when it begins during the older completion check", async () => {
+  it("defers a re-entrant menu action until the older write settles", async () => {
     const firstWrite = deferred<void>();
     const secondWrite = deferred<void>();
     writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
@@ -812,10 +823,12 @@ describe("DataGrid clipboard interactions", () => {
     });
     await act(async () => firstWrite.resolve());
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
     expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
 
+    fireEvent.click(copySelection);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     await act(async () => secondWrite.resolve());
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(document.activeElement).toBe(emptySales);
