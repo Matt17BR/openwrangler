@@ -1,13 +1,17 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
+import { resolve } from "node:path";
+import {
+  DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
+  inspectDataWranglerComparisonReview
+} from "./data-wrangler-comparison-report.mjs";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
 import {
   inspectPerformanceSummary,
   inspectReleaseDocumentationSource,
-  performanceReportLink
+  performanceReportLink,
+  readBoundedGitBlobSnapshot,
+  readBoundedGitDiscoverySnapshot
 } from "./release-readiness.mjs";
 import { inspectReleaseCandidateWorkflow, inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
@@ -84,16 +88,9 @@ const publicWritingProblems = inspectPublicWriting({
 if (publicWritingProblems.length > 0) {
   throw new Error(`Public writing guidance is disconnected:\n- ${publicWritingProblems.join("\n- ")}`);
 }
-const trackedEvidencePaths = new Set(
-  execFileSync("git", ["ls-files", "-z", "--"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    windowsHide: true
-  })
-    .split("\0")
-    .filter(Boolean)
-);
+const sourceDiscovery = readBoundedGitDiscoverySnapshot({ root });
+const trackedEvidencePaths = sourceDiscovery.trackedPaths;
+const sourceCommit = sourceDiscovery.commit;
 const readmeProblems = inspectReleaseDocumentationSource({
   featureParity,
   preview: packageJson.preview,
@@ -105,10 +102,6 @@ if (readmeProblems.length > 0) {
   throw new Error(`Release documentation is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
-const performanceSummaryProblems = inspectPerformanceSummary(readme);
-if (performanceSummaryProblems.length > 0) {
-  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
-}
 const packageMajor = /^(?<major>0|[1-9]\d*)\./u.exec(packageJson.version ?? "")?.groups?.major;
 const requiresVersionedComparison =
   packageJson.preview === false && packageMajor !== undefined && BigInt(packageMajor) >= 2n;
@@ -116,26 +109,42 @@ if (requiresVersionedComparison && linkedComparison === undefined) {
   throw new Error("Stable version 2 documentation must link its versioned Data Wrangler comparison.");
 }
 if (linkedComparison !== undefined) {
-  const reviewPath = resolve(root, linkedComparison.path);
-  const reportPath = join(dirname(reviewPath), "report.json");
-  if (!existsSync(reportPath)) {
+  if (!trackedEvidencePaths.has(linkedComparison.path)) {
+    throw new Error(`README Performance review ${linkedComparison.path} must exist and be tracked.`);
+  }
+  const reviewSource = readBoundedGitBlobSnapshot({
+    commit: sourceCommit,
+    maxBytes: 2 * 1024 * 1024,
+    path: linkedComparison.path,
+    root
+  });
+  const reportDataPath = linkedComparison.path.replace(/review\.md$/u, "report.json");
+  if (!trackedEvidencePaths.has(reportDataPath)) {
     if (requiresVersionedComparison) {
-      throw new Error(
-        `Stable version 2 documentation is missing ${join(dirname(linkedComparison.path), "report.json")}.`
-      );
+      throw new Error(`Stable version 2 documentation is missing ${reportDataPath}.`);
     }
   } else {
-    const report = parseStrictJson(readFileSync(reportPath, "utf8"));
+    const reportSource = readBoundedGitBlobSnapshot({
+      commit: sourceCommit,
+      maxBytes: DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
+      path: reportDataPath,
+      root
+    });
+    const report = parseStrictJson(reportSource, { maxBytes: DATA_WRANGLER_STUDY_REPORT_MAX_BYTES });
     if (report?.provenance?.openWrangler?.version !== linkedComparison.version) {
       throw new Error(
         `Data Wrangler comparison report version ${String(report?.provenance?.openWrangler?.version)} does not match its ${linkedComparison.version} directory.`
       );
     }
-    const comparisonProblems = inspectDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
+    const comparisonProblems = inspectDataWranglerComparisonReview(reviewSource, report);
     if (comparisonProblems.length > 0) {
       throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
     }
   }
+}
+const performanceSummaryProblems = inspectPerformanceSummary(readme);
+if (performanceSummaryProblems.length > 0) {
+  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
 }
 if (!packageJson.preview) {
   const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");

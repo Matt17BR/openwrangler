@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -35,6 +34,7 @@ import {
   inspectPerformanceEvidenceCandidateReadiness,
   inspectPreviewReleaseReadiness,
   inspectStableReleaseReadiness,
+  readCanonicalGitPublicationState,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
   readStableVsixPayload
@@ -115,30 +115,19 @@ function isCurrentUserOwned(metadata) {
   return typeof process.getuid !== "function" || metadata.uid === BigInt(process.getuid());
 }
 
-function runGit(root, arguments_, { maxBuffer = 64 * 1024 } = {}) {
-  return execFileSync("git", arguments_, {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer,
-    timeout: 10_000,
-    windowsHide: true
-  });
-}
-
-function canonicalRepositoryRoot(root) {
+function canonicalRepositoryState(root, options) {
   const requested = resolve(root);
   const canonical = realpathSync.native(requested);
   const metadata = lstatSync(requested, { bigint: true });
   if (canonical !== requested || !metadata.isDirectory() || metadata.isSymbolicLink()) {
     throw new Error("The canonical release repository root must be one canonical directory.");
   }
-  const topLevel = realpathSync.native(
-    resolve(runGit(canonical, ["rev-parse", "--show-toplevel"], { maxBuffer: 4096 }).trim())
-  );
+  const state = readCanonicalGitPublicationState(canonical, options);
+  const topLevel = realpathSync.native(resolve(state.root));
   if (topLevel !== canonical) {
     throw new Error("Canonical release publication must run from the exact Git repository root.");
   }
-  return canonical;
+  return Object.freeze({ ...state, root: canonical });
 }
 
 export function readCanonicalReleaseSourceBinding({ expectedCommit, releaseTag, root }) {
@@ -148,19 +137,11 @@ export function readCanonicalReleaseSourceBinding({ expectedCommit, releaseTag, 
   if (typeof releaseTag !== "string" || !STABLE_RELEASE_TAG.test(releaseTag)) {
     throw new Error("RELEASE_TAG must be one vmajor.minor.patch tag.");
   }
-  const canonicalRoot = canonicalRepositoryRoot(root);
+  const { root: canonicalRoot, tagCommit, trackedStatus } = canonicalRepositoryState(root, { releaseTag });
   const source = readReleaseSourceSnapshot({ expectedCommit, root: canonicalRoot });
-  const trackedStatus = runGit(
-    canonicalRoot,
-    ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"],
-    { maxBuffer: 1024 * 1024 }
-  );
   if (trackedStatus.length !== 0) {
     throw new Error("Canonical release publication requires one clean tracked worktree and index.");
   }
-  const tagCommit = runGit(canonicalRoot, ["rev-parse", "--verify", "--end-of-options", `${releaseTag}^{commit}`], {
-    maxBuffer: 4096
-  }).trim();
   if (!FULL_COMMIT_ID.test(tagCommit) || tagCommit !== expectedCommit) {
     throw new Error("RELEASE_TAG must resolve to the exact EXPECTED_SHA commit.");
   }
@@ -179,13 +160,8 @@ export function readPreviewReleaseSourceBinding({ expectedCommit, releaseTag, ro
   if (typeof releaseTag !== "string" || !STABLE_RELEASE_TAG.test(releaseTag)) {
     throw new Error("RELEASE_TAG must be one vmajor.minor.patch tag.");
   }
-  const canonicalRoot = canonicalRepositoryRoot(root);
+  const { root: canonicalRoot, trackedStatus } = canonicalRepositoryState(root);
   const source = readReleaseSourceSnapshot({ expectedCommit, root: canonicalRoot });
-  const trackedStatus = runGit(
-    canonicalRoot,
-    ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"],
-    { maxBuffer: 1024 * 1024 }
-  );
   if (trackedStatus.length !== 0) {
     throw new Error("Canonical preview publication requires one clean tracked worktree and index.");
   }

@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -15,11 +16,14 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { COMPARISON_TEST_SHA, createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
+import { renderDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import {
   inspectVsixArchive,
   MAX_VSIX_ENTRY_BYTES,
@@ -44,6 +48,8 @@ import {
   PREVIEW_README_RELEASE_SECTION
 } from "./release-documents.mjs";
 import {
+  classifyCurrentCompletedPerformanceReport,
+  HISTORICAL_PERFORMANCE_DISCLOSURE,
   inspectPerformanceEvidenceCandidateReadiness,
   inspectPerformanceEvidenceSourceReadiness,
   inspectPerformanceSummary,
@@ -57,6 +63,8 @@ import {
   PRIMARY_PARITY_SCOPE,
   R_PREVIEW_PARITY_SCOPE,
   R_STABLE_PARITY_SCOPE,
+  readBoundedGitBlobSnapshot,
+  readBoundedGitDiscoverySnapshot,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
   readStableVsixPayload,
@@ -81,6 +89,27 @@ const stablePackage = {
   version: "1.0.0",
   preview: false
 };
+const TEST_SOURCE_COMMIT = "1".repeat(40);
+const OTHER_SOURCE_COMMIT = "2".repeat(40);
+const PERFORMANCE_OVERVIEW =
+  "Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed Polars sessions use lazy scans, and live notebook LazyFrames keep their existing lazy plan. Filtering, sorting, and column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in Pandas, and DuckDB relations stay in DuckDB.";
+
+function performanceReportUrl(path) {
+  return `https://github.com/Matt17BR/openwrangler/blob/main/${path}`;
+}
+
+function historicalPerformanceCopy(path) {
+  return `${PERFORMANCE_OVERVIEW}\n\n${HISTORICAL_PERFORMANCE_DISCLOSURE}\n\nSee the [historical benchmark report](${performanceReportUrl(path)}) for that release's test setup and reviewed results.`;
+}
+
+function currentPerformanceCopy(path, report) {
+  const context =
+    `Open Wrangler ${report.provenance.openWrangler.version} and Data Wrangler ${report.provenance.dataWrangler.version}; ` +
+    `completed ${report.generatedAtUtc.slice(0, 10)}; Pandas and Polars with CSV and Parquet; ` +
+    `${report.completedSessions}/${report.plannedSessions} sessions and ` +
+    `${report.completedSamples}/${report.plannedSamples} samples`;
+  return `${PERFORMANCE_OVERVIEW}\n\nThe [current comparison: ${context}](${performanceReportUrl(path)}) recorded no material median regressions under its release gate.`;
+}
 
 function manifest({ id = "openwrangler", publisher = "Matt17BR", version = "1.0.0", properties = "" } = {}) {
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -225,11 +254,15 @@ ${STABLE_README_RELEASE_SECTION}
 
 ## Performance
 
-[dated report](https://github.com/Matt17BR/openwrangler/blob/main/${stableV2ReportPath})
+${historicalPerformanceCopy(stableV2ReportPath)}
 `;
 
 function stableV2Ready(overrides = {}) {
   const packageJson = { ...stablePackage, version: stableV2Version };
+  const performanceReport = createReleaseComparisonReport({
+    version: stableV2Version,
+    sha256: COMPARISON_TEST_SHA
+  });
   return ready({
     releaseTag: `v${stableV2Version}`,
     sourcePackageJson: JSON.stringify(packageJson),
@@ -254,12 +287,12 @@ function stableV2Ready(overrides = {}) {
       stableV2ReportDataPath
     ]),
     performanceReportFiles: new Map([
-      [
-        stableV2ReportDataPath,
-        JSON.stringify(createReleaseComparisonReport({ version: stableV2Version, sha256: COMPARISON_TEST_SHA }))
-      ]
+      [stableV2ReportPath, renderDataWranglerComparisonReview(performanceReport)],
+      [stableV2ReportDataPath, JSON.stringify(performanceReport)]
     ]),
+    performanceReportSourceCommit: TEST_SOURCE_COMMIT,
     candidateSha256: COMPARISON_TEST_SHA,
+    sourceCommit: TEST_SOURCE_COMMIT,
     vsixManifest: manifest({ version: stableV2Version }),
     ...overrides
   });
@@ -1097,28 +1130,472 @@ test("stable public copy rejects leftover 1.99 preview labels", () => {
   );
 });
 
-test("keeps release numbers in the dated performance report", () => {
+test("constrains historical and current Performance summaries to exact evidence-backed structures", () => {
+  const historicalPath = "docs/performance/data-wrangler-1.2.1/review.md";
+  const historicalReadme = `# Open Wrangler\n\n## Performance\n\n${historicalPerformanceCopy(historicalPath)}\n`;
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme), []);
+  assert.deepEqual(inspectPerformanceSummary("# Open Wrangler\n"), [
+    "README must contain exactly one Performance section with one versioned Data Wrangler review."
+  ]);
+
+  const missingLink =
+    `# Open Wrangler\n\n## Performance\n\n${PERFORMANCE_OVERVIEW}\n\n` + `${HISTORICAL_PERFORMANCE_DISCLOSURE}\n`;
+  assert.deepEqual(inspectPerformanceSummary(missingLink), [
+    "README Performance must link exactly one versioned Data Wrangler review."
+  ]);
+
+  const structuralProblem =
+    "README Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.";
+  for (const claim of [
+    "Open Wrangler uses less memory than Data Wrangler.",
+    "Data Wrangler uses more memory than Open Wrangler.",
+    "Open Wrangler uses half as much memory as Data Wrangler.",
+    "Open Wrangler uses 50% of the memory Data Wrangler uses.",
+    "Open Wrangler takes half the time for notebook previews.",
+    "Open Wrangler is twice as fast on CSV workloads.",
+    "Open Wrangler beats Data Wrangler for profiling.",
+    "Open Wrangler reduced latency for the workbench."
+  ]) {
+    const mutated = historicalReadme.replace(
+      HISTORICAL_PERFORMANCE_DISCLOSURE,
+      `${HISTORICAL_PERFORMANCE_DISCLOSURE} ${claim}`
+    );
+    assert.deepEqual(inspectPerformanceSummary(mutated), [structuralProblem], claim);
+  }
+
+  const currentPath = "docs/performance/data-wrangler-2.0.0/review.md";
+  const currentReport = createReleaseComparisonReport();
+  const currentReadme = `# Open Wrangler\n\n## Performance\n\n${currentPerformanceCopy(currentPath, currentReport)}\n`;
+  assert.deepEqual(inspectPerformanceSummary(currentReadme, { currentReport }), []);
+  const neutralCurrentReadme =
+    `# Open Wrangler\n\n## Performance\n\n` + `[dated report](${performanceReportUrl(currentPath)})\n`;
+  assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme), []);
+  assert.deepEqual(inspectPerformanceSummary(neutralCurrentReadme, { currentReport }), []);
+
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme.replace("## Performance", "## Performance ##")), []);
+  assert.deepEqual(inspectPerformanceSummary(historicalReadme.replace("## Performance", "## performance")), []);
   assert.deepEqual(
-    inspectPerformanceSummary(
-      "# Open Wrangler\n\n## Performance\n\nOur latest reviewed comparison found faster notebook previews.\n"
-    ),
+    inspectPerformanceSummary(historicalReadme.replace("## Performance", "Performance\n-----------")),
     []
   );
   assert.deepEqual(
     inspectPerformanceSummary(
-      "# Open Wrangler\n\n## Performance\n\nOpen Wrangler 1.2.1 was faster for notebook previews.\n"
+      `${historicalReadme}\n## Performance ##\n\n${historicalPerformanceCopy(historicalPath)}\n`
     ),
-    ["README Performance prose must keep release numbers in the dated report link."]
-  );
-  assert.deepEqual(
-    inspectPerformanceSummary("# Open Wrangler\n\n## Performance\n\nThe comparison used Data Wrangler 1.24.2.\n"),
-    ["README Performance prose must keep release numbers in the dated report link."]
+    ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
   );
   assert.deepEqual(
     inspectPerformanceSummary(
-      "# Open Wrangler\n\n## Performance\n\n| Product | Time |\n| --- | ---: |\n| Open Wrangler | 1 s |\n"
+      `${historicalReadme}\nPerformance\n-----------\n\n${historicalPerformanceCopy(historicalPath)}\n`
     ),
-    ["README Performance must link to detailed results instead of embedding a table."]
+    ["README must contain exactly one Performance section with one versioned Data Wrangler review."]
+  );
+  for (const duplicateHeading of [
+    "## PERFORMANCE",
+    "## **Performance**",
+    "## `Performance`",
+    "## P&#x65;rformance",
+    "## [Performance][performance-heading]\n\n[performance-heading]: https://example.invalid/performance",
+    "<h2>performance</h2>",
+    "<h2>P&#101;rformance</h2>"
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        `${historicalReadme}\n${duplicateHeading}\n\n${historicalPerformanceCopy(historicalPath)}\n`
+      ),
+      ["README must contain exactly one Performance section with one versioned Data Wrangler review."],
+      duplicateHeading
+    );
+  }
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace(HISTORICAL_PERFORMANCE_DISCLOSURE, `    ${HISTORICAL_PERFORMANCE_DISCLOSURE}`)
+    ),
+    [structuralProblem]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(historicalReadme.replace("See the [historical", "    See the [historical")),
+    ["README Performance must link exactly one versioned Data Wrangler review."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme
+        .replace("See the [historical", "```text\nSee the [historical")
+        .replace("reviewed results.", "reviewed results.\n```")
+    ),
+    ["README Performance must link exactly one versioned Data Wrangler review."]
+  );
+
+  const outOfSectionProblem =
+    "README performance comparisons and current-result claims must appear only in its Performance section.";
+  for (const outsideClaim of [
+    "OPEN WRANGLER OUTPERFORMS DATA WRANGLER.",
+    "Open Wrangler needs a smaller memory footprint.",
+    "Notebook previews finish sooner with Open Wrangler.",
+    "Open Wrangler completes the same workload with fewer allocations.",
+    "Open Wrangler uses fewer resources for the same workload.",
+    "Open Wrangler has lower resource consumption than Data Wrangler.",
+    "Open Wrangler processed 10,000 rows per second.",
+    "The workbench is lightweight and responsive.",
+    "The latest timing evidence is favorable.",
+    `[historical benchmark report](${performanceReportUrl(historicalPath)})`
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${outsideClaim}`)),
+      [outOfSectionProblem],
+      outsideClaim
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n\`\`\`text\n${outsideClaim}\n\`\`\``)
+      ),
+      [outOfSectionProblem],
+      `plain-English fenced content: ${outsideClaim}`
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n\`\`\`js\n${outsideClaim}\n\`\`\``)
+      ),
+      [outOfSectionProblem],
+      `language-label-only fenced content: ${outsideClaim}`
+    );
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n    ${outsideClaim}`)),
+      [outOfSectionProblem],
+      `plain-English indented content: ${outsideClaim}`
+    );
+  }
+  for (const metricFirstClaim of [
+    "Open Wrangler's memory use is half of Data Wrangler's.",
+    "Open Wrangler's memory footprint is 50% of Data Wrangler's.",
+    "Open Wrangler's latency dropped by half versus Data Wrangler.",
+    "Open Wrangler allocates 40% of what Data Wrangler does.",
+    "Open Wrangler's memory dropped to one half of Data Wrangler's.",
+    "Open Wrangler's latency fell to a fraction of Data Wrangler's.",
+    "Open Wrangler's memory uses a 0.5x multiplier compared with Data Wrangler.",
+    "Open Wrangler's latency was reduced compared with Data Wrangler.",
+    "Open Wrangler's latency was cut in half versus Data Wrangler."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${metricFirstClaim}`)),
+      [outOfSectionProblem],
+      `metric-first comparison: ${metricFirstClaim}`
+    );
+  }
+  for (const ordinaryComparison of [
+    "Open Wrangler's latency halved compared with Data Wrangler.",
+    "Open Wrangler uses one-half of Data Wrangler's memory.",
+    "Open Wrangler uses one-third of Data Wrangler's memory.",
+    "Open Wrangler uses 1/2 the memory of Data Wrangler.",
+    "Open Wrangler uses 0.5-times the memory of Data Wrangler.",
+    "Open Wrangler uses forty-percent of Data Wrangler's memory.",
+    "Open Wrangler performs better than Data Wrangler."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${ordinaryComparison}`)
+      ),
+      [outOfSectionProblem],
+      `ordinary comparison grammar: ${ordinaryComparison}`
+    );
+  }
+  const allTriggerConfusableClaim =
+    "O\u0440\u0435n Wr\u0430ngl\u0435r is f\u0430st\u0435r than D\u0430t\u0430 Wr\u0430ngl\u0435r.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${allTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "all product, context, and comparator triggers contain confusable letters"
+  );
+  const unmappedAllTriggerConfusableClaim = "Oγen Wγangler is fγster thγn Dγta Wγangler.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${unmappedAllTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "no product, comparator, context, metric, or verb token must need an intact ASCII spelling"
+  );
+  const ambiguousAllTriggerConfusableClaim = "γγγγ γγγγγγγγ γγγγγγγγ γγγγγγ γγγγ γγγγ γγγγγγγγ.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${ambiguousAllTriggerConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "fully ambiguous confusable tokens must retain structural claim meaning"
+  );
+  const allSmallCapConfusableClaim = "Oᴘᴇɴ Wʀᴀɴɢʟᴇʀ ᴘᴇʀꜰᴏʀᴍꜱ ʙᴇᴛᴛᴇʀ ᴛʜᴀɴ Dᴀᴛᴀ Wʀᴀɴɢʟᴇʀ.";
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${allSmallCapConfusableClaim}`)
+    ),
+    [outOfSectionProblem],
+    "all-small-cap product and relation tokens must retain structural claim meaning"
+  );
+  for (const mixedCodeAndProse of [
+    "```js\nconst marker = true;\nOpen Wrangler is faster than Data Wrangler.\n```",
+    "    const marker = true;\n    Open Wrangler is faster than Data Wrangler.",
+    "```js\nreturn Open Wrangler is faster than Data Wrangler.\n```",
+    "    return Open Wrangler is faster than Data Wrangler.",
+    '```js\n"Open Wrangler is faster than Data Wrangler.";\n```',
+    "```js\nconst marker = true; # Open Wrangler is faster than Data Wrangler.\n```",
+    "```js\nconst marker = true; -- Open Wrangler is faster than Data Wrangler.\n```",
+    '```json\n{"marker": true} // Open Wrangler is faster than Data Wrangler.\n```'
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${mixedCodeAndProse}`)),
+      [outOfSectionProblem],
+      `mixed source and visible prose: ${mixedCodeAndProse}`
+    );
+  }
+  for (const codeExample of [
+    '```js\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
+    '```js\nconst marker = true;\nconst comparison = "Open Wrangler is faster than Data Wrangler.";\n```',
+    '```js\nconst comparisons = [\n  "Open Wrangler is faster than Data Wrangler.",\n];\n```',
+    "```js\n// Open Wrangler is faster than Data Wrangler.\nconst marker = true;\n```",
+    '```python\n"""Open Wrangler uses less memory than Data Wrangler."""\nmarker = True\n```',
+    "```python\nmarker = True  # Open Wrangler is faster than Data Wrangler.\n```",
+    "```r\nmarker <- TRUE  # Open Wrangler is faster than Data Wrangler.\n```",
+    "```sql\nSELECT 1; -- Open Wrangler is faster than Data Wrangler.\n```",
+    '    const comparison = "Open Wrangler uses less memory than Data Wrangler.";',
+    '    const marker = true;\n    const comparison = "Open Wrangler uses less memory than Data Wrangler.";'
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${codeExample}`)),
+      [],
+      `source-code example: ${codeExample}`
+    );
+  }
+  for (const comparisonMutation of [
+    "Open Wrangler's memory use is documented beside Data Wrangler's.",
+    "The chart uses 50% opacity for the memory-footprint series.",
+    "The chart uses one half opacity for the memory-footprint series.",
+    "The chart uses a 0.5x multiplier for visual spacing.",
+    "Open Wrangler records latency without asserting a comparative result.",
+    "The allocator processes 40% of the queued samples in the first pass.",
+    "O\u0440\u0435n Wr\u0430ngl\u0435r documents D\u0430t\u0430 Wr\u0430ngl\u0435r integration."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${comparisonMutation}`)
+      ),
+      [],
+      `non-comparative mutation: ${comparisonMutation}`
+    );
+  }
+  for (const renderedClaim of [
+    "Open Wrangler is f&#x61;ster than Data Wrangler.",
+    "Open Wrangler uses **less** [memory](https://example.invalid/memory).",
+    "Open Wrangler is **fa**`st`[er](https://example.invalid/result).",
+    "Open Wrangler needs half the t&#x69;me for notebook previews.",
+    "Open Wrangler reduced la<!-- split -->tency.",
+    "Open Wrangler is [faster][speed] than Data Wrangler.\n\n[speed]: https://example.invalid/speed",
+    "<p>Open Wrangler is <strong>faster</strong> than Data Wrangler.</p>",
+    "> Open Wrangler is twice as fast as Data Wrangler.",
+    "<button>Open Wrangler uses less memory than Data Wrangler.</button>",
+    '<input type="button" value="Open Wrangler beats Data Wrangler.">',
+    '<span aria-label="Open Wrangler outperforms Data Wrangler."></span>',
+    '<span aria-description="Open Wrangler uses half as much memory as Data Wrangler."></span>',
+    '<pre><code class="language-js" title="Open Wrangler is faster than Data Wrangler.">const marker = true;</code></pre>',
+    '<textarea placeholder="Data Wrangler uses more memory than Open Wrangler."></textarea>',
+    "<pre>Open Wrangler uses 50% of the memory Data Wrangler uses.</pre>",
+    'Open Wrangler is <strong title="formatted emphasis">fa</strong>ster than Data Wrangler.',
+    "<figure><figcaption>Open Wrangler beats Data Wrangler.</figcaption></figure>",
+    "![Open Wrangler uses fewer resources than Data Wrangler.](https://example.invalid/chart.png)",
+    '<img alt="Open Wrangler takes half the time of Data Wrangler." src="https://example.invalid/chart.png">',
+    "Open Wrangler is ｆａｓｔｅｒ than Data Wrangler.",
+    "Open Wrangler is fаster than Data Wrangler.",
+    "Open Wrangler is faѕter than Data Wrangler.",
+    "Open Wrangler is fαster than Data Wrangler.",
+    "Open Wrangler uses less memоry than Data Wrangler.",
+    "Open Wrangler is fɑster than Data Wrangler.",
+    "Open Wrangler is fᴀster than Data Wrangler.",
+    "Open Wrangler uses less memօry than Data Wrangler.",
+    "Open Wrangler is f&#x251;ster than Data Wrangler.",
+    "Open Wrangler uses less me&#x6d;&#x585;ry than Data Wrangler."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${renderedClaim}`)),
+      [outOfSectionProblem],
+      renderedClaim
+    );
+  }
+  for (const truthfulProse of [
+    "The performance study records memory, timing, and workload identity for each session.",
+    "See the performance methodology for more details about fixture construction.",
+    "The report compares the products without making a current result claim.",
+    "Time zones remain part of datetime values during profiling.",
+    "The current section explains installation. Performance evidence remains historical.",
+    "Open Wrangler is documented below. The parser accepts fast syntax.",
+    "Open Wrangler τεκμηριώνει τη μέθοδο χωρίς ισχυρισμό σύγκρισης.",
+    "Resource comparisons require a dated report and do not assert a current result.",
+    "The image alternative identifies the performance study chart.",
+    "The résumé describes the performance methodology without asserting a result."
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${truthfulProse}`)),
+      [],
+      truthfulProse
+    );
+  }
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      historicalReadme.replace("# Open Wrangler", "# Open Wrangler\n\nOpen Wrangler is not faster than Data Wrangler.")
+    ),
+    [outOfSectionProblem]
+  );
+
+  for (const supplementalClaim of [
+    '<span aria-label="Open Wrangler is faster than Data Wrangler."></span>',
+    '<img alt="Open Wrangler uses half as much memory as Data Wrangler." src="chart.png">',
+    '<input type="button" value="Data Wrangler uses more memory than Open Wrangler.">',
+    '<textarea placeholder="Open Wrangler uses 50% of the memory Data Wrangler uses."></textarea>',
+    '<span aria-description="Open Wrangler outperforms Data Wrangler."></span>'
+  ]) {
+    assert.deepEqual(
+      inspectPerformanceSummary(
+        historicalReadme.replace("## Performance\n", `## Performance\n\n${supplementalClaim}\n`)
+      ),
+      [structuralProblem],
+      `Performance accessibility claim: ${supplementalClaim}`
+    );
+  }
+
+  const malformedReadmeProblem =
+    "README must contain exactly one Performance section with one versioned Data Wrangler review.";
+  const structuralInputs = [
+    `${"<div>".repeat(10_000)}claim${"</div>".repeat(10_000)}`,
+    "<br>".repeat(20_001),
+    "<!-- node -->".repeat(40_001)
+  ];
+  const structuralStartedAt = Date.now();
+  for (const rawHtml of structuralInputs) {
+    assert.deepEqual(
+      inspectPerformanceSummary(historicalReadme.replace("# Open Wrangler", `# Open Wrangler\n\n${rawHtml}`)),
+      [malformedReadmeProblem]
+    );
+  }
+  assert.ok(Date.now() - structuralStartedAt < 2_000, "raw HTML limits must reject before synchronous DOM parsing");
+
+  const moduleUrl = pathToFileURL(resolve(repositoryRoot, "scripts/release-readiness.mjs")).href;
+  const expandingUnicodeProgram = `
+    import { inspectPerformanceSummary } from ${JSON.stringify(moduleUrl)};
+    const expanding = "\ufdfa".repeat(698_000);
+    const readme = "# Open Wrangler\\n\\n" + expanding +
+      "\\n\\n## Performance\\n\\n[dated report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)\\n";
+    const expected = ["README performance comparisons and current-result claims must appear only in its Performance section."];
+    const actual = inspectPerformanceSummary(readme);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      throw new Error("unexpected expanding-Unicode classification: " + JSON.stringify(actual));
+    }
+  `;
+  const expandingUnicodeResult = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=192", "--input-type=module", "--eval", expandingUnicodeProgram],
+    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000 }
+  );
+  assert.equal(
+    expandingUnicodeResult.status,
+    0,
+    `post-NFKD work must remain bounded before skeleton construction: ${expandingUnicodeResult.stderr}`
+  );
+
+  const referenceHistorical = historicalReadme
+    .replace(
+      `[historical benchmark report](${performanceReportUrl(historicalPath)})`,
+      "[historical benchmark report][historical-evidence]"
+    )
+    .concat(`\n[historical-evidence]: ${performanceReportUrl(historicalPath)}\n`);
+  assert.deepEqual(inspectPerformanceSummary(referenceHistorical), []);
+  const htmlHistorical = historicalReadme.replace(
+    `[historical benchmark report](${performanceReportUrl(historicalPath)})`,
+    `<a href="${performanceReportUrl(historicalPath)}">historical benchmark report</a>`
+  );
+  assert.deepEqual(inspectPerformanceSummary(htmlHistorical), []);
+  const entityHistorical = historicalReadme.replace("whole dataset", "whole data&#115;et");
+  assert.deepEqual(inspectPerformanceSummary(entityHistorical), []);
+  const inlineCodeHistorical = historicalReadme.replace("grid blocks", "`grid blocks`");
+  assert.deepEqual(inspectPerformanceSummary(inlineCodeHistorical), []);
+
+  for (const invisibleReadme of [
+    historicalReadme.replace("Performance", "Per\u200bformance"),
+    historicalReadme.replace("Performance", "Per&#x200b;formance"),
+    historicalReadme.replace("Performance", "Per&ZeroWidthSpace;formance")
+  ]) {
+    assert.notDeepEqual(inspectPerformanceSummary(invisibleReadme), []);
+  }
+
+  const qualificationProblem =
+    "README Performance must use the exact linked historical summary, neutral current-report link, or report-derived current summary.";
+  for (const incomplete of [
+    currentReadme.replace("Open Wrangler 2.0.0 and Data Wrangler 1.24.2; ", ""),
+    currentReadme.replace("completed 2026-08-04; ", ""),
+    currentReadme.replace("Pandas and Polars with CSV and Parquet; ", ""),
+    currentReadme.replace("8/8 sessions and 80/80 samples", "completed study")
+  ]) {
+    assert.deepEqual(inspectPerformanceSummary(incomplete, { currentReport }), [qualificationProblem]);
+  }
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      neutralCurrentReadme.replace("[dated report]", "Open Wrangler is twice as fast; see the [dated report]"),
+      { currentReport }
+    ),
+    [qualificationProblem]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(neutralCurrentReadme.replace("2.0.0/review.md", "2.0.1/review.md"), {
+      currentReport
+    }),
+    []
+  );
+});
+
+test("requires candidate, report, and source provenance before classifying current performance", () => {
+  const report = createReleaseComparisonReport();
+  const input = {
+    candidateSha256: COMPARISON_TEST_SHA,
+    performanceReportSourceCommit: TEST_SOURCE_COMMIT,
+    report,
+    reportVersion: "2.0.0",
+    sourceCommit: TEST_SOURCE_COMMIT,
+    sourceVersion: "2.0.0"
+  };
+  assert.equal(classifyCurrentCompletedPerformanceReport(input).current, true, "trusted canonical caller");
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({ ...input, candidateSha256: undefined }).current,
+    false,
+    "missing candidate"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({ ...input, performanceReportSourceCommit: OTHER_SOURCE_COMMIT }).current,
+    false,
+    "wrong report source"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      performanceReportSourceCommit: undefined,
+      sourceCommit: undefined
+    }).current,
+    false,
+    "missing source binding"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      performanceReportSourceCommit: undefined,
+      sourceCommit: undefined
+    }).current,
+    false,
+    "matching digest alone is not source provenance"
+  );
+  assert.equal(
+    classifyCurrentCompletedPerformanceReport({
+      ...input,
+      sourceCommit: OTHER_SOURCE_COMMIT
+    }).current,
+    false,
+    "the report must be bound to the exact inspected source commit"
   );
 });
 
@@ -1128,8 +1605,8 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   const reportDataPath = (reportVersion) => `docs/performance/data-wrangler-${reportVersion}/report.json`;
   const reportUrl = (reportVersion) =>
     `https://github.com/Matt17BR/openwrangler/blob/main/${reportPath(reportVersion)}`;
-  const readmeWithReport = (reportVersion, prefix = "") =>
-    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n[dated report](${reportUrl(reportVersion)})\n`;
+  const readmeWithReport = (reportVersion, prefix = "", performanceCopy) =>
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n${performanceCopy ?? historicalPerformanceCopy(reportPath(reportVersion))}\n`;
   const reportSources = new Map();
   const reportSource = (reportVersion, sha256 = COMPARISON_TEST_SHA) => {
     const key = `${reportVersion}:${sha256}`;
@@ -1155,25 +1632,135 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
         reportPath(reportVersion),
         reportDataPath(reportVersion)
       ]),
-      performanceReportFiles: new Map([[reportDataPath(reportVersion), reportSource(reportVersion)]]),
+      performanceReportFiles: new Map([
+        [
+          reportPath(reportVersion),
+          renderDataWranglerComparisonReview(
+            createReleaseComparisonReport({ version: reportVersion, sha256: COMPARISON_TEST_SHA })
+          )
+        ],
+        [reportDataPath(reportVersion), reportSource(reportVersion)]
+      ]),
+      performanceReportSourceCommit: TEST_SOURCE_COMMIT,
       candidateSha256: COMPARISON_TEST_SHA,
+      sourceCommit: TEST_SOURCE_COMMIT,
       vsixManifest: manifest({ version: sourceVersion }),
       ...overrides
     });
 
   assert.deepEqual(inspectStableReleaseReadiness(candidate(version)), []);
-  assert.deepEqual(inspectStableReleaseReadiness(candidate("2.0.0", {}, "2.0.1")), []);
-
-  const historical = `[historical report](${reportUrl("1.2.1")})\n\n`;
+  const invisibleStableProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      readme: readmeWithReport(version).replace("Performance", "Per&ZeroWidthSpace;formance"),
+      packagedReadme: readmeWithReport(version).replace("Performance", "Per&#8203;formance")
+    })
+  );
+  assert.ok(
+    invisibleStableProblems.includes(
+      "README.md Performance section must link exactly one versioned Data Wrangler review."
+    )
+  );
+  assert.ok(
+    invisibleStableProblems.includes(
+      "Packaged README Performance section must link exactly one versioned Data Wrangler review."
+    )
+  );
+  const digestOnlyProblems = inspectStableReleaseReadiness(
+    candidate(version, { performanceReportSourceCommit: undefined, sourceCommit: undefined })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      digestOnlyProblems.includes(
+        `${label} Performance data ${reportDataPath(version)} is not bound to the exact release source commit.`
+      )
+    );
+  }
+  const currentClaim = currentPerformanceCopy(reportPath(version), createReleaseComparisonReport({ version }));
   assert.deepEqual(
     inspectStableReleaseReadiness(
       candidate(version, {
-        readme: readmeWithReport(version, historical),
-        packagedReadme: readmeWithReport(version, historical)
+        readme: readmeWithReport(version, "", currentClaim),
+        packagedReadme: readmeWithReport(version, "", currentClaim)
       })
     ),
     []
   );
+
+  const missingCandidateProblems = inspectStableReleaseReadiness(candidate(version, { candidateSha256: undefined }));
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      missingCandidateProblems.includes(
+        `${label} Performance data ${reportDataPath(version)} does not match the release candidate VSIX.`
+      )
+    );
+  }
+
+  assert.deepEqual(
+    inspectStableReleaseReadiness(
+      candidate(
+        "2.0.0",
+        {
+          readme: readmeWithReport("2.0.0"),
+          packagedReadme: readmeWithReport("2.0.0")
+        },
+        "2.0.1"
+      )
+    ),
+    []
+  );
+
+  const staleClaimProblems = inspectStableReleaseReadiness(
+    candidate(
+      "2.0.0",
+      {
+        readme: readmeWithReport("2.0.0", "", currentClaim),
+        packagedReadme: readmeWithReport("2.0.0", "", currentClaim)
+      },
+      "2.0.1"
+    )
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      staleClaimProblems.includes(
+        `${label} Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.`
+      )
+    );
+  }
+
+  const staleSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportSourceCommit: OTHER_SOURCE_COMMIT,
+      readme: readmeWithReport(version, "", currentClaim),
+      packagedReadme: readmeWithReport(version, "", currentClaim)
+    })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      staleSourceProblems.includes(
+        `${label} Performance data ${reportDataPath(version)} is not bound to the exact release source commit.`
+      )
+    );
+    assert.ok(
+      staleSourceProblems.includes(
+        `${label} Performance must use the exact linked historical-evidence summary or neutral link-only summary while no current completed report is proven.`
+      )
+    );
+  }
+
+  const historical = `[historical report](${reportUrl("1.2.1")})\n\n`;
+  const outsideEvidenceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      readme: readmeWithReport(version, historical),
+      packagedReadme: readmeWithReport(version, historical)
+    })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      outsideEvidenceProblems.includes(
+        `${label} performance comparisons and current-result claims must appear only in its Performance section.`
+      )
+    );
+  }
 
   const sourceProblems = inspectStableReleaseReadiness(
     candidate(version, {
@@ -1242,6 +1829,50 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     )
   );
 
+  const missingReviewProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([[reportDataPath(version), reportSource(version)]])
+    })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(
+      missingReviewProblems.includes(
+        `${label} Performance review ${reportPath(version)} must be read from the release commit.`
+      )
+    );
+  }
+
+  const emptyReviewProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([
+        [reportPath(version), ""],
+        [reportDataPath(version), reportSource(version)]
+      ])
+    })
+  );
+  assert.ok(
+    emptyReviewProblems.some((problem) =>
+      problem.startsWith(`README.md Performance review ${reportPath(version)} is invalid:`)
+    )
+  );
+
+  const staleReviewProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([
+        [
+          reportPath(version),
+          renderDataWranglerComparisonReview(createReleaseComparisonReport({ version, sha256: "b".repeat(64) }))
+        ],
+        [reportDataPath(version), reportSource(version)]
+      ])
+    })
+  );
+  assert.ok(
+    staleReviewProblems.includes(
+      `README.md Performance review ${reportPath(version)} is invalid: The generated Data Wrangler comparison results in review.md are stale.`
+    )
+  );
+
   const malformedSourceProblems = inspectStableReleaseReadiness(
     candidate(version, { performanceReportFiles: new Map([[reportDataPath(version), "{"]]) })
   );
@@ -1296,7 +1927,9 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
       candidate(
         "2.0.0",
         {
-          candidateSha256: "b".repeat(64)
+          candidateSha256: "b".repeat(64),
+          readme: readmeWithReport("2.0.0"),
+          packagedReadme: readmeWithReport("2.0.0")
         },
         "2.0.1"
       )
@@ -2135,7 +2768,11 @@ test("reads release documentation from the exact immutable Git commit", () => {
     encoding: "utf8"
   }).trim();
   const source = readReleaseSourceSnapshot({ expectedCommit, root });
+  const discovery = readBoundedGitDiscoverySnapshot({ root });
   assert.equal(source.commit, expectedCommit);
+  assert.equal(discovery.commit, expectedCommit);
+  assert.equal(discovery.tree, source.tree);
+  assert.deepEqual(discovery.trackedPaths, source.trackedPaths);
   assert.ok(source.trackedPaths.has("docs/testing.md"));
   assert.match(source.files.get("package.json"), /"name": "openwrangler"/u);
 
@@ -2191,6 +2828,280 @@ test("reads release documentation from the exact immutable Git commit", () => {
   }
 });
 
+test("pins trusted Git independently of hostile initial and post-resolution PATH replacements", (context) => {
+  if (process.platform === "win32") {
+    context.skip("POSIX executable replacement fixture");
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "ow-release-git-pin-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const repository = join(root, "repository");
+  const firstHostile = join(root, "first-hostile");
+  const secondHostile = join(root, "second-hostile");
+  const marker = join(root, "hostile-git-ran");
+  mkdirSync(repository);
+  mkdirSync(firstHostile);
+  mkdirSync(secondHostile);
+  writeFileSync(join(repository, "evidence.txt"), "evidence\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: repository });
+  execFileSync("git", ["add", "evidence.txt"], { cwd: repository });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Open Wrangler Tests",
+      "-c",
+      "user.email=tests@openwrangler.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "-m",
+      "evidence"
+    ],
+    { cwd: repository }
+  );
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+  for (const directory of [firstHostile, secondHostile]) {
+    const executable = join(directory, "git");
+    writeFileSync(executable, `#!/bin/sh\n: > '${marker}'\nsleep 30\n`, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+  }
+  const moduleUrl = pathToFileURL(resolve(repositoryRoot, "scripts/release-readiness.mjs")).href;
+  const program = `
+    const { readBoundedGitDiscoverySnapshot } = await import(${JSON.stringify(moduleUrl)});
+    const first = readBoundedGitDiscoverySnapshot({ root: ${JSON.stringify(repository)} });
+    process.env.PATH = ${JSON.stringify(secondHostile)};
+    const second = readBoundedGitDiscoverySnapshot({ root: ${JSON.stringify(repository)} });
+    if (first.commit !== ${JSON.stringify(commit)} || second.commit !== first.commit) process.exit(97);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: firstHostile },
+    timeout: 10_000,
+    windowsHide: true
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.equal(existsSync(marker), false, "neither hostile PATH executable may run");
+});
+
+test("fails closed before invoking Git from mutable Windows installation roots", (context) => {
+  if (process.platform === "win32") {
+    context.skip("The release-readiness module intentionally fails closed before this test file loads on Windows.");
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "ow-release-windows-git-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const marker = join(root, "git-ran");
+  const executable = join(root, "Git", "cmd", "git.exe");
+  mkdirSync(join(root, "Git", "cmd"), { recursive: true });
+  writeFileSync(executable, `#!/bin/sh\n: > '${marker}'\nexit 91\n`, { mode: 0o700 });
+  chmodSync(executable, 0o700);
+  const moduleUrl = pathToFileURL(resolve(repositoryRoot, "scripts/release-readiness.mjs")).href;
+  const program = `
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    await import(${JSON.stringify(moduleUrl)});
+  `;
+  for (const environment of [
+    { PATH: dirname(executable), ProgramFiles: root, SystemRoot: join(root, "Windows") },
+    { PATH: join(root, "Windows"), "ProgramFiles(x86)": root, SystemRoot: root }
+  ]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+      encoding: "utf8",
+      env: { ...process.env, ...environment },
+      timeout: 5_000,
+      windowsHide: true
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Windows release evidence requires an immutable Git authority/u);
+    assert.equal(result.signal, null);
+    assert.equal(existsSync(marker), false, "mutable Windows-root Git must not run");
+  }
+});
+
+test("reads performance evidence only from bounded regular immutable Git blobs", (context) => {
+  const repository = mkdtempSync(join(tmpdir(), "ow-release-evidence-blob-"));
+  context.after(() => rmSync(repository, { force: true, recursive: true }));
+  const relativePath = "docs/performance/data-wrangler-2.0.0/review.md";
+  const evidence = join(repository, relativePath);
+  mkdirSync(join(repository, "docs", "performance", "data-wrangler-2.0.0"), { recursive: true });
+  writeFileSync(evidence, "committed evidence\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: repository });
+  const commit = (message) => {
+    execFileSync("git", ["add", "-A"], { cwd: repository });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Open Wrangler Tests",
+        "-c",
+        "user.email=tests@openwrangler.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        message
+      ],
+      { cwd: repository }
+    );
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+  };
+  const committed = commit("evidence");
+  const readCommitted = () =>
+    readBoundedGitBlobSnapshot({ commit: committed, maxBytes: 64, path: relativePath, root: repository });
+  assert.equal(readCommitted(), "committed evidence\n");
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: committed,
+        maxBytes: 64,
+        path: `${relativePath}\nignored`,
+        root: repository
+      }),
+    /normalized repository-relative path/u
+  );
+
+  writeFileSync(evidence, "replacement evidence\n");
+  const replacement = commit("replacement evidence");
+  execFileSync("git", ["replace", committed, replacement], { cwd: repository });
+  assert.equal(readCommitted(), "committed evidence\n", "replacement refs must not alter the bound commit");
+  execFileSync("git", ["replace", "-d", committed], { cwd: repository });
+
+  const helperDirectory = join(repository, "hostile-git-environment");
+  const helperMarker = join(helperDirectory, "git-ran");
+  mkdirSync(helperDirectory);
+  if (process.platform !== "win32") {
+    const helper = join(helperDirectory, "git");
+    writeFileSync(helper, `#!/bin/sh\n: > '${helperMarker}'\nsleep 30\n`, { mode: 0o700 });
+    chmodSync(helper, 0o700);
+  }
+  const hostileConfig = join(helperDirectory, "config");
+  if (process.platform !== "win32") {
+    execFileSync("mkfifo", [hostileConfig]);
+  } else {
+    writeFileSync(hostileConfig, "[alias]\ncat-file = !exit 99\n");
+  }
+  const hostileEnvironment = {
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: join(helperDirectory, "alternate-objects"),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_GLOBAL: hostileConfig,
+    GIT_CONFIG_KEY_0: "alias.cat-file",
+    GIT_CONFIG_SYSTEM: hostileConfig,
+    GIT_CONFIG_VALUE_0: "!sleep 30",
+    GIT_EXEC_PATH: helperDirectory,
+    GIT_OBJECT_DIRECTORY: join(helperDirectory, "objects"),
+    GIT_REPLACE_REF_BASE: "refs/hostile-replacements/",
+    PATH: helperDirectory
+  };
+  const inheritedEnvironment = new Map(Object.keys(hostileEnvironment).map((name) => [name, process.env[name]]));
+  const startedAt = Date.now();
+  try {
+    Object.assign(process.env, hostileEnvironment);
+    assert.equal(readCommitted(), "committed evidence\n");
+    const discovery = readBoundedGitDiscoverySnapshot({ root: repository });
+    assert.equal(discovery.commit, replacement);
+    assert.ok(discovery.trackedPaths.has(relativePath));
+  } finally {
+    for (const [name, value] of inheritedEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  assert.ok(Date.now() - startedAt < 4_000, "inherited Git helper/config hangs must not consume the read bound");
+  assert.equal(existsSync(helperMarker), false, "inherited Git executables and helpers must not run");
+
+  if (process.platform !== "win32") {
+    unlinkSync(evidence);
+    symlinkSync("/dev/null", evidence);
+    assert.equal(readCommitted(), "committed evidence\n", "device-targeting worktree symlink must not be opened");
+  }
+  if (existsSync(evidence)) unlinkSync(evidence);
+  const foreign = join(repository, "foreign-evidence.md");
+  writeFileSync(foreign, "foreign evidence\n");
+  linkSync(foreign, evidence);
+  assert.equal(readCommitted(), "committed evidence\n", "hard-linked worktree replacement must not be opened");
+  unlinkSync(evidence);
+  writeFileSync(evidence, "x".repeat(4096));
+  assert.equal(readCommitted(), "committed evidence\n", "oversized worktree replacement must not be opened");
+
+  if (process.platform !== "win32") {
+    unlinkSync(evidence);
+    symlinkSync("/dev/null", evidence);
+    const symlinkCommit = commit("symlink evidence");
+    assert.throws(
+      () =>
+        readBoundedGitBlobSnapshot({
+          commit: symlinkCommit,
+          maxBytes: 64,
+          path: relativePath,
+          root: repository
+        }),
+      /must be one regular tracked Git blob/u
+    );
+    unlinkSync(evidence);
+  }
+  writeFileSync(evidence, "x".repeat(65));
+  const oversizedCommit = commit("oversized evidence");
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 64,
+        path: relativePath,
+        root: repository
+      }),
+    /exceeds its 64-byte commit snapshot limit/u
+  );
+
+  const oversizedBlob = execFileSync("git", ["rev-parse", `${oversizedCommit}:${relativePath}`], {
+    cwd: repository,
+    encoding: "utf8"
+  }).trim();
+  const forgedContents = Buffer.from("y".repeat(65), "utf8");
+  const forgedObject = Buffer.concat([Buffer.from(`blob ${forgedContents.length}\0`, "utf8"), forgedContents]);
+  const oversizedObjectPath = join(repository, ".git", "objects", oversizedBlob.slice(0, 2), oversizedBlob.slice(2));
+  chmodSync(oversizedObjectPath, 0o600);
+  writeFileSync(oversizedObjectPath, deflateSync(forgedObject));
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 128,
+        path: relativePath,
+        root: repository
+      }),
+    /bytes do not hash back to their bound Git object ID/u
+  );
+
+  const docsTree = execFileSync("git", ["rev-parse", `${oversizedCommit}:docs`], {
+    cwd: repository,
+    encoding: "utf8"
+  }).trim();
+  const forgedTreeContents = Buffer.concat([
+    Buffer.from("100644 decoy.md\0", "utf8"),
+    Buffer.alloc(docsTree.length === 40 ? 20 : 32)
+  ]);
+  const forgedTreeObject = Buffer.concat([
+    Buffer.from(`tree ${forgedTreeContents.length}\0`, "utf8"),
+    forgedTreeContents
+  ]);
+  const docsTreeObjectPath = join(repository, ".git", "objects", docsTree.slice(0, 2), docsTree.slice(2));
+  chmodSync(docsTreeObjectPath, 0o600);
+  writeFileSync(docsTreeObjectPath, deflateSync(forgedTreeObject));
+  assert.throws(
+    () =>
+      readBoundedGitBlobSnapshot({
+        commit: oversizedCommit,
+        maxBytes: 128,
+        path: relativePath,
+        root: repository
+      }),
+    /Release source tree docs bytes do not hash back to their bound Git object ID/u
+  );
+});
+
 test("reads the linked performance report from the immutable release commit", () => {
   const repository = mkdtempSync(join(tmpdir(), "ow-release-performance-source-"));
   try {
@@ -2231,6 +3142,18 @@ test("reads the linked performance report from the immutable release commit", ()
     );
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
     const source = readReleaseSourceSnapshot({ expectedCommit: commit, root: repository });
+    assert.equal(
+      source.tree,
+      execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: repository, encoding: "utf8" }).trim()
+    );
+    assert.equal(
+      source.blobOids.get("docs/performance/data-wrangler-2.0.0/review.md"),
+      execFileSync("git", ["rev-parse", "HEAD:docs/performance/data-wrangler-2.0.0/review.md"], {
+        cwd: repository,
+        encoding: "utf8"
+      }).trim()
+    );
+    assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/review.md"), "# Review\n");
     assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/report.json"), reportSource);
   } finally {
     rmSync(repository, { force: true, recursive: true });

@@ -177,7 +177,28 @@ Before publication, a second reviewer checks the eight session IDs, ten samples 
 the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
-The latest completed review is the
-[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned directory when a release
-reruns the comparison with the VSIX that will be published. Commit its `review.md` and `report.json` together. The
-README keeps a short summary and a link to the dated review instead of copying the results table.
+The retained [`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md) is historical evidence. It predates the
+machine-readable report contract and does not describe current Open Wrangler performance.
+
+A comparison becomes current completed evidence only when all of these conditions hold:
+
+- its versioned `review.md` and sibling `report.json` are both tracked;
+- the report passes the complete release-study schema and disposition checks;
+- the report, package metadata, and report directory are bound to the same exact source commit and Open Wrangler
+  version; and
+- candidate-aware release readiness confirms that the report's candidate digest matches the VSIX being released.
+
+Every README Performance section links one tracked review. Without current completed evidence, it uses the exact
+historical disclosure or a neutral link-only summary and contains no result claim. Ordinary documentation checks do
+not promote a report to current evidence. Only candidate-aware release readiness can authorize the report-derived
+summary after binding the exact candidate digest, report, and source commit. Its visible link names both tested
+versions, the completion date, Pandas and Polars CSV and Parquet workloads, and completed session and sample counts.
+The detailed timings remain in the report rather than in a README table or free-form claim.
+
+README contains exactly one visible, case-insensitive Performance heading. Comparison evidence and current-result
+claims remain inside that section; moving equivalent prose or links elsewhere does not bypass the gate. Documentation
+checks read the commit, root tree, review, and report as bounded Git objects with replacement and inherited helper
+configuration disabled, and independently verify that each returned object hashes to its bound object ID.
+
+Create a new versioned directory when a release reruns the comparison with the VSIX that will be published, and
+commit its `review.md` and `report.json` together.
