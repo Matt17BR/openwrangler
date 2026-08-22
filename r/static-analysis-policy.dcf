@@ -9,6 +9,11 @@ Maximum-AST-Nodes: 500000
 Maximum-AST-Depth: 256
 Maximum-Diagnostics: 256
 Maximum-Suppressions: 128
+Maximum-Candidate-State-Work: 2000000
+Maximum-Operation-Work: 32000000
+Maximum-Span-Lookup-Work: 8000000
+Maximum-Diagnostic-Bytes: 4194304
+Maximum-Total-Work: 46000000
 Ratchet-Undefined-Symbol: 4
 Ratchet-Partial-Argument: 0
 Ratchet-Global-Assignment: 3

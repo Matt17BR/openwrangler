@@ -23,7 +23,12 @@ local({
     ast_nodes = 128L,
     ast_depth = 16L,
     diagnostics = 16L,
-    suppressions = 16L
+    suppressions = 16L,
+    candidate_states = 8192L,
+    operations = 262144L,
+    span_lookups = 65536L,
+    diagnostic_bytes = 65536L,
+    total_work = 393216L
   )
   diagnostics_with_limits <- function(source, limits = fixture_limits) {
     analyzer$test$analyze_text(source, "r/openwrangler_runtime/frame_contract.R", limits)
@@ -198,6 +203,30 @@ local({
     !("global-assignment" %in% rules(local_replacement_target_after_rhs)),
     "A replacement target was resolved from the stale pre-RHS global environment"
   )
+  closure_global_replacement_target <- paste(
+    "function() {",
+    "  holder <- new.env()",
+    "  mutate_holder <- function() holder <<- .GlobalEnv",
+    "  holder$unsafe_target <- { mutate_holder(); 1 }",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    ".GlobalEnv$unsafe_target" %in% diagnostic_symbols(
+      closure_global_replacement_target, "global-assignment"
+    ),
+    "A reachable closure effect did not flow into the caller's replacement target"
+  )
+  closure_local_replacement_target <- sub(
+    "holder <- new.env()",
+    "holder <- .GlobalEnv",
+    sub("holder <<- .GlobalEnv", "holder <<- new.env()", closure_global_replacement_target, fixed = TRUE),
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(closure_local_replacement_target)),
+    "A closure's proven local replacement target retained stale global state"
+  )
   assert_true(
     !("global-assignment" %in% rules(paste(
       "function() {",
@@ -370,6 +399,163 @@ local({
   assert_true(
     !("global-assignment" %in% rules(uncalled_closure_seed_mutation)),
     "An unreachable closure mutation invalidated exact seed restoration"
+  )
+  parenthesized_closure_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    "  (function() previous_random_seed <<- replacement_seed)()",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(parenthesized_closure_seed_mutation),
+    "An immediately invoked parenthesized closure spoofed random-seed restoration"
+  )
+  do_call_seed_mutation <- sub(
+    "  mutate_snapshot()",
+    "  base::do.call(mutate_snapshot, list())",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(do_call_seed_mutation),
+    "A do.call-dispatched closure spoofed random-seed restoration"
+  )
+  computed_closure_seed_mutation <- sub(
+    "  mutate_snapshot()",
+    "  (if (flag) mutate_snapshot else function() NULL)()",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(computed_closure_seed_mutation),
+    "A computed closure invocation spoofed random-seed restoration"
+  )
+  callback_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    "  base::lapply(list(1L), function(value) previous_random_seed <<- replacement_seed)",
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(callback_seed_mutation),
+    "A supported callback dispatch spoofed random-seed restoration"
+  )
+  uncertain_callback_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed",
+      "  unknown_dispatch(mutate_snapshot)",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(uncertain_callback_seed_mutation),
+    "An uncertain higher-order callback silently retained the random-seed exemption"
+  )
+  loop_carried_closure_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  mutate_snapshot <- NULL",
+      "  for (value in values) mutate_snapshot <- function() previous_random_seed <<- replacement_seed",
+      "  mutate_snapshot()",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(loop_carried_closure_seed_mutation),
+    "A loop-carried closure mutation spoofed random-seed restoration"
+  )
+  aliased_assign_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  writer <- base::assign",
+      "  current_environment <- base::environment()",
+      "  writer('previous_random_seed', replacement_seed, envir = current_environment)",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(aliased_assign_seed_mutation),
+    "An aliased base::assign call against the current environment spoofed seed restoration"
+  )
+  loop_carried_environment_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  current_environment <- base::environment()",
+      "  target_environment <- new.env()",
+      "  for (value in values) target_environment <- current_environment",
+      "  base::assign('previous_random_seed', replacement_seed, envir = target_environment)",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(loop_carried_environment_seed_mutation),
+    "A loop-carried current-environment alias spoofed random-seed restoration"
+  )
+  safe_early_return_seed_control <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  mutate_snapshot <- function() {",
+      "    base::return(NULL)",
+      "    previous_random_seed <<- replacement_seed",
+      "  }",
+      "  mutate_snapshot()",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(safe_early_return_seed_control)),
+    "A proven early return rejected otherwise exact random-seed restoration"
+  )
+  shadowed_return_seed_mutation <- sub(
+    "    base::return(NULL)",
+    "    return <- function(...) NULL\n    return(NULL)",
+    safe_early_return_seed_control,
+    fixed = TRUE
+  )
+  assert_true(
+    "global-assignment" %in% rules(shadowed_return_seed_mutation),
+    "A shadowed return call hid a reachable random-seed snapshot mutation"
+  )
+  shadowed_assign_seed_control <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  assign <- function(...) NULL",
+      "  current_environment <- base::environment()",
+      "  assign('previous_random_seed', replacement_seed, envir = current_environment)",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(shadowed_assign_seed_control)),
+    "A shadowed local assign callable invalidated exact random-seed restoration"
+  )
+  shadowed_environment_seed_control <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  environment <- function() new.env()",
+      "  local_environment <- environment()",
+      "  base::assign('previous_random_seed', replacement_seed, envir = local_environment)",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    !("global-assignment" %in% rules(shadowed_environment_seed_control)),
+    "A shadowed environment callable was treated as the current lexical environment"
   )
   assert_true(
     !("global-assignment" %in% rules("function() { local_environment <- new.env(); local_environment$target <- 1; base::assign('target', 1, envir = local_environment) }")),
@@ -742,6 +928,44 @@ local({
     length(codetools_write_operations) == 2L && length(unique(codetools_write_operations)) == 2L,
     "Same-line codetools write diagnostics collapsed to one suppression identity"
   )
+  distinct_same_line_codetools_writes <- "function() { first <<- 1; second <<- 2 }"
+  first_write_operation <- diagnostic_operations(
+    distinct_same_line_codetools_writes, "global-assignment", "first"
+  )
+  second_write_operation <- diagnostic_operations(
+    distinct_same_line_codetools_writes, "global-assignment", "second"
+  )
+  assert_true(
+    length(first_write_operation) == 1L && length(second_write_operation) == 1L &&
+      !identical(first_write_operation, second_write_operation),
+    "Codetools global assignments were not matched to their exact target symbols"
+  )
+  non_evaluated_symbol_owners <- paste(
+    "function(object) {",
+    "  quote(missing_value); object$missing_value; missing_value",
+    "}",
+    sep = "\n"
+  )
+  evaluated_symbol_operation <- diagnostic_operations(
+    non_evaluated_symbol_owners, "undefined-symbol", "missing_value"
+  )
+  assert_true(
+    identical(evaluated_symbol_operation, "L2:C47-L2:C59"),
+    "A quoted operand or member name inherited an evaluated codetools diagnostic"
+  )
+  reversed_non_evaluated_symbol_owners <- paste(
+    "function(object) {",
+    "  missing_value; quote(missing_value); object$missing_value",
+    "}",
+    sep = "\n"
+  )
+  assert_true(
+    identical(
+      diagnostic_operations(reversed_non_evaluated_symbol_owners, "undefined-symbol", "missing_value"),
+      "L2:C3-L2:C15"
+    ),
+    "A later non-evaluated symbol displaced an earlier evaluated codetools diagnostic"
+  )
 
   shifted_location <- paste(
     "unknown(al = 1)",
@@ -783,7 +1007,10 @@ local({
   )
   measured_work <- attr(diagnostics(work_probe), "work", exact = TRUE)
   assert_true(
-    identical(names(measured_work), c("candidate_states", "operations", "diagnostic_bytes")) &&
+    identical(
+      names(measured_work),
+      c("candidate_states", "operations", "span_lookups", "diagnostic_bytes", "total_work")
+    ) &&
       all(is.finite(measured_work)) && all(measured_work > 1),
     "Analyzer work receipts are incomplete"
   )
@@ -799,9 +1026,33 @@ local({
     below[[name]] <- below[[name]] - 1L
     expect_error(
       diagnostics_with_limits(work_probe, below),
-      sprintf("analysis %s work exceeds its bound", gsub("_", " ", name, fixed = TRUE))
+      if (identical(name, "total_work")) "analysis total work exceeds its bound" else
+        sprintf("analysis %s work exceeds its bound", gsub("_", " ", name, fixed = TRUE))
     )
   }
+  performance_probe <- function(count) paste(c(
+    "function(flag) {",
+    "  target <- function(alpha, beta) 1",
+    rep("  if (flag) target <- function(apple, pear) 1", count),
+    "  target(al = missing_value, beta = 2)",
+    "}"
+  ), collapse = "\n")
+  performance_limits <- list(
+    source_bytes = 1048576L,
+    aggregate_source_bytes = 2097152L,
+    ast_nodes = 500000L,
+    ast_depth = 256L,
+    diagnostics = 256L,
+    suppressions = 128L
+  )
+  work_800 <- attr(diagnostics_with_limits(performance_probe(800L), performance_limits), "work", exact = TRUE)
+  work_1600 <- attr(diagnostics_with_limits(performance_probe(1600L), performance_limits), "work", exact = TRUE)
+  assert_true(
+    work_1600[["operations"]] <= work_800[["operations"]] * 2.1 &&
+      work_1600[["span_lookups"]] <= work_800[["span_lookups"]] * 2.1 &&
+      work_1600[["total_work"]] <= work_800[["total_work"]] * 2.1,
+    "Analyzer state merging or source-span ownership grew superlinearly from 800 to 1600 branches"
+  )
 
   runner <- paste(readLines("r/tests/run_warning_strict.R", warn = FALSE, encoding = "UTF-8"), collapse = "\n")
   hook <- regexpr("openwrangler_r_static_analysis\\$run", runner)
