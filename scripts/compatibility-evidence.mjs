@@ -48,6 +48,7 @@ const MAX_CSS_DECLARATION_BYTES = 2 * 1024;
 const MAX_MARKDOWN_REFERENCES = 256;
 const MAX_MARKDOWN_CONSTRUCTS = 4_096;
 const MAX_MARKDOWN_LABEL_BYTES = 4 * 1024;
+const MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS = 999;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const NON_VISIBLE_HTML_CONTAINERS = new Set([
@@ -121,6 +122,7 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["Χ", "X"],
   ["ο", "o"],
   ["ρ", "p"],
+  ["σ", "C"],
   ["υ", "u"],
   ["Σ", "C"],
   ["ς", "C"],
@@ -149,7 +151,12 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["Ꭴ", "o"],
   ["Ꮜ", "u"],
   ["Ꮪ", "S"],
-  ["Ꮯ", "C"]
+  ["Ꮯ", "C"],
+  ["ꭱ", "R"],
+  ["ꭴ", "o"],
+  ["ꮜ", "u"],
+  ["ꮪ", "S"],
+  ["ꮯ", "C"]
 ]);
 const RENDERED_NAMED_ENTITIES = new Map([
   ["amp", "&"],
@@ -1530,7 +1537,32 @@ function htmlTagPattern() {
   return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
 }
 
+function commonmarkAutolinkContent(candidate) {
+  if (!candidate.startsWith("<") || !candidate.endsWith(">")) return undefined;
+  const content = candidate.slice(1, -1);
+  const uri = /^(?<scheme>[A-Za-z][A-Za-z0-9+.-]{1,31}):(?<destination>[^<>]*)$/u.exec(content)?.groups;
+  if (uri && [...uri.destination].every((character) => character.codePointAt(0) > 0x20)) return content;
+  if (
+    /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u.test(
+      content
+    )
+  ) {
+    return content;
+  }
+  return undefined;
+}
+
+function commonmarkAutolinkAt(source, index) {
+  if (source[index] !== "<") return undefined;
+  const end = source.indexOf(">", index + 1);
+  if (end < 0) return undefined;
+  const candidate = source.slice(index, end + 1);
+  const content = commonmarkAutolinkContent(candidate);
+  return content === undefined ? undefined : { content, end: end + 1 };
+}
+
 function cssDeclarationValue(value) {
+  const important = /\s*!\s*important\s*$/iu.test(value);
   let normalized = value
     .trim()
     .replace(/\s*!\s*important\s*$/iu, "")
@@ -1542,7 +1574,7 @@ function cssDeclarationValue(value) {
   ) {
     normalized = normalized.slice(1, -1).trim();
   }
-  return normalized.toLowerCase();
+  return { important, value: normalized.toLowerCase() };
 }
 
 function normalizedCssSyntax(value, label, problems) {
@@ -1614,9 +1646,11 @@ function styleHidesContainer(styleValue, label, problems) {
       problems.push(`${label} contains an unproven inline style declaration.`);
       return true;
     }
-    effective.set(property, value);
+    const previous = effective.get(property);
+    if (!previous?.important || value.important) effective.set(property, value);
   }
-  for (const [property, value] of effective) {
+  for (const [property, declaration] of effective) {
+    const { value } = declaration;
     if (
       (property === "display" && value === "none") ||
       (property === "visibility" && ["collapse", "hidden"].includes(value)) ||
@@ -1653,10 +1687,22 @@ function stripRawNonVisibleHtmlBlocks(source, label, problems) {
 }
 
 function inspectMalformedHtmlOpenings(source, label, problems) {
-  const recognized = new Set([...source.matchAll(htmlTagPattern())].map((candidate) => candidate.index));
-  for (const candidate of source.matchAll(/^(?<indent> {0,3})<\/?[A-Za-z]/gmu)) {
-    if (!recognized.has(candidate.index + candidate.groups.indent.length)) {
+  const opening = /^(?<indent> {0,3})<\/?[A-Za-z]/gmu;
+  const pattern = htmlTagPattern();
+  let candidate;
+  let recognized = 0;
+  while ((candidate = opening.exec(source)) !== null) {
+    const index = candidate.index + candidate.groups.indent.length;
+    if (commonmarkAutolinkAt(source, index)) continue;
+    pattern.lastIndex = index;
+    const tag = pattern.exec(source);
+    if (!tag || tag.index !== index) {
       problems.push(`${label} contains malformed or unsupported raw HTML syntax.`);
+      return;
+    }
+    recognized += 1;
+    if (recognized > MAX_VISIBLE_HTML_TAGS) {
+      problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
       return;
     }
   }
@@ -1688,6 +1734,7 @@ function matchingHiddenContainerEnd(source, opening, state, label, problems) {
   pattern.lastIndex = openingEnd;
   let depth = 1;
   for (const candidate of source.matchAll(pattern)) {
+    if (commonmarkAutolinkContent(candidate[0]) !== undefined) continue;
     state.tags += 1;
     if (state.tags > MAX_VISIBLE_HTML_TAGS) {
       problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
@@ -1711,26 +1758,10 @@ function visibleMarkdown(source, label, problems) {
     problems.push(`${label} must be bounded documentation text.`);
     return "";
   }
-  const uncommented = [];
-  let cursor = 0;
-  while (cursor < source.length) {
-    const commentStart = source.indexOf("<!--", cursor);
-    if (commentStart < 0) {
-      uncommented.push(source.slice(cursor));
-      break;
-    }
-    uncommented.push(source.slice(cursor, commentStart));
-    const commentEnd = source.indexOf("-->", commentStart + 4);
-    if (commentEnd < 0) {
-      problems.push(`${label} contains an unterminated HTML comment.`);
-      return uncommented.join("");
-    }
-    uncommented.push("\n".repeat(source.slice(commentStart, commentEnd + 3).split("\n").length - 1));
-    cursor = commentEnd + 3;
-  }
   const renderableLines = [];
   let fence;
-  for (const line of uncommented.join("").split("\n")) {
+  let htmlComment = false;
+  for (const line of source.split("\n")) {
     const fenceCandidate = /^ {0,3}(?<marker>`{3,}|~{3,})(?<info>.*)$/u.exec(line)?.groups;
     const fenceMarker =
       fenceCandidate && !(fenceCandidate.marker[0] === "`" && fenceCandidate.info.includes("`"))
@@ -1742,18 +1773,43 @@ function visibleMarkdown(source, label, problems) {
       renderableLines.push("");
       continue;
     }
-    if (fenceMarker) {
+    if (fenceMarker && !htmlComment) {
       fence = { character: fenceMarker[0], length: fenceMarker.length };
       renderableLines.push("");
       continue;
     }
-    if (/^(?: {4}|\t)/u.test(line)) {
+    const uncommented = [];
+    let cursor = 0;
+    while (cursor < line.length) {
+      if (htmlComment) {
+        const commentEnd = line.indexOf("-->", cursor);
+        if (commentEnd < 0) {
+          cursor = line.length;
+          continue;
+        }
+        htmlComment = false;
+        cursor = commentEnd + 3;
+        continue;
+      }
+      const commentStart = line.indexOf("<!--", cursor);
+      if (commentStart < 0) {
+        uncommented.push(line.slice(cursor));
+        cursor = line.length;
+        continue;
+      }
+      uncommented.push(line.slice(cursor, commentStart));
+      htmlComment = true;
+      cursor = commentStart + 4;
+    }
+    const visibleLine = uncommented.join("");
+    if (/^(?: {4}|\t)/u.test(visibleLine)) {
       renderableLines.push("");
       continue;
     }
-    renderableLines.push(line);
+    renderableLines.push(visibleLine);
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
+  if (htmlComment) problems.push(`${label} contains an unterminated HTML comment.`);
   const renderable = stripRawNonVisibleHtmlBlocks(renderableLines.join("\n"), label, problems);
   inspectMalformedHtmlOpenings(renderable, label, problems);
   const visible = [];
@@ -1762,6 +1818,7 @@ function visibleMarkdown(source, label, problems) {
   let retainedCursor = 0;
   let candidate;
   while ((candidate = pattern.exec(renderable)) !== null) {
+    if (commonmarkAutolinkContent(candidate[0]) !== undefined) continue;
     state.tags += 1;
     if (state.tags > MAX_VISIBLE_HTML_TAGS) {
       problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
@@ -1872,6 +1929,12 @@ function renderedInlineHtml(claim) {
   let cursor = 0;
   for (const candidate of claim.matchAll(pattern)) {
     rendered.push(claim.slice(cursor, candidate.index));
+    const autolink = commonmarkAutolinkContent(candidate[0]);
+    if (autolink !== undefined) {
+      rendered.push(autolink);
+      cursor = candidate.index + candidate[0].length;
+      continue;
+    }
     const tag = candidate.groups.tag.toLowerCase();
     if (!INLINE_HTML_TAGS.has(tag)) rendered.push(" ");
     cursor = candidate.index + candidate[0].length;
@@ -1937,6 +2000,7 @@ function extractMarkdownReferences(source, label, problems) {
     const reference = normalizedReferenceLabel(match.label);
     if (
       reference.length === 0 ||
+      [...match.label].length > MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS ||
       Buffer.byteLength(match.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
       Buffer.byteLength(body, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
       references.size >= MAX_MARKDOWN_REFERENCES ||
@@ -2101,6 +2165,14 @@ function renderedInlineMarkdown(claim, references) {
   let constructs = 0;
   let unsupported = false;
   while (cursor < claim.length) {
+    const autolink = commonmarkAutolinkAt(claim, cursor);
+    if (autolink) {
+      constructs += 1;
+      if (constructs > MAX_MARKDOWN_CONSTRUCTS) return { text: rendered.join(""), unsupported: true };
+      rendered.push(autolink.content);
+      cursor = autolink.end;
+      continue;
+    }
     if (
       claim[cursor] === "\\" &&
       cursor + 1 < claim.length &&
@@ -2271,30 +2343,36 @@ function hasTokenStem(tokens, stems) {
 function structuredOwnershipViolation(claim, references) {
   const rendered = renderedProseClaim(claim, references);
   const renderedProse = rendered.text;
-  const tokens = claimTokens(renderedProse);
+  const tokens = claimTokens(foldEvidenceConfusables(renderedProse));
   const products = evidenceProductCandidates(renderedProse);
   const has = (...values) => values.every((value) => tokens.has(value));
-  const ownsEvidence = hasTokenStem(tokens, [
-    "own",
-    "run",
-    "execut",
-    "qualif",
-    "certif",
-    "validat",
-    "cover",
-    "assign",
-    "attribut",
-    "responsib",
-    "attest",
-    "authorit",
-    "designat",
-    "demonstrat",
-    "establish",
-    "eviden",
-    "guarant",
-    "prov",
-    "support"
-  ]);
+  const ownsEvidence =
+    hasTokenStem(tokens, [
+      "own",
+      "run",
+      "execut",
+      "qualif",
+      "certif",
+      "validat",
+      "cover",
+      "assign",
+      "attribut",
+      "responsib",
+      "attest",
+      "authorit",
+      "designat",
+      "demonstrat",
+      "establish",
+      "eviden",
+      "guarant",
+      "govern",
+      "control",
+      "accountab",
+      "warrant",
+      "assur",
+      "prov",
+      "support"
+    ]) || has("in", "charge", "of");
   const cursorRestrictedTarget =
     tokens.has("jupyter") ||
     has("native", "r") ||

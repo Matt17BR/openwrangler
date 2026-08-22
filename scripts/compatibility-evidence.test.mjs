@@ -775,6 +775,44 @@ test("raw HTML visibility and final CSS cascade follow rendered browser semantic
     }),
     []
   );
+
+  for (const style of ["display:none;display:block !important", "display:none !important;display:block !important"]) {
+    assert.deepEqual(
+      inspect({
+        architectureSource: sources.architectureSource.replace(
+          architectureBlock,
+          `<section style="${style}">\n${architectureBlock}\n</section>`
+        )
+      }),
+      []
+    );
+  }
+  for (const style of ["display:none !important;display:block", "display:block !important;display:none !important"]) {
+    assert.match(
+      inspect({
+        architectureSource: sources.architectureSource.replace(
+          architectureBlock,
+          `<section style="${style}">\n${architectureBlock}\n</section>`
+        )
+      }).join(" "),
+      /top-level structured record/u
+    );
+  }
+});
+
+test("fenced code owns literal comment markers before HTML comment stripping", () => {
+  const adversary = [
+    "```text",
+    "<!-- this opener is literal fenced code",
+    "```",
+    "-->",
+    "Cursor governs released-Jupyter.",
+    ""
+  ].join("\n");
+  assert.match(
+    inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${adversary}` }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -912,6 +950,36 @@ test("reference definitions are linear and continuation titles remain metadata",
   assert.deepEqual(problems, []);
 });
 
+test("CommonMark autolinks remain visible and reference labels stop at 999 characters", () => {
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nSee <https://example.com/compatibility>.\n`
+    }),
+    []
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n<Cursor@example.com> governs released-Jupyter.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+
+  const maximumLabel = "a".repeat(999);
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nC[urs][${maximumLabel}]or governs released-Jupyter.\n\n[${maximumLabel}]: https://example.com/editor\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+  const oversizedLabel = "a".repeat(1_000);
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n[${oversizedLabel}]: https://example.com/editor\n`
+    }).join(" "),
+    /invalid, duplicate, or unbounded Markdown references/u
+  );
+});
+
 test("CommonMark literal and reference semantics retain evidence-sensitive text", () => {
   for (const outsideClaim of [
     "```invalid`info\nCursor owns every released-Jupyter, Native R, and installed-performance lane.\n```",
@@ -996,16 +1064,86 @@ test("HTML entities and reviewed Unicode confusables cannot forge Cursor", () =>
   );
 });
 
-test("authority and guarantee wording remains ownership-sensitive", () => {
-  for (const outsideClaim of [
-    "Cursor is the authority for released-Jupyter and Native R phases.",
-    "Cursor guarantees released-Jupyter and Native R qualification."
+test("decoded sigma and lowercase Cherokee product confusables are independently rejected", () => {
+  for (const productName of [
+    "&#x3A3;ursor",
+    "&#x3C2;ursor",
+    "&#x3C3;ursor",
+    "ꮯursor",
+    "Cursꭴr",
+    "Cuꭱsor",
+    "Cꮜrsor",
+    "Curꮪor"
   ]) {
     assert.match(
-      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
-      /compatibility-sensitive Cursor ownership/u
+      inspect({
+        ciDocumentationSource: `${sources.ciDocumentationSource}\n${productName} guarantees released-Jupyter.\n`
+      }).join(" "),
+      /exact canonical case|compatibility-sensitive Cursor ownership/u,
+      productName
     );
   }
+});
+
+test("authority and guarantee wording remains ownership-sensitive", () => {
+  const isolatedClaims = [
+    "Cursor is the authority for released-Jupyter.",
+    "Cursor guarantees released-Jupyter.",
+    "Cursor governs released-Jupyter.",
+    "Cursor controls released-Jupyter.",
+    "Cursor is in charge of released-Jupyter.",
+    "Cursor is accountable for released-Jupyter.",
+    "Cursor warrants released-Jupyter.",
+    "Cursor assures released-Jupyter.",
+    "Cursor gοverns released-Jupyter.",
+    "Cursor cοntrols released-Jupyter.",
+    "Cursor is in chargе of released-Jupyter.",
+    "Cursor is accοuntable for released-Jupyter.",
+    "Cursor wаrrants released-Jupyter.",
+    "Cursor assυres released-Jupyter."
+  ];
+  for (const outsideClaim of isolatedClaims) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u,
+      outsideClaim
+    );
+  }
+});
+
+test("visible HTML tag inspection rejects before retaining tag 4,097", () => {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--max-old-space-size=96",
+      "--input-type=module",
+      "--eval",
+      String.raw`
+        import { readFileSync } from "node:fs";
+        import { inspectCompatibilityEvidence } from "./scripts/compatibility-evidence.mjs";
+        const read = (path) => readFileSync(path, "utf8");
+        const inputs = {
+          authoritySource: read("fixtures/compatibility-evidence.json"),
+          packageSource: read("package.json"),
+          remoteWorkspaceContractSource: read("scripts/remote-workspace-contract.mjs"),
+          cursorAcquisitionSource: read("scripts/cursor-acquisition.mjs"),
+          candidateWorkflowSource: read(".github/workflows/candidate-acceptance.yml"),
+          ciWorkflowSource: read(".github/workflows/ci.yml"),
+          crossWorkflowSource: read(".github/workflows/cross-platform.yml"),
+          readmeSource: read("README.md"),
+          releasingSource: read("docs/releasing.md"),
+          architectureSource: read("docs/architecture.md"),
+          featureParitySource: read("docs/feature-parity.md"),
+          testingSource: read("docs/testing.md"),
+          ciDocumentationSource: "<span></span>".repeat(Math.floor(3_500_000 / 13))
+        };
+        const problems = inspectCompatibilityEvidence(inputs);
+        if (!problems.some((problem) => problem.includes("too many HTML tags"))) process.exit(2);
+      `
+    ],
+    { cwd: root, encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }
+  );
+  assert.equal(child.status, 0, child.stderr || child.stdout);
 });
 
 test("Native R source and installed-artifact ownership are independently exact", () => {
