@@ -1363,7 +1363,7 @@ export function DataGrid({
                       reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       gridClipboard.selectColumn(column);
                     }}
-                    onCopy={() => void gridClipboard.copyColumn(column)}
+                    onCopy={() => gridClipboard.copyColumn(column)}
                     onApplyProfileFilter={onApplyProfileFilter}
                     onBeginResize={beginColumnResize}
                     onResize={(width) =>
@@ -2256,7 +2256,7 @@ function ColumnHeader({
   onClearSortColumn(column: string): void;
   onActivate(): void;
   onSelect(): void;
-  onCopy(): void;
+  onCopy(): Promise<boolean>;
   onApplyProfileFilter?: (filter: ColumnFilter) => void;
   onBeginResize: BeginColumnResize;
   onResize(width: number): void;
@@ -2308,6 +2308,9 @@ function ColumnHeader({
     closeMenu();
     action();
   };
+  const runClipboardMenuAction = async () => {
+    if (await onCopy()) closeMenu();
+  };
   const activeSortLabel =
     activeSort &&
     `${activeSort.direction === "asc" ? "ascending" : "descending"}${
@@ -2356,7 +2359,7 @@ function ColumnHeader({
         if (event.target !== event.currentTarget) return;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
           event.preventDefault();
-          onCopy();
+          void onCopy();
           return;
         }
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -2381,7 +2384,7 @@ function ColumnHeader({
               aria-busy={clipboardAction.busy}
               disabled={clipboardAction.disabled}
               title={clipboardAction.title}
-              onClick={onCopy}
+              onClick={() => void onCopy()}
             />
             {activeSort && (
               <button
@@ -2423,7 +2426,7 @@ function ColumnHeader({
                   type="button"
                   disabled={clipboardAction.disabled}
                   title={clipboardAction.title}
-                  onClick={() => runMenuAction(onCopy)}
+                  onClick={() => void runClipboardMenuAction()}
                 >
                   {clipboardAction.menuLabel}
                 </button>

@@ -353,7 +353,7 @@ describe("packaged whole-column copy journey", () => {
     expect(closeAllEditors).toHaveBeenCalledTimes(1);
   });
 
-  it("bounds a never-settling owned clipboard write and starts session cleanup", async () => {
+  it("does not start cleanup until a timed-out owned clipboard write actually settles", async () => {
     const fixture = fakeUri("file:///workspace/fixtures/grid-column-copy.csv");
     const active = activeSession(fixture.toString());
     let session = false;
@@ -361,7 +361,11 @@ describe("packaged whole-column copy journey", () => {
     const closeAllEditors = vi.fn(async () => {
       session = false;
     });
-    const writeClipboardText = vi.fn(() => new Promise<void>(() => undefined));
+    const lateWrite = deferred<void>();
+    const writeClipboardText = vi.fn(async (text: string) => {
+      await lateWrite.promise;
+      clipboard = text;
+    });
     const journey = createPackagedGridColumnCopyJourney({
       closeAllEditors,
       connectToEditorWorkbench: async () => ({}) as never,
@@ -383,14 +387,25 @@ describe("packaged whole-column copy journey", () => {
       sessionTimeoutMs: 20
     });
 
-    await expect(
-      journey(
-        testingApi(active, () => session),
-        fixture as never
-      )
-    ).rejects.toThrow("Packaged whole-column clipboard write failed.");
+    const outcome = journey(
+      testingApi(active, () => session),
+      fixture as never
+    ).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ error, status: "rejected" as const })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const cleanupStartedBeforeWriteSettlement = closeAllEditors.mock.calls.length > 0;
+    lateWrite.resolve();
+    const result = await outcome;
+    expect(result.status).toBe("rejected");
+    expect(result.status === "rejected" ? result.error : undefined).toEqual(
+      new Error("Packaged whole-column clipboard write failed.")
+    );
+    expect(cleanupStartedBeforeWriteSettlement).toBe(false);
     expect(writeClipboardText).toHaveBeenCalledTimes(1);
     expect(closeAllEditors).toHaveBeenCalledTimes(1);
+    expect(clipboard).toBe("open-wrangler-grid-copy-sentinel");
   });
 
   it("starts editor and session cleanup before a never-settling viewport restore finishes", async () => {
@@ -503,6 +518,16 @@ describe("packaged whole-column copy journey", () => {
 
 function fakeUri(value: string): { toString(): string } {
   return { toString: () => value };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function activeSession(sourceUri: string) {
