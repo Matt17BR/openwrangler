@@ -11,6 +11,7 @@ export const WEBVIEW_STYLE_IMPORTS = [
   "workspace.css",
   "filters.css",
   "grid.css",
+  "grid-column-controls.css",
   "grid-insights.css",
   "summary.css",
   "operations.css",
