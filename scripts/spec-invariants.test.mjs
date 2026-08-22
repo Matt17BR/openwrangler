@@ -2230,6 +2230,50 @@ test("cleaning-history structural owners survive modifiers, extra nouns, and fin
   }
 });
 
+test("cleaning-history relative clauses and finite attributions bind their structural owners", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "A report that committed steps say other committed steps cannot be edited.",
+    "A report about committed steps that another report says every committed step cannot be edited.",
+    "Committed steps, a report reports, cannot be edited.",
+    "Committed steps, a report supports, cannot be edited.",
+    "Committed steps—a report reports—cannot be edited.",
+    "Committed steps—a report supports—cannot be edited."
+  ];
+  const truthful = [
+    "Committed steps that a report says another report cannot be edited.",
+    "Committed steps about a report that other committed steps say every report cannot be edited.",
+    "A report, committed steps report, cannot be edited.",
+    "A report, committed steps support, cannot be edited.",
+    "A report—committed steps report—cannot be edited.",
+    "A report—committed steps support—cannot be edited."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history phrasal rollback keeps bounded cleaning ownership across modifier positions", () => {
   const model = cleaningHistoryModel();
   const contradictions = [
@@ -2258,6 +2302,47 @@ test("cleaning-history phrasal rollback keeps bounded cleaning ownership across 
     "Users can roll the report carefully back.",
     "The report can roll, carefully, back through pages.",
     "The report can roll back slowly through pages."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history phrasal rollback accepts bounded structural modifier phrases", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Users can roll often back every committed step.",
+    "Users can roll very quickly back every committed step.",
+    "Users can roll matter-of-factly back every committed step."
+  ];
+  const truthful = [
+    "Users can roll often back only the latest committed step.",
+    "Users can roll very quickly back only the latest committed step.",
+    "Users can roll matter-of-factly back only the latest committed step.",
+    "Users can roll the report often back.",
+    "Users can roll the report very quickly back.",
+    "Users can roll the report matter-of-factly back."
   ];
 
   for (const example of contradictions) {
