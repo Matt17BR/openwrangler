@@ -313,6 +313,86 @@ test("runner commands and success ownership must be executable and active", () =
   }
 });
 
+test("required owners accept only absent or literal-false continue-on-error", () => {
+  const literalFalseOwners = sources.ciWorkflowSource
+    .replace("  r-contract-kernel:\n", "  r-contract-kernel:\n    continue-on-error: false\n")
+    .replace(
+      "      - run: npm run test:r-contract -- --shard kernel-agent\n",
+      "      - continue-on-error: false\n        run: npm run test:r-contract -- --shard kernel-agent\n"
+    );
+  assert.deepEqual(inspect({ ciWorkflowSource: literalFalseOwners }), []);
+
+  for (const continueOnError of ["${{ false }}", '"false"', '"true"', "1"]) {
+    const jobOwner = sources.ciWorkflowSource.replace(
+      "  r-contract-kernel:\n",
+      `  r-contract-kernel:\n    continue-on-error: ${continueOnError}\n`
+    );
+    assert.match(inspect({ ciWorkflowSource: jobOwner }).join(" "), /enabled owners/u);
+
+    const stepOwner = sources.crossWorkflowSource.replace(
+      "      - run: npm run test:r-contract\n",
+      `      - continue-on-error: ${continueOnError}\n        run: npm run test:r-contract\n`
+    );
+    assert.match(inspect({ crossWorkflowSource: stepOwner }).join(" "), /enabled owners/u);
+  }
+
+  const literalFalseAcceptance = sources.candidateWorkflowSource
+    .replace("  acceptance:\n", "  acceptance:\n    continue-on-error: false\n")
+    .replace(
+      "      - name: Require every candidate acceptance result\n",
+      "      - name: Require every candidate acceptance result\n        continue-on-error: false\n"
+    );
+  assert.deepEqual(inspect({ candidateWorkflowSource: literalFalseAcceptance }), []);
+  for (const continueOnError of ["${{ false }}", '"false"', '"true"']) {
+    const acceptanceOwner = sources.candidateWorkflowSource.replace(
+      "      - name: Require every candidate acceptance result\n",
+      `      - name: Require every candidate acceptance result\n        continue-on-error: ${continueOnError}\n`
+    );
+    assert.match(inspect({ candidateWorkflowSource: acceptanceOwner }).join(" "), /qualification fan-in/u);
+  }
+
+  for (const continueOnError of ["${{ true }}", '"true"']) {
+    const deferredRunner = sources.candidateWorkflowSource.replace(
+      "        continue-on-error: true\n",
+      `        continue-on-error: ${continueOnError}\n`
+    );
+    assert.match(inspect({ candidateWorkflowSource: deferredRunner }).join(" "), /executable success owner/u);
+  }
+});
+
+test("success fan-ins reject inherited and direct environment additions", () => {
+  for (const candidateWorkflowSource of [
+    sources.candidateWorkflowSource.replace(
+      "          CONTRACT_RESULT: ${{ needs.contract.result }}\n",
+      "          CONTRACT_RESULT: ${{ needs.contract.result }}\n          BASH_ENV: /tmp/replace-owner\n"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "  acceptance:\n",
+      "  acceptance:\n    env:\n      ENV: /tmp/replace-owner\n"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "name: Candidate acceptance\n",
+      "name: Candidate acceptance\nenv:\n  SHELL_STARTUP: /tmp/replace-owner\n"
+    ),
+    sources.candidateWorkflowSource.replace(
+      "          CORE_OUTCOME: ${{ steps.packaged_editor_r_core.outcome }}\n",
+      "          CORE_OUTCOME: ${{ steps.packaged_editor_r_core.outcome }}\n          BASH_ENV: /tmp/replace-owner\n"
+    )
+  ]) {
+    assert.match(inspect({ candidateWorkflowSource }).join(" "), /qualification fan-in|executable success owner/u);
+  }
+
+  for (const ciWorkflowSource of [
+    sources.ciWorkflowSource.replace(
+      "          R_CONTRACT_REQUIRED: ${{ needs.classify.outputs.r_contract_required }}\n",
+      "          R_CONTRACT_REQUIRED: ${{ needs.classify.outputs.r_contract_required }}\n          BASH_ENV: /tmp/replace-owner\n"
+    ),
+    sources.ciWorkflowSource.replace("  validate:\n", "  validate:\n    env:\n      ENV: /tmp/replace-owner\n")
+  ]) {
+    assert.match(inspect({ ciWorkflowSource }).join(" "), /required CI success fan-in/u);
+  }
+});
+
 test("every workflow owner retains its own effective editor-version authority", () => {
   const pinnedExtensionHost = sources.ciWorkflowSource.replace(
     "          VSCODE_TEST_VERSION: stable",
@@ -465,13 +545,25 @@ test("canonical ownership records must remain visible top-level Markdown", () =>
   for (const hiddenBlock of [
     `<section hidden>\n<section>decoy</section>\n${architectureBlock}\n</section>`,
     `<section\n hidden>\n${architectureBlock}\n</section>`,
-    `<section style=display:none>\n${architectureBlock}\n</section>`
+    `<section style=display:none>\n${architectureBlock}\n</section>`,
+    `<section style=" DISPLAY : none !IMPORTANT ">\n${architectureBlock}\n</section>`,
+    `<section style='color: red; visibility : "hidden" ! important'>\n${architectureBlock}\n</section>`
   ]) {
     assert.match(
       inspect({ architectureSource: sources.architectureSource.replace(architectureBlock, hiddenBlock) }).join(" "),
       /top-level structured record/u
     );
   }
+
+  assert.deepEqual(
+    inspect({
+      architectureSource: sources.architectureSource.replace(
+        architectureBlock,
+        `<section style="display: block !important">\n${architectureBlock}\n</section>`
+      )
+    }),
+    []
+  );
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -521,9 +613,28 @@ test("named product and editor claims require canonical case", () => {
     );
   }
 
+  for (const outsideClaim of [
+    "C<strong>u</strong>rsor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "C<span>u</span>rsor owns every released-Jupyter, Native R, and installed-performance lane.",
+    "open&NoBreak;wrangler certifies the editor compatibility matrix.",
+    "open&ZeroWidthSpace;wrangler certifies the editor compatibility matrix.",
+    "open&InvisibleTimes;wrangler certifies the editor compatibility matrix."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /exact canonical case|compatibility-sensitive Cursor ownership/u
+    );
+  }
+
   assert.deepEqual(
     inspect({
       ciDocumentationSource: `${sources.ciDocumentationSource}\nThe literal \`cursor\` supports no installed performance mode.\n`
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nThe literal <code>cursor owns installed performance</code> is not a product claim.\nSee [the source](https://example.com/cursor-owns-native-r).\n`
     }),
     []
   );
@@ -634,6 +745,22 @@ test("near-cap duplicate workflow jobs fail semantically with bounded diagnostic
   assert.ok(diagnostics.length <= 64, `retained ${diagnostics.length} diagnostics`);
   assert.ok(Buffer.byteLength(diagnostics.join("\n"), "utf8") <= 16 * 1024);
   assert.match(diagnostics.join(" "), /valid semantic YAML/u);
+});
+
+test("malformed or missing CI and Cross workflow structure returns bounded diagnostics", () => {
+  for (const changes of [
+    { ciWorkflowSource: "jobs: [" },
+    { ciWorkflowSource: "{}\n" },
+    { crossWorkflowSource: "jobs: [" },
+    { crossWorkflowSource: "{}\n" }
+  ]) {
+    assert.doesNotThrow(() => {
+      const diagnostics = inspect(changes);
+      assert.ok(diagnostics.length <= 64);
+      assert.ok(Buffer.byteLength(diagnostics.join("\n"), "utf8") <= 16 * 1024);
+      assert.match(diagnostics.join(" "), /valid semantic YAML|bounded jobs mapping/u);
+    });
+  }
 });
 
 test("workflow ownership and Native R release seams fail closed on drift", () => {

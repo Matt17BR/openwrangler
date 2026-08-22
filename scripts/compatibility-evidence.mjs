@@ -41,6 +41,9 @@ const MAX_SHELL_TOKENS = 2_048;
 const MAX_SHELL_TOKEN_BYTES = 4 * 1024;
 const MAX_SHELL_COMMANDS = 512;
 const MAX_VISIBLE_HTML_TAGS = 4_096;
+const MAX_INLINE_HTML_ATTRIBUTE_BYTES = 16 * 1024;
+const MAX_CSS_DECLARATIONS = 64;
+const MAX_CSS_DECLARATION_BYTES = 2 * 1024;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const NON_VISIBLE_HTML_CONTAINERS = new Set([
@@ -50,6 +53,7 @@ const NON_VISIBLE_HTML_CONTAINERS = new Set([
   "noscript",
   "object",
   "pre",
+  "code",
   "script",
   "style",
   "template",
@@ -71,6 +75,31 @@ const VOID_HTML_TAGS = new Set([
   "source",
   "track",
   "wbr"
+]);
+const INLINE_HTML_TAGS = new Set([
+  "a",
+  "abbr",
+  "b",
+  "bdi",
+  "bdo",
+  "cite",
+  "del",
+  "em",
+  "i",
+  "ins",
+  "kbd",
+  "mark",
+  "q",
+  "s",
+  "samp",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "time",
+  "u",
+  "var"
 ]);
 const EXPECTED_EDITOR_OWNERS = new Map([
   [
@@ -133,6 +162,42 @@ const EXPECTED_NATIVE_R_SOURCE_COMMANDS = new Map([
   ["ci.yml#r-contract-kernel", "npm run test:r-contract -- --shard kernel-agent"],
   ["ci.yml#r-contract-protocol", "npm run test:r-contract:protocol"],
   ["cross-platform.yml#r-4-4-scheduled-qualification", "npm run test:r-contract"]
+]);
+const EXPECTED_CI_RESULT_FAN_IN = Object.freeze({
+  R_CONTRACT_REQUIRED: "${{ needs.classify.outputs.r_contract_required }}",
+  CANONICAL_EDITOR_REQUIRED: "${{ needs.classify.outputs.canonical_editor_required }}",
+  VISUAL_ACCESSIBILITY_REQUIRED: "${{ needs.classify.outputs.visual_accessibility_required }}",
+  WINDOWS_UNIQUE_REQUIRED: "${{ needs.classify.outputs.windows_unique_required }}",
+  CLASSIFY_RESULT: "${{ needs.classify.result }}",
+  INVARIANT_CORE_RESULT: "${{ needs.invariant-core.result }}",
+  R_CONTRACT_KERNEL_RESULT: "${{ needs.r-contract-kernel.result }}",
+  R_CONTRACT_PROTOCOL_RESULT: "${{ needs.r-contract-protocol.result }}",
+  CANONICAL_EDITOR_RESULT: "${{ needs.canonical-editor.result }}",
+  VISUAL_ACCESSIBILITY_RESULT: "${{ needs.visual-accessibility.result }}",
+  WINDOWS_UNIQUE_RESULT: "${{ needs.windows-unique.result }}"
+});
+const EXPECTED_RUNNER_FAN_IN_ENVIRONMENTS = new Map([
+  [
+    "r_platform",
+    Object.freeze({
+      CORE_OUTCOME: "${{ steps.packaged_editor_r_core.outcome }}",
+      NATIVE_OUTCOME: "${{ steps.packaged_editor_r_native.outcome }}",
+      RESTART_OUTCOME: "${{ steps.packaged_editor_r_restart.outcome }}"
+    })
+  ],
+  [
+    "r_local",
+    Object.freeze({
+      SHARD: "${{ matrix.shard }}",
+      CORE_OUTCOME: "${{ steps.packaged_editor_r_core.outcome }}",
+      RESTART_OUTCOME: "${{ steps.packaged_editor_r_restart.outcome }}",
+      INTERACTIVE_OUTCOME: "${{ steps.packaged_editor_r_interactive.outcome }}",
+      LITERATE_OUTCOME: "${{ steps.packaged_editor_r_literate.outcome }}",
+      NATIVE_OUTCOME: "${{ steps.packaged_editor_r_native.outcome }}",
+      VALUES_OUTCOME: "${{ steps.packaged_editor_r_values.outcome }}",
+      CATEGORICAL_OUTCOME: "${{ steps.packaged_editor_r_categorical.outcome }}"
+    })
+  ]
 ]);
 const EXPECTED_RUNNER_CONDITIONS = new Map([
   ["platform#packaged_editor", undefined],
@@ -519,6 +584,23 @@ function exactKeys(value, expected) {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
+function continueOnErrorIsDisabled(owner) {
+  return record(owner) && (!Object.hasOwn(owner, "continue-on-error") || owner["continue-on-error"] === false);
+}
+
+function emptyEnvironment(environment) {
+  return environment === undefined || exactKeys(environment, []);
+}
+
+function exactEffectiveFanInEnvironment(workflow, job, step, expected) {
+  const expectedKeys = Object.keys(expected);
+  const stepEnvironmentIsExact =
+    expectedKeys.length === 0
+      ? emptyEnvironment(step?.env)
+      : exactKeys(step?.env, expectedKeys) && Object.entries(expected).every(([key, value]) => step.env[key] === value);
+  return emptyEnvironment(workflow?.env) && emptyEnvironment(job?.env) && stepEnvironmentIsExact;
+}
+
 function sameArray(actual, expected) {
   return Array.isArray(actual) && JSON.stringify(actual) === JSON.stringify(expected);
 }
@@ -837,6 +919,7 @@ function ownsRVersion(job, version) {
 }
 
 function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, problems) {
+  if (!ciWorkflow || !crossWorkflow) return;
   const ciJobs = ciWorkflow.jobs;
   const crossJobs = crossWorkflow.jobs;
   const owners = new Map([
@@ -847,14 +930,14 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
   const ownersReachable = [...owners].every(
     ([owner, job]) =>
       record(job) &&
-      job["continue-on-error"] !== true &&
+      continueOnErrorIsDisabled(job) &&
       normalizedCondition(job.if) === EXPECTED_NATIVE_R_SOURCE_JOB_CONDITIONS.get(owner) &&
       Array.isArray(job.steps) &&
-      job.steps.every((step) => step["continue-on-error"] !== true) &&
+      job.steps.every(continueOnErrorIsDisabled) &&
       job.steps.some(
         (step) =>
           normalizedCondition(step.if) === undefined &&
-          step["continue-on-error"] !== true &&
+          continueOnErrorIsDisabled(step) &&
           step.run === EXPECTED_NATIVE_R_SOURCE_COMMANDS.get(owner)
       )
   );
@@ -868,22 +951,16 @@ function inspectNativeRSourceOwnerReachability(ciWorkflow, crossWorkflow, proble
   const resultOwner = validate?.steps?.find(
     (step) => normalizedCondition(step.if) === undefined && step.run === "node scripts/require-ci-results.mjs"
   );
-  const requiredResults = {
-    R_CONTRACT_REQUIRED: "${{ needs.classify.outputs.r_contract_required }}",
-    R_CONTRACT_KERNEL_RESULT: "${{ needs.r-contract-kernel.result }}",
-    R_CONTRACT_PROTOCOL_RESULT: "${{ needs.r-contract-protocol.result }}"
-  };
   const hasRequiredFanIn =
     record(validate) &&
-    validate["continue-on-error"] !== true &&
+    continueOnErrorIsDisabled(validate) &&
     normalizedCondition(validate.if) === "${{ always() && github.event_name == 'pull_request' }}" &&
     Array.isArray(validate.needs) &&
     ["classify", "r-contract-kernel", "r-contract-protocol"].every((owner) => validate.needs.includes(owner)) &&
     Array.isArray(validate.steps) &&
-    validate.steps.every((step) => step["continue-on-error"] !== true) &&
-    resultOwner?.["continue-on-error"] !== true &&
-    record(resultOwner?.env) &&
-    Object.entries(requiredResults).every(([key, value]) => resultOwner.env[key] === value);
+    validate.steps.every(continueOnErrorIsDisabled) &&
+    continueOnErrorIsDisabled(resultOwner) &&
+    exactEffectiveFanInEnvironment(ciWorkflow, validate, resultOwner, EXPECTED_CI_RESULT_FAN_IN);
   if (!ownersReachable || !crossOwnerIsTriggered || !hasRequiredFanIn) {
     problems.push("Native R source ownership must retain enabled owners and the required CI success fan-in.");
   }
@@ -987,16 +1064,6 @@ function exactSuccessFanIn(step, environmentKeys) {
 }
 
 function exactLocalRShardSuccessFanIn(step) {
-  const expectedEnvironment = {
-    SHARD: "${{ matrix.shard }}",
-    CORE_OUTCOME: "${{ steps.packaged_editor_r_core.outcome }}",
-    RESTART_OUTCOME: "${{ steps.packaged_editor_r_restart.outcome }}",
-    INTERACTIVE_OUTCOME: "${{ steps.packaged_editor_r_interactive.outcome }}",
-    LITERATE_OUTCOME: "${{ steps.packaged_editor_r_literate.outcome }}",
-    NATIVE_OUTCOME: "${{ steps.packaged_editor_r_native.outcome }}",
-    VALUES_OUTCOME: "${{ steps.packaged_editor_r_values.outcome }}",
-    CATEGORICAL_OUTCOME: "${{ steps.packaged_editor_r_categorical.outcome }}"
-  };
   const expectedRun = `set -euo pipefail
 case "$SHARD" in
   lifecycle)
@@ -1012,38 +1079,33 @@ case "$SHARD" in
     ;;
   *) exit 1 ;;
 esac`;
-  return (
-    exactKeys(step.env, Object.keys(expectedEnvironment)) &&
-    Object.entries(expectedEnvironment).every(([key, value]) => step.env[key] === value) &&
-    step.run?.trim() === expectedRun
-  );
+  return step.run?.trim() === expectedRun;
 }
 
-function runnerOutcomeIsOwned(job, runnerId) {
+function runnerOutcomeIsOwned(workflow, jobId, job, runnerId) {
   return (job.steps ?? []).some((step) => {
     const condition = normalizedCondition(step.if);
     const commandAnalysis = executableShellCommands(step.run);
     const exactFailureExit =
       condition === `\${{ always() && steps.${runnerId}.outcome == 'failure' }}` &&
-      step["continue-on-error"] !== true &&
+      continueOnErrorIsDisabled(step) &&
+      exactEffectiveFanInEnvironment(workflow, job, step, {}) &&
       !commandAnalysis.error &&
       commandAnalysis.assignments.length === 0 &&
       commandAnalysis.controls.length === 0 &&
       commandAnalysis.commands.length === 1 &&
       sameArray(commandAnalysis.commands[0].tokens, ["exit", "1"]);
-    const outcomeEnvironment = record(step.env)
-      ? Object.entries(step.env).filter(([, value]) => /^\$\{\{ steps\.[a-z0-9_-]+\.outcome \}\}$/u.test(value))
-      : [];
+    const expectedEnvironment = EXPECTED_RUNNER_FAN_IN_ENVIRONMENTS.get(jobId);
     return (
       exactFailureExit ||
       (normalizedCondition(step.if) === "${{ always() }}" &&
-        step["continue-on-error"] !== true &&
-        outcomeEnvironment.some(([, value]) => value === `\${{ steps.${runnerId}.outcome }}`) &&
-        (exactSuccessFanIn(
-          step,
-          outcomeEnvironment.map(([key]) => key)
-        ) ||
-          exactLocalRShardSuccessFanIn(step)))
+        continueOnErrorIsDisabled(step) &&
+        expectedEnvironment !== undefined &&
+        Object.values(expectedEnvironment).includes(`\${{ steps.${runnerId}.outcome }}`) &&
+        exactEffectiveFanInEnvironment(workflow, job, step, expectedEnvironment) &&
+        (jobId === "r_local"
+          ? exactLocalRShardSuccessFanIn(step)
+          : exactSuccessFanIn(step, Object.keys(expectedEnvironment))))
     );
   });
 }
@@ -1054,7 +1116,7 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
     const job = workflow.jobs[jobId];
     if (!job) continue;
     const owner = `${workflowName}#${jobId}`;
-    if (normalizedCondition(job.if) !== EXPECTED_OWNER_JOB_CONDITIONS.get(owner)) {
+    if (!continueOnErrorIsDisabled(job) || normalizedCondition(job.if) !== EXPECTED_OWNER_JOB_CONDITIONS.get(owner)) {
       problems.push(`Compatibility owner ${owner} must retain its exact effective condition.`);
     }
     for (const step of runnerSteps(job)) {
@@ -1067,17 +1129,19 @@ function inspectOwnerConditions(workflow, workflowName, jobIds, problems) {
         problems.push(`Compatibility runner ${owner} must retain its exact effective condition.`);
       }
       if (workflowName === "candidate-acceptance.yml") {
-        if (step["continue-on-error"] !== true || !runnerOutcomeIsOwned(job, step.id)) {
+        if (step["continue-on-error"] !== true || !runnerOutcomeIsOwned(workflow, jobId, job, step.id)) {
           problems.push(`Compatibility runner ${owner} must retain an executable success owner.`);
         }
-      } else if (step["continue-on-error"] === true) {
+      } else if (!continueOnErrorIsDisabled(step)) {
         problems.push(`Compatibility runner ${owner} may not suppress its result.`);
       }
     }
   }
 }
 
-function inspectSemanticCandidateClaims(jobs, problems) {
+function inspectSemanticCandidateClaims(workflow, problems) {
+  if (!workflow) return;
+  const jobs = workflow.jobs;
   const platformRunners = runnerSteps(jobs.platform);
   if (
     !sameArray(jobs.platform?.strategy?.matrix?.include, [
@@ -1149,9 +1213,14 @@ function inspectSemanticCandidateClaims(jobs, problems) {
     normalizedCondition(jobs.acceptance?.if) !== "${{ always() }}" ||
     !sameArray(jobs.acceptance?.needs, expectedNeeds) ||
     jobs.acceptance?.steps?.length !== 1 ||
-    acceptanceStep?.["continue-on-error"] === true ||
-    !record(acceptanceStep?.env) ||
-    Object.entries(acceptanceResults).some(([key, job]) => acceptanceStep.env[key] !== `\${{ needs.${job}.result }}`) ||
+    !continueOnErrorIsDisabled(jobs.acceptance) ||
+    !continueOnErrorIsDisabled(acceptanceStep) ||
+    !exactEffectiveFanInEnvironment(
+      workflow,
+      jobs.acceptance,
+      acceptanceStep,
+      Object.fromEntries(Object.entries(acceptanceResults).map(([key, job]) => [key, `\${{ needs.${job}.result }}`]))
+    ) ||
     !exactSuccessFanIn(acceptanceStep, Object.keys(acceptanceResults))
   ) {
     problems.push("complete VS Code qualification fan-in must retain every exact semantic owner result.");
@@ -1200,14 +1269,59 @@ function htmlTagPattern() {
   return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
 }
 
-function hiddenHtmlContainer(tag, attributes) {
+function cssDeclarationValue(value) {
+  let normalized = value
+    .trim()
+    .replace(/\s*!\s*important\s*$/iu, "")
+    .trim();
+  if (
+    normalized.length >= 2 &&
+    ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized.toLowerCase();
+}
+
+function styleHidesContainer(styleValue, label, problems) {
+  if (Buffer.byteLength(styleValue, "utf8") > MAX_INLINE_HTML_ATTRIBUTE_BYTES) {
+    problems.push(`${label} contains an oversized inline style declaration.`);
+    return true;
+  }
+  const declarations = styleValue.split(";");
+  if (declarations.length > MAX_CSS_DECLARATIONS) {
+    problems.push(`${label} contains too many inline style declarations.`);
+    return true;
+  }
+  for (const declaration of declarations) {
+    if (Buffer.byteLength(declaration, "utf8") > MAX_CSS_DECLARATION_BYTES) {
+      problems.push(`${label} contains an oversized inline style declaration.`);
+      return true;
+    }
+    const separator = declaration.indexOf(":");
+    if (separator < 0) continue;
+    const property = declaration.slice(0, separator).trim().toLowerCase();
+    const value = cssDeclarationValue(declaration.slice(separator + 1));
+    if ((property === "display" && value === "none") || (property === "visibility" && value === "hidden")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hiddenHtmlContainer(tag, attributes, label, problems) {
+  if (Buffer.byteLength(attributes, "utf8") > MAX_INLINE_HTML_ATTRIBUTE_BYTES) {
+    problems.push(`${label} contains an oversized HTML attribute list.`);
+    return true;
+  }
   const style = /(?:^|\s)style\s*=\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)'|(?<bare>[^\s]+))/iu.exec(attributes);
   const styleValue = style?.groups?.double ?? style?.groups?.single ?? style?.groups?.bare ?? "";
   return (
     NON_VISIBLE_HTML_CONTAINERS.has(tag) ||
     /(?:^|\s)hidden(?:\s|=|$)/iu.test(attributes) ||
     /(?:^|\s)aria-hidden\s*=\s*(?:"true"|'true'|true)(?=\s|$)/iu.test(attributes) ||
-    /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)(?:\s*;|\s*$)/iu.test(styleValue)
+    styleHidesContainer(styleValue, label, problems)
   );
 }
 
@@ -1297,7 +1411,7 @@ function visibleMarkdown(source, label, problems) {
     }
     if (
       candidate.groups.closing ||
-      !hiddenHtmlContainer(candidate.groups.tag.toLowerCase(), candidate.groups.attributes)
+      !hiddenHtmlContainer(candidate.groups.tag.toLowerCase(), candidate.groups.attributes, label, problems)
     ) {
       continue;
     }
@@ -1385,12 +1499,25 @@ function decodeRenderedEntities(claim) {
     ["apos", "'"],
     ["gt", ">"],
     ["lt", "<"],
+    ["lrm", "\u200e"],
+    ["newline", "\n"],
     ["nbsp", " "],
-    ["quot", '"']
+    ["nobreak", "\u2060"],
+    ["negativemediumspace", "\u200b"],
+    ["negativethickspace", "\u200b"],
+    ["negativethinspace", "\u200b"],
+    ["negativeverythinspace", "\u200b"],
+    ["quot", '"'],
+    ["rlm", "\u200f"],
+    ["shy", "\u00ad"],
+    ["tab", "\t"],
+    ["zerowidthspace", "\u200b"],
+    ["zwj", "\u200d"],
+    ["zwnj", "\u200c"]
   ]);
   return claim.replace(/&(?:#(?<decimal>[0-9]+)|#x(?<hex>[0-9a-f]+)|(?<named>[a-z]+));/giu, (entity, ...args) => {
     const groups = args.at(-1);
-    if (groups.named) return named.get(groups.named.toLowerCase()) ?? entity;
+    if (groups.named) return named.get(groups.named.toLowerCase()) ?? "";
     const codePoint = Number.parseInt(groups.hex ?? groups.decimal, groups.hex ? 16 : 10);
     return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
       ? String.fromCodePoint(codePoint)
@@ -1398,9 +1525,24 @@ function decodeRenderedEntities(claim) {
   });
 }
 
+function renderedInlineHtml(claim) {
+  const rendered = [];
+  const pattern = htmlTagPattern();
+  let cursor = 0;
+  for (const candidate of claim.matchAll(pattern)) {
+    rendered.push(claim.slice(cursor, candidate.index));
+    const tag = candidate.groups.tag.toLowerCase();
+    if (!INLINE_HTML_TAGS.has(tag)) rendered.push(" ");
+    cursor = candidate.index + candidate[0].length;
+  }
+  rendered.push(claim.slice(cursor));
+  return rendered.join("");
+}
+
 function renderedProseClaim(claim) {
-  return decodeRenderedEntities(claim.replace(/(`+)[\s\S]*?\1/gu, " "))
+  return decodeRenderedEntities(renderedInlineHtml(claim.replace(/(`+)[\s\S]*?\1/gu, " ")))
     .replace(/[*_~]+/gu, "")
+    .replace(/[\u00ad\u200b-\u200f\u2060-\u2064\u206a-\u206f\ufeff]/gu, "")
     .replace(/\s+/gu, " ")
     .trim();
 }
@@ -1921,7 +2063,7 @@ export function inspectCompatibilityEvidence(inputs) {
   );
   inspectOwnerConditions(candidateWorkflow, "candidate-acceptance.yml", [...candidateEditorVersions.keys()], problems);
   inspectOwnerConditions(ciWorkflow, "ci.yml", ["canonical-editor"], problems);
-  inspectSemanticCandidateClaims(candidateJobs, problems);
+  inspectSemanticCandidateClaims(candidateWorkflow, problems);
   if (
     !sameArray(authority.nativeR.versions, [
       { version: "4.4.3", platforms: ["linux"] },
