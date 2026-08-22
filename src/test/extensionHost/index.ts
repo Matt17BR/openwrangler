@@ -10829,13 +10829,13 @@ function boundedCodePreviewWorkbenchFrames(workbench: Page, description: string)
 }
 
 function createBoundedCodePreviewWorkbenchPage(workbench: Page, description: string): Page {
-  return new Proxy(workbench, {
-    get(target, property) {
-      if (property === "frames") return () => boundedCodePreviewWorkbenchFrames(target, description);
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  });
+  return {
+    context: () => workbench.context(),
+    frames: () => boundedCodePreviewWorkbenchFrames(workbench, description),
+    isClosed: () => workbench.isClosed(),
+    mainFrame: () => workbench.mainFrame(),
+    waitForTimeout: (timeout: number) => workbench.waitForTimeout(timeout)
+  } as unknown as Page;
 }
 
 async function captureSoleCodePreviewPanelFrameElement(
