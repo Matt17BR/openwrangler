@@ -1480,6 +1480,63 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy();
   });
 
+  it("does not let an old menu copy completion close a reopened header menu", async () => {
+    const delayedWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedWrite.promise);
+    renderGrid();
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+
+    const cityHeader = screen.getByRole("columnheader", { name: /^city(?:,|$)/u });
+    const details = cityHeader.querySelector<HTMLDetailsElement>("details.columnMenu");
+    const summary = details?.querySelector<HTMLElement>("summary");
+    expect(details).not.toBeNull();
+    expect(summary).not.toBeNull();
+    fireEvent.click(summary!);
+    details!.open = true;
+    fireEvent(details!, new Event("toggle", { bubbles: true }));
+    fireEvent.click(within(details!).getByRole("button", { name: "Copy column (header excluded)" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("Milan\nParis"));
+
+    details!.open = false;
+    fireEvent(details!, new Event("toggle", { bubbles: true }));
+    details!.open = true;
+    fireEvent(details!, new Event("toggle", { bubbles: true }));
+    act(() => summary!.focus());
+
+    delayedWrite.resolve();
+    await waitFor(() => expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy());
+    expect(details).toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+    expect(within(details!).getByRole("button", { name: "Copy column (header excluded)" })).toBeEnabled();
+  });
+
+  it("keeps an initiated header operation pending through the actual adapter settlement", async () => {
+    vi.useFakeTimers();
+    const delayedWrite = deferred<void>();
+    try {
+      writeText.mockImplementationOnce(() => delayedWrite.promise);
+      renderGrid();
+      const cityHeader = screen.getByRole("columnheader", { name: "city" });
+      fireEvent.click(within(cityHeader).getByRole("button", { name: "Copy column city; header excluded" }));
+      dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+      await act(async () => Promise.resolve());
+
+      expect(writeText).toHaveBeenCalledExactlyOnceWith("Milan\nParis");
+      expect(cityHeader).toHaveAttribute("data-clipboard-operation-generation", "1");
+      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "true");
+
+      await act(async () => vi.advanceTimersByTimeAsync(10_001));
+      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "true");
+
+      await act(async () => delayedWrite.resolve());
+      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "false");
+    } finally {
+      delayedWrite.resolve();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       name: "inspection",

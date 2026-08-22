@@ -2262,6 +2262,18 @@ function ColumnHeader({
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
+  const menuGenerationRef = useRef(0);
+  const menuOperationGenerationRef = useRef(0);
+  const clipboardOperationGenerationRef = useRef(0);
+  const pendingClipboardOperationCountRef = useRef(0);
+  const mountedRef = useRef(true);
+  const [clipboardOperationState, setClipboardOperationState] = useState({ generation: 0, pending: 0 });
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const filterDisabledDescriptionId = `column-filter-disabled-${column.position}`;
   const sortDisabledDescriptionId = `column-sort-disabled-${column.position}`;
@@ -2308,8 +2320,38 @@ function ColumnHeader({
     closeMenu();
     action();
   };
+  const runClipboardAction = async (): Promise<boolean> => {
+    clipboardOperationGenerationRef.current += 1;
+    pendingClipboardOperationCountRef.current += 1;
+    setClipboardOperationState({
+      generation: clipboardOperationGenerationRef.current,
+      pending: pendingClipboardOperationCountRef.current
+    });
+    try {
+      return await onCopy();
+    } finally {
+      pendingClipboardOperationCountRef.current -= 1;
+      if (mountedRef.current) {
+        setClipboardOperationState({
+          generation: clipboardOperationGenerationRef.current,
+          pending: pendingClipboardOperationCountRef.current
+        });
+      }
+    }
+  };
   const runClipboardMenuAction = async () => {
-    if (await onCopy()) closeMenu();
+    const menu = menuRef.current;
+    const menuGeneration = menuGenerationRef.current;
+    const operationGeneration = ++menuOperationGenerationRef.current;
+    if (
+      (await runClipboardAction()) &&
+      menuRef.current === menu &&
+      menu?.open === true &&
+      menuGenerationRef.current === menuGeneration &&
+      menuOperationGenerationRef.current === operationGeneration
+    ) {
+      closeMenu();
+    }
   };
   const activeSortLabel =
     activeSort &&
@@ -2342,6 +2384,8 @@ function ColumnHeader({
         .join(", ")}
       data-diff-state={added ? "added" : undefined}
       data-clipboard-selected={clipboardSelected ? "true" : undefined}
+      data-clipboard-operation-generation={clipboardOperationState.generation}
+      data-clipboard-operation-pending={clipboardOperationState.pending > 0 ? "true" : "false"}
       className={[
         selected ? "selectedColumn" : "",
         clipboardSelected ? "gridClipboardSelected" : "",
@@ -2359,7 +2403,7 @@ function ColumnHeader({
         if (event.target !== event.currentTarget) return;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
           event.preventDefault();
-          void onCopy();
+          void runClipboardAction();
           return;
         }
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -2384,7 +2428,7 @@ function ColumnHeader({
               aria-busy={clipboardAction.busy}
               disabled={clipboardAction.disabled}
               title={clipboardAction.title}
-              onClick={() => void onCopy()}
+              onClick={() => void runClipboardAction()}
             />
             {activeSort && (
               <button
@@ -2404,7 +2448,13 @@ function ColumnHeader({
                 )}
               </button>
             )}
-            <details ref={menuRef} className="columnMenu">
+            <details
+              ref={menuRef}
+              className="columnMenu"
+              onToggle={() => {
+                menuGenerationRef.current += 1;
+              }}
+            >
               <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
               <div className="columnMenuContent">
                 {viewControlsDisabled && (

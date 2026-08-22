@@ -17,11 +17,15 @@ interface MonotonicDeadline {
 
 export interface PackagedGridColumnCopySurface {
   readonly restoreViewport: () => Promise<void>;
-  activateHeaderCopy(column: string): Promise<void>;
+  activateHeaderCopy(column: string): Promise<PackagedGridColumnCopyWriteReceipt>;
   assertHeaderFocused(column: string): Promise<void>;
-  pressHeaderCopyShortcut(column: string, platform: NodeJS.Platform): Promise<void>;
+  pressHeaderCopyShortcut(column: string, platform: NodeJS.Platform): Promise<PackagedGridColumnCopyWriteReceipt>;
   waitForColumnValues(columnPosition: number, expected: readonly string[]): Promise<void>;
   waitForHeaderCopyState(column: string, state: "copying" | "ready", rowCount: number): Promise<void>;
+}
+
+export interface PackagedGridColumnCopyWriteReceipt {
+  readonly waitForSettlement: () => Promise<void>;
 }
 
 export interface PackagedGridColumnCopyJourneyDependencies {
@@ -128,26 +132,30 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
       );
 
       const workbench = await connectToEditorWorkbench();
-      surface = await createSurface(workbench, testing, active.sessionId);
+      const activeSurface = await createSurface(workbench, testing, active.sessionId);
+      surface = activeSurface;
       const city = active.metadata.schema.find((column) => column.name === "city");
       const sales = active.metadata.schema.find((column) => column.name === "sales");
       assert.ok(city && sales, "The packaged fixture must expose city and sales columns.");
-      await surface.waitForColumnValues(sales.position, ["2004", "2002"]);
+      await activeSurface.waitForColumnValues(sales.position, ["2004", "2002"]);
 
       recordProgress("grid-column-copy:header-action");
       await writeOwnedClipboardText(writeClipboardText, GRID_COPY_SENTINEL, createMonotonicDeadline(sessionTimeoutMs));
       lastTestOwnedClipboard = GRID_COPY_SENTINEL;
-      await surface.activateHeaderCopy("city");
-      await surface.waitForHeaderCopyState("city", "copying", FILTERED_ROWS);
-      const cityText = packagedGridColumnCopyExpectedCityText();
-      await waitForClipboardText(
-        readClipboardText,
-        cityText,
-        createMonotonicDeadline(sessionTimeoutMs),
-        "the visible header action to copy the exact filtered and sorted city column"
-      );
-      lastTestOwnedClipboard = cityText;
-      await surface.waitForHeaderCopyState("city", "ready", FILTERED_ROWS);
+      const cityWrite = await activeSurface.activateHeaderCopy("city");
+      const cityText = await retainClipboardWriteSettlement(cityWrite, async () => {
+        await activeSurface.waitForHeaderCopyState("city", "copying", FILTERED_ROWS);
+        const expected = packagedGridColumnCopyExpectedCityText();
+        await waitForClipboardText(
+          readClipboardText,
+          expected,
+          createMonotonicDeadline(sessionTimeoutMs),
+          "the visible header action to copy the exact filtered and sorted city column"
+        );
+        lastTestOwnedClipboard = expected;
+        await activeSurface.waitForHeaderCopyState("city", "ready", FILTERED_ROWS);
+        return expected;
+      });
       assert.equal(cityText.startsWith("city\n"), false, "The explicit column contract must exclude its header.");
 
       recordProgress("grid-column-copy:first-shortcut");
@@ -157,17 +165,20 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
         createMonotonicDeadline(sessionTimeoutMs)
       );
       lastTestOwnedClipboard = GRID_SHORTCUT_SENTINEL;
-      await surface.pressHeaderCopyShortcut("sales", process.platform);
-      const salesText = packagedGridColumnCopyExpectedSalesText();
-      await waitForClipboardText(
-        readClipboardText,
-        salesText,
-        createMonotonicDeadline(sessionTimeoutMs),
-        "one first platform shortcut to prepare and copy the exact filtered and sorted sales column"
-      );
-      lastTestOwnedClipboard = salesText;
-      await surface.waitForHeaderCopyState("sales", "ready", FILTERED_ROWS);
-      await surface.assertHeaderFocused("sales");
+      const salesWrite = await activeSurface.pressHeaderCopyShortcut("sales", process.platform);
+      const salesText = await retainClipboardWriteSettlement(salesWrite, async () => {
+        const expected = packagedGridColumnCopyExpectedSalesText();
+        await waitForClipboardText(
+          readClipboardText,
+          expected,
+          createMonotonicDeadline(sessionTimeoutMs),
+          "one first platform shortcut to prepare and copy the exact filtered and sorted sales column"
+        );
+        lastTestOwnedClipboard = expected;
+        await activeSurface.waitForHeaderCopyState("sales", "ready", FILTERED_ROWS);
+        await activeSurface.assertHeaderFocused("sales");
+        return expected;
+      });
       assert.equal(salesText.startsWith("sales\n"), false, "The shortcut contract must also exclude its header.");
       assert.deepEqual(
         await readFixture(fixture),
@@ -249,7 +260,9 @@ export async function createPlaywrightGridColumnCopySurface(
       const action = copyAction(column, new RegExp(`^Copy column ${escapeRegExp(column)}; header excluded$`, "u"));
       await action.waitFor({ state: "visible", timeout: 10_000 });
       assert.equal(await action.isEnabled(), true, "The narrow header copy action must be enabled.");
+      const previousGeneration = await readClipboardOperationGeneration(header(column));
       await action.click();
+      return createClipboardWriteReceipt(header(column), previousGeneration);
     },
     assertHeaderFocused: async (column) => {
       assert.equal(await header(column).evaluate((element) => element === element.ownerDocument.activeElement), true);
@@ -258,7 +271,9 @@ export async function createPlaywrightGridColumnCopySurface(
       const target = header(column);
       await target.waitFor({ state: "visible", timeout: 10_000 });
       await target.focus();
+      const previousGeneration = await readClipboardOperationGeneration(target);
       await target.press(platform === "darwin" ? "Meta+c" : "Control+c");
+      return createClipboardWriteReceipt(target, previousGeneration);
     },
     waitForColumnValues: async (columnPosition, expected) => {
       const cells = frame.locator(`td[data-grid-column=${JSON.stringify(String(columnPosition))}][data-grid-row]`);
@@ -279,6 +294,55 @@ export async function createPlaywrightGridColumnCopySurface(
       const action = copyAction(column, name);
       await action.waitFor({ state: "visible", timeout: 10_000 });
       assert.equal(await action.getAttribute("aria-busy"), state === "copying" ? "true" : "false");
+    }
+  };
+}
+
+async function readClipboardOperationGeneration(header: Locator): Promise<number> {
+  const value = await header.getAttribute("data-clipboard-operation-generation");
+  assert.match(value ?? "", /^(?:0|[1-9][0-9]*)$/u, "The header clipboard generation must be canonical.");
+  const generation = Number(value);
+  assert.ok(Number.isSafeInteger(generation), "The header clipboard generation must be a safe integer.");
+  return generation;
+}
+
+function createClipboardWriteReceipt(header: Locator, previousGeneration: number): PackagedGridColumnCopyWriteReceipt {
+  return {
+    waitForSettlement: async () => {
+      await header.waitFor({ state: "attached", timeout: 0 });
+      await header.evaluate((element, previous) => {
+        const readGeneration = (): number => Number(element.getAttribute("data-clipboard-operation-generation"));
+        const settled = (): boolean =>
+          Number.isSafeInteger(readGeneration()) &&
+          readGeneration() > previous &&
+          element.getAttribute("data-clipboard-operation-pending") === "false";
+        if (settled()) return;
+        return new Promise<void>((resolve, reject) => {
+          const MutationObserverConstructor = element.ownerDocument.defaultView?.MutationObserver;
+          if (!MutationObserverConstructor) {
+            reject(new Error("The packaged whole-column clipboard action cannot observe its exact settlement."));
+            return;
+          }
+          const observer = new MutationObserverConstructor(() => {
+            const generation = readGeneration();
+            if (!Number.isSafeInteger(generation) || generation <= previous) return;
+            if (element.getAttribute("data-clipboard-operation-pending") !== "false") return;
+            observer.disconnect();
+            resolve();
+          });
+          observer.observe(element, {
+            attributeFilter: ["data-clipboard-operation-generation", "data-clipboard-operation-pending"],
+            attributes: true
+          });
+          if (!element.isConnected) {
+            observer.disconnect();
+            reject(new Error("The packaged whole-column clipboard action lost its exact header before settlement."));
+          } else if (settled()) {
+            observer.disconnect();
+            resolve();
+          }
+        });
+      }, previousGeneration);
     }
   };
 }
@@ -372,6 +436,35 @@ async function writeOwnedClipboardText(
     await writeSettlement.catch(() => undefined);
     throw new Error("Packaged whole-column clipboard write failed.");
   }
+}
+
+async function retainClipboardWriteSettlement<T>(
+  receipt: PackagedGridColumnCopyWriteReceipt,
+  operation: () => Promise<T>
+): Promise<T> {
+  let result!: T;
+  let operationFailure: unknown;
+  try {
+    result = await operation();
+  } catch (error) {
+    operationFailure = error;
+  }
+
+  let settlementFailure: unknown;
+  try {
+    await receipt.waitForSettlement();
+  } catch (error) {
+    settlementFailure = error;
+  }
+  if (operationFailure !== undefined && settlementFailure !== undefined) {
+    throw new AggregateError(
+      [operationFailure, settlementFailure],
+      "The packaged whole-column clipboard action and its settlement proof both failed."
+    );
+  }
+  if (operationFailure !== undefined) throw operationFailure;
+  if (settlementFailure !== undefined) throw settlementFailure;
+  return result;
 }
 
 function createMonotonicDeadline(timeoutMs: number): MonotonicDeadline {
