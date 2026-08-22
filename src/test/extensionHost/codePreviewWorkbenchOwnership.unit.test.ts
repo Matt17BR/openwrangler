@@ -827,10 +827,9 @@ function createFixture(
     styleProperties: { "anchor-name": FLOW_ANCHOR_NAME }
   });
 
-  // VS Code 1.134 mounts this physical overlay branch at the workbench root,
-  // separately from the view-body anchor's supported workbench-part branch.
+  // VS Code 1.134's OverlayLayoutElement mounts an anonymous physical root at
+  // the workbench root, separately from the view-body anchor's supported part.
   const overlayRoot = makeElement({
-    classNames: ["webview-overlay"],
     parent: root,
     rectangle: rectangle(0, 0, 1_280, 800)
   });
@@ -1085,12 +1084,14 @@ describe("Code Preview split-overlay workbench ownership", () => {
   });
 
   it.each(SUPPORTED_WORKBENCH_CONTAINERS)(
-    "accepts the faithful workbench-root overlay and $className anchor branches",
+    "accepts the faithful anonymous workbench-root overlay and $className anchor branches",
     (descriptor) => {
       const fixture = createFixture(authority, { descriptor });
       expect(fixture.container.contains(fixture.anchor)).toBe(true);
       expect(fixture.container.contains(fixture.outerFrame)).toBe(false);
       expect(fixture.overlayRoot.contains(fixture.outerFrame)).toBe(true);
+      expect(fixture.overlayRoot.classList.contains("webview-overlay")).toBe(false);
+      expect(fixture.overlayRoot.children).toEqual([fixture.overlayContent]);
       expect(fixture.overlayRoot.parentElement).toBe(fixture.root);
       expect(fixture.container.parentElement).toBe(fixture.root);
       expect(fixture.root.classList.contains("monaco-workbench")).toBe(true);
@@ -1290,15 +1291,51 @@ describe("Code Preview split-overlay workbench ownership", () => {
     );
 
     const duplicateOverlay = createFixture(authority);
-    duplicateOverlay.makeElement({
-      classNames: ["webview-overlay"],
+    const duplicateOverlayRoot = duplicateOverlay.makeElement({
       parent: duplicateOverlay.root,
       rectangle: rectangle(0, 0, 1_280, 800)
+    });
+    duplicateOverlay.makeElement({
+      classNames: ["webview-overlay-content"],
+      parent: duplicateOverlayRoot,
+      rectangle: rectangle(980, 20, 280, 760)
     });
     expectReason(
       authority,
       authority.inspect(duplicateOverlay.outerFrame, inspectionOptions(authority)),
-      "webview-overlay-root-not-unique"
+      "webview-overlay-content-not-unique"
+    );
+
+    const extraOverlayChild = createFixture(authority);
+    extraOverlayChild.makeElement({
+      parent: extraOverlayChild.overlayRoot,
+      rectangle: rectangle(0, 0, 1, 1)
+    });
+    expectReason(
+      authority,
+      authority.inspect(extraOverlayChild.outerFrame, inspectionOptions(authority)),
+      "invalid-webview-overlay-root"
+    );
+
+    const precedingOverlayChild = createFixture(authority);
+    precedingOverlayChild.setParent(precedingOverlayChild.overlayContent, null);
+    precedingOverlayChild.makeElement({
+      parent: precedingOverlayChild.overlayRoot,
+      rectangle: rectangle(0, 0, 1, 1)
+    });
+    precedingOverlayChild.setParent(precedingOverlayChild.overlayContent, precedingOverlayChild.overlayRoot);
+    expectReason(
+      authority,
+      authority.inspect(precedingOverlayChild.outerFrame, inspectionOptions(authority)),
+      "invalid-webview-overlay-root"
+    );
+
+    const missingFlowBinding = createFixture(authority);
+    delete missingFlowBinding.overlayContent.dataset.parentFlowToElementId;
+    expectReason(
+      authority,
+      authority.inspect(missingFlowBinding.outerFrame, inspectionOptions(authority)),
+      "missing-webview-overlay-flow-binding"
     );
 
     const detachedWorkbench = createFixture(authority);
@@ -1388,7 +1425,6 @@ describe("Code Preview split-overlay workbench ownership", () => {
     const overlayReparented = createFixture(authority);
     const overlayAcquisition = captureOwnership(authority, overlayReparented);
     const overlayReplacement = overlayReparented.makeElement({
-      classNames: ["webview-overlay"],
       parent: overlayReparented.root,
       rectangle: rectangle(0, 0, 1_280, 800)
     });

@@ -9861,16 +9861,15 @@ function inspectCodePreviewWorkbenchOwnership(
   const outerVisibility = visibility(outerFrame);
   if (outerVisibility !== "visible") return fail(`outer-frame-${outerVisibility}`);
   const overlayContent = outerFrame.parentElement;
-  if (
-    !overlayContent ||
-    !overlayContent.classList.contains("webview-overlay-content") ||
-    overlayContent.dataset?.parentFlowToElementId === undefined
-  ) {
+  if (!overlayContent || !overlayContent.classList.contains("webview-overlay-content")) {
     return fail("missing-webview-overlay-content");
   }
+  if (overlayContent.dataset?.parentFlowToElementId === undefined) {
+    return fail("missing-webview-overlay-flow-binding");
+  }
   const overlayRoot = overlayContent.parentElement;
-  if (!overlayRoot || !overlayRoot.classList.contains("webview-overlay")) {
-    return fail("missing-webview-overlay-root");
+  if (!overlayRoot || overlayRoot.firstElementChild !== overlayContent || overlayContent.nextElementSibling !== null) {
+    return fail("invalid-webview-overlay-root");
   }
   const workbenchRoot = overlayRoot.parentElement;
   if (!workbenchRoot || !workbenchRoot.classList.contains("monaco-workbench")) {
@@ -9956,7 +9955,7 @@ function inspectCodePreviewWorkbenchOwnership(
       let identified: Candidate | null = null;
       let identifiedCount = 0;
       let identifiedCandidateCount = 0;
-      let exactOverlayRootCount = 0;
+      let exactOverlayContentCount = 0;
       let exactWorkbenchRootCount = 0;
       const inventoryFailure = walkElements(
         current.ownerDocument.documentElement,
@@ -9968,10 +9967,13 @@ function inspectCodePreviewWorkbenchOwnership(
             if (exactWorkbenchRootCount > 1) return "workbench-root-not-unique";
             if (candidate !== workbenchRoot) return "workbench-root-not-exact";
           }
-          if (candidate.classList.contains("webview-overlay") && candidate.parentElement === workbenchRoot) {
-            exactOverlayRootCount += 1;
-            if (exactOverlayRootCount > 1) return "webview-overlay-root-not-unique";
-            if (candidate !== overlayRoot) return "webview-overlay-root-not-exact";
+          if (
+            candidate.classList.contains("webview-overlay-content") &&
+            candidate.parentElement?.parentElement === workbenchRoot
+          ) {
+            exactOverlayContentCount += 1;
+            if (exactOverlayContentCount > 1) return "webview-overlay-content-not-unique";
+            if (candidate !== overlayContent) return "webview-overlay-content-not-exact";
           }
           const candidateAnchorName = candidate.style.getPropertyValue("anchor-name");
           if (candidateAnchorName.length > 0) {
@@ -10017,8 +10019,8 @@ function inspectCodePreviewWorkbenchOwnership(
       if (exactWorkbenchRootCount !== 1) {
         return fail("workbench-root-not-exact", chain, relations, containerIndex, flowLinkCount);
       }
-      if (exactOverlayRootCount !== 1) {
-        return fail("webview-overlay-root-not-exact", chain, relations, containerIndex, flowLinkCount);
+      if (exactOverlayContentCount !== 1) {
+        return fail("webview-overlay-content-not-exact", chain, relations, containerIndex, flowLinkCount);
       }
       if (anchoredCount !== 1 || !anchored) {
         return fail("flow-anchor-not-unique", chain, relations, containerIndex, flowLinkCount);
