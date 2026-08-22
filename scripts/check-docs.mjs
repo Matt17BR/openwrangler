@@ -14,6 +14,7 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
+import { inspectNodeToolchainContract, loadBoundedNodeToolchainWorkflowDocuments } from "./node-toolchain-contract.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -41,8 +42,28 @@ if (missing.length > 0) {
 const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
 const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8");
 const packageJson = parseStrictJson(packageJsonSource, { maxBytes: 1024 * 1024 });
+const packageLock = parseStrictJson(packageLockSource, { maxBytes: 16 * 1024 * 1024 });
 if (typeof packageJson !== "object" || packageJson === null || Array.isArray(packageJson)) {
   throw new Error("package.json must contain one bounded JSON object.");
+}
+if (typeof packageLock !== "object" || packageLock === null || Array.isArray(packageLock)) {
+  throw new Error("package-lock.json must contain one bounded JSON object.");
+}
+const contributingSource = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8");
+const releasingSource = readFileSync(resolve(root, "docs/releasing.md"), "utf8");
+const workflowDocuments = loadBoundedNodeToolchainWorkflowDocuments({ root });
+const nodeToolchainProblems = inspectNodeToolchainContract({
+  azureSource: readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8"),
+  changelogSource: readFileSync(resolve(root, "CHANGELOG.md"), "utf8"),
+  contributingSource,
+  nodeVersionSource: readFileSync(resolve(root, ".node-version"), "utf8"),
+  packageJson,
+  packageLock,
+  releasingSource,
+  workflows: workflowDocuments
+});
+if (nodeToolchainProblems.length > 0) {
+  throw new Error(`Node toolchain contract is stale:\n- ${nodeToolchainProblems.join("\n- ")}`);
 }
 const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
   contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),
@@ -56,7 +77,7 @@ const mediaGallery = readFileSync(resolve(root, "docs/media-gallery.md"), "utf8"
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const publicWritingProblems = inspectPublicWriting({
   agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
-  contributing: readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8"),
+  contributing: contributingSource,
   pullRequestTemplate: readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8"),
   styleGuide: readFileSync(resolve(root, "docs/writing-style.md"), "utf8")
 });
