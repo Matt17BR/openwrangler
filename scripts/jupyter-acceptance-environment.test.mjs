@@ -2309,7 +2309,10 @@ def _ow_identity_excepthook(exc_type, exc_value, exc_traceback):
     value = OSError.errno.__get__(exc_value, OSError) if isinstance(exc_value, OSError) else None
     sys.stderr.write("__OW_PRIMARY_IDENTITY__=" + identity + ";errno=" + str(value) + "\\n")
     _ow_system_excepthook(exc_type, exc_value, exc_traceback)
-sys.excepthook = _ow_identity_excepthook
+if sys.version_info >= (3, 11):
+    sys.excepthook = _ow_identity_excepthook
+else:
+    sys.__excepthook__ = _ow_identity_excepthook
 def _ow_fail_bounded_primary_and_cleanup_close(fd):
     if fd == 3:
         raise _ow_primary
