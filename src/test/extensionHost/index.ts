@@ -9786,6 +9786,31 @@ function assertCodePreviewWorkbenchContainerActionChain(
   description: string
 ): void {
   assert.equal(
+    receipt.containerFrameElementCount,
+    1,
+    `${description} requires one live workbench-container iframe at action time.`
+  );
+  assert.equal(
+    receipt.containerHasSoleOuterFrame,
+    true,
+    `${description} requires the exact sole outer iframe at action time.`
+  );
+  assert.equal(
+    receipt.containerConnected,
+    true,
+    `${description} requires the exact workbench container to remain connected at action time.`
+  );
+  assert.equal(
+    receipt.outerConnected,
+    true,
+    `${description} requires the exact outer iframe to remain connected at action time.`
+  );
+  assert.equal(
+    receipt.containerContainsOuterFrame && receipt.containerSharesOuterDocument,
+    true,
+    `${description} requires live same-document workbench-container ownership at action time.`
+  );
+  assert.equal(
     receipt.withinAncestorBound &&
       receipt.containerAncestorsConnectedAndVisible &&
       receipt.containerReachedDocumentBoundary,
@@ -9809,6 +9834,18 @@ function assertCodePreviewWorkbenchContainerActionChain(
     receipt.outerVisible,
     true,
     `${description} requires the exact outer iframe to remain visible at action time.`
+  );
+  assert.equal(
+    receipt.containerIsSupported &&
+      receipt.supportedContainerInventoryBounded &&
+      receipt.supportedContainerIdentitiesUnique,
+    true,
+    `${description} requires one bounded, duplicate-free supported workbench-container inventory at action time.`
+  );
+  assert.equal(
+    receipt.visibleOwningContainerCount === 1 && receipt.containerIsVisibleOwner,
+    true,
+    `${description} requires the exact pinned container to be the unique visible owner at action time.`
   );
 }
 
@@ -11534,44 +11571,7 @@ async function assertLiveCodePreviewActionOwnership(
       })
     );
   }, "performing the final complete live Code Preview action ownership probe");
-  assert.equal(
-    receipt.panel.containerFrameElementCount,
-    1,
-    `${description} requires one live workbench-container iframe at action time.`
-  );
-  assert.equal(
-    receipt.panel.containerHasSoleOuterFrame,
-    true,
-    `${description} requires the exact sole outer iframe at action time.`
-  );
-  assert.equal(
-    receipt.panel.containerConnected,
-    true,
-    `${description} requires the exact workbench container to remain connected at action time.`
-  );
-  assert.equal(
-    receipt.panel.outerConnected,
-    true,
-    `${description} requires the exact outer iframe to remain connected at action time.`
-  );
-  assert.equal(
-    receipt.panel.containerContainsOuterFrame && receipt.panel.containerSharesOuterDocument,
-    true,
-    `${description} requires live same-document workbench-container ownership at action time.`
-  );
   assertCodePreviewWorkbenchContainerActionChain(receipt.panel, generation.panelAncestors.length + 1, description);
-  assert.equal(
-    receipt.panel.containerIsSupported &&
-      receipt.panel.supportedContainerInventoryBounded &&
-      receipt.panel.supportedContainerIdentitiesUnique,
-    true,
-    `${description} requires one bounded, duplicate-free supported workbench-container inventory at action time.`
-  );
-  assert.equal(
-    receipt.panel.visibleOwningContainerCount === 1 && receipt.panel.containerIsVisibleOwner,
-    true,
-    `${description} requires the exact pinned container to be the unique visible owner at action time.`
-  );
   assert.equal(
     receipt.frameChain.every(
       (frame) =>

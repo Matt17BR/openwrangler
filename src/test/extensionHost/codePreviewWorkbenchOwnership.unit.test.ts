@@ -23,6 +23,9 @@ interface WorkbenchContainerAuthority {
   readonly selector: string;
 }
 
+const LIVE_ACTION_FUNCTION = "assertLiveCodePreviewActionOwnership";
+const LIVE_PANEL_ASSERTION_HELPER = "assertCodePreviewWorkbenchContainerActionChain";
+
 interface FakeElement {
   readonly classList: { contains(className: string): boolean };
   readonly id: string;
@@ -53,9 +56,54 @@ const SUPPORTED_WORKBENCH_CONTAINERS = [
 const SUPPORTED_WORKBENCH_CONTAINER_SELECTOR =
   '.part.panel[id="workbench.parts.panel"], .part.auxiliarybar[id="workbench.parts.auxiliarybar"], .part.sidebar[id="workbench.parts.sidebar"]';
 
+function assertLivePanelAssertionBinding(source: string): void {
+  const syntax = ts.createSourceFile("extensionHost/index.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const liveAction = syntax.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === LIVE_ACTION_FUNCTION
+  );
+  nodeAssert.ok(liveAction?.body, `${LIVE_ACTION_FUNCTION} must remain a top-level function with a body.`);
+  const statements = Array.from(liveAction.body.statements);
+  const receiptIndex = statements.findIndex(
+    (statement) =>
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.declarations.some(
+        (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "receipt"
+      )
+  );
+  nodeAssert.notEqual(receiptIndex, -1, `${LIVE_ACTION_FUNCTION} must retain its complete live receipt.`);
+  const assertion = statements[receiptIndex + 1];
+  nodeAssert.ok(
+    assertion && ts.isExpressionStatement(assertion) && ts.isCallExpression(assertion.expression),
+    "The live panel assertion must immediately consume the complete live receipt."
+  );
+  const call = assertion.expression;
+  nodeAssert.ok(
+    ts.isIdentifier(call.expression) && call.expression.text === LIVE_PANEL_ASSERTION_HELPER,
+    `The complete live receipt must be consumed by ${LIVE_PANEL_ASSERTION_HELPER}.`
+  );
+  nodeAssert.deepEqual(
+    call.arguments.map((argument) => argument.getText(syntax)),
+    ["receipt.panel", "generation.panelAncestors.length + 1", "description"],
+    "The live panel assertion must retain the exact receipt, ancestor count, and diagnostic owner."
+  );
+  nodeAssert.equal(
+    statements.filter(
+      (statement) =>
+        ts.isExpressionStatement(statement) &&
+        ts.isCallExpression(statement.expression) &&
+        ts.isIdentifier(statement.expression.expression) &&
+        statement.expression.expression.text === LIVE_PANEL_ASSERTION_HELPER
+    ).length,
+    1,
+    "The complete live panel assertion must run exactly once."
+  );
+}
+
 function loadAuthority(): WorkbenchContainerAuthority {
   const path = resolve(process.cwd(), "src/test/extensionHost/index.ts");
   const source = readFileSync(path, "utf8");
+  assertLivePanelAssertionBinding(source);
   const syntax = ts.createSourceFile(path, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const variables = new Set(["CODE_PREVIEW_WORKBENCH_CONTAINERS", "CODE_PREVIEW_WORKBENCH_CONTAINER_SELECTOR"]);
   const functions = new Set([
@@ -104,6 +152,7 @@ function createFixture(
     extraContainers?: number;
     hidden?: boolean;
     hiddenAncestor?: boolean;
+    hiddenOuterFrame?: boolean;
     id?: string;
     intermediateAncestors?: number;
     outerFrameConnected?: boolean;
@@ -156,7 +205,20 @@ function createFixture(
         }
         return false;
       },
-      getBoundingClientRect: () => ({ bottom: 100, height: 100, left: 0, right: 100, top: 0, width: 100 }),
+      getBoundingClientRect: () => {
+        let current: FakeElement | null = element;
+        while (current !== null) {
+          if (
+            current.style.display === "none" ||
+            current.style.visibility === "hidden" ||
+            current.style.visibility === "collapse"
+          ) {
+            return { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0 };
+          }
+          current = current.parentElement;
+        }
+        return { bottom: 100, height: 100, left: 0, right: 100, top: 0, width: 100 };
+      },
       querySelectorAll: (selector) => (selector === "iframe" ? frames : [])
     };
     Object.defineProperty(element, "__frames", { value: frames });
@@ -207,7 +269,13 @@ function createFixture(
   for (let index = 0; index < (options.intermediateAncestors ?? 1); index += 1) {
     parent = makeElement({ parent });
   }
-  const outerFrame = makeElement({ connected: options.outerFrameConnected, parent });
+  const outerFrame = makeElement({
+    connected: options.outerFrameConnected,
+    parent,
+    style: options.hiddenOuterFrame
+      ? { display: "none", opacity: "1", visibility: "visible" }
+      : { display: "block", opacity: "1", visibility: "visible" }
+  });
   const frames = (container as unknown as { __frames: FakeElement[] }).__frames;
   frames.push(outerFrame);
   if (options.duplicateIframe) frames.push(makeElement({ parent: container }));
@@ -275,6 +343,7 @@ describe("Code Preview workbench-container ownership", () => {
       visibleOwningContainerCount: 1
     });
     expect(() => authority.assertReceipt(ownershipReceipt(inspected), "supported container")).not.toThrow();
+    expect(() => authority.assertActionReceipt(inspected, 2, "supported container action")).not.toThrow();
   });
 
   it("rejects detached and hidden supported containers", () => {
@@ -291,9 +360,10 @@ describe("Code Preview workbench-container ownership", () => {
     );
   });
 
-  it("keeps hidden-container and hidden-ancestor action failures independently reachable", () => {
+  it("keeps hidden-container, outer-frame, and hidden-ancestor action failures ordered and independently reachable", () => {
     const hiddenContainer = createFixture(authority, { hidden: true });
     const hiddenAncestor = createFixture(authority, { hiddenAncestor: true });
+    const hiddenOuterFrame = createFixture(authority, { hiddenOuterFrame: true });
     const hiddenContainerReceipt = authority.inspect(
       hiddenContainer.container,
       inspectionOptions(authority, hiddenContainer)
@@ -302,21 +372,59 @@ describe("Code Preview workbench-container ownership", () => {
       hiddenAncestor.container,
       inspectionOptions(authority, hiddenAncestor)
     );
+    const hiddenOuterFrameReceipt = authority.inspect(
+      hiddenOuterFrame.container,
+      inspectionOptions(authority, hiddenOuterFrame)
+    );
     expect(hiddenContainerReceipt).toMatchObject({
       containerAncestorsConnectedAndVisible: true,
       containerAncestorsExact: true,
-      containerVisible: false
+      containerVisible: false,
+      outerVisible: false
     });
     expect(hiddenAncestorReceipt).toMatchObject({
       containerAncestorsConnectedAndVisible: false,
       containerAncestorsExact: true,
       containerVisible: true
     });
+    expect(hiddenOuterFrameReceipt).toMatchObject({ containerVisible: true, outerVisible: false });
     expect(() => authority.assertActionReceipt(hiddenContainerReceipt, 2, "hidden exact container")).toThrow(
       /requires the exact workbench container to remain visible at action time/u
     );
     expect(() => authority.assertActionReceipt(hiddenAncestorReceipt, 2, "hidden container ancestor")).toThrow(
       /requires every bounded workbench-container ancestor to remain connected, laid out, and visible/u
+    );
+    expect(() => authority.assertActionReceipt(hiddenOuterFrameReceipt, 2, "hidden outer frame")).toThrow(
+      /requires the exact outer iframe to remain visible at action time/u
+    );
+  });
+
+  it("binds the exact live helper call to the complete receipt before later action assertions", () => {
+    const path = resolve(process.cwd(), "src/test/extensionHost/index.ts");
+    const source = readFileSync(path, "utf8");
+    const exactCall =
+      "assertCodePreviewWorkbenchContainerActionChain(receipt.panel, generation.panelAncestors.length + 1, description);";
+    const nextAssertion = "assert.equal(\n    receipt.frameChain.every(";
+    expect(() => assertLivePanelAssertionBinding(source)).not.toThrow();
+    expect(source).toContain(`${exactCall}\n  ${nextAssertion}`);
+
+    const movedCall = source
+      .replace(`${exactCall}\n  ${nextAssertion}`, `${nextAssertion}`)
+      .replace(
+        "assert.equal(\n    receipt.generationCounts.reduce",
+        `${exactCall}\n  assert.equal(\n    receipt.generationCounts.reduce`
+      );
+    expect(() => assertLivePanelAssertionBinding(movedCall)).toThrow(/complete live receipt/u);
+
+    const omittedCall = source.replace(`  ${exactCall}\n`, "");
+    expect(() => assertLivePanelAssertionBinding(omittedCall)).toThrow(/complete live receipt/u);
+
+    const wrongArguments = source.replace(
+      exactCall,
+      "assertCodePreviewWorkbenchContainerActionChain(receipt.panel, generation.panelAncestors.length, description);"
+    );
+    expect(() => assertLivePanelAssertionBinding(wrongArguments)).toThrow(
+      /retain the exact receipt, ancestor count, and diagnostic owner/u
     );
   });
 
