@@ -1510,8 +1510,7 @@ test("cleaning-history only-conditions bind atomically while bare conditions rem
     "Committed steps remain visible. Editing them is available only if the latest committed step is selected.",
     "Committed steps remain visible. Only when the latest committed step is selected, to edit them is available.",
     "Committed steps cannot be reordered only when the latest committed step is selected.",
-    "Only if the latest committed step is selected, committed steps cannot be reordered.",
-    `Undo is available only when ${"the ".repeat(34)}latest committed step is selected.`
+    "Only if the latest committed step is selected, committed steps cannot be reordered."
   ];
   const truthful = [
     "Undo is available only when the latest committed step is selected.",
@@ -1545,6 +1544,17 @@ test("cleaning-history only-conditions bind atomically while bare conditions rem
       example
     );
   }
+  const overAtomicCondition = `Undo is available only when ${"the ".repeat(34)}latest committed step is selected.`;
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overAtomicCondition)
+      }),
+    /exceeds the 34-token atomic condition or exception bound/u,
+    overAtomicCondition
+  );
 });
 
 test("cleaning-history post-predicate anaphors survive context and current unrelated subjects mask history", () => {
@@ -1625,6 +1635,194 @@ test("cleaning-history singular and plural capability nominalizations are symmet
           productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
           documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
         }),
+      example
+    );
+  }
+});
+
+test("cleaning-history exclusive conditions retain predicate ownership and fail closed at 34 tokens", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Only when the toolbar is open, committed steps can be edited.",
+    "Only if the toolbar is open, committed steps can be inspected.",
+    "Committed steps can be edited only when the toolbar is open.",
+    "Only when the toolbar is open, Undo is available."
+  ];
+  const overBound = [
+    `Only if ${"the ".repeat(34)}latest committed step is selected, committed steps can be inspected.`,
+    `Committed steps can be inspected, only if ${"the ".repeat(34)}latest committed step is selected.`
+  ];
+  const atBound = [
+    `Only if ${"the ".repeat(27)}latest committed step is selected, Undo is available.`,
+    `Undo is available only if ${"the ".repeat(27)}latest committed step is selected.`
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of overBound) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /exceeds the 34-token atomic condition or exception bound/u,
+      example
+    );
+  }
+  for (const example of atBound) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history post-predicate ownership bounds are monotonic", () => {
+  const model = cleaningHistoryModel();
+  const atBound = `Editing ${"is ".repeat(11)}unavailable.`;
+  const overBound = [`Editing ${"is ".repeat(12)}unavailable.`, `Editing ${"is ".repeat(13)}unavailable.`];
+
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, atBound)
+      }),
+    /contradictory cleaning-history capability claim/u,
+    atBound
+  );
+  for (const example of overBound) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /exceeds the 12-token capability ownership window/u,
+      example
+    );
+  }
+});
+
+test("cleaning-history exclusive conditions validate polarity and every coordinated branch", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Undo is available only when the latest committed step is not selected.",
+    "Undo is available only when the latest committed step is selected or it targets an earlier committed step.",
+    "Only when the latest committed step is selected or it targets an earlier committed step, Undo is available."
+  ];
+  const truthful = [
+    "Committed steps can be inspected not only when the latest committed step is selected.",
+    "Committed steps can be inspected not only if the latest committed step is selected."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history inline code examples do not cross conditional ownership boundaries", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Show the sample if the check reads `ok; Committed steps cannot be edited`.",
+    "Show the sample only if the check reads `ok; Committed steps cannot be edited`."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertCleaningHistoryClaimsCurrent({
+      modelSource: JSON.stringify(model),
+      productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+      documents: cleaningHistoryDocumentsWithReadmeClaim(
+        model,
+        "Show the sample only if the check reads `ordinary literal`."
+      )
+    })
+  );
+});
+
+test("cleaning-history explicit owners fence anaphors and adversative Undo clauses", () => {
+  const model = cleaningHistoryModel();
+  const truthful = [
+    "Committed steps remain visible. Editing them can make the report unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar can make the report unavailable.",
+    "Undo is unavailable for every committed step except the latest one, but reports remain visible."
+  ];
+  const contradictions = [
+    "Committed steps remain visible. Editing them remains unavailable.",
+    "Undo is unavailable for every committed step except the latest one, but committed steps can be reordered."
+  ];
+
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
       example
     );
   }
