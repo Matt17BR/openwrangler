@@ -1428,24 +1428,10 @@ async function exerciseReleasedDataWranglerCoexistence(
 
     const workbench = await connectToEditorWorkbench();
     if (expectation.selection) {
-      recordAcceptanceProgress(`${phase}:provider-prompt`);
-      const conflict = await waitForNotebookPreviewConflict(workbench);
       assert.equal(
         configuration.get("notebookPreviewProvider", "ask"),
         "ask",
         "The conflict prompt must not mutate the preference before one explicit choice."
-      );
-      const action = expectation.provider === "openWrangler" ? conflict.useOpenWrangler : conflict.keepDataWrangler;
-      await action.click();
-      await conflict.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-      await waitFor(
-        () =>
-          vscode.workspace
-            .getConfiguration("openWrangler")
-            .inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">("notebookPreviewProvider")?.globalValue ===
-          expectation.provider,
-        10_000,
-        "the selected notebook preview provider to persist globally"
       );
     } else {
       recordAcceptanceProgress(`${phase}:provider-persisted`);
@@ -1462,22 +1448,79 @@ async function exerciseReleasedDataWranglerCoexistence(
     recordAcceptanceProgress(`${phase}:kernel-select`);
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     recordAcceptanceProgress(`${phase}:kernel-selected`);
+    if (!expectation.selection) {
+      const ownership = assertDataWranglerCoexistenceOwnership(
+        workbench,
+        notebook,
+        notebookEditor,
+        expectation.provider,
+        `${phase}:initial-provider`
+      );
+      if (expectation.provider === "openWrangler") {
+        recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
+        const consent = await waitForReleasedJupyterConsent(workbench, testing);
+        await consent.allow.click();
+        await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      }
+      await ownership;
+    }
 
-    const setupExecution = executeReleasedNotebookCell(
-      notebook,
-      0,
-      DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
-      `${phase}:setup-cell`,
-      notebookEditor
-    );
-    if (expectation.provider === "openWrangler") {
+    let firstOutputReceipt: DataWranglerFirstOutputReceipt | undefined;
+    if (expectation.selection) {
+      recordAcceptanceProgress(`${phase}:first-physical-dataframe`);
+      const firstExecution = executeReleasedNotebookCell(
+        notebook,
+        0,
+        undefined,
+        `${phase}:first-dataframe-cell`,
+        notebookEditor
+      );
+      recordAcceptanceProgress(`${phase}:provider-prompt`);
+      const conflict = await waitForNotebookPreviewConflict(workbench);
+      firstOutputReceipt = await captureDataWranglerFirstOutput(workbench, notebook, notebookEditor);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The unresolved first dataframe must not open a panel.");
+      assert.equal(
+        configuration.get("notebookPreviewProvider", "ask"),
+        "ask",
+        "The first physical dataframe output must render before the provider choice resolves."
+      );
+      const action = expectation.provider === "openWrangler" ? conflict.useOpenWrangler : conflict.keepDataWrangler;
+      await action.click();
+      await conflict.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await firstExecution;
+      await waitFor(
+        () =>
+          vscode.workspace
+            .getConfiguration("openWrangler")
+            .inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">("notebookPreviewProvider")?.globalValue ===
+          expectation.provider,
+        10_000,
+        "the selected notebook preview provider to persist globally"
+      );
+    }
+
+    if (firstOutputReceipt && expectation.provider === "openWrangler") {
       recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       await consent.allow.click();
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
     }
+    if (firstOutputReceipt) {
+      if (expectation.provider === "openWrangler") {
+        await waitForDataWranglerInlineUpgrade(workbench, firstOutputReceipt);
+      }
+      await assertDataWranglerFirstOutputUnchanged(notebook, firstOutputReceipt, expectation.provider);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The inline provider choice must not open a panel.");
+    }
+    const setupExecution = executeReleasedNotebookCell(
+      notebook,
+      1,
+      DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+      `${phase}:setup-cell`,
+      notebookEditor
+    );
     await setupExecution;
-    const initialKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
+    const initialKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(1));
     assert.equal(
       canonicalAcceptancePath(String(initialKernel.executable)),
       canonicalAcceptancePath(testPython),
@@ -1492,13 +1535,6 @@ async function exerciseReleasedDataWranglerCoexistence(
       );
     }
 
-    await assertDataWranglerCoexistenceOwnership(
-      workbench,
-      notebook,
-      notebookEditor,
-      expectation.provider,
-      `${phase}:initial-provider`
-    );
     await assertNotebookPreviewConflictAbsent(
       workbench,
       1_500,
@@ -1508,20 +1544,6 @@ async function exerciseReleasedDataWranglerCoexistence(
     if (!expectation.selection) {
       recordAcceptanceProgress(`${phase}:kernel-restart`);
       await restartReleasedJupyterKernelAndWait(notebook);
-      await executeReleasedNotebookCell(
-        notebook,
-        0,
-        DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
-        `${phase}:restart-setup-cell`,
-        notebookEditor
-      );
-      const replacementKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
-      assert.notEqual(
-        Number(replacementKernel.pid),
-        Number(initialKernel.pid),
-        "The coexistence restart phase must exercise a replacement kernel process."
-      );
-      assert.equal(canonicalAcceptancePath(String(replacementKernel.executable)), canonicalAcceptancePath(testPython));
       await assertDataWranglerCoexistenceOwnership(
         workbench,
         notebook,
@@ -1529,6 +1551,20 @@ async function exerciseReleasedDataWranglerCoexistence(
         expectation.provider,
         `${phase}:restarted-provider`
       );
+      await executeReleasedNotebookCell(
+        notebook,
+        1,
+        DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+        `${phase}:restart-setup-cell`,
+        notebookEditor
+      );
+      const replacementKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(1));
+      assert.notEqual(
+        Number(replacementKernel.pid),
+        Number(initialKernel.pid),
+        "The coexistence restart phase must exercise a replacement kernel process."
+      );
+      assert.equal(canonicalAcceptancePath(String(replacementKernel.executable)), canonicalAcceptancePath(testPython));
       await assertNotebookPreviewConflictAbsent(
         workbench,
         1_500,
@@ -1547,6 +1583,152 @@ async function exerciseReleasedDataWranglerCoexistence(
   }
 }
 
+interface DataWranglerFirstOutputReceipt {
+  readonly cell: vscode.NotebookCell;
+  readonly executionOrder: number;
+  readonly outputs: readonly vscode.NotebookCellOutput[];
+  readonly items: readonly vscode.NotebookCellOutputItem[];
+  readonly output: vscode.NotebookCellOutput;
+  readonly htmlItem: vscode.NotebookCellOutputItem;
+  readonly domOwner: ElementHandle<unknown>;
+}
+
+async function captureDataWranglerFirstOutput(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor
+): Promise<DataWranglerFirstOutputReceipt> {
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after its first physical dataframe output");
+  const cell = notebook.cellAt(0);
+  const executionOrder = cell.executionSummary?.executionOrder;
+  assert.ok(
+    Number.isSafeInteger(executionOrder) && executionOrder !== undefined && executionOrder > 0,
+    "The first coexistence dataframe must have one positive execution order."
+  );
+  const outputs = [...cell.outputs];
+  const executeResults = outputs.filter((output) => output.metadata?.outputType === "execute_result");
+  assert.equal(executeResults.length, 1, "The first coexistence dataframe must publish one execute_result output.");
+  const output = executeResults[0]!;
+  const items = [...output.items];
+  const htmlItems = items.filter((item) => item.mime === "text/html");
+  assert.equal(htmlItems.length, 1, "The unresolved first dataframe must retain one ordinary HTML item.");
+  assert.equal(
+    items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2),
+    false,
+    "Open Wrangler MIME must not exist before the provider choice resolves."
+  );
+  const domOwner = await waitForDataWranglerOrdinaryHtml(workbench);
+  return { cell, executionOrder, outputs, items, output, htmlItem: htmlItems[0]!, domOwner };
+}
+
+async function waitForDataWranglerOrdinaryHtml(workbench: Page): Promise<ElementHandle<unknown>> {
+  const browser = workbench.context().browser();
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      const tables = target.frame.locator("table").filter({ hasText: "DACH" });
+      const count = await tables.count().catch(() => 0);
+      assert.ok(count < 2, "The unresolved first dataframe exposed duplicate ordinary HTML tables in one target.");
+      if (count !== 1) continue;
+      const table = tables.first();
+      const matches = await table.evaluate((element) => {
+        const labels = (element.textContent ?? "").replace(/\s+/gu, " ");
+        return labels.includes("market") && labels.includes("revenue") && labels.includes("Nordics");
+      });
+      if (!matches) continue;
+      const ownerHandle = await table.evaluateHandle((element) => element.parentElement);
+      const owner = ownerHandle.asElement();
+      if (!owner) {
+        await ownerHandle.dispose();
+        continue;
+      }
+      const ordinary = await owner.evaluate((elementValue: unknown) => {
+        const element = elementValue as {
+          readonly isConnected: boolean;
+          querySelector(selector: string): unknown | null;
+        };
+        return (
+          element.isConnected &&
+          element.querySelector("table") !== null &&
+          element.querySelector("[data-open-wrangler-inline-upgrade]") === null
+        );
+      });
+      if (ordinary) return owner as ElementHandle<unknown>;
+      await owner.dispose();
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error("Timed out waiting for the unresolved first dataframe to render as ordinary HTML.");
+}
+
+async function waitForDataWranglerInlineUpgrade(
+  workbench: Page,
+  receipt: DataWranglerFirstOutputReceipt
+): Promise<void> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    const upgraded = await receipt.domOwner
+      .evaluate((elementValue: unknown) => {
+        const element = elementValue as {
+          readonly isConnected: boolean;
+          querySelector(selector: string): unknown | null;
+        };
+        return (
+          element.isConnected &&
+          element.querySelector("[data-open-wrangler-inline-upgrade]") !== null &&
+          element.querySelector("table") !== null
+        );
+      })
+      .catch(() => false);
+    if (upgraded) return;
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error("Timed out waiting for the exact first dataframe output element to upgrade inline.");
+}
+
+async function assertDataWranglerFirstOutputUnchanged(
+  notebook: vscode.NotebookDocument,
+  receipt: DataWranglerFirstOutputReceipt,
+  provider: "openWrangler" | "dataWrangler"
+): Promise<void> {
+  assert.equal(notebook.cellAt(0), receipt.cell, "Provider selection must retain the exact first dataframe cell.");
+  assert.equal(
+    receipt.cell.executionSummary?.executionOrder,
+    receipt.executionOrder,
+    "Provider selection must not rerun the first dataframe cell."
+  );
+  assert.equal(receipt.cell.outputs.length, receipt.outputs.length, "Provider selection must not add an output.");
+  for (let index = 0; index < receipt.outputs.length; index += 1) {
+    assert.equal(receipt.cell.outputs[index], receipt.outputs[index], "Provider selection replaced a notebook output.");
+  }
+  assert.equal(receipt.output.items.length, receipt.items.length, "Provider selection replaced an output item list.");
+  for (let index = 0; index < receipt.items.length; index += 1) {
+    assert.equal(receipt.output.items[index], receipt.items[index], "Provider selection replaced an output item.");
+  }
+  assert.ok(receipt.output.items.includes(receipt.htmlItem), "The exact ordinary HTML output item was lost.");
+  assert.equal(
+    receipt.cell.outputs.flatMap((output) => output.items.map((item) => item.mime)).includes(OPEN_WRANGLER_MIME_V2),
+    false,
+    "The inline upgrade must not mutate the notebook output into Open Wrangler MIME."
+  );
+  const domState = await receipt.domOwner.evaluate((elementValue: unknown) => {
+    const element = elementValue as {
+      readonly isConnected: boolean;
+      querySelector(selector: string): unknown | null;
+    };
+    return {
+      connected: element.isConnected,
+      upgraded: element.querySelector("[data-open-wrangler-inline-upgrade]") !== null,
+      ordinary: element.querySelector("table") !== null
+    };
+  });
+  assert.equal(domState.connected, true, "Provider selection detached the exact first output element.");
+  assert.equal(domState.ordinary, true, "The exact first output element lost its table content.");
+  assert.equal(domState.upgraded, provider === "openWrangler", "The exact first output has the wrong provider owner.");
+  await receipt.domOwner.dispose();
+}
+
 async function assertDataWranglerCoexistenceOwnership(
   workbench: Page,
   notebook: vscode.NotebookDocument,
@@ -1555,14 +1737,14 @@ async function assertDataWranglerCoexistenceOwnership(
   checkpoint: string
 ): Promise<void> {
   if (provider === "openWrangler") {
-    await executeReleasedNotebookCellUntilMime(notebook, 1, OPEN_WRANGLER_MIME_V2, checkpoint, notebookEditor);
-    const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    await executeReleasedNotebookCellUntilMime(notebook, 0, OPEN_WRANGLER_MIME_V2, checkpoint, notebookEditor);
+    const mimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2));
     return;
   }
 
-  await executeReleasedNotebookCell(notebook, 1, undefined, `${checkpoint}:dataframe-cell`, notebookEditor);
-  const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+  await executeReleasedNotebookCell(notebook, 0, undefined, `${checkpoint}:dataframe-cell`, notebookEditor);
+  const mimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
   assert.equal(
     mimes.includes(OPEN_WRANGLER_MIME_V2),
     false,

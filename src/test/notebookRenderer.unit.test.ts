@@ -141,6 +141,72 @@ describe("notebook renderer", () => {
       expect(postMessage).toHaveBeenLastCalledWith(
         expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "deadline-output" })
       );
+
+      postMessage.mockClear();
+      const pendingController = new AbortController();
+      const pendingElement = document.createElement("div");
+      const pendingOrdinary = document.createElement("table");
+      pendingElement.appendChild(pendingOrdinary);
+      await hook?.postRender(
+        { id: "provider-pending-output", mime: "text/html", data: () => bytes },
+        pendingElement,
+        pendingController.signal
+      );
+      const pendingCandidate = postMessage.mock.calls[0]?.[0] as Record<string, unknown>;
+      receiver?.({ ...pendingCandidate, kind: "openWrangler.inlinePending" });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(pendingElement.firstChild).toBe(pendingOrdinary);
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      receiver?.({
+        ...pendingCandidate,
+        kind: "openWrangler.inlineUpgrade",
+        payload: canonicalPayload(1, "frame")
+      });
+      expect(pendingElement.querySelector("[data-open-wrangler-inline-upgrade]")).not.toBeNull();
+      expect(pendingElement.querySelector("[data-original-html]")).toBeNull();
+      pendingController.abort();
+      expect(pendingElement.firstChild).toBe(pendingOrdinary);
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "provider-pending-output" })
+      );
+
+      postMessage.mockClear();
+      const replacedElement = document.createElement("div");
+      const replacedOrdinary = document.createElement("table");
+      replacedElement.appendChild(replacedOrdinary);
+      await hook?.postRender(
+        { id: "provider-replaced-output", mime: "text/html", data: () => bytes },
+        replacedElement,
+        new AbortController().signal
+      );
+      const replacedCandidate = postMessage.mock.calls[0]?.[0] as Record<string, unknown>;
+      receiver?.({ ...replacedCandidate, kind: "openWrangler.inlinePending" });
+      const externalReplacement = document.createElement("p");
+      replacedElement.replaceChildren(externalReplacement);
+      await Promise.resolve();
+      expect(replacedElement.firstChild).toBe(externalReplacement);
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "provider-replaced-output" })
+      );
+
+      postMessage.mockClear();
+      const detachedElement = document.createElement("div");
+      const detachedOrdinary = document.createElement("table");
+      detachedElement.appendChild(detachedOrdinary);
+      document.body.appendChild(detachedElement);
+      await hook?.postRender(
+        { id: "provider-detached-output", mime: "text/html", data: () => bytes },
+        detachedElement,
+        new AbortController().signal
+      );
+      const detachedCandidate = postMessage.mock.calls[0]?.[0] as Record<string, unknown>;
+      receiver?.({ ...detachedCandidate, kind: "openWrangler.inlinePending" });
+      detachedElement.remove();
+      await Promise.resolve();
+      expect(detachedElement.firstChild).toBe(detachedOrdinary);
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "provider-detached-output" })
+      );
     } finally {
       vi.useRealTimers();
     }

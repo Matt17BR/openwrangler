@@ -12,6 +12,12 @@ const DATA_WRANGLER_EXTENSION_ID = "ms-toolsai.datawrangler";
 const JUPYTER_EXTENSION_ID = "ms-toolsai.jupyter";
 const CHOOSE_PREVIEW_PROVIDER_COMMAND = "openWrangler.chooseNotebookPreviewProvider";
 const RETRY_DELAYS_MS = [500, 1_000, 2_000, 5_000, 15_000] as const;
+const providerPromptTerminationListeners = new Set<() => void>();
+
+export function onDidTerminateNotebookPreviewProviderPrompt(listener: () => void): vscode.Disposable {
+  providerPromptTerminationListeners.add(listener);
+  return { dispose: () => providerPromptTerminationListeners.delete(listener) };
+}
 
 interface NotebookPreviewEntry {
   bridge: KernelBridge;
@@ -37,7 +43,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
         // the later notebook-document execution update. Wake preparation here
         // so a newly started kernel can install the formatter before the first
         // user result is produced. This provider intentionally renders no item.
-        this.schedule(cell.notebook, 0, true);
+        this.schedule(cell.notebook, 0, true, true);
         return undefined;
       }
     };
@@ -91,8 +97,14 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     }
   }
 
-  private schedule(notebook: vscode.NotebookDocument, delayMs = 0, expedite = false): void {
+  private schedule(
+    notebook: vscode.NotebookDocument,
+    delayMs = 0,
+    expedite = false,
+    allowProviderPrompt = false
+  ): void {
     if (this.disposed || !this.canPrepare(notebook)) return;
+    if (!allowProviderPrompt && this.hasUnresolvedProviderConflict()) return;
     const entry = this.entry(notebook);
     if (entry.prepared) return;
     if (entry.running) {
@@ -259,6 +271,16 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     );
   }
 
+  private hasUnresolvedProviderConflict(): boolean {
+    return (
+      !shouldRegisterNotebookFormatters() &&
+      vscode.workspace
+        .getConfiguration("openWrangler")
+        .get<NotebookPreviewProvider>("notebookPreviewProvider", "ask") === "ask" &&
+      vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) !== undefined
+    );
+  }
+
   private async resolveOpenWranglerProvider(): Promise<boolean> {
     if (shouldRegisterNotebookFormatters()) return true;
     const preference = vscode.workspace
@@ -275,12 +297,18 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   }
 
   private async promptForConflictProvider(): Promise<boolean> {
-    const selection = await vscode.window.showInformationMessage(
-      "Open Wrangler and Data Wrangler can both render dataframe outputs. Which notebook preview should take priority?",
-      { modal: true, detail: "You can change this later with “Open Wrangler: Choose Notebook Preview Provider”." },
-      "Use Open Wrangler",
-      "Keep Data Wrangler"
-    );
+    let selection: string | undefined;
+    try {
+      selection = await vscode.window.showInformationMessage(
+        "Open Wrangler and Data Wrangler can both render dataframe outputs. Which notebook preview should take priority?",
+        { modal: true, detail: "You can change this later with “Open Wrangler: Choose Notebook Preview Provider”." },
+        "Use Open Wrangler",
+        "Keep Data Wrangler"
+      );
+    } catch (error) {
+      this.publishProviderPromptTermination();
+      throw error;
+    }
     if (selection === "Use Open Wrangler") {
       await updateSetting("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Global);
       return true;
@@ -289,8 +317,14 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       await updateSetting("notebookPreviewProvider", "dataWrangler", vscode.ConfigurationTarget.Global);
       return false;
     }
-    this.conflictPromptDismissed = true;
+    this.publishProviderPromptTermination();
     return false;
+  }
+
+  private publishProviderPromptTermination(): void {
+    if (this.conflictPromptDismissed) return;
+    this.conflictPromptDismissed = true;
+    for (const listener of providerPromptTerminationListeners) listener();
   }
 
   private async chooseProvider(): Promise<void> {

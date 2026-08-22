@@ -28,12 +28,17 @@ export function dataWranglerCoexistenceNotebookFixture(target: DataWranglerCoexi
         "    'market': ['DACH', 'Nordics', 'Iberia', 'France'],",
         "    'revenue': [620.50, 1840.75, 991.00, 2420.25],",
         "})",
+        DATA_WRANGLER_COEXISTENCE_VARIABLE
+      ]),
+      cell([
+        "import json",
+        "import os",
+        "import sys",
         `print(${JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT)} + json.dumps({`,
         "    'executable': sys.executable,",
         "    'pid': os.getpid(),",
         "}, sort_keys=True))"
-      ]),
-      cell([DATA_WRANGLER_COEXISTENCE_VARIABLE])
+      ])
     ],
     metadata: {
       kernelspec: {

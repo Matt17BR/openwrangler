@@ -9,11 +9,18 @@ import {
   type NotebookOutputPayload
 } from "../../shared/notebookOutput";
 import { SessionCoordinator } from "../sessionCoordinator";
+import { getSetting } from "../configuration";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../sessionResponseValidation";
 import { OpenWranglerPanel } from "../webviewPanel";
-import { KernelBridge, shouldRegisterNotebookFormatters, type ExecutedNotebookCellResultBinding } from "./kernelBridge";
+import {
+  KernelBridge,
+  shouldRegisterNotebookFormatters,
+  type ExecutedNotebookCellResultBinding,
+  type NotebookPreviewProvider
+} from "./kernelBridge";
 import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { onDidTerminateNotebookPreviewProviderPrompt } from "./notebookPreviewCoordinator";
 
 interface OpenInOpenWranglerMessage {
   kind: "openInOpenWrangler";
@@ -21,6 +28,7 @@ interface OpenInOpenWranglerMessage {
 }
 
 const INLINE_UPGRADE_RENDERER_ID = "openWrangler.inlineHtmlUpgrade";
+const DATA_WRANGLER_EXTENSION_ID = "ms-toolsai.datawrangler";
 const INLINE_UPGRADE_PROTOCOL = 1;
 const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
 const INLINE_UPGRADE_MAX_OPERATIONS = 8;
@@ -53,6 +61,7 @@ interface InlineUpgradeOperation {
   publishedReceipt?: InlineUpgradePublishedReceipt;
   action?: InlineUpgradeAction;
   permitsSettlingReplacement: boolean;
+  awaitingProvider: boolean;
   active: boolean;
   published: boolean;
 }
@@ -130,14 +139,15 @@ export function registerNotebookRendererMessaging(
   }
   if (tracker) {
     const revalidate = (): void => {
+      const provider = inlineUpgradeProviderState();
       for (const operation of [...state.operations.values()]) {
         const editor = operation.editor;
-        if (
-          !shouldRegisterNotebookFormatters() ||
-          !editor ||
-          !originatingNotebook(editor) ||
-          (operation.binding && !operation.binding.isCurrent())
-        ) {
+        if (!editor || !originatingNotebook(editor) || (operation.binding && !operation.binding.isCurrent())) {
+          terminateInlineUpgradeOperation(state, operation);
+        } else if (operation.awaitingProvider) {
+          if (provider === "owned") startInlineUpgradeOperation(context, tracker, state, operation);
+          else if (provider === "foreign") terminateInlineUpgradeOperation(state, operation);
+        } else if (provider !== "owned") {
           terminateInlineUpgradeOperation(state, operation);
         }
       }
@@ -149,10 +159,17 @@ export function registerNotebookRendererMessaging(
     );
     context.subscriptions.push(vscode.extensions.onDidChange(revalidate));
     context.subscriptions.push(vscode.window.onDidChangeVisibleNotebookEditors(revalidate));
+    context.subscriptions.push(
+      onDidTerminateNotebookPreviewProviderPrompt(() => {
+        for (const operation of [...state.operations.values()]) {
+          if (operation.awaitingProvider) terminateInlineUpgradeOperation(state, operation);
+        }
+      })
+    );
     context.subscriptions.push({
       dispose: () => {
-        state.disposed = true;
         for (const operation of [...state.operations.values()]) terminateInlineUpgradeOperation(state, operation);
+        state.disposed = true;
         state.workQueue.length = 0;
         state.settlingWork.clear();
         state.retiredTokens.clear();
@@ -331,8 +348,9 @@ function receiveInlineUpgradeMessage(
 
   const candidate = parseInlineUpgradeCandidate(message);
   if (!candidate) return;
-  const senderOwned = shouldRegisterNotebookFormatters() && originatingNotebook(editor);
-  if (!senderOwned) return;
+  if (!originatingNotebook(editor)) return;
+  const provider = inlineUpgradeProviderState();
+  if (provider === "foreign") return;
   if (state.retiredTokens.has(candidate.token)) {
     postInlineUpgradeTerminal(state, messaging, editor, candidate);
     return;
@@ -364,10 +382,70 @@ function receiveInlineUpgradeMessage(
     messaging,
     cancellation: new vscode.CancellationTokenSource(),
     permitsSettlingReplacement: false,
+    awaitingProvider: provider === "pending",
     active: true,
     published: false
   };
   state.operations.set(candidate.token, operation);
+  if (operation.awaitingProvider) {
+    postInlineUpgradePending(state, operation, messaging, editor);
+    return;
+  }
+  startInlineUpgradeOperation(context, tracker, state, operation);
+}
+
+function postInlineUpgradePending(
+  state: InlineUpgradeState,
+  operation: InlineUpgradeOperation,
+  messaging: ReturnType<typeof vscode.notebooks.createRendererMessaging>,
+  editor: vscode.NotebookEditor
+): void {
+  let posted: Thenable<boolean>;
+  try {
+    posted = messaging.postMessage(
+      {
+        kind: "openWrangler.inlinePending",
+        protocol: INLINE_UPGRADE_PROTOCOL,
+        token: operation.candidate.token,
+        outputItemId: operation.candidate.outputItemId,
+        byteLength: operation.candidate.byteLength,
+        sha256: operation.candidate.sha256
+      },
+      editor
+    );
+  } catch {
+    terminateInlineUpgradeOperation(state, operation);
+    return;
+  }
+  void Promise.resolve(posted).then(
+    (delivered) => {
+      if (!delivered && isInlineUpgradeOperationOwned(state.operations, operation)) {
+        terminateInlineUpgradeOperation(state, operation);
+      }
+    },
+    () => {
+      if (isInlineUpgradeOperationOwned(state.operations, operation)) terminateInlineUpgradeOperation(state, operation);
+    }
+  );
+}
+
+function startInlineUpgradeOperation(
+  context: vscode.ExtensionContext,
+  tracker: NotebookCellResultTracker,
+  state: InlineUpgradeState,
+  operation: InlineUpgradeOperation
+): void {
+  if (
+    !isInlineUpgradeOperationOwned(state.operations, operation) ||
+    (!operation.awaitingProvider && operation.deadline)
+  ) {
+    return;
+  }
+  if (inlineUpgradeProviderState() !== "owned") {
+    terminateInlineUpgradeOperation(state, operation);
+    return;
+  }
+  operation.awaitingProvider = false;
   operation.deadline = setTimeout(
     () => terminateInlineUpgradeOperation(state, operation),
     INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS
@@ -375,6 +453,14 @@ function receiveInlineUpgradeMessage(
   operation.deadline.unref?.();
   state.workQueue.push(operation);
   pumpInlineUpgradeWork(context, tracker, state);
+}
+
+function inlineUpgradeProviderState(): "owned" | "pending" | "foreign" {
+  if (shouldRegisterNotebookFormatters()) return "owned";
+  const preference = getSetting<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
+  return preference === "ask" && vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) !== undefined
+    ? "pending"
+    : "foreign";
 }
 
 function pumpInlineUpgradeWork(

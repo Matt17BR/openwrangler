@@ -35,7 +35,7 @@ describe("Data Wrangler coexistence notebook fixture", () => {
     }
   });
 
-  it("defines one deterministic Pandas frame before exposing that exact variable", () => {
+  it("exposes one deterministic Pandas frame as the first physical execution", () => {
     const fixture = dataWranglerCoexistenceNotebookFixture({ label: "Python", name: "python" });
     const setup = cellSource(fixture, 0);
 
@@ -43,10 +43,10 @@ describe("Data Wrangler coexistence notebook fixture", () => {
     expect(setup).toContain("'order_id': [2400001, 2400002, 2400003, 2400004]");
     expect(setup).toContain("'market': ['DACH', 'Nordics', 'Iberia', 'France']");
     expect(setup).toContain("'revenue': [620.50, 1840.75, 991.00, 2420.25]");
-    expect(setup).toContain(JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT));
-    expect(setup.indexOf(`${DATA_WRANGLER_COEXISTENCE_VARIABLE} =`)).toBeLessThan(
-      setup.indexOf(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT)
-    );
-    expect(cellSource(fixture, 1)).toBe(`${DATA_WRANGLER_COEXISTENCE_VARIABLE}\n`);
+    expect(setup.endsWith(`${DATA_WRANGLER_COEXISTENCE_VARIABLE}\n`)).toBe(true);
+    const attestation = cellSource(fixture, 1);
+    expect(attestation).toContain(JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT));
+    expect(attestation).toContain("sys.executable");
+    expect(attestation).toContain("os.getpid()");
   });
 });

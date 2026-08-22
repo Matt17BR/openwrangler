@@ -57,6 +57,7 @@ interface InlineUpgradeCandidate {
   abortListener?: () => void;
   deadline?: ReturnType<typeof setTimeout>;
   enhancement?: HTMLElement;
+  ownershipObserver?: MutationObserver;
 }
 
 export function activate(context: RendererContext): RendererApi {
@@ -104,18 +105,51 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       retireHtmlUpgradeCandidate(context, candidates, completed, candidate, false);
       return;
     }
+    if (accepted.kind === "openWrangler.inlinePending") {
+      if (completed.has(accepted.outputItemId)) return;
+      if (candidate.signal.aborted || !hasExactChildren(candidate.element, candidate.ordinaryNodes)) {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        return;
+      }
+      releaseHtmlUpgradeCandidateDeadline(candidate);
+      candidate.abortListener ??= () => {
+        if (candidates.get(candidate.outputItemId) !== candidate) return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      };
+      candidate.signal.addEventListener("abort", candidate.abortListener, { once: true });
+      candidate.ownershipObserver ??= new MutationObserver(() => {
+        if (candidates.get(candidate.outputItemId) !== candidate) return;
+        if (!candidate.element.isConnected || !hasExactChildren(candidate.element, candidate.ordinaryNodes)) {
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        }
+      });
+      candidate.ownershipObserver.observe(candidate.element, { childList: true });
+      candidate.ownershipObserver.observe(candidate.element.ownerDocument, { childList: true, subtree: true });
+      if (candidate.signal.aborted || !hasExactChildren(candidate.element, candidate.ordinaryNodes)) {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      }
+      return;
+    }
     if (completed.has(accepted.outputItemId)) return;
     const payload = normalizeNotebookOutputPayload(accepted.payload);
-    if (!payload) return;
+    if (!payload) {
+      if (candidate.ownershipObserver) retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      return;
+    }
     try {
       const enhancement = document.createElement("section");
       enhancement.dataset.openWranglerInlineUpgrade = "true";
       enhancement.appendChild(renderPayload(payload, context));
-      if (!hasExactChildren(candidate.element, candidate.ordinaryNodes)) return;
+      if (!hasExactChildren(candidate.element, candidate.ordinaryNodes)) {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        return;
+      }
+      releaseHtmlUpgradeCandidateObserverOwnership(candidate);
       candidate.element.replaceChildren(enhancement);
       candidate.enhancement = enhancement;
       completed.add(candidate.outputItemId);
       releaseHtmlUpgradeCandidateDeadline(candidate);
+      releaseHtmlUpgradeCandidateAbortOwnership(candidate);
       candidate.abortListener = () => {
         if (candidates.get(candidate.outputItemId) !== candidate) return;
         retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
@@ -217,6 +251,7 @@ function retireHtmlUpgradeCandidate(
 function releaseHtmlUpgradeCandidateAsyncOwnership(candidate: InlineUpgradeCandidate): void {
   releaseHtmlUpgradeCandidateDeadline(candidate);
   releaseHtmlUpgradeCandidateAbortOwnership(candidate);
+  releaseHtmlUpgradeCandidateObserverOwnership(candidate);
 }
 
 function releaseHtmlUpgradeCandidateDeadline(candidate: InlineUpgradeCandidate): void {
@@ -227,6 +262,11 @@ function releaseHtmlUpgradeCandidateDeadline(candidate: InlineUpgradeCandidate):
 function releaseHtmlUpgradeCandidateAbortOwnership(candidate: InlineUpgradeCandidate): void {
   if (candidate.abortListener) candidate.signal.removeEventListener("abort", candidate.abortListener);
   candidate.abortListener = undefined;
+}
+
+function releaseHtmlUpgradeCandidateObserverOwnership(candidate: InlineUpgradeCandidate): void {
+  candidate.ownershipObserver?.disconnect();
+  candidate.ownershipObserver = undefined;
 }
 
 function isHtmlRendererContext(context: RendererContext): context is HtmlRendererContext {
@@ -244,6 +284,13 @@ function parseInlineUpgradeResponse(message: unknown):
       readonly payload: unknown;
     }
   | {
+      readonly kind: "openWrangler.inlinePending";
+      readonly token: string;
+      readonly outputItemId: string;
+      readonly byteLength: number;
+      readonly sha256: string;
+    }
+  | {
       readonly kind: "openWrangler.inlineRevoke";
       readonly token: string;
       readonly outputItemId: string;
@@ -254,7 +301,9 @@ function parseInlineUpgradeResponse(message: unknown):
   if (typeof message !== "object" || message === null) return undefined;
   const candidate = message as Record<string, unknown>;
   if (
-    (candidate.kind !== "openWrangler.inlineUpgrade" && candidate.kind !== "openWrangler.inlineRevoke") ||
+    (candidate.kind !== "openWrangler.inlineUpgrade" &&
+      candidate.kind !== "openWrangler.inlinePending" &&
+      candidate.kind !== "openWrangler.inlineRevoke") ||
     candidate.protocol !== INLINE_UPGRADE_PROTOCOL ||
     typeof candidate.token !== "string" ||
     candidate.token.length !== 32 ||
@@ -280,6 +329,13 @@ function parseInlineUpgradeResponse(message: unknown):
         byteLength: number;
         sha256: string;
         payload: unknown;
+      }
+    | {
+        kind: "openWrangler.inlinePending";
+        token: string;
+        outputItemId: string;
+        byteLength: number;
+        sha256: string;
       }
     | {
         kind: "openWrangler.inlineRevoke";

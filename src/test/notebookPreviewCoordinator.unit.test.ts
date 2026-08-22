@@ -137,7 +137,10 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 }));
 
 import { NotebookFormatterPreparationPendingError } from "../extension/notebooks/kernelBridge";
-import { NotebookPreviewCoordinator } from "../extension/notebooks/notebookPreviewCoordinator";
+import {
+  NotebookPreviewCoordinator,
+  onDidTerminateNotebookPreviewProviderPrompt
+} from "../extension/notebooks/notebookPreviewCoordinator";
 
 describe("NotebookPreviewCoordinator", () => {
   beforeEach(() => {
@@ -246,6 +249,10 @@ describe("NotebookPreviewCoordinator", () => {
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
     await vi.runOnlyPendingTimersAsync();
+    expect(mocks.information).not.toHaveBeenCalled();
+    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
+
+    await vi.runOnlyPendingTimersAsync();
 
     expect(mocks.information).toHaveBeenCalledOnce();
     expect(mocks.updateSetting).toHaveBeenCalledWith("notebookPreviewProvider", "dataWrangler", 1);
@@ -262,10 +269,32 @@ describe("NotebookPreviewCoordinator", () => {
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
     await vi.runOnlyPendingTimersAsync();
+    expect(mocks.information).not.toHaveBeenCalled();
+    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
+
+    await vi.runOnlyPendingTimersAsync();
 
     expect(mocks.information).toHaveBeenCalledOnce();
     expect(mocks.updateSetting).toHaveBeenCalledWith("notebookPreviewProvider", "openWrangler", 1);
     expect(mocks.prepare).toHaveBeenCalledOnce();
+    coordinator.dispose();
+  });
+
+  it("publishes one terminal signal when the unresolved provider prompt is dismissed", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    const termination = vi.fn();
+    const subscription = onDidTerminateNotebookPreviewProviderPrompt(termination);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(termination).toHaveBeenCalledOnce();
+    expect(mocks.updateSetting).not.toHaveBeenCalled();
+    subscription.dispose();
     coordinator.dispose();
   });
 

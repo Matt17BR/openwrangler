@@ -29,9 +29,19 @@ const rendererMocks = vi.hoisted(() => ({
     ((message: unknown, editor: NotebookEditor | undefined) => Promise<boolean>) | undefined,
   bridgeDisposals: 0,
   registerFormatters: true,
+  previewProvider: "ask" as "ask" | "openWrangler" | "dataWrangler" | "disabled",
+  dataWranglerInstalled: false,
   configurationListeners: [] as Array<(event: { affectsConfiguration(section: string): boolean }) => void>,
   extensionListeners: [] as Array<() => void>,
-  visibleEditorListeners: [] as Array<() => void>
+  visibleEditorListeners: [] as Array<() => void>,
+  providerPromptTerminationListeners: [] as Array<() => void>
+}));
+
+vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
+  onDidTerminateNotebookPreviewProviderPrompt: (listener: () => void) => {
+    rendererMocks.providerPromptTerminationListeners.push(listener);
+    return { dispose: () => undefined };
+  }
 }));
 
 vi.mock("vscode", () => ({
@@ -92,6 +102,8 @@ vi.mock("vscode", () => ({
     }
   },
   extensions: {
+    getExtension: (id: string) =>
+      id === "ms-toolsai.datawrangler" && rendererMocks.dataWranglerInstalled ? { id } : undefined,
     onDidChange: (listener: () => void) => {
       rendererMocks.extensionListeners.push(listener);
       return { dispose: () => undefined };
@@ -100,7 +112,8 @@ vi.mock("vscode", () => ({
 }));
 
 vi.mock("../extension/configuration", () => ({
-  getSetting: <T>(_key: string, fallback: T): T => fallback
+  getSetting: <T>(key: string, fallback: T): T =>
+    (key === "notebookPreviewProvider" ? rendererMocks.previewProvider : fallback) as T
 }));
 
 vi.mock("../extension/webviewPanel", () => ({
@@ -154,9 +167,12 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlinePostResult = undefined;
     rendererMocks.bridgeDisposals = 0;
     rendererMocks.registerFormatters = true;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = false;
     rendererMocks.configurationListeners.length = 0;
     rendererMocks.extensionListeners.length = 0;
     rendererMocks.visibleEditorListeners.length = 0;
+    rendererMocks.providerPromptTerminationListeners.length = 0;
   });
 
   it("opens the primary renderer action as the exact current live variable without pinning the saved backend", () => {
@@ -1226,6 +1242,158 @@ describe("notebook renderer messaging", () => {
     expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
+  it("retains the exact first HTML candidate until an unresolved provider choice selects Open Wrangler", async () => {
+    const document = notebook("file:///workspace/provider-pending.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const binding = inlineBinding(document, exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
+    register(tracker);
+    installCanonicalRuntimeResponses(document, "a");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("a") });
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts).toEqual([
+      {
+        editor: exactEditor,
+        message: expect.objectContaining({
+          kind: "openWrangler.inlinePending",
+          token: "a".repeat(32),
+          outputItemId: "output-a"
+        })
+      }
+    ]);
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+    expect(rendererMocks.activeEditorReads).toBe(0);
+
+    rendererMocks.previewProvider = "openWrangler";
+    rendererMocks.registerFormatters = true;
+    for (const listener of rendererMocks.configurationListeners) {
+      listener({ affectsConfiguration: (section) => section === "openWrangler.notebookPreviewProvider" });
+    }
+    await settleMessages();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledWith(
+      exactEditor,
+      { byteLength: 37, sha256: "a".repeat(64) },
+      expect.anything()
+    );
+    expect(rendererMocks.inlinePosts.at(-1)).toMatchObject({
+      editor: exactEditor,
+      message: { kind: "openWrangler.inlineUpgrade", token: "a".repeat(32), outputItemId: "output-a" }
+    });
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+    expect(rendererMocks.activeEditorReads).toBe(0);
+  });
+
+  it("revokes a provider-pending candidate without runtime work when Data Wrangler is selected", async () => {
+    const document = notebook("file:///workspace/provider-pending-data-wrangler.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const tracker = { bindInlineUpgrade: vi.fn() };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("b") });
+    await settleMessages();
+    rendererMocks.previewProvider = "dataWrangler";
+    for (const listener of rendererMocks.configurationListeners) {
+      listener({ affectsConfiguration: (section) => section === "openWrangler.notebookPreviewProvider" });
+    }
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind: string }).kind)).toEqual([
+      "openWrangler.inlinePending",
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+  });
+
+  it("revokes a provider-pending candidate when the unresolved modal is dismissed", async () => {
+    const document = notebook("file:///workspace/provider-pending-dismissed.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const tracker = { bindInlineUpgrade: vi.fn() };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("d") });
+    await settleMessages();
+    for (const listener of rendererMocks.providerPromptTerminationListeners) listener();
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind: string }).kind)).toEqual([
+      "openWrangler.inlinePending",
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+  });
+
+  it("sends provider-pending revocation before renderer messaging disposal latches", async () => {
+    const document = notebook("file:///workspace/provider-pending-disposal.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const { context } = register({ bindInlineUpgrade: vi.fn() });
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("e") });
+    await settleMessages();
+    for (const subscription of context.subscriptions) subscription.dispose();
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind: string }).kind)).toEqual([
+      "openWrangler.inlinePending",
+      "openWrangler.inlineRevoke"
+    ]);
+  });
+
+  it("releases a provider-pending candidate when its exact renderer cannot accept the receipt", async () => {
+    const document = notebook("file:///workspace/provider-pending-undelivered.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    rendererMocks.inlinePostResult = async (message) =>
+      (message as { kind?: string }).kind !== "openWrangler.inlinePending";
+    const tracker = { bindInlineUpgrade: vi.fn() };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("c") });
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind: string }).kind)).toEqual([
+      "openWrangler.inlinePending",
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+  });
+
   it("cancels a queued pre-eligibility candidate when its exact sender disappears", async () => {
     const document = notebook("file:///workspace/queued-sender.ipynb");
     const exactEditor = editor(document);
@@ -1782,6 +1950,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.notebookDocuments.push(document);
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "dataWrangler";
     const tracker = { bindInlineUpgrade: vi.fn() };
     register(tracker);
 
