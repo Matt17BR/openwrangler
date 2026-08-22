@@ -716,8 +716,10 @@ const unresolvedVisibleNamedEntity = /&[a-z][a-z0-9]*;/iu;
 const visibleEntityShape = /&[^\s&<>;]*;/gu;
 const validNumericEntity = /^&#(?:[0-9]+|x[0-9a-f]+);$/iu;
 const validNamedEntityShape = /^&[a-z][a-z0-9]*;$/iu;
+const cleaningHistorySentenceTerminal = /\p{Sentence_Terminal}/u;
 const cleaningHistoryRenderedBoundaryCodePoints = new Set([
-  0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x0589, 0x061b, 0x061f, 0x0964, 0x1362, 0x2028, 0x2029, 0x3002
+  0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x0589, 0x061b, 0x061f, 0x06d4, 0x0964, 0x0965, 0x1362, 0x1367, 0x1368, 0x2028, 0x2029,
+  0x3002
 ]);
 const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
   connectorRoles: Object.freeze({
@@ -755,6 +757,7 @@ const cleaningHistoryClauseBoundaryGrammar = Object.freeze({
 });
 const cleaningHistoryClauseConnectorRoles = cleaningHistoryClauseBoundaryGrammar.connectorRoles;
 const cleaningHistoryClausePunctuationRoles = cleaningHistoryClauseBoundaryGrammar.punctuationRoles;
+const cleaningHistoryPassiveCapabilityAuxiliaries = new Set(["am", "are", "be", "been", "being", "is", "was", "were"]);
 const cleaningHistoryStatementPunctuationSource = Object.entries(cleaningHistoryClausePunctuationRoles)
   .filter(([, role]) => role === "statement")
   .map(([punctuation]) => (punctuation === "\n" ? "\\n" : punctuation))
@@ -960,6 +963,16 @@ function normalizeVisibleMarkdownText(value, label, { validateEntities = true } 
     .replace(/[\u02bc\u2018\u2019\uff07]/gu, "'")
     .replace(/[\u2010\u2011\ufe63\uff0d]/gu, "-")
     .replace(/[\u2012\u2013\u2015\u2212\u2e3a\u2e3b\ufe58]/gu, " ");
+  if (validateEntities) {
+    for (const character of normalized) {
+      if (
+        cleaningHistorySentenceTerminal.test(character) &&
+        cleaningHistoryClausePunctuationRoles[character] === undefined
+      ) {
+        throw new Error(`${label} contains an unsupported visible sentence terminal.`);
+      }
+    }
+  }
   if (validateEntities && unresolvedVisibleNamedEntity.test(normalized)) {
     throw new Error(`${label} contains an unresolved visible named Markdown entity.`);
   }
@@ -1742,6 +1755,15 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length) {
   return { owner: "none", scope: "unknown", explicit: false };
 }
 
+function cleaningHistoryPassiveCapabilityContinuation(tokens, predicateIndex) {
+  if (predicateIndex <= 0 || cleaningHistoryPredicateCandidate(tokens, predicateIndex) === undefined) return false;
+  const prefix = tokens.slice(0, predicateIndex);
+  return (
+    prefix.some((token) => cleaningHistoryPassiveCapabilityAuxiliaries.has(token)) &&
+    prefix.every((token) => isCleaningHistoryGrammarToken(token))
+  );
+}
+
 function cleaningHistorySemanticPredicateIndex(kind, tokens, initialIndex) {
   const status =
     /^(?:available|blocked|disabled|disallowed|enabled|forbidden|impossible|limited|offered|prohibited|reserved|restricted|supported|unavailable|unsupported)$/u;
@@ -1976,6 +1998,7 @@ function cleaningHistoryPredicateRecords(rendered) {
       } else if (
         subject.owner === "none" &&
         currentSubject?.owner === "cleaning" &&
+        cleaningHistoryPassiveCapabilityContinuation(segment.tokens, subjectProbeIndex) &&
         (cleaningHistoryConnectorRole(segment.separatorBefore) !== undefined ||
           cleaningHistoryClausePunctuationRoles[segment.separatorBefore] === "segment")
       ) {
@@ -1990,7 +2013,7 @@ function cleaningHistoryPredicateRecords(rendered) {
         if (atomicExceptionIndex >= 0) {
           const punctuationRole = cleaningHistoryClausePunctuationRoles[segment.separatorBefore];
           if (
-            priorRecord?.kind === "undo" &&
+            priorRecord !== undefined &&
             priorRecord.subject.owner === "cleaning" &&
             (punctuationRole === "segment" || (connectorExceptionTokens !== undefined && segment.startIndex > 1))
           ) {
@@ -2053,8 +2076,7 @@ function cleaningHistoryPredicateRecords(rendered) {
           predicateIndex,
           subject: recordSubject,
           antecedent: currentSubject?.owner === "cleaning" ? currentSubject : previousStatementSubject,
-          exceptionTokens:
-            predicate.kind === "undo" && recordSubject.owner === "cleaning" ? atomicExceptionForPredicate : undefined
+          exceptionTokens: recordSubject.owner === "cleaning" ? atomicExceptionForPredicate : undefined
         };
         statementRecords.push(record);
         records.push(record);
@@ -2097,7 +2119,7 @@ function cleaningHistoryRecordContradicts(record) {
     if (polarity === "negative") return true;
     return prior || cleaningHistoryHasMultiTarget(targetTokens) || record.subject.scope === "set" || !latest;
   }
-  if (record.kind === "reorder") return polarity === "positive";
+  if (record.kind === "reorder") return polarity === "positive" || exception.present;
   if (cleaningHistoryInvocationScoped(localTokens)) return false;
   if (polarity === "negative") return true;
   const restrictsImplementedCapability =
