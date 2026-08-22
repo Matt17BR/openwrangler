@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  KernelBridge,
   NotebookFormatterPreparationPendingError,
   isIdempotentKernelReadRequest,
   withKernelSessionIdentity
@@ -33,6 +34,7 @@ import {
   openedResponse,
   openRequest,
   resetKernelBridgeTestState,
+  resultBinding,
   setOpenNotebookDocuments,
   textKernelExecution,
   unpinnedOpenRequest
@@ -533,6 +535,65 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
     ).rejects.toThrow("recover the live variable on its originating kernel");
 
     expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(requestsB).toEqual([]);
+  });
+
+  it("never redirects a panel open away from its exact executed-result kernel during bootstrap", async () => {
+    const document = notebookDocument("/workspace/pinned-inline-panel.ipynb");
+    setOpenNotebookDocuments(document);
+    const bootstrapStarted = deferred<void>();
+    const releaseBootstrap = deferred<void>();
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const kernelA = controllableKernel((code) => {
+      if (!code.includes("__ow_payload =")) {
+        return (async function* () {
+          bootstrapStarted.resolve(undefined);
+          await releaseBootstrap.promise;
+          yield* [];
+        })();
+      }
+      return kernelExecution(code, (request) => {
+        requestsA.push(request);
+        return request.kind === "openSession"
+          ? openedResponse(request.requestedSessionId!, "polars")
+          : initializedResponse;
+      });
+    });
+    const kernelB = controlledFakeKernel((request) => {
+      requestsB.push(request);
+      return request.kind === "openSession"
+        ? openedResponse(request.requestedSessionId!, "polars")
+        : initializedResponse;
+    });
+    let currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const binding = resultBinding(kernelA.kernel, "polars");
+    type PinnedKernelBridgeConstructor = new (
+      context: vscode.ExtensionContext,
+      notebook: vscode.NotebookDocument,
+      registerFormatters: boolean,
+      fileOperations: Record<string, never>,
+      requiredBinding: typeof binding
+    ) => KernelBridge;
+    const PinnedKernelBridge = KernelBridge as unknown as PinnedKernelBridgeConstructor;
+    const bridge = new PinnedKernelBridge(
+      { extensionPath: process.cwd() } as vscode.ExtensionContext,
+      document,
+      true,
+      {},
+      binding
+    );
+
+    const opening = bridge.request(openRequest("pinned-inline-panel", "polars"));
+    await bootstrapStarted.promise;
+    currentKernel = kernelB.kernel;
+    releaseBootstrap.resolve(undefined);
+
+    await expect(opening).rejects.toThrow("selected notebook kernel changed");
+    expect(requestsA).toEqual([]);
     expect(requestsB).toEqual([]);
   });
 
