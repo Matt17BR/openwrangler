@@ -12,12 +12,7 @@ import { SessionCoordinator } from "../sessionCoordinator";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../sessionResponseValidation";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters, type ExecutedNotebookCellResultBinding } from "./kernelBridge";
-import {
-  INLINE_UPGRADE_MAX_CELLS,
-  INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS,
-  type InlineNotebookCellResultBinding,
-  NotebookCellResultTracker
-} from "./notebookCellResult";
+import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 interface OpenInOpenWranglerMessage {
@@ -427,7 +422,6 @@ async function runInlineUpgradeWork(
   try {
     const editor = operation.editor;
     if (!editor) return;
-    if (!hasBoundedInlineUpgradeOutputContainers(editor)) return;
     const binding = await tracker.bindInlineUpgrade(
       editor,
       { byteLength: operation.candidate.byteLength, sha256: operation.candidate.sha256 },
@@ -480,23 +474,6 @@ async function runInlineUpgradeWork(
       terminateInlineUpgradeOperation(state, operation);
     }
   }
-}
-
-function hasBoundedInlineUpgradeOutputContainers(editor: vscode.NotebookEditor): boolean {
-  let cells: readonly vscode.NotebookCell[];
-  try {
-    cells = editor.notebook.getCells();
-  } catch {
-    return false;
-  }
-  if (cells.length > INLINE_UPGRADE_MAX_CELLS) return false;
-  let outputContainers = 0;
-  for (const cell of cells) {
-    const count = cell.outputs.length;
-    if (count > INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - outputContainers) return false;
-    outputContainers += count;
-  }
-  return true;
 }
 
 async function createInlineUpgradePayload(

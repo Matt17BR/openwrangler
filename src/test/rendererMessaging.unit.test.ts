@@ -566,7 +566,62 @@ describe("notebook renderer messaging", () => {
     }
   }, 30_000);
 
-  it("rejects an over-limit empty-output prefix before binding or touching a trailing match", async () => {
+  it("does not consume an overridden cell iterator before delegating topology to the tracker", async () => {
+    let iteratorReads = 0;
+    let outputsReads = 0;
+    const cell = Object.defineProperty({}, "outputs", {
+      get: () => {
+        outputsReads += 1;
+        return [];
+      }
+    });
+    const cells = [cell];
+    Object.defineProperty(cells, Symbol.iterator, {
+      value: () => ({
+        next: () => {
+          iteratorReads += 1;
+          return iteratorReads <= 2 ? { done: false, value: cell } : { done: true, value: undefined };
+        }
+      })
+    });
+    const document = notebook("file:///workspace/over-yielding-cells.ipynb", false, cells);
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("5") });
+    await settleMicrotasks();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(iteratorReads).toBe(0);
+    expect(outputsReads).toBe(0);
+  });
+
+  it("does not read a caller-controlled outputs getter before the tracker", async () => {
+    let outputsReads = 0;
+    const cell = Object.defineProperty({}, "outputs", {
+      get: () => {
+        outputsReads += 1;
+        throw new Error("renderer entrypoint must not read cell outputs");
+      }
+    });
+    const document = notebook("file:///workspace/hostile-outputs.ipynb", false, [cell]);
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("5") });
+    await settleMicrotasks();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(outputsReads).toBe(0);
+  });
+
+  it("delegates an over-limit empty-output prefix without touching a trailing match", async () => {
     let trailingItemsRead = 0;
     const emptyOutput = { items: [] };
     const trailingOutput = Object.defineProperty({}, "items", {
@@ -587,7 +642,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("5") });
     await settleMicrotasks();
 
-    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
     expect(trailingItemsRead).toBe(0);
     expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
       kind: "openWrangler.inlineRevoke",
