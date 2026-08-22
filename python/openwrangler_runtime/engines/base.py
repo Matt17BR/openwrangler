@@ -767,6 +767,11 @@ class DataFrameEngine(ABC):
         for module_name in self.runtime_modules:
             import_module(module_name)
 
+    def validate_runtime(self) -> None:
+        """Validate backend-wide requirements before inspecting a source value."""
+
+        return None
+
     def interrupt(self) -> None:
         """Request interruption of current work when the engine supports it."""
         return None

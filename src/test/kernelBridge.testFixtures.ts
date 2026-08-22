@@ -136,12 +136,14 @@ function controlledPySparkKernel(
 
 function controlledNonPySparkKernel(
   backend: Exclude<TestBackend, "pyspark">,
-  requests: OpenWranglerRequest[]
+  requests: OpenWranglerRequest[],
+  onPreflight: () => void = () => undefined
 ): ControlledPySparkKernel {
   let preflightExecutions = 0;
   const controller = controllableKernel((code) => {
     if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
       preflightExecutions += 1;
+      onPreflight();
       return pySparkPreflightExecution(code, false, null);
     }
     return kernelExecution(code, (request) => {

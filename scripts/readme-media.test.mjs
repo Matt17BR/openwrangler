@@ -483,7 +483,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /## Workbench/u);
   assert.match(
     readme,
-    /Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4\.2 notebook viewing, and preview native R\./u
+    /Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4\.2\.x notebook viewing, and preview native R\./u
   );
   assert.match(
     readme,
@@ -521,7 +521,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
   assert.match(
     readme,
-    /Local PySpark 4\.2\.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles/u
+    /Local stable\/final PySpark 4\.2\.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles/u
   );
   assert.match(
     readme,
@@ -600,7 +600,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /does not count or cache the whole PySpark dataframe before showing the first page; the row total\s+appears after the final page/u
   );
   assert.match(readme, /PySpark support is notebook-only and view-only/u);
-  assert.match(readme, /existing local 4\.2 Classic or Connect session/u);
+  assert.match(readme, /existing local stable\/final PySpark 4\.2\.x Classic or Connect session/u);
   assert.match(readme, /PySpark loads pages sequentially/u);
   assert.match(readme, /toolbar says \*\*Source order\*\* until you add a sort, then \*\*Sorted\*\*/u);
   assert.match(readme, /rows tied across every sort key can move when it reruns the DataFrame/u);

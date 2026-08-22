@@ -5,6 +5,7 @@ import {
   EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR,
   EXTENSION_HOST_TEST_SELECTOR_ERROR,
   parseExtensionHostPhaseSelection,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   type ExtensionHostPhaseHandlers
 } from "./extensionHost/phaseDispatch";
 
@@ -40,8 +41,8 @@ function recordingHandlers(calls: string[]): ExtensionHostPhaseHandlers {
     pythonEnvironment: async () => {
       calls.push("python-environment");
     },
-    releasedJupyter: async (phase) => {
-      calls.push(`jupyter:${phase}`);
+    releasedJupyter: async (phase, selector) => {
+      calls.push(`jupyter:${phase}:${selector ?? "default"}`);
     },
     remoteWorkspace: async () => {
       calls.push("remote-workspace");
@@ -85,6 +86,20 @@ describe("extension-host phase selection", () => {
     }
   });
 
+  it("accepts the PySpark prerelease denial only for its explicit VS Code selector", () => {
+    expect(selection("jupyter-pyspark", PYSPARK_PRERELEASE_DENIAL_SELECTOR, "vscode").selector).toBe(
+      PYSPARK_PRERELEASE_DENIAL_SELECTOR
+    );
+    for (const [phase, editor] of [
+      ["jupyter-pyspark", "cursor"],
+      ["jupyter-allow", "vscode"]
+    ] as const) {
+      expect(() => selection(phase, PYSPARK_PRERELEASE_DENIAL_SELECTOR, editor)).toThrow(
+        EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR
+      );
+    }
+  });
+
   it("accepts every R selector only in the local released-R phase", () => {
     for (const selector of [
       "core-operations",
@@ -114,12 +129,18 @@ describe("extension-host phase dispatch", () => {
     ["jupyter-coexist-open-restart", undefined, undefined, "coexistence:jupyter-coexist-open-restart"],
     ["jupyter-coexist-data-select", undefined, undefined, "coexistence:jupyter-coexist-data-select"],
     ["jupyter-coexist-data-restart", undefined, undefined, "coexistence:jupyter-coexist-data-restart"],
-    ["jupyter-deny", undefined, undefined, "jupyter:jupyter-deny"],
-    ["jupyter-allow", undefined, undefined, "jupyter:jupyter-allow"],
-    ["jupyter-pyspark", undefined, undefined, "jupyter:jupyter-pyspark"],
-    ["jupyter-remote", undefined, undefined, "jupyter:jupyter-remote"],
-    ["jupyter-r", "core-operations", undefined, "jupyter:jupyter-r"],
-    ["jupyter-r-remote", undefined, undefined, "jupyter:jupyter-r-remote"],
+    ["jupyter-deny", undefined, undefined, "jupyter:jupyter-deny:default"],
+    ["jupyter-allow", undefined, undefined, "jupyter:jupyter-allow:default"],
+    ["jupyter-pyspark", undefined, undefined, "jupyter:jupyter-pyspark:default"],
+    [
+      "jupyter-pyspark",
+      PYSPARK_PRERELEASE_DENIAL_SELECTOR,
+      "vscode",
+      `jupyter:jupyter-pyspark:${PYSPARK_PRERELEASE_DENIAL_SELECTOR}`
+    ],
+    ["jupyter-remote", undefined, undefined, "jupyter:jupyter-remote:default"],
+    ["jupyter-r", "core-operations", undefined, "jupyter:jupyter-r:core-operations"],
+    ["jupyter-r-remote", undefined, undefined, "jupyter:jupyter-r-remote:default"],
     ["python-environment", undefined, undefined, "python-environment"],
     ["platform-smoke", undefined, undefined, "platform-smoke"],
     ["remote-workspace", undefined, undefined, "remote-workspace"],
