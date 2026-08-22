@@ -1171,6 +1171,58 @@ test("keeps a Windows snapshot child on its pinned parent after a junction-style
   assert.equal((await receipt(task)).eligible, false);
 });
 
+test("closes an executable snapshot reader when its first stat fails", async (context) => {
+  const value = await fixture(context, "snapshot-reader-stat-failure");
+  const executable = await QUALIFICATION_ISOLATION_TEST_BOUNDARY.openExecutable(gitExecutable());
+  let readerClosed = false;
+  try {
+    await assert.rejects(
+      QUALIFICATION_ISOLATION_TEST_BOUNDARY.createExecutableSnapshot(executable, value.root, {
+        readerCloseForTest: async (reader) => {
+          await reader.close();
+          readerClosed = true;
+        },
+        readerStatForTest() {
+          throw new Error("injected snapshot reader stat failure");
+        },
+        snapshotBesideOwnedExecutable: false
+      }),
+      /injected snapshot reader stat failure/u
+    );
+  } finally {
+    await QUALIFICATION_ISOLATION_TEST_BOUNDARY.closePinnedExecutable(executable);
+  }
+  assert.equal(readerClosed, true);
+});
+
+test("preserves snapshot identity failure before its reader close failure", async (context) => {
+  const value = await fixture(context, "snapshot-reader-identity-close-failure");
+  const executable = await QUALIFICATION_ISOLATION_TEST_BOUNDARY.openExecutable(gitExecutable());
+  try {
+    await assert.rejects(
+      QUALIFICATION_ISOLATION_TEST_BOUNDARY.createExecutableSnapshot(executable, value.root, {
+        readerCloseForTest: async (reader) => {
+          await reader.close();
+          throw new Error("injected snapshot reader close failure");
+        },
+        async readerStatForTest(reader) {
+          const value = await reader.stat({ bigint: true });
+          return { ...value, ino: value.ino + 1n };
+        },
+        snapshotBesideOwnedExecutable: false
+      }),
+      (error) => {
+        assert.ok(error instanceof AggregateError);
+        assert.match(error.errors[0].message, /snapshot identity changed/u);
+        assert.match(error.errors[1].message, /snapshot reader close failure/u);
+        return true;
+      }
+    );
+  } finally {
+    await QUALIFICATION_ISOLATION_TEST_BOUNDARY.closePinnedExecutable(executable);
+  }
+});
+
 test("charges Python payload path bytes before retaining a near-limit listing for sorting", async (context) => {
   const value = await fixture(context, "python-payload-preallocation-budget");
   const task = await addTask(value, "python-payload-preallocation-budget");
@@ -2836,6 +2888,109 @@ test("bounds a never-settling forced close after both termination signals", asyn
   assert.ok(Date.now() - started < 1_000, "forced close exceeded its bounded wait");
 });
 
+test("delegates package-root discovery to the owned worker", async () => {
+  const candidate = join(tmpdir(), "not-inspected-on-the-main-thread");
+  let workerOptions;
+  class ResultWorker extends EventEmitter {
+    terminate() {
+      return Promise.resolve(0);
+    }
+  }
+  const value = await QUALIFICATION_ISOLATION_TEST_BOUNDARY.discoverPythonPayloads([candidate], "/unused", {
+    includeVenv: false,
+    requireDirectoryRoots: true,
+    timeoutMilliseconds: 100,
+    workerFactoryForTest(_url, options) {
+      workerOptions = options;
+      const worker = new ResultWorker();
+      setImmediate(() =>
+        worker.emit("message", {
+          protocol: "openwrangler-python-payload-scan-v1",
+          type: "result",
+          value: { directories: [], linkedDirectories: [], payloads: [], roots: [candidate], snapshots: [] }
+        })
+      );
+      return worker;
+    }
+  });
+  assert.deepEqual(workerOptions.workerData.searchPaths, [candidate]);
+  assert.deepEqual(value.roots, [candidate]);
+});
+
+test("starts the absolute Python payload deadline before pre-worker discovery", async () => {
+  let constructed = false;
+  class DeadlineWorker extends EventEmitter {
+    terminate() {
+      return Promise.resolve(0);
+    }
+  }
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.discoverPythonPayloads([], "/unused", {
+      async beforeWorkerConstructionForTest({ deadlineNanoseconds }) {
+        assert.equal(typeof deadlineNanoseconds, "bigint");
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 15));
+      },
+      includeVenv: false,
+      timeoutMilliseconds: 5,
+      workerFactoryForTest() {
+        constructed = true;
+        return new DeadlineWorker();
+      }
+    }),
+    /Python payload discovery exceeded its absolute deadline/u
+  );
+  assert.equal(constructed, true);
+});
+
+test("owns the package-root discovery deadline before qualification inspects a root", async (context) => {
+  const value = await fixture(context, "python-root-pre-discovery-deadline");
+  const task = await addTask(value, "python-root-pre-discovery-deadline");
+  const packageRoot = join(value.root, "deadline-package-root");
+  await mkdir(packageRoot, { mode: 0o700 });
+  await writeFile(join(packageRoot, "ordinary.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  let deadlineObserved = false;
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [packageRoot],
+      assignmentPath: task.assignmentPath,
+      async beforePythonPayloadWorkerConstructionForTest({ deadlineNanoseconds }) {
+        deadlineObserved = true;
+        assert.equal(typeof deadlineNanoseconds, "bigint");
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 15));
+      },
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      pythonPayloadScanTimeoutMsForTest: 5,
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python payload discovery exceeded its absolute deadline/u
+  );
+  assert.equal(deadlineObserved, true);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("charges synchronous worker construction to the existing absolute deadline", async () => {
+  class DeadlineWorker extends EventEmitter {
+    terminate() {
+      return Promise.resolve(0);
+    }
+  }
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.discoverPythonPayloads([], "/unused", {
+      includeVenv: false,
+      timeoutMilliseconds: 5,
+      workerFactoryForTest() {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+        return new DeadlineWorker();
+      }
+    }),
+    /Python payload discovery exceeded its absolute deadline/u
+  );
+});
+
 test("terminates a never-settling Python payload scan at one absolute deadline", async () => {
   const worker = new Worker("setInterval(() => {}, 1_000)", { eval: true });
   let exited = false;
@@ -2843,26 +2998,83 @@ test("terminates a never-settling Python payload scan at one absolute deadline",
     exited = true;
   });
   await assert.rejects(
-    QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, 25),
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+      deadlineNanoseconds: process.hrtime.bigint() + 25_000_000n
+    }),
     /Python payload discovery exceeded its absolute deadline/u
   );
   assert.equal(exited, true);
 });
 
-test("aggregates a Python payload scan deadline before worker-settlement failure", async () => {
+test("bounds uncertain Python payload worker termination and ignores late progress", async () => {
+  let progress = 0;
+  class StalledWorker extends EventEmitter {
+    terminate() {
+      setImmediate(() =>
+        this.emit("message", {
+          protocol: "openwrangler-python-payload-scan-v1",
+          type: "progress",
+          value: { entries: 1 }
+        })
+      );
+      return new Promise(() => {});
+    }
+  }
+  const worker = new StalledWorker();
+  const started = Date.now();
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+      deadlineNanoseconds: process.hrtime.bigint() + 5_000_000n,
+      onProgress() {
+        progress += 1;
+      },
+      settlementTimeoutMilliseconds: 20
+    }),
+    /worker ownership is uncertain after its settlement deadline/u
+  );
+  await new Promise((resolveDelay) => setImmediate(resolveDelay));
+  assert.equal(progress, 0);
+  assert.ok(Date.now() - started < 1_000, "worker settlement exceeded its fixed bound");
+});
+
+test("bounds raw Python payload worker diagnostics", async () => {
   class FailingWorker extends EventEmitter {
-    async terminate() {
-      throw new Error("worker termination failed");
+    terminate() {
+      return Promise.resolve(0);
     }
   }
   const worker = new FailingWorker();
-  await assert.rejects(QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, 5), (error) => {
-    assert.ok(error instanceof AggregateError);
-    assert.match(error.message, /discovery and worker settlement failed/u);
-    assert.match(error.errors[0].message, /absolute deadline/u);
-    assert.match(error.errors[1].message, /worker termination failed/u);
+  const result = QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+    deadlineNanoseconds: process.hrtime.bigint() + 1_000_000_000n
+  });
+  worker.emit("error", new Error("x".repeat(20_000)));
+  await assert.rejects(result, (error) => {
+    assert.ok(Buffer.byteLength(error.message, "utf8") <= 4_096);
     return true;
   });
+});
+
+test("bounds termination diagnostics after the Python payload deadline", async () => {
+  class FailingWorker extends EventEmitter {
+    terminate() {
+      throw new Error(`worker termination failed ${"x".repeat(20_000)}`);
+    }
+  }
+  const worker = new FailingWorker();
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, {
+      deadlineNanoseconds: process.hrtime.bigint() + 5_000_000n,
+      settlementTimeoutMilliseconds: 20
+    }),
+    (error) => {
+      assert.match(error.message, /worker ownership is uncertain/u);
+      assert.ok(Buffer.byteLength(error.message, "utf8") <= 4_096);
+      assert.match(error.errors[0].message, /absolute deadline/u);
+      assert.match(error.errors[1].message, /worker termination failed/u);
+      assert.ok(error.errors.every((value) => Buffer.byteLength(value.message, "utf8") <= 4_096));
+      return true;
+    }
+  );
 });
 
 test("attempts every owned cleanup and preserves primary plus ordered cleanup faults", async () => {

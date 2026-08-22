@@ -42,6 +42,8 @@ const MAX_PYTHON_PAYLOAD_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_PATH_BYTES = 16 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_DIRECTORIES = MAX_PYTHON_PAYLOAD_FILES * 8;
 const DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS = 120_000;
+const DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS = 5_000;
+const MAX_PYTHON_PAYLOAD_SCAN_DIAGNOSTIC_BYTES = 4_096;
 const PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL = "openwrangler-python-payload-scan-v1";
 const MIN_SUPPORTED_CPYTHON_MINOR = 10;
 const MAX_SUPPORTED_CPYTHON_MINOR = 14;
@@ -2344,6 +2346,8 @@ async function createExecutableSnapshot(
     afterChildOpenForTest,
     afterWriteForTest,
     platformForTest = process.platform,
+    readerCloseForTest,
+    readerStatForTest,
     snapshotBesideOwnedExecutable = true
   } = {}
 ) {
@@ -2360,6 +2364,7 @@ async function createExecutableSnapshot(
   const snapshotPath = join(destinationRoot, name);
   const parentPin = await openPinnedDirectory(destinationRoot, "qualification command snapshot parent");
   let writer;
+  let reader;
   let snapshot;
   const digest = createHash("sha256");
   const buffer = Buffer.alloc(64 * 1024);
@@ -2408,16 +2413,16 @@ async function createExecutableSnapshot(
         : platformForTest === "win32"
           ? snapshotPath
           : `/dev/fd/${String(writer.fd)}`;
-    const reader = await open(
+    reader = await open(
       readerPath,
       constants.O_RDONLY | (platformForTest === "win32" ? (constants.O_NOFOLLOW ?? 0) : 0)
     );
-    const readerSnapshot = await reader.stat({ bigint: true });
+    const readerSnapshot = await (readerStatForTest?.(reader) ?? reader.stat({ bigint: true }));
     if (!sameImmutableSnapshot(completed, readerSnapshot)) {
-      await reader.close();
       fail("qualification command snapshot identity changed before it was made executable");
     }
     snapshot = { before: readerSnapshot, handle: reader, path: snapshotPath };
+    reader = undefined;
     await writer.close();
     writer = undefined;
     await verifyPinnedExecutable(snapshot);
@@ -2438,6 +2443,10 @@ async function createExecutableSnapshot(
   } catch (error) {
     await finishWithOwnedCleanup(error, [
       { label: "qualification command snapshot writer", run: () => writer?.close() },
+      {
+        label: "qualification command snapshot reader",
+        run: () => (reader ? (readerCloseForTest ? readerCloseForTest(reader) : reader.close()) : undefined)
+      },
       { label: "qualification command snapshot owner", run: () => closePinnedExecutable(snapshot) },
       { label: "qualification command snapshot parent", run: () => parentPin.handle.close() }
     ]);
@@ -3070,6 +3079,8 @@ async function runOwnedCommand(command, arguments_, options) {
       afterChildOpenForTest: options.executableSnapshotAfterChildOpenForTest,
       afterWriteForTest: options.executableSnapshotAfterWriteForTest,
       platformForTest: platform,
+      readerCloseForTest: options.executableSnapshotReaderCloseForTest,
+      readerStatForTest: options.executableSnapshotReaderStatForTest,
       snapshotBesideOwnedExecutable: options.snapshotBesideOwnedExecutable
     });
     if (platform !== "win32") {
@@ -3989,26 +4000,6 @@ async function capturePythonRuntimeLayout(
   }
 }
 
-async function canonicalExistingPythonRoots(candidates) {
-  const roots = [];
-  for (const candidate of candidates) {
-    let value;
-    try {
-      value = await lstat(candidate, { bigint: true });
-    } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw error;
-    }
-    if (!value.isDirectory() || value.isSymbolicLink()) {
-      fail(`Python package root ${candidate} is not one directory`);
-    }
-    const canonical = await realpath(candidate);
-    if (canonical !== candidate) fail(`Python package root ${candidate} is aliased`);
-    if (!roots.includes(canonical)) roots.push(canonical);
-  }
-  return roots;
-}
-
 function pythonPayloadKind(name, includePackageData = false) {
   const folded = name.toLocaleLowerCase("en-US");
   if (folded === "record") return "record";
@@ -4061,6 +4052,7 @@ async function discoverPythonPayloadsInProcess(
     completeRoots = [],
     followDirectoryLinks = false,
     includeVenv = true,
+    requireDirectoryRoots = false,
     retainedEntryLimit = MAX_PYTHON_PAYLOAD_DIRECTORIES,
     retainedPathByteLimit = MAX_PYTHON_PAYLOAD_PATH_BYTES
   } = {}
@@ -4068,6 +4060,7 @@ async function discoverPythonPayloadsInProcess(
   const directories = new Map();
   const linkedDirectories = [];
   const payloads = new Map();
+  const roots = [];
   const snapshots = new Map();
   const complete = new Set(completeRoots);
   let entries = 0;
@@ -4200,11 +4193,17 @@ async function discoverPythonPayloadsInProcess(
       if (error?.code === "ENOENT") continue;
       throw error;
     }
+    if (requireDirectoryRoots && (!value.isDirectory() || value.isSymbolicLink())) {
+      fail(`Python package root ${candidate} is not one directory`);
+    }
     if (value.isDirectory() && !value.isSymbolicLink()) {
       const target = await realpath(candidate);
+      if (target !== candidate) fail(`Python package root ${candidate} is aliased`);
+      if (!roots.includes(target)) roots.push(target);
       await scanDirectory(candidate, target, false, complete.has(candidate), new Set());
-    } else if (value.isFile() || value.isSymbolicLink()) await addPayload(candidate, "import-archive");
-    else fail(`Python import search path is unsupported: ${candidate}`);
+    } else if (!requireDirectoryRoots && (value.isFile() || value.isSymbolicLink())) {
+      await addPayload(candidate, "import-archive");
+    } else fail(`Python import search path is unsupported: ${candidate}`);
   }
   if (includeVenv) {
     const scriptsRoot = join(venv, process.platform === "win32" ? "Scripts" : "bin");
@@ -4217,6 +4216,7 @@ async function discoverPythonPayloadsInProcess(
     directories: [...directories.values()].sort(byPath),
     linkedDirectories,
     payloads: [...payloads.values()].sort(byPath),
+    roots,
     snapshots
   };
 }
@@ -4236,6 +4236,7 @@ function serializablePythonDiscovery(value) {
       targetSnapshot: pythonDiscoverySnapshot(entry.targetSnapshot)
     })),
     payloads: value.payloads,
+    roots: value.roots,
     snapshots: [...value.snapshots.entries()].map(([path, snapshots]) => [
       path,
       {
@@ -4247,58 +4248,108 @@ function serializablePythonDiscovery(value) {
 }
 
 function boundedScanDiagnostic(value) {
-  const text = value instanceof Error ? value.message : String(value);
+  let text;
+  try {
+    text = value instanceof Error ? value.message : String(value);
+  } catch {
+    text = "Python payload discovery diagnostic could not be rendered";
+  }
   const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= 4096) return text;
-  return `${bytes.subarray(0, 4080).toString("utf8")}…`;
+  if (bytes.length <= MAX_PYTHON_PAYLOAD_SCAN_DIAGNOSTIC_BYTES) return text;
+  let end = MAX_PYTHON_PAYLOAD_SCAN_DIAGNOSTIC_BYTES - Buffer.byteLength("…", "utf8");
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString("utf8")}…`;
 }
 
-async function runOwnedPythonDiscoveryWorker(worker, deadlineMilliseconds, onProgress) {
-  validateBound(deadlineMilliseconds, DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS, "Python payload scan timeout");
+function boundedScanError(value) {
+  return new Error(boundedScanDiagnostic(value));
+}
+
+function pythonPayloadScanDeadline(timeoutMilliseconds) {
+  validateBound(timeoutMilliseconds, DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS, "Python payload scan timeout");
+  return process.hrtime.bigint() + BigInt(timeoutMilliseconds) * 1_000_000n;
+}
+
+function remainingPythonPayloadScanMilliseconds(deadlineNanoseconds) {
+  if (typeof deadlineNanoseconds !== "bigint") fail("Python payload scan deadline is invalid");
+  const remaining = deadlineNanoseconds - process.hrtime.bigint();
+  if (remaining <= 0n) return 0;
+  return Math.max(1, Math.ceil(Number(remaining) / 1_000_000));
+}
+
+async function runOwnedPythonDiscoveryWorker(
+  worker,
+  {
+    deadlineNanoseconds,
+    onProgress,
+    settlementTimeoutMilliseconds = DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS
+  }
+) {
+  validateBound(
+    settlementTimeoutMilliseconds,
+    DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS,
+    "Python payload worker settlement timeout"
+  );
   const controller = new AbortController();
-  const deadline = process.hrtime.bigint() + BigInt(deadlineMilliseconds) * 1_000_000n;
   let progress = Promise.resolve();
   let timer;
-  let settled = false;
+  let terminal = false;
   let workerExited = false;
+  let lateWorkerError;
+  let onMessage;
+  let onError;
+  let onExit;
   const settlement = new Promise((resolveResult, rejectResult) => {
     const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
+      if (terminal) return;
+      terminal = true;
       clearTimeout(timer);
       callback(value);
     };
-    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
-    timer = setTimeout(
-      () => {
-        controller.abort(new Error("Python payload discovery exceeded its absolute deadline"));
-        finish(rejectResult, controller.signal.reason);
-      },
-      Math.max(1, remaining)
-    );
-    worker.on("message", (message) => {
+    const expire = () => {
+      controller.abort(new Error("Python payload discovery exceeded its absolute deadline"));
+      finish(rejectResult, controller.signal.reason);
+    };
+    const remaining = remainingPythonPayloadScanMilliseconds(deadlineNanoseconds);
+    if (remaining === 0) queueMicrotask(expire);
+    else timer = setTimeout(expire, remaining);
+    onMessage = (message) => {
+      if (terminal) return;
       if (message?.protocol !== PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL) {
         finish(rejectResult, new Error("Python payload discovery worker returned an invalid envelope"));
         return;
       }
       if (message.type === "progress") {
-        progress = progress.then(() => onProgress?.(message.value, controller.signal));
-        progress.catch((error) => finish(rejectResult, error));
+        progress = progress.then(() => {
+          if (!controller.signal.aborted) return onProgress?.(message.value, controller.signal);
+        });
+        progress.catch((error) => finish(rejectResult, boundedScanError(error)));
         return;
       }
       if (message.type === "error") {
-        finish(rejectResult, new Error(boundedScanDiagnostic(message.error)));
+        finish(rejectResult, boundedScanError(message.error));
         return;
       }
-      if (message.type === "result") finish(resolveResult, message.value);
-      else finish(rejectResult, new Error("Python payload discovery worker returned an invalid message"));
-    });
-    worker.once("error", (error) => finish(rejectResult, error));
-    worker.once("exit", (code) => {
+      if (message.type === "result") {
+        progress.then(
+          () => finish(resolveResult, message.value),
+          (error) => finish(rejectResult, boundedScanError(error))
+        );
+      } else finish(rejectResult, new Error("Python payload discovery worker returned an invalid message"));
+    };
+    onError = (error) => {
+      const bounded = boundedScanError(error);
+      if (terminal) lateWorkerError ??= bounded;
+      else finish(rejectResult, bounded);
+    };
+    onExit = (code) => {
       workerExited = true;
-      if (!settled)
+      if (!terminal)
         finish(rejectResult, new Error(`Python payload discovery worker exited before settlement (${code})`));
-    });
+    };
+    worker.on("message", onMessage);
+    worker.on("error", onError);
+    worker.once("exit", onExit);
   });
   let primaryError;
   let result;
@@ -4306,18 +4357,37 @@ async function runOwnedPythonDiscoveryWorker(worker, deadlineMilliseconds, onPro
     result = await settlement;
     await progress;
   } catch (error) {
-    primaryError = error;
+    primaryError = boundedScanError(error);
     controller.abort(error);
   }
   controller.abort(primaryError ?? new Error("Python payload discovery completed"));
   let settlementError;
   if (!workerExited) {
     try {
-      await worker.terminate();
+      const termination = Promise.resolve().then(() => worker.terminate());
+      const outcome = await boundedWait(termination, settlementTimeoutMilliseconds);
+      if (outcome === SETTLEMENT_UNCERTAIN) {
+        settlementError = new OwnedProcessTreeError(
+          "Python payload discovery worker ownership is uncertain after its settlement deadline"
+        );
+        settlementError.errors = [];
+      }
     } catch (error) {
-      settlementError = error;
+      const bounded = boundedScanError(error);
+      settlementError = new OwnedProcessTreeError(
+        boundedScanDiagnostic(`Python payload discovery worker ownership is uncertain: ${bounded.message}`)
+      );
+      settlementError.errors = [bounded];
     }
   }
+  settlementError ??= lateWorkerError;
+  if (settlementError instanceof OwnedProcessTreeError) {
+    settlementError.errors = [primaryError, ...(settlementError.errors ?? [])].filter(Boolean);
+    throw settlementError;
+  }
+  worker.removeListener?.("message", onMessage);
+  worker.removeListener?.("error", onError);
+  worker.removeListener?.("exit", onExit);
   if (primaryError && settlementError) {
     throw new AggregateError([primaryError, settlementError], "Python payload discovery and worker settlement failed");
   }
@@ -4329,15 +4399,15 @@ async function runOwnedPythonDiscoveryWorker(worker, deadlineMilliseconds, onPro
 async function discoverPythonPayloads(searchPaths, venv, options = {}) {
   const deadlineNanoseconds =
     options.deadlineNanoseconds ??
-    process.hrtime.bigint() + BigInt(DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS) * 1_000_000n;
-  const remainingMilliseconds = Number((deadlineNanoseconds - process.hrtime.bigint()) / 1_000_000n);
-  if (remainingMilliseconds <= 0) fail("Python payload discovery exceeded its absolute deadline");
-  const worker = new Worker(new URL(import.meta.url), {
+    pythonPayloadScanDeadline(options.timeoutMilliseconds ?? DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS);
+  await options.beforeWorkerConstructionForTest?.({ deadlineNanoseconds, searchPaths });
+  const workerOptions = {
     workerData: {
       options: {
         completeRoots: options.completeRoots ?? [],
         followDirectoryLinks: options.followDirectoryLinks ?? false,
         includeVenv: options.includeVenv ?? true,
+        requireDirectoryRoots: options.requireDirectoryRoots ?? false,
         retainedEntryLimit: options.retainedEntryLimit ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
         retainedPathByteLimit: options.retainedPathByteLimit ?? MAX_PYTHON_PAYLOAD_PATH_BYTES
       },
@@ -4345,12 +4415,16 @@ async function discoverPythonPayloads(searchPaths, venv, options = {}) {
       searchPaths,
       venv
     }
+  };
+  const worker = options.workerFactoryForTest
+    ? options.workerFactoryForTest(new URL(import.meta.url), workerOptions)
+    : new Worker(new URL(import.meta.url), workerOptions);
+  const value = await runOwnedPythonDiscoveryWorker(worker, {
+    deadlineNanoseconds,
+    onProgress: options.afterEntryRetainedForTest,
+    settlementTimeoutMilliseconds:
+      options.settlementTimeoutMilliseconds ?? DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS
   });
-  const value = await runOwnedPythonDiscoveryWorker(
-    worker,
-    Math.min(DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS, remainingMilliseconds),
-    options.afterEntryRetainedForTest
-  );
   return { ...value, snapshots: new Map(value.snapshots) };
 }
 
@@ -4523,7 +4597,21 @@ async function writePinnedPythonSnapshotFile(pin, parentPin, name, destination, 
   }
 }
 
-async function createPythonPackageSnapshot(layoutState, externalRoots, options) {
+async function createPythonPackageSnapshot(layoutState, rootCandidates, options) {
+  const source = await discoverPythonPayloads(rootCandidates, layoutState.layout.venv, {
+    afterEntryRetainedForTest: options.afterPythonPayloadEntryRetainedForTest,
+    beforeWorkerConstructionForTest: options.beforePythonPayloadWorkerConstructionForTest,
+    completeRoots: rootCandidates,
+    deadlineNanoseconds: options.pythonPayloadScanDeadlineNanoseconds,
+    followDirectoryLinks: true,
+    includeVenv: false,
+    requireDirectoryRoots: true,
+    retainedEntryLimit: options.pythonPayloadEntryLimitForTest ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
+    retainedPathByteLimit: options.pythonPayloadPathByteLimitForTest ?? MAX_PYTHON_PAYLOAD_PATH_BYTES,
+    settlementTimeoutMilliseconds: options.pythonPayloadWorkerSettlementTimeoutMsForTest,
+    workerFactoryForTest: options.pythonPayloadWorkerFactoryForTest
+  });
+  const externalRoots = source.roots;
   const rootPins = [];
   try {
     for (const root of externalRoots) {
@@ -4539,15 +4627,6 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
     );
   }
   layoutState.pythonSourceRootPins = rootPins;
-  const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, {
-    afterEntryRetainedForTest: options.afterPythonPayloadEntryRetainedForTest,
-    completeRoots: externalRoots,
-    deadlineNanoseconds: options.pythonPayloadScanDeadlineNanoseconds,
-    followDirectoryLinks: true,
-    includeVenv: false,
-    retainedEntryLimit: options.pythonPayloadEntryLimitForTest ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
-    retainedPathByteLimit: options.pythonPayloadPathByteLimitForTest ?? MAX_PYTHON_PAYLOAD_PATH_BYTES
-  });
   layoutState.pythonSourceDirectories = source.directories;
   layoutState.pythonSourceLinkedDirectories = source.linkedDirectories;
   const opened = await openPythonPayloadSet(source.payloads, source.snapshots, "source");
@@ -4632,6 +4711,7 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
       files: digestMappings.length,
       sha256: sha256(Buffer.from(JSON.stringify(digestMappings), "utf8"))
     },
+    externalRoots,
     snapshotRoots,
     sourceManifest: opened.summary
   };
@@ -4715,6 +4795,7 @@ async function preparePythonImportBoundary(
     options,
     venvConfiguration
   );
+  options.pythonPayloadScanDeadlineNanoseconds ??= pythonPayloadScanDeadline(options.pythonPayloadScanTimeoutMs);
   const version = `python${String(runtime.major)}.${String(runtime.minor)}`;
   const privateSite =
     process.platform === "win32"
@@ -4736,13 +4817,11 @@ async function preparePythonImportBoundary(
     if (typeof value !== "string" || !isAbsolute(value)) fail("test Python package root must be absolute");
     candidates.unshift(value);
   }
-  const externalRoots = await canonicalExistingPythonRoots(candidates);
+  const snapshot = await createPythonPackageSnapshot(layoutState, candidates, options);
+  const externalRoots = snapshot.externalRoots;
   for (const root of externalRoots) {
     if (root.includes("\n") || root.includes("\r")) fail("Python package root contains a line break");
   }
-  options.pythonPayloadScanDeadlineNanoseconds ??=
-    process.hrtime.bigint() + BigInt(options.pythonPayloadScanTimeoutMs) * 1_000_000n;
-  const snapshot = await createPythonPackageSnapshot(layoutState, externalRoots, options);
   layoutState.pythonSnapshotRoots = snapshot.snapshotRoots;
   const pathConfiguration = join(privateSite, "openwrangler-pinned-packages.pth");
   await writeFile(
@@ -5104,6 +5183,7 @@ async function runQualification({
   additionalPythonPackageRootsForTest,
   assignmentPath,
   beforeCommandSpawnForTest,
+  beforePythonPayloadWorkerConstructionForTest,
   beforePythonSnapshotChildCreateForTest,
   beforeWindowsLoaderReleaseForTest,
   bootstrapCommandPlatformForTest,
@@ -5115,6 +5195,8 @@ async function runQualification({
   commandRunnerForTest,
   cleanupActionsForTest = [],
   environment = process.env,
+  executableSnapshotReaderCloseForTest,
+  executableSnapshotReaderStatForTest,
   onlyAdditionalPythonPackageRootsForTest = false,
   pytestTempAfterOpenForTest,
   pytestTempLimitsForTest,
@@ -5123,6 +5205,8 @@ async function runQualification({
   pythonPayloadEntryLimitForTest,
   pythonPayloadPathByteLimitForTest,
   pythonPayloadScanTimeoutMsForTest = DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS,
+  pythonPayloadWorkerFactoryForTest,
+  pythonPayloadWorkerSettlementTimeoutMsForTest = DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS,
   pythonSnapshotPlatformForTest,
   posixMissingControlPipeForTest,
   posixOuterSettlementMsForTest,
@@ -5140,6 +5224,11 @@ async function runQualification({
     pythonPayloadScanTimeoutMsForTest,
     DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS,
     "Python payload scan timeout"
+  );
+  validateBound(
+    pythonPayloadWorkerSettlementTimeoutMsForTest,
+    DEFAULT_PYTHON_PAYLOAD_WORKER_SETTLEMENT_TIMEOUT_MS,
+    "Python payload worker settlement timeout"
   );
   const initialAssignment = await readAssignment(assignmentPath);
   let layoutState;
@@ -5189,11 +5278,14 @@ async function runQualification({
         afterPythonSnapshotDescriptorWriteForTest,
         afterPythonSnapshotChildOpenForTest,
         afterPythonSourceDiscoveryForTest,
+        beforePythonPayloadWorkerConstructionForTest,
         beforePythonSnapshotChildCreateForTest,
         platformForTest: bootstrapCommandPlatformForTest,
         pythonPayloadEntryLimitForTest,
         pythonPayloadPathByteLimitForTest,
         pythonPayloadScanTimeoutMs: pythonPayloadScanTimeoutMsForTest,
+        pythonPayloadWorkerFactoryForTest,
+        pythonPayloadWorkerSettlementTimeoutMsForTest,
         pythonSnapshotPlatformForTest,
         terminationGraceMs,
         timeoutMs,
@@ -5239,6 +5331,8 @@ async function runQualification({
         beforeWindowsLoaderReleaseForTest,
         executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
         executableSnapshotAfterChildOpenForTest: afterExecutableSnapshotChildOpenForTest,
+        executableSnapshotReaderCloseForTest,
+        executableSnapshotReaderStatForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixMissingControlPipeForTest,
@@ -5405,6 +5499,9 @@ function parseCommandLine(arguments_) {
 
 const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   cpythonPreSitePrefixMode,
+  closePinnedExecutable,
+  createExecutableSnapshot,
+  discoverPythonPayloads,
   finishWithOwnedCleanup,
   isSupportedCpythonVersion,
   parseGitConfigManifestBytes,
