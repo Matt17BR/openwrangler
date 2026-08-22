@@ -1735,22 +1735,48 @@ function isCleaningHistoryOrdinaryAdverb(token) {
   return /^[\p{L}]+ly$/u.test(token);
 }
 
-function isCleaningHistoryRollbackModifierPhrase(tokens) {
+const cleaningHistoryIrregularAdverbs = new Set([
+  "always",
+  "ever",
+  "fast",
+  "hard",
+  "late",
+  "long",
+  "never",
+  "often",
+  "seldom",
+  "sometimes",
+  "soon",
+  "straight",
+  "well"
+]);
+const cleaningHistoryAdverbDegrees = new Set([
+  "almost",
+  "especially",
+  "extremely",
+  "fairly",
+  "highly",
+  "less",
+  "more",
+  "most",
+  "quite",
+  "rather",
+  "really",
+  "so",
+  "too",
+  "very"
+]);
+
+function isCleaningHistoryProvenAdverb(token) {
+  return isCleaningHistoryOrdinaryAdverb(token) || cleaningHistoryIrregularAdverbs.has(token);
+}
+
+function isCleaningHistoryAdverbModifierPhrase(tokens) {
   const words = tokens.filter((token) => token !== ",");
   if (words.length === 0 || words.length > 4) return false;
-  if (
-    words.some(
-      (token, index) =>
-        !/^[\p{L}]+$/u.test(token) ||
-        cleaningHistoryPredicateKind(token) !== undefined ||
-        cleaningHistoryExplicitUnrelatedOwnerWords.has(token) ||
-        isCleaningHistoryNoun(words, index) ||
-        (isCleaningHistoryGrammarToken(token) && token !== "of")
-    )
-  ) {
-    return false;
-  }
-  return words.length === 1 || isCleaningHistoryOrdinaryAdverb(words.at(-1));
+  if (words.join(" ") === "matter of factly") return true;
+  if (!isCleaningHistoryProvenAdverb(words.at(-1))) return false;
+  return words.slice(0, -1).every((token) => cleaningHistoryAdverbDegrees.has(token));
 }
 
 function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
@@ -1772,7 +1798,7 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
         (cleaningHistoryClausePunctuationRoles[token] !== undefined &&
           !(
             token === "," &&
-            (isCleaningHistoryOrdinaryAdverb(tokens[cursor - 1]) || isCleaningHistoryOrdinaryAdverb(tokens[cursor + 1]))
+            (isCleaningHistoryProvenAdverb(tokens[cursor - 1]) || isCleaningHistoryProvenAdverb(tokens[cursor + 1]))
           )) ||
         cleaningHistoryConnectorRole(token) !== undefined
       ) {
@@ -1789,7 +1815,7 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
       );
     }
-    const modifierOnlyBetween = isCleaningHistoryRollbackModifierPhrase(betweenTokens);
+    const modifierOnlyBetween = isCleaningHistoryAdverbModifierPhrase(betweenTokens);
     const targetTokens = modifierOnlyBetween
       ? []
       : betweenTokens.filter((token) => token !== "," && !isCleaningHistoryOrdinaryAdverb(token));
@@ -1827,7 +1853,7 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
     }
     let prefixModifierCount = 0;
     for (let count = 1; count <= Math.min(4, canonical.length); count += 1) {
-      if (isCleaningHistoryRollbackModifierPhrase(canonical.slice(-count))) prefixModifierCount = count;
+      if (isCleaningHistoryAdverbModifierPhrase(canonical.slice(-count))) prefixModifierCount = count;
     }
     canonical.splice(canonical.length - prefixModifierCount, prefixModifierCount);
     canonical.push(
@@ -2706,13 +2732,98 @@ function rejectCleaningHistoryConditionBranch() {
   throw new Error("cleaning-history claim prose contains an unsupported repeated or unless condition branch.");
 }
 
+const cleaningHistoryFiniteAttributionOwnerIntroducers = new Set([
+  "a",
+  "about",
+  "an",
+  "another",
+  "any",
+  "by",
+  "cleaning",
+  "committed",
+  "each",
+  "every",
+  "for",
+  "from",
+  "in",
+  "of",
+  "on",
+  "other",
+  "some",
+  "that",
+  "the",
+  "to",
+  "which",
+  "whose",
+  "with"
+]);
+const cleaningHistoryFiniteAttributionOwnerPhraseWords = new Set(["about", "cleaning", "of", "on", "with"]);
+
+function isCleaningHistoryFiniteAttributionRelation(tokens, index) {
+  const token = tokens[index];
+  if (
+    !/^[\p{L}]+$/u.test(token) ||
+    cleaningHistoryPredicateKind(token) !== undefined ||
+    isCleaningHistoryNoun(tokens, index) ||
+    isCleaningHistoryProvenAdverb(token) ||
+    cleaningHistoryAdverbDegrees.has(token) ||
+    (cleaningHistoryFiniteAttributionOwnerIntroducers.has(token) &&
+      !cleaningHistoryExplicitUnrelatedOwnerWords.has(token))
+  ) {
+    return false;
+  }
+  return (
+    !cleaningHistoryExplicitUnrelatedOwnerWords.has(token) ||
+    !cleaningHistoryFiniteAttributionOwnerIntroducers.has(tokens[index - 1])
+  );
+}
+
 function cleaningHistoryFiniteAttributionParenthetical(tokens) {
-  if (tokens.length === 0 || tokens.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) return false;
-  if (tokens.some((token) => cleaningHistoryPredicateKind(token) !== undefined)) return false;
+  if (tokens.length === 0 || tokens.some((token) => cleaningHistoryPredicateKind(token) !== undefined)) return false;
   const ownerIndex = tokens.findIndex(
     (token, index) => cleaningHistoryExplicitUnrelatedOwnerWords.has(token) || isCleaningHistoryNoun(tokens, index)
   );
-  return ownerIndex >= 0 && tokens.length - ownerIndex === 2;
+  if (ownerIndex < 0) return false;
+  if (
+    ["that", "which", "whose"].includes(tokens[0]) ||
+    (tokens[0] === "for" && tokens[1] === "which") ||
+    (/^[\p{L}]+(?:ed|ing)$/u.test(tokens[0]) && cleaningHistoryPredicateKind(tokens[0]) === undefined) ||
+    tokens.some((token) => cleaningHistoryPostPredicateAnaphors.has(token))
+  ) {
+    return false;
+  }
+  let relationEnd = tokens.length;
+  for (let count = 1; count <= Math.min(4, tokens.length - ownerIndex - 1); count += 1) {
+    if (isCleaningHistoryAdverbModifierPhrase(tokens.slice(-count))) relationEnd = tokens.length - count;
+  }
+  const relationIndex = relationEnd - 1;
+  const relationPrefix = tokens.slice(ownerIndex + 1, relationIndex);
+  const nestedOwner = relationPrefix.some(
+    (token, index) =>
+      cleaningHistoryExplicitUnrelatedOwnerWords.has(token) || isCleaningHistoryNoun(relationPrefix, index)
+  );
+  const qualifiedRelation =
+    relationPrefix.length === 0 ||
+    isCleaningHistoryAdverbModifierPhrase(relationPrefix) ||
+    (nestedOwner && relationPrefix.some((token) => ["that", "which", "whose"].includes(token))) ||
+    relationPrefix.every((token) => cleaningHistoryFiniteAttributionOwnerPhraseWords.has(token));
+  if (
+    relationIndex > ownerIndex &&
+    qualifiedRelation &&
+    isCleaningHistoryFiniteAttributionRelation(tokens, relationIndex)
+  ) {
+    if (tokens.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) {
+      throw new Error(
+        `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
+      );
+    }
+    return true;
+  }
+  const tail = tokens.slice(ownerIndex + 1);
+  if (ownerIndex === 0 || (tail.length > 1 && !cleaningHistoryFiniteAttributionOwnerPhraseWords.has(tail[0]))) {
+    return false;
+  }
+  throw new Error("cleaning-history claim prose contains an unsupported finite attribution parenthetical.");
 }
 
 function cleaningHistoryPredicateRecords(rendered) {

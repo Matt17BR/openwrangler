@@ -2274,6 +2274,72 @@ test("cleaning-history relative clauses and finite attributions bind their struc
   }
 });
 
+test("cleaning-history nested finite attributions preserve their matrix owner across punctuation", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps, a report very clearly says, cannot be edited.",
+    "Committed steps&#44; a report says very clearly&#44; cannot be edited.",
+    "Committed steps&comma; the unusually detailed report very clearly says&comma; cannot be edited.",
+    "Committed steps—a report very clearly says—cannot be edited.",
+    "Committed steps, a report that another report says confirms, cannot be edited.",
+    "Committed steps—a report that another report says confirms—cannot be edited."
+  ];
+  const truthful = [
+    "A report, committed steps very clearly say, cannot be edited.",
+    "A report&#44; committed steps say very clearly&#44; cannot be edited.",
+    "A report—committed steps very clearly say—cannot be edited.",
+    "A report, committed steps that other committed steps say confirm, cannot be edited.",
+    "A report—committed steps that other committed steps say confirm—cannot be edited."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+
+  const overWindow = `Committed steps, the ${"very ".repeat(10)}detailed report says, cannot be edited.`;
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overWindow)
+      }),
+    /exceeds the 12-token capability ownership window/u
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(
+          model,
+          "Committed steps, a detailed report about cleaning, cannot be edited."
+        )
+      }),
+    /unsupported finite attribution parenthetical/u
+  );
+});
+
 test("cleaning-history phrasal rollback keeps bounded cleaning ownership across modifier positions", () => {
   const model = cleaningHistoryModel();
   const contradictions = [
@@ -2333,16 +2399,20 @@ test("cleaning-history phrasal rollback accepts bounded structural modifier phra
   const model = cleaningHistoryModel();
   const contradictions = [
     "Users can roll often back every committed step.",
+    "Users can roll very often back every committed step.",
     "Users can roll very quickly back every committed step.",
     "Users can roll matter-of-factly back every committed step."
   ];
   const truthful = [
     "Users can roll often back only the latest committed step.",
+    "Users can roll very often back only the latest committed step.",
     "Users can roll very quickly back only the latest committed step.",
     "Users can roll matter-of-factly back only the latest committed step.",
     "Users can roll the report often back.",
     "Users can roll the report very quickly back.",
-    "Users can roll the report matter-of-factly back."
+    "Users can roll the report matter-of-factly back.",
+    "Users can roll snapshots back after every committed step.",
+    "Users can roll backups back after every committed step."
   ];
 
   for (const example of contradictions) {
