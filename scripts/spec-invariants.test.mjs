@@ -423,10 +423,8 @@ test("cleaning-history claims use rendered inline Markdown and decoded entity te
 test("cleaning-history rendered line separators preserve statement ownership after entity decoding", () => {
   const model = cleaningHistoryModel();
   const separators = [
-    "\n",
     "\u000b",
     "\u000c",
-    "\r",
     "\u0589",
     "\u061b",
     "\u061f",
@@ -1807,10 +1805,13 @@ test("cleaning-history explicit owners fence anaphors and adversative Undo claus
   const truthful = [
     "Committed steps remain visible. Editing them can make the report unavailable.",
     "Committed steps remain visible. Editing them in the toolbar can make the report unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar causes the report to become unavailable.",
     "Undo is unavailable for every committed step except the latest one, but reports remain visible."
   ];
   const contradictions = [
     "Committed steps remain visible. Editing them remains unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar remains unavailable.",
+    "Committed steps remain visible. Editing them in the toolbar causes unavailable.",
     "Undo is unavailable for every committed step except the latest one, but committed steps can be reordered."
   ];
 
@@ -1835,6 +1836,157 @@ test("cleaning-history explicit owners fence anaphors and adversative Undo claus
         }),
       /contradictory cleaning-history capability claim/u,
       example
+    );
+  }
+});
+
+test("cleaning-history rendered soft and hard breaks preserve claim continuity and block boundaries", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps cannot be\nedited.",
+    "Committed steps cannot be  \nedited.",
+    "Committed steps cannot be\r\nedited."
+  ];
+  const truthful = [
+    "Committed steps can be\nedited.",
+    "Committed steps can be  \nedited.",
+    "Committed steps can be\r\nedited.",
+    "Committed steps cannot be\n\nedited.",
+    "- Committed steps cannot be\n- edited.",
+    "The report is unavailable.\n\nCommitted steps can be edited.",
+    "- The report is unavailable.\n- Committed steps can be edited."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history only-if spellings share exact bounded condition semantics", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps can be edited only-if the latest committed step is selected.",
+    "Committed steps can be edited only-when the latest committed step is selected.",
+    "Committed steps can be edited if and only if the latest committed step is selected.",
+    "Committed steps can be edited if-and-only-if the latest committed step is selected.",
+    "Undo is available only-if the latest committed step is not selected.",
+    "Undo is available if-and-only-if the latest committed step is not selected."
+  ];
+  const truthful = [
+    "Undo is available only-if the latest committed step is selected.",
+    "Undo is available only-when the latest committed step is selected.",
+    "Undo is available if and only if the latest committed step is selected.",
+    "Undo is available if-and-only-if the latest committed step is selected.",
+    "Committed steps can be inspected not only-if the latest committed step is selected.",
+    "Committed steps can be edited if the latest committed step is selected."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history exclusive prefixes survive rendered punctuation fragments within the exact bound", () => {
+  const model = cleaningHistoryModel();
+  const boundaries = [
+    { atBoundFillers: 21, label: "comma", separator: ", " },
+    { atBoundFillers: 21, label: "colon", separator: ": " },
+    { atBoundFillers: 21, label: "em dash", separator: " — " },
+    { atBoundFillers: 16, label: "soft break", separator: "\n" },
+    { atBoundFillers: 16, label: "hard break", separator: "  \n" }
+  ];
+
+  for (const { atBoundFillers, label, separator } of boundaries) {
+    const condition = `Only when the latest committed step is selected${separator}the latest committed step remains selected`;
+    const negatedCondition = `Only when the latest committed step is not selected${separator}the latest committed step remains selected`;
+    const atBound = `Only when the latest committed step is selected${separator}${"the ".repeat(
+      atBoundFillers
+    )}latest committed step remains selected${separator}committed steps can be edited.`;
+    const overBound = `Only when the latest committed step is selected${separator}${"the ".repeat(
+      atBoundFillers + 1
+    )}latest committed step remains selected${separator}committed steps can be edited.`;
+    const contradictions = [
+      `${condition}${separator}committed steps can be edited.`,
+      `${negatedCondition}${separator}Undo is available.`,
+      atBound
+    ];
+    const truthful = [
+      `${condition}${separator}Undo is available.`,
+      `If the latest committed step is selected${separator}the latest committed step remains selected${separator}committed steps can be edited.`
+    ];
+
+    for (const example of contradictions) {
+      assert.throws(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        /contradictory cleaning-history capability claim/u,
+        `${label}: ${example}`
+      );
+    }
+    for (const example of truthful) {
+      assert.doesNotThrow(
+        () =>
+          assertCleaningHistoryClaimsCurrent({
+            modelSource: JSON.stringify(model),
+            productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+            documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+          }),
+        `${label}: ${example}`
+      );
+    }
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, overBound)
+        }),
+      /exceeds the 34-token atomic condition or exception bound/u,
+      `${label}: ${overBound}`
     );
   }
 });
