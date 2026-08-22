@@ -361,13 +361,15 @@ async function writeOwnedClipboardText(
   text: string,
   deadline: MonotonicDeadline
 ): Promise<void> {
+  const writeSettlement = Promise.resolve().then(() => writeClipboardText(text));
+  void writeSettlement.catch(() => undefined);
   try {
-    await settleBeforeDeadline(
-      () => writeClipboardText(text),
-      deadline,
-      "Packaged whole-column clipboard write timed out."
-    );
+    await settleBeforeDeadline(() => writeSettlement, deadline, "Packaged whole-column clipboard write timed out.");
   } catch {
+    // Host clipboard writes are not cancellable. Keep the phase owned until the
+    // write settles; the packaged runner's outer process deadline remains the
+    // terminal bound when the host never settles.
+    await writeSettlement.catch(() => undefined);
     throw new Error("Packaged whole-column clipboard write failed.");
   }
 }

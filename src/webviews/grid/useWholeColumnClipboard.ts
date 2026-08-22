@@ -115,6 +115,8 @@ export function useWholeColumnClipboard({
     viewContextId === undefined || viewContextId.startsWith("inspection:")
       ? "Whole-column copy is unavailable in this data view."
       : undefined;
+  const expectedRows = metadata.filteredShape.rows;
+  const availabilityReason = wholeColumnAvailabilityReason(unavailableReason, expectedRows);
 
   const publishState = useCallback((next: WholeColumnClipboardState): void => {
     stateRef.current = next;
@@ -183,10 +185,26 @@ export function useWholeColumnClipboard({
     [ownerIsCurrent]
   );
 
+  const clearMatchingBusyState = useCallback(
+    (owner: ColumnCopyOwner): void => {
+      const current = stateRef.current;
+      if (
+        current.copyRequested === true &&
+        current.ownerId === owner.ownerId &&
+        current.preparationIdentity === owner.preparationIdentity &&
+        current.column?.id === owner.column.id
+      ) {
+        publishState({ ...current, copyRequested: false });
+      }
+    },
+    [publishState]
+  );
+
   const releaseWriteRequest = useCallback(
-    (request: ColumnWriteRequest, reason: string): void => {
+    (request: ColumnWriteRequest, reason: string, settle = true): void => {
       if (!(request.ownsResult?.() ?? true)) {
-        settleWriteRequest(request);
+        clearMatchingBusyState(request);
+        if (settle) settleWriteRequest(request);
         return;
       }
       if (stateRef.current.ownerId === request.ownerId) {
@@ -195,9 +213,9 @@ export function useWholeColumnClipboard({
       } else if (stateRef.current.phase === "idle") {
         setAnnouncement(reason);
       }
-      settleWriteRequest(request);
+      if (settle) settleWriteRequest(request);
     },
-    [publishState]
+    [clearMatchingBusyState, publishState]
   );
 
   const startWrite = useCallback(
@@ -217,7 +235,11 @@ export function useWholeColumnClipboard({
       const promise = (async () => {
         try {
           await clipboardWrite.write(request.result.payload.text, (phase) => ownsClipboardPhase(request, phase));
-          if (writeGenerationTerminalRef.current || !ownerIsCurrent(request)) return;
+          if (writeGenerationTerminalRef.current) return;
+          if (!ownerIsCurrent(request)) {
+            clearMatchingBusyState(request);
+            return;
+          }
           publishState({ ...stateRef.current, copyRequested: false });
           setAnnouncement(
             `Copied ${request.result.payload.rowCount.toLocaleString()} cells from column ${request.column.name} without its header.`
@@ -240,7 +262,7 @@ export function useWholeColumnClipboard({
         if (writeRef.current?.request.requestId !== request.requestId) return;
         activeWrite.timeout = undefined;
         writeGenerationTerminalRef.current = true;
-        releaseWriteRequest(request, clipboardAdapterUnavailableReason);
+        releaseWriteRequest(request, clipboardAdapterUnavailableReason, false);
         const pending = pendingWriteRef.current;
         pendingWriteRef.current = undefined;
         if (pending) releaseWriteRequest(pending, clipboardAdapterUnavailableReason);
@@ -261,7 +283,7 @@ export function useWholeColumnClipboard({
         }
       });
     },
-    [ownerIsCurrent, ownsClipboardPhase, publishState, releaseWriteRequest]
+    [clearMatchingBusyState, ownerIsCurrent, ownsClipboardPhase, publishState, releaseWriteRequest]
   );
 
   useLayoutEffect(() => {
@@ -274,7 +296,10 @@ export function useWholeColumnClipboard({
       result: Extract<GridClipboardResult, { ok: true }>,
       focusOwner: HTMLElement | undefined
     ): Promise<boolean> => {
-      if (!ownerIsCurrent(owner)) return false;
+      if (!ownerIsCurrent(owner)) {
+        clearMatchingBusyState(owner);
+        return false;
+      }
       if (writeGenerationTerminalRef.current) {
         publishState({ ...stateRef.current, copyRequested: false });
         setAnnouncement(clipboardAdapterUnavailableReason);
@@ -316,7 +341,7 @@ export function useWholeColumnClipboard({
       await request.settled;
       return owner.ownsResult?.() ?? true;
     },
-    [ownerIsCurrent, publishState, releaseWriteRequest, startWrite]
+    [clearMatchingBusyState, ownerIsCurrent, publishState, releaseWriteRequest, startWrite]
   );
 
   const finish = useCallback(
@@ -475,7 +500,6 @@ export function useWholeColumnClipboard({
       if (activeWrite?.timeout !== undefined) window.clearTimeout(activeWrite.timeout);
       if (activeWrite) {
         activeWrite.timeout = undefined;
-        settleWriteRequest(activeWrite.request);
       }
       cancelActive(false);
     };
@@ -485,22 +509,8 @@ export function useWholeColumnClipboard({
     (column: ColumnSchema, copyRequested: boolean, ownsResult?: () => boolean): void => {
       cancelActive(false);
       setAnnouncement("");
-      if (unavailableReason || !viewContextId) {
-        const reason = unavailableReason ?? "Whole-column copy is unavailable in this data view.";
-        publishState({ phase: "error", column, reason });
-        setAnnouncement(reason);
-        return;
-      }
-      const expectedRows = metadata.filteredShape.rows;
-      if (expectedRows !== null && expectedRows > maximumClipboardCells) {
-        const result = clipboardCellLimitError();
-        const reason = result.ok ? "" : result.reason;
-        publishState({ phase: "error", column, reason });
-        setAnnouncement(reason);
-        return;
-      }
-      if (expectedRows === 0) {
-        const reason = "There are no rows in the current data view.";
+      if (availabilityReason || !viewContextId) {
+        const reason = availabilityReason ?? "Whole-column copy is unavailable in this data view.";
         publishState({ phase: "error", column, reason });
         setAnnouncement(reason);
         return;
@@ -535,14 +545,14 @@ export function useWholeColumnClipboard({
     },
     [
       cancelActive,
-      metadata.filteredShape.rows,
+      availabilityReason,
+      expectedRows,
       metadata.filterModel,
       metadata.revision,
       metadata.sessionId,
       preparationIdentity,
       publishState,
       requestNext,
-      unavailableReason,
       viewContextId
     ]
   );
@@ -620,11 +630,12 @@ export function useWholeColumnClipboard({
   );
 
   const result = useMemo<GridClipboardResult>(() => {
+    if (availabilityReason) return { ok: false, reason: availabilityReason };
     if (state.phase === "ready" && state.result) return state.result;
     if (state.phase === "error") return { ok: false, reason: state.reason ?? "Column copy is unavailable." };
     if (state.phase === "preparing") return { ok: false, reason: "Preparing the whole column for copying." };
     return { ok: false, reason: "Select a column header to copy the whole filtered and sorted column." };
-  }, [state]);
+  }, [availabilityReason, state]);
   const reset = useCallback((): void => cancelActive(true), [cancelActive]);
   const isColumnSelected = useCallback(
     (columnId: string): boolean => state.column?.id === columnId,
@@ -632,6 +643,16 @@ export function useWholeColumnClipboard({
   );
   const actionForColumn = useCallback(
     (column: ColumnSchema): WholeColumnClipboardAction => {
+      if (availabilityReason) {
+        return {
+          ariaLabel: `Copy column ${column.name}; header excluded`,
+          busy: false,
+          disabled: true,
+          icon: "warning",
+          menuLabel: "Copy column (header excluded)",
+          title: availabilityReason
+        };
+      }
       const selected = state.column?.id === column.id;
       if (!selected || state.phase === "idle") {
         return {
@@ -686,7 +707,7 @@ export function useWholeColumnClipboard({
         title: state.reason ?? "Select the column again to retry."
       };
     },
-    [state]
+    [availabilityReason, state]
   );
 
   return {
@@ -700,6 +721,18 @@ export function useWholeColumnClipboard({
     selectedColumnId: state.column?.id,
     selectionDescription: describeWholeColumnState(state)
   };
+}
+
+function wholeColumnAvailabilityReason(
+  unavailableReason: string | undefined,
+  expectedRows: number | null
+): string | undefined {
+  if (unavailableReason) return unavailableReason;
+  if (expectedRows !== null && expectedRows > maximumClipboardCells) {
+    const result = clipboardCellLimitError();
+    return result.ok ? undefined : result.reason;
+  }
+  return expectedRows === 0 ? "There are no rows in the current data view." : undefined;
 }
 
 function describeWholeColumnState(state: WholeColumnClipboardState): string {
