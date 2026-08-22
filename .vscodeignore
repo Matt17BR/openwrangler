@@ -41,6 +41,7 @@ package-lock.json
 **/*.egg-info/**
 **/__pycache__/**
 python/pyproject.toml
+python/runtime-dependencies.json
 tsconfig*.json
 dist-test/**
 vite*.config.ts

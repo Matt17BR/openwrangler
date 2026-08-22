@@ -2,6 +2,7 @@ import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata } from "./p
 import { isOpenWranglerResponse } from "./protocolValidation";
 
 export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
+export const NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS = 200;
 const NOTEBOOK_LIVE_RESULT_HANDLE = /^__openwrangler_live_result_[0-9a-f]{32}$/u;
 
 export const NOTEBOOK_OUTPUT_LIMITS = {

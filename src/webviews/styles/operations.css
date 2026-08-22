@@ -1,0 +1,382 @@
+.emptyState {
+  padding: 24px;
+}
+
+.sessionOpenStatus {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+}
+
+.sessionOpenStatus strong {
+  font-size: 13px;
+}
+
+.sessionOpenStatus p {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.diffStats {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.diffStats span {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.operationFormError {
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+  font-size: 11px;
+  margin: 0;
+  padding: 6px 8px;
+}
+
+.operationDialogBackdrop {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.44);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 22px;
+  position: fixed;
+  z-index: 100;
+}
+
+.operationDialog {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  border-radius: 7px;
+  box-shadow: 0 12px 36px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
+  display: flex;
+  flex-direction: column;
+  height: min(82vh, 760px);
+  max-width: 1080px;
+  overflow: hidden;
+  width: min(94vw, 1080px);
+}
+
+.operationDialogHeader {
+  align-items: center;
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 7px 10px 7px 16px;
+}
+
+.operationDialogHeader > div {
+  display: grid;
+  gap: 2px;
+}
+
+.operationDialogHeader span {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.operationDialogBody {
+  border: 0;
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(260px, 0.78fr) minmax(360px, 1.22fr);
+  margin: 0;
+  min-inline-size: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+.operationCatalog {
+  border-right: 1px solid var(--vscode-panel-border);
+  overflow: auto;
+  padding: 10px;
+}
+
+.operationSearch {
+  align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-bottom: 10px;
+}
+
+.operationSearch > span {
+  color: var(--vscode-descriptionForeground);
+  grid-column: 1;
+  grid-row: 1;
+  margin-left: 7px;
+  pointer-events: none;
+  position: relative;
+  z-index: 1;
+}
+
+.operationSearch input {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  padding-left: 28px;
+}
+
+.operationGroup h3 {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  margin: 14px 7px 5px;
+  text-transform: uppercase;
+}
+
+.operationChoice {
+  align-items: start;
+  background: transparent;
+  color: var(--vscode-foreground);
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  padding: 7px;
+  text-align: left;
+  width: 100%;
+}
+
+.operationChoice:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.operationChoice.selected {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.operationChoice > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.operationChoice small {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.operationChoice.selected small {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.operationForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px 0;
+}
+
+.operationFormTitle {
+  align-items: start;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  padding-bottom: 12px;
+}
+
+.operationFormTitle > span {
+  font-size: 18px;
+}
+
+.operationFormTitle h2,
+.operationFormTitle p {
+  margin: 0;
+}
+
+.operationFormTitle h2 {
+  font-size: 16px;
+}
+
+.operationFormTitle p {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.formField,
+.formFieldset,
+.columnSelectionField {
+  display: grid;
+  gap: 5px;
+}
+
+.formField > span,
+.formField > label,
+.formFieldset legend,
+.columnSelectionField legend {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.formField small,
+.codeField small,
+.columnSelectionField small {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.columnSelectionField {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.columnSelectionField legend {
+  margin-bottom: 5px;
+  padding: 0;
+}
+
+.columnChecklist {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  display: grid;
+  max-height: 154px;
+  min-height: 34px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.columnChecklistItem {
+  align-items: center;
+  border-radius: 2px;
+  display: flex;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.columnChecklistItem:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.columnChecklistItem:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.operationCompatibilityNote {
+  line-height: 1.35;
+}
+
+.formFieldset {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  margin: 0;
+  padding: 10px;
+}
+
+.formFieldset legend {
+  padding: 0 4px;
+}
+
+.compoundRow {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1.2fr 0.9fr 0.8fr;
+  margin-bottom: 8px;
+}
+
+.operationInputRow {
+  grid-template-columns: minmax(120px, 1.2fr) minmax(96px, 0.9fr) minmax(82px, 0.8fr) auto;
+}
+
+.aggregationRow {
+  grid-template-columns: minmax(120px, 1fr) minmax(96px, 0.8fr) minmax(120px, 1fr) auto;
+}
+
+.fallbackColumnRow {
+  grid-template-columns: minmax(160px, 1fr) auto;
+}
+
+.operationRowActions {
+  align-items: center;
+  display: flex;
+  gap: 3px;
+  padding-bottom: 1px;
+}
+
+.operationRemoveButton {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vscode-foreground);
+  display: inline-flex;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 6px;
+}
+
+.operationRemoveButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-panel-border);
+}
+
+.checkboxField {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.querySummary {
+  display: flex;
+  gap: 8px;
+}
+
+.querySummary strong {
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.codeField textarea {
+  font-family: var(--vscode-editor-font-family, monospace);
+  line-height: 1.45;
+}
+
+.operationFormActions {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-top: 1px solid var(--vscode-panel-border);
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin: auto -20px 0;
+  padding: 10px 20px;
+  position: sticky;
+}
+
+.operationPrompt {
+  align-items: center;
+  align-self: center;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  flex-direction: column;
+  margin: auto;
+  max-width: 280px;
+  text-align: center;
+}
+
+.operationPrompt > span {
+  font-size: 32px;
+}
+
+.operationPrompt h2 {
+  color: var(--vscode-foreground);
+  margin-bottom: 0;
+}

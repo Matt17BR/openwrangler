@@ -17,6 +17,7 @@ import type { BridgeRequestOptions } from "./dataBridge";
 import { persistedSessionState } from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
+  persistenceUnavailableError,
   protocolError,
   publicMetadata,
   SessionResponseCommitter,
@@ -59,6 +60,7 @@ export class SessionRuntimeReconfigurer {
   async reopenLiveSessionInMode(
     session: RuntimeReconfigurationSession,
     mode: SessionMode,
+    viewState: RuntimeReconfigurationSession["viewState"],
     options: BridgeRequestOptions | undefined,
     hooks: RuntimeReconfigurationHooks
   ): Promise<OpenWranglerResponse> {
@@ -82,7 +84,7 @@ export class SessionRuntimeReconfigurer {
     const originMismatch = hooks.originMismatch(session.openRequest);
     if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
 
-    const previous = runtimeState(session);
+    const previous = replacementSnapshot(session);
     const candidateSessionId = randomUUID();
     const candidateRequest: OpenSessionRequest = {
       ...session.openRequest,
@@ -107,7 +109,7 @@ export class SessionRuntimeReconfigurer {
     try {
       response = await session.delegate.request(candidateRequest, {
         ...options,
-        requiredKernelSessionId: previous.runtimeId
+        requiredKernelSessionId: previous.runtime.runtimeId
       });
     } catch (error) {
       await cleanupCandidate();
@@ -163,7 +165,7 @@ export class SessionRuntimeReconfigurer {
       assertCandidateCurrent();
       page = await this.runtimeStateRestorer.restoreOneViewingState(
         candidate,
-        session.viewState,
+        viewState,
         candidateRequest.pageSize,
         candidateRequest.columnOffset,
         candidateRequest.columnLimit,
@@ -186,14 +188,42 @@ export class SessionRuntimeReconfigurer {
       );
     }
     const publicRevision = session.publicRevision + 1;
-    publishCandidate(session, candidate, candidateRequest, publicRevision);
-    session.draftPresentation = undefined;
-    session.draftBaseFilterModel = undefined;
+    const publishableCandidate = candidate;
+    const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
+      publishableCandidate,
+      candidateRequest.source,
+      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () => {
+        publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
+        session.draftPresentation = undefined;
+        session.draftBaseFilterModel = undefined;
+        candidateCleanupAttempted = true;
+        candidate = undefined;
+        return () => {
+          if (!canRollbackReplacement(session, publishableCandidate, publicRevision, hooks)) return false;
+          restoreReplacement(session, previous);
+          candidate = publishableCandidate;
+          candidateCleanupAttempted = false;
+          return true;
+        };
+      }
+    );
+    if (persistenceResult.kind === "unavailable") {
+      if (persistenceResult.liveState === "committed") this.runtimeCleanup.track(previous.runtime, "retired runtime");
+      else await cleanupCandidate();
+      return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
+    }
+    if (persistenceResult.kind === "stale") {
+      await cleanupCandidate();
+      return protocolError(
+        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+        `The session changed before ${displayMode} mode could be persisted and published.`,
+        false,
+        session.publicId
+      );
+    }
     hooks.invalidateStepInspection();
-    candidateCleanupAttempted = true;
-    candidate = undefined;
-    this.runtimeCleanup.track(previous, "retired runtime");
-    await this.responseCommitter.persistSession(session);
+    this.runtimeCleanup.track(previous.runtime, "retired runtime");
     return publicOpenedResponse(
       { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
       session.publicId,
@@ -384,7 +414,7 @@ export class SessionRuntimeReconfigurer {
     const previousActiveViewContextId = session.activeViewContextId;
     const previousLatestRequestedViewContextId = session.latestRequestedViewContextId;
     const previousLatestRequestedPageRequestId = session.latestRequestedPageRequestId;
-    const committed = await this.responseCommitter.commitRuntimeReplacement(
+    const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
       () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
@@ -395,6 +425,7 @@ export class SessionRuntimeReconfigurer {
         candidateCleanupAttempted = true;
         candidate = undefined;
         return () => {
+          if (!canRollbackReplacement(session, publishableCandidate, publicRevision, hooks)) return false;
           session.runtimeId = previous.runtimeId;
           session.runtimeRevision = previous.runtimeRevision;
           session.publicRevision = previousPublicRevision;
@@ -412,10 +443,16 @@ export class SessionRuntimeReconfigurer {
           session.latestRequestedPageRequestId = previousLatestRequestedPageRequestId;
           candidate = publishableCandidate;
           candidateCleanupAttempted = false;
+          return true;
         };
       }
     );
-    if (!committed) {
+    if (persistenceResult.kind === "unavailable") {
+      if (persistenceResult.liveState === "committed") this.runtimeCleanup.track(previous, "retired runtime");
+      else await cleanupCandidate();
+      return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
+    }
+    if (persistenceResult.kind === "stale") {
       await cleanupCandidate();
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
@@ -456,7 +493,7 @@ export class SessionRuntimeReconfigurer {
       gridState(session.viewState),
       session.draftBaseFilterModel
     );
-    const previous = runtimeState(session);
+    const previous = replacementSnapshot(session);
     const candidateSessionId = randomUUID();
     const candidateRequest = replacementOpenRequest(session, source, candidateSessionId, options?.backendPreference);
     if (!isOpenWranglerRequest(candidateRequest)) {
@@ -619,14 +656,42 @@ export class SessionRuntimeReconfigurer {
     }
 
     const publicRevision = session.publicRevision + 1;
-    publishCandidate(session, candidate, candidateRequest, publicRevision);
-    if (options?.backendPreference === "auto") delete session.backendPreference;
-    else if (options?.backendPreference !== undefined) session.backendPreference = options.backendPreference;
+    const publishableCandidate = candidate;
+    const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
+      publishableCandidate,
+      candidateRequest.source,
+      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () => {
+        publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
+        if (options?.backendPreference === "auto") delete session.backendPreference;
+        else if (options?.backendPreference !== undefined) session.backendPreference = options.backendPreference;
+        candidateCleanupAttempted = true;
+        candidate = undefined;
+        return () => {
+          if (!canRollbackReplacement(session, publishableCandidate, publicRevision, hooks)) return false;
+          restoreReplacement(session, previous);
+          candidate = publishableCandidate;
+          candidateCleanupAttempted = false;
+          return true;
+        };
+      }
+    );
+    if (persistenceResult.kind === "unavailable") {
+      if (persistenceResult.liveState === "committed") this.runtimeCleanup.track(previous.runtime, "retired runtime");
+      else await cleanupCandidate();
+      return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
+    }
+    if (persistenceResult.kind === "stale") {
+      await cleanupCandidate();
+      return protocolError(
+        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+        "The file session changed before its import options could be persisted and published.",
+        false,
+        session.publicId
+      );
+    }
     hooks.invalidateStepInspection();
-    candidateCleanupAttempted = true;
-    candidate = undefined;
-    this.runtimeCleanup.track(previous, "retired runtime");
-    await this.responseCommitter.persistSession(session);
+    this.runtimeCleanup.track(previous.runtime, "retired runtime");
     return publicOpenedResponse(
       { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
       session.publicId,
@@ -654,6 +719,68 @@ function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionSta
     draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
     viewState: session.viewState
   };
+}
+
+interface RuntimeReplacementSnapshot {
+  readonly runtime: RuntimeSessionState;
+  readonly publicRevision: number;
+  readonly openRequest: OpenSessionRequest;
+  readonly recoveryRequired: boolean;
+  readonly activeViewContextId: string | undefined;
+  readonly latestRequestedViewContextId: string | undefined;
+  readonly latestRequestedPageRequestId: string | undefined;
+  readonly hadBackendPreference: boolean;
+  readonly backendPreference: DataBackend | undefined;
+}
+
+function replacementSnapshot(session: RuntimeReconfigurationSession): RuntimeReplacementSnapshot {
+  return {
+    runtime: runtimeState(session),
+    publicRevision: session.publicRevision,
+    openRequest: session.openRequest,
+    recoveryRequired: session.recoveryRequired,
+    activeViewContextId: session.activeViewContextId,
+    latestRequestedViewContextId: session.latestRequestedViewContextId,
+    latestRequestedPageRequestId: session.latestRequestedPageRequestId,
+    hadBackendPreference: Object.prototype.hasOwnProperty.call(session, "backendPreference"),
+    backendPreference: session.backendPreference
+  };
+}
+
+function canRollbackReplacement(
+  session: RuntimeReconfigurationSession,
+  candidate: RuntimeSessionState,
+  publicRevision: number,
+  hooks: RuntimeReconfigurationHooks
+): boolean {
+  return (
+    hooks.isCurrent() &&
+    session.runtimeId === candidate.runtimeId &&
+    session.runtimeRevision === candidate.runtimeRevision &&
+    session.publicRevision === publicRevision &&
+    session.metadata === candidate.metadata &&
+    session.viewState === candidate.viewState
+  );
+}
+
+function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: RuntimeReplacementSnapshot): void {
+  session.runtimeId = snapshot.runtime.runtimeId;
+  session.runtimeRevision = snapshot.runtime.runtimeRevision;
+  session.publicRevision = snapshot.publicRevision;
+  session.openRequest = snapshot.openRequest;
+  session.metadata = snapshot.runtime.metadata;
+  session.code = snapshot.runtime.code;
+  session.draftPresentation = snapshot.runtime.draftPresentation;
+  session.draftBaseFilterModel = snapshot.runtime.draftBaseFilterModel;
+  session.viewChangeEpoch = snapshot.runtime.viewChangeEpoch;
+  session.draftBaseViewChangeEpoch = snapshot.runtime.draftBaseViewChangeEpoch;
+  session.viewState = snapshot.runtime.viewState;
+  session.recoveryRequired = snapshot.recoveryRequired;
+  session.activeViewContextId = snapshot.activeViewContextId;
+  session.latestRequestedViewContextId = snapshot.latestRequestedViewContextId;
+  session.latestRequestedPageRequestId = snapshot.latestRequestedPageRequestId;
+  if (snapshot.hadBackendPreference) session.backendPreference = snapshot.backendPreference;
+  else delete session.backendPreference;
 }
 
 function candidateShell(session: RuntimeReconfigurationSession, runtimeId: string): RuntimeSessionState {

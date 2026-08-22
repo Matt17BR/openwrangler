@@ -6,6 +6,7 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import {
   AZURE_INSTALL_OWNERS,
+  COMPATIBILITY_INSTALL,
   WORKFLOW_PATHS,
   WORKFLOW_INSTALL_OWNERS,
   inspectInstallPolicy,
@@ -54,11 +55,17 @@ function rejected(overrides, pattern) {
 test("install policy owns every script-free lockfile install and exact shim", () => {
   assert.deepEqual(inspect(), []);
   assert.deepEqual(installPolicyInventory(), {
-    installInvocations: 28,
+    installInvocations: 29,
     owners: 26,
     platformPackages: 9,
     workflowFiles: 11
   });
+  assert.deepEqual(
+    WORKFLOW_INSTALL_OWNERS.find(([path, job]) => path === ".github/workflows/ci.yml" && job === "invariant-core")?.at(
+      -1
+    ),
+    ["npm ci --ignore-scripts", COMPATIBILITY_INSTALL]
+  );
 });
 
 test("shell command tokenization preserves quoted and unmatched boundaries", () => {

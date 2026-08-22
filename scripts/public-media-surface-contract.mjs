@@ -26,7 +26,7 @@ export const PUBLIC_MEDIA_MAX_DISPLAY_WIDTH = 960;
 export const PUBLIC_MEDIA_RESPONSIVE_WIDTHS = Object.freeze([760, 1_400]);
 
 export const PUBLIC_SURFACE_CONTENT = [
-  "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.",
+  "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.",
   "Open files",
   "The active filter matches 14,287 rows."
 ];

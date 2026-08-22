@@ -142,6 +142,23 @@ def _write_fake_dependency(site_packages: Path) -> None:
         "Metadata-Version: 2.1\nName: ow-guard-fixture\nVersion: 1.2.3\n",
         encoding="utf-8",
     )
+    (metadata / "RECORD").write_text(
+        "ow_guard_fixture/__init__.py,,\n",
+        encoding="utf-8",
+    )
+
+
+def _write_legacy_pandas_distribution(site_packages: Path, version: str) -> None:
+    module = site_packages / "pandas"
+    module.mkdir()
+    (module / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    metadata = site_packages / "pandas-legacy.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: pandas\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+    (metadata / "RECORD").write_text("pandas/__init__.py,,\n", encoding="utf-8")
 
 
 def _write_fake_pip(site_packages: Path) -> None:
@@ -373,6 +390,28 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
     finally:
         os.close(descriptor)
     guard._lstat_private_file(path, code="malformed_state")
+
+
+def _write_legacy_marker(
+    fixture: GuardFixture,
+    token: str,
+    dependency: dict[str, Any] | list[dict[str, Any]],
+) -> Path:
+    _create_manual_journal(fixture)
+    marker = fixture.journal / f"mutation-{token}.json"
+    payload = json.dumps(
+        {
+            "dependencies": dependency if isinstance(dependency, list) else [dependency],
+            "environment": fixture.environment,
+            "protocol": PROTOCOL,
+            "token": token,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    _write_manual_journal_leaf(marker, payload)
+    return marker
 
 
 def _run_icacls(path: Path, *arguments: str) -> None:
@@ -1417,6 +1456,141 @@ def test_environment_replacement_between_ready_and_go_never_invokes_pip(guard_fi
     assert _marker_paths(guard_fixture) == []
 
 
+def test_shipped_v1_unbounded_journal_recovers_without_weakening_new_requests(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    legacy_dependency = {
+        "importModule": "pandas",
+        "distribution": "pandas",
+        "installSpec": "pandas",
+        "exactVersion": None,
+        "minimumVersion": None,
+        "maximumVersionExclusive": None,
+    }
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "install",
+        _install_request(guard_fixture, token, dependency=legacy_dependency),
+    )
+    assert code == 10
+    assert frames == [{"code": "invalid_request", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert not guard_fixture.journal.exists()
+
+    _write_legacy_pandas_distribution(_site_packages(guard_fixture.executable), "2.2.0")
+    marker = _write_legacy_marker(guard_fixture, token, legacy_dependency)
+    retained = marker.read_bytes()
+
+    status_code, status_frames, status_stderr = _run(
+        guard_fixture,
+        "status",
+        _status_request(guard_fixture),
+    )
+    assert status_code == 0
+    assert status_frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert status_stderr == b""
+    assert marker.read_bytes() == retained
+
+    validate_code, validate_frames, validate_stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert validate_code == 0
+    assert validate_frames == [{"kind": "validated", "protocol": PROTOCOL, "token": token}]
+    assert validate_stderr == b""
+    assert _marker_paths(guard_fixture) == []
+
+
+def test_shipped_v1_journal_transition_is_exact_allowlist_bound(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        {
+            "importModule": "pandas",
+            "distribution": "pandas",
+            "installSpec": "pandas>=1",
+            "exactVersion": None,
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+        },
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
+
+
+def test_actual_six_key_v1_journal_accepts_unbounded_pandas_with_the_released_duckdb_marker(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        [
+            {
+                "importModule": "pandas",
+                "distribution": "pandas",
+                "installSpec": "pandas",
+                "exactVersion": None,
+                "minimumVersion": None,
+                "maximumVersionExclusive": None,
+            },
+            {
+                "importModule": "duckdb",
+                "distribution": "duckdb",
+                "installSpec": "duckdb>=1.4.5,<1.6",
+                "exactVersion": None,
+                "minimumVersion": "1.4.5",
+                "maximumVersionExclusive": "1.6",
+            },
+        ],
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 0
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
+
+
+def test_impossible_five_key_v1_journal_shape_is_rejected(
+    guard_fixture: GuardFixture,
+) -> None:
+    token = str(uuid.uuid4())
+    marker = _write_legacy_marker(
+        guard_fixture,
+        token,
+        {
+            "importModule": "pandas",
+            "distribution": "pandas",
+            "installSpec": "pandas",
+            "minimumVersion": None,
+            "maximumVersionExclusive": None,
+        },
+    )
+    retained = marker.read_bytes()
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker.read_bytes() == retained
+
+
 def test_abrupt_termination_releases_lock_and_validator_clears_retained_marker(
     guard_fixture: GuardFixture,
 ) -> None:
@@ -1545,7 +1719,12 @@ def test_failed_pip_retains_marker_and_does_not_expose_output(guard_fixture: Gua
 
 def test_failed_dependency_validation_retains_exact_marker(guard_fixture: GuardFixture) -> None:
     token = str(uuid.uuid4())
-    incompatible = {**guard_fixture.dependency, "minimumVersion": "2.0"}
+    incompatible = {
+        **guard_fixture.dependency,
+        "installSpec": "ow-guard-fixture>=2.0,<3.0",
+        "minimumVersion": "2.0",
+        "maximumVersionExclusive": "3.0",
+    }
     process = _arm(guard_fixture, token, dependency=incompatible)
     _write_frame(process, _go_frame(token))
     assert _finish(process)[0] == 0
@@ -1557,6 +1736,65 @@ def test_failed_dependency_validation_retains_exact_marker(guard_fixture: GuardF
     assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
     assert stderr == b""
     assert marker.read_bytes() == original
+
+
+@pytest.mark.parametrize("version", ["1.2.4rc1", "1.2.4.dev1"])
+def test_validation_rejects_prerelease_and_development_versions(
+    guard_fixture: GuardFixture,
+    version: str,
+) -> None:
+    token = str(uuid.uuid4())
+    process = _arm(guard_fixture, token)
+    _write_frame(process, _go_frame(token))
+    assert _finish(process)[0] == 0
+    marker_path = _marker_paths(guard_fixture)[0]
+    original = marker_path.read_bytes()
+    metadata = _site_packages(guard_fixture.executable) / "ow_guard_fixture-1.2.3.dist-info" / "METADATA"
+    metadata.write_text(
+        f"Metadata-Version: 2.1\nName: ow-guard-fixture\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert code == 13
+    assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker_path.read_bytes() == original
+
+
+def test_validation_rejects_a_shadow_module_not_owned_by_the_distribution(
+    guard_fixture: GuardFixture,
+    tmp_path: Path,
+) -> None:
+    token = str(uuid.uuid4())
+    process = _arm(guard_fixture, token)
+    _write_frame(process, _go_frame(token))
+    assert _finish(process)[0] == 0
+    marker_path = _marker_paths(guard_fixture)[0]
+    original = marker_path.read_bytes()
+    site_packages = _site_packages(guard_fixture.executable)
+    shadow = tmp_path / "shadow-module"
+    package = shadow / "ow_guard_fixture"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (site_packages / "openwrangler-shadow.pth").write_text(
+        f"import sys;sys.path.insert(0, {str(shadow)!r})\n",
+        encoding="utf-8",
+    )
+
+    code, frames, stderr = _run(
+        guard_fixture,
+        "validate",
+        _validate_request(guard_fixture, token),
+    )
+    assert code == 13
+    assert frames == [{"code": "validation_failed", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert marker_path.read_bytes() == original
 
 
 def test_stale_validator_token_cannot_clear_a_different_marker(guard_fixture: GuardFixture) -> None:

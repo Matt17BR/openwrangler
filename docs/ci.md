@@ -28,6 +28,35 @@ Classifier/workflow/toolchain/result-owner/R-lock changes select the complete un
 output, an invalid path, and every unmatched substantive path also fail open to that union. Documentation cannot
 classify a product, package, runtime, protocol, or workflow change away when it accompanies that change.
 
+An ordinary pull request classifies the exact base-to-head range. When GitHub supplies native stack metadata, every
+layer instead classifies the cumulative `pull_request.stack.base.sha`-to-head range and validates its exact position
+and size. A non-final layer is recorded as a partial prefix, but it retains the same invariant core, conservative
+changed-area owners, and final `validate` result contract as the complete stack. Missing stack metadata uses the
+ordinary pull-request base; partially present or malformed stack metadata fails closed. Draft heads qualify when
+opened. GitHub's dedicated `stacked` activity qualifies an unchanged head again as soon as it joins a stack, so its
+checks use the cumulative stack base. Making the same SHA ready or draft does not start a duplicate run, while
+synchronization, reopen, and base edits still trigger both CI and CodeQL. The independent `CodeQL gate` remains
+required on every layer.
+
+GitHub merge-queue candidates enter through `merge_group: checks_requested`. That synthetic merged-tree SHA runs
+the full conservative owner union plus both required result gates; it does not reuse a pull-request head result or
+path-prune the integration object. Queue candidates may replace manual branch-current replays only after the active
+ruleset requires `validate` and `CodeQL gate` on the `merge_group` result.
+
+<!-- BEGIN GENERATED CI CAPABILITIES -->
+
+### Enforced workflow capabilities
+
+This section is generated from `scripts/fixtures/ci-capabilities.json` and checked against the workflow graph.
+Job display names and YAML ordering are not part of the contract; job IDs, events, fatality, reachability, and final fan-in are.
+
+- `source_coverage`: trigger `pull_request`; merge queue trigger `merge_group:checks_requested`; provider `.github/workflows/ci.yml:validate`; mandatory final fan-in `.github/workflows/ci.yml:validate`; required checks `validate`, `CodeQL gate`.
+- `installed_candidate`: trigger `workflow_dispatch`; provider `.github/workflows/candidate-acceptance.yml:acceptance`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.
+- `artifact_provenance`: trigger `workflow_dispatch`; provider `.github/workflows/release-candidate.yml:package`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.
+- `release_fan_in`: trigger `workflow_dispatch`; provider `.github/workflows/release-candidate.yml:qualify`; mandatory final fan-in `.github/workflows/release-candidate.yml:qualify`.
+
+<!-- END GENERATED CI CAPABILITIES -->
+
 A successful pull-request run retains no ordinary artifact. Visual actual/diff evidence is uploaded for seven days
 only on failure. Release workflows retain their separately reviewed artifact contracts.
 
@@ -42,7 +71,8 @@ installed library, package/tree receipt, or executable package state is restored
 
 Pull requests retain both selected R 4.5 owners without the temporary pull-request R 4.4 compatibility carrier.
 Cross no longer has a pull-request trigger or classifier carriers; its manual dispatch and weekly schedule run the
-macOS/Windows runtime matrix, Windows dependency guards, and the lock-backed R 4.4 qualification. CodeQL retains the
+macOS/Windows runtime matrix, Windows dependency guards, the exact `python-runtime-dependency-cohorts` job that installs
+and exercises every declared dependency/Python qualification pair, and the lock-backed R 4.4 qualification. CodeQL retains the
 `Analyze (javascript-typescript)` and `Analyze (python)` jobs as two always-on analyzers and requires both exact results
 through `CodeQL gate`.
 

@@ -41,9 +41,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - The data grid now selects rectangular ranges by mouse or pen drag without native text selection. Shift-modified
   pointer and keyboard selection still extend the current anchor; Ctrl/Cmd+click explicitly starts a new rectangle
   because non-contiguous selections are not supported.
-- Development and hosted automation now use exactly Node.js 22.22.0 with npm 10.9.4. The standard check includes a
-  strict dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains
-  Nano ID 3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
+- Development, CI, and packaging now use exactly Node.js 24.19.0 with npm 11.17.0. The maintained-LTS engine policy is
+  `^22.22.0 || ^24.0.0`, deliberately excluding Node 23; one pull-request smoke proves Node 22.23.2 with npm 10.9.8
+  without making it a packaging owner. The minimum extension-host contract remains independently pinned to
+  `engines.vscode` `^1.106.0`, `@types/vscode` 1.106.0, and `@types/node` 22.20.1. The standard check includes a strict
+  dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains Nano ID
+  3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
 - Successful pull-request checks no longer retain coverage, visual, or VSIX run artifacts. The canonical PR package
   moves between same-run consumers through a run-, attempt-, commit-, and producer-digest-bound cache key. Cache misses
   and producer digest or size mismatches fail closed before repeated inventory verification; coverage, visual, and

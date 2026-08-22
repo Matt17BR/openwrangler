@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 import * as vscode from "vscode";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type { SessionSource } from "../../shared/protocol";
@@ -19,6 +21,57 @@ import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 const OPEN_NOTEBOOK_CELL_RESULT_COMMAND = "openWrangler.openNotebookCellResult";
 const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
 const NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS = 10_000;
+const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
+const INLINE_UPGRADE_MAX_SCAN_BYTES = 16 * 1024 * 1024;
+export const INLINE_UPGRADE_MAX_CELLS = 10_000;
+export const INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS = 100_000;
+const INLINE_UPGRADE_MAX_OUTPUT_ITEMS = 100_000;
+
+export interface InlineNotebookOutputCandidate {
+  readonly byteLength: number;
+  readonly sha256: string;
+}
+
+export interface InlineNotebookCellResultBinding extends vscode.Disposable {
+  readonly cell: vscode.NotebookCell;
+  readonly notebook: vscode.NotebookDocument;
+  readonly editor: vscode.NotebookEditor;
+  readonly executionOrder: number;
+  readonly sourceFingerprint: string;
+  readonly kernelBinding: ExecutedNotebookCellResultBinding;
+  readonly onDidInvalidate: vscode.Event<void>;
+  isCurrent(): boolean;
+  hasCurrentKernel(): Promise<boolean>;
+}
+
+interface InlineRawOutputMatch {
+  readonly cell: vscode.NotebookCell;
+  readonly output: vscode.NotebookCellOutput;
+  readonly item: vscode.NotebookCellOutputItem;
+}
+
+interface InlineRawOutputCellSnapshot {
+  readonly cell: vscode.NotebookCell;
+  readonly outputs: readonly vscode.NotebookCellOutput[];
+}
+
+interface InlineRawOutputSnapshot {
+  readonly editor: vscode.NotebookEditor;
+  readonly notebook: vscode.NotebookDocument;
+  readonly cellArray: readonly vscode.NotebookCell[];
+  readonly cells: readonly InlineRawOutputCellSnapshot[];
+}
+
+interface InlineRawOutputItemsSnapshot {
+  readonly output: vscode.NotebookCellOutput;
+  readonly itemArray: readonly vscode.NotebookCellOutputItem[];
+  readonly items: readonly vscode.NotebookCellOutputItem[];
+}
+
+interface InlineRawOutputDataSnapshot extends InlineRawOutputMatch {
+  readonly data: Uint8Array;
+  readonly byteLength: number;
+}
 
 export interface NotebookCellResultTrackerDiagnostics {
   readonly stage: "unseen" | "awaiting-result" | "completion-kernel" | "probe" | "eligible" | "rejected";
@@ -37,19 +90,23 @@ export function registerNotebookCellResultAction(
   coordinator: SessionCoordinator,
   tracker = new NotebookCellResultTracker()
 ): void {
-  tracker.start();
-  const provider: vscode.NotebookCellStatusBarItemProvider = {
-    onDidChangeCellStatusBarItems: tracker.onDidChangeCellStatusBarItems,
-    provideCellStatusBarItems: (cell) => notebookCellResultStatusItem(cell, tracker)
-  };
-  context.subscriptions.push(
-    tracker,
-    vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", provider),
-    vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", provider),
-    vscode.commands.registerCommand(OPEN_NOTEBOOK_CELL_RESULT_COMMAND, (cell: unknown) =>
-      openNotebookCellResult(context, coordinator, tracker, cell)
-    )
-  );
+  registerAtomically(context.subscriptions, () => {
+    tracker.start();
+    context.subscriptions.push(tracker);
+    const provider: vscode.NotebookCellStatusBarItemProvider = {
+      onDidChangeCellStatusBarItems: tracker.onDidChangeCellStatusBarItems,
+      provideCellStatusBarItems: (cell) => notebookCellResultStatusItem(cell, tracker)
+    };
+    context.subscriptions.push(
+      vscode.notebooks.registerNotebookCellStatusBarItemProvider("jupyter-notebook", provider)
+    );
+    context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider("interactive", provider));
+    context.subscriptions.push(
+      vscode.commands.registerCommand(OPEN_NOTEBOOK_CELL_RESULT_COMMAND, (cell: unknown) =>
+        openNotebookCellResult(context, coordinator, tracker, cell)
+      )
+    );
+  });
 }
 
 export function notebookCellResultStatusItem(
@@ -218,6 +275,7 @@ interface NotebookExecutionState {
 
 export class NotebookCellResultTracker implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>();
+  private readonly inlineChanged = new vscode.EventEmitter<void>();
   private readonly notebookStates = new WeakMap<vscode.NotebookDocument, NotebookExecutionState>();
   private readonly activeStates = new Set<NotebookExecutionState>();
   private readonly eligibleCells = new WeakMap<vscode.NotebookCell, ExecutedCellEligibility>();
@@ -240,16 +298,26 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.workspaceSubscriptions.push(
-      vscode.workspace.onDidChangeNotebookDocument((event) => this.recordDocumentChange(event)),
-      vscode.workspace.onDidCloseNotebookDocument((notebook) => this.forgetNotebook(notebook))
-    );
+    try {
+      registerAtomically(this.workspaceSubscriptions, () => {
+        this.workspaceSubscriptions.push(
+          vscode.workspace.onDidChangeNotebookDocument((event) => this.recordDocumentChange(event))
+        );
+        this.workspaceSubscriptions.push(
+          vscode.workspace.onDidCloseNotebookDocument((notebook) => this.forgetNotebook(notebook))
+        );
+      });
+    } catch (error) {
+      this.started = false;
+      throw error;
+    }
   }
 
   recordDocumentChange(event: vscode.NotebookDocumentChangeEvent): void {
     if (!isSupportedNotebook(event.notebook)) return;
     const state = this.stateFor(event.notebook);
     let changed = false;
+    const inlineProvenanceChanged = event.contentChanges.length > 0 || event.cellChanges.length > 0;
 
     for (const contentChange of event.contentChanges) {
       for (const removedCell of contentChange.removedCells) {
@@ -314,14 +382,17 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     }
 
     if (changed) this.changed.fire();
+    if (inlineProvenanceChanged) this.inlineChanged.fire();
   }
 
   forgetNotebook(notebook: vscode.NotebookDocument): void {
     const state = this.notebookStates.get(notebook);
-    if (!state) return;
-    this.notebookStates.delete(notebook);
-    this.activeStates.delete(state);
-    if (this.clearState(state)) this.changed.fire();
+    if (state) {
+      this.notebookStates.delete(notebook);
+      this.activeStates.delete(state);
+      if (this.clearState(state)) this.changed.fire();
+    }
+    this.inlineChanged.fire();
   }
 
   current(cell: vscode.NotebookCell): ExecutedCellEligibility | undefined {
@@ -341,6 +412,63 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     return eligibility;
   }
 
+  async bindInlineUpgrade(
+    editor: vscode.NotebookEditor,
+    candidate: InlineNotebookOutputCandidate,
+    cancellation?: vscode.CancellationToken
+  ): Promise<InlineNotebookCellResultBinding | undefined> {
+    if (
+      !this.started ||
+      cancellation?.isCancellationRequested ||
+      !isInlineUpgradeCandidate(candidate) ||
+      !isExactVisibleNotebookEditor(editor) ||
+      !isSupportedNotebook(editor.notebook)
+    ) {
+      return undefined;
+    }
+    const rawMatch = findInlineRawOutputMatch(editor, candidate);
+    if (!rawMatch || rawMatch.output.metadata?.outputType !== "execute_result") return undefined;
+    const immediate = this.current(rawMatch.cell);
+    if (immediate) return this.createInlineUpgradeBinding(editor, candidate, rawMatch, immediate);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let observedInspection = this.pendingCells.has(rawMatch.cell) || this.kernelObservations.has(rawMatch.cell);
+      const subscriptions: vscode.Disposable[] = [];
+      const finish = (binding: InlineNotebookCellResultBinding | undefined): void => {
+        if (settled) {
+          binding?.dispose();
+          return;
+        }
+        settled = true;
+        for (const subscription of subscriptions.splice(0)) subscription.dispose();
+        resolve(binding);
+      };
+      const inspect = (): void => {
+        if (
+          settled ||
+          !this.started ||
+          cancellation?.isCancellationRequested ||
+          !matchesInlineRawOutput(editor, candidate, rawMatch)
+        ) {
+          finish(undefined);
+          return;
+        }
+        const eligibility = this.current(rawMatch.cell);
+        if (eligibility) {
+          finish(this.createInlineUpgradeBinding(editor, candidate, rawMatch, eligibility));
+          return;
+        }
+        const inspectionActive = this.pendingCells.has(rawMatch.cell) || this.kernelObservations.has(rawMatch.cell);
+        if (inspectionActive) observedInspection = true;
+        else if (observedInspection) finish(undefined);
+      };
+      subscriptions.push(this.inlineChanged.event(inspect));
+      if (cancellation) subscriptions.push(cancellation.onCancellationRequested(() => finish(undefined)));
+      inspect();
+    });
+  }
+
   diagnosticsForTesting(): NotebookCellResultTrackerDiagnostics | undefined {
     if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return undefined;
     return Object.freeze({ ...this.diagnosticState });
@@ -356,7 +484,10 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     const current = await isExecutedNotebookCellResultKernelCurrent(eligibility.notebook, eligibility.binding);
     if (current || this.eligibleCells.get(cell) !== eligibility) return current;
     const state = this.notebookStates.get(eligibility.notebook);
-    if (state && this.forgetCell(state, cell)) this.changed.fire();
+    if (state && this.forgetCell(state, cell)) {
+      this.changed.fire();
+      this.inlineChanged.fire();
+    }
     return false;
   }
 
@@ -365,7 +496,47 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     this.started = false;
     for (const state of this.activeStates) this.clearState(state);
     this.activeStates.clear();
+    this.inlineChanged.fire();
     this.changed.dispose();
+    this.inlineChanged.dispose();
+  }
+
+  private createInlineUpgradeBinding(
+    editor: vscode.NotebookEditor,
+    candidate: InlineNotebookOutputCandidate,
+    rawMatch: InlineRawOutputMatch,
+    eligibility: ExecutedCellEligibility
+  ): InlineNotebookCellResultBinding {
+    let active = true;
+    const invalidated = new vscode.EventEmitter<void>();
+    const subscriptions: vscode.Disposable[] = [];
+    const isCurrent = (): boolean =>
+      active && matchesInlineRawOutput(editor, candidate, rawMatch) && this.current(rawMatch.cell) === eligibility;
+    const stop = (notify: boolean): void => {
+      if (!active) return;
+      active = false;
+      if (notify) invalidated.fire();
+      for (const subscription of subscriptions.splice(0)) subscription.dispose();
+      invalidated.dispose();
+    };
+    subscriptions.push(
+      this.inlineChanged.event(() => {
+        if (!isCurrent()) stop(true);
+      })
+    );
+    return {
+      cell: rawMatch.cell,
+      notebook: editor.notebook,
+      editor,
+      executionOrder: eligibility.executionOrder,
+      sourceFingerprint: eligibility.sourceFingerprint,
+      kernelBinding: eligibility.binding,
+      onDidInvalidate: invalidated.event,
+      isCurrent,
+      hasCurrentKernel: async () =>
+        isCurrent() && (await this.hasCurrentKernel(rawMatch.cell, eligibility)) && isCurrent(),
+      dispose: () => stop(false)
+    };
   }
 
   private stateFor(notebook: vscode.NotebookDocument): NotebookExecutionState {
@@ -477,22 +648,28 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             binding?.dispose();
             state.trackedCells.delete(cell);
             if (probeAttempted) this.recordDiagnostic("rejected", "probe-rejected");
+            this.inlineChanged.fire();
             return;
           }
           const eligibility: ExecutedCellEligibility = { ...pending, binding };
           eligibility.invalidationSubscription = binding.onDidInvalidate(() => {
-            if (this.eligibleCells.get(cell) === eligibility && this.forgetCell(state, cell)) this.changed.fire();
+            if (this.eligibleCells.get(cell) === eligibility && this.forgetCell(state, cell)) {
+              this.changed.fire();
+              this.inlineChanged.fire();
+            }
           });
           if (!binding.isValid()) {
             eligibility.invalidationSubscription.dispose();
             binding.dispose();
             state.trackedCells.delete(cell);
             this.recordDiagnostic("rejected", "probe-rejected");
+            this.inlineChanged.fire();
             return;
           }
           this.eligibleCells.set(cell, eligibility);
           this.recordDiagnostic("eligible");
           this.changed.fire();
+          this.inlineChanged.fire();
         },
         () => {
           if (this.pendingCells.get(cell) !== pending) return;
@@ -513,6 +690,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     pending.activeBinding?.dispose();
     delete pending.activeBinding;
     this.disposeObservation(pending.observation);
+    this.inlineChanged.fire();
     return true;
   }
 
@@ -675,6 +853,283 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   }
 }
 
+function findInlineRawOutputMatch(
+  editor: vscode.NotebookEditor,
+  candidate: InlineNotebookOutputCandidate
+): InlineRawOutputMatch | undefined {
+  const snapshot = snapshotInlineRawOutputContainers(editor);
+  if (!snapshot) return undefined;
+  let visitedItems = 0;
+  let scannedBytes = 0;
+  let match: InlineRawOutputMatch | undefined;
+  const itemSnapshots: InlineRawOutputItemsSnapshot[] = [];
+  const itemIdentities = new Set<vscode.NotebookCellOutputItem>();
+  const dataSnapshots: InlineRawOutputDataSnapshot[] = [];
+  try {
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      if (!cellSnapshot) return undefined;
+      for (let outputIndex = 0; outputIndex < cellSnapshot.outputs.length; outputIndex += 1) {
+        const output = cellSnapshot.outputs[outputIndex];
+        if (!output) return undefined;
+        const itemArray = output.items;
+        const items = snapshotBoundedIndexedReferences(itemArray, INLINE_UPGRADE_MAX_OUTPUT_ITEMS - visitedItems);
+        if (!items) return undefined;
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+          const item = items[itemIndex];
+          if (!item || itemIdentities.has(item)) return undefined;
+          itemIdentities.add(item);
+        }
+        visitedItems += items.length;
+        itemSnapshots.push({ output, itemArray, items });
+      }
+    }
+    if (!isInlineRawOutputSnapshotCurrent(snapshot) || !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)) {
+      return undefined;
+    }
+    let itemSnapshotIndex = 0;
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      if (!cellSnapshot) return undefined;
+      for (let outputIndex = 0; outputIndex < cellSnapshot.outputs.length; outputIndex += 1) {
+        const output = cellSnapshot.outputs[outputIndex];
+        const itemSnapshot = itemSnapshots[itemSnapshotIndex];
+        itemSnapshotIndex += 1;
+        if (!output || !itemSnapshot || itemSnapshot.output !== output) return undefined;
+        for (let itemIndex = 0; itemIndex < itemSnapshot.items.length; itemIndex += 1) {
+          const item = itemSnapshot.items[itemIndex];
+          if (!item || item.mime !== "text/html") continue;
+          const data = item.data;
+          const byteLength = boundedOneByteViewLength(data);
+          if (byteLength === undefined) return undefined;
+          if (byteLength !== candidate.byteLength) continue;
+          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - byteLength) return undefined;
+          scannedBytes += byteLength;
+          dataSnapshots.push({ cell: cellSnapshot.cell, output, item, data, byteLength });
+        }
+      }
+    }
+    if (
+      itemSnapshotIndex !== itemSnapshots.length ||
+      !isInlineRawOutputSnapshotCurrent(snapshot) ||
+      !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)
+    ) {
+      return undefined;
+    }
+    for (const dataSnapshot of dataSnapshots) {
+      const currentBytes = copyCurrentBoundedBytes(dataSnapshot.data, dataSnapshot.byteLength);
+      if (!currentBytes) return undefined;
+      if (!matchesInlineUpgradeBytes(currentBytes, currentBytes.byteLength, candidate)) continue;
+      if (match) return undefined;
+      match = {
+        cell: dataSnapshot.cell,
+        output: dataSnapshot.output,
+        item: dataSnapshot.item
+      };
+    }
+  } catch {
+    return undefined;
+  }
+  return match;
+}
+
+function snapshotInlineRawOutputContainers(editor: vscode.NotebookEditor): InlineRawOutputSnapshot | undefined {
+  if (!isExactVisibleNotebookEditor(editor)) return undefined;
+  const notebook = editor.notebook;
+  try {
+    const cellArray = snapshotBoundedIndexedReferences(notebook.getCells(), INLINE_UPGRADE_MAX_CELLS);
+    if (!cellArray) return undefined;
+    let visitedOutputs = 0;
+    const outputIdentities = new Set<vscode.NotebookCellOutput>();
+    const cellSnapshots = new Array<InlineRawOutputCellSnapshot>(cellArray.length);
+    for (let cellIndex = 0; cellIndex < cellArray.length; cellIndex += 1) {
+      const cell = cellArray[cellIndex];
+      if (!cell) return undefined;
+      if (cell.notebook !== notebook) return undefined;
+      const outputArray = cell.outputs;
+      const outputs = snapshotBoundedIndexedReferences(
+        outputArray,
+        INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs
+      );
+      if (!outputs) return undefined;
+      for (let outputIndex = 0; outputIndex < outputs.length; outputIndex += 1) {
+        const output = outputs[outputIndex];
+        if (!output || outputIdentities.has(output)) return undefined;
+        outputIdentities.add(output);
+      }
+      visitedOutputs += outputs.length;
+      cellSnapshots[cellIndex] = { cell, outputs };
+    }
+    const snapshot = { editor, notebook, cellArray, cells: cellSnapshots };
+    return isInlineRawOutputSnapshotCurrent(snapshot) ? snapshot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isInlineRawOutputSnapshotCurrent(snapshot: InlineRawOutputSnapshot): boolean {
+  const { editor, notebook } = snapshot;
+  if (editor.notebook !== notebook || !isExactVisibleNotebookEditor(editor)) return false;
+  try {
+    const cells = notebook.getCells();
+    if (!hasExactIndexedReferences(cells, snapshot.cellArray)) return false;
+    const outputArrays = new Array<readonly vscode.NotebookCellOutput[]>(snapshot.cells.length);
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      const cell = snapshot.cellArray[cellIndex];
+      if (!cellSnapshot || cell !== cellSnapshot.cell || cell.notebook !== notebook) return false;
+      const outputArray = cell.outputs;
+      outputArrays[cellIndex] = outputArray;
+      if (!hasExactIndexedReferences(outputArray, cellSnapshot.outputs)) return false;
+    }
+    if (!hasExactIndexedReferences(cells, snapshot.cellArray)) return false;
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      const outputArray = outputArrays[cellIndex];
+      if (
+        !cellSnapshot ||
+        !outputArray ||
+        cellSnapshot.cell.notebook !== notebook ||
+        !hasExactIndexedReferences(outputArray, cellSnapshot.outputs)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function areInlineRawOutputItemsSnapshotsCurrent(snapshots: readonly InlineRawOutputItemsSnapshot[]): boolean {
+  try {
+    const itemArrays = new Array<readonly vscode.NotebookCellOutputItem[]>(snapshots.length);
+    for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      const snapshot = snapshots[snapshotIndex];
+      if (!snapshot) return false;
+      const itemArray = snapshot.output.items;
+      itemArrays[snapshotIndex] = itemArray;
+      if (itemArray !== snapshot.itemArray || !hasExactIndexedReferences(itemArray, snapshot.items)) return false;
+    }
+    for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      const snapshot = snapshots[snapshotIndex];
+      const itemArray = itemArrays[snapshotIndex];
+      if (
+        !snapshot ||
+        !itemArray ||
+        itemArray !== snapshot.itemArray ||
+        !hasExactIndexedReferences(itemArray, snapshot.items)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function snapshotBoundedIndexedReferences<T extends object>(
+  values: readonly T[],
+  maximumLength: number
+): readonly T[] | undefined {
+  const length = denseArrayLength(values);
+  if (length === undefined || length > maximumLength) return undefined;
+  const snapshot = new Array<T>(length);
+  for (let index = 0; index < length; index += 1) {
+    const value = denseOwnIndexedReference(values, index);
+    if (!value) return undefined;
+    snapshot[index] = value;
+  }
+  if (denseArrayLength(values) !== length) return undefined;
+  return hasExactIndexedReferences(values, snapshot) ? snapshot : undefined;
+}
+
+function hasExactIndexedReferences<T extends object>(values: readonly T[], expected: readonly T[]): boolean {
+  const length = denseArrayLength(values);
+  if (length === undefined || length !== expected.length) return false;
+  for (let index = 0; index < length; index += 1) {
+    if (denseOwnIndexedReference(values, index) !== expected[index]) return false;
+  }
+  return denseArrayLength(values) === length;
+}
+
+function denseArrayLength(values: readonly object[]): number | undefined {
+  if (!Array.isArray(values) || nodeTypes.isProxy(values)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(values, "length");
+  const length = descriptor && "value" in descriptor ? descriptor.value : undefined;
+  return Number.isSafeInteger(length) && length >= 0 ? length : undefined;
+}
+
+function denseOwnIndexedReference<T extends object>(values: readonly T[], index: number): T | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(values, String(index));
+  if (!descriptor || !("value" in descriptor)) return undefined;
+  const value: unknown = descriptor.value;
+  return (typeof value === "object" && value !== null) || typeof value === "function" ? (value as T) : undefined;
+}
+
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")?.get;
+const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength")?.get;
+const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset")?.get;
+const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "length")?.get;
+const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+
+function boundedOneByteViewLength(value: unknown): number | undefined {
+  if (
+    !ArrayBuffer.isView(value) ||
+    !typedArrayBufferGetter ||
+    !typedArrayByteLengthGetter ||
+    !typedArrayByteOffsetGetter ||
+    !typedArrayLengthGetter ||
+    !arrayBufferByteLengthGetter
+  ) {
+    return undefined;
+  }
+  try {
+    const buffer: unknown = typedArrayBufferGetter.call(value);
+    const byteLength: unknown = typedArrayByteLengthGetter.call(value);
+    const byteOffset: unknown = typedArrayByteOffsetGetter.call(value);
+    const length: unknown = typedArrayLengthGetter.call(value);
+    const bufferByteLength: unknown = arrayBufferByteLengthGetter.call(buffer);
+    if (
+      !Number.isSafeInteger(byteLength) ||
+      !Number.isSafeInteger(byteOffset) ||
+      !Number.isSafeInteger(length) ||
+      !Number.isSafeInteger(bufferByteLength) ||
+      (byteLength as number) < 0 ||
+      (byteOffset as number) < 0 ||
+      length !== byteLength ||
+      (byteOffset as number) > (bufferByteLength as number) - (byteLength as number)
+    ) {
+      return undefined;
+    }
+    return byteLength as number;
+  } catch {
+    return undefined;
+  }
+}
+
+function copyCurrentBoundedBytes(data: Uint8Array, expectedByteLength: number): Uint8Array | undefined {
+  if (boundedOneByteViewLength(data) !== expectedByteLength) return undefined;
+  const copy = new Uint8Array(expectedByteLength);
+  try {
+    Uint8Array.prototype.set.call(copy, data);
+  } catch {
+    return undefined;
+  }
+  return boundedOneByteViewLength(data) === expectedByteLength ? copy : undefined;
+}
+
+function matchesInlineRawOutput(
+  editor: vscode.NotebookEditor,
+  candidate: InlineNotebookOutputCandidate,
+  expected: InlineRawOutputMatch
+): boolean {
+  const current = findInlineRawOutputMatch(editor, candidate);
+  return current?.cell === expected.cell && current.output === expected.output && current.item === expected.item;
+}
+
 function isExactCellInNotebook(cell: vscode.NotebookCell, notebook: vscode.NotebookDocument): boolean {
   try {
     return cell.notebook === notebook && notebook.getCells().includes(cell);
@@ -743,14 +1198,71 @@ function isSupportedNotebook(notebook: vscode.NotebookDocument): boolean {
   return notebook.notebookType === "jupyter-notebook" || notebook.notebookType === "interactive";
 }
 
+function isExactVisibleNotebookEditor(editor: vscode.NotebookEditor): boolean {
+  const notebook = editor?.notebook;
+  if (
+    !vscode.workspace.isTrusted ||
+    !notebook ||
+    notebook.isClosed ||
+    !vscode.workspace.notebookDocuments.includes(notebook) ||
+    !isSoleOpenNotebookDocument(notebook)
+  ) {
+    return false;
+  }
+  const editors = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook === notebook);
+  return editors.length === 1 && editors[0] === editor;
+}
+
+function isInlineUpgradeCandidate(candidate: InlineNotebookOutputCandidate): boolean {
+  return (
+    Number.isSafeInteger(candidate.byteLength) &&
+    candidate.byteLength > 0 &&
+    candidate.byteLength <= INLINE_UPGRADE_MAX_HTML_BYTES &&
+    /^[a-f0-9]{64}$/u.test(candidate.sha256)
+  );
+}
+
+function matchesInlineUpgradeBytes(
+  data: Uint8Array,
+  byteLength: number,
+  candidate: InlineNotebookOutputCandidate
+): boolean {
+  return byteLength === candidate.byteLength && createHash("sha256").update(data).digest("hex") === candidate.sha256;
+}
+
 function isPositiveExecutionOrder(value: number | undefined): value is number {
   return Number.isSafeInteger(value) && value !== undefined && value > 0;
 }
 
 function hasOpenWranglerOutput(cell: vscode.NotebookCell): boolean {
-  return cell.outputs.some((output) => output.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2));
+  const outputs = boundedNotebookCellOutputs(cell);
+  return outputs?.some((output) => output.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2)) === true;
 }
 
 function hasExecuteResultOutput(cell: vscode.NotebookCell): boolean {
-  return cell.outputs.some((output) => output.metadata?.outputType === "execute_result");
+  const outputs = boundedNotebookCellOutputs(cell);
+  return outputs?.some((output) => output.metadata?.outputType === "execute_result") === true;
+}
+
+function boundedNotebookCellOutputs(cell: vscode.NotebookCell): readonly vscode.NotebookCellOutput[] | undefined {
+  const outputs = cell.outputs;
+  return outputs.length <= INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS ? outputs : undefined;
+}
+
+function registerAtomically(subscriptions: vscode.Disposable[], register: () => void): void {
+  const start = subscriptions.length;
+  try {
+    register();
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const disposable of subscriptions.splice(start).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (failures.length === 1) throw error;
+    throw new AggregateError(failures, "Open Wrangler notebook-result registration failed during rollback.");
+  }
 }

@@ -166,7 +166,7 @@ export function createPackagedExcelDependencyInstallJourney({
       assert.equal(missing?.kind, "error");
       if (missing?.kind !== "error") throw new Error("The XLSX dependency error was replaced unexpectedly.");
       assert.equal(missing.code, "missing_dependencies");
-      assert.match(missing.message, /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5\.$/u);
+      assert.match(missing.message, /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\.$/u);
       assert.doesNotMatch(missing.message, /fastexcel|polars|xlrd/iu);
       assert.equal(testing.activeSession(), undefined);
       assert.equal(testing.diagnostics().sessionCount, 0);
@@ -188,11 +188,11 @@ export function createPackagedExcelDependencyInstallJourney({
       assert.equal(initialInput.viewType, "openWrangler.viewer");
       assert.equal(initialInput.uri.toString(), workbook.toString());
       const install = await waitForOpenWranglerWebviewAction(workbench, "Install required dependency", true);
-      const errorAlert = install.target.frame.getByRole("alert").filter({ hasText: "openpyxl>=3.1.5" }).first();
+      const errorAlert = install.target.frame.getByRole("alert").filter({ hasText: "openpyxl>=3.1.5,<4" }).first();
       await errorAlert.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
       assert.match(
         await errorAlert.innerText(),
-        /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5\.$/u
+        /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\.$/u
       );
 
       recordAcceptanceProgress("excel-dependency-install:request");
@@ -203,12 +203,12 @@ export function createPackagedExcelDependencyInstallJourney({
       );
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         workbench,
-        "Install openpyxl>=3.1.5"
+        "Install openpyxl>=3.1.5,<4"
       );
       await confirmationPage.bringToFront();
       assert.equal(
         await confirmation.locator(".dialog-message-text").innerText(),
-        `Install openpyxl>=3.1.5 into ${dependency.executable}?`
+        `Install openpyxl>=3.1.5,<4 into ${dependency.executable}?`
       );
       assert.equal(
         await confirmation.locator(".dialog-message-detail").innerText(),
@@ -387,14 +387,14 @@ export function createPackagedExcelDependencyInstallJourney({
       recordAcceptanceProgress("excel-dependency-install:runtime-page");
 
       const invocation = JSON.parse(readFileSync(dependency.invocation, "utf8")) as Record<string, unknown>;
-      assert.deepEqual(invocation.args, ["install", "--no-input", "--no-user", "--", "openpyxl>=3.1.5"]);
+      assert.deepEqual(invocation.args, ["install", "--no-input", "--no-user", "--", "openpyxl>=3.1.5,<4"]);
       assert.equal(invocation.pipNoInput, "1");
       assert.equal(invocation.pipUser, "0");
       assert.equal(invocation.pipConfigFile, process.platform === "win32" ? "nul" : devNull);
       assert.equal(invocation.pythonPathPresent, false);
       assert.equal(invocation.pythonHomePresent, false);
       assert.match(path.basename(String(invocation.cwd)), /^openwrangler-pip-/u);
-      assert.equal(readFileSync(dependency.marker, "utf8"), "openpyxl>=3.1.5\n");
+      assert.equal(readFileSync(dependency.marker, "utf8"), "openpyxl>=3.1.5,<4\n");
       assert.equal(
         readFileSync(dependency.integrityChecks, "utf8"),
         "clean\nclean\nclean\n",

@@ -43,7 +43,7 @@ stages:
           - task: NodeTool@0
             displayName: Use pinned Node.js
             inputs:
-              versionSpec: 22.22.0
+              versionSpec: 24.19.0
               checkLatest: false
           - script: node scripts/marketplace-release-intake.mjs
             name: release_intake
@@ -85,7 +85,7 @@ stages:
                 - task: NodeTool@0
                   displayName: Use pinned Node.js
                   inputs:
-                    versionSpec: 22.22.0
+                    versionSpec: 24.19.0
                     checkLatest: false
                 - script: npm ci --ignore-scripts
                   displayName: Restore the reviewed lockfile

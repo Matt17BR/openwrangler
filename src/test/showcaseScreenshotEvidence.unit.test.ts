@@ -33,7 +33,7 @@ describe("wide-schema showcase evidence", () => {
   });
 
   it("reserves readable toolbar identity space while inspection controls wrap", () => {
-    const stylesheet = readFileSync(resolve("src/webviews/styles.css"), "utf8");
+    const stylesheet = readFileSync(resolve("src/webviews/styles/application.css"), "utf8");
 
     expect(stylesheet).toMatch(/\.toolbarIdentity\s*\{[^}]*min-width:\s*15ch;/u);
     expect(stylesheet).toMatch(/\.toolbarActions\s*\{[^}]*flex-wrap:\s*wrap;/u);

@@ -784,6 +784,11 @@ describe("notebook variable discovery", () => {
       isPySpark: false,
       version: null
     });
+
+    const pinnedCode = buildPySparkNotebookPreflightCode(marker, "spark_frame", "pyspark");
+    expect(pinnedCode.indexOf('__ow_module = __ow_sys.modules.get("pyspark")')).toBeLessThan(
+      pinnedCode.indexOf("__ow_user_ns.get")
+    );
   });
 
   it("fails closed on malformed PySpark version-probe envelopes", () => {
@@ -809,5 +814,16 @@ describe("notebook variable discovery", () => {
         marker
       )
     ).toThrow("could not verify PySpark in the selected notebook kernel");
+    expect(parsePySparkNotebookPreflightOutput(preflightText(marker, true, `4.2.0+${"a".repeat(58)}`), marker)).toEqual(
+      {
+        isPySpark: true,
+        version: `4.2.0+${"a".repeat(58)}`
+      }
+    );
+    for (const version of [`4.2.0+${"a".repeat(59)}`, "4.2.0\n", "4.2.0\u0000"]) {
+      expect(() => parsePySparkNotebookPreflightOutput(preflightText(marker, true, version), marker)).toThrow(
+        "could not verify PySpark in the selected notebook kernel"
+      );
+    }
   });
 });

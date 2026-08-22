@@ -22,7 +22,7 @@ describe("Python environment requirements", () => {
     const xlsx: SessionSource = { kind: "file", label: "data.xlsx", path: "/tmp/data.xlsx" };
     const xls: SessionSource = { kind: "file", label: "legacy.xls", path: "/tmp/legacy.xls" };
 
-    expect(requiredDependencies("polars", parquet).map((item) => item.installSpec)).toEqual(["polars"]);
+    expect(requiredDependencies("polars", parquet).map((item) => item.installSpec)).toEqual(["polars>=1.35.2,<2"]);
     expect(requiredDependencies("duckdb", parquet)).toEqual([
       {
         importModule: "duckdb",
@@ -40,36 +40,73 @@ describe("Python environment requirements", () => {
       {
         importModule: "pytz",
         distribution: "pytz",
-        installSpec: "pytz"
+        installSpec: "pytz>=2026.3.post1,<2027",
+        minimumVersion: "2026.3.post1",
+        maximumVersionExclusive: "2027"
       }
     ]);
-    expect(requiredDependencies("pandas", parquet).map((item) => item.installSpec)).toEqual(["pandas", "pyarrow"]);
+    expect(requiredDependencies("pandas", parquet).map((item) => item.installSpec)).toEqual([
+      "pandas>=2.3.3,<4",
+      "pyarrow>=25,<26"
+    ]);
     expect(requiredDependencies("pandas", xlsx)).toEqual([
-      { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+      {
+        importModule: "pandas",
+        distribution: "pandas",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
+        maximumVersionExclusive: "4"
+      },
       {
         importModule: "openpyxl",
         distribution: "openpyxl",
-        installSpec: "openpyxl>=3.1.5",
-        minimumVersion: "3.1.5"
+        installSpec: "openpyxl>=3.1.5,<4",
+        minimumVersion: "3.1.5",
+        maximumVersionExclusive: "4"
       }
     ]);
     expect(requiredDependencies("pandas", xls)).toEqual([
-      { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+      {
+        importModule: "pandas",
+        distribution: "pandas",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
+        maximumVersionExclusive: "4"
+      },
       {
         importModule: "xlrd",
         distribution: "xlrd",
-        installSpec: "xlrd>=2.0.1",
-        minimumVersion: "2.0.1"
+        installSpec: "xlrd>=2.0.2,<3",
+        minimumVersion: "2.0.2",
+        maximumVersionExclusive: "3"
       }
     ]);
-    expect(requiredDependencies("polars", xlsx).map((item) => item.installSpec)).toEqual(["polars", "fastexcel>=0.9"]);
-    expect(requiredDependencies("polars", xls).map((item) => item.installSpec)).toEqual(["polars", "fastexcel>=0.9"]);
+    expect(requiredDependencies("polars", xlsx).map((item) => item.installSpec)).toEqual([
+      "polars>=1.35.2,<2",
+      "fastexcel>=0.20.2,<1"
+    ]);
+    expect(requiredDependencies("polars", xls).map((item) => item.installSpec)).toEqual([
+      "polars>=1.35.2,<2",
+      "fastexcel>=0.20.2,<1"
+    ]);
   });
 
   it("requires Pandas and PyArrow for trusted pickle conversion", () => {
     expect(trustedPickleConversionDependencies()).toEqual([
-      { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
-      { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
+      {
+        importModule: "pandas",
+        distribution: "pandas",
+        installSpec: "pandas>=2.3.3,<4",
+        minimumVersion: "2.3.3",
+        maximumVersionExclusive: "4"
+      },
+      {
+        importModule: "pyarrow",
+        distribution: "pyarrow",
+        installSpec: "pyarrow>=25,<26",
+        minimumVersion: "25",
+        maximumVersionExclusive: "26"
+      }
     ]);
   });
 
@@ -110,7 +147,7 @@ describe("Python environment requirements", () => {
     expect(automaticBackends(utf16Le)).toEqual(["pandas"]);
     expect(automaticBackends(utf16Be)).toEqual(["pandas"]);
     expect(requiredDependencies(automaticBackends(lossyUtf8)[0], lossyUtf8).map((item) => item.installSpec)).toEqual([
-      "pandas"
+      "pandas>=2.3.3,<4"
     ]);
     expect(isFileDataBackend("pyspark")).toBe(false);
     expect(automaticBackends(parquet)).not.toContain("pyspark");

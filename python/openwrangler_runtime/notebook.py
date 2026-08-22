@@ -13,6 +13,7 @@ from IPython.display import display
 from .engines import EngineError, UnsupportedDataFrameError, default_engine_registry
 
 MIME_TYPE_V2 = "application/vnd.openwrangler.viewer.v2+json"
+DEFAULT_CAPTURE_ROWS = 200
 MAX_SAVED_ROWS = 10_000
 MAX_SAVED_COLUMNS = 2_048
 MAX_SAVED_CELLS = 100_000
@@ -32,7 +33,7 @@ def show(
     value: Any,
     label: str = "dataframe",
     backend: str | None = None,
-    page_size: int = 200,
+    page_size: int = DEFAULT_CAPTURE_ROWS,
     *,
     variable_name: str | None = None,
 ) -> None:
@@ -45,7 +46,7 @@ def build_payload(
     value: Any,
     label: str = "dataframe",
     backend: str | None = None,
-    page_size: int = 200,
+    page_size: int = DEFAULT_CAPTURE_ROWS,
     *,
     variable_name: str | None = None,
 ) -> dict[str, Any]:
@@ -114,6 +115,8 @@ def build_payload(
             "filterModel": filter_model,
             "steps": [],
         }
+        if engine.name == "pandas":
+            metadata["rowAxis"] = engine.row_axis(frame)
         payload = {
             "mimeVersion": 2,
             "metadata": metadata,

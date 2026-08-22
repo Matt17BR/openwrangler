@@ -1,4 +1,5 @@
 import { load as parseYaml } from "js-yaml";
+import { NATIVE_R_CANDIDATE_CACHE_VERSION, NATIVE_R_CANDIDATE_PACKAGE_SPECS } from "./r-dependency-lock.mjs";
 import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
 
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
@@ -25,16 +26,7 @@ const EXPECTED_JOBS = [
   "acceptance"
 ];
 const FAN_IN_NEEDS = ["contract", "platform", "r_platform", "linux", "performance", "jupyter", "r_local"];
-const R_CONTRACT_EXTRA_PACKAGES = [
-  "any::jsonlite",
-  "any::tibble",
-  "any::readr",
-  "any::dplyr",
-  "any::data.table",
-  "any::bit64",
-  "any::collapse",
-  "any::nanoparquet"
-].join("\n");
+const R_CONTRACT_EXTRA_PACKAGES = NATIVE_R_CANDIDATE_PACKAGE_SPECS.join("\n");
 const DUPLICATE_SOURCE_HARNESS_RUNS = [
   "npm run test:python-environment-smoke",
   "npm run test:extension-host",
@@ -265,7 +257,7 @@ function inspectRPackages(jobName, job, problems) {
     dependency.with["extra-packages"] !== R_CONTRACT_EXTRA_PACKAGES ||
     dependency.with.dependencies !== '"hard"' ||
     dependency.with.cache !== true ||
-    dependency.with["cache-version"] !== "native-r-contract-v1" ||
+    dependency.with["cache-version"] !== NATIVE_R_CANDIDATE_CACHE_VERSION ||
     dependency.with["install-pandoc"] !== false ||
     dependency.with["install-quarto"] !== false ||
     steps(job).some((step) => /\binstall\.packages\s*\(/u.test(command(step?.run)))

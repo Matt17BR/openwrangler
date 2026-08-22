@@ -40,6 +40,7 @@ import {
   getSetting
 } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
+import { requiredDependencies } from "../../extension/pythonEnvironmentModel";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import {
@@ -166,6 +167,10 @@ import { createReleasedPythonFileEntrypointJourney } from "./releasedPythonFileE
 import { createPackagedExcelDependencyInstallJourney } from "./packagedExcelDependencyInstallJourney";
 import { createDependencyMutationRecoveryJourney } from "./dependencyMutationRecoveryJourney";
 import { createPackagedFirstUseInteractionJourney } from "./packagedFirstUseInteractionJourney";
+import {
+  exercisePackagedGridRangeCopyJourney,
+  runPackagedGridRangeCopyLifecycle
+} from "./packagedGridRangeCopyJourney";
 import { createPackagedReopenAndUndoJourney } from "./packagedReopenAndUndoJourney";
 import { createPackagedLinkedRendererLiveOpen } from "./packagedLinkedRendererLiveOpen";
 import { createPackagedRendererProvenanceJourneys } from "./packagedRendererProvenanceJourney";
@@ -250,7 +255,9 @@ import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEdi
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
+  dispatchPlatformSmokeJourney,
   parseExtensionHostPhaseSelection,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   type DataWranglerCoexistencePhase
 } from "./phaseDispatch";
 import { createFocusedReleasedRAcceptanceHandlers } from "./focusedReleasedRAcceptance";
@@ -542,7 +549,7 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-light.svg"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const phaseSelection = parseExtensionHostPhaseSelection(process.env, process.platform);
-  const { phase, selector: testSelector, testPython } = phaseSelection;
+  const { phase, testPython } = phaseSelection;
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
       .getConfiguration("openWrangler")
@@ -947,17 +954,22 @@ export async function run(): Promise<void> {
       recordAcceptanceProgress(`${coexistencePhase}:complete`);
       console.log(`Open Wrangler real Data Wrangler coexistence ${coexistencePhase} acceptance passed.`);
     },
-    releasedJupyter: async (releasedPhase) => {
+    releasedJupyter: async (releasedPhase, releasedSelector) => {
       assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
       recordAcceptanceProgress(`${releasedPhase}:start`);
       if (releasedPhase === "jupyter-pyspark") {
-        await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
+        await exerciseReleasedPySparkJupyterExtension(
+          testing,
+          extension,
+          testPython,
+          releasedSelector === PYSPARK_PRERELEASE_DENIAL_SELECTOR ? "prerelease-denial" : "stable-qualification"
+        );
       } else if (releasedPhase === "jupyter-r" || releasedPhase === "jupyter-r-remote") {
         const coverage = releasedRAcceptanceCoverageProfile({
           editor: phaseSelection.editor,
           phase: releasedPhase,
           platform: phaseSelection.platform,
-          selector: testSelector
+          selector: releasedSelector
         });
         await exerciseReleasedRJupyterExtension(testing, extension, releasedPhase, coverage);
       } else {
@@ -991,15 +1003,24 @@ export async function run(): Promise<void> {
       assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
       recordAcceptanceProgress("platform-smoke:start");
       const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
-      await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
-      recordAcceptanceProgress("platform-smoke:excel-dependency-install");
-      await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
-      if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
-        recordAcceptanceProgress("platform-smoke:screenshots");
-        await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
-      }
-      recordAcceptanceProgress("platform-smoke:complete");
-      console.log("Open Wrangler packaged platform smoke passed.");
+      await dispatchPlatformSmokeJourney(phaseSelection, {
+        gridRangeCopy: async () => {
+          await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
+          recordAcceptanceProgress("platform-smoke:complete");
+          console.log("Open Wrangler packaged grid range-copy acceptance passed.");
+        },
+        standard: async () => {
+          await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
+          recordAcceptanceProgress("platform-smoke:excel-dependency-install");
+          await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
+          if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+            recordAcceptanceProgress("platform-smoke:screenshots");
+            await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+          }
+          recordAcceptanceProgress("platform-smoke:complete");
+          console.log("Open Wrangler packaged platform smoke passed.");
+        }
+      });
     },
     remoteWorkspace: async () => {
       assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");
@@ -7348,6 +7369,92 @@ function trustedPickleSiblingTemporaries(directory: string): string[] {
   return readdirSync(directory)
     .filter((entry) => /^\.openwrangler-.+-\d+\.tmp$/u.test(entry))
     .sort();
+}
+
+async function exercisePackagedGridRangeCopyAcceptance(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  let sourceBytes: Uint8Array | undefined;
+  let editorMayBeOpen = false;
+  await runPackagedGridRangeCopyLifecycle(
+    async () => {
+      assert.equal(
+        testing.diagnostics().sessionCount,
+        0,
+        "The focused packaged grid range-copy journey must start without another dataframe session."
+      );
+      sourceBytes = await vscode.workspace.fs.readFile(fixture);
+      const workbench = await connectToEditorWorkbench();
+      recordAcceptanceProgress("platform-smoke:grid-range-copy:open");
+      editorMayBeOpen = true;
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One),
+        10_000,
+        "the focused packaged grid range-copy editor to open"
+      );
+      await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:grid-range-copy:import");
+      const active = testing.activeSession();
+      assert.ok(active, "The focused packaged grid range-copy journey must publish one live session.");
+      assert.equal(active.metadata.source.uri, fixture.toString());
+      assert.deepEqual(active.metadata.shape, {
+        rows: PACKAGED_FIRST_USE_ROW_COUNT,
+        columns: PACKAGED_SCREENSHOT_COLUMNS.length
+      });
+      const target = await waitForOpenWranglerGridTarget(workbench, testing, active.metadata.sessionId);
+      await exercisePackagedGridRangeCopyJourney({
+        frame: target.frame,
+        hostClipboard: vscode.env.clipboard,
+        platform: process.platform,
+        recordProgress: recordAcceptanceProgress
+      });
+      assertExactBytes(
+        await vscode.workspace.fs.readFile(fixture),
+        sourceBytes,
+        "The packaged grid range-copy journey must not modify its source."
+      );
+    },
+    async () => {
+      const failures: unknown[] = [];
+      if (editorMayBeOpen) {
+        try {
+          recordAcceptanceProgress("platform-smoke:grid-range-copy:cleanup");
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await withBoundedAcceptancePromise(
+            vscode.commands.executeCommand("workbench.action.closeAllEditors"),
+            10_000,
+            "the focused packaged grid range-copy editors to close"
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await waitFor(
+            () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+            10_000,
+            "the focused packaged grid range-copy session and runtime to terminate"
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (sourceBytes) {
+        try {
+          assertExactBytes(
+            await vscode.workspace.fs.readFile(fixture),
+            sourceBytes,
+            "The packaged grid range-copy cleanup must preserve its source."
+          );
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "The packaged grid range-copy journey had multiple cleanup failures.");
+      }
+    }
+  );
 }
 
 async function exercisePackagedPlatformSmoke(
@@ -18900,6 +19007,24 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
   const isolatedPython = createDependencyIsolatedPython(directory, python, invocationLog);
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  const lossySource = {
+    ...csvSource(fixture),
+    importOptions: {
+      delimiter: ",",
+      encoding: "utf8-lossy",
+      quoteChar: '"',
+      hasHeader: true
+    }
+  } as const;
+  const legacySource = {
+    kind: "file",
+    label: "legacy.xls",
+    path: path.join(directory, "legacy.xls"),
+    importOptions: { sheetIndex: 0 }
+  } as const;
+  const lossyRequirement = requiredDependencies("pandas", lossySource)[0].installSpec;
+  const legacyRequirements = requiredDependencies("pandas", legacySource).map((dependency) => dependency.installSpec);
+  const legacyRequirementList = legacyRequirements.join(", ");
 
   try {
     assert.equal(await vscode.commands.executeCommand("openWrangler.changeRuntime", isolatedPython), isolatedPython);
@@ -18916,7 +19041,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejected.kind, "error");
     if (rejected.kind === "error") {
       assert.equal(rejected.code, "missing_dependencies");
-      assert.match(rejected.message, /Missing: polars/);
+      assert.match(rejected.message, /Missing: polars>=1\.35\.2,<2\.$/u);
       assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedDuckDB = await testing.request({
@@ -18930,40 +19055,30 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedDuckDB.kind, "error");
     if (rejectedDuckDB.kind === "error") {
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
-      assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.5\.4,<1\.6, fsspec==2026\.7\.0, pytz\.$/u);
+      assert.match(
+        rejectedDuckDB.message,
+        /Missing: duckdb>=1\.5\.4,<1\.6, fsspec==2026\.7\.0, pytz>=2026\.3\.post1,<2027\.$/u
+      );
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLossyUtf8 = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
-      source: {
-        ...csvSource(fixture),
-        importOptions: {
-          delimiter: ",",
-          encoding: "utf8-lossy",
-          quoteChar: '"',
-          hasHeader: true
-        }
-      },
+      source: lossySource,
       pageSize: 20,
       mode: "viewing"
     });
     assert.equal(rejectedLossyUtf8.kind, "error");
     if (rejectedLossyUtf8.kind === "error") {
       assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
-      assert.match(rejectedLossyUtf8.message, /Missing: pandas/);
+      assert.equal(rejectedLossyUtf8.message.endsWith(`Missing: ${lossyRequirement}.`), true);
       assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
       assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLegacyExcel = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
-      source: {
-        kind: "file",
-        label: "legacy.xls",
-        path: path.join(directory, "legacy.xls"),
-        importOptions: { sheetIndex: 0 }
-      },
+      source: legacySource,
       backend: "pandas",
       pageSize: 20,
       mode: "viewing"
@@ -18971,7 +19086,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLegacyExcel.kind, "error");
     if (rejectedLegacyExcel.kind === "error") {
       assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
-      assert.match(rejectedLegacyExcel.message, /Missing: pandas, xlrd>=2\.0\.1/);
+      assert.equal(rejectedLegacyExcel.message.includes(`Missing: ${legacyRequirementList}`), true);
       assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -18997,7 +19112,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       );
       const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
         page,
-        "Install pandas, xlrd>=2.0.1"
+        `Install ${legacyRequirementList}`
       );
       try {
         await confirmationPage.bringToFront();
@@ -19005,7 +19120,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         const confirmationDetail = await confirmation.locator(".dialog-message-detail").innerText();
         assert.equal(
           confirmationMessage,
-          `Install pandas, xlrd>=2.0.1 into ${isolatedPython}?`,
+          `Install ${legacyRequirementList} into ${isolatedPython}?`,
           "The real dependency confirmation must identify the exact requirements and interpreter."
         );
         assert.equal(confirmationDetail, "Open Wrangler never installs packages without this confirmation.");

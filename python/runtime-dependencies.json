@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "id": "polars",
+      "importModule": "polars",
+      "distribution": "polars",
+      "exactVersion": null,
+      "minimumVersion": "1.35.2",
+      "maximumVersionExclusive": "2",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "1.35.2" },
+          { "pythonVersion": "3.12", "version": "1.43.2" }
+        ]
+      }
+    },
+    {
+      "id": "duckdb",
+      "importModule": "duckdb",
+      "distribution": "duckdb",
+      "exactVersion": null,
+      "minimumVersion": "1.5.4",
+      "maximumVersionExclusive": "1.6",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "minor",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "1.5.4" },
+          { "pythonVersion": "3.12", "version": "1.5.5" }
+        ]
+      }
+    },
+    {
+      "id": "fsspec",
+      "importModule": "fsspec",
+      "distribution": "fsspec",
+      "exactVersion": "2026.7.0",
+      "minimumVersion": null,
+      "maximumVersionExclusive": null,
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "exact",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.7.0" }]
+      }
+    },
+    {
+      "id": "pytz",
+      "importModule": "pytz",
+      "distribution": "pytz",
+      "exactVersion": null,
+      "minimumVersion": "2026.3.post1",
+      "maximumVersionExclusive": "2027",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.3.post1" }]
+      }
+    },
+    {
+      "id": "pandas",
+      "importModule": "pandas",
+      "distribution": "pandas",
+      "exactVersion": null,
+      "minimumVersion": "2.3.3",
+      "maximumVersionExclusive": "4",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "2.3.3" },
+          { "pythonVersion": "3.12", "version": "3.0.5" }
+        ]
+      }
+    },
+    {
+      "id": "pyarrow",
+      "importModule": "pyarrow",
+      "distribution": "pyarrow",
+      "exactVersion": null,
+      "minimumVersion": "25",
+      "maximumVersionExclusive": "26",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "25.0.0" },
+          { "pythonVersion": "3.12", "version": "25.0.1" }
+        ]
+      }
+    },
+    {
+      "id": "openpyxl",
+      "importModule": "openpyxl",
+      "distribution": "openpyxl",
+      "exactVersion": null,
+      "minimumVersion": "3.1.5",
+      "maximumVersionExclusive": "4",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "3.1.5" }]
+      }
+    },
+    {
+      "id": "xlrd",
+      "importModule": "xlrd",
+      "distribution": "xlrd",
+      "exactVersion": null,
+      "minimumVersion": "2.0.2",
+      "maximumVersionExclusive": "3",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2.0.2" }]
+      }
+    },
+    {
+      "id": "ipython",
+      "importModule": "IPython",
+      "distribution": "ipython",
+      "exactVersion": null,
+      "minimumVersion": "9.15.0",
+      "maximumVersionExclusive": "10",
+      "pyprojectGroup": "runtime",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [
+          { "pythonVersion": "3.12", "version": "9.15.0" },
+          { "pythonVersion": "3.12", "version": "9.16.1" }
+        ]
+      },
+      "pythonCompatibility": {
+        "pythonMaximumVersionExclusive": "3.11",
+        "minimumVersion": "8.39.0",
+        "maximumVersionExclusive": "9",
+        "qualifiedCase": { "pythonVersion": "3.10", "version": "8.39.0" }
+      }
+    },
+    {
+      "id": "fastexcel",
+      "importModule": "fastexcel",
+      "distribution": "fastexcel",
+      "exactVersion": null,
+      "minimumVersion": "0.20.2",
+      "maximumVersionExclusive": "1",
+      "pyprojectGroup": "dev",
+      "qualification": {
+        "cohortKind": "major",
+        "minimumStatus": "qualified",
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "0.20.2" }]
+      }
+    }
+  ]
+}

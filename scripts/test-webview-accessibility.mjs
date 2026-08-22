@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
+import { createAxeResultPublication, formatAxeFailureDetail } from "./accessibility-result-classification.mjs";
 import { verifyGridClipboardBrowserAcceptance } from "./grid-clipboard-browser-acceptance.mjs";
 import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
@@ -26,7 +27,10 @@ const browserIsolation = createWebviewBrowserIsolation({
   aliasPrefix: "ow-a11y-"
 });
 let browser;
-const failures = [];
+const axePublication = createAxeResultPublication(
+  (receipt) => process.stdout.write(receipt),
+  (receipt) => process.stderr.write(receipt)
+);
 
 try {
   browser = await chromium.launchPersistentContext(browserIsolation.createProfile("accessibility"), {
@@ -59,12 +63,7 @@ try {
       30_000,
       `${harness} axe scan`
     );
-    const violations = result.violations.filter((violation) => violation.impact !== "minor");
-    if (violations.length === 0) {
-      console.log(`Accessibility verified: ${harness}`);
-    } else {
-      failures.push({ harness, violations });
-    }
+    recordAxeScanResult(harness, result.violations);
     await page.close();
   }
   await verifyNotebookPreviewDisclosure(browser);
@@ -1048,7 +1047,7 @@ async function verifyRProfileAccessibility(browser) {
   }
 
   await page.close();
-  console.log("R profile/sort capabilities, keyboard navigation, focus restoration, and axe verified.");
+  console.log("R profile/sort capabilities, keyboard navigation, and focus restoration verified.");
 }
 
 async function verifyGridStatusBar(browser) {
@@ -1386,7 +1385,7 @@ async function verifySessionModeDisclosure(browser) {
   await page.addScriptTag({ path: axePath });
   await scanPageAccessibility(page, "wide-view.html (700px blocked reverse-mode explanation)");
   await page.close();
-  console.log("Live Editing blocked reverse action, compact opened explanation, forced colors, and axe verified.");
+  console.log("Live Editing blocked reverse action, compact opened explanation, and forced colors verified.");
 }
 
 async function verifyShortGridProfileResponsiveness(browser) {
@@ -1521,7 +1520,7 @@ async function verifyShortGridProfileResponsiveness(browser) {
   await assertProjectedHarnessClean(page, "short-grid profile responsiveness");
   await page.close();
   console.log(
-    "Short-grid profile compaction, exposed pointer/ArrowRight activation, focus transfer, live resize status, retained preference, and axe verified."
+    "Short-grid profile compaction, exposed pointer/ArrowRight activation, focus transfer, live resize status, and retained preference verified."
   );
 }
 
@@ -1616,35 +1615,33 @@ async function scanPageAccessibility(page, harness, selector) {
     30_000,
     `${harness} axe scan`
   );
-  const violations = result.violations.filter((violation) => violation.impact !== "minor");
-  if (violations.length === 0) {
-    console.log(`Accessibility verified: ${harness}`);
-  } else {
-    failures.push({ harness, violations });
-  }
+  recordAxeScanResult(harness, result.violations);
 }
 
 function isActiveTab(element) {
   return element === document.activeElement;
 }
 
-if (failures.length > 0) {
-  const detail = failures
-    .flatMap(({ harness, violations }) =>
-      violations.map(
-        (violation) =>
-          `${harness}: [${violation.impact ?? "unknown"}] ${violation.id}: ${violation.help}\n` +
-          violation.nodes
-            .slice(0, 5)
-            .map((node) => `  ${node.target.join(" ")}: ${node.failureSummary ?? "failed"}`)
-            .join("\n")
-      )
-    )
-    .join("\n");
-  throw new Error(`Webview accessibility scan failed:\n${detail}`);
+const axeReport = axePublication.report();
+printAxeMachineResult(axeReport);
+if (axeReport.unapprovedFindingCount > 0) {
+  throw new Error(`Webview accessibility scan failed:\n${formatAxeFailureDetail(axeReport)}`);
 }
 
-console.log(`Accessibility verified for ${harnesses.length} production webview harnesses.`);
+console.log(
+  `Accessibility verified for ${axeReport.scanCount} scans across ${harnesses.length} production webview harnesses.`
+);
+
+function recordAxeScanResult(harness, violations) {
+  const result = axePublication.record({ harness, violations });
+  if (result.unapprovedFindingCount === 0) {
+    console.log(`Accessibility verified: ${harness}`);
+  }
+}
+
+function printAxeMachineResult(result) {
+  axePublication.print(result);
+}
 
 async function withTimeout(promise, timeoutMs, label) {
   let timer;
@@ -1876,7 +1873,7 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     await page.close();
   }
 
-  console.log("Applied cleaning-plan command row, responsive layout, forced colors, tab order, and axe verified.");
+  console.log("Applied cleaning-plan command row, responsive layout, forced colors, and tab order verified.");
 }
 
 async function verifyStepInspectionWorkflow(browser) {
@@ -1937,7 +1934,7 @@ async function verifyStepInspectionWorkflow(browser) {
   }
 
   await page.close();
-  console.log("Applied-step diff, accessibility, Escape clear, and local confirmed-grid restoration verified.");
+  console.log("Applied-step diff, Escape clear, and local confirmed-grid restoration verified.");
 }
 
 async function verifyFilterKeyboardWorkflow(browser) {
@@ -2564,17 +2561,53 @@ async function showAppliedStep(page) {
 }
 
 async function waitForFocusedGridCell(page, row, column) {
-  await page.waitForFunction(
-    ({ expectedRow, expectedColumn }) => {
-      const active = document.activeElement;
-      return (
-        active instanceof HTMLElement &&
-        active.dataset.gridRow === String(expectedRow) &&
-        active.dataset.gridColumn === String(expectedColumn)
-      );
-    },
-    { expectedRow: row, expectedColumn: column }
-  );
+  try {
+    await page.waitForFunction(
+      ({ expectedRow, expectedColumn }) => {
+        const active = document.activeElement;
+        return (
+          active instanceof HTMLElement &&
+          active.dataset.gridRow === String(expectedRow) &&
+          active.dataset.gridColumn === String(expectedColumn)
+        );
+      },
+      { expectedRow: row, expectedColumn: column }
+    );
+  } catch (error) {
+    const diagnostic = await page.evaluate(() => ({
+      active: {
+        column: document.activeElement?.getAttribute("data-grid-column") ?? null,
+        row: document.activeElement?.getAttribute("data-grid-row") ?? null,
+        tag: document.activeElement?.tagName ?? null
+      },
+      projectedResponses: globalThis.openWranglerProjectedResponses.slice(-8).map((response) => ({
+        columnLimit: response.columnLimit,
+        columnOffset: response.columnOffset,
+        limit: response.limit,
+        offset: response.offset,
+        rowCount: response.rowWidths.length,
+        viewRequestId: response.viewRequestId
+      })),
+      requests: globalThis.openWranglerMessages
+        .filter((message) => message.kind === "runtimeRequest" && message.request?.kind === "getPage")
+        .slice(-8)
+        .map((message) => ({
+          columnLimit: message.request.columnLimit,
+          columnOffset: message.request.columnOffset,
+          limit: message.request.limit,
+          offset: message.request.offset,
+          viewRequestId: message.request.viewRequestId
+        })),
+      rovingCells: [...document.querySelectorAll("td[tabindex='0']")].map((cell) => ({
+        column: cell.getAttribute("data-grid-column"),
+        row: cell.getAttribute("data-grid-row")
+      })),
+      status: document.querySelector("[aria-label='Visible rows']")?.textContent?.trim() ?? null
+    }));
+    throw new Error(`Grid focus did not reach row ${row}, column ${column}: ${JSON.stringify(diagnostic)}.`, {
+      cause: error
+    });
+  }
 }
 
 async function focusedGridRow(page) {

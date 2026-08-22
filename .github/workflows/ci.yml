@@ -2,16 +2,21 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, edited, stacked]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
 
 permissions:
   contents: read
 
+env:
+  OPEN_WRANGLER_CI_CAPABILITY_GRAPH: scripts/fixtures/ci-capabilities.json
+
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   classify:
@@ -36,6 +41,9 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_STACK_BASE_SHA: ${{ github.event.pull_request.stack.base.sha }}
+          CI_STACK_POSITION: ${{ github.event.pull_request.stack.position }}
+          CI_STACK_SIZE: ${{ github.event.pull_request.stack.size }}
 
   invariant-core:
     name: Invariant core
@@ -59,7 +67,7 @@ jobs:
       - name: Install the exact remote-Jupyter lock compiler
         run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
       - name: Portable, Python 3.10, schema, protocol, reference, docs, and license invariants
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         run: >-
           npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
           check:invariants test:scripts test:python
@@ -76,6 +84,22 @@ jobs:
         run: npm audit
       - name: Full Python and fixture dependency audits
         run: npm run audit:python
+      - name: Select the Node 22 maintained-LTS compatibility runtime
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+      - name: Node 22 maintained-LTS compatibility smoke
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          test "$(node --version)" = "v22.23.2"
+          npm version --json | grep --fixed-strings --line-regexp '  "npm": "10.9.8",' > /dev/null
+          npm ci --ignore-scripts --no-audit
+          test -z "$(git status --porcelain --untracked-files=no)"
+          npm run check:invariants
+          npm run typecheck
+          npm run test:scripts:workflow
 
   r-contract-kernel:
     name: R 4.5 kernel contract
@@ -83,7 +107,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
         (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -283,7 +307,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
         (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -483,7 +507,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
         (needs.classify.result != 'success' || needs.classify.outputs.canonical_editor_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -540,7 +564,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
         (needs.classify.result != 'success' || needs.classify.outputs.visual_accessibility_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -576,7 +600,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
         (needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false')
       }}
     runs-on: windows-latest
@@ -618,7 +642,7 @@ jobs:
       - canonical-editor
       - visual-accessibility
       - windows-unique
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

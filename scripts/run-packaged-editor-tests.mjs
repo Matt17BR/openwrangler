@@ -66,6 +66,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceQuartoPythonKernel,
   probeJupyterAcceptanceRKernel,
+  RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
@@ -78,8 +79,13 @@ import {
 import {
   PACKAGED_PYTHON_JUPYTER_PROFILE_ENV,
   packagedPythonJupyterEditorPlan,
+  packagedPythonJupyterPySparkDistribution,
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
+import {
+  resolvePackagedGridRangeCopySelector,
+  runPackagedPlatformSmokePhase
+} from "./packaged-grid-range-copy-selector.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
@@ -221,6 +227,10 @@ try {
             .map((value) => value.trim())
             .filter(Boolean);
           const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
+          const platformSmokeSelector = resolvePackagedGridRangeCopySelector({
+            acceptanceMode,
+            selector: process.env.OPEN_WRANGLER_TEST_SELECTOR
+          });
           const rJourneySelector = process.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY;
           if (
             acceptanceMode !== "full" &&
@@ -248,6 +258,10 @@ try {
             remoteJupyterEnabled,
             requestedEditors: requested
           });
+          const pysparkDistribution = packagedPythonJupyterPySparkDistribution(
+            pythonJupyterProfile,
+            RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION
+          );
           const rJupyterSelection = resolvePackagedRJourneySelection({
             acceptanceMode,
             selector: rJourneySelector,
@@ -515,7 +529,7 @@ try {
               jupyterKernelPython = await createJupyterAcceptanceKernelPython(
                 resolve(temporaryRoot, "jv"),
                 testPython,
-                { containedBy: temporaryRoot }
+                { containedBy: temporaryRoot, pysparkDistribution }
               );
             } catch (error) {
               latchPrivateRootIdentityLoss(error, {
@@ -1427,20 +1441,24 @@ try {
                 };
                 if (acceptanceMode === "platform-smoke") {
                   activePhase = "platform-smoke";
-                  await runEditorAcceptancePhase({
-                    editor: identifiedEditor,
-                    workspace,
-                    userData,
-                    extensions,
-                    developmentPaths: [fakeJupyter],
-                    testModule,
-                    python: acceptancePythonForPhase("platform-smoke", testPython, jupyterKernelPython),
-                    phase: "platform-smoke",
-                    resultPath: resultPaths["platform-smoke"],
-                    runId: runIds["platform-smoke"],
-                    progressPath: progressPaths["platform-smoke"],
-                    requiresWorkbenchCdp: true
-                  });
+                  await runPackagedPlatformSmokePhase(
+                    runEditorAcceptancePhase,
+                    {
+                      editor: identifiedEditor,
+                      workspace,
+                      userData,
+                      extensions,
+                      developmentPaths: [fakeJupyter],
+                      testModule,
+                      python: acceptancePythonForPhase("platform-smoke", testPython, jupyterKernelPython),
+                      phase: "platform-smoke",
+                      resultPath: resultPaths["platform-smoke"],
+                      runId: runIds["platform-smoke"],
+                      progressPath: progressPaths["platform-smoke"],
+                      requiresWorkbenchCdp: true
+                    },
+                    platformSmokeSelector
+                  );
                 } else if (acceptanceMode === "full" && genericPackagedPhasesEnabled) {
                   activePhase = "restricted";
                   await runEditorAcceptancePhase({
@@ -1558,7 +1576,12 @@ try {
                       testModule,
                       python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
                       phase,
-                      testSelector: phase === "jupyter-allow" ? pythonJupyterPlan.allowSelector : undefined,
+                      testSelector:
+                        phase === "jupyter-allow"
+                          ? pythonJupyterPlan.allowSelector
+                          : phase === "jupyter-pyspark"
+                            ? pythonJupyterPlan.pysparkSelector
+                            : undefined,
                       resultPath: resultPaths[phase],
                       runId: runIds[phase],
                       progressPath: progressPaths[phase],

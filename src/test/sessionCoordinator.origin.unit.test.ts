@@ -41,7 +41,13 @@ describe("SessionCoordinator", () => {
     setOpenNotebookDocuments(notebook);
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge(
-      { request: vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse()) },
+      {
+        request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind !== "openSession") throw new Error(`Unexpected provenance request: ${request.kind}`);
+          const opened = openedResponse();
+          return { ...opened, metadata: { ...opened.metadata, source: request.source } };
+        })
+      },
       notebook
     );
 
@@ -460,7 +466,7 @@ describe("SessionCoordinator", () => {
       expect(coordinator.activeSession()).toMatchObject({
         sessionId: opened.metadata.sessionId,
         metadata: { mode: "viewing", revision: opened.metadata.revision },
-        viewState: { viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
+        viewState: { viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
       });
       expect(closedRuntimeIds).toEqual([candidateSessionId]);
     } finally {
@@ -594,7 +600,7 @@ describe("SessionCoordinator", () => {
     setOpenTextDocuments();
   });
 
-  it("pins public source metadata to the immutable open request across runtime responses", async () => {
+  it("rejects runtime source substitution before publishing an open session", async () => {
     const runtimeOpened = openedResponse();
     const substitutedSource = {
       kind: "file" as const,
@@ -620,23 +626,8 @@ describe("SessionCoordinator", () => {
     const bridge = coordinator.createBridge({ request: delegateRequest });
 
     const opened = await bridge.request(openRequest);
-    expect(opened).toMatchObject({ kind: "sessionOpened", metadata: { source: openRequest.source } });
-    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
-    expect(coordinator.activeSession()?.metadata.source).toEqual(openRequest.source);
-
-    const page = await bridge.request({
-      kind: "getPage",
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision,
-      viewRequestId: "immutable-source-page",
-      offset: 0,
-      limit: 10,
-      ...columnWindow,
-      filterModel: opened.metadata.filterModel
-    });
-
-    expect(page).toMatchObject({ kind: "page", metadata: { source: openRequest.source } });
-    expect(coordinator.activeSession()?.metadata.source).toEqual(openRequest.source);
+    expect(opened).toMatchObject({ kind: "error", code: "invalid_runtime_response", recoverable: true });
+    expect(coordinator.activeSession()).toBeUndefined();
   });
 
   it("publishes one bounded applied-step inspection and restores full-plan code when cleared", async () => {

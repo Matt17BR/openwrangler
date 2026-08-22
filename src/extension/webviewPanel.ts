@@ -14,7 +14,7 @@ import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionM
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
-import { getSetting } from "./configuration";
+import { getSetting, readWebviewBootstrapSettings, type WebviewBootstrapSettings } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
@@ -1611,10 +1611,17 @@ export class OpenWranglerPanel {
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
     const nonce = createSecureNonce();
-    const { pageSize: fetchBlockSize, columnLimit: columnBlockSize } = fetchGridBlockSize(this.backend);
-    const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
-    const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
-    const filterMode = getSetting<"basic" | "advanced">("filterMode", "basic");
+    const bootstrapSettings = readWebviewBootstrapSettings();
+    const { pageSize: fetchBlockSize, columnLimit: columnBlockSize } = fetchGridBlockSize(
+      this.backend,
+      bootstrapSettings
+    );
+    const bootstrapAttributes = serializeBootstrapAttributes({
+      ...bootstrapSettings,
+      fetchBlockSize,
+      fetchColumnBlockSize: columnBlockSize,
+      canChangeImportOptions: canChangeImportOptions(this.source)
+    });
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1625,7 +1632,7 @@ export class OpenWranglerPanel {
   <link rel="stylesheet" href="${styleUri}">
   <title>Open Wrangler</title>
 </head>
-<body data-fetch-block-size="${fetchBlockSize}" data-fetch-column-block-size="${columnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}" data-can-change-import-options="${canChangeImportOptions(this.source)}">
+<body ${bootstrapAttributes}>
   <div id="root"></div>
   <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -1633,20 +1640,41 @@ export class OpenWranglerPanel {
   }
 }
 
-function fetchColumnBlockSize(): number {
-  const configured = getSetting<number>("fetchColumnBlockSize", 16);
-  return Number.isInteger(configured) ? Math.min(256, Math.max(1, configured)) : 16;
-}
-
-function fetchGridBlockSize(backend?: DataBackend): { pageSize: number; columnLimit: number } {
-  const configuredRows = getSetting<number>("fetchBlockSize", 200);
-  const pageSize = Number.isInteger(configuredRows) ? Math.min(2_000, Math.max(25, configuredRows)) : 200;
-  const columnLimit = fetchColumnBlockSize();
+function fetchGridBlockSize(
+  backend?: DataBackend,
+  settings = readWebviewBootstrapSettings()
+): { pageSize: number; columnLimit: number } {
+  const pageSize = settings.fetchBlockSize;
+  const columnLimit = settings.fetchColumnBlockSize;
   if (backend !== "r") return { pageSize, columnLimit };
   return {
     pageSize: Math.min(pageSize, 1_000, Math.floor(100_000 / columnLimit)),
     columnLimit
   };
+}
+
+function serializeBootstrapAttributes(
+  settings: WebviewBootstrapSettings & { readonly canChangeImportOptions: boolean }
+): string {
+  return [
+    ["data-fetch-block-size", settings.fetchBlockSize],
+    ["data-fetch-column-block-size", settings.fetchColumnBlockSize],
+    ["data-default-column-width", settings.defaultColumnWidth],
+    ["data-insights-on-open", settings.insightsOnOpen],
+    ["data-filter-mode", settings.filterMode],
+    ["data-can-change-import-options", settings.canChangeImportOptions]
+  ]
+    .map(([name, value]) => `${name}="${escapeHtmlAttribute(String(value))}"`)
+    .join(" ");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function panelRuntimeCleanupOptions(): BridgeRequestOptions {
