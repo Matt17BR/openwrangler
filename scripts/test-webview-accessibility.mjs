@@ -1091,6 +1091,16 @@ async function verifyGridStatusBar(browser) {
       nextDisabled: true,
       expectSecondRow: false
     },
+    ...[481, 550, 640, 800, 840, 841].map((width) => ({
+      harness: "grid-view.html",
+      width,
+      expectedDataGridWidth: width,
+      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false,
+      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000"
+    })),
     {
       harness: "grid-zoom-1-5.html",
       width: 1280,
@@ -1148,6 +1158,36 @@ async function verifyGridStatusBar(browser) {
       openProfilesDrawer: true,
       visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
       expectSingleLine: false
+    },
+    ...[241, 300, 312, 313, 314].map((width) => ({
+      harness: "grid-view.html",
+      width,
+      expectedDataGridWidth: width,
+      range: "Rows 1\u20134 of 4",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: true
+    })),
+    {
+      harness: "grid-view.html",
+      width: 265,
+      expectedDataGridWidth: 265,
+      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: true,
+      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      expectSingleLine: false
+    },
+    {
+      harness: "grid-view.html",
+      width: 266,
+      expectedDataGridWidth: 266,
+      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: true,
+      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000"
     },
     {
       harness: "wide-view.html",
@@ -1411,7 +1451,7 @@ async function verifyGridStatusBar(browser) {
   }
 
   const forcedPage = await browser.newPage();
-  await forcedPage.setViewportSize({ width: 320, height: 760 });
+  await forcedPage.setViewportSize({ width: 300, height: 760 });
   await forcedPage.emulateMedia({ forcedColors: "active" });
   await forcedPage.goto(pathToFileURL(resolve(harnessDir, "grid-terminal-range-dark-320.html")).href, {
     waitUntil: "load"
