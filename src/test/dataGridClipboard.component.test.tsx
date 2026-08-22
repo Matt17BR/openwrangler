@@ -582,6 +582,119 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
+  it("keeps a whole-column write ahead of a later range write until exact settlement", async () => {
+    const columnWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => columnWrite.promise).mockResolvedValue(undefined);
+    renderGrid();
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy column" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 72);
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await act(async () => Promise.resolve());
+
+    try {
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Wait for the current clipboard copy to finish.")).toBeTruthy();
+    } finally {
+      await act(async () => columnWrite.resolve());
+    }
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t");
+  });
+
+  it("keeps a range write ahead of a later whole-column write until exact settlement", async () => {
+    const rangeWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => rangeWrite.promise).mockResolvedValue(undefined);
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 73);
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy column" }));
+    await act(async () => Promise.resolve());
+
+    try {
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Wait for the current clipboard copy to finish.")).toBeTruthy();
+    } finally {
+      await act(async () => rangeWrite.resolve());
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy column" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenLastCalledWith("Milan\nParis");
+  });
+
+  it("bounds repeated changed-column copies behind one unresolved write", async () => {
+    const cityWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => cityWrite.promise).mockResolvedValue(undefined);
+    renderGrid();
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy column" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("columnheader", { name: "sales" }));
+    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [numberCell(10.5), numberCell(-20)]);
+    const copySales = await screen.findByRole("button", { name: "Copy column" });
+    fireEvent.click(copySales);
+    fireEvent.click(copySales);
+    fireEvent.click(copySales);
+    await act(async () => Promise.resolve());
+
+    try {
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Wait for the current clipboard copy to finish.")).toBeTruthy();
+    } finally {
+      await act(async () => cityWrite.resolve());
+    }
+
+    fireEvent.click(copySales);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenLastCalledWith("10.5\n-20");
+  });
+
+  it("keeps a disposed grid's unresolved write ahead of its replacement grid", async () => {
+    const oldWrite = deferred<void>();
+    writeText.mockImplementationOnce(() => oldWrite.promise).mockResolvedValue(undefined);
+    const original = renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 74);
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    original.unmount();
+
+    renderGrid("view-b");
+    const replacementMilan = screen.getByRole("cell", { name: "Milan" });
+    const replacementSales = screen.getByRole("cell", { name: "" });
+    pointerDrag(replacementMilan, replacementSales, 75);
+    fireEvent.keyDown(replacementSales, { key: "c", ctrlKey: true });
+    await act(async () => Promise.resolve());
+
+    try {
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Wait for the current clipboard copy to finish.")).toBeTruthy();
+    } finally {
+      await act(async () => oldWrite.resolve());
+    }
+
+    fireEvent.keyDown(replacementSales, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText).toHaveBeenLastCalledWith("Milan\t10.5\nParis\t");
+  });
+
   it("does not publish or restore a delayed copy after grid focus moves elsewhere", async () => {
     const delayedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => delayedWrite.promise);
@@ -655,8 +768,9 @@ describe("DataGrid clipboard interactions", () => {
 
   it("leaves a never-settling range write pending for its external lifecycle owner", async () => {
     vi.useFakeTimers();
+    const unsettledWrite = deferred<void>();
     try {
-      writeText.mockImplementationOnce(() => new Promise<void>(() => undefined));
+      writeText.mockImplementationOnce(() => unsettledWrite.promise);
       renderGrid();
       const milan = screen.getByRole("cell", { name: "Milan" });
       const emptySales = screen.getByRole("cell", { name: "" });
@@ -678,6 +792,7 @@ describe("DataGrid clipboard interactions", () => {
       expect(writeText).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
     } finally {
+      await act(async () => unsettledWrite.resolve());
       vi.useRealTimers();
     }
   });

@@ -262,12 +262,48 @@ export function buildGridClipboardPayload({
 }
 
 const clipboardFallbackFocusOwners = new WeakSet<Element>();
+let activeGridClipboardWrite: object | undefined;
+
+export interface GridClipboardWriteOwner {
+  release(): void;
+  write(text: string, ownsAttempt: () => boolean): Promise<void>;
+}
+
+export function tryAcquireGridClipboardWrite(): GridClipboardWriteOwner | undefined {
+  if (activeGridClipboardWrite !== undefined) return undefined;
+  const token = {};
+  let released = false;
+  let writeStarted = false;
+  let writeSettled = false;
+  activeGridClipboardWrite = token;
+  return {
+    release(): void {
+      if (released) return;
+      if (writeStarted && !writeSettled) {
+        throw new Error("The clipboard write owner cannot be released before its write settles.");
+      }
+      released = true;
+      if (activeGridClipboardWrite === token) activeGridClipboardWrite = undefined;
+    },
+    async write(text: string, ownsAttempt: () => boolean): Promise<void> {
+      if (released || writeStarted || activeGridClipboardWrite !== token) {
+        throw new Error("The clipboard write owner is no longer current.");
+      }
+      writeStarted = true;
+      try {
+        await writeGridClipboardText(text, ownsAttempt);
+      } finally {
+        writeSettled = true;
+      }
+    }
+  };
+}
 
 export function gridClipboardFallbackOwnsFocus(element: Element | null): boolean {
   return element !== null && clipboardFallbackFocusOwners.has(element);
 }
 
-export async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
+async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

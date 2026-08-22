@@ -7,11 +7,11 @@ import {
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
   gridClipboardSelectionDescription,
+  tryAcquireGridClipboardWrite,
   type GridCellCoordinate,
   type GridClipboardMode,
   type GridClipboardResult,
-  type GridClipboardSelection,
-  writeGridClipboardText
+  type GridClipboardSelection
 } from "./gridClipboard";
 import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
 
@@ -86,7 +86,6 @@ export function useGridClipboard({
   });
   const contextIdRef = useRef(contextId);
   const expectedResultRefreshRef = useRef<ExpectedResultRefreshReceipt | undefined>(undefined);
-  const activeClipboardWriteRef = useRef<object | undefined>(undefined);
   const copyActionGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -196,33 +195,32 @@ export function useGridClipboard({
   );
   const copy = useCallback(
     async (mode: GridClipboardMode, additionalOwnership?: () => boolean): Promise<boolean> => {
-      if (activeClipboardWriteRef.current !== undefined) {
+      const clipboardWrite = tryAcquireGridClipboardWrite();
+      if (!clipboardWrite) {
         if (mountedRef.current) setAnnouncement("Wait for the current clipboard copy to finish.");
         return false;
       }
-      const result = results[mode];
-      const actionGeneration = ++copyActionGenerationRef.current;
-      const actionContextId = contextIdRef.current;
-      const ownsAction = (): boolean =>
-        mountedRef.current &&
-        copyActionGenerationRef.current === actionGeneration &&
-        contextIdRef.current === actionContextId &&
-        resultsRef.current[mode] === result;
-      const ownsResult = (): boolean => {
-        if (!ownsAction() || !(additionalOwnership?.() ?? true)) return false;
-        return ownsAction();
-      };
-      if (!result.ok) {
-        if (ownsResult()) {
-          setCopySettlementReceipt((current) => ({ id: current.id, mode: "none", status: "idle" }));
-          setAnnouncement(result.reason);
-        }
-        return ownsResult();
-      }
-      if (!ownsResult()) return false;
-      const activeClipboardWrite = {};
-      activeClipboardWriteRef.current = activeClipboardWrite;
       try {
+        const result = results[mode];
+        const actionGeneration = ++copyActionGenerationRef.current;
+        const actionContextId = contextIdRef.current;
+        const ownsAction = (): boolean =>
+          mountedRef.current &&
+          copyActionGenerationRef.current === actionGeneration &&
+          contextIdRef.current === actionContextId &&
+          resultsRef.current[mode] === result;
+        const ownsResult = (): boolean => {
+          if (!ownsAction() || !(additionalOwnership?.() ?? true)) return false;
+          return ownsAction();
+        };
+        if (!result.ok) {
+          if (ownsResult()) {
+            setCopySettlementReceipt((current) => ({ id: current.id, mode: "none", status: "idle" }));
+            setAnnouncement(result.reason);
+          }
+          return ownsResult();
+        }
+        if (!ownsResult()) return false;
         const settlementReceiptId = nextGridClipboardSettlementReceipt();
         flushSync(() => {
           setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "pending" });
@@ -241,7 +239,7 @@ export function useGridClipboard({
           return false;
         }
         try {
-          await writeGridClipboardText(result.payload.text, ownsResult);
+          await clipboardWrite.write(result.payload.text, ownsResult);
           if (!ownsResult()) {
             clearSettlementReceipt();
             return false;
@@ -265,7 +263,7 @@ export function useGridClipboard({
           return false;
         }
       } finally {
-        if (activeClipboardWriteRef.current === activeClipboardWrite) activeClipboardWriteRef.current = undefined;
+        clipboardWrite.release();
       }
     },
     [results]
