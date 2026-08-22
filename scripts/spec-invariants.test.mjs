@@ -2134,6 +2134,73 @@ test("cleaning-history matrix clauses and rendered rollback spellings preserve e
   );
 });
 
+test("cleaning-history finite, parenthetical, and zero-relative clauses preserve structural owners", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "Committed steps whose report is visible cannot be edited.",
+    "Committed steps, whose report is visible, cannot be edited.",
+    "Committed steps for which a report is generated cannot be edited.",
+    "Committed steps, for which a report is generated, cannot be edited.",
+    "A report saying that committed steps cannot be edited is inaccurate.",
+    "A report stating that committed steps cannot be edited is inaccurate.",
+    "A report claiming that committed steps cannot be edited is inaccurate.",
+    "A report listing that committed steps cannot be edited is inaccurate.",
+    "Committed steps—a report says they are visible—cannot be edited.",
+    "Committed steps — which a report lists — cannot be edited.",
+    "Committed steps a report lists cannot be edited.",
+    "Users can roll a report's committed steps back.",
+    "Users can roll committed steps listed in a report back.",
+    "Users can roll committed steps that a report lists back.",
+    "Users can roll every committed step slowly back."
+  ];
+  const truthful = [
+    "A report whose committed steps are visible cannot be edited.",
+    "A report, whose committed steps are visible, cannot be edited.",
+    "A report—committed steps remain visible—cannot be edited.",
+    "A report — which committed steps generate — cannot be edited.",
+    "A report committed steps describe cannot be edited.",
+    "Users can roll the report slowly back."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
+test("cleaning-history visible tokens are bounded before claim canonicalization", () => {
+  const model = cleaningHistoryModel();
+  const overBound = "Users can roll only the latest committed step back. ".repeat(500);
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overBound)
+      }),
+    /exceeds the 4096-word-token work limit/u
+  );
+});
+
 test("cleaning-history rendered soft and hard breaks preserve claim continuity and block boundaries", () => {
   const model = cleaningHistoryModel();
   const contradictions = [
@@ -2356,17 +2423,24 @@ test("cleaning-history predicate work is explicitly bounded before clause analys
       documents: cleaningHistoryDocumentsWithReadmeClaim(model, atLimit)
     })
   );
-  for (const example of [overLimit, reviewedAdversary]) {
-    assert.throws(
-      () =>
-        assertCleaningHistoryClaimsCurrent({
-          modelSource: JSON.stringify(model),
-          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
-          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
-        }),
-      /exceeds the 512-predicate-token work limit/u
-    );
-  }
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, overLimit)
+      }),
+    /exceeds the 512-predicate-token work limit/u
+  );
+  assert.throws(
+    () =>
+      assertCleaningHistoryClaimsCurrent({
+        modelSource: JSON.stringify(model),
+        productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+        documents: cleaningHistoryDocumentsWithReadmeClaim(model, reviewedAdversary)
+      }),
+    /exceeds the 4096-word-token work limit/u
+  );
 });
 
 test("cleaning-history inline fragment context has independently exact bounded operation accounting", () => {

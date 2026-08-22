@@ -1093,10 +1093,23 @@ function normalizeCleaningHistoryConditionalSpellings(value) {
     .replace(cleaningHistoryOnlyConditionSpelling, "only $1");
 }
 
-function normalizeVisibleMarkdownText(value, label, { validateEntities = true } = {}) {
+function chargeCleaningHistoryVisibleTokens(value, counter) {
+  const tokenPattern = /[\p{L}\p{N}']+|[,:—]/gu;
+  while (tokenPattern.exec(value) !== null) {
+    if (counter.value >= CLEANING_HISTORY_WORD_TOKEN_MAX) {
+      throw new Error(
+        `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_WORD_TOKEN_MAX}-word-token work limit.`
+      );
+    }
+    counter.value += 1;
+  }
+}
+
+function normalizeVisibleMarkdownText(value, label, { canonicalizeConditions = true, validateEntities = true } = {}) {
   if (validateEntities) assertValidVisibleEntityShapes(value, label);
+  const normalizedValue = value.normalize("NFKC");
   const normalized = normalizeCleaningHistoryRenderedBoundaries(
-    normalizeCleaningHistoryConditionalSpellings(value.normalize("NFKC"))
+    (canonicalizeConditions ? normalizeCleaningHistoryConditionalSpellings(normalizedValue) : normalizedValue)
       .replaceAll(cleaningHistoryDecodedWhitespaceSentinel, " ")
       .replaceAll(cleaningHistoryDecodedBoundarySentinel, "\n")
       .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
@@ -1134,14 +1147,22 @@ function flattenVisibleInlineChildren(children, label) {
       if (child.type === "image" && Array.isArray(child.children)) {
         visit(child.children);
       } else if (child.type === "text" || child.type === "image") {
-        fragments.push({ type: child.type, text: normalizeVisibleMarkdownText(child.content, label) });
+        fragments.push({
+          type: child.type,
+          text: normalizeVisibleMarkdownText(child.content, label),
+          visibleTokenText: normalizeVisibleMarkdownText(child.content, label, { canonicalizeConditions: false })
+        });
       } else if (child.type === "code_inline") {
         fragments.push({
           type: child.type,
-          text: normalizeVisibleMarkdownText(child.content, label, { validateEntities: false })
+          text: normalizeVisibleMarkdownText(child.content, label, { validateEntities: false }),
+          visibleTokenText: normalizeVisibleMarkdownText(child.content, label, {
+            canonicalizeConditions: false,
+            validateEntities: false
+          })
         });
       } else if (child.type === "softbreak" || child.type === "hardbreak") {
-        fragments.push({ type: "text", text: " " });
+        fragments.push({ type: "text", text: " ", visibleTokenText: " " });
       }
     }
   };
@@ -1368,11 +1389,23 @@ function exampleCodeSpanIndexes(fragments, testHooks = undefined) {
   return examples;
 }
 
-function renderedInlineText(token, label, { excludeExampleCode = false, testHooks = undefined } = {}) {
+function renderedInlineText(
+  token,
+  label,
+  { excludeExampleCode = false, testHooks = undefined, visibleTokenCounter = undefined } = {}
+) {
   if (token?.type !== "inline" || !Array.isArray(token.children)) return "";
   const fragments = flattenVisibleInlineChildren(token.children, label);
   const excluded = excludeExampleCode ? exampleCodeSpanIndexes(fragments, testHooks) : new Set();
-  return fragments.map((fragment, index) => (excluded.has(index) ? " " : fragment.text)).join("");
+  return fragments
+    .map((fragment, index) => {
+      if (excluded.has(index)) return " ";
+      if (visibleTokenCounter !== undefined) {
+        chargeCleaningHistoryVisibleTokens(fragment.visibleTokenText, visibleTokenCounter);
+      }
+      return fragment.text;
+    })
+    .join("");
 }
 
 function markdownHeadingRecords(tokens, label) {
@@ -1725,19 +1758,16 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
       continue;
     }
     const targetTokens = tokens.slice(index + 1, backIndex);
-    const hasCleaningTarget = targetTokens.some((_, targetIndex) => isCleaningHistoryNoun(targetTokens, targetIndex));
-    const cleaningTarget = targetTokens.every(
-      (token, targetIndex) => isCleaningHistoryGrammarToken(token) || isCleaningHistoryNoun(targetTokens, targetIndex)
-    );
-    if (!hasCleaningTarget || !cleaningTarget) {
-      canonical.push(...tokens.slice(index, backIndex + 1));
-      index = backIndex;
-      continue;
-    }
     if (targetTokens.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) {
       throw new Error(
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
       );
+    }
+    const targetSubject = cleaningHistorySubject([...targetTokens, "rollback"], targetTokens.length);
+    if (targetSubject.owner !== "cleaning") {
+      canonical.push(...tokens.slice(index, backIndex + 1));
+      index = backIndex;
+      continue;
     }
     canonical.push("rollback", ...targetTokens);
     index = backIndex;
@@ -1745,7 +1775,11 @@ function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
   return canonical;
 }
 
-function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBudget) {
+function cleaningHistoryTokens(value, remainingVisibleTokenBudget, remainingPredicateBudget) {
+  const visibleTokenCounter = { value: CLEANING_HISTORY_WORD_TOKEN_MAX - remainingVisibleTokenBudget };
+  const initialVisibleTokenCount = visibleTokenCounter.value;
+  chargeCleaningHistoryVisibleTokens(value, visibleTokenCounter);
+  const visibleTokenCount = visibleTokenCounter.value - initialVisibleTokenCount;
   const normalized = normalizeCleaningHistoryRollbackSpellings(normalizeCleaningHistoryConditionalSpellings(value))
     .replace(/\bcan't\b/giu, "cannot")
     .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
@@ -1761,7 +1795,7 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
   const rawTokens = [];
   let rawPredicateCount = 0;
   for (const match of normalized.matchAll(/[\p{L}\p{N}']+|[,:—]/gu)) {
-    if (rawTokens.length >= remainingTokenBudget) {
+    if (rawTokens.length >= remainingVisibleTokenBudget) {
       throw new Error(
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_WORD_TOKEN_MAX}-word-token work limit.`
       );
@@ -1789,7 +1823,7 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
       predicateCount += 1;
     }
   }
-  return { predicateCount, tokens };
+  return { predicateCount, tokens, visibleTokenCount };
 }
 
 function cleaningHistoryStatements(rendered) {
@@ -1804,7 +1838,7 @@ function cleaningHistoryStatements(rendered) {
     );
     const { tokens } = result;
     predicateCount += result.predicateCount;
-    tokenCount += tokens.length;
+    tokenCount += result.visibleTokenCount;
     if (tokens.length > 0) statements.push(tokens);
   }
   return statements;
@@ -1861,7 +1895,48 @@ function isCleaningHistoryNoun(tokens, index) {
   return false;
 }
 
-function cleaningHistoryReportRelationSubject(tokens) {
+function cleaningHistoryStructuralOwnerPair(tokens, hasCapabilityPredicate) {
+  if (!hasCapabilityPredicate) return undefined;
+  const owners = tokens.flatMap((token, index) => {
+    if (cleaningHistoryExplicitUnrelatedOwnerWords.has(token)) return [{ index, owner: "unrelated" }];
+    return isCleaningHistoryNoun(tokens, index) ? [{ index, owner: "cleaning" }] : [];
+  });
+  if (owners.length !== 2 || owners[0].owner === owners[1].owner) return undefined;
+
+  const [governing, embedded] = owners;
+  const relation = tokens.slice(governing.index + 1, embedded.index);
+  const suffix = tokens.slice(embedded.index + 1);
+  const possessiveIndex = relation.indexOf("possessive");
+  if (possessiveIndex >= 0) {
+    const possessedArtifact = relation
+      .slice(possessiveIndex + 1)
+      .some((token) => !isCleaningHistoryGrammarToken(token));
+    return possessedArtifact ? governing.owner : embedded.owner;
+  }
+
+  const relativeIndex = relation.findIndex((token) => ["that", "which", "whose"].includes(token));
+  const leadingRelative =
+    relativeIndex >= 0 &&
+    relation
+      .slice(0, relativeIndex)
+      .every((token) => ["a", "an", "by", "for", "from", "in", "of", "on", "the", "to", "with"].includes(token));
+  if (leadingRelative) return governing.owner;
+  if (relativeIndex > 0) return embedded.owner;
+
+  const relationWord = relation.find((token) => !isCleaningHistoryGrammarToken(token));
+  const hasEmbeddedReference = suffix.some(
+    (token) => cleaningHistoryReportObjectReferences.has(token) || cleaningHistoryPluralPersonalAnaphors.has(token)
+  );
+  if (/^[\p{L}]+(?:ed|ing)$/u.test(relationWord ?? "") && !hasEmbeddedReference) return governing.owner;
+
+  const zeroRelative =
+    !relation.some((token) => cleaningHistoryReportModifierPrepositions.has(token)) &&
+    relation.every((token) => isCleaningHistoryGrammarToken(token)) &&
+    suffix.some((token) => !isCleaningHistoryGrammarToken(token));
+  return zeroRelative ? governing.owner : undefined;
+}
+
+function cleaningHistoryReportRelationSubject(tokens, hasCapabilityPredicate) {
   const reportIndices = tokens.flatMap((token, index) =>
     cleaningHistoryExplicitUnrelatedOwnerWords.has(token) ? [index] : []
   );
@@ -1884,6 +1959,9 @@ function cleaningHistoryReportRelationSubject(tokens) {
     reportObject,
     reportObjectComplement
   });
+  const structuralOwner = cleaningHistoryStructuralOwnerPair(tokens, hasCapabilityPredicate);
+  if (structuralOwner === "cleaning") return cleaningSubject;
+  if (structuralOwner === "unrelated") return reportSubject();
   if (latestCleaningIndex < 0) return reportSubject();
   if (latestCleaningIndex < latestReportIndex) {
     const relation = tokens.slice(latestCleaningIndex + 1, latestReportIndex);
@@ -2031,7 +2109,7 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
   const after = tokens.slice(predicateIndex + 1);
   const cleaningBefore = before.findIndex((_, index) => isCleaningHistoryNoun(before, index));
   const cleaningAfter = after.findIndex((_, index) => isCleaningHistoryNoun(after, index));
-  const reportRelationSubject = cleaningHistoryReportRelationSubject(before);
+  const reportRelationSubject = cleaningHistoryReportRelationSubject(before, predicateIndex < tokens.length);
   const unrelatedBefore = before.findIndex(
     (token, index) =>
       !isCleaningHistoryGrammarToken(token) &&
@@ -2072,6 +2150,8 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
     cleaningAfter >= 0 &&
     after.slice(0, cleaningAfter).every((token) => isCleaningHistoryGrammarToken(token)) &&
     actorFirst;
+  const structuredCleaningObject =
+    actorFirst && cleaningHistoryReportRelationSubject(after, true)?.owner === "cleaning";
   const nominalizedCleaningSubject =
     cleaningAfter >= 0 &&
     candidateIndex < predicateIndex &&
@@ -2099,7 +2179,7 @@ function cleaningHistorySubject(tokens, predicateIndex = tokens.length, candidat
   if (cleaningBefore >= 0 && (unrelatedBefore < 0 || unrelatedBefore > cleaningBefore)) {
     return { owner: "cleaning", scope: cleaningHistoryScope(before), explicit: true };
   }
-  if (directCleaningObject || nominalizedCleaningSubject || nominalizedCandidateSubject) {
+  if (directCleaningObject || structuredCleaningObject || nominalizedCleaningSubject || nominalizedCandidateSubject) {
     return { owner: "cleaning", scope: cleaningHistoryScope(after), explicit: true };
   }
   if (unrelatedBefore >= 0) return { owner: "unrelated", scope: "unknown", explicit: true };
@@ -2147,18 +2227,6 @@ function cleaningHistoryCoordinatedBarePassiveContinuation(tokens, predicateInde
 
 function cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject) {
   return currentSubject ?? previousStatementSubject;
-}
-
-function cleaningHistoryPreservesMatrixSubject(segment, currentSubject) {
-  if (segment.separatorBefore !== "," || currentSubject === undefined) return false;
-  const prefix = segment.tokens.slice(0, CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW);
-  let relationIndex = 0;
-  while (["already", "also", "once", "previously"].includes(prefix[relationIndex])) relationIndex += 1;
-  const relation = prefix[relationIndex];
-  return (
-    ["that", "which"].includes(relation) ||
-    (/^[\p{L}]+(?:ed|ing)$/u.test(relation ?? "") && cleaningHistoryPredicateKind(relation) === undefined)
-  );
 }
 
 function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, antecedent) {
@@ -2533,10 +2601,44 @@ function cleaningHistoryPredicateRecords(rendered) {
   let immediatelyPriorRecord;
   for (const statementTokens of cleaningHistoryStatements(rendered)) {
     let currentSubject;
+    let parentheticalSubject;
     let pendingAtomicException;
     let pendingClausePrefix;
     const statementRecords = [];
-    for (const segment of cleaningHistorySegments(statementTokens)) {
+    const segments = cleaningHistorySegments(statementTokens);
+    const remainingParentheticalSeparators = new Map();
+    for (const { separatorBefore } of segments) {
+      if (![",", "—"].includes(separatorBefore)) continue;
+      remainingParentheticalSeparators.set(
+        separatorBefore,
+        (remainingParentheticalSeparators.get(separatorBefore) ?? 0) + 1
+      );
+    }
+    for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+      const segment = segments[segmentIndex];
+      let preservesMatrixSubject = false;
+      if ([",", "—"].includes(segment.separatorBefore)) {
+        remainingParentheticalSeparators.set(
+          segment.separatorBefore,
+          remainingParentheticalSeparators.get(segment.separatorBefore) - 1
+        );
+        if (parentheticalSubject?.separator === segment.separatorBefore) {
+          currentSubject = parentheticalSubject.subject;
+          parentheticalSubject = undefined;
+        } else if (
+          currentSubject !== undefined &&
+          remainingParentheticalSeparators.get(segment.separatorBefore) > 0 &&
+          (segment.separatorBefore === "—" ||
+            ["that", "which", "whose"].includes(segment.tokens[0]) ||
+            (segment.tokens[0] === "for" && segment.tokens[1] === "which") ||
+            (/^[\p{L}]+(?:ed|ing)$/u.test(segment.tokens[0] ?? "") &&
+              cleaningHistoryPredicateKind(segment.tokens[0]) === undefined) ||
+            segment.tokens.some((token) => cleaningHistoryPostPredicateAnaphors.has(token)))
+        ) {
+          parentheticalSubject = { separator: segment.separatorBefore, subject: currentSubject };
+          preservesMatrixSubject = true;
+        }
+      }
       const priorRecord = immediatelyPriorRecord;
       immediatelyPriorRecord = undefined;
       const clausePrefix =
@@ -2616,7 +2718,6 @@ function cleaningHistoryPredicateRecords(rendered) {
         pendingAtomicException = undefined;
       }
       const subjectProbeIndex = predicates[0]?.index ?? segment.tokens.length;
-      const preservesMatrixSubject = cleaningHistoryPreservesMatrixSubject(segment, currentSubject);
       const coordinatedCapabilityPredecessors = priorRecord?.coordinatedCapabilityPredecessors ?? [];
       const coordinatedBarePassiveCandidate =
         priorRecord?.subject.owner === "cleaning" &&
@@ -2842,9 +2943,16 @@ function cleaningHistoryRecordContradicts(record) {
 }
 
 function containsContradictoryCleaningHistoryClaim(source, testHooks = undefined) {
+  const visibleTokenCounter = { value: 0 };
   const rendered = parseCleaningHistoryMarkdown(source, "cleaning-history claim prose")
     .filter((token) => token.type === "inline")
-    .map((token) => renderedInlineText(token, "cleaning-history claim prose", { excludeExampleCode: true, testHooks }))
+    .map((token) =>
+      renderedInlineText(token, "cleaning-history claim prose", {
+        excludeExampleCode: true,
+        testHooks,
+        visibleTokenCounter
+      })
+    )
     .join("\n");
   return cleaningHistoryPredicateRecords(rendered).some(cleaningHistoryRecordContradicts);
 }
