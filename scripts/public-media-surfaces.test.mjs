@@ -75,8 +75,6 @@ import {
 
 const sourceSha = "a".repeat(40);
 const version = "1.2.1";
-const renderCutoverId = "public-media-render-verification";
-const prepublicationCutoverId = "public-media-prepublication";
 const reviewedMediaSha = "9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22";
 const staleMediaSha = "5acf731e8b44e9ff82c4ac48fdc151210636da95";
 const productPrefix = `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/docs/images/readme/v1.2/`;
@@ -193,9 +191,11 @@ test("public media inventory declares one exact bounded series", () => {
 });
 
 test("public media release cutovers match their manifest and generated recovery documentation", () => {
-  assert.deepEqual(checkReleaseCutoverRepository(), { cutovers: 2, checkedPaths: 13 });
-  assert.ok(releaseCutover(renderCutoverId).consumers.includes("scripts/public-media-surfaces.test.mjs"));
-  assert.ok(releaseCutover(prepublicationCutoverId).consumers.includes("scripts/public-media-surfaces.test.mjs"));
+  assert.deepEqual(checkReleaseCutoverRepository(), { cutovers: 2, checkedPaths: 14 });
+  assert.ok(
+    releaseCutover("public-media-render-verification").consumers.includes("scripts/public-media-surfaces.test.mjs")
+  );
+  assert.ok(releaseCutover("public-media-prepublication").consumers.includes("scripts/public-media-surfaces.test.mjs"));
 });
 
 test("the complete checked-in public media inventory satisfies the release-surface contract", () => {

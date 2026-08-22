@@ -1,5 +1,55 @@
 {
   "schemaVersion": 1,
+  "consumerInventory": [
+    {
+      "path": ".github/workflows/open-vsx-promotion.yml",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "azure-pipelines-marketplace.yml",
+      "cutoverIds": ["public-media-prepublication"]
+    },
+    {
+      "path": "docs/media-spec-v1.2.md",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "docs/releasing.md",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "docs/testing.md",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "scripts/marketplace-promotion-workflow.mjs",
+      "cutoverIds": ["public-media-prepublication"]
+    },
+    {
+      "path": "scripts/marketplace-promotion-workflow.test.mjs",
+      "cutoverIds": ["public-media-prepublication"]
+    },
+    {
+      "path": "scripts/open-vsx-promotion-workflow.mjs",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "scripts/open-vsx-promotion-workflow.test.mjs",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "scripts/public-media-surface-contract.mjs",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "scripts/public-media-surfaces.test.mjs",
+      "cutoverIds": ["public-media-prepublication", "public-media-render-verification"]
+    },
+    {
+      "path": "scripts/verify-public-media-surfaces.mjs",
+      "cutoverIds": ["public-media-render-verification"]
+    }
+  ],
   "cutovers": [
     {
       "id": "public-media-render-verification",
