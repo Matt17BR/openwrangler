@@ -112,6 +112,15 @@ describe("executed notebook cell result action", () => {
     const earlyCell = codeCell(document, 2, [earlyOutput] as never);
     const matchedCell = codeCell(document, 3, [output("<table><tr><td>candidate</td></tr></table>", "text/html")]);
     const overLimitCell = codeCell(document, 4, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    const earlyOutputs = earlyCell.outputs;
+    const matchedOutputs = matchedCell.outputs;
+    const overLimitOutputs = overLimitCell.outputs;
+    Object.defineProperty(earlyCell, "outputs", { configurable: true, get: () => earlyOutputs.slice() });
+    Object.defineProperty(matchedCell, "outputs", { configurable: true, get: () => matchedOutputs.slice() });
+    Object.defineProperty(overLimitCell, "outputs", {
+      configurable: true,
+      get: () => overLimitOutputs.slice()
+    });
     setCells(document, [earlyCell, matchedCell, overLimitCell]);
     const exactEditor = { notebook: document } as NotebookEditor;
     mocks.notebookDocuments.push(document);

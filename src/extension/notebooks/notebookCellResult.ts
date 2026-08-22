@@ -51,13 +51,13 @@ interface InlineRawOutputMatch {
 
 interface InlineRawOutputCellSnapshot {
   readonly cell: vscode.NotebookCell;
-  readonly outputArray: readonly vscode.NotebookCellOutput[];
   readonly outputs: readonly vscode.NotebookCellOutput[];
 }
 
 interface InlineRawOutputSnapshot {
   readonly editor: vscode.NotebookEditor;
   readonly notebook: vscode.NotebookDocument;
+  readonly cellArray: readonly vscode.NotebookCell[];
   readonly cells: readonly InlineRawOutputCellSnapshot[];
 }
 
@@ -858,28 +858,41 @@ function findInlineRawOutputMatch(
   let match: InlineRawOutputMatch | undefined;
   const itemSnapshots: InlineRawOutputItemsSnapshot[] = [];
   try {
-    for (const cellSnapshot of snapshot.cells) {
-      for (const output of cellSnapshot.outputs) {
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      if (!cellSnapshot) return undefined;
+      for (let outputIndex = 0; outputIndex < cellSnapshot.outputs.length; outputIndex += 1) {
+        const output = cellSnapshot.outputs[outputIndex];
+        if (!output) return undefined;
         const itemArray = output.items;
-        if (itemArray.length > INLINE_UPGRADE_MAX_OUTPUT_ITEMS - visitedItems) return undefined;
-        visitedItems += itemArray.length;
-        itemSnapshots.push({ output, itemArray, items: [...itemArray] });
+        const items = snapshotBoundedIndexedReferences(itemArray, INLINE_UPGRADE_MAX_OUTPUT_ITEMS - visitedItems);
+        if (!items) return undefined;
+        visitedItems += items.length;
+        itemSnapshots.push({ output, itemArray, items });
       }
     }
     if (!isInlineRawOutputSnapshotCurrent(snapshot) || !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)) {
       return undefined;
     }
     let itemSnapshotIndex = 0;
-    for (const cellSnapshot of snapshot.cells) {
-      for (const output of cellSnapshot.outputs) {
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      if (!cellSnapshot) return undefined;
+      for (let outputIndex = 0; outputIndex < cellSnapshot.outputs.length; outputIndex += 1) {
+        const output = cellSnapshot.outputs[outputIndex];
         const itemSnapshot = itemSnapshots[itemSnapshotIndex];
         itemSnapshotIndex += 1;
-        if (!itemSnapshot || itemSnapshot.output !== output) return undefined;
-        for (const item of itemSnapshot.items) {
-          if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
-          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
-          scannedBytes += item.data.byteLength;
-          if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
+        if (!output || !itemSnapshot || itemSnapshot.output !== output) return undefined;
+        for (let itemIndex = 0; itemIndex < itemSnapshot.items.length; itemIndex += 1) {
+          const item = itemSnapshot.items[itemIndex];
+          if (!item || item.mime !== "text/html") continue;
+          const data = item.data;
+          if (!ArrayBuffer.isView(data) || data.BYTES_PER_ELEMENT !== 1) return undefined;
+          const byteLength = data.byteLength;
+          if (byteLength !== candidate.byteLength) continue;
+          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - byteLength) return undefined;
+          scannedBytes += byteLength;
+          if (!matchesInlineUpgradeBytes(data, byteLength, candidate)) continue;
           if (match) return undefined;
           match = { cell: cellSnapshot.cell, output, item };
         }
@@ -902,18 +915,24 @@ function snapshotInlineRawOutputContainers(editor: vscode.NotebookEditor): Inlin
   if (!isExactVisibleNotebookEditor(editor)) return undefined;
   const notebook = editor.notebook;
   try {
-    const cells = notebook.getCells();
-    if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+    const cellArray = snapshotBoundedIndexedReferences(notebook.getCells(), INLINE_UPGRADE_MAX_CELLS);
+    if (!cellArray) return undefined;
     let visitedOutputs = 0;
-    const cellSnapshots: InlineRawOutputCellSnapshot[] = [];
-    for (const cell of cells) {
+    const cellSnapshots = new Array<InlineRawOutputCellSnapshot>(cellArray.length);
+    for (let cellIndex = 0; cellIndex < cellArray.length; cellIndex += 1) {
+      const cell = cellArray[cellIndex];
+      if (!cell) return undefined;
       if (cell.notebook !== notebook) return undefined;
       const outputArray = cell.outputs;
-      if (outputArray.length > INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs) return undefined;
-      visitedOutputs += outputArray.length;
-      cellSnapshots.push({ cell, outputArray, outputs: [...outputArray] });
+      const outputs = snapshotBoundedIndexedReferences(
+        outputArray,
+        INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs
+      );
+      if (!outputs) return undefined;
+      visitedOutputs += outputs.length;
+      cellSnapshots[cellIndex] = { cell, outputs };
     }
-    const snapshot = { editor, notebook, cells: cellSnapshots };
+    const snapshot = { editor, notebook, cellArray, cells: cellSnapshots };
     return isInlineRawOutputSnapshotCurrent(snapshot) ? snapshot : undefined;
   } catch {
     return undefined;
@@ -925,15 +944,27 @@ function isInlineRawOutputSnapshotCurrent(snapshot: InlineRawOutputSnapshot): bo
   if (editor.notebook !== notebook || !isExactVisibleNotebookEditor(editor)) return false;
   try {
     const cells = notebook.getCells();
-    if (cells.length !== snapshot.cells.length) return false;
-    for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
+    if (!hasExactIndexedReferences(cells, snapshot.cellArray)) return false;
+    const outputArrays = new Array<readonly vscode.NotebookCellOutput[]>(snapshot.cells.length);
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
       const cellSnapshot = snapshot.cells[cellIndex];
       const cell = cells[cellIndex];
       if (!cellSnapshot || cell !== cellSnapshot.cell || cell.notebook !== notebook) return false;
       const outputArray = cell.outputs;
-      if (outputArray !== cellSnapshot.outputArray || outputArray.length !== cellSnapshot.outputs.length) return false;
-      for (let outputIndex = 0; outputIndex < outputArray.length; outputIndex += 1) {
-        if (outputArray[outputIndex] !== cellSnapshot.outputs[outputIndex]) return false;
+      outputArrays[cellIndex] = outputArray;
+      if (!hasExactIndexedReferences(outputArray, cellSnapshot.outputs)) return false;
+    }
+    if (!hasExactIndexedReferences(cells, snapshot.cellArray)) return false;
+    for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      const outputArray = outputArrays[cellIndex];
+      if (
+        !cellSnapshot ||
+        !outputArray ||
+        cellSnapshot.cell.notebook !== notebook ||
+        !hasExactIndexedReferences(outputArray, cellSnapshot.outputs)
+      ) {
+        return false;
       }
     }
     return true;
@@ -944,17 +975,51 @@ function isInlineRawOutputSnapshotCurrent(snapshot: InlineRawOutputSnapshot): bo
 
 function areInlineRawOutputItemsSnapshotsCurrent(snapshots: readonly InlineRawOutputItemsSnapshot[]): boolean {
   try {
-    for (const snapshot of snapshots) {
+    const itemArrays = new Array<readonly vscode.NotebookCellOutputItem[]>(snapshots.length);
+    for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      const snapshot = snapshots[snapshotIndex];
+      if (!snapshot) return false;
       const itemArray = snapshot.output.items;
-      if (itemArray !== snapshot.itemArray || itemArray.length !== snapshot.items.length) return false;
-      for (let itemIndex = 0; itemIndex < itemArray.length; itemIndex += 1) {
-        if (itemArray[itemIndex] !== snapshot.items[itemIndex]) return false;
+      itemArrays[snapshotIndex] = itemArray;
+      if (itemArray !== snapshot.itemArray || !hasExactIndexedReferences(itemArray, snapshot.items)) return false;
+    }
+    for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+      const snapshot = snapshots[snapshotIndex];
+      const itemArray = itemArrays[snapshotIndex];
+      if (
+        !snapshot ||
+        !itemArray ||
+        itemArray !== snapshot.itemArray ||
+        !hasExactIndexedReferences(itemArray, snapshot.items)
+      ) {
+        return false;
       }
     }
     return true;
   } catch {
     return false;
   }
+}
+
+function snapshotBoundedIndexedReferences<T>(values: readonly T[], maximumLength: number): readonly T[] | undefined {
+  const length = values.length;
+  if (!Number.isSafeInteger(length) || length < 0 || length > maximumLength) return undefined;
+  const snapshot = new Array<T>(length);
+  for (let index = 0; index < length; index += 1) snapshot[index] = values[index]!;
+  return hasExactIndexedReferences(values, snapshot) ? snapshot : undefined;
+}
+
+function hasExactIndexedReferences<T>(values: readonly T[], expected: readonly T[]): boolean {
+  const length = values.length;
+  if (!Number.isSafeInteger(length) || length < 0 || length !== expected.length) return false;
+  for (let index = 0; index < length; index += 1) {
+    if (values[index] !== expected[index]) return false;
+  }
+  if (values.length !== length) return false;
+  for (let index = 0; index < length; index += 1) {
+    if (values[index] !== expected[index]) return false;
+  }
+  return true;
 }
 
 function matchesInlineRawOutput(
@@ -1058,10 +1123,12 @@ function isInlineUpgradeCandidate(candidate: InlineNotebookOutputCandidate): boo
   );
 }
 
-function matchesInlineUpgradeBytes(data: Uint8Array, candidate: InlineNotebookOutputCandidate): boolean {
-  return (
-    data.byteLength === candidate.byteLength && createHash("sha256").update(data).digest("hex") === candidate.sha256
-  );
+function matchesInlineUpgradeBytes(
+  data: Uint8Array,
+  byteLength: number,
+  candidate: InlineNotebookOutputCandidate
+): boolean {
+  return byteLength === candidate.byteLength && createHash("sha256").update(data).digest("hex") === candidate.sha256;
 }
 
 function isPositiveExecutionOrder(value: number | undefined): value is number {
