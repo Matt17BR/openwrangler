@@ -27,6 +27,13 @@ const MAX_TRACKED_PATH_BYTES = 4_096;
 const MAX_TRACKED_PATH_OUTPUT_BYTES = 128 * 1_024;
 const MAX_TRACKED_PREFIX_BYTES = MAX_TRACKED_PATH_OUTPUT_BYTES;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const INSTRUCTION_FAILURES = Symbol("openwrangler.agentInstructionFailures");
+const nativeDescriptorClose = closeSync;
+const nativeDirectoryPrototype = Dir.prototype;
+const nativeDirectoryPathGetter = Object.getOwnPropertyDescriptor(nativeDirectoryPrototype, "path")?.get;
+const nativeDirectoryReadSync = nativeDirectoryPrototype.readSync;
+const nativeDirectoryCloseSync = nativeDirectoryPrototype.closeSync;
+const CLEANUP_FAULT_NAMES = Object.freeze(["afterFileClose", "afterAncestorClose", "afterNativeDirectoryClose"]);
 
 function invariantIds(...numbers) {
   return numbers.map((number) => `I${String(number).padStart(2, "0")}`);
@@ -243,9 +250,60 @@ function instructionError(message, options) {
 }
 
 function instructionAggregateError(message, errors) {
-  const error = new AggregateError(errors, message);
+  const failures = [];
+  for (const error of errors) appendInstructionFailures(failures, error);
+  const error = new AggregateError(failures, message);
   error.code = "AGENT_INSTRUCTIONS_INVALID";
+  Object.defineProperty(error, INSTRUCTION_FAILURES, { value: Object.freeze(failures) });
   return error;
+}
+
+function appendInstructionFailures(failures, error) {
+  const nested = error?.[INSTRUCTION_FAILURES];
+  if (Array.isArray(nested)) failures.push(...nested);
+  else failures.push(error);
+}
+
+function throwInstructionFailures(message, failures) {
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw instructionAggregateError(message, failures);
+}
+
+function captureCleanupFaults(value) {
+  if (value === undefined) return Object.freeze({});
+  if (value === null || typeof value !== "object" || utilTypes.isProxy(value)) {
+    throw instructionError("The instruction cleanup fault seam must be one plain callback record.");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw instructionError("The instruction cleanup fault seam must be one plain callback record.");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (
+      typeof key !== "string" ||
+      !CLEANUP_FAULT_NAMES.includes(key) ||
+      !Object.hasOwn(descriptors[key], "value") ||
+      typeof descriptors[key].value !== "function"
+    ) {
+      throw instructionError("The instruction cleanup fault seam contains an unsupported callback.");
+    }
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      CLEANUP_FAULT_NAMES.flatMap((name) => (descriptors[name] ? [[name, descriptors[name].value]] : []))
+    )
+  );
+}
+
+function closeOwnedDescriptor(descriptor, label, afterClose) {
+  try {
+    nativeDescriptorClose(descriptor);
+    afterClose?.(label);
+    return undefined;
+  } catch (cause) {
+    return instructionError(`${label} did not close.`, { cause });
+  }
 }
 
 function portableRelativePath(path) {
@@ -307,7 +365,7 @@ function exactStatIdentity(left, right) {
   );
 }
 
-function openVerifiedDirectory(absolutePath, label, openDirectory = openSync) {
+function openVerifiedDirectory(absolutePath, label, openDirectory = openSync, afterClose) {
   const pathSnapshot = lstatSync(absolutePath, { bigint: true });
   if (!pathSnapshot.isDirectory() || pathSnapshot.isSymbolicLink()) {
     throw instructionError(`${label} must be one real directory.`);
@@ -323,12 +381,10 @@ function openVerifiedDirectory(absolutePath, label, openDirectory = openSync) {
     }
     return { absolutePath, descriptor, label, snapshot: openedSnapshot };
   } catch (error) {
-    try {
-      closeSync(descriptor);
-    } catch {
-      throw instructionError(`${label} could not close after descriptor binding failed.`);
-    }
-    throw error;
+    const failures = [error];
+    const closeFailure = closeOwnedDescriptor(descriptor, `${label}'s verified descriptor`, afterClose);
+    if (closeFailure) failures.push(closeFailure);
+    throwInstructionFailures(`${label} failed descriptor binding and cleanup.`, failures);
   }
 }
 
@@ -336,7 +392,7 @@ function withVerifiedDirectoryChain(
   root,
   relativeDirectory,
   callback,
-  { beforeAncestorRevalidation, openDirectory = openSync } = {}
+  { beforeAncestorRevalidation, openDirectory = openSync, cleanupFaults = Object.freeze({}) } = {}
 ) {
   const normalizedDirectory = relativeDirectory === "" ? "" : normalizedRepositoryPath(relativeDirectory, "Directory");
   const parts = normalizedDirectory === "" ? [] : normalizedDirectory.split("/");
@@ -346,11 +402,16 @@ function withVerifiedDirectoryChain(
   let failure;
   try {
     let current = root;
-    opened.push(openVerifiedDirectory(current, "The repository root", openDirectory));
+    opened.push(openVerifiedDirectory(current, "The repository root", openDirectory, cleanupFaults.afterAncestorClose));
     for (const part of parts) {
       current = join(current, part);
       opened.push(
-        openVerifiedDirectory(current, `Directory ${portableRelativePath(relative(root, current))}`, openDirectory)
+        openVerifiedDirectory(
+          current,
+          `Directory ${portableRelativePath(relative(root, current))}`,
+          openDirectory,
+          cleanupFaults.afterAncestorClose
+        )
       );
     }
     result = callback(Object.freeze([...opened]));
@@ -375,20 +436,25 @@ function withVerifiedDirectoryChain(
   } catch (error) {
     failure = error;
   }
-  let closeFailure = false;
-  for (const directory of opened.reverse()) {
-    try {
-      closeSync(directory.descriptor);
-    } catch {
-      closeFailure = true;
-    }
+  const failures = [];
+  if (failure) appendInstructionFailures(failures, failure);
+  for (const directory of [...opened].reverse()) {
+    const closeFailure = closeOwnedDescriptor(
+      directory.descriptor,
+      `${directory.label}'s verified descriptor`,
+      cleanupFaults.afterAncestorClose
+    );
+    if (closeFailure) failures.push(closeFailure);
   }
-  if (failure) throw failure;
-  if (closeFailure) throw instructionError("A verified ancestor directory descriptor did not close.");
+  throwInstructionFailures("The verified directory-chain operation and cleanup did not complete.", failures);
   return result;
 }
 
-function verifyRegularPath(absolutePath, label, { privateFile = false, openFile = openSync } = {}) {
+function verifyRegularPath(
+  absolutePath,
+  label,
+  { privateFile = false, openFile = openSync, cleanupFaults = Object.freeze({}) } = {}
+) {
   const pathSnapshot = lstatSync(absolutePath, { bigint: true });
   if (!pathSnapshot.isFile() || pathSnapshot.isSymbolicLink() || (privateFile && pathSnapshot.nlink !== 1n)) {
     throw instructionError(`${label} must be one ${privateFile ? "private " : ""}regular file.`);
@@ -405,24 +471,30 @@ function verifyRegularPath(absolutePath, label, { privateFile = false, openFile 
   } catch (error) {
     failure = error;
   }
-  try {
-    closeSync(descriptor);
-  } catch {
-    failure ??= instructionError(`${label} could not close its verified descriptor.`);
-  }
-  if (failure) throw failure;
+  const failures = [];
+  if (failure) appendInstructionFailures(failures, failure);
+  const closeFailure = closeOwnedDescriptor(descriptor, `${label}'s verified descriptor`, cleanupFaults.afterFileClose);
+  if (closeFailure) failures.push(closeFailure);
+  throwInstructionFailures(`${label} verification and cleanup did not complete.`, failures);
   return result;
 }
 
 export function readBoundedInstructionFile(
   repositoryRoot,
   relativePath,
-  { maxBytes = SCOPED_FILE_LIMIT_BYTES, openFile = openSync, openDirectory = openSync, beforeAncestorRevalidation } = {}
+  {
+    maxBytes = SCOPED_FILE_LIMIT_BYTES,
+    openFile = openSync,
+    openDirectory = openSync,
+    beforeAncestorRevalidation,
+    cleanupFaults: cleanupFaultValue
+  } = {}
 ) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > TOTAL_INSTRUCTION_LIMIT_BYTES) {
     throw instructionError("The agent-instruction file limit is invalid.");
   }
   const normalizedPath = normalizedRepositoryPath(relativePath, "Agent-instruction path");
+  const cleanupFaults = captureCleanupFaults(cleanupFaultValue);
   const root = realpathSync(repositoryRoot);
   const absolutePath = resolve(root, normalizedPath);
   containedRelativePath(root, absolutePath);
@@ -467,15 +539,18 @@ export function readBoundedInstructionFile(
       } catch (error) {
         failure = error;
       }
-      try {
-        closeSync(descriptor);
-      } catch {
-        failure ??= instructionError(`${relativePath} could not close its verified descriptor.`);
-      }
-      if (failure) throw failure;
+      const failures = [];
+      if (failure) appendInstructionFailures(failures, failure);
+      const closeFailure = closeOwnedDescriptor(
+        descriptor,
+        `${relativePath}'s verified descriptor`,
+        cleanupFaults.afterFileClose
+      );
+      if (closeFailure) failures.push(closeFailure);
+      throwInstructionFailures(`${relativePath} read and cleanup did not complete.`, failures);
       return result;
     },
-    { beforeAncestorRevalidation, openDirectory }
+    { beforeAncestorRevalidation, openDirectory, cleanupFaults }
   );
 }
 
@@ -515,10 +590,8 @@ function canonicalInvariantBody(rule, text) {
     .join("\n");
 }
 
-const nativeDirectoryPathGetter = Object.getOwnPropertyDescriptor(Dir.prototype, "path")?.get;
-
 function claimNativeDirectory(directory) {
-  if (utilTypes.isProxy(directory) || Object.getPrototypeOf(directory) !== Dir.prototype) {
+  if (utilTypes.isProxy(directory) || Object.getPrototypeOf(directory) !== nativeDirectoryPrototype) {
     throw instructionError("An opened instruction-scan directory is not an owned native directory handle.");
   }
   return directory;
@@ -546,11 +619,12 @@ function bindNativeDirectory(directory) {
 }
 
 function readNativeDirectory(directory) {
-  return Dir.prototype.readSync.call(directory);
+  return nativeDirectoryReadSync.call(directory);
 }
 
-function closeNativeDirectory(directory) {
-  return Dir.prototype.closeSync.call(directory);
+function closeNativeDirectory(directory, afterClose) {
+  nativeDirectoryCloseSync.call(directory);
+  afterClose?.();
 }
 
 function validateCanonicalInvariantBodies(path, body, expectedRules) {
@@ -737,7 +811,12 @@ function trackedAgentInstructionPaths(repositoryRoot) {
 export function scanTrackedAgentInstructionPaths(
   repositoryRoot,
   trackedPaths,
-  { maxDirectories = MAX_SCAN_DIRECTORIES, maxEntries = MAX_SCAN_ENTRIES, openDirectory = opendirSync } = {}
+  {
+    maxDirectories = MAX_SCAN_DIRECTORIES,
+    maxEntries = MAX_SCAN_ENTRIES,
+    openDirectory = opendirSync,
+    cleanupFaults: cleanupFaultValue
+  } = {}
 ) {
   if (!Number.isSafeInteger(maxDirectories) || maxDirectories <= 0 || maxDirectories > MAX_SCAN_DIRECTORIES) {
     throw instructionError("The instruction directory-scan bound is invalid.");
@@ -745,6 +824,7 @@ export function scanTrackedAgentInstructionPaths(
   if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0 || maxEntries > MAX_SCAN_ENTRIES) {
     throw instructionError("The instruction entry-scan bound is invalid.");
   }
+  const cleanupFaults = captureCleanupFaults(cleanupFaultValue);
   const root = realpathSync(repositoryRoot);
   const tracked = new Set();
   const directoryPrefixes = new Set();
@@ -883,7 +963,7 @@ export function scanTrackedAgentInstructionPaths(
     let closeFailure;
     if (ownedDirectory) {
       try {
-        closeNativeDirectory(ownedDirectory);
+        closeNativeDirectory(ownedDirectory, cleanupFaults.afterNativeDirectoryClose);
       } catch (error) {
         closeFailure = instructionError("An instruction-scan directory descriptor did not close.", { cause: error });
       }

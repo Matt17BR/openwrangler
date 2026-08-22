@@ -4,8 +4,10 @@ import { createHash } from "node:crypto";
 import {
   Dir,
   copyFileSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   opendirSync,
   readFileSync,
   renameSync,
@@ -476,39 +478,74 @@ test("instruction scans reject overridden native handles and close the owned des
   }
 });
 
+test("instruction scans retain immutable native read and close methods across prototype replacement", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-native-method-capture-"));
+  temporaryRoots.add(root);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  const nativeRead = Dir.prototype.readSync;
+  const nativeClose = Dir.prototype.closeSync;
+  let opened;
+  let hostileReadCalls = 0;
+  let hostileCloseCalls = 0;
+  let result;
+  try {
+    result = scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+      openDirectory(path) {
+        opened = opendirSync(path);
+        Dir.prototype.readSync = function hostileRead() {
+          hostileReadCalls += 1;
+          throw new Error("hostile mutable-prototype read");
+        };
+        Dir.prototype.closeSync = function hostileClose() {
+          hostileCloseCalls += 1;
+          throw new Error("hostile mutable-prototype close");
+        };
+        return opened;
+      }
+    });
+  } finally {
+    Dir.prototype.readSync = nativeRead;
+    Dir.prototype.closeSync = nativeClose;
+  }
+  assert.deepEqual(result, ["AGENTS.md"]);
+  assert.equal(hostileReadCalls, 0, "Mutable prototype reads must not intercept the captured native operation.");
+  assert.equal(hostileCloseCalls, 0, "Mutable prototype closes must not intercept the captured native operation.");
+  assert.throws(
+    () => nativeClose.call(opened),
+    (error) => error?.code === "ERR_DIR_CLOSED",
+    "The captured native close must release the exact owned handle once."
+  );
+});
+
 test("a primary scan failure aggregates the one owned native close failure in stable order", () => {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-close-aggregation-"));
   temporaryRoots.add(root);
   writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
   writeFileSync(join(root, "other.txt"), "other\n", "utf8");
-  const nativeClose = Dir.prototype.closeSync;
   const closeFailure = new Error("injected native directory close failure");
   let opened;
   let closeAttempts = 0;
   let received;
-  Dir.prototype.closeSync = function closeThenFail() {
-    closeAttempts += 1;
-    nativeClose.call(this);
-    throw closeFailure;
-  };
-  try {
-    assert.throws(
-      () =>
-        scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
-          maxEntries: 1,
-          openDirectory(path) {
-            opened = opendirSync(path);
-            return opened;
+  assert.throws(
+    () =>
+      scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+        maxEntries: 1,
+        openDirectory(path) {
+          opened = opendirSync(path);
+          return opened;
+        },
+        cleanupFaults: {
+          afterNativeDirectoryClose() {
+            closeAttempts += 1;
+            throw closeFailure;
           }
-        }),
-      (error) => {
-        received = error;
-        return true;
-      }
-    );
-  } finally {
-    Dir.prototype.closeSync = nativeClose;
-  }
+        }
+      }),
+    (error) => {
+      received = error;
+      return true;
+    }
+  );
   assert.equal(received instanceof AggregateError, true);
   assert.equal(received?.code, "AGENT_INSTRUCTIONS_INVALID");
   assert.equal(received?.errors.length, 2);
@@ -517,10 +554,71 @@ test("a primary scan failure aggregates the one owned native close failure in st
   assert.equal(received.errors[1].cause, closeFailure);
   assert.equal(closeAttempts, 1, "The owned native directory close must be attempted exactly once.");
   assert.throws(
-    () => nativeClose.call(opened),
+    () => Dir.prototype.closeSync.call(opened),
     (error) => error?.code === "ERR_DIR_CLOSED",
     "The injected late close failure must not leave the native directory handle open."
   );
+});
+
+test("a bounded read preserves its primary plus file and every reverse-order ancestor close failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-complete-close-aggregation-"));
+  temporaryRoots.add(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/AGENTS.md"), Buffer.from([0xff]));
+  const fileCloseFailure = new Error("injected file close failure");
+  const sourceCloseFailure = new Error("injected source-directory close failure");
+  const rootCloseFailure = new Error("injected root-directory close failure");
+  const fileDescriptors = [];
+  const ancestorDescriptors = [];
+  const ancestorCloseLabels = [];
+  let received;
+  assert.throws(
+    () =>
+      readBoundedInstructionFile(root, "src/AGENTS.md", {
+        openFile(path, flags) {
+          const descriptor = openSync(path, flags);
+          fileDescriptors.push(descriptor);
+          return descriptor;
+        },
+        openDirectory(path, flags) {
+          const descriptor = openSync(path, flags);
+          ancestorDescriptors.push(descriptor);
+          return descriptor;
+        },
+        cleanupFaults: {
+          afterFileClose() {
+            throw fileCloseFailure;
+          },
+          afterAncestorClose(label) {
+            ancestorCloseLabels.push(label);
+            if (label.includes("Directory src")) throw sourceCloseFailure;
+            throw rootCloseFailure;
+          }
+        }
+      }),
+    (error) => {
+      received = error;
+      return true;
+    }
+  );
+  assert.equal(received instanceof AggregateError, true);
+  assert.equal(received?.code, "AGENT_INSTRUCTIONS_INVALID");
+  assert.equal(received?.errors.length, 4);
+  assert.match(received.errors[0].message, /not strict UTF-8/u);
+  assert.equal(received.errors[1].cause, fileCloseFailure);
+  assert.equal(received.errors[2].cause, sourceCloseFailure);
+  assert.equal(received.errors[3].cause, rootCloseFailure);
+  assert.deepEqual(ancestorCloseLabels, [
+    "Directory src's verified descriptor",
+    "The repository root's verified descriptor"
+  ]);
+  for (const descriptor of [...fileDescriptors, ...ancestorDescriptors]) {
+    assert.throws(
+      () => fstatSync(descriptor),
+      (error) => error?.code === "EBADF",
+      "Every descriptor with an injected post-close failure must still be closed exactly once."
+    );
+  }
 });
 
 test("ancestor replacement fails descriptor-bound discovery and instruction reads", () => {
