@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ColumnSchema, GridPage } from "../shared/protocol";
 import {
   buildGridClipboardPayload,
@@ -6,7 +6,8 @@ import {
   createGridClipboardColumnAccumulator,
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
-  gridClipboardSelectionDescription
+  gridClipboardSelectionDescription,
+  tryAcquireGridClipboardWrite
 } from "../webviews/grid/gridClipboard";
 
 const schema: ColumnSchema[] = [
@@ -35,6 +36,33 @@ const page: GridPage = {
 };
 
 describe("grid clipboard contract", () => {
+  it("retains one shared write owner until its noncancellable adapter settles", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const unsettledWrite = deferred<void>();
+    const writeText = vi.fn(() => unsettledWrite.promise);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      const owner = tryAcquireGridClipboardWrite();
+      expect(owner).toBeDefined();
+      if (!owner) throw new Error("Expected the first clipboard write owner.");
+      const write = owner.write("first payload", () => true);
+
+      expect(tryAcquireGridClipboardWrite()).toBeUndefined();
+      expect(() => owner.release()).toThrow("cannot be released before its write settles");
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      unsettledWrite.resolve();
+      await write;
+      owner.release();
+      const replacement = tryAcquireGridClipboardWrite();
+      expect(replacement).toBeDefined();
+      replacement?.release();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
   it("normalizes an extended selection and describes its inclusive dimensions", () => {
     const selection = extendGridClipboardSelection(
       collapsedGridClipboardSelection("view-a", { row: 5, column: 1 }),
@@ -164,6 +192,38 @@ describe("grid clipboard contract", () => {
         page: numericPage
       })
     ).toMatchObject({ ok: true, payload: { text: "'-42\t-42\t-42\t-42.5" } });
+  });
+
+  it("neutralizes hostile unknown displays in rectangular and whole-column copies", () => {
+    const unknown = {
+      kind: "unknown" as const,
+      raw: { source: "opaque" },
+      display: "=CMD()",
+      isNull: false,
+      isNaN: false
+    };
+    const selection = collapsedGridClipboardSelection("view-a", { row: 0, column: 0 });
+    const unknownPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: ["c:0"],
+      rows: [{ id: "r:0", rowNumber: 0, values: [unknown] }]
+    };
+
+    expect(
+      buildGridClipboardPayload({
+        mode: "range",
+        selection,
+        contextId: "view-a",
+        schema: [schema[0]],
+        page: unknownPage
+      })
+    ).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
+
+    const accumulator = createGridClipboardColumnAccumulator();
+    expect(accumulator.append(unknown)).toBeUndefined();
+    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
   });
 
   it("copies the focused cell independently of the selection anchor", () => {
@@ -368,4 +428,12 @@ describe("grid clipboard contract", () => {
 
 function cell(display: string) {
   return { kind: "string" as const, raw: display, display, isNull: false, isNaN: false };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

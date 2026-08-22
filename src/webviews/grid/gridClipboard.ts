@@ -62,7 +62,7 @@ export function createGridClipboardColumnAccumulator(): GridClipboardColumnAccum
       const separatorBytes = fields.length === 0 ? 0 : 1;
       const plan = planClipboardField(
         cell.display,
-        cell.kind === "string",
+        spreadsheetFormulaCanExecute(cell),
         maximumClipboardBytes - outputBytes - separatorBytes
       );
       if (!plan) {
@@ -242,7 +242,7 @@ export function buildGridClipboardPayload({
     for (const column of columnPositions) {
       const cell = row.values[column];
       if (!cell) return { ok: false, reason: "Wait for every selected cell to load before copying." };
-      if (!appendField(cell.display, cell.kind === "string")) return clipboardByteLimitError();
+      if (!appendField(cell.display, spreadsheetFormulaCanExecute(cell))) return clipboardByteLimitError();
     }
     const outputRow = fields.join("\t");
     outputRows.push(outputRow);
@@ -261,7 +261,49 @@ export function buildGridClipboardPayload({
   };
 }
 
-export async function writeGridClipboardText(text: string): Promise<void> {
+const clipboardFallbackFocusOwners = new WeakSet<Element>();
+let activeGridClipboardWrite: object | undefined;
+
+export interface GridClipboardWriteOwner {
+  release(): void;
+  write(text: string, ownsAttempt: () => boolean): Promise<void>;
+}
+
+export function tryAcquireGridClipboardWrite(): GridClipboardWriteOwner | undefined {
+  if (activeGridClipboardWrite !== undefined) return undefined;
+  const token = {};
+  let released = false;
+  let writeStarted = false;
+  let writeSettled = false;
+  activeGridClipboardWrite = token;
+  return {
+    release(): void {
+      if (released) return;
+      if (writeStarted && !writeSettled) {
+        throw new Error("The clipboard write owner cannot be released before its write settles.");
+      }
+      released = true;
+      if (activeGridClipboardWrite === token) activeGridClipboardWrite = undefined;
+    },
+    async write(text: string, ownsAttempt: () => boolean): Promise<void> {
+      if (released || writeStarted || activeGridClipboardWrite !== token) {
+        throw new Error("The clipboard write owner is no longer current.");
+      }
+      writeStarted = true;
+      try {
+        await writeGridClipboardText(text, ownsAttempt);
+      } finally {
+        writeSettled = true;
+      }
+    }
+  };
+}
+
+export function gridClipboardFallbackOwnsFocus(element: Element | null): boolean {
+  return element !== null && clipboardFallbackFocusOwners.has(element);
+}
+
+async function writeGridClipboardText(text: string, ownsAttempt: () => boolean): Promise<void> {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -275,6 +317,7 @@ export async function writeGridClipboardText(text: string): Promise<void> {
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     throw new Error("Clipboard access is unavailable in this editor.");
   }
+  if (!ownsAttempt()) throw new Error("Clipboard ownership changed before the fallback attempt.");
   const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const input = document.createElement("textarea");
   input.value = text;
@@ -282,14 +325,30 @@ export async function writeGridClipboardText(text: string): Promise<void> {
   input.setAttribute("aria-hidden", "true");
   input.style.position = "fixed";
   input.style.inset = "0 auto auto -10000px";
+  clipboardFallbackFocusOwners.add(input);
   document.body.append(input);
   try {
     input.select();
-    if (!document.execCommand("copy")) throw new Error("Clipboard access is unavailable in this editor.");
+    const copied = document.execCommand("copy");
+    const activeAfterCopy = document.activeElement;
+    if (activeAfterCopy !== input && activeAfterCopy !== activeElement) {
+      throw new Error("Clipboard focus ownership changed during the fallback attempt.");
+    }
+    if (!ownsAttempt()) throw new Error("Clipboard ownership changed during the fallback attempt.");
+    if (!copied) throw new Error("Clipboard access is unavailable in this editor.");
   } finally {
-    input.remove();
-    activeElement?.focus({ preventScroll: true });
+    const inputRetainsFocus = document.activeElement === input;
+    try {
+      if (inputRetainsFocus && ownsAttempt()) activeElement?.focus({ preventScroll: true });
+    } finally {
+      input.remove();
+      clipboardFallbackFocusOwners.delete(input);
+    }
   }
+}
+
+function spreadsheetFormulaCanExecute(cell: CellValue): boolean {
+  return cell.kind === "string" || cell.kind === "unknown";
 }
 
 function planClipboardField(
