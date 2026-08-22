@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 
 export interface DependencyInstallLifecycleFixture {
@@ -8,6 +9,19 @@ export interface DependencyInstallLifecycleFixture {
   readonly started: string;
   readonly release: string;
   readonly completed: string;
+  readonly parentPip: DependencyInstallParentPipAuthority;
+}
+
+export interface DependencyInstallLifecycleLifetime {
+  readonly directory: string;
+  readonly lifecycle: DependencyInstallLifecycleFixture;
+  preserveDirectory(): void;
+}
+
+export interface DependencyInstallLifecycleLifetimeDependencies {
+  readonly makeTemporaryDirectory: (prefix: string) => string;
+  readonly createLifecycle: (directory: string, dependencyPython: string) => DependencyInstallLifecycleFixture;
+  readonly cleanupTemporaryDirectory: (directory: string) => void;
 }
 
 export interface DependencyInstallLifecycleSources {
@@ -16,6 +30,7 @@ export interface DependencyInstallLifecycleSources {
 }
 
 export interface DependencyInstallParentPipAuthority {
+  readonly executable: string;
   readonly packagePath: string;
   readonly packagingRequirementsPath: string;
   readonly packagingSpecifiersPath: string;
@@ -83,7 +98,7 @@ export function validateDependencyInstallParentPipAuthority(
   receipt: DependencyInstallParentPipReceipt,
   readStatus: (candidate: string) => DirectoryStatus = lstatSync
 ): DependencyInstallParentPipAuthority {
-  requireAbsoluteReceiptPath(receipt.executable, "The lifecycle fixture parent interpreter");
+  const executable = requireAbsoluteReceiptPath(receipt.executable, "The lifecycle fixture parent interpreter");
   const pipImportRoot = requireAbsoluteReceiptPath(
     receipt.pipImportRoot,
     "The lifecycle fixture parent pip import root"
@@ -145,6 +160,7 @@ export function validateDependencyInstallParentPipAuthority(
   );
 
   return {
+    executable,
     packagePath,
     packagingRequirementsPath,
     packagingSpecifiersPath,
@@ -428,5 +444,55 @@ export function createDependencyInstallLifecyclePython(
     true,
     "The lifecycle-test environment must import only its owned fake pip package."
   );
-  return { executable, started, release, completed };
+  return { executable, started, release, completed, parentPip };
+}
+
+function dependencyInstallLifecycleLifetimeDependencies(): DependencyInstallLifecycleLifetimeDependencies {
+  return {
+    makeTemporaryDirectory: mkdtempSync,
+    createLifecycle: createDependencyInstallLifecyclePython,
+    cleanupTemporaryDirectory: (directory) => rmSync(directory, { force: true, recursive: true })
+  };
+}
+
+export async function withDependencyInstallLifecyclePython<T>(
+  dependencyPython: string,
+  run: (lifetime: DependencyInstallLifecycleLifetime) => Promise<T>,
+  dependencyOverrides: Partial<DependencyInstallLifecycleLifetimeDependencies> = {}
+): Promise<T> {
+  const dependencies = { ...dependencyInstallLifecycleLifetimeDependencies(), ...dependencyOverrides };
+  let directory: string | undefined;
+  let preserveDirectory = false;
+  let outcome:
+    { readonly kind: "fulfilled"; readonly value: T } | { readonly kind: "rejected"; readonly error: unknown };
+  try {
+    directory = dependencies.makeTemporaryDirectory(path.join(tmpdir(), "openwrangler-dependency-shutdown-"));
+    const lifecycle = dependencies.createLifecycle(directory, dependencyPython);
+    const value = await run({
+      directory,
+      lifecycle,
+      preserveDirectory: () => {
+        preserveDirectory = true;
+      }
+    });
+    outcome = { kind: "fulfilled", value };
+  } catch (error) {
+    outcome = { kind: "rejected", error };
+  }
+
+  if (directory !== undefined && !preserveDirectory) {
+    try {
+      dependencies.cleanupTemporaryDirectory(directory);
+    } catch (cleanupFailure) {
+      if (outcome.kind === "rejected") {
+        throw new AggregateError(
+          [outcome.error, cleanupFailure],
+          "Dependency-install lifecycle setup and owned-directory cleanup both failed."
+        );
+      }
+      throw cleanupFailure;
+    }
+  }
+  if (outcome.kind === "rejected") throw outcome.error;
+  return outcome.value;
 }
