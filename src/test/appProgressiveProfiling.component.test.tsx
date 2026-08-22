@@ -857,7 +857,12 @@ describe("App progressive profiling and view correlation", () => {
     const confirmedContext = setViewContextMessages().at(-1)?.viewContextId;
 
     postMessage.mockClear();
-    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
     expect(onlyRequest("undoStep")).toBeDefined();
     dispatch({
       kind: "error",
@@ -876,7 +881,12 @@ describe("App progressive profiling and view correlation", () => {
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(confirmedContext);
 
     postMessage.mockClear();
-    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
     expect(onlyRequest("undoStep")).toBeDefined();
     dispatch({ kind: "cancelled", targetRequestId: "mutation" });
 
@@ -1162,7 +1172,12 @@ describe("App progressive profiling and view correlation", () => {
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(2));
 
     postMessage.mockClear();
-    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    });
     expect(onlyRequest("undoStep")).toBeDefined();
     expect(screen.queryByText(/Keep this exact-stats warning/)).not.toBeInTheDocument();
     dispatch({

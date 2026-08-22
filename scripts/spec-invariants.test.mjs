@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { link, mkdtemp, mkdir, open, opendir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdtemp,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";

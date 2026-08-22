@@ -4643,7 +4643,12 @@ describe("App file import options", () => {
     await screen.findByRole("cell", { name: "Milan" });
 
     webviewPostMessage.mockClear();
-    dispatchAppMessage({ kind: "editorAction", action: "undoStep" });
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "undoStep",
+      expectedSessionId: appliedMetadata.sessionId,
+      expectedRevision: appliedMetadata.revision
+    });
     expect(webviewPostMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "runtimeRequest",

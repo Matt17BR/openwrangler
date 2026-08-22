@@ -7002,7 +7002,13 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
   const confirmedView = structuredClone(beforeSelection.viewState);
   const confirmedCode = beforeSelection.code;
 
-  await vscode.commands.executeCommand("openWrangler.selectStep", "packaged-score");
+  await vscode.commands.executeCommand("openWrangler.selectStep", {
+    cleaningStepHandle: {
+      sessionId: confirmedMetadata.sessionId,
+      revision: confirmedMetadata.revision,
+      stepId: "packaged-score"
+    }
+  });
   await waitFor(
     () => testing.activeSession()?.stepInspection?.stepId === "packaged-score",
     30_000,

@@ -40,10 +40,10 @@ describe("native state and presentation commands", () => {
       if (command !== "setContext" || typeof key !== "string" || typeof value !== "boolean") return undefined;
       contextWriteCount += 1;
       if (contextWriteCount === 1) await firstWrite.promise;
-      if (contextWriteCount === 8) await finalRollback.promise;
+      if (contextWriteCount === 18) await finalRollback.promise;
       if (key === "openWrangler.canInsertNotebookCode" && value) throw new Error("context write rejected");
       contextValues.set(key, value);
-      if (contextWriteCount === 8) finalRollbackApplied.resolve();
+      if (contextWriteCount === 18) finalRollbackApplied.resolve();
       return undefined;
     };
     nativeMocks.executeCommand.mockImplementation(executeContextCommand as () => Promise<undefined>);
@@ -61,7 +61,7 @@ describe("native state and presentation commands", () => {
       expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(1);
 
       firstWrite.resolve();
-      await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(8));
+      await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(18));
       expect(contextValues.get("openWrangler.canInsertRDocumentCode")).toBe(true);
       finalRollback.resolve();
       await finalRollbackApplied.promise;
@@ -69,16 +69,31 @@ describe("native state and presentation commands", () => {
       expect(nativeMocks.executeCommand.mock.calls).toEqual([
         ["setContext", "openWrangler.hasDraft", true],
         ["setContext", "openWrangler.canChangePlan", false],
+        ["setContext", "openWrangler.canInspectCleaningStep", true],
+        ["setContext", "openWrangler.canEditCleaningStep", false],
+        ["setContext", "openWrangler.canDeleteCleaningStep", false],
+        ["setContext", "openWrangler.canUndoCleaningStep", false],
+        ["setContext", "openWrangler.canReorderCleaningStep", false],
         ["setContext", "openWrangler.canInsertNotebookCode", true],
         ["setContext", "openWrangler.canInsertRDocumentCode", true],
         ["setContext", "openWrangler.hasDraft", false],
         ["setContext", "openWrangler.canChangePlan", false],
+        ["setContext", "openWrangler.canInspectCleaningStep", false],
+        ["setContext", "openWrangler.canEditCleaningStep", false],
+        ["setContext", "openWrangler.canDeleteCleaningStep", false],
+        ["setContext", "openWrangler.canUndoCleaningStep", false],
+        ["setContext", "openWrangler.canReorderCleaningStep", false],
         ["setContext", "openWrangler.canInsertNotebookCode", false],
         ["setContext", "openWrangler.canInsertRDocumentCode", false]
       ]);
       expect(Object.fromEntries(contextValues)).toEqual({
         "openWrangler.hasDraft": false,
         "openWrangler.canChangePlan": false,
+        "openWrangler.canInspectCleaningStep": false,
+        "openWrangler.canEditCleaningStep": false,
+        "openWrangler.canDeleteCleaningStep": false,
+        "openWrangler.canUndoCleaningStep": false,
+        "openWrangler.canReorderCleaningStep": false,
         "openWrangler.canInsertNotebookCode": false,
         "openWrangler.canInsertRDocumentCode": false
       });
@@ -120,15 +135,25 @@ describe("native state and presentation commands", () => {
     register(initial);
     expect(nativeMocks.executeCommand).toHaveBeenCalledOnce();
     firstWrite.resolve();
-    await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(8));
+    await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(18));
 
     expect(nativeMocks.executeCommand.mock.calls).toEqual([
       ["setContext", "openWrangler.hasDraft", true],
       ["setContext", "openWrangler.canChangePlan", false],
+      ["setContext", "openWrangler.canInspectCleaningStep", true],
+      ["setContext", "openWrangler.canEditCleaningStep", false],
+      ["setContext", "openWrangler.canDeleteCleaningStep", false],
+      ["setContext", "openWrangler.canUndoCleaningStep", false],
+      ["setContext", "openWrangler.canReorderCleaningStep", false],
       ["setContext", "openWrangler.canInsertNotebookCode", true],
       ["setContext", "openWrangler.canInsertRDocumentCode", true],
       ["setContext", "openWrangler.hasDraft", false],
       ["setContext", "openWrangler.canChangePlan", true],
+      ["setContext", "openWrangler.canInspectCleaningStep", true],
+      ["setContext", "openWrangler.canEditCleaningStep", true],
+      ["setContext", "openWrangler.canDeleteCleaningStep", true],
+      ["setContext", "openWrangler.canUndoCleaningStep", true],
+      ["setContext", "openWrangler.canReorderCleaningStep", false],
       ["setContext", "openWrangler.canInsertNotebookCode", false],
       ["setContext", "openWrangler.canInsertRDocumentCode", false]
     ]);
@@ -583,6 +608,8 @@ describe("native state and presentation commands", () => {
     nativeMocks.cleaningHistoryCapabilityOverrides.set("undo", false);
     nativeMocks.cleaningHistoryCapabilityOverrides.set("reorder", false);
     register(noDraftSnapshot());
+
+    await vi.waitFor(() => expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(9));
 
     const context = (key: string) =>
       ([...nativeMocks.executeCommand.mock.calls] as unknown[][])

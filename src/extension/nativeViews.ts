@@ -368,7 +368,17 @@ const NATIVE_PLAN_CONTEXT_KEYS = [
   "openWrangler.canInsertNotebookCode",
   "openWrangler.canInsertRDocumentCode"
 ] as const;
-type NativePlanContextValues = readonly [boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean];
+type NativePlanContextValues = readonly [
+  boolean,
+  boolean,
+  boolean,
+  boolean,
+  boolean,
+  boolean,
+  boolean,
+  boolean,
+  boolean
+];
 const CLEARED_NATIVE_PLAN_CONTEXTS: NativePlanContextValues = [
   false,
   false,

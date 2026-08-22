@@ -1691,7 +1691,12 @@ async function verifyColumnHeaderControlLayout(browser) {
             }
           }
           if (control.classList.contains("columnResizeHandle")) {
-            await new Promise((resolveTransition) => setTimeout(resolveTransition, 100));
+            const settlementDeadline = performance.now() + 500;
+            let settledFrames = 0;
+            while (settledFrames < 2 && performance.now() < settlementDeadline) {
+              await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+              settledFrames = getComputedStyle(control).opacity === "1" ? settledFrames + 1 : 0;
+            }
             const gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
             const opacity = getComputedStyle(control).opacity;
             if (!Number.isFinite(gripperWidth) || gripperWidth <= 0 || gripperWidth >= target || opacity !== "1") {
