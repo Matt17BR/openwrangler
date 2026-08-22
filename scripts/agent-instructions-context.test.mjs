@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  Dir,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -405,6 +406,123 @@ test("instruction scans accept native handles from an honest opener but reject f
   }
 });
 
+test("instruction scans reject proxy handles without claiming their caller-owned native target", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-proxy-directory-"));
+  temporaryRoots.add(root);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  const target = opendirSync(root);
+  let proxyTraps = 0;
+  const proxy = new Proxy(target, {
+    getOwnPropertyDescriptor() {
+      proxyTraps += 1;
+      return undefined;
+    },
+    getPrototypeOf() {
+      proxyTraps += 1;
+      return Dir.prototype;
+    }
+  });
+  try {
+    assert.throws(
+      () =>
+        scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+          openDirectory() {
+            return proxy;
+          }
+        }),
+      /not an owned native directory handle/u
+    );
+    assert.equal(proxyTraps, 0, "Proxy traps must not run while an unowned directory candidate is rejected.");
+  } finally {
+    Dir.prototype.closeSync.call(target);
+  }
+  assert.throws(
+    () => Dir.prototype.closeSync.call(target),
+    (error) => error?.code === "ERR_DIR_CLOSED",
+    "The rejected proxy target remains caller-owned and is closed exactly once by the caller."
+  );
+});
+
+test("instruction scans reject overridden native handles and close the owned descriptor through the native method", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-overridden-directory-"));
+  temporaryRoots.add(root);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  for (const method of ["readSync", "closeSync"]) {
+    let opened;
+    let overrideCalls = 0;
+    assert.throws(
+      () =>
+        scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+          openDirectory(path) {
+            opened = opendirSync(path);
+            Object.defineProperty(opened, method, {
+              configurable: true,
+              value() {
+                overrideCalls += 1;
+                throw new Error(`hostile ${method} override`);
+              }
+            });
+            return opened;
+          }
+        }),
+      /overrides native directory methods/u
+    );
+    assert.equal(overrideCalls, 0, `The rejected native-handle ${method} override must never execute.`);
+    assert.throws(
+      () => Dir.prototype.closeSync.call(opened),
+      (error) => error?.code === "ERR_DIR_CLOSED",
+      `The rejected ${method}-overridden native handle must already be closed by its native owner.`
+    );
+  }
+});
+
+test("a primary scan failure aggregates the one owned native close failure in stable order", () => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-agent-close-aggregation-"));
+  temporaryRoots.add(root);
+  writeFileSync(join(root, "AGENTS.md"), "owned\n", "utf8");
+  writeFileSync(join(root, "other.txt"), "other\n", "utf8");
+  const nativeClose = Dir.prototype.closeSync;
+  const closeFailure = new Error("injected native directory close failure");
+  let opened;
+  let closeAttempts = 0;
+  let received;
+  Dir.prototype.closeSync = function closeThenFail() {
+    closeAttempts += 1;
+    nativeClose.call(this);
+    throw closeFailure;
+  };
+  try {
+    assert.throws(
+      () =>
+        scanTrackedAgentInstructionPaths(root, ["AGENTS.md"], {
+          maxEntries: 1,
+          openDirectory(path) {
+            opened = opendirSync(path);
+            return opened;
+          }
+        }),
+      (error) => {
+        received = error;
+        return true;
+      }
+    );
+  } finally {
+    Dir.prototype.closeSync = nativeClose;
+  }
+  assert.equal(received instanceof AggregateError, true);
+  assert.equal(received?.code, "AGENT_INSTRUCTIONS_INVALID");
+  assert.equal(received?.errors.length, 2);
+  assert.match(received.errors[0].message, /entry bound before retention/u);
+  assert.match(received.errors[1].message, /descriptor did not close/u);
+  assert.equal(received.errors[1].cause, closeFailure);
+  assert.equal(closeAttempts, 1, "The owned native directory close must be attempted exactly once.");
+  assert.throws(
+    () => nativeClose.call(opened),
+    (error) => error?.code === "ERR_DIR_CLOSED",
+    "The injected late close failure must not leave the native directory handle open."
+  );
+});
+
 test("ancestor replacement fails descriptor-bound discovery and instruction reads", () => {
   const discoveryRoot = temporaryInstructionTree();
   assert.throws(
@@ -480,9 +598,16 @@ test("canonical rule seals preserve Markdown-significant indentation, nesting, q
       mutate: (text) => text.replace("    Grouped targets and keys", "    > Grouped targets and keys")
     },
     {
-      path: "src/shared/AGENTS.md",
-      mutate: (text) =>
-        text.replace("    Grouped targets and keys", "    ```text\n    Grouped targets and keys\n    ```")
+      path: "scripts/AGENTS.md",
+      mutate: (text) => text.replace("npm run check:pr\nnpm test", "npm   run check:pr\nnpm test"),
+      pattern: /canonical active-policy structure/u,
+      label: "CANONICAL_FENCE_WHITESPACE_ACCEPTED"
+    },
+    {
+      path: "scripts/AGENTS.md",
+      mutate: (text) => text.replace("npm run check:pr\nnpm test", "npm run check:pr\n\nnpm test"),
+      pattern: /canonical active-policy structure/u,
+      label: "CANONICAL_FENCE_STRUCTURE_ACCEPTED"
     }
   ];
   for (const change of changes) {
@@ -494,8 +619,8 @@ test("canonical rule seals preserve Markdown-significant indentation, nesting, q
     writeFileSync(instructionPath, reseal(change.path, changed), "utf8");
     assert.throws(
       () => validateAgentInstructionContext(root),
-      /exact invariant number|independently sealed canonical body/u,
-      change.path === "AGENTS.md" ? "INDENTED_RULE_ACCEPTED" : "MARKDOWN_STRUCTURE_ACCEPTED"
+      change.pattern ?? /exact invariant number|independently sealed canonical body/u,
+      change.label ?? (change.path === "AGENTS.md" ? "INDENTED_RULE_ACCEPTED" : "MARKDOWN_STRUCTURE_ACCEPTED")
     );
   }
 

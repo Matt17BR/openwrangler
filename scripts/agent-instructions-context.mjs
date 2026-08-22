@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TextDecoder } from "node:util";
+import { TextDecoder, types as utilTypes } from "node:util";
 
 const ROOT_FILE_LIMIT_BYTES = 12 * 1_024;
 const SCOPED_FILE_LIMIT_BYTES = 24 * 1_024;
@@ -236,8 +236,14 @@ export const REPRESENTATIVE_CONTEXTS = Object.freeze([
   })
 ]);
 
-function instructionError(message) {
-  const error = new Error(message);
+function instructionError(message, options) {
+  const error = new Error(message, options);
+  error.code = "AGENT_INSTRUCTIONS_INVALID";
+  return error;
+}
+
+function instructionAggregateError(message, errors) {
+  const error = new AggregateError(errors, message);
   error.code = "AGENT_INSTRUCTIONS_INVALID";
   return error;
 }
@@ -511,9 +517,21 @@ function canonicalInvariantBody(rule, text) {
 
 const nativeDirectoryPathGetter = Object.getOwnPropertyDescriptor(Dir.prototype, "path")?.get;
 
-function bindNativeDirectory(directory) {
-  if (Object.getPrototypeOf(directory) !== Dir.prototype || typeof nativeDirectoryPathGetter !== "function") {
+function claimNativeDirectory(directory) {
+  if (utilTypes.isProxy(directory) || Object.getPrototypeOf(directory) !== Dir.prototype) {
     throw instructionError("An opened instruction-scan directory is not an owned native directory handle.");
+  }
+  return directory;
+}
+
+function bindNativeDirectory(directory) {
+  if (
+    typeof nativeDirectoryPathGetter !== "function" ||
+    Object.hasOwn(directory, "path") ||
+    Object.hasOwn(directory, "readSync") ||
+    Object.hasOwn(directory, "closeSync")
+  ) {
+    throw instructionError("An opened instruction-scan directory overrides native directory methods.");
   }
   let path;
   try {
@@ -790,10 +808,12 @@ export function scanTrackedAgentInstructionPaths(
       throw instructionError("A queued tracked-scope directory changed identity before pathname reopen.");
     }
     const openedDirectory = openDirectory(current.path);
+    let ownedDirectory;
     let nativeDirectory;
     let failure;
     try {
-      nativeDirectory = bindNativeDirectory(openedDirectory);
+      ownedDirectory = claimNativeDirectory(openedDirectory);
+      nativeDirectory = bindNativeDirectory(ownedDirectory);
       let handleSnapshot;
       try {
         const handlePath = realpathSync(nativeDirectory.path);
@@ -860,14 +880,22 @@ export function scanTrackedAgentInstructionPaths(
     } catch (error) {
       failure = error;
     }
-    if (nativeDirectory) {
+    let closeFailure;
+    if (ownedDirectory) {
       try {
-        closeNativeDirectory(nativeDirectory.directory);
-      } catch {
-        failure ??= instructionError("An instruction-scan directory descriptor did not close.");
+        closeNativeDirectory(ownedDirectory);
+      } catch (error) {
+        closeFailure = instructionError("An instruction-scan directory descriptor did not close.", { cause: error });
       }
     }
+    if (failure && closeFailure) {
+      throw instructionAggregateError(
+        "An instruction-scan directory failed and its owned descriptor also did not close.",
+        [failure, closeFailure]
+      );
+    }
     if (failure) throw failure;
+    if (closeFailure) throw closeFailure;
   }
   found.sort();
   const expected = [...tracked].sort();
