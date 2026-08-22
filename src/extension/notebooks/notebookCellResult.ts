@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 import * as vscode from "vscode";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type { SessionSource } from "../../shared/protocol";
@@ -65,6 +66,11 @@ interface InlineRawOutputItemsSnapshot {
   readonly output: vscode.NotebookCellOutput;
   readonly itemArray: readonly vscode.NotebookCellOutputItem[];
   readonly items: readonly vscode.NotebookCellOutputItem[];
+}
+
+interface InlineRawOutputDataSnapshot extends InlineRawOutputMatch {
+  readonly data: Uint8Array;
+  readonly byteLength: number;
 }
 
 export interface NotebookCellResultTrackerDiagnostics {
@@ -858,6 +864,7 @@ function findInlineRawOutputMatch(
   let match: InlineRawOutputMatch | undefined;
   const itemSnapshots: InlineRawOutputItemsSnapshot[] = [];
   const itemIdentities = new Set<vscode.NotebookCellOutputItem>();
+  const dataSnapshots: InlineRawOutputDataSnapshot[] = [];
   try {
     for (let cellIndex = 0; cellIndex < snapshot.cells.length; cellIndex += 1) {
       const cellSnapshot = snapshot.cells[cellIndex];
@@ -893,14 +900,12 @@ function findInlineRawOutputMatch(
           const item = itemSnapshot.items[itemIndex];
           if (!item || item.mime !== "text/html") continue;
           const data = item.data;
-          if (!ArrayBuffer.isView(data) || data.BYTES_PER_ELEMENT !== 1) return undefined;
-          const byteLength = data.byteLength;
+          const byteLength = boundedOneByteViewLength(data);
+          if (byteLength === undefined) return undefined;
           if (byteLength !== candidate.byteLength) continue;
           if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - byteLength) return undefined;
           scannedBytes += byteLength;
-          if (!matchesInlineUpgradeBytes(data, byteLength, candidate)) continue;
-          if (match) return undefined;
-          match = { cell: cellSnapshot.cell, output, item };
+          dataSnapshots.push({ cell: cellSnapshot.cell, output, item, data, byteLength });
         }
       }
     }
@@ -910,6 +915,17 @@ function findInlineRawOutputMatch(
       !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)
     ) {
       return undefined;
+    }
+    for (const dataSnapshot of dataSnapshots) {
+      const currentBytes = copyCurrentBoundedBytes(dataSnapshot.data, dataSnapshot.byteLength);
+      if (!currentBytes) return undefined;
+      if (!matchesInlineUpgradeBytes(currentBytes, currentBytes.byteLength, candidate)) continue;
+      if (match) return undefined;
+      match = {
+        cell: dataSnapshot.cell,
+        output: dataSnapshot.output,
+        item: dataSnapshot.item
+      };
     }
   } catch {
     return undefined;
@@ -1039,7 +1055,7 @@ function hasExactIndexedReferences<T extends object>(values: readonly T[], expec
 }
 
 function denseArrayLength(values: readonly object[]): number | undefined {
-  if (!Array.isArray(values)) return undefined;
+  if (!Array.isArray(values) || nodeTypes.isProxy(values)) return undefined;
   const descriptor = Object.getOwnPropertyDescriptor(values, "length");
   const length = descriptor && "value" in descriptor ? descriptor.value : undefined;
   return Number.isSafeInteger(length) && length >= 0 ? length : undefined;
@@ -1050,6 +1066,59 @@ function denseOwnIndexedReference<T extends object>(values: readonly T[], index:
   if (!descriptor || !("value" in descriptor)) return undefined;
   const value: unknown = descriptor.value;
   return (typeof value === "object" && value !== null) || typeof value === "function" ? (value as T) : undefined;
+}
+
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")?.get;
+const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength")?.get;
+const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset")?.get;
+const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "length")?.get;
+const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+
+function boundedOneByteViewLength(value: unknown): number | undefined {
+  if (
+    !ArrayBuffer.isView(value) ||
+    !typedArrayBufferGetter ||
+    !typedArrayByteLengthGetter ||
+    !typedArrayByteOffsetGetter ||
+    !typedArrayLengthGetter ||
+    !arrayBufferByteLengthGetter
+  ) {
+    return undefined;
+  }
+  try {
+    const buffer: unknown = Reflect.apply(typedArrayBufferGetter, value, []);
+    const byteLength: unknown = Reflect.apply(typedArrayByteLengthGetter, value, []);
+    const byteOffset: unknown = Reflect.apply(typedArrayByteOffsetGetter, value, []);
+    const length: unknown = Reflect.apply(typedArrayLengthGetter, value, []);
+    const bufferByteLength: unknown = Reflect.apply(arrayBufferByteLengthGetter, buffer, []);
+    if (
+      !Number.isSafeInteger(byteLength) ||
+      !Number.isSafeInteger(byteOffset) ||
+      !Number.isSafeInteger(length) ||
+      !Number.isSafeInteger(bufferByteLength) ||
+      (byteLength as number) < 0 ||
+      (byteOffset as number) < 0 ||
+      length !== byteLength ||
+      (byteOffset as number) > (bufferByteLength as number) - (byteLength as number)
+    ) {
+      return undefined;
+    }
+    return byteLength as number;
+  } catch {
+    return undefined;
+  }
+}
+
+function copyCurrentBoundedBytes(data: Uint8Array, expectedByteLength: number): Uint8Array | undefined {
+  if (boundedOneByteViewLength(data) !== expectedByteLength) return undefined;
+  const copy = new Uint8Array(expectedByteLength);
+  try {
+    Uint8Array.prototype.set.call(copy, data);
+  } catch {
+    return undefined;
+  }
+  return boundedOneByteViewLength(data) === expectedByteLength ? copy : undefined;
 }
 
 function matchesInlineRawOutput(
