@@ -74,9 +74,7 @@ const output = await prettier.format(
     "",
     "## Notebook MIME types",
     "",
-    ...packageJson.contributes.notebookRenderer.flatMap((renderer) =>
-      renderer.mimeTypes.map((mimeType) => `- \`${mimeType}\``)
-    ),
+    ...notebookMimeTypeRows(packageJson.contributes.notebookRenderer),
     ""
   ].join("\n")}\n`,
   { parser: "markdown" }
@@ -97,6 +95,38 @@ function messageKinds(unionName) {
     const definition = schema.definitions[name];
     const object = definition.allOf?.find((part) => part.properties?.kind) ?? definition;
     return { name, kind: object.properties.kind.const };
+  });
+}
+
+function notebookMimeTypeRows(renderers) {
+  if (!Array.isArray(renderers)) throw new Error("Notebook renderer contributions must be an array.");
+  return renderers.flatMap((renderer) => {
+    if (!renderer || typeof renderer !== "object" || Array.isArray(renderer)) {
+      throw new Error("Notebook renderer contributions must be objects.");
+    }
+    if (Array.isArray(renderer.mimeTypes)) {
+      if (
+        typeof renderer.entrypoint !== "string" ||
+        renderer.mimeTypes.length === 0 ||
+        renderer.mimeTypes.some((mimeType) => typeof mimeType !== "string" || mimeType.length === 0)
+      ) {
+        throw new Error("Direct notebook renderer contributions must declare an entrypoint and MIME types.");
+      }
+      return renderer.mimeTypes.map((mimeType) => `- \`${mimeType}\``);
+    }
+    const entrypoint = renderer.entrypoint;
+    if (
+      !Object.hasOwn(renderer, "mimeTypes") &&
+      entrypoint &&
+      typeof entrypoint === "object" &&
+      !Array.isArray(entrypoint) &&
+      Object.keys(entrypoint).length === 2 &&
+      entrypoint.extends === "vscode.builtin-renderer" &&
+      entrypoint.path === "./media/notebookRenderer.js"
+    ) {
+      return [];
+    }
+    throw new Error("Notebook renderer contributions must be direct renderers or the validated renderer extension.");
   });
 }
 

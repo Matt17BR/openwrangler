@@ -1087,11 +1087,11 @@ function boundedOneByteViewLength(value: unknown): number | undefined {
     return undefined;
   }
   try {
-    const buffer: unknown = Reflect.apply(typedArrayBufferGetter, value, []);
-    const byteLength: unknown = Reflect.apply(typedArrayByteLengthGetter, value, []);
-    const byteOffset: unknown = Reflect.apply(typedArrayByteOffsetGetter, value, []);
-    const length: unknown = Reflect.apply(typedArrayLengthGetter, value, []);
-    const bufferByteLength: unknown = Reflect.apply(arrayBufferByteLengthGetter, buffer, []);
+    const buffer: unknown = typedArrayBufferGetter.call(value);
+    const byteLength: unknown = typedArrayByteLengthGetter.call(value);
+    const byteOffset: unknown = typedArrayByteOffsetGetter.call(value);
+    const length: unknown = typedArrayLengthGetter.call(value);
+    const bufferByteLength: unknown = arrayBufferByteLengthGetter.call(buffer);
     if (
       !Number.isSafeInteger(byteLength) ||
       !Number.isSafeInteger(byteOffset) ||
