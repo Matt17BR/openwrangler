@@ -179,6 +179,110 @@ function pySparkPipBootstrapBody(launch) {
   return JSON.parse(wrapper.slice(5, -1));
 }
 
+const PYSPARK_PRIMARY_IDENTITY_RECEIPT = "__OW_PRIMARY_IDENTITY__=same;errno=5";
+const PYSPARK_CLEANUP_FAILURE_RECEIPT =
+  "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception (type=OSError errno=9).";
+
+function assertOptionalPythonTracebackExcerpt(lines, expectedSource, label) {
+  assert.ok(lines.length <= 2, `${label} must contain at most one source excerpt and one position marker`);
+  if (lines.length === 0) return;
+  assert.equal(lines[0].trim(), expectedSource, `${label} source excerpt`);
+  if (lines.length === 2) assert.match(lines[1].trim(), /^[~^]+$/u, `${label} position marker`);
+}
+
+function assertPySparkPrimaryCleanupTracebackReceipt(stderr, options) {
+  assert.ok(Buffer.byteLength(stderr, "utf8") <= options.maxStderrBytes, options.name);
+  assert.doesNotMatch(stderr, options.unexpected);
+  const normalized = stderr.replaceAll("\r\n", "\n");
+  assert.equal(normalized.endsWith("\n"), true, `${options.name} terminal newline`);
+  const lines = normalized.slice(0, -1).split("\n");
+  assert.equal(lines[0], PYSPARK_PRIMARY_IDENTITY_RECEIPT, `${options.name} primary identity`);
+  assert.equal(
+    lines.filter((line) => line.startsWith("__OW_PRIMARY_IDENTITY__=")).length,
+    1,
+    `${options.name} primary identity cardinality`
+  );
+  assert.equal(lines[1], "Traceback (most recent call last):", `${options.name} traceback header`);
+  assert.equal(
+    lines.filter((line) => line === "Traceback (most recent call last):").length,
+    1,
+    `${options.name} traceback cardinality`
+  );
+  assert.equal(lines.at(-2), options.primaryText, `${options.name} terminal primary failure`);
+  assert.equal(lines.at(-1), PYSPARK_CLEANUP_FAILURE_RECEIPT, `${options.name} cleanup failure`);
+
+  const tracebackLines = lines.slice(2, -2);
+  const framePattern = /^ {2}File "<string>", line ([1-9]\d*), in (.+)$/u;
+  const frames = tracebackLines.flatMap((line, index) => {
+    const match = framePattern.exec(line);
+    return match === null ? [] : [{ functionName: match[2], index, line: Number.parseInt(match[1], 10) }];
+  });
+  assert.equal(frames.length, 2, `${options.name} exact traceback frame count`);
+  assert.deepEqual(
+    frames.map((frame) => frame.functionName),
+    ["<module>", options.wrapperName],
+    `${options.name} exact traceback frame owners`
+  );
+  assert.ok(frames[0].line > frames[1].line, `${options.name} call-site and wrapper line order`);
+  assertOptionalPythonTracebackExcerpt(
+    tracebackLines.slice(frames[0].index + 1, frames[1].index),
+    "os.close(raw_descriptor)",
+    `${options.name} call site`
+  );
+  assertOptionalPythonTracebackExcerpt(
+    tracebackLines.slice(frames[1].index + 1),
+    "raise _ow_primary",
+    `${options.name} wrapper`
+  );
+}
+
+function withoutOptionalPythonTracebackExcerpts(stderr) {
+  const lines = stderr.replaceAll("\r\n", "\n").split("\n");
+  const retained = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed !== "os.close(raw_descriptor)" && trimmed !== "raise _ow_primary") {
+      retained.push(lines[index]);
+      continue;
+    }
+    if (/^[~^]+$/u.test(lines[index + 1]?.trim() ?? "")) index += 1;
+  }
+  return retained.join("\n");
+}
+
+function assertPySparkTracebackReceiptMutationControls(stderr, options) {
+  const excerptFree = withoutOptionalPythonTracebackExcerpts(stderr);
+  assert.doesNotMatch(excerptFree, /os\.close\(raw_descriptor\)|raise _ow_primary/u);
+  assertPySparkPrimaryCleanupTracebackReceipt(excerptFree, options);
+
+  const wrapperFrame = new RegExp(`^ {2}File "<string>", line [1-9]\\d*, in ${options.wrapperName}\\n`, "mu");
+  const reversedCleanup = stderr
+    .replace(`${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n`, "")
+    .replace(`${options.primaryText}\n`, `${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n${options.primaryText}\n`);
+  const mutations = [
+    ["missing wrapper frame", stderr.replace(wrapperFrame, "")],
+    [
+      "duplicate traceback",
+      stderr.replace(
+        "Traceback (most recent call last):\n",
+        "Traceback (most recent call last):\nTraceback (most recent call last):\n"
+      )
+    ],
+    ["changed identity", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=different;errno=5")],
+    ["changed errno", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=same;errno=6")],
+    ["cleanup before primary", reversedCleanup],
+    ["hostile text leak", stderr.replace(/\n$/u, "\nPRIVATE_HOSTILE_TRACEBACK_LEAK\n")]
+  ];
+  for (const [label, mutation] of mutations) {
+    assert.notEqual(mutation, stderr, `${options.name} ${label} fixture`);
+    assert.throws(
+      () => assertPySparkPrimaryCleanupTracebackReceipt(mutation, options),
+      { name: "AssertionError" },
+      `${options.name} must reject ${label}`
+    );
+  }
+}
+
 function inspectDescriptorBoundFixture(path) {
   const descriptor = openSync(
     path,
@@ -2326,7 +2430,7 @@ os.close = _ow_fail_bounded_primary_and_cleanup_close
           identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
-          tracebackExpected: /os\.close\(raw_descriptor\)/u,
+          tracebackWrapper: "_ow_fail_bounded_primary_and_cleanup_close",
           maxStderrBytes: 8_192,
           unexpected:
             /PRIVATE_HOSTILE_ADD_NOTE_OVERRIDE|PRIVATE_HOSTILE_TYPE_ACCESS|PRIVATE_HOSTILE_CLEANUP_ACCESS|\/private\/add-note-cleanup-path|FORGED_CLEANUP_EXCEPTION|X{128}/u
@@ -2370,7 +2474,8 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
           identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] python310 primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
-          tracebackExpected: /os\.close\(raw_descriptor\)/u,
+          tracebackWrapper: "_ow_fail_python310_primary_and_cleanup_close",
+          maxStderrBytes: 8_192,
           unexpected:
             /PRIVATE_PYTHON310_ADD_NOTE_OVERRIDE|PRIVATE_PYTHON310_TYPE_ACCESS|PRIVATE_PYTHON310_CLEANUP_ACCESS|\/private\/cleanup-path|PRIVATE_PYTHON310_CLEANUP_OUTPUT/u
         },
@@ -2421,9 +2526,16 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
           assert.equal(terminalExceptions.length, 1, result.stderr);
           assert.match(terminalExceptions[0], scenario.terminalPrimary);
         }
-        if (scenario.tracebackExpected !== undefined) {
-          assert.match(result.stderr, scenario.tracebackExpected);
-          assert.equal(result.stderr.match(/Traceback \(most recent call last\):/gu)?.length, 1, result.stderr);
+        if (scenario.tracebackWrapper !== undefined) {
+          const tracebackOptions = {
+            maxStderrBytes: scenario.maxStderrBytes,
+            name: scenario.name,
+            primaryText: scenario.primaryText,
+            unexpected: scenario.unexpected,
+            wrapperName: scenario.tracebackWrapper
+          };
+          assertPySparkPrimaryCleanupTracebackReceipt(result.stderr, tracebackOptions);
+          assertPySparkTracebackReceiptMutationControls(result.stderr, tracebackOptions);
         }
         if (scenario.identityExpected !== undefined) assert.match(result.stderr, scenario.identityExpected);
         assert.doesNotMatch(result.stdout, /__OW_PACKAGE_EXECUTED__/u);
