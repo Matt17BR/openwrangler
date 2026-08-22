@@ -1626,6 +1626,7 @@ const cleaningHistoryGrammarWords = new Set([
   "older",
   "one",
   "ones",
+  "once",
   "only",
   "open",
   "or",
@@ -1634,9 +1635,11 @@ const cleaningHistoryGrammarWords = new Set([
   "part",
   "per",
   "plus",
+  "possessive",
   "preceding",
   "previous",
   "prior",
+  "previously",
   "read",
   "recent",
   "recently",
@@ -1686,31 +1689,97 @@ const cleaningHistoryGrammarWords = new Set([
   ...cleaningHistoryMultiWords
 ]);
 
+function normalizeCleaningHistoryRollbackSpellings(value) {
+  return value
+    .replace(/\brolled[\s—-]+back\b/giu, "undone")
+    .replace(/\brolling[\s—-]+back\b/giu, "undoing")
+    .replace(/\brolls[\s—-]+back\b/giu, "undoes")
+    .replace(/\broll[\s—-]+backs\b/giu, "rollbacks")
+    .replace(/\broll[\s—-]+back\b/giu, "rollback");
+}
+
+function canonicalizeCleaningHistoryPhrasalRollback(tokens) {
+  const canonical = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index] !== "roll") {
+      canonical.push(tokens[index]);
+      continue;
+    }
+    let backIndex = -1;
+    for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+      const token = tokens[cursor];
+      if (token === "back") {
+        backIndex = cursor;
+        break;
+      }
+      if (
+        token === "roll" ||
+        cleaningHistoryClausePunctuationRoles[token] !== undefined ||
+        cleaningHistoryConnectorRole(token) !== undefined
+      ) {
+        break;
+      }
+    }
+    if (backIndex < 0) {
+      canonical.push(tokens[index]);
+      continue;
+    }
+    const targetTokens = tokens.slice(index + 1, backIndex);
+    const hasCleaningTarget = targetTokens.some((_, targetIndex) => isCleaningHistoryNoun(targetTokens, targetIndex));
+    const cleaningTarget = targetTokens.every(
+      (token, targetIndex) => isCleaningHistoryGrammarToken(token) || isCleaningHistoryNoun(targetTokens, targetIndex)
+    );
+    if (!hasCleaningTarget || !cleaningTarget) {
+      canonical.push(...tokens.slice(index, backIndex + 1));
+      index = backIndex;
+      continue;
+    }
+    if (targetTokens.length > CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW) {
+      throw new Error(
+        `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW}-token capability ownership window.`
+      );
+    }
+    canonical.push("rollback", ...targetTokens);
+    index = backIndex;
+  }
+  return canonical;
+}
+
 function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBudget) {
-  const normalized = normalizeCleaningHistoryConditionalSpellings(value)
+  const normalized = normalizeCleaningHistoryRollbackSpellings(normalizeCleaningHistoryConditionalSpellings(value))
     .replace(/\bcan't\b/giu, "cannot")
     .replace(/\b(are|could|did|do|does|had|has|have|is|might|must|should|was|were|will|would)n't\b/giu, "$1 not")
     .replace(/\bcleaning-(plan|steps?|operations?|history|workflow)\b/giu, "cleaning $1")
+    .replace(/\b(report|step|operation|transformation|entry)'s\b/giu, "$1 possessive")
+    .replace(/\b(reports|steps|operations|transformations|entries)'(?=\s)/giu, "$1 possessive")
     .replace(/\bread-only\b/giu, "readonly")
     .replace(/\b(?:non)-(current|deletable|editable|inspectable|latest|modifiable)\b/giu, "non$1")
     .replace(/\b(?:un)-(deletable|editable|inspectable|modifiable)\b/giu, "un$1")
     .replace(/\bre-(arrange|arranged|arranges|arranging|order|ordered|ordering|orders)\b/giu, "re$1")
-    .replace(/\brolled[ -]back\b/giu, "undone")
-    .replace(/\brolling[ -]back\b/giu, "undoing")
-    .replace(/\brolls[ -]back\b/giu, "undoes")
-    .replace(/\broll[ -]backs\b/giu, "rollbacks")
-    .replace(/\broll[ -]back\b/giu, "rollback")
     .replace(/([\p{L}])-(?=[\p{L}])/gu, "$1 ")
     .toLowerCase();
-  const tokens = [];
-  let predicateCount = 0;
+  const rawTokens = [];
+  let rawPredicateCount = 0;
   for (const match of normalized.matchAll(/[\p{L}\p{N}']+|[,:—]/gu)) {
-    if (tokens.length >= remainingTokenBudget) {
+    if (rawTokens.length >= remainingTokenBudget) {
       throw new Error(
         `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_WORD_TOKEN_MAX}-word-token work limit.`
       );
     }
     const token = match[0];
+    if (cleaningHistoryPredicateKind(token) !== undefined || ["order", "ordering", "sequence"].includes(token)) {
+      if (rawPredicateCount >= remainingPredicateBudget) {
+        throw new Error(
+          `cleaning-history claim prose exceeds the ${CLEANING_HISTORY_PREDICATE_TOKEN_MAX}-predicate-token work limit.`
+        );
+      }
+      rawPredicateCount += 1;
+    }
+    rawTokens.push(token);
+  }
+  const tokens = canonicalizeCleaningHistoryPhrasalRollback(rawTokens);
+  let predicateCount = 0;
+  for (const token of tokens) {
     if (cleaningHistoryPredicateKind(token) !== undefined || ["order", "ordering", "sequence"].includes(token)) {
       if (predicateCount >= remainingPredicateBudget) {
         throw new Error(
@@ -1719,7 +1788,6 @@ function cleaningHistoryTokens(value, remainingTokenBudget, remainingPredicateBu
       }
       predicateCount += 1;
     }
-    tokens.push(token);
   }
   return { predicateCount, tokens };
 }
@@ -1819,6 +1887,9 @@ function cleaningHistoryReportRelationSubject(tokens) {
   if (latestCleaningIndex < 0) return reportSubject();
   if (latestCleaningIndex < latestReportIndex) {
     const relation = tokens.slice(latestCleaningIndex + 1, latestReportIndex);
+    if (relation.includes("possessive")) return reportSubject();
+    const cleaningRelative = ["that", "which"].includes(relation[0]);
+    const cleaningPassive = relation.includes("by");
     const reportRelative = tokens.slice(latestReportIndex + 1).some((token) => ["that", "which"].includes(token));
     if (reportRelative) return reportSubject();
     const reportIsCleaningContext = relation.some((token) => cleaningHistoryCapabilityContextPrepositions.has(token));
@@ -1829,7 +1900,7 @@ function cleaningHistoryReportRelationSubject(tokens) {
         .slice(0, producesReportIndex)
         .every((token) => cleaningHistoryExplicitSubjectAuxiliaries.has(token) || ["that", "which"].includes(token)) &&
       relation.slice(producesReportIndex + 1).every((token) => ["a", "an", "one", "the"].includes(token));
-    return reportIsCleaningContext || cleaningProducesReport
+    return reportIsCleaningContext || cleaningRelative || cleaningPassive || cleaningProducesReport
       ? { ...cleaningSubject, producedReport: reportSubject() }
       : reportSubject();
   }
@@ -1837,9 +1908,20 @@ function cleaningHistoryReportRelationSubject(tokens) {
   const firstCleaningAfterReport = cleaningIndices.find((index) => index > latestReportIndex);
   const relation = tokens.slice(latestReportIndex + 1, firstCleaningAfterReport);
   const suffix = tokens.slice(firstCleaningAfterReport + 1);
+  const reportPossessiveIndex = relation.indexOf("possessive");
+  if (reportPossessiveIndex >= 0) {
+    const hasPossessedArtifact = relation
+      .slice(reportPossessiveIndex + 1)
+      .some((token) => !isCleaningHistoryGrammarToken(token));
+    return hasPossessedArtifact ? reportSubject(cleaningSubject) : cleaningSubject;
+  }
   const cleaningIsReportModifier = relation.some((token) => cleaningHistoryReportModifierPrepositions.has(token));
   const cleaningIsReportSource = relation.includes("by");
   const reportRelationIsRelative = relation.some((token) => ["that", "which"].includes(token));
+  const reportHasParticipialObject =
+    /^[\p{L}]+ing$/u.test(relation[0] ?? "") &&
+    !cleaningHistoryGrammarWords.has(relation[0]) &&
+    relation.slice(1).every((token) => isCleaningHistoryGrammarToken(token));
   const laterCleaningSubject = cleaningIndices.some((index) => index > firstCleaningAfterReport);
   const cleaningObjectReference = suffix.some(
     (token) =>
@@ -1854,7 +1936,11 @@ function cleaningHistoryReportRelationSubject(tokens) {
     !laterCleaningSubject &&
     !cleaningObjectReference &&
     !cleaningObjectComplement &&
-    (cleaningIsReportModifier || cleaningIsReportSource || reportRelationIsRelative || !explicitSubjectPredicate)
+    (cleaningIsReportModifier ||
+      cleaningIsReportSource ||
+      reportRelationIsRelative ||
+      reportHasParticipialObject ||
+      !explicitSubjectPredicate)
   ) {
     return reportSubject(cleaningSubject, !cleaningIsReportModifier && !cleaningIsReportSource);
   }
@@ -2061,6 +2147,18 @@ function cleaningHistoryCoordinatedBarePassiveContinuation(tokens, predicateInde
 
 function cleaningHistoryCurrentAntecedent(currentSubject, previousStatementSubject) {
   return currentSubject ?? previousStatementSubject;
+}
+
+function cleaningHistoryPreservesMatrixSubject(segment, currentSubject) {
+  if (segment.separatorBefore !== "," || currentSubject === undefined) return false;
+  const prefix = segment.tokens.slice(0, CLEANING_HISTORY_CAPABILITY_OWNERSHIP_WINDOW);
+  let relationIndex = 0;
+  while (["already", "also", "once", "previously"].includes(prefix[relationIndex])) relationIndex += 1;
+  const relation = prefix[relationIndex];
+  return (
+    ["that", "which"].includes(relation) ||
+    (/^[\p{L}]+(?:ed|ing)$/u.test(relation ?? "") && cleaningHistoryPredicateKind(relation) === undefined)
+  );
 }
 
 function cleaningHistoryPostPredicateCapabilitySubject(tokens, predicateIndex, antecedent) {
@@ -2518,6 +2616,7 @@ function cleaningHistoryPredicateRecords(rendered) {
         pendingAtomicException = undefined;
       }
       const subjectProbeIndex = predicates[0]?.index ?? segment.tokens.length;
+      const preservesMatrixSubject = cleaningHistoryPreservesMatrixSubject(segment, currentSubject);
       const coordinatedCapabilityPredecessors = priorRecord?.coordinatedCapabilityPredecessors ?? [];
       const coordinatedBarePassiveCandidate =
         priorRecord?.subject.owner === "cleaning" &&
@@ -2576,7 +2675,9 @@ function cleaningHistoryPredicateRecords(rendered) {
       ) {
         subject = { ...currentSubject, explicit: false };
       }
-      if (subject.owner !== "none" && subject.owner !== "anaphor") currentSubject = subject;
+      if (subject.owner !== "none" && subject.owner !== "anaphor" && !preservesMatrixSubject) {
+        currentSubject = subject;
+      }
       if (predicates.length === 0) {
         const connectorExceptionTokens =
           segment.separatorBefore === "unless" ? [segment.separatorBefore, ...segment.tokens] : undefined;
