@@ -393,7 +393,7 @@ def settle_exact_identities(identities, release):
 
 with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
     root = Path(directory)
-    descendant = "import os; from pathlib import Path; import sys,time; marker=Path(sys.argv[1]); ready=Path(sys.argv[2]); release=Path(sys.argv[3]); retired=Path(sys.argv[4]); payload=Path('/proc/self/stat').read_bytes(); fields=payload[payload.rfind(b') ')+2:].split(); receipt=f'{os.getpid()}:{int(fields[19])}'; staged=ready.with_suffix('.staged'); staged.write_text(receipt, encoding='ascii'); staged.replace(ready); release_deadline=time.monotonic()+2\nwhile not release.exists():\n if time.monotonic() >= release_deadline: raise SystemExit(70)\n time.sleep(0.001)\nready.unlink(); retired_staged=retired.with_suffix('.staged'); retired_staged.write_text(receipt, encoding='ascii'); retired_staged.replace(retired); time.sleep(0.6); marker.write_text('survived', encoding='utf8')"
+    descendant = "import os; from pathlib import Path; import sys,time; marker=Path(sys.argv[1]); ready=Path(sys.argv[2]); release=Path(sys.argv[3]); retired=Path(sys.argv[4]); expired=Path(sys.argv[5]) if len(sys.argv) > 5 else None; payload=Path('/proc/self/stat').read_bytes(); fields=payload[payload.rfind(b') ')+2:].split(); receipt=f'{os.getpid()}:{int(fields[19])}'; release_limit_seconds=2; release_started=time.monotonic(); release_deadline=release_started+release_limit_seconds; staged=ready.with_suffix('.staged'); staged.write_text(receipt, encoding='ascii'); staged.replace(ready)\nwhile not release.exists():\n if time.monotonic() >= release_deadline:\n  if expired is not None:\n   expiry_finished=time.monotonic(); expired_staged=expired.with_suffix('.staged'); expired_staged.write_text(f'{release_started}:{release_deadline}:{expiry_finished}:{release_limit_seconds}', encoding='ascii'); expired_staged.replace(expired)\n  raise SystemExit(70)\n time.sleep(0.001)\nready.unlink(); retired_staged=retired.with_suffix('.staged'); retired_staged.write_text(receipt, encoding='ascii'); retired_staged.replace(retired); time.sleep(0.6); marker.write_text('survived', encoding='utf8')"
     parent = "import os,subprocess,sys,time; from pathlib import Path; root=Path(sys.argv[1]); prefix=sys.argv[2]; source=sys.argv[3]; mode=sys.argv[4]; release=root/f'{prefix}-release'; children=[]\nfor index in range(6):\n marker=root/f'{prefix}-marker-{index}'; ready=root/f'{prefix}-pid-{index}'; retired=root/f'{prefix}-retired-{index}'; children.append(subprocess.Popen([sys.executable,'-c',source,str(marker),str(ready),str(release),str(retired)],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True))\nrelease_deadline=time.monotonic()+1.5\nwhile time.monotonic()<release_deadline and not release.exists(): time.sleep(0.001)\nassert release.exists()\nretirement_deadline=time.monotonic()+0.25\nwhile time.monotonic()<retirement_deadline and not all((root/f'{prefix}-retired-{index}').exists() for index in range(6)): time.sleep(0.001)\nassert all((root/f'{prefix}-retired-{index}').exists() for index in range(6))\nif mode == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif mode == 'timeout': time.sleep(2)"
 
     # Exercise the test-owned fallback against a live detached helper, independently of bounded_command.
@@ -432,6 +432,65 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
         "timeout": "isolated R command exceeded its deadline",
         "overflow": "isolated R command output exceeded its bounded log",
     }
+
+    # Prove the helper's own deadline without a release marker, pidfd signal, or cleanup implementation.
+    expiry_marker = root / "self-expiry-marker"
+    expiry_ready = root / "self-expiry-pid"
+    expiry_release = root / "self-expiry-release"
+    expiry_retired = root / "self-expiry-retired"
+    expiry_receipt = root / "self-expiry-timing"
+    expiry_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            descendant,
+            str(expiry_marker),
+            str(expiry_ready),
+            str(expiry_release),
+            str(expiry_retired),
+            str(expiry_receipt),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    expiry_cleanup_used = False
+    try:
+        expiry_ready_deadline = time.monotonic() + 1.5
+        while time.monotonic() < expiry_ready_deadline and not expiry_ready.exists():
+            time.sleep(0.001)
+        assert expiry_ready.exists(), "self-expiring descendant identity receipt was unavailable"
+        expiry_identity_fields = expiry_ready.read_text(encoding="ascii").split(":")
+        assert len(expiry_identity_fields) == 2 and all(field.isdecimal() for field in expiry_identity_fields)
+        expiry_process_id, expiry_start_time = (int(field) for field in expiry_identity_fields)
+        assert expiry_process_id == expiry_process.pid
+        assert current_start_time(expiry_process_id) == expiry_start_time
+        assert not expiry_release.exists(), "self-expiry proof unexpectedly supplied a release marker"
+        assert expiry_process.wait(timeout=2.75) == 70, "detached helper did not report its self-expiry"
+        assert expiry_receipt.exists(), "detached helper did not publish its self-expiry timing"
+        expiry_timing_fields = expiry_receipt.read_text(encoding="ascii").split(":")
+        assert len(expiry_timing_fields) == 4
+        expiry_started, expiry_deadline, expiry_finished, expiry_limit = (
+            float(field) for field in expiry_timing_fields
+        )
+        assert expiry_limit == 2
+        assert expiry_deadline == expiry_started + expiry_limit
+        assert expiry_finished >= expiry_deadline
+        assert expiry_finished < expiry_deadline + 0.75
+        assert current_start_time(expiry_process_id) != expiry_start_time
+        assert not expiry_retired.exists(), "self-expiring descendant falsely reported release retirement"
+        assert not expiry_marker.exists(), "self-expiring descendant mutated before terminal settlement"
+        time.sleep(0.7)
+        assert not expiry_marker.exists(), "self-expiring descendant mutated after terminal settlement"
+    finally:
+        if expiry_process.poll() is None:
+            expiry_cleanup_used = True
+            expiry_process.kill()
+            expiry_process.wait(timeout=1)
+    assert not expiry_cleanup_used, "self-expiry proof required external process cleanup"
+
     for mode in ("success", "timeout", "overflow"):
         # The observer owns every exact identity receipt before releasing producers to withdraw them.
         identities = {}
