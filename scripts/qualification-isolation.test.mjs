@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import {
   access,
   appendFile,
@@ -22,6 +23,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import {
   ASSIGNMENT_PROTOCOL,
   QUALIFICATION_ENVIRONMENT_CONTRACT,
@@ -1128,6 +1130,41 @@ test("never creates a snapshot child through a replaced ancestor", async (contex
       timeoutMs: 120_000,
       writeOutput: false
     })
+  );
+  assert.equal(swapped, true);
+  assert.equal(existsSync(join(escaped, "ordinary.py")), false);
+  assert.equal((await receipt(task)).eligible, false);
+});
+
+test("keeps a Windows snapshot child on its pinned parent after a junction-style replacement", async (context) => {
+  const value = await fixture(context, "python-windows-snapshot-parent-swap");
+  const task = await addTask(value, "python-windows-snapshot-parent-swap");
+  const shared = join(value.root, "windows-parent-swap-python-packages");
+  const escaped = join(value.root, "windows-snapshot-escape");
+  await mkdir(shared, { mode: 0o700 });
+  await mkdir(escaped, { mode: 0o700 });
+  await writeFile(join(shared, "ordinary.py"), "VALUE = 1\n", { flag: "wx", mode: 0o600 });
+  let swapped = false;
+  await assert.rejects(
+    runQualification({
+      additionalPythonPackageRootsForTest: [shared],
+      afterPythonSnapshotChildOpenForTest: async ({ destination, kind }) => {
+        if (swapped || kind !== "file" || !destination.endsWith("ordinary.py")) return;
+        swapped = true;
+        const parent = dirname(destination);
+        await rename(parent, `${parent}.retained`);
+        await symlink(escaped, parent, process.platform === "win32" ? "junction" : "dir");
+      },
+      assignmentPath: task.assignmentPath,
+      command: [process.execPath, child, "record"],
+      environment: runnerEnvironment(),
+      onlyAdditionalPythonPackageRootsForTest: true,
+      pythonSnapshotPlatformForTest: "win32",
+      terminationGraceMs: 5_000,
+      timeoutMs: 120_000,
+      writeOutput: false
+    }),
+    /Python package snapshot parent .* identity changed/u
   );
   assert.equal(swapped, true);
   assert.equal(existsSync(join(escaped, "ordinary.py")), false);
@@ -2797,6 +2834,35 @@ test("bounds a never-settling forced close after both termination signals", asyn
   assert.equal(stdinDestroyed, true);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   assert.ok(Date.now() - started < 1_000, "forced close exceeded its bounded wait");
+});
+
+test("terminates a never-settling Python payload scan at one absolute deadline", async () => {
+  const worker = new Worker("setInterval(() => {}, 1_000)", { eval: true });
+  let exited = false;
+  worker.once("exit", () => {
+    exited = true;
+  });
+  await assert.rejects(
+    QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, 25),
+    /Python payload discovery exceeded its absolute deadline/u
+  );
+  assert.equal(exited, true);
+});
+
+test("aggregates a Python payload scan deadline before worker-settlement failure", async () => {
+  class FailingWorker extends EventEmitter {
+    async terminate() {
+      throw new Error("worker termination failed");
+    }
+  }
+  const worker = new FailingWorker();
+  await assert.rejects(QUALIFICATION_ISOLATION_TEST_BOUNDARY.runOwnedPythonDiscoveryWorker(worker, 5), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(error.message, /discovery and worker settlement failed/u);
+    assert.match(error.errors[0].message, /absolute deadline/u);
+    assert.match(error.errors[1].message, /worker termination failed/u);
+    return true;
+  });
 });
 
 test("attempts every owned cleanup and preserves primary plus ordered cleanup faults", async () => {

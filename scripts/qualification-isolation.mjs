@@ -26,6 +26,7 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
+import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const ASSIGNMENT_PROTOCOL = "openwrangler-qualification-assignment-v1";
@@ -40,6 +41,8 @@ const MAX_PYTHON_PAYLOAD_FILES = 100_000;
 const MAX_PYTHON_PAYLOAD_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_PATH_BYTES = 16 * 1024 * 1024;
 const MAX_PYTHON_PAYLOAD_DIRECTORIES = MAX_PYTHON_PAYLOAD_FILES * 8;
+const DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS = 120_000;
+const PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL = "openwrangler-python-payload-scan-v1";
 const MIN_SUPPORTED_CPYTHON_MINOR = 10;
 const MAX_SUPPORTED_CPYTHON_MINOR = 14;
 const MAX_RECEIPT_BYTES = 256 * 1024;
@@ -2337,7 +2340,12 @@ async function hashPinnedExecutable(executable) {
 async function createExecutableSnapshot(
   executable,
   snapshotRoot,
-  { afterWriteForTest, requireExecutable = true, snapshotBesideOwnedExecutable = true } = {}
+  {
+    afterChildOpenForTest,
+    afterWriteForTest,
+    platformForTest = process.platform,
+    snapshotBesideOwnedExecutable = true
+  } = {}
 ) {
   await verifyPinnedExecutable(executable);
   const source = executableLeaf(executable);
@@ -2348,16 +2356,24 @@ async function createExecutableSnapshot(
   const stateRoot = resolve(snapshotRoot, "../../..");
   const destinationRoot =
     snapshotBesideOwnedExecutable && isInside(executable.path, stateRoot) ? dirname(executable.path) : snapshotRoot;
-  const snapshotPath = join(destinationRoot, `${randomUUID()}${extension}`);
-  const writer = await open(
-    snapshotPath,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
-    Number(source.before.mode & 0o777n)
-  );
+  const name = `${randomUUID()}${extension}`;
+  const snapshotPath = join(destinationRoot, name);
+  const parentPin = await openPinnedDirectory(destinationRoot, "qualification command snapshot parent");
+  let writer;
+  let snapshot;
   const digest = createHash("sha256");
   const buffer = Buffer.alloc(64 * 1024);
   let offset = 0;
   try {
+    await verifyPinnedDirectory(parentPin, "qualification command snapshot parent");
+    const ownedPath = await descriptorOwnedChildPath(parentPin, name, platformForTest);
+    writer = await open(
+      ownedPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
+      Number(source.before.mode & 0o777n)
+    );
+    await afterChildOpenForTest?.({ parent: destinationRoot, snapshotPath });
+    await verifyPinnedDirectory(parentPin, "qualification command snapshot parent");
     await writer.chmod(Number(source.before.mode & 0o777n));
     while (offset < Number(source.before.size)) {
       const length = Math.min(buffer.length, Number(source.before.size) - offset);
@@ -2382,28 +2398,50 @@ async function createExecutableSnapshot(
     ) {
       fail("qualification command snapshot identity is invalid");
     }
-  } finally {
+    const sourceDigest = digest.digest("hex");
+    await afterWriteForTest?.({ snapshotPath });
+    await verifyPinnedDirectory(parentPin, "qualification command snapshot parent");
+    await verifyPinnedExecutable(executable);
+    const readerPath =
+      platformForTest === "linux"
+        ? `/proc/self/fd/${String(writer.fd)}`
+        : platformForTest === "win32"
+          ? snapshotPath
+          : `/dev/fd/${String(writer.fd)}`;
+    const reader = await open(
+      readerPath,
+      constants.O_RDONLY | (platformForTest === "win32" ? (constants.O_NOFOLLOW ?? 0) : 0)
+    );
+    const readerSnapshot = await reader.stat({ bigint: true });
+    if (!sameImmutableSnapshot(completed, readerSnapshot)) {
+      await reader.close();
+      fail("qualification command snapshot identity changed before it was made executable");
+    }
+    snapshot = { before: readerSnapshot, handle: reader, path: snapshotPath };
     await writer.close();
+    writer = undefined;
+    await verifyPinnedExecutable(snapshot);
+    if (completed.size !== source.before.size || (await hashPinnedExecutable(snapshot)) !== sourceDigest) {
+      fail("qualification command snapshot bytes changed before launch");
+    }
+    await parentPin.handle.close();
+    return {
+      record: {
+        sha256: sourceDigest,
+        snapshot: executableIdentity(snapshot),
+        source: executableIdentity(source),
+        sourcePath: executable.path
+      },
+      snapshot,
+      source: executable
+    };
+  } catch (error) {
+    await finishWithOwnedCleanup(error, [
+      { label: "qualification command snapshot writer", run: () => writer?.close() },
+      { label: "qualification command snapshot owner", run: () => closePinnedExecutable(snapshot) },
+      { label: "qualification command snapshot parent", run: () => parentPin.handle.close() }
+    ]);
   }
-  const sourceDigest = digest.digest("hex");
-  await afterWriteForTest?.({ snapshotPath });
-  await verifyPinnedExecutable(executable);
-  const snapshot = await openPinnedExecutable(snapshotPath, undefined, { requireExecutable });
-  const snapshotLeaf = executableLeaf(snapshot);
-  if (snapshotLeaf.before.size !== source.before.size || (await hashPinnedExecutable(snapshot)) !== sourceDigest) {
-    await closePinnedExecutable(snapshot);
-    fail("qualification command snapshot bytes changed before launch");
-  }
-  return {
-    record: {
-      sha256: sourceDigest,
-      snapshot: executableIdentity(snapshotLeaf),
-      source: executableIdentity(source),
-      sourcePath: executable.path
-    },
-    snapshot,
-    source: executable
-  };
 }
 
 async function verifyExecutableLaunch(value) {
@@ -3029,22 +3067,28 @@ async function runOwnedCommand(command, arguments_, options) {
       options.executableAfterOpenForTest ? { afterOpenForTest: options.executableAfterOpenForTest } : undefined
     );
     launch = await createExecutableSnapshot(executable, options.executableSnapshotRoot, {
+      afterChildOpenForTest: options.executableSnapshotAfterChildOpenForTest,
       afterWriteForTest: options.executableSnapshotAfterWriteForTest,
+      platformForTest: platform,
       snapshotBesideOwnedExecutable: options.snapshotBesideOwnedExecutable
     });
     if (platform !== "win32") {
       supervisorExecutable = await openPinnedExecutable(options.posixSupervisorCommand);
-      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
+      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot, {
+        platformForTest: platform
+      });
     } else if (options.windowsSupervisorCommand) {
       supervisorExecutable = await openPinnedExecutable(options.windowsSupervisorCommand);
-      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot);
+      supervisorLaunch = await createExecutableSnapshot(supervisorExecutable, options.executableSnapshotRoot, {
+        platformForTest: platform
+      });
       supervisorScriptExecutable = await openPinnedExecutable(options.windowsJobSupervisorScript, undefined, {
         requireExecutable: false
       });
       supervisorScriptLaunch = await createExecutableSnapshot(
         supervisorScriptExecutable,
         options.executableSnapshotRoot,
-        { requireExecutable: false }
+        { platformForTest: platform, requireExecutable: false }
       );
     }
   } catch (error) {
@@ -4009,7 +4053,7 @@ function pythonDirectoryRecord(path, value) {
   };
 }
 
-async function discoverPythonPayloads(
+async function discoverPythonPayloadsInProcess(
   searchPaths,
   venv,
   {
@@ -4177,6 +4221,163 @@ async function discoverPythonPayloads(
   };
 }
 
+function pythonDiscoverySnapshot(value) {
+  return Object.fromEntries(
+    ["birthtimeNs", "ctimeNs", "dev", "ino", "mode", "mtimeNs", "nlink", "size"].map((key) => [key, value[key]])
+  );
+}
+
+function serializablePythonDiscovery(value) {
+  return {
+    directories: value.directories,
+    linkedDirectories: value.linkedDirectories.map((entry) => ({
+      ...entry,
+      sourceSnapshot: pythonDiscoverySnapshot(entry.sourceSnapshot),
+      targetSnapshot: pythonDiscoverySnapshot(entry.targetSnapshot)
+    })),
+    payloads: value.payloads,
+    snapshots: [...value.snapshots.entries()].map(([path, snapshots]) => [
+      path,
+      {
+        source: pythonDiscoverySnapshot(snapshots.source),
+        target: pythonDiscoverySnapshot(snapshots.target)
+      }
+    ])
+  };
+}
+
+function boundedScanDiagnostic(value) {
+  const text = value instanceof Error ? value.message : String(value);
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= 4096) return text;
+  return `${bytes.subarray(0, 4080).toString("utf8")}…`;
+}
+
+async function runOwnedPythonDiscoveryWorker(worker, deadlineMilliseconds, onProgress) {
+  validateBound(deadlineMilliseconds, DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS, "Python payload scan timeout");
+  const controller = new AbortController();
+  const deadline = process.hrtime.bigint() + BigInt(deadlineMilliseconds) * 1_000_000n;
+  let progress = Promise.resolve();
+  let timer;
+  let settled = false;
+  let workerExited = false;
+  const settlement = new Promise((resolveResult, rejectResult) => {
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+    timer = setTimeout(
+      () => {
+        controller.abort(new Error("Python payload discovery exceeded its absolute deadline"));
+        finish(rejectResult, controller.signal.reason);
+      },
+      Math.max(1, remaining)
+    );
+    worker.on("message", (message) => {
+      if (message?.protocol !== PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL) {
+        finish(rejectResult, new Error("Python payload discovery worker returned an invalid envelope"));
+        return;
+      }
+      if (message.type === "progress") {
+        progress = progress.then(() => onProgress?.(message.value, controller.signal));
+        progress.catch((error) => finish(rejectResult, error));
+        return;
+      }
+      if (message.type === "error") {
+        finish(rejectResult, new Error(boundedScanDiagnostic(message.error)));
+        return;
+      }
+      if (message.type === "result") finish(resolveResult, message.value);
+      else finish(rejectResult, new Error("Python payload discovery worker returned an invalid message"));
+    });
+    worker.once("error", (error) => finish(rejectResult, error));
+    worker.once("exit", (code) => {
+      workerExited = true;
+      if (!settled)
+        finish(rejectResult, new Error(`Python payload discovery worker exited before settlement (${code})`));
+    });
+  });
+  let primaryError;
+  let result;
+  try {
+    result = await settlement;
+    await progress;
+  } catch (error) {
+    primaryError = error;
+    controller.abort(error);
+  }
+  controller.abort(primaryError ?? new Error("Python payload discovery completed"));
+  let settlementError;
+  if (!workerExited) {
+    try {
+      await worker.terminate();
+    } catch (error) {
+      settlementError = error;
+    }
+  }
+  if (primaryError && settlementError) {
+    throw new AggregateError([primaryError, settlementError], "Python payload discovery and worker settlement failed");
+  }
+  if (primaryError) throw primaryError;
+  if (settlementError) throw settlementError;
+  return result;
+}
+
+async function discoverPythonPayloads(searchPaths, venv, options = {}) {
+  const deadlineNanoseconds =
+    options.deadlineNanoseconds ??
+    process.hrtime.bigint() + BigInt(DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS) * 1_000_000n;
+  const remainingMilliseconds = Number((deadlineNanoseconds - process.hrtime.bigint()) / 1_000_000n);
+  if (remainingMilliseconds <= 0) fail("Python payload discovery exceeded its absolute deadline");
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: {
+      options: {
+        completeRoots: options.completeRoots ?? [],
+        followDirectoryLinks: options.followDirectoryLinks ?? false,
+        includeVenv: options.includeVenv ?? true,
+        retainedEntryLimit: options.retainedEntryLimit ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
+        retainedPathByteLimit: options.retainedPathByteLimit ?? MAX_PYTHON_PAYLOAD_PATH_BYTES
+      },
+      protocol: PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL,
+      searchPaths,
+      venv
+    }
+  });
+  const value = await runOwnedPythonDiscoveryWorker(
+    worker,
+    Math.min(DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS, remainingMilliseconds),
+    options.afterEntryRetainedForTest
+  );
+  return { ...value, snapshots: new Map(value.snapshots) };
+}
+
+if (!isMainThread && workerData?.protocol === PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL) {
+  try {
+    const value = await discoverPythonPayloadsInProcess(workerData.searchPaths, workerData.venv, {
+      ...workerData.options,
+      afterEntryRetainedForTest(progress) {
+        parentPort.postMessage({ protocol: PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL, type: "progress", value: progress });
+      }
+    });
+    parentPort.postMessage({
+      protocol: PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL,
+      type: "result",
+      value: serializablePythonDiscovery(value)
+    });
+  } catch (error) {
+    parentPort.postMessage({
+      error: boundedScanDiagnostic(error),
+      protocol: PYTHON_PAYLOAD_SCAN_WORKER_PROTOCOL,
+      type: "error"
+    });
+  } finally {
+    parentPort.close();
+  }
+}
+
 function requireSnapshotChildName(name) {
   if (
     typeof name !== "string" ||
@@ -4191,11 +4392,14 @@ function requireSnapshotChildName(name) {
   }
 }
 
-async function descriptorOwnedChildPath(parentPin, name) {
+async function descriptorOwnedChildPath(parentPin, name, platform = process.platform) {
   requireSnapshotChildName(name);
-  if (process.platform === "win32") return join(parentPin.path, name);
+  if (platform === "win32" && process.platform === "win32") {
+    fail("Windows snapshot creation requires a handle-relative child primitive");
+  }
+  const descriptorPlatform = platform === "win32" ? process.platform : platform;
   const descriptorRoot =
-    process.platform === "linux"
+    descriptorPlatform === "linux"
       ? `/proc/self/fd/${String(parentPin.handle.fd)}`
       : `/dev/fd/${String(parentPin.handle.fd)}`;
   if ((await realpath(descriptorRoot)) !== parentPin.path) {
@@ -4208,7 +4412,7 @@ async function createPinnedPythonSnapshotDirectory(parentPin, name, destination,
   await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
   await options.beforePythonSnapshotChildCreateForTest?.({ destination, kind: "directory", source: null });
   await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
-  const ownedDestination = await descriptorOwnedChildPath(parentPin, name);
+  const ownedDestination = await descriptorOwnedChildPath(parentPin, name, options.pythonSnapshotPlatformForTest);
   await mkdir(ownedDestination, { mode: 0o700 });
   let handle;
   try {
@@ -4217,6 +4421,8 @@ async function createPinnedPythonSnapshotDirectory(parentPin, name, destination,
       constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
     );
     const opened = await handle.stat({ bigint: true });
+    await options.afterPythonSnapshotChildOpenForTest?.({ destination, kind: "directory", source: null });
+    await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
     const named = await lstat(destination, { bigint: true });
     if (
       !opened.isDirectory() ||
@@ -4239,11 +4445,12 @@ async function writePinnedPythonSnapshotFile(pin, parentPin, name, destination, 
   await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
   await options.beforePythonSnapshotChildCreateForTest?.({ destination, kind: "file", source: pin.path });
   await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
-  const ownedDestination = await descriptorOwnedChildPath(parentPin, name);
+  const ownedDestination = await descriptorOwnedChildPath(parentPin, name, options.pythonSnapshotPlatformForTest);
   await verifyPinnedPythonPayload(pin);
   let output;
   try {
-    if (process.platform === "linux") {
+    const snapshotPlatform = options.pythonSnapshotPlatformForTest ?? process.platform;
+    if (snapshotPlatform === "linux") {
       await copyFile(
         `/proc/self/fd/${String(pin.handle.fd)}`,
         ownedDestination,
@@ -4251,12 +4458,16 @@ async function writePinnedPythonSnapshotFile(pin, parentPin, name, destination, 
       );
       await options.afterPythonSnapshotCopyForTest?.({ destination, source: pin.path });
       output = await open(ownedDestination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+      await options.afterPythonSnapshotChildOpenForTest?.({ destination, kind: "file", source: pin.path });
+      await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
     } else {
       output = await open(
         ownedDestination,
         constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
         0o600
       );
+      await options.afterPythonSnapshotChildOpenForTest?.({ destination, kind: "file", source: pin.path });
+      await verifyPinnedDirectory(parentPin, `Python package snapshot parent ${parentPin.path}`);
       const buffer = Buffer.alloc(1024 * 1024);
       let offset = 0;
       while (offset < pin.size) {
@@ -4331,6 +4542,7 @@ async function createPythonPackageSnapshot(layoutState, externalRoots, options) 
   const source = await discoverPythonPayloads(externalRoots, layoutState.layout.venv, {
     afterEntryRetainedForTest: options.afterPythonPayloadEntryRetainedForTest,
     completeRoots: externalRoots,
+    deadlineNanoseconds: options.pythonPayloadScanDeadlineNanoseconds,
     followDirectoryLinks: true,
     includeVenv: false,
     retainedEntryLimit: options.pythonPayloadEntryLimitForTest ?? MAX_PYTHON_PAYLOAD_DIRECTORIES,
@@ -4463,9 +4675,10 @@ async function pinSealedPythonDirectory(path) {
   }
 }
 
-async function sealPythonExecutionNamespace(layoutState, snapshotRoots) {
+async function sealPythonExecutionNamespace(layoutState, snapshotRoots, deadlineNanoseconds) {
   const discovered = await discoverPythonPayloads(snapshotRoots, layoutState.layout.venv, {
     completeRoots: snapshotRoots,
+    deadlineNanoseconds,
     includeVenv: false
   });
   const paths = [...discovered.directories.map(({ path }) => path).sort((left, right) => right.length - left.length)];
@@ -4527,6 +4740,8 @@ async function preparePythonImportBoundary(
   for (const root of externalRoots) {
     if (root.includes("\n") || root.includes("\r")) fail("Python package root contains a line break");
   }
+  options.pythonPayloadScanDeadlineNanoseconds ??=
+    process.hrtime.bigint() + BigInt(options.pythonPayloadScanTimeoutMs) * 1_000_000n;
   const snapshot = await createPythonPackageSnapshot(layoutState, externalRoots, options);
   layoutState.pythonSnapshotRoots = snapshot.snapshotRoots;
   const pathConfiguration = join(privateSite, "openwrangler-pinned-packages.pth");
@@ -4535,11 +4750,18 @@ async function preparePythonImportBoundary(
     `import sys; sys.dont_write_bytecode=True; sys.modules['sitecustomize']=sys; sys.modules['usercustomize']=sys\n${snapshot.snapshotRoots.join("\n")}\n`,
     { flag: "wx", mode: 0o400 }
   );
-  await sealPythonExecutionNamespace(layoutState, [...snapshot.snapshotRoots, privateSite]);
+  await sealPythonExecutionNamespace(
+    layoutState,
+    [...snapshot.snapshotRoots, privateSite],
+    options.pythonPayloadScanDeadlineNanoseconds
+  );
   const preload = await discoverPythonPayloads(
     [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots],
     layoutState.layout.venv,
-    { completeRoots: snapshot.snapshotRoots }
+    {
+      completeRoots: snapshot.snapshotRoots,
+      deadlineNanoseconds: options.pythonPayloadScanDeadlineNanoseconds
+    }
   );
   layoutState.pythonExpectedSysPath = [...runtime.sysPath, privateSite, ...snapshot.snapshotRoots];
   layoutState.pythonPayloadDiscoverySnapshots = preload.snapshots;
@@ -4868,6 +5090,7 @@ async function publishEligibleReceipt(layoutState, value) {
 async function runQualification({
   afterCommandSpawnForTest,
   afterCommandSettlementForTest,
+  afterExecutableSnapshotChildOpenForTest,
   afterExecutableSnapshotWriteForTest,
   afterGitExecutableSnapshotWriteForTest,
   afterGitWrapperPreparedForTest,
@@ -4876,6 +5099,7 @@ async function runQualification({
   afterPythonPreinventoryForTest,
   afterPythonSnapshotCopyForTest,
   afterPythonSnapshotDescriptorWriteForTest,
+  afterPythonSnapshotChildOpenForTest,
   afterPythonSourceDiscoveryForTest,
   additionalPythonPackageRootsForTest,
   assignmentPath,
@@ -4898,6 +5122,8 @@ async function runQualification({
   pythonInventoryAfterRunnerForTest,
   pythonPayloadEntryLimitForTest,
   pythonPayloadPathByteLimitForTest,
+  pythonPayloadScanTimeoutMsForTest = DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS,
+  pythonSnapshotPlatformForTest,
   posixMissingControlPipeForTest,
   posixOuterSettlementMsForTest,
   posixSupervisorSourceForTest,
@@ -4910,6 +5136,11 @@ async function runQualification({
 }) {
   validateBound(timeoutMs, DEFAULT_COMMAND_TIMEOUT_MS, "qualification timeout");
   validateBound(terminationGraceMs, DEFAULT_TERMINATION_GRACE_MS, "qualification termination grace");
+  validateBound(
+    pythonPayloadScanTimeoutMsForTest,
+    DEFAULT_PYTHON_PAYLOAD_SCAN_TIMEOUT_MS,
+    "Python payload scan timeout"
+  );
   const initialAssignment = await readAssignment(assignmentPath);
   let layoutState;
   let gitOwnerPins;
@@ -4956,11 +5187,14 @@ async function runQualification({
         afterPythonPreinventoryForTest,
         afterPythonSnapshotCopyForTest,
         afterPythonSnapshotDescriptorWriteForTest,
+        afterPythonSnapshotChildOpenForTest,
         afterPythonSourceDiscoveryForTest,
         beforePythonSnapshotChildCreateForTest,
         platformForTest: bootstrapCommandPlatformForTest,
         pythonPayloadEntryLimitForTest,
         pythonPayloadPathByteLimitForTest,
+        pythonPayloadScanTimeoutMs: pythonPayloadScanTimeoutMsForTest,
+        pythonSnapshotPlatformForTest,
         terminationGraceMs,
         timeoutMs,
         windowsJobSupervisorScript: bootstrapWindowsJobSupervisorScriptForTest ?? WINDOWS_JOB_SUPERVISOR_PATH,
@@ -5004,6 +5238,7 @@ async function runQualification({
         beforeSpawnForTest: beforeCommandSpawnForTest,
         beforeWindowsLoaderReleaseForTest,
         executableSnapshotAfterWriteForTest: afterExecutableSnapshotWriteForTest,
+        executableSnapshotAfterChildOpenForTest: afterExecutableSnapshotChildOpenForTest,
         ownedRunnerForTest: commandRunnerForTest,
         platformForTest: commandPlatformForTest,
         posixMissingControlPipeForTest,
@@ -5173,6 +5408,7 @@ const QUALIFICATION_ISOLATION_TEST_BOUNDARY = Object.freeze({
   finishWithOwnedCleanup,
   isSupportedCpythonVersion,
   parseGitConfigManifestBytes,
+  runOwnedPythonDiscoveryWorker,
   openDirectory(path, afterOpenForTest) {
     return openPinnedDirectory(path, "test directory", { afterOpenForTest });
   },
@@ -5203,7 +5439,7 @@ export {
   runQualification
 };
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainThread && process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   try {
     await runQualification(parseCommandLine(process.argv.slice(2)));
   } catch (error) {
