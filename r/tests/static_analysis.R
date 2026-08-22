@@ -474,6 +474,23 @@ local({
     "assign:.GlobalEnv" %in% diagnostic_symbols(unresolved_callback_seed_mutation, "global-assignment"),
     "An unresolved known callback capability retained the random-seed exemption"
   )
+  transitive_callback_seed_mutation <- sub(
+    "  mutate_snapshot <- function() previous_random_seed <<- replacement_seed\n  mutate_snapshot()",
+    paste(
+      "  base::lapply(",
+      "    X = list(base::assign),",
+      "    FUN = base::do.call,",
+      "    args = list(x = 'previous_random_seed', value = replacement_seed, envir = base::environment())",
+      "  )",
+      sep = "\n"
+    ),
+    closure_seed_mutation,
+    fixed = TRUE
+  )
+  assert_true(
+    "assign:.GlobalEnv" %in% diagnostic_symbols(transitive_callback_seed_mutation, "global-assignment"),
+    "A known built-in callback hid nested dispatch from random-seed restoration analysis"
+  )
   seed_callback_dispatches <- c(
     do_call = "base::do.call(args = list(), what = mutate_snapshot)",
     lapply = "base::lapply(FUN = mutate_snapshot, X = list(1L))",
@@ -742,6 +759,32 @@ local({
   assert_true(
     "target:al" %in% diagnostic_symbols(conditional_callee_unsafe, "partial-argument"),
     "A computed callee condition discarded its ordered binding effect"
+  )
+  computed_callee_partial <- paste(
+    "target <- function(alpha, beta) alpha + beta",
+    "({ target })(al = 1, beta = 2)",
+    sep = "\n"
+  )
+  assert_true(
+    identical(
+      diagnostic_operations(computed_callee_partial, "partial-argument", "target:al"),
+      "L2:C14-L2:C15"
+    ),
+    "A resolved computed callee bypassed partial matching or exact argument-span identity"
+  )
+  assert_true(
+    !("target:alpha" %in% diagnostic_symbols(
+      sub("al = 1", "alpha = 1", computed_callee_partial, fixed = TRUE),
+      "partial-argument"
+    )),
+    "An exact computed-callee argument was diagnosed as partial"
+  )
+  terminal_computed_callee <-
+    "({ base::stop('terminal'); function(alpha, beta) alpha + beta })(al = 1, beta = 2)"
+  assert_true(
+    !("partial-argument" %in% rules(terminal_computed_callee)) &&
+      "unreachable-expression" %in% rules(terminal_computed_callee),
+    "A terminal computed-callee prelude retained or invoked an unreachable callable candidate"
   )
 
   callback_dispatches <- c(
