@@ -755,12 +755,17 @@ test("raw HTML visibility and final CSS cascade follow rendered browser semantic
     }),
     []
   );
-  assert.match(
-    inspect({
-      ciDocumentationSource: `${sources.ciDocumentationSource}\n<section data-owner=<broken>>${contradiction}</section>\n`
-    }).join(" "),
-    /malformed or unsupported raw HTML/u
-  );
+  for (const malformedTag of [
+    `<section data-owner=<broken>>${contradiction}</section>`,
+    `<section =broken>${contradiction}</section>`,
+    `<section data-owner=>${contradiction}</section>`
+  ]) {
+    const escapedMalformedTagProblems = inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n${malformedTag}\n`
+    });
+    assert.match(escapedMalformedTagProblems.join(" "), /compatibility-sensitive Cursor ownership/u, malformedTag);
+    assert.doesNotMatch(escapedMalformedTagProblems.join(" "), /malformed or unsupported raw HTML/u);
+  }
 
   const architectureBlock = sources.architectureSource.match(
     /<!-- open-wrangler-current-compatibility-owners:start -->[\s\S]*?<!-- open-wrangler-current-compatibility-owners:end -->/u
@@ -826,6 +831,26 @@ test("fenced code owns literal comment markers before HTML comment stripping", (
     }).join(" "),
     /compatibility-sensitive Cursor ownership/u
   );
+
+  for (const escapedContainer of [
+    "> ```text\n> literal fenced text\nCursor governs released-Jupyter.\n",
+    "> > ~~~text\n> > literal nested fenced text\n> Cursor governs released-Jupyter.\n",
+    "> <!-- hidden only while this quote remains open\nCursor governs released-Jupyter.\n",
+    "> > <!-- hidden only while this nested quote remains open\n> Cursor governs released-Jupyter.\n"
+  ]) {
+    const problems = inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n${escapedContainer}`
+    });
+    assert.match(problems.join(" "), /compatibility-sensitive Cursor ownership/u, escapedContainer);
+    assert.doesNotMatch(problems.join(" "), /unterminated fenced code block|unterminated HTML comment/u);
+  }
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n> \`\`\`text\n> > \`\`\`\n> Cursor governs released-Jupyter.\n> \`\`\`\n`
+    }),
+    []
+  );
 });
 
 test("indented code owns literal comment openers before comment state", () => {
@@ -837,6 +862,31 @@ test("indented code owns literal comment openers before comment state", () => {
       /compatibility-sensitive Cursor ownership/u
     );
   }
+
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nA visible compatibility paragraph\n    Cursor governs released-Jupyter.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n> A visible compatibility paragraph\n>     Cursor governs released-Jupyter.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n\n    Cursor governs released-Jupyter.\n`
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n>\n>     Cursor governs released-Jupyter.\n`
+    }),
+    []
+  );
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -972,6 +1022,59 @@ test("reference definitions are linear and continuation titles remain metadata",
   const problems = inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${adversary}\n` });
   assert.ok(performance.now() - started < 2_000, "escaped unterminated reference parsing must stay bounded");
   assert.deepEqual(problems, []);
+});
+
+test("raw reference labels are rejected before any unbounded iteration or slice", () => {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      String.raw`
+        import { readFileSync } from "node:fs";
+        import { inspectCompatibilityEvidence } from "./scripts/compatibility-evidence.mjs";
+        const read = (path) => readFileSync(path, "utf8");
+        const sources = {
+          authoritySource: read("fixtures/compatibility-evidence.json"),
+          packageSource: read("package.json"),
+          remoteWorkspaceContractSource: read("scripts/remote-workspace-contract.mjs"),
+          cursorAcquisitionSource: read("scripts/cursor-acquisition.mjs"),
+          candidateWorkflowSource: read(".github/workflows/candidate-acceptance.yml"),
+          ciWorkflowSource: read(".github/workflows/ci.yml"),
+          crossWorkflowSource: read(".github/workflows/cross-platform.yml"),
+          readmeSource: read("README.md"),
+          releasingSource: read("docs/releasing.md"),
+          architectureSource: read("docs/architecture.md"),
+          featureParitySource: read("docs/feature-parity.md"),
+          testingSource: read("docs/testing.md"),
+          ciDocumentationSource: read("docs/ci.md")
+        };
+        const originalIterator = String.prototype[Symbol.iterator];
+        Object.defineProperty(String.prototype, Symbol.iterator, {
+          configurable: true,
+          value: function () {
+            if (this.length > 4 * 1024) throw new Error("unbounded raw-label iteration");
+            return originalIterator.call(this);
+          }
+        });
+        const label = "a".repeat(1024 * 1024);
+        for (const addition of [
+          "[" + label + "]: https://example.com/editor",
+          "C[urs][" + label + "]or governs released-Jupyter."
+        ]) {
+          const problems = inspectCompatibilityEvidence({
+            ...sources,
+            ciDocumentationSource: sources.ciDocumentationSource + "\n" + addition + "\n"
+          });
+          if (!problems.some((problem) => /invalid, duplicate, or unbounded Markdown references|structural bounds/u.test(problem))) {
+            throw new Error("oversized raw label was not rejected");
+          }
+        }
+      `
+    ],
+    { cwd: root, encoding: "utf8", timeout: 10_000 }
+  );
+  assert.equal(child.status, 0, child.stderr || child.stdout);
 });
 
 test("CommonMark autolinks remain visible and reference labels stop at 999 characters", () => {
@@ -1164,6 +1267,33 @@ test("authority and guarantee wording remains ownership-sensitive", () => {
     }),
     []
   );
+});
+
+test("bounded ownership grammar recognizes modifiers, quantifiers, passive voice, and future forms", () => {
+  for (const outsideClaim of [
+    "Cursor will actively manage every released-Jupyter lane.",
+    "Cursor routinely manages all protected released-Jupyter lanes.",
+    "Every released-Jupyter lane will be managed by Cursor.",
+    "Native R qualification would remain under Cursor's authority."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u,
+      outsideClaim
+    );
+  }
+
+  for (const neutralClaim of [
+    "Cursor precedes released-Jupyter in this document.",
+    "Cursor does not manage released-Jupyter qualification.",
+    "Cursor provides no Native R qualification evidence."
+  ]) {
+    assert.deepEqual(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${neutralClaim}\n` }),
+      [],
+      neutralClaim
+    );
+  }
 });
 
 test("visible HTML tag inspection rejects before retaining tag 4,097", () => {

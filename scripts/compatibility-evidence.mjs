@@ -1536,17 +1536,39 @@ function inspectSemanticCandidateClaims(workflow, problems) {
 }
 
 function htmlTagPattern() {
-  return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=[\t\n\f />])(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
+  const whitespace = "[\\t\\n\\f\\r ]";
+  const tag = "[A-Za-z][A-Za-z0-9-]*";
+  const attributeName = "[A-Za-z_:][A-Za-z0-9_.:-]*";
+  const unquotedValue = "[^\"'=<>`\\u0000-\\u0020]+";
+  const attributeValue = `(?:${unquotedValue}|'[^']*'|"[^"]*")`;
+  const attribute = `${whitespace}+${attributeName}(?:${whitespace}*=${whitespace}*${attributeValue})?`;
+  return new RegExp(
+    `<(?:/(?<closingTag>${tag})${whitespace}*|(?<openingTag>${tag})(?<attributes>(?:${attribute})*)${whitespace}*(?<selfClosing>/?))>`,
+    "gisu"
+  );
 }
 
-function withoutMarkdownBlockquoteContainers(line) {
+function normalizedHtmlTagCandidate(candidate) {
+  const closing = candidate.groups.closingTag !== undefined;
+  candidate.groups = {
+    attributes: closing ? "" : candidate.groups.attributes,
+    closing: closing ? "/" : undefined,
+    tag: candidate.groups.closingTag ?? candidate.groups.openingTag
+  };
+  return candidate;
+}
+
+function markdownBlockquoteLine(line) {
   let content = line;
-  for (let depth = 0; depth < MAX_MARKDOWN_CONTAINER_DEPTH; depth += 1) {
+  const contents = [line];
+  let depth = 0;
+  for (; depth < MAX_MARKDOWN_CONTAINER_DEPTH; depth += 1) {
     const container = /^ {0,3}>[\t ]?/u.exec(content);
     if (!container) break;
     content = content.slice(container[0].length);
+    contents.push(content);
   }
-  return content;
+  return { content, contents, depth, overflow: /^ {0,3}>/u.test(content) };
 }
 
 function commonmarkAutolinkContent(candidate) {
@@ -1698,28 +1720,6 @@ function stripRawNonVisibleHtmlBlocks(source, label, problems) {
   return retained.join("");
 }
 
-function inspectMalformedHtmlOpenings(source, label, problems) {
-  const opening = /^(?<indent> {0,3})<\/?[A-Za-z]/gmu;
-  const pattern = htmlTagPattern();
-  let candidate;
-  let recognized = 0;
-  while ((candidate = opening.exec(source)) !== null) {
-    const index = candidate.index + candidate.groups.indent.length;
-    if (commonmarkAutolinkAt(source, index)) continue;
-    pattern.lastIndex = index;
-    const tag = pattern.exec(source);
-    if (!tag || tag.index !== index) {
-      problems.push(`${label} contains malformed or unsupported raw HTML syntax.`);
-      return;
-    }
-    recognized += 1;
-    if (recognized > MAX_VISIBLE_HTML_TAGS) {
-      problems.push(`${label} contains too many HTML tags for visible-record inspection.`);
-      return;
-    }
-  }
-}
-
 function hiddenHtmlContainer(tag, attributes, label, problems) {
   if (Buffer.byteLength(attributes, "utf8") > MAX_INLINE_HTML_ATTRIBUTE_BYTES) {
     problems.push(`${label} contains an oversized HTML attribute list.`);
@@ -1745,7 +1745,8 @@ function matchingHiddenContainerEnd(source, opening, state, label, problems) {
   const pattern = htmlTagPattern();
   pattern.lastIndex = openingEnd;
   let depth = 1;
-  for (const candidate of source.matchAll(pattern)) {
+  for (const rawCandidate of source.matchAll(pattern)) {
+    const candidate = normalizedHtmlTagCandidate(rawCandidate);
     if (commonmarkAutolinkContent(candidate[0]) !== undefined) continue;
     state.tags += 1;
     if (state.tags > MAX_VISIBLE_HTML_TAGS) {
@@ -1772,9 +1773,33 @@ function visibleMarkdown(source, label, problems) {
   }
   const renderableLines = [];
   let fence;
-  let htmlComment = false;
+  let htmlComment;
+  let indentedCode;
+  let paragraph;
+  let containerOverflowReported = false;
   for (const line of source.split("\n")) {
-    const containerLine = withoutMarkdownBlockquoteContainers(line);
+    const blockquote = markdownBlockquoteLine(line);
+    if (blockquote.overflow && !containerOverflowReported) {
+      problems.push(`${label} exceeds the supported Markdown container depth.`);
+      containerOverflowReported = true;
+    }
+    let containerLine = blockquote.content;
+    if (fence) {
+      if (blockquote.depth < fence.containerDepth) {
+        fence = undefined;
+      } else {
+        containerLine = blockquote.contents[fence.containerDepth];
+      }
+    }
+    if (htmlComment) {
+      if (blockquote.depth < htmlComment.containerDepth) {
+        htmlComment = undefined;
+      } else {
+        containerLine = blockquote.contents[htmlComment.containerDepth];
+      }
+    }
+    if (paragraph && blockquote.depth !== paragraph.containerDepth) paragraph = undefined;
+    if (indentedCode && blockquote.depth !== indentedCode.containerDepth) indentedCode = undefined;
     const fenceCandidate = /^ {0,3}(?<marker>`{3,}|~{3,})(?<info>.*)$/u.exec(containerLine)?.groups;
     const fenceMarker =
       fenceCandidate && !(fenceCandidate.marker[0] === "`" && fenceCandidate.info.includes("`"))
@@ -1787,13 +1812,22 @@ function visibleMarkdown(source, label, problems) {
       continue;
     }
     if (fenceMarker && !htmlComment) {
-      fence = { character: fenceMarker[0], length: fenceMarker.length };
+      fence = { character: fenceMarker[0], containerDepth: blockquote.depth, length: fenceMarker.length };
+      paragraph = undefined;
+      indentedCode = undefined;
       renderableLines.push("");
       continue;
     }
-    if (!htmlComment && /^(?: {4}|\t)/u.test(containerLine)) {
-      renderableLines.push("");
-      continue;
+    const indented = /^(?: {4}|\t)/u.exec(containerLine);
+    if (!htmlComment && indented) {
+      if (!paragraph || indentedCode) {
+        indentedCode = { containerDepth: blockquote.depth };
+        renderableLines.push("");
+        continue;
+      }
+      containerLine = containerLine.slice(indented[0].length);
+    } else if (!indented) {
+      indentedCode = undefined;
     }
     const uncommented = [];
     let cursor = 0;
@@ -1804,7 +1838,7 @@ function visibleMarkdown(source, label, problems) {
           cursor = containerLine.length;
           continue;
         }
-        htmlComment = false;
+        htmlComment = undefined;
         cursor = commentEnd + 3;
         continue;
       }
@@ -1815,22 +1849,23 @@ function visibleMarkdown(source, label, problems) {
         continue;
       }
       uncommented.push(containerLine.slice(cursor, commentStart));
-      htmlComment = true;
+      htmlComment = { containerDepth: blockquote.depth };
       cursor = commentStart + 4;
     }
     const visibleLine = uncommented.join("");
     renderableLines.push(visibleLine);
+    paragraph = visibleLine.trim().length > 0 ? { containerDepth: blockquote.depth } : undefined;
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
   if (htmlComment) problems.push(`${label} contains an unterminated HTML comment.`);
   const renderable = stripRawNonVisibleHtmlBlocks(renderableLines.join("\n"), label, problems);
-  inspectMalformedHtmlOpenings(renderable, label, problems);
   const visible = [];
   const state = { tags: 0, saturated: false };
   const pattern = htmlTagPattern();
   let retainedCursor = 0;
   let candidate;
   while ((candidate = pattern.exec(renderable)) !== null) {
+    candidate = normalizedHtmlTagCandidate(candidate);
     if (commonmarkAutolinkContent(candidate[0]) !== undefined) continue;
     state.tags += 1;
     if (state.tags > MAX_VISIBLE_HTML_TAGS) {
@@ -1940,7 +1975,8 @@ function renderedInlineHtml(claim) {
   const rendered = [];
   const pattern = htmlTagPattern();
   let cursor = 0;
-  for (const candidate of claim.matchAll(pattern)) {
+  for (const rawCandidate of claim.matchAll(pattern)) {
+    const candidate = normalizedHtmlTagCandidate(rawCandidate);
     rendered.push(claim.slice(cursor, candidate.index));
     const autolink = commonmarkAutolinkContent(candidate[0]);
     if (autolink !== undefined) {
@@ -1964,11 +2000,91 @@ function normalizedReferenceLabel(value) {
   return decodeRenderedEntities(markdownUnescape(value)).trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
+function rawUtf8Character(source, index) {
+  const first = source.charCodeAt(index);
+  if (first >= 0xd800 && first <= 0xdbff && index + 1 < source.length) {
+    const second = source.charCodeAt(index + 1);
+    if (second >= 0xdc00 && second <= 0xdfff) return { bytes: 4, width: 2 };
+  }
+  if (first <= 0x7f) return { bytes: 1, width: 1 };
+  if (first <= 0x7ff) return { bytes: 2, width: 1 };
+  return { bytes: 3, width: 1 };
+}
+
+function boundedMarkdownBracket(source, start, { allowNested = true, maximumCharacters, maximumBytes }) {
+  let depth = 1;
+  let escaped = false;
+  let characters = 0;
+  let bytes = 0;
+  let overByteLimit = false;
+  let overCharacterLimit = false;
+  for (let cursor = start; cursor < source.length;) {
+    const character = source[cursor];
+    if (!escaped && character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          end: cursor,
+          invalid: false,
+          overByteLimit,
+          overCharacterLimit,
+          overLimit: overByteLimit || overCharacterLimit
+        };
+      }
+    }
+    if (!escaped && character === "[") {
+      if (!allowNested) {
+        return {
+          end: -1,
+          invalid: true,
+          overByteLimit,
+          overCharacterLimit,
+          overLimit: overByteLimit || overCharacterLimit
+        };
+      }
+      depth += 1;
+      if (depth > 8) {
+        return {
+          end: -1,
+          invalid: true,
+          overByteLimit,
+          overCharacterLimit,
+          overLimit: overByteLimit || overCharacterLimit
+        };
+      }
+    }
+    const encoded = rawUtf8Character(source, cursor);
+    characters += 1;
+    bytes += encoded.bytes;
+    if (characters > maximumCharacters) overCharacterLimit = true;
+    if (bytes > maximumBytes) overByteLimit = true;
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    }
+    cursor += encoded.width;
+  }
+  return {
+    end: -1,
+    invalid: false,
+    overByteLimit,
+    overCharacterLimit,
+    overLimit: overByteLimit || overCharacterLimit
+  };
+}
+
 function commonmarkReferenceLabelWithinBounds(value) {
-  return (
-    [...value].length <= MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS &&
-    Buffer.byteLength(value, "utf8") <= MAX_MARKDOWN_LABEL_BYTES
-  );
+  let characters = 0;
+  let bytes = 0;
+  for (let cursor = 0; cursor < value.length;) {
+    const encoded = rawUtf8Character(value, cursor);
+    characters += 1;
+    bytes += encoded.bytes;
+    if (characters > MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS || bytes > MAX_MARKDOWN_LABEL_BYTES) return false;
+    cursor += encoded.width;
+  }
+  return true;
 }
 
 function markdownReferenceDefinition(line) {
@@ -1976,21 +2092,14 @@ function markdownReferenceDefinition(line) {
   while (cursor < line.length && line[cursor] === " " && cursor < 4) cursor += 1;
   if (cursor > 3 || line[cursor] !== "[") return undefined;
   const labelStart = cursor + 1;
-  let escaped = false;
-  for (cursor = labelStart; cursor < line.length; cursor += 1) {
-    const character = line[cursor];
-    if (escaped) {
-      escaped = false;
-    } else if (character === "\\") {
-      escaped = true;
-    } else if (character === "[") {
-      return undefined;
-    } else if (character === "]") {
-      if (line[cursor + 1] !== ":") return undefined;
-      return { label: line.slice(labelStart, cursor), body: line.slice(cursor + 2).replace(/^[\t ]*/u, "") };
-    }
-  }
-  return undefined;
+  const label = boundedMarkdownBracket(line, labelStart, {
+    allowNested: false,
+    maximumBytes: MAX_MARKDOWN_LABEL_BYTES,
+    maximumCharacters: MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS
+  });
+  if (label.invalid || label.end < 0 || line[label.end + 1] !== ":") return undefined;
+  if (label.overLimit) return { invalidLabel: true };
+  return { label: line.slice(labelStart, label.end), body: line.slice(label.end + 2).replace(/^[\t ]*/u, "") };
 }
 
 function markdownContinuationTitle(line) {
@@ -2007,6 +2116,11 @@ function extractMarkdownReferences(source, label, problems) {
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
     const match = markdownReferenceDefinition(line);
+    if (match?.invalidLabel) {
+      problems.push(`${label} contains invalid, duplicate, or unbounded Markdown references.`);
+      retained.push("");
+      continue;
+    }
     if (!match || match.body.length === 0) {
       retained.push(line);
       continue;
@@ -2037,26 +2151,6 @@ function extractMarkdownReferences(source, label, problems) {
     }
   }
   return { source: retained.join("\n"), references };
-}
-
-function closingMarkdownBracket(source, start) {
-  let escaped = false;
-  let depth = 1;
-  for (let cursor = start; cursor < source.length; cursor += 1) {
-    const character = source[cursor];
-    if (escaped) {
-      escaped = false;
-    } else if (character === "\\") {
-      escaped = true;
-    } else if (character === "[") {
-      depth += 1;
-      if (depth > 8) return -1;
-    } else if (character === "]") {
-      depth -= 1;
-      if (depth === 0) return cursor;
-    }
-  }
-  return -1;
 }
 
 function closingMarkdownDestination(source, start) {
@@ -2229,16 +2323,21 @@ function renderedInlineMarkdown(claim, references) {
     constructs += 1;
     if (constructs > MAX_MARKDOWN_CONSTRUCTS) return { text: rendered.join(""), unsupported: true };
     const labelStart = cursor + (image ? 2 : 1);
-    const labelEnd = closingMarkdownBracket(claim, labelStart);
-    if (labelEnd < 0 || Buffer.byteLength(claim.slice(labelStart, labelEnd), "utf8") > MAX_MARKDOWN_LABEL_BYTES) {
+    const labelRange = boundedMarkdownBracket(claim, labelStart, {
+      maximumBytes: MAX_MARKDOWN_LABEL_BYTES,
+      maximumCharacters: Number.MAX_SAFE_INTEGER
+    });
+    const labelEnd = labelRange.end;
+    if (labelRange.invalid || labelRange.overLimit || labelEnd < 0) {
       unsupported = true;
-      rendered.push(claim[cursor]);
-      cursor += 1;
+      rendered.push(" ");
+      cursor = labelEnd < 0 ? claim.length : labelEnd + 1;
       continue;
     }
     const label = claim.slice(labelStart, labelEnd);
     let consumedEnd = labelEnd + 1;
     let linked = false;
+    let unsupportedEnd;
     if (claim[labelEnd + 1] === "(") {
       const destinationEnd = closingMarkdownDestination(claim, labelEnd + 2);
       if (destinationEnd >= 0 && validMarkdownDestinationAndTitle(claim.slice(labelEnd + 2, destinationEnd))) {
@@ -2248,8 +2347,12 @@ function renderedInlineMarkdown(claim, references) {
         unsupported = true;
       }
     } else if (claim[labelEnd + 1] === "[") {
-      const referenceEnd = closingMarkdownBracket(claim, labelEnd + 2);
-      if (referenceEnd >= 0) {
+      const referenceRange = boundedMarkdownBracket(claim, labelEnd + 2, {
+        maximumBytes: MAX_MARKDOWN_LABEL_BYTES,
+        maximumCharacters: MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS
+      });
+      const referenceEnd = referenceRange.end;
+      if (!referenceRange.invalid && !referenceRange.overLimit && referenceEnd >= 0) {
         const explicitReference = claim.slice(labelEnd + 2, referenceEnd);
         const rawReference = explicitReference.length === 0 ? label : explicitReference;
         const reference = normalizedReferenceLabel(rawReference);
@@ -2257,11 +2360,17 @@ function renderedInlineMarkdown(claim, references) {
           linked = true;
           consumedEnd = referenceEnd + 1;
         }
-      } else {
+      } else if (referenceRange.invalid || referenceRange.overByteLimit || referenceEnd < 0) {
         unsupported = true;
+        unsupportedEnd = referenceEnd >= 0 ? referenceEnd + 1 : claim.length;
       }
     } else if (commonmarkReferenceLabelWithinBounds(label) && references.has(normalizedReferenceLabel(label))) {
       linked = true;
+    }
+    if (unsupportedEnd !== undefined) {
+      rendered.push(markdownUnescape(label));
+      cursor = unsupportedEnd;
+      continue;
     }
     if (!linked) {
       rendered.push(claim[cursor]);
@@ -2356,24 +2465,25 @@ function evidenceProductCandidates(claim) {
   return candidates;
 }
 
-function hasTokenStem(tokens, stems) {
-  return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
-}
-
-function structurallyOwnsCursorTarget(claim) {
+function structurallyOwnsEvidence(claim) {
   const tokens =
     foldEvidenceConfusables(claim)
       .toLowerCase()
       .match(/[a-z0-9]+(?:\.[0-9]+)*/gu) ?? [];
-  for (let index = 0; index + 2 < tokens.length; index += 1) {
-    if (tokens[index] !== "cursor" || !/^[a-z]{2,63}(?:s|ed)$/u.test(tokens[index + 1])) continue;
-    let target = index + 2;
-    if (["a", "an", "every", "the"].includes(tokens[target])) target += 1;
-    if (
-      (tokens[target] === "released" && tokens[target + 1] === "jupyter") ||
-      (tokens[target] === "native" && tokens[target + 1] === "r") ||
-      (tokens[target] === "installed" && tokens[target + 1] === "performance")
-    ) {
+  const negations = new Set(["cannot", "neither", "never", "no", "nor", "not", "without"]);
+  const relation =
+    /^(?:own(?:s|ed|ing)?|run(?:s|ning)?|ran|execut(?:e|es|ed|ing)|qualif(?:y|ies|ied|ying)|certif(?:y|ies|ied|ying)|validat(?:e|es|ed|ing)|cover(?:s|ed|ing)?|assign(?:s|ed|ing)?|attribut(?:e|es|ed|ing)|attest(?:s|ed|ing)?|designat(?:e|es|ed|ing)|demonstrat(?:e|es|ed|ing)|establish(?:es|ed|ing)?|guarantee(?:s|d|ing)?|govern(?:s|ed|ing)?|control(?:s|led|ling)?|warrant(?:s|ed|ing)?|assur(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|support(?:s|ed|ing)?|manag(?:e|es|ed|ing)|maintain(?:s|ed|ing)?|operat(?:e|es|ed|ing)|responsible|accountable|authority)$/u;
+  const isNegated = (index) => {
+    const start = Math.max(0, index - 4);
+    const end = Math.min(tokens.length, index + 3);
+    for (let cursor = start; cursor < end; cursor += 1) {
+      if (cursor !== index && negations.has(tokens[cursor])) return true;
+    }
+    return false;
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (relation.test(tokens[index]) && !isNegated(index)) return true;
+    if (tokens[index] === "in" && tokens[index + 1] === "charge" && tokens[index + 2] === "of" && !isNegated(index)) {
       return true;
     }
   }
@@ -2386,33 +2496,7 @@ function structuredOwnershipViolation(claim, references) {
   const tokens = claimTokens(foldEvidenceConfusables(renderedProse));
   const products = evidenceProductCandidates(renderedProse);
   const has = (...values) => values.every((value) => tokens.has(value));
-  const ownsEvidence =
-    hasTokenStem(tokens, [
-      "own",
-      "run",
-      "execut",
-      "qualif",
-      "certif",
-      "validat",
-      "cover",
-      "assign",
-      "attribut",
-      "responsib",
-      "attest",
-      "authorit",
-      "designat",
-      "demonstrat",
-      "establish",
-      "eviden",
-      "guarant",
-      "govern",
-      "control",
-      "accountab",
-      "warrant",
-      "assur",
-      "prov",
-      "support"
-    ]) || has("in", "charge", "of");
+  const ownsEvidence = structurallyOwnsEvidence(renderedProse);
   const cursorRestrictedTarget =
     tokens.has("jupyter") ||
     has("native", "r") ||
@@ -2427,18 +2511,13 @@ function structuredOwnershipViolation(claim, references) {
     (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
   const namedProductContext = products.length > 0;
   const cursorProduct = products.some((product) => product.name === "Cursor");
-  const cursorStructuralOwnership = cursorProduct && structurallyOwnsCursorTarget(renderedProse);
   if (rendered.unsupportedMarkdown && ownsEvidence) {
     return "evidence-sensitive Markdown must remain inside the supported structural bounds";
   }
-  if (
-    (ownsEvidence || cursorStructuralOwnership) &&
-    (cursorProductContext || namedProductContext) &&
-    products.some((product) => !product.canonical)
-  ) {
+  if (ownsEvidence && (cursorProductContext || namedProductContext) && products.some((product) => !product.canonical)) {
     return "named product and editor claims must retain exact canonical case";
   }
-  if (cursorProduct && cursorRestrictedTarget && (ownsEvidence || cursorStructuralOwnership)) {
+  if (cursorProduct && cursorRestrictedTarget && ownsEvidence) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
   if (
