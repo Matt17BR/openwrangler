@@ -210,6 +210,7 @@ def _write_fake_dependency(site_packages: Path) -> None:
         "Metadata-Version: 2.1\nName: ow-guard-fixture\nVersion: 1.2.3\n",
         encoding="utf-8",
     )
+    (metadata / "RECORD").write_text("ow_guard_fixture/__init__.py,,\n", encoding="utf-8")
 
 
 def _write_fake_pip(site_packages: Path) -> None:

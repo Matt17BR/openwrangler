@@ -1,8 +1,17 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEPENDENCY_GUARD_ACCEPTANCE_TOKEN,
+  DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION,
+  DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE,
+  DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE,
+  DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY,
   DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE,
   DEPENDENCY_GUARD_PROTOCOL,
+  createDependencyGuardFixtureDistribution,
   dependencyGuardFakePipSource,
   dependencyGuardInvocationRecorderSource,
   dependencyGuardParentSource,
@@ -11,6 +20,108 @@ import {
   type DependencyGuardAcceptanceDependency,
   type DependencyGuardAcceptanceEnvironment
 } from "./extensionHost/dependencyGuardRecoveryFixture";
+
+interface DependencyGuardFixtureOwnershipReceipt {
+  readonly files: readonly string[] | null;
+  readonly owned: boolean;
+  readonly recordSource: string;
+}
+
+type DependencyGuardFixtureRecordMutation = (recordSource: string) => string | null;
+
+const expectedDependencyGuardFixtureRecordSource = [
+  `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
+  `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA,,`,
+  `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD,,`,
+  ""
+].join("\n");
+
+const dependencyGuardPath = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "python",
+  "openwrangler_runtime",
+  "dependency_guard.py"
+);
+const testPython =
+  process.env.OPEN_WRANGLER_TEST_PYTHON ??
+  process.env.OPEN_WRANGLER_PYTHON ??
+  (process.platform === "win32" ? "python" : "python3");
+
+function inspectFixtureOwnership(
+  mutateRecord?: DependencyGuardFixtureRecordMutation
+): DependencyGuardFixtureOwnershipReceipt {
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-record-"));
+  try {
+    createDependencyGuardFixtureDistribution(directory);
+    const recordPath = path.join(directory, DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY, "RECORD");
+    const recordSource = readFileSync(recordPath, "utf8");
+    if (mutateRecord !== undefined) {
+      const mutatedRecordSource = mutateRecord(recordSource);
+      if (mutatedRecordSource === null) {
+        rmSync(recordPath);
+      } else {
+        if (mutatedRecordSource === recordSource) {
+          throw new Error("The hostile RECORD mutation must change the isolated fixture copy.");
+        }
+        writeFileSync(recordPath, mutatedRecordSource, { encoding: "utf8" });
+      }
+    }
+    // This owner tests RECORD mapping. The dependency-guard owners separately
+    // cover descriptor identity, so pin only the imported file identity here to
+    // keep unrelated OS-temp ancestor activity out of this fixture proof.
+    const ownership = JSON.parse(
+      execFileSync(
+        testPython,
+        [
+          "-I",
+          "-B",
+          "-c",
+          [
+            "import importlib",
+            "import importlib.metadata",
+            "import importlib.util",
+            "import json",
+            "import os",
+            "import sys",
+            "guard_path, site_packages = sys.argv[1:]",
+            "sys.path.insert(0, site_packages)",
+            "specification = importlib.util.spec_from_file_location('openwrangler_dependency_guard_fixture_test', guard_path)",
+            "guard = importlib.util.module_from_spec(specification)",
+            "specification.loader.exec_module(guard)",
+            `module = importlib.import_module(${JSON.stringify(DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE)})`,
+            `distribution = importlib.metadata.distribution(${JSON.stringify(DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION)})`,
+            "origin = os.path.normcase(os.path.abspath(module.__file__))",
+            "owned_identity = ('dependency-record-fixture',)",
+            "guard._regular_module_file_identity = lambda candidate: (",
+            "    owned_identity",
+            "    if isinstance(candidate, str)",
+            "    and os.path.normcase(os.path.abspath(candidate)) == origin",
+            "    else None",
+            ")",
+            "files = distribution.files",
+            "print(json.dumps({",
+            "    'files': None if files is None else [str(item) for item in files],",
+            "    'owned': guard._distribution_owns_module(distribution, module),",
+            "}, separators=(',', ':'), sort_keys=True))"
+          ].join("\n"),
+          dependencyGuardPath,
+          directory
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 30_000,
+          windowsHide: true
+        }
+      )
+    ) as DependencyGuardFixtureOwnershipReceipt;
+    return { ...ownership, recordSource };
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
 
 const environment: DependencyGuardAcceptanceEnvironment = {
   executable: "/fixture/environment/bin/python",
@@ -21,15 +132,64 @@ const environment: DependencyGuardAcceptanceEnvironment = {
 };
 
 const dependency: DependencyGuardAcceptanceDependency = {
-  importModule: "openwrangler_guard_fixture",
-  distribution: "openwrangler-guard-fixture",
-  installSpec: "openwrangler-guard-fixture>=1.0.0,<2.0.0",
+  importModule: DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE,
+  distribution: DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION,
+  installSpec: `${DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION}>=1.0.0,<2.0.0`,
   exactVersion: null,
   minimumVersion: "1.0.0",
   maximumVersionExclusive: "2.0.0"
 };
 
 describe("dependency-guard recovery fixture", () => {
+  it("binds the synthetic module to its exact distribution RECORD", () => {
+    const receipt = inspectFixtureOwnership();
+
+    expect(receipt).toEqual({
+      files: [
+        DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE,
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
+      ],
+      owned: true,
+      recordSource: expectedDependencyGuardFixtureRecordSource
+    });
+  });
+
+  const hostileRecordMutations: ReadonlyArray<
+    readonly [string, DependencyGuardFixtureRecordMutation, readonly string[] | null]
+  > = [
+    ["an absent RECORD", () => null, null],
+    [
+      "a mismatched module entry",
+      (recordSource) =>
+        recordSource.replace(
+          `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
+          `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py,,`
+        ),
+      [
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
+      ]
+    ],
+    [
+      "a foreign module entry",
+      (recordSource) =>
+        recordSource.replace(`${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`, "foreign_guard_fixture/__init__.py,,"),
+      [
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
+        `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
+      ]
+    ]
+  ];
+
+  it.each(hostileRecordMutations)("rejects fixture ownership with %s", (_label, mutateRecord, expectedFiles) => {
+    expect(inspectFixtureOwnership(mutateRecord)).toEqual({
+      files: expectedFiles,
+      owned: false,
+      recordSource: expectedDependencyGuardFixtureRecordSource
+    });
+  });
+
   it("builds JSON-safe invocation and dependency-probe recorders", () => {
     const invocationLog = '/fixture/"invocations".jsonl';
     const probeLog = '/fixture/"probes".jsonl';

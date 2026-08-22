@@ -36,8 +36,10 @@ export function packagedExcelDependencyWorkbookSource(): string {
 
 export function excelDependencyGateSource(marker: string): string {
   return [
+    "import importlib.abc as _openwrangler_importlib_abc",
     "import importlib.util as _openwrangler_importlib_util",
     "import os as _openwrangler_os",
+    "import sys as _openwrangler_sys",
     `_openwrangler_marker = ${JSON.stringify(marker)}`,
     "_openwrangler_find_spec_original = _openwrangler_importlib_util.find_spec",
     "def _openwrangler_find_spec(name, package=None):",
@@ -45,6 +47,12 @@ export function excelDependencyGateSource(marker: string): string {
     "        return None",
     "    return _openwrangler_find_spec_original(name, package)",
     "_openwrangler_importlib_util.find_spec = _openwrangler_find_spec",
+    "class _OpenWranglerDependencyGate(_openwrangler_importlib_abc.MetaPathFinder):",
+    "    def find_spec(self, fullname, path=None, target=None):",
+    "        if fullname == 'openpyxl' and not _openwrangler_os.path.exists(_openwrangler_marker):",
+    '            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)',
+    "        return None",
+    "_openwrangler_sys.meta_path.insert(0, _OpenWranglerDependencyGate())",
     ""
   ].join("\n");
 }
@@ -65,7 +73,7 @@ export function excelDependencyPipSource(marker: string, invocation: string, int
     "        with open(integrity_checks_path, 'a', encoding='utf-8') as stream:",
     "            stream.write('clean\\n')",
     "    raise SystemExit(result)",
-    "expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']",
+    "expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5,<4']",
     "if sys.argv[1:] != expected:",
     "    raise SystemExit(91)",
     "environment_keys = {key.upper() for key in os.environ}",
@@ -86,7 +94,7 @@ export function excelDependencyPipSource(marker: string, invocation: string, int
     "os.replace(invocation_temporary, invocation_path)",
     "marker_temporary = f'{marker_path}.{os.getpid()}.tmp'",
     "with open(marker_temporary, 'xb') as stream:",
-    "    stream.write(b'openpyxl>=3.1.5\\n')",
+    "    stream.write(b'openpyxl>=3.1.5,<4\\n')",
     "    stream.flush()",
     "    os.fsync(stream.fileno())",
     "os.replace(marker_temporary, marker_path)",

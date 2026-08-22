@@ -32,6 +32,7 @@ LOCK_NAME = "mutation.lock"
 MAX_FRAME_BYTES = 65_536
 MAX_MARKER_BYTES = 65_536
 MAX_DEPENDENCIES = 64
+VERSION_FIELD_MAX_LENGTH = 64
 INTEGRITY_PROTOCOL = "openwrangler-dependency-integrity-v1"
 INTEGRITY_CHECK_TIMEOUT_SECONDS = 20
 INTEGRITY_HELPER = Path(__file__).with_name("dependency_integrity.py")
@@ -67,11 +68,6 @@ _MARKER_PATTERN = re.compile(r"^mutation-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 _TEMP_PATTERN = re.compile(r"^\.pending-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.tmp$")
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _DISTRIBUTION_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
-_INSTALL_SPEC_PATTERN = re.compile(
-    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127}))"
-    r"(?P<constraints>(?:(?:==|!=|<=|>=|<|>|~=)[0-9]+(?:\.[0-9]+){0,7}"
-    r"(?:,(?:==|!=|<=|>=|<|>|~=)[0-9]+(?:\.[0-9]+){0,7})*)?)$"
-)
 _BOUND_VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){0,7}$")
 
 _ENVIRONMENT_KEYS = {
@@ -90,6 +86,22 @@ _DEPENDENCY_KEYS = {
     "exactVersion",
     "minimumVersion",
     "maximumVersionExclusive",
+}
+_LEGACY_V1_DEPENDENCY_KEYS = _DEPENDENCY_KEYS
+_LEGACY_V1_DEPENDENCY_TRANSITIONS: dict[
+    tuple[str, str, str, str | None, str | None, str | None],
+    tuple[str | None, str | None, str | None],
+] = {
+    ("polars", "polars", "polars", None, None, None): (None, None, None),
+    ("duckdb", "duckdb", "duckdb>=1.4.5,<1.6", None, "1.4.5", "1.6"): (None, "1.4.5", "1.6"),
+    ("duckdb", "duckdb", "duckdb>=1.5.4,<1.6", None, "1.5.4", "1.6"): (None, "1.5.4", "1.6"),
+    ("fsspec", "fsspec", "fsspec==2026.7.0", "2026.7.0", None, None): ("2026.7.0", None, None),
+    ("pytz", "pytz", "pytz", None, None, None): (None, None, None),
+    ("pandas", "pandas", "pandas", None, None, None): (None, None, None),
+    ("pyarrow", "pyarrow", "pyarrow", None, None, None): (None, None, None),
+    ("openpyxl", "openpyxl", "openpyxl>=3.1.5", None, "3.1.5", None): (None, "3.1.5", None),
+    ("xlrd", "xlrd", "xlrd>=2.0.1", None, "2.0.1", None): (None, "2.0.1", None),
+    ("fastexcel", "fastexcel", "fastexcel>=0.9", None, "0.9", None): (None, "0.9", None),
 }
 
 
@@ -329,32 +341,54 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     install_spec = _bounded_string(value["installSpec"], maximum=2048, code=code)
     if not _MODULE_PATTERN.fullmatch(import_module) or not _DISTRIBUTION_PATTERN.fullmatch(distribution):
         _fail(code)
-    install_match = _INSTALL_SPEC_PATTERN.fullmatch(install_spec)
-    if install_match is None:
-        _fail(code)
-    install_distribution = _normalized_distribution_name(install_match.group("name"))
-    if install_distribution != _normalized_distribution_name(distribution):
-        _fail(code)
     exact = value["exactVersion"]
     minimum = value["minimumVersion"]
     maximum = value["maximumVersionExclusive"]
+    exact_version = None
+    minimum_version = None
+    maximum_version = None
     if exact is not None:
-        exact = _bounded_string(exact, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(exact):
+        exact = _bounded_string(exact, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+        try:
+            exact_version = _pep440_version(exact)
+        except BaseException:
             _fail(code)
     if minimum is not None:
-        minimum = _bounded_string(minimum, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(minimum):
+        minimum = _bounded_string(minimum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+        try:
+            minimum_version = _pep440_version(minimum)
+        except BaseException:
             _fail(code)
     if maximum is not None:
-        maximum = _bounded_string(maximum, maximum=64, code=code)
-        if not _BOUND_VERSION_PATTERN.fullmatch(maximum):
+        maximum = _bounded_string(maximum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+        try:
+            maximum_version = _pep440_version(maximum)
+        except BaseException:
             _fail(code)
-    constraints = install_match.group("constraints")
-    if exact is None:
-        if any(constraint.startswith("==") for constraint in constraints.split(",")):
+    for parsed_version in (exact_version, minimum_version, maximum_version):
+        if parsed_version is not None and (parsed_version.is_prerelease or parsed_version.is_devrelease):
             _fail(code)
-    elif constraints != f"=={exact}" or minimum is not None or maximum is not None:
+    if exact_version is not None:
+        if minimum_version is not None or maximum_version is not None:
+            _fail(code)
+        constraints = f"=={exact}"
+    else:
+        if minimum_version is None or maximum_version is None or minimum_version >= maximum_version:
+            _fail(code)
+        assert minimum is not None and maximum is not None
+        constraints = f">={minimum},<{maximum}"
+    try:
+        requirement = _pep440_requirement(install_spec)
+        expected_specifier = _pep440_specifier(constraints)
+    except BaseException:
+        _fail(code)
+    if (
+        requirement.extras
+        or requirement.marker is not None
+        or requirement.url is not None
+        or _canonical_distribution_name(requirement.name) != _canonical_distribution_name(distribution)
+        or requirement.specifier != expected_specifier
+    ):
         _fail(code)
     return {
         "importModule": import_module,
@@ -366,8 +400,47 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     }
 
 
-def _normalized_distribution_name(value: str) -> str:
-    return re.sub(r"[-_.]+", "-", value).lower()
+def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != _LEGACY_V1_DEPENDENCY_KEYS:
+        _fail(code)
+    import_module = _bounded_string(value["importModule"], maximum=256, code=code)
+    distribution = _bounded_string(value["distribution"], maximum=128, code=code)
+    install_spec = _bounded_string(value["installSpec"], maximum=2048, code=code)
+    exact = value["exactVersion"]
+    minimum = value["minimumVersion"]
+    maximum = value["maximumVersionExclusive"]
+    if exact is not None:
+        exact = _bounded_string(exact, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+    if minimum is not None:
+        minimum = _bounded_string(minimum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+    if maximum is not None:
+        maximum = _bounded_string(maximum, maximum=VERSION_FIELD_MAX_LENGTH, code=code)
+    transition_key = (import_module, distribution, install_spec, exact, minimum, maximum)
+    try:
+        exact, normalized_minimum, normalized_maximum = _LEGACY_V1_DEPENDENCY_TRANSITIONS[transition_key]
+    except KeyError:
+        _fail(code)
+    return {
+        "importModule": import_module,
+        "distribution": distribution,
+        "installSpec": install_spec,
+        "exactVersion": exact,
+        "minimumVersion": normalized_minimum,
+        "maximumVersionExclusive": normalized_maximum,
+    }
+
+
+def _normalize_marker_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
+        _fail(code)
+    try:
+        normalized = [_normalize_dependency(dependency, code=code) for dependency in value]
+    except GuardError:
+        normalized = [_normalize_legacy_journal_dependency(dependency, code=code) for dependency in value]
+    modules = {dependency["importModule"] for dependency in normalized}
+    if len(modules) != len(normalized):
+        _fail(code)
+    return normalized
 
 
 def _normalize_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
@@ -2061,7 +2134,7 @@ def _read_marker(
     try:
         token = _canonical_uuid(decoded["token"])
         environment = _normalize_environment(decoded["environment"], compare_actual=False, code=code)
-        dependencies = _normalize_dependencies(decoded["dependencies"], code=code)
+        dependencies = _normalize_marker_dependencies(decoded["dependencies"], code=code)
     except GuardError:
         _fail(code)
     marker = {
@@ -2321,10 +2394,26 @@ def _pep440_specifier(value: str) -> Any:
     return SpecifierSet(value)
 
 
+def _pep440_requirement(value: str) -> Any:
+    from pip._vendor.packaging.requirements import Requirement
+
+    return Requirement(value)
+
+
+def _canonical_distribution_name(value: str) -> str:
+    from pip._vendor.packaging.utils import canonicalize_name
+
+    return canonicalize_name(value)
+
+
+def _pep440_version(value: str) -> Any:
+    from pip._vendor.packaging.version import Version
+
+    return Version(value)
+
+
 def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> bool:
     try:
-        from pip._vendor.packaging.version import Version
-
         if dependency["exactVersion"] is not None:
             specifier = f"=={dependency['exactVersion']}"
         else:
@@ -2334,28 +2423,324 @@ def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> 
             if dependency["maximumVersionExclusive"] is not None:
                 constraints.append(f"<{dependency['maximumVersionExclusive']}")
             specifier = ",".join(constraints)
-        return bool(_pep440_specifier(specifier).contains(Version(observed), prereleases=True))
+        parsed = _pep440_specifier(specifier)
+        return bool(parsed.contains(_pep440_version(observed), prereleases=False))
     except BaseException:
         return False
+
+
+def _stat_entry_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _stat_file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _posix_regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    normalized = os.path.normpath(path)
+    if os.path.normcase(normalized) != os.path.normcase(path):
+        return None
+    parts = Path(normalized).parts
+    if len(parts) < 2 or parts[0] != os.path.sep:
+        return None
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    ancestors: list[tuple[int, str, int, tuple[int, int, int, int, int, int, int]]] = []
+    try:
+        current_descriptor = os.open(parts[0], directory_flags)
+        descriptors.append(current_descriptor)
+        for component in parts[1:-1]:
+            if component in {"", ".", ".."}:
+                return None
+            named = os.stat(
+                component,
+                dir_fd=current_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(named.st_mode):
+                return None
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=current_descriptor,
+            )
+            descriptors.append(child_descriptor)
+            opened = os.fstat(child_descriptor)
+            expected = _stat_entry_identity(named)
+            if not stat.S_ISDIR(opened.st_mode) or _stat_entry_identity(opened) != expected:
+                return None
+            ancestors.append((current_descriptor, component, child_descriptor, expected))
+            current_descriptor = child_descriptor
+        filename = parts[-1]
+        named_file = os.stat(
+            filename,
+            dir_fd=current_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(named_file.st_mode) or named_file.st_nlink != 1:
+            return None
+        file_descriptor = os.open(
+            filename,
+            file_flags,
+            dir_fd=current_descriptor,
+        )
+        descriptors.append(file_descriptor)
+        opened_file = os.fstat(file_descriptor)
+        current_file = os.stat(
+            filename,
+            dir_fd=current_descriptor,
+            follow_symlinks=False,
+        )
+        expected_file = _stat_entry_identity(named_file)
+        if (
+            not stat.S_ISREG(opened_file.st_mode)
+            or opened_file.st_nlink != 1
+            or _stat_entry_identity(opened_file) != expected_file
+            or _stat_entry_identity(current_file) != expected_file
+        ):
+            return None
+        for parent_descriptor, component, child_descriptor, expected in ancestors:
+            named = os.stat(
+                component,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(child_descriptor)
+            if (
+                not stat.S_ISDIR(named.st_mode)
+                or not stat.S_ISDIR(opened.st_mode)
+                or _stat_entry_identity(named) != expected
+                or _stat_entry_identity(opened) != expected
+            ):
+                return None
+        return _stat_file_identity(named_file)
+    except (OSError, ValueError):
+        return None
+    finally:
+        for descriptor in reversed(descriptors):
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [
+        ("low", ctypes.c_uint32),
+        ("high", ctypes.c_uint32),
+    ]
+
+
+class _WindowsFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("attributes", ctypes.c_uint32),
+        ("creation_time", _WindowsFileTime),
+        ("last_access_time", _WindowsFileTime),
+        ("last_write_time", _WindowsFileTime),
+        ("volume_serial", ctypes.c_uint32),
+        ("size_high", ctypes.c_uint32),
+        ("size_low", ctypes.c_uint32),
+        ("links", ctypes.c_uint32),
+        ("index_high", ctypes.c_uint32),
+        ("index_low", ctypes.c_uint32),
+    ]
+
+
+def _windows_file_information_identity(
+    value: _WindowsFileInformation,
+) -> tuple[int, int, int, int, int]:
+    return (
+        value.volume_serial,
+        (value.index_high << 32) | value.index_low,
+        (value.size_high << 32) | value.size_low,
+        (value.last_write_time.high << 32) | value.last_write_time.low,
+        (value.creation_time.high << 32) | value.creation_time.low,
+    )
+
+
+def _windows_regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    normalized = os.path.normpath(path)
+    if os.path.normcase(normalized) != os.path.normcase(path):
+        return None
+    drive, tail = os.path.splitdrive(normalized)
+    components = [item for item in re.split(r"[\\/]", tail) if item]
+    if not drive or not components:
+        return None
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        return None
+    kernel32 = loader("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_WindowsFileInformation),
+    ]
+    get_information.restype = ctypes.c_int
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    handles: list[tuple[int, _WindowsFileInformation]] = []
+    try:
+        current = f"{drive}{os.path.sep}"
+        for index, component in enumerate(components):
+            current = os.path.join(current, component)
+            is_file = index == len(components) - 1
+            flags = 0x00200000
+            if not is_file:
+                flags |= 0x02000000
+            handle = create_file(
+                current,
+                0,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                flags,
+                None,
+            )
+            if handle in {None, 0, ctypes.c_void_p(-1).value}:
+                return None
+            numeric_handle = int(handle)
+            information = _WindowsFileInformation()
+            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(information)):
+                close_handle(ctypes.c_void_p(numeric_handle))
+                return None
+            is_directory = bool(information.attributes & 0x00000010)
+            if (
+                bool(information.attributes & 0x00000400)
+                or is_directory == is_file
+                or (is_file and information.links != 1)
+            ):
+                close_handle(ctypes.c_void_p(numeric_handle))
+                return None
+            handles.append((numeric_handle, information))
+        for numeric_handle, expected in handles:
+            current_information = _WindowsFileInformation()
+            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(current_information)) or (
+                current_information.attributes != expected.attributes
+                or current_information.links != expected.links
+                or _windows_file_information_identity(current_information)
+                != _windows_file_information_identity(expected)
+            ):
+                return None
+        return _windows_file_information_identity(handles[-1][1])
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    finally:
+        for numeric_handle, _information in reversed(handles):
+            close_handle(ctypes.c_void_p(numeric_handle))
+
+
+def _regular_module_file_identity(
+    path: str,
+) -> tuple[int, int, int, int, int] | None:
+    if not os.path.isabs(path) or "\x00" in path or any(ord(character) < 0x20 for character in path):
+        return None
+    if os.name == "nt":
+        return _windows_regular_module_file_identity(path)
+    return _posix_regular_module_file_identity(path)
+
+
+def _distribution_owns_module(distribution: Any, module: Any) -> bool:
+    try:
+        files = distribution.files
+        origin = getattr(module, "__file__", None)
+        specification = getattr(module, "__spec__", None)
+        specification_origin = getattr(specification, "origin", None)
+        loader = getattr(specification, "loader", None)
+        if (
+            files is None
+            or not isinstance(origin, str)
+            or not isinstance(specification_origin, str)
+            or loader is None
+            or not os.path.isabs(origin)
+            or os.path.normcase(os.path.abspath(origin)) != os.path.normcase(os.path.abspath(specification_origin))
+        ):
+            return False
+        origin_identity = _regular_module_file_identity(origin)
+        if origin_identity is None:
+            return False
+        normalized_origin = os.path.normcase(os.path.abspath(origin))
+        for index, item in enumerate(files):
+            if index >= 100_000:
+                return False
+            try:
+                candidate_value = os.fspath(distribution.locate_file(item))
+            except (OSError, TypeError, ValueError):
+                continue
+            if (
+                not isinstance(candidate_value, str)
+                or not os.path.isabs(candidate_value)
+                or os.path.normcase(os.path.abspath(candidate_value)) != normalized_origin
+            ):
+                continue
+            candidate_identity = _regular_module_file_identity(candidate_value)
+            if candidate_identity != origin_identity:
+                return False
+            return not (
+                getattr(module, "__file__", None) != origin
+                or getattr(module, "__spec__", None) is not specification
+                or getattr(specification, "origin", None) != specification_origin
+                or getattr(specification, "loader", None) is not loader
+                or _regular_module_file_identity(origin) != origin_identity
+            )
+    except BaseException:
+        return False
+    return False
 
 
 def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
     with _silence_file_descriptors():
         for dependency in dependencies:
             try:
-                importlib.import_module(dependency["importModule"])
-                observed = importlib.metadata.version(dependency["distribution"])
+                distribution = importlib.metadata.distribution(dependency["distribution"])
+                module = importlib.import_module(dependency["importModule"])
+                observed = distribution.version
             except BaseException:
                 _fail("validation_failed")
             if (
                 not isinstance(observed, str)
                 or not observed
-                or len(observed) > 256
+                or len(observed) > VERSION_FIELD_MAX_LENGTH
                 or "\x00" in observed
                 or any(ord(character) < 0x20 for character in observed)
             ):
                 _fail("validation_failed")
             if not _dependency_version_supported(dependency, observed):
+                _fail("validation_failed")
+            if not _distribution_owns_module(distribution, module):
                 _fail("validation_failed")
 
 
