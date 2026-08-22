@@ -85,15 +85,15 @@ candidates consume the protected commit and exact VSIX after that merge gate; th
 coverage. Their packaged PySpark journey still provisions Java 17 because that is installed-product evidence. An
 optional adapter may skip in an ordinary development test run, but it may not disappear from pull-request coverage.
 
-Repository development and automation use exactly Node.js 22.22.0 from `.node-version`; that release supplies the
-declared npm 10.9.4 package manager. GitHub workflows consume the version file directly. Azure Marketplace recovery
+Repository development and automation use exactly Node.js 24.19.0 from `.node-version`; that release supplies the declared npm 11.17.0 package manager. GitHub workflows consume the version file directly. Azure Marketplace recovery
 duplicates the same exact Node value because it may inspect historical tags that predate the file, and workflow
-contracts keep that duplicate synchronized. The development pin remains repository tooling and is excluded from the
-VSIX. `npm run check` includes the strict dependency-only TypeScript graph, and `npm run audit:node` audits the full
+contracts keep that duplicate synchronized. The supported development engine range is `^22.22.0 || ^24.0.0`; Node 23 is intentionally excluded. A pull request also runs one bounded Node 22.23.2/npm 10.9.8 compatibility smoke.
+The minimum extension-host contract remains independently pinned to `engines.vscode` `^1.106.0`, `@types/vscode` 1.106.0, and `@types/node` 22.20.1. The development pin remains repository tooling and is excluded from the VSIX.
+`npm run check` includes the strict dependency-only TypeScript graph, and `npm run audit:node` audits the full
 development tree.
 
 Every repository, CI, candidate, packaging, promotion, and release install uses `npm ci --ignore-scripts`; `.npmrc`
-makes the same boundary the contributor default. `npm run check:install-policy` inventories all 28 executable
+makes the same boundary the contributor default. `npm run check:install-policy` inventories all 29 executable
 install invocations across 26 owners in 11 GitHub and Azure automation files and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
 install, or lock entry with `hasInstallScript`. The lock has no native `keytar` or `prebuild-install`. A tracked
 fail-closed credential shim selects VSCE's existing file/PAT path, while a script-free signing bridge resolves only
