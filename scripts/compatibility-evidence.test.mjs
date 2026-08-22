@@ -1296,6 +1296,79 @@ test("bounded ownership grammar recognizes modifiers, quantifiers, passive voice
   }
 });
 
+test("ownership grammar binds product, relation, target, and negation to one clause", () => {
+  for (const outsideClaim of [
+    "Cursor is the owner of released-Jupyter qualification.",
+    "Responsibility for Native R qualification belongs to Cursor.",
+    "Native R qualification would remain under Cursor's authority.",
+    "Cursor does not document previews but owns released-Jupyter.",
+    "Cursor does not manage platform smoke but owns Native R.",
+    "Cursor owns Native R, not VS Code.",
+    `Cursor owns ${"explicit bounded evidence ".repeat(20)}released-Jupyter.`
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u,
+      outsideClaim
+    );
+  }
+
+  for (const neutralClaim of [
+    "VS Code owns released-Jupyter, but Cursor documents platform smoke.",
+    "Cursor documents platform smoke, while VS Code owns released-Jupyter.",
+    "Cursor provides platform-smoke evidence, while VS Code owns Native R.",
+    "Cursor provides platform smoke and VS Code documents Native R.",
+    "Cursor supports platform smoke and does not certify Native R.",
+    "Cursor supports platform smoke, does not certify Native R.",
+    "Cursor does not own Native R qualification.",
+    "Cursor provides no Native R qualification evidence."
+  ]) {
+    assert.deepEqual(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${neutralClaim}\n` }),
+      [],
+      neutralClaim
+    );
+  }
+});
+
+test("invalid Markdown brackets preserve visible ownership text within bounded work", () => {
+  for (const outsideClaim of [
+    "[broken Cursor owns released-Jupyter.",
+    "[[[[[[[[[broken Cursor owns released-Jupyter.",
+    "prefix [unclosed label before Cursor owns Native R."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${outsideClaim}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u,
+      outsideClaim
+    );
+  }
+
+  const boundedClauses = `Cursor owns released-Jupyter ${"but ordinary prose ".repeat(257)}`;
+  const started = performance.now();
+  const problems = inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${boundedClauses}.\n` });
+  assert.ok(performance.now() - started < 2_000, "ownership clause parsing must remain bounded");
+  assert.match(problems.join(" "), /supported structural bounds/u);
+});
+
+test("headings and thematic breaks reset paragraph state before indented code", () => {
+  for (const block of [
+    "# Compatibility evidence\n    Cursor owns released-Jupyter.",
+    "Compatibility evidence\n---\n    Cursor owns released-Jupyter.",
+    "Compatibility evidence\n===\n    Cursor owns released-Jupyter.",
+    "***\n    Cursor owns released-Jupyter."
+  ]) {
+    assert.deepEqual(inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${block}\n` }), [], block);
+  }
+
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nA visible paragraph\n    Cursor owns released-Jupyter.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+});
+
 test("visible HTML tag inspection rejects before retaining tag 4,097", () => {
   const child = spawnSync(
     process.execPath,

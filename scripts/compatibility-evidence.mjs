@@ -48,6 +48,7 @@ const MAX_CSS_DECLARATION_BYTES = 2 * 1024;
 const MAX_MARKDOWN_REFERENCES = 256;
 const MAX_MARKDOWN_CONSTRUCTS = 4_096;
 const MAX_MARKDOWN_LABEL_BYTES = 4 * 1024;
+const MAX_OWNERSHIP_CLAUSES = 256;
 const MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS = 999;
 const MAX_MARKDOWN_CONTAINER_DEPTH = 8;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
@@ -1766,6 +1767,15 @@ function matchingHiddenContainerEnd(source, opening, state, label, problems) {
   return source.length;
 }
 
+function markdownParagraphBoundary(line) {
+  if (/^ {0,3}#{1,6}(?:[\t ]+|$)/u.test(line)) return "visible";
+  if (/^ {0,3}(?:=+|-+)[\t ]*$/u.test(line)) return "noncontent";
+  const thematic = /^ {0,3}(?<body>[*_-](?:[\t ]*[*_-]){2,})[\t ]*$/u.exec(line)?.groups?.body;
+  if (!thematic) return undefined;
+  const markers = thematic.replace(/[\t ]/gu, "");
+  return markers.length >= 3 && [...markers].every((marker) => marker === markers[0]) ? "noncontent" : undefined;
+}
+
 function visibleMarkdown(source, label, problems) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > 4 * 1024 * 1024) {
     problems.push(`${label} must be bounded documentation text.`);
@@ -1818,6 +1828,13 @@ function visibleMarkdown(source, label, problems) {
       renderableLines.push("");
       continue;
     }
+    const paragraphBoundary = htmlComment ? undefined : markdownParagraphBoundary(containerLine);
+    if (paragraphBoundary === "noncontent") {
+      paragraph = undefined;
+      indentedCode = undefined;
+      renderableLines.push("");
+      continue;
+    }
     const indented = /^(?: {4}|\t)/u.exec(containerLine);
     if (!htmlComment && indented) {
       if (!paragraph || indentedCode) {
@@ -1854,7 +1871,10 @@ function visibleMarkdown(source, label, problems) {
     }
     const visibleLine = uncommented.join("");
     renderableLines.push(visibleLine);
-    paragraph = visibleLine.trim().length > 0 ? { containerDepth: blockquote.depth } : undefined;
+    paragraph =
+      paragraphBoundary !== "visible" && visibleLine.trim().length > 0
+        ? { containerDepth: blockquote.depth }
+        : undefined;
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
   if (htmlComment) problems.push(`${label} contains an unterminated HTML comment.`);
@@ -2328,16 +2348,20 @@ function renderedInlineMarkdown(claim, references) {
       maximumCharacters: Number.MAX_SAFE_INTEGER
     });
     const labelEnd = labelRange.end;
-    if (labelRange.invalid || labelRange.overLimit || labelEnd < 0) {
+    if (labelRange.invalid || labelEnd < 0) {
+      rendered.push(claim[cursor]);
+      cursor += 1;
+      continue;
+    }
+    if (labelRange.overLimit) {
       unsupported = true;
-      rendered.push(" ");
-      cursor = labelEnd < 0 ? claim.length : labelEnd + 1;
+      rendered.push(claim[cursor]);
+      cursor += 1;
       continue;
     }
     const label = claim.slice(labelStart, labelEnd);
     let consumedEnd = labelEnd + 1;
     let linked = false;
-    let unsupportedEnd;
     if (claim[labelEnd + 1] === "(") {
       const destinationEnd = closingMarkdownDestination(claim, labelEnd + 2);
       if (destinationEnd >= 0 && validMarkdownDestinationAndTitle(claim.slice(labelEnd + 2, destinationEnd))) {
@@ -2360,17 +2384,11 @@ function renderedInlineMarkdown(claim, references) {
           linked = true;
           consumedEnd = referenceEnd + 1;
         }
-      } else if (referenceRange.invalid || referenceRange.overByteLimit || referenceEnd < 0) {
+      } else if (referenceRange.overLimit) {
         unsupported = true;
-        unsupportedEnd = referenceEnd >= 0 ? referenceEnd + 1 : claim.length;
       }
     } else if (commonmarkReferenceLabelWithinBounds(label) && references.has(normalizedReferenceLabel(label))) {
       linked = true;
-    }
-    if (unsupportedEnd !== undefined) {
-      rendered.push(markdownUnescape(label));
-      cursor = unsupportedEnd;
-      continue;
     }
     if (!linked) {
       rendered.push(claim[cursor]);
@@ -2405,8 +2423,8 @@ function renderedProseClaim(claim, references) {
   };
 }
 
-function evidenceProductCandidates(claim) {
-  const words = [...claim.matchAll(/[\p{L}\p{N}\p{M}\p{Default_Ignorable_Code_Point}]+/gu)].map((match) => {
+function evidenceWords(claim) {
+  return [...claim.matchAll(/[\p{L}\p{N}\p{M}\p{Default_Ignorable_Code_Point}]+/gu)].map((match) => {
     const visible = match[0].replace(/\p{Default_Ignorable_Code_Point}/gu, "");
     return {
       raw: match[0],
@@ -2415,6 +2433,9 @@ function evidenceProductCandidates(claim) {
       normalized: foldEvidenceConfusables(visible).toLowerCase()
     };
   });
+}
+
+function evidenceProductCandidates(claim, words = evidenceWords(claim)) {
   const candidates = [];
   const single = new Map([
     ["antigravity", "Antigravity"],
@@ -2446,7 +2467,14 @@ function evidenceProductCandidates(claim) {
       (ordinaryCursorPredecessors.has(words[index - 1]?.normalized) ||
         ordinaryCursorFollowers.has(words[index + 1]?.normalized));
     if (expected && !ordinaryCursor && !/[./_?=&-]/u.test(before) && !/[./_?=&-]/u.test(after)) {
-      candidates.push({ name: expected, canonical: word.raw === expected });
+      candidates.push({
+        name: expected,
+        canonical: word.raw === expected,
+        end: word.end,
+        start: word.start,
+        wordEnd: index + 1,
+        wordStart: index
+      });
     }
   }
   const pairs = new Map([
@@ -2460,70 +2488,212 @@ function evidenceProductCandidates(claim) {
     if (!/^\s+$/u.test(claim.slice(first.end, second.start))) continue;
     const expected = pairs.get(`${first.normalized} ${second.normalized}`);
     if (!expected) continue;
-    candidates.push({ name: expected, canonical: claim.slice(first.start, second.end) === expected });
+    candidates.push({
+      name: expected,
+      canonical: claim.slice(first.start, second.end) === expected,
+      end: second.end,
+      start: first.start,
+      wordEnd: index + 2,
+      wordStart: index
+    });
   }
   return candidates;
 }
 
-function structurallyOwnsEvidence(claim) {
-  const tokens =
-    foldEvidenceConfusables(claim)
-      .toLowerCase()
-      .match(/[a-z0-9]+(?:\.[0-9]+)*/gu) ?? [];
-  const negations = new Set(["cannot", "neither", "never", "no", "nor", "not", "without"]);
-  const relation =
-    /^(?:own(?:s|ed|ing)?|run(?:s|ning)?|ran|execut(?:e|es|ed|ing)|qualif(?:y|ies|ied|ying)|certif(?:y|ies|ied|ying)|validat(?:e|es|ed|ing)|cover(?:s|ed|ing)?|assign(?:s|ed|ing)?|attribut(?:e|es|ed|ing)|attest(?:s|ed|ing)?|designat(?:e|es|ed|ing)|demonstrat(?:e|es|ed|ing)|establish(?:es|ed|ing)?|guarantee(?:s|d|ing)?|govern(?:s|ed|ing)?|control(?:s|led|ling)?|warrant(?:s|ed|ing)?|assur(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|support(?:s|ed|ing)?|manag(?:e|es|ed|ing)|maintain(?:s|ed|ing)?|operat(?:e|es|ed|ing)|responsible|accountable|authority)$/u;
-  const isNegated = (index) => {
-    const start = Math.max(0, index - 4);
-    const end = Math.min(tokens.length, index + 3);
-    for (let cursor = start; cursor < end; cursor += 1) {
-      if (cursor !== index && negations.has(tokens[cursor])) return true;
-    }
-    return false;
-  };
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (relation.test(tokens[index]) && !isNegated(index)) return true;
-    if (tokens[index] === "in" && tokens[index + 1] === "charge" && tokens[index + 2] === "of" && !isNegated(index)) {
-      return true;
+const OWNERSHIP_RELATION =
+  /^(?:own(?:s|ed|ing)?|owner|ownership|run(?:s|ning)?|ran|execut(?:e|es|ed|ing)|qualif(?:y|ies|ied|ying)|certif(?:y|ies|ied|ying)|validat(?:e|es|ed|ing)|cover(?:s|ed|ing)?|assign(?:s|ed|ing)?|attribut(?:e|es|ed|ing)|attest(?:s|ed|ing)?|designat(?:e|es|ed|ing)|demonstrat(?:e|es|ed|ing)|establish(?:es|ed|ing)?|guarantee(?:s|d|ing)?|govern(?:s|ed|ing)?|control(?:s|led|ling)?|warrant(?:s|ed|ing)?|assur(?:e|es|ed|ing)|provid(?:e|es|ed|ing)|support(?:s|ed|ing)?|manag(?:e|es|ed|ing)|maintain(?:s|ed|ing)?|operat(?:e|es|ed|ing)|responsib(?:le|ility|ilities)|accountable|authority|belong(?:s|ed|ing)?)$/u;
+const OWNERSHIP_NEGATIONS = new Set(["cannot", "neither", "never", "no", "nor", "not", "without"]);
+const OWNERSHIP_CONNECTORS = new Set(["although", "and", "but", "however", "or", "whereas", "while", "yet"]);
+
+function ownershipRelationIndices(words) {
+  const indices = [];
+  for (let index = 0; index < words.length; index += 1) {
+    if (OWNERSHIP_RELATION.test(words[index].normalized)) indices.push(index);
+    else if (
+      words[index].normalized === "in" &&
+      words[index + 1]?.normalized === "charge" &&
+      words[index + 2]?.normalized === "of"
+    ) {
+      indices.push(index);
     }
   }
+  return indices;
+}
+
+function ownershipScopeBoundary(claim, left, right) {
+  return /[,.!?;:]/u.test(claim.slice(left.end, right.start));
+}
+
+function relationIsNegated(claim, words, relationIndex) {
+  for (let index = relationIndex - 1; index >= Math.max(0, relationIndex - 6); index -= 1) {
+    if (ownershipScopeBoundary(claim, words[index], words[index + 1])) break;
+    const token = words[index].normalized;
+    if (OWNERSHIP_CONNECTORS.has(token)) break;
+    if (OWNERSHIP_NEGATIONS.has(token)) return true;
+  }
+  for (let index = relationIndex + 1; index < Math.min(words.length, relationIndex + 7); index += 1) {
+    if (ownershipScopeBoundary(claim, words[index - 1], words[index])) break;
+    const token = words[index].normalized;
+    if (OWNERSHIP_CONNECTORS.has(token) || OWNERSHIP_RELATION.test(token)) break;
+    if (OWNERSHIP_NEGATIONS.has(token)) return true;
+  }
   return false;
+}
+
+function ownershipClauseTexts(claim) {
+  const clauses = [];
+  let cursor = 0;
+  for (const separator of claim.matchAll(/\b(?:although|but|however|whereas|while|yet)\b/giu)) {
+    clauses.push(claim.slice(cursor, separator.index));
+    cursor = separator.index + separator[0].length;
+  }
+  clauses.push(claim.slice(cursor));
+  const pending = [...clauses];
+  const result = [];
+  let inspected = 0;
+  while (pending.length > 0) {
+    if (inspected >= MAX_OWNERSHIP_CLAUSES) return { clauses: result, unsupported: true };
+    const clause = pending.shift();
+    inspected += 1;
+    const words = evidenceWords(clause);
+    const products = evidenceProductCandidates(clause, words);
+    const relations = ownershipRelationIndices(words);
+    let split;
+    for (const word of words) {
+      if (word.normalized !== "and") continue;
+      const leftOwns = relations.some((index) => words[index].start < word.start);
+      const rightOwns = relations.some((index) => words[index].start >= word.end);
+      const leftProduct = products.some((product) => product.end <= word.start);
+      const rightProduct = products.some((product) => product.start >= word.end);
+      if (leftOwns && leftProduct && (rightOwns || rightProduct)) {
+        split = word;
+        break;
+      }
+    }
+    if (split) {
+      pending.unshift(clause.slice(0, split.start), clause.slice(split.end));
+      continue;
+    }
+    for (let index = 0; index < clause.length; index += 1) {
+      if (clause[index] !== ",") continue;
+      const leftOwns = relations.some((relationIndex) => words[relationIndex].start < index);
+      const rightOwns = relations.some((relationIndex) => words[relationIndex].start > index);
+      const leftProduct = products.some((product) => product.end <= index);
+      if (leftOwns && rightOwns && leftProduct) {
+        split = { start: index, end: index + 1 };
+        break;
+      }
+    }
+    if (split) pending.unshift(clause.slice(0, split.start), clause.slice(split.end));
+    else if (clause.trim().length > 0) result.push(clause);
+  }
+  return { clauses: result, unsupported: false };
+}
+
+function relationProduct(products, words, relationIndex, inheritedProduct) {
+  for (let index = relationIndex + 1; index < Math.min(words.length, relationIndex + 6); index += 1) {
+    if (words[index].normalized !== "by" && words[index].normalized !== "to") continue;
+    let product;
+    for (const candidate of products) {
+      if (candidate.wordStart > index && (!product || candidate.wordStart < product.wordStart)) product = candidate;
+    }
+    if (product) return product;
+  }
+  let preceding;
+  let following;
+  for (const product of products) {
+    if (product.wordEnd <= relationIndex && (!preceding || product.wordEnd > preceding.wordEnd)) preceding = product;
+    if (product.wordStart > relationIndex && (!following || product.wordStart < following.wordStart))
+      following = product;
+  }
+  if (preceding) return preceding;
+  return following ?? inheritedProduct;
+}
+
+const NOMINAL_OWNERSHIP_RELATIONS = new Set([
+  "accountable",
+  "authority",
+  "owner",
+  "ownership",
+  "responsibility",
+  "responsibilities",
+  "responsible"
+]);
+
+function relationTargetWords(words, products, relationIndex, product) {
+  const previousProduct = products
+    .filter((candidate) => candidate !== product && candidate.wordEnd <= relationIndex)
+    .reduce((nearest, candidate) => (!nearest || candidate.wordEnd > nearest.wordEnd ? candidate : nearest), undefined);
+  const precedingStart = previousProduct?.wordEnd ?? 0;
+  if (product.wordStart > relationIndex) {
+    return words.slice(precedingStart, relationIndex);
+  }
+  const following = words.slice(relationIndex + 1);
+  if (!NOMINAL_OWNERSHIP_RELATIONS.has(words[relationIndex].normalized)) return following;
+  return [...words.slice(precedingStart, Math.max(0, product.wordStart)), ...following];
+}
+
+function hasCursorRestrictedTarget(words) {
+  const tokens = new Set(words.map((word) => word.normalized));
+  const has = (...values) => values.every((value) => tokens.has(value));
+  return (
+    tokens.has("jupyter") ||
+    has("native", "r") ||
+    has("installed", "performance") ||
+    (tokens.has("r") && ["phase", "journey", "coverage", "catalog"].some((value) => tokens.has(value)))
+  );
+}
+
+function structuredOwnershipAnalysis(claim) {
+  const split = ownershipClauseTexts(claim);
+  const assertions = [];
+  let inheritedProduct;
+  let ownsEvidence = false;
+  for (const clause of split.clauses) {
+    const words = evidenceWords(clause);
+    const products = evidenceProductCandidates(clause, words);
+    const relationIndices = ownershipRelationIndices(words);
+    for (const relationIndex of relationIndices) {
+      if (relationIsNegated(clause, words, relationIndex)) continue;
+      ownsEvidence = true;
+      const product = relationProduct(products, words, relationIndex, inheritedProduct);
+      if (product) {
+        assertions.push({
+          product,
+          restrictedTarget: hasCursorRestrictedTarget(relationTargetWords(words, products, relationIndex, product))
+        });
+        inheritedProduct = product;
+      }
+    }
+    if (products.length > 0) {
+      const nearestProduct = products.reduce((nearest, product) =>
+        product.wordEnd > nearest.wordEnd ? product : nearest
+      );
+      inheritedProduct = { ...nearestProduct, wordEnd: -1, wordStart: -1 };
+    }
+  }
+  return { assertions, ownsEvidence, unsupported: split.unsupported };
 }
 
 function structuredOwnershipViolation(claim, references) {
   const rendered = renderedProseClaim(claim, references);
   const renderedProse = rendered.text;
   const tokens = claimTokens(foldEvidenceConfusables(renderedProse));
-  const products = evidenceProductCandidates(renderedProse);
   const has = (...values) => values.every((value) => tokens.has(value));
-  const ownsEvidence = structurallyOwnsEvidence(renderedProse);
-  const cursorRestrictedTarget =
-    tokens.has("jupyter") ||
-    has("native", "r") ||
-    has("installed", "performance") ||
-    (tokens.has("r") && ["phase", "journey", "coverage", "catalog"].some((value) => tokens.has(value)));
-  const cursorProductContext =
-    (ownsEvidence &&
-      ((tokens.has("released") && tokens.has("jupyter")) ||
-        has("native", "r") ||
-        has("installed", "performance") ||
-        tokens.has("fork"))) ||
-    (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
-  const namedProductContext = products.length > 0;
-  const cursorProduct = products.some((product) => product.name === "Cursor");
-  if (rendered.unsupportedMarkdown && ownsEvidence) {
+  const ownership = structuredOwnershipAnalysis(renderedProse);
+  if ((rendered.unsupportedMarkdown || ownership.unsupported) && ownership.ownsEvidence) {
     return "evidence-sensitive Markdown must remain inside the supported structural bounds";
   }
-  if (ownsEvidence && (cursorProductContext || namedProductContext) && products.some((product) => !product.canonical)) {
+  if (ownership.assertions.some((assertion) => !assertion.product.canonical)) {
     return "named product and editor claims must retain exact canonical case";
   }
-  if (cursorProduct && cursorRestrictedTarget && ownsEvidence) {
+  if (ownership.assertions.some((assertion) => assertion.product.name === "Cursor" && assertion.restrictedTarget)) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
   if (
     tokens.has("r") &&
     tokens.has("4.4") &&
-    ownsEvidence &&
+    ownership.ownsEvidence &&
     (has("protected", "pull", "request", "ci") || has("candidate", "acceptance"))
   ) {
     return "direct R 4.4 source qualification must remain owned by scheduled/manual Cross";
