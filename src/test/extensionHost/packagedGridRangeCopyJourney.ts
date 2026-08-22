@@ -20,6 +20,22 @@ const menuPendingClipboard = "open-wrangler-grid-range-copy-menu-pending";
 const clipboardWaitMs = 10_000;
 const maximumPriorClipboardBytes = 4 * 1024 * 1024;
 export const packagedGridClipboardOperationTimeoutMs = 2_000;
+const packagedGridClipboardSettlementPollMs = 25;
+const packagedGridClipboardSettlementSelector = '[data-grid-clipboard-settlement-receipt="true"]';
+
+type PackagedGridClipboardSettlementStatus = "idle" | "pending" | "success" | "failure";
+
+export interface PackagedGridClipboardSettlementReceipt {
+  readonly id: number;
+  readonly mode: "none" | "cell" | "row" | "range";
+  readonly status: PackagedGridClipboardSettlementStatus;
+}
+
+interface RawPackagedGridClipboardSettlementReceipt {
+  readonly id: unknown;
+  readonly mode: unknown;
+  readonly status: unknown;
+}
 
 class PackagedGridClipboardOperationFailure extends Error {
   constructor() {
@@ -53,6 +69,44 @@ export class PackagedGridRangeCopyFailure extends Error {
 
 export function packagedGridCopyShortcut(platform: NodeJS.Platform): "Meta+c" | "Control+c" {
   return platform === "darwin" ? "Meta+c" : "Control+c";
+}
+
+export function validatePackagedGridClipboardSettlementReceipt(
+  value: RawPackagedGridClipboardSettlementReceipt
+): PackagedGridClipboardSettlementReceipt {
+  const id = typeof value.id === "string" && /^(?:0|[1-9]\d{0,15})$/u.test(value.id) ? Number(value.id) : NaN;
+  if (
+    !Number.isSafeInteger(id) ||
+    id < 0 ||
+    (value.mode !== "none" && value.mode !== "cell" && value.mode !== "row" && value.mode !== "range") ||
+    (value.status !== "idle" && value.status !== "pending" && value.status !== "success" && value.status !== "failure")
+  ) {
+    throw new PackagedGridClipboardOperationFailure();
+  }
+  return { id, mode: value.mode, status: value.status };
+}
+
+export async function waitForFreshPackagedGridRangeCopySettlement(
+  readReceipt: () => Thenable<RawPackagedGridClipboardSettlementReceipt>,
+  priorReceiptId: number
+): Promise<number> {
+  let actionReceiptId: number | undefined;
+  for (;;) {
+    let receipt: PackagedGridClipboardSettlementReceipt | undefined;
+    try {
+      receipt = validatePackagedGridClipboardSettlementReceipt(await readReceipt());
+    } catch {
+      // Once the product action has started, an unreadable receipt is not proof that its noncancelable write stopped.
+    }
+    if (receipt && actionReceiptId === undefined && receipt.id > priorReceiptId) {
+      actionReceiptId = receipt.id;
+    }
+    if (receipt && receipt.id === actionReceiptId && receipt.mode === "range") {
+      if (receipt.status === "success") return receipt.id;
+      if (receipt.status === "failure") throw new PackagedGridClipboardOperationFailure();
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, packagedGridClipboardSettlementPollMs));
+  }
 }
 
 export async function runPackagedGridRangeCopyLifecycle(
@@ -186,7 +240,12 @@ export async function exercisePackagedGridRangeCopyJourney({
   await runWithPackagedGridClipboardRestoration(hostClipboard, async () => {
     recordProgress(`platform-smoke:grid-range-copy:${platform === "darwin" ? "cmd" : "ctrl"}`);
     await writePackagedGridClipboard(hostClipboard, keyboardPendingClipboard);
+    const priorKeyboardReceipt = await readPackagedGridClipboardSettlementReceipt(frame);
     await endpoint.press(packagedGridCopyShortcut(platform));
+    await waitForFreshPackagedGridRangeCopySettlement(
+      () => readRawPackagedGridClipboardSettlementReceipt(frame),
+      priorKeyboardReceipt.id
+    );
     await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame.getByText("Copied 2 by 2 cell range.", { exact: true }).waitFor({ timeout: 5_000 });
 
@@ -201,13 +260,38 @@ export async function exercisePackagedGridRangeCopyJourney({
       "The mixed menu must expose two filters and one copy action."
     );
     const copySelection = menu.getByRole("menuitem", { name: "Copy selection", exact: true });
+    const priorMenuReceipt = await readPackagedGridClipboardSettlementReceipt(frame);
     await copySelection.click();
+    await waitForFreshPackagedGridRangeCopySettlement(
+      () => readRawPackagedGridClipboardSettlementReceipt(frame),
+      priorMenuReceipt.id
+    );
     await waitForPackagedGridClipboard(hostClipboard, expectedRangeText);
     await frame
       .locator('td[data-grid-row="1"][data-grid-column="1"]:focus')
       .waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(await frame.locator('td[data-clipboard-selected="true"]').count(), 4);
   }, [keyboardPendingClipboard, menuPendingClipboard, expectedRangeText]);
+}
+
+async function readPackagedGridClipboardSettlementReceipt(
+  frame: Frame
+): Promise<PackagedGridClipboardSettlementReceipt> {
+  return validatePackagedGridClipboardSettlementReceipt(await readRawPackagedGridClipboardSettlementReceipt(frame));
+}
+
+async function readRawPackagedGridClipboardSettlementReceipt(
+  frame: Frame
+): Promise<RawPackagedGridClipboardSettlementReceipt> {
+  return frame.locator(packagedGridClipboardSettlementSelector).evaluate(
+    (element) => ({
+      id: element.getAttribute("data-grid-clipboard-settlement-id"),
+      mode: element.getAttribute("data-grid-clipboard-settlement-mode"),
+      status: element.getAttribute("data-grid-clipboard-settlement-status")
+    }),
+    undefined,
+    { timeout: 0 }
+  );
 }
 
 async function readPackagedGridClipboard(

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ColumnSchema, LiveGridPage, SessionMetadata } from "../../shared/protocol";
 import {
   buildGridClipboardPayload,
@@ -16,6 +17,7 @@ import { useWholeColumnClipboard } from "./useWholeColumnClipboard";
 
 export interface GridClipboardController {
   announcement: string;
+  copySettlementReceipt: GridClipboardSettlementReceipt;
   copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<boolean>;
   copyColumn(ownsResult?: () => boolean): Promise<boolean>;
   focusCell(coordinate: GridCellCoordinate): void;
@@ -31,7 +33,22 @@ export interface GridClipboardController {
   wholeColumnResult: GridClipboardResult;
 }
 
+export interface GridClipboardSettlementReceipt {
+  id: number;
+  mode: GridClipboardMode | "none";
+  status: "idle" | "pending" | "success" | "failure";
+}
+
 const wholeColumnOwnsCopyReason = "A whole column is selected. Use Copy column.";
+let nextGridClipboardSettlementReceiptId = 0;
+
+function nextGridClipboardSettlementReceipt(): number {
+  if (nextGridClipboardSettlementReceiptId >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("The clipboard settlement receipt sequence is exhausted.");
+  }
+  nextGridClipboardSettlementReceiptId += 1;
+  return nextGridClipboardSettlementReceiptId;
+}
 
 interface ExpectedResultRefreshReceipt {
   contextId: string;
@@ -62,6 +79,11 @@ export function useGridClipboard({
 }): GridClipboardController {
   const [selection, setSelection] = useState(() => collapsedGridClipboardSelection(contextId, initialCoordinate));
   const [announcement, setAnnouncement] = useState("");
+  const [copySettlementReceipt, setCopySettlementReceipt] = useState<GridClipboardSettlementReceipt>({
+    id: 0,
+    mode: "none",
+    status: "idle"
+  });
   const contextIdRef = useRef(contextId);
   const expectedResultRefreshRef = useRef<ExpectedResultRefreshReceipt | undefined>(undefined);
   const copyActionGenerationRef = useRef(0);
@@ -73,6 +95,10 @@ export function useGridClipboard({
       selectionGenerationRef.current += 1;
       copyActionGenerationRef.current += 1;
       expectedResultRefreshRef.current = expectedResultRefresh;
+      setAnnouncement("");
+      setCopySettlementReceipt((current) =>
+        current.status === "idle" ? current : { id: current.id, mode: "none", status: "idle" }
+      );
     },
     [onSelectionWillChange]
   );
@@ -182,12 +208,37 @@ export function useGridClipboard({
         return ownsAction();
       };
       if (!result.ok) {
-        if (ownsResult()) setAnnouncement(result.reason);
+        if (ownsResult()) {
+          setCopySettlementReceipt((current) => ({ id: current.id, mode: "none", status: "idle" }));
+          setAnnouncement(result.reason);
+        }
         return ownsResult();
+      }
+      if (!ownsResult()) return false;
+      const settlementReceiptId = nextGridClipboardSettlementReceipt();
+      flushSync(() => {
+        setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "pending" });
+        setAnnouncement(
+          mode === "cell" ? "Copying cell." : mode === "row" ? "Copying row." : "Copying selected cells."
+        );
+      });
+      const clearSettlementReceipt = (): void => {
+        if (copyActionGenerationRef.current === actionGeneration) setAnnouncement("");
+        setCopySettlementReceipt((current) =>
+          current.id === settlementReceiptId ? { id: current.id, mode: "none", status: "idle" } : current
+        );
+      };
+      if (!ownsResult()) {
+        clearSettlementReceipt();
+        return false;
       }
       try {
         await writeGridClipboardText(result.payload.text, ownsResult);
-        if (!ownsResult()) return false;
+        if (!ownsResult()) {
+          clearSettlementReceipt();
+          return false;
+        }
+        setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "success" });
         setAnnouncement(
           mode === "cell"
             ? "Copied cell."
@@ -198,9 +249,11 @@ export function useGridClipboard({
         return true;
       } catch {
         if (ownsResult()) {
+          setCopySettlementReceipt({ id: settlementReceiptId, mode, status: "failure" });
           setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
           return true;
         }
+        clearSettlementReceipt();
         return false;
       }
     },
@@ -227,6 +280,7 @@ export function useGridClipboard({
     announcement: wholeColumn.selectedColumnId ? wholeColumn.announcement : announcement,
     copy,
     copyColumn: wholeColumn.copy,
+    copySettlementReceipt,
     focusCell,
     getSelectionGeneration: () => selectionGenerationRef.current,
     isColumnSelected: wholeColumn.isColumnSelected,
@@ -303,6 +357,11 @@ export function GridClipboardControls({ controller }: { controller: GridClipboar
         aria-label="Clipboard copy result"
         aria-live="polite"
         aria-atomic="true"
+        aria-busy={controller.copySettlementReceipt.status === "pending"}
+        data-grid-clipboard-settlement-receipt="true"
+        data-grid-clipboard-settlement-id={controller.copySettlementReceipt.id}
+        data-grid-clipboard-settlement-mode={controller.copySettlementReceipt.mode}
+        data-grid-clipboard-settlement-status={controller.copySettlementReceipt.status}
       >
         {controller.announcement}
       </span>

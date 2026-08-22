@@ -145,6 +145,43 @@ describe("DataGrid clipboard interactions", () => {
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
   });
 
+  it("publishes and retains the keyboard range-copy receipt through a late stateful write", async () => {
+    vi.useFakeTimers();
+    try {
+      let clipboard = "prior clipboard";
+      let receiptAtWrite: ReturnType<typeof clipboardSettlementReceipt> | undefined;
+      const lateWrite = deferred<void>();
+      writeText.mockImplementationOnce(async (value: string) => {
+        receiptAtWrite = clipboardSettlementReceipt();
+        await lateWrite.promise;
+        clipboard = value;
+      });
+      renderGrid();
+      const milan = screen.getByRole("cell", { name: "Milan" });
+      const emptySales = screen.getByRole("cell", { name: "" });
+      pointerDrag(milan, emptySales, 67);
+
+      fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+
+      const pending = clipboardSettlementReceipt();
+      expect(pending).toMatchObject({ mode: "range", status: "pending" });
+      expect(pending.id).toBeGreaterThan(0);
+      expect(receiptAtWrite).toEqual(pending);
+      expect(clipboard).toBe("prior clipboard");
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(clipboardSettlementReceipt()).toEqual(pending);
+      expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+
+      await act(async () => lateWrite.resolve());
+
+      expect(clipboard).toBe("Milan\t10.5\nParis\t");
+      expect(clipboardSettlementReceipt()).toEqual({ ...pending, status: "success" });
+      expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("announces a successful keyboard fallback without invalidating its same-cell owner", async () => {
     writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
     const execCommand = vi.fn(() => {
@@ -248,6 +285,48 @@ describe("DataGrid clipboard interactions", () => {
     await waitFor(() => expect(document.activeElement).toBe(emptySales));
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
     expect(screen.getByText("Copied 2 by 2 cell range.")).toBeTruthy();
+  });
+
+  it("publishes and retains the menu range-copy receipt through a late stateful write", async () => {
+    vi.useFakeTimers();
+    try {
+      let clipboard = "prior clipboard";
+      let receiptAtWrite: ReturnType<typeof clipboardSettlementReceipt> | undefined;
+      const lateWrite = deferred<void>();
+      writeText.mockImplementationOnce(async (value: string) => {
+        receiptAtWrite = clipboardSettlementReceipt();
+        await lateWrite.promise;
+        clipboard = value;
+      });
+      renderGrid();
+      const milan = screen.getByRole("cell", { name: "Milan" });
+      const emptySales = screen.getByRole("cell", { name: "" });
+      pointerDrag(milan, emptySales, 68);
+      openClipboardMenu(milan, 69);
+
+      fireEvent.click(
+        within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole("menuitem", {
+          name: "Copy selection"
+        })
+      );
+
+      const pending = clipboardSettlementReceipt();
+      expect(pending).toMatchObject({ mode: "range", status: "pending" });
+      expect(receiptAtWrite).toEqual(pending);
+      expect(clipboard).toBe("prior clipboard");
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(clipboardSettlementReceipt()).toEqual(pending);
+      expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
+
+      await act(async () => lateWrite.resolve());
+
+      expect(clipboard).toBe("Milan\t10.5\nParis\t");
+      expect(clipboardSettlementReceipt()).toEqual({ ...pending, status: "success" });
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(document.activeElement).toBe(emptySales);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lets an owned menu fallback take private textarea focus and restore the range endpoint", async () => {
@@ -480,12 +559,18 @@ describe("DataGrid clipboard interactions", () => {
     );
 
     fireEvent.click(copySelection);
+    const firstReceipt = clipboardSettlementReceipt();
     fireEvent.click(copySelection);
+    const secondReceipt = clipboardSettlementReceipt();
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(firstReceipt).toMatchObject({ mode: "range", status: "pending" });
+    expect(secondReceipt).toMatchObject({ mode: "range", status: "pending" });
+    expect(secondReceipt.id).toBeGreaterThan(firstReceipt.id);
     await act(async () => firstWrite.resolve());
 
     expect(screen.getByRole("menu", { name: "Cell and range actions for city" })).toBeInTheDocument();
     expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+    expect(clipboardSettlementReceipt()).toEqual(secondReceipt);
 
     await act(async () => secondWrite.resolve());
 
@@ -537,11 +622,15 @@ describe("DataGrid clipboard interactions", () => {
       })
     );
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const staleReceipt = clipboardSettlementReceipt();
+    expect(staleReceipt).toMatchObject({ mode: "range", status: "pending" });
 
     rendered.rerender(grid("view-b"));
+    expect(clipboardSettlementReceipt()).toEqual({ id: staleReceipt.id, mode: "none", status: "idle" });
     await act(async () => staleViewWrite.resolve());
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByText("Copied 2 by 2 cell range.")).toBeNull();
+    expect(clipboardSettlementReceipt()).toEqual({ id: staleReceipt.id, mode: "none", status: "idle" });
 
     const disposedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => disposedWrite.promise);
@@ -559,6 +648,27 @@ describe("DataGrid clipboard interactions", () => {
 
     await act(async () => disposedWrite.resolve());
     expect(writeText).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a never-settling range write pending for its external lifecycle owner", async () => {
+    vi.useFakeTimers();
+    try {
+      writeText.mockImplementationOnce(() => new Promise<void>(() => undefined));
+      renderGrid();
+      const milan = screen.getByRole("cell", { name: "Milan" });
+      const emptySales = screen.getByRole("cell", { name: "" });
+      pointerDrag(milan, emptySales, 70);
+
+      fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+      const pending = clipboardSettlementReceipt();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(clipboardSettlementReceipt()).toEqual(pending);
+      expect(pending).toMatchObject({ mode: "range", status: "pending" });
+      expect(screen.queryByText(/Copied 2 by 2|Could not write/u)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dismisses a pre-restore range menu before its action can copy the replacement selection", async () => {
@@ -942,7 +1052,29 @@ describe("DataGrid clipboard interactions", () => {
     expect(
       await screen.findByText("Could not write to the clipboard. Check this editor's clipboard permissions.")
     ).toBeTruthy();
+    expect(clipboardSettlementReceipt()).toMatchObject({ mode: "cell", status: "failure" });
     expect(screen.queryByText(/denied/u)).toBeNull();
+  });
+
+  it("does not publish a failure receipt until the exact navigator write rejects", async () => {
+    const delayedFailure = deferred<void>();
+    writeText.mockImplementationOnce(() => delayedFailure.promise);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
+    renderGrid();
+    const milan = screen.getByRole("cell", { name: "Milan" });
+    const emptySales = screen.getByRole("cell", { name: "" });
+    pointerDrag(milan, emptySales, 71);
+
+    fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
+    const pending = clipboardSettlementReceipt();
+    expect(pending).toMatchObject({ mode: "range", status: "pending" });
+
+    await act(async () => delayedFailure.reject(new Error("primary adapter denied")));
+
+    expect(clipboardSettlementReceipt()).toEqual({ ...pending, status: "failure" });
+    expect(
+      screen.getByText("Could not write to the clipboard. Check this editor's clipboard permissions.")
+    ).toBeTruthy();
   });
 
   it("prepares and copies a whole filtered and sorted column across projected pages", async () => {
@@ -1135,6 +1267,15 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+function clipboardSettlementReceipt() {
+  const status = screen.getByRole("status", { name: "Clipboard copy result" });
+  return {
+    id: Number(status.getAttribute("data-grid-clipboard-settlement-id")),
+    mode: status.getAttribute("data-grid-clipboard-settlement-mode"),
+    status: status.getAttribute("data-grid-clipboard-settlement-status")
+  };
 }
 
 function pointerEvent(pointerId: number, overrides: { buttons?: number } = {}) {

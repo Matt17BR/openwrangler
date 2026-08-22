@@ -4,7 +4,9 @@ import {
   packagedGridClipboardOperationTimeoutMs,
   runPackagedGridRangeCopyLifecycle,
   runWithPackagedGridClipboardRestoration,
+  validatePackagedGridClipboardSettlementReceipt,
   waitForPackagedGridClipboard,
+  waitForFreshPackagedGridRangeCopySettlement,
   writePackagedGridClipboard
 } from "./extensionHost/packagedGridRangeCopyJourney";
 
@@ -13,6 +15,123 @@ describe("packaged grid range-copy journey", () => {
     expect(packagedGridCopyShortcut("darwin")).toBe("Meta+c");
     expect(packagedGridCopyShortcut("linux")).toBe("Control+c");
     expect(packagedGridCopyShortcut("win32")).toBe("Control+c");
+  });
+
+  it("validates the bounded production clipboard settlement receipt", () => {
+    expect(validatePackagedGridClipboardSettlementReceipt(settlementReceipt(42, "success"))).toEqual({
+      id: 42,
+      mode: "range",
+      status: "success"
+    });
+    for (const invalid of [
+      settlementReceipt("01", "success"),
+      settlementReceipt("9007199254740992", "success"),
+      settlementReceipt("2", "complete"),
+      { id: "2", mode: "column", status: "success" }
+    ]) {
+      expect(() => validatePackagedGridClipboardSettlementReceipt(invalid)).toThrowError(
+        "The packaged grid range-copy clipboard operation did not complete safely."
+      );
+    }
+  });
+
+  it("binds one newer range receipt and ignores stale success", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshots = [
+        settlementReceipt(8, "success"),
+        settlementReceipt(9, "pending"),
+        settlementReceipt(9, "success")
+      ];
+      const readReceipt = vi.fn(async () => snapshots.shift() ?? settlementReceipt(9, "success"));
+      const outcome = waitForFreshPackagedGridRangeCopySettlement(readReceipt, 8);
+
+      await vi.runAllTimersAsync();
+
+      await expect(outcome).resolves.toBe(9);
+      expect(readReceipt).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retarget from the first newer receipt to another range action", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshots = [settlementReceipt(21, "success", "cell"), settlementReceipt(22, "success")];
+      const readReceipt = vi.fn(async () => snapshots.shift() ?? settlementReceipt(22, "success"));
+      let terminal = false;
+      void waitForFreshPackagedGridRangeCopySettlement(readReceipt, 20).then(
+        () => {
+          terminal = true;
+        },
+        () => {
+          terminal = true;
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(terminal).toBe(false);
+      expect(readReceipt.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a newer failure receipt authorize clipboard inspection", async () => {
+    vi.useFakeTimers();
+    try {
+      const readReceipt = vi
+        .fn()
+        .mockResolvedValueOnce(settlementReceipt(12, "pending"))
+        .mockResolvedValue(settlementReceipt(12, "failure"));
+      const outcome = waitForFreshPackagedGridRangeCopySettlement(readReceipt, 11);
+      let terminal = false;
+      void outcome.then(
+        () => {
+          terminal = true;
+        },
+        () => {
+          terminal = true;
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(terminal).toBe(false);
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(outcome).rejects.toMatchObject({ name: "PackagedGridClipboardOperationFailure" });
+      expect(terminal).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a pending or unreadable renderer receipt owned for the outer process deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const readReceipt = vi
+        .fn()
+        .mockResolvedValueOnce(settlementReceipt(16, "pending"))
+        .mockRejectedValue(new Error("renderer was replaced"));
+      let terminal = false;
+      void waitForFreshPackagedGridRangeCopySettlement(readReceipt, 15).then(
+        () => {
+          terminal = true;
+        },
+        () => {
+          terminal = true;
+        }
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(terminal).toBe(false);
+      expect(readReceipt.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -666,4 +785,12 @@ function deferredClipboardWrite(apply: () => void) {
       pending.resolve();
     }
   };
+}
+
+function settlementReceipt(
+  id: number | string,
+  status: "idle" | "pending" | "success" | "failure" | "complete",
+  mode: "none" | "cell" | "row" | "range" | "column" = "range"
+) {
+  return { id: String(id), mode, status };
 }
