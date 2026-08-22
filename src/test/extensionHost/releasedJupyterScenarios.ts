@@ -1,9 +1,11 @@
 import type { PackagedEvidenceSceneId } from "./evidenceScenes";
 
 export const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
+export const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
 
 export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   "core-operations",
   "categorical-operations",
   "value-operations",
@@ -107,6 +109,17 @@ export const RELEASED_JUPYTER_SCENARIOS: readonly ReleasedJupyterScenarioDefinit
     runnerKey: "released-jupyter",
     declaredProgressSections: [],
     evidenceSceneIds: ["notebook-pyspark-picker", "notebook-pyspark"]
+  },
+  {
+    phaseId: "jupyter-pyspark",
+    selector: PYSPARK_PRERELEASE_DENIAL_SELECTOR,
+    tierRiskOwner: "released-jupyter",
+    editorEligibility: ["vscode"],
+    platformEligibility: "all",
+    prerequisites: ["host-python", "released-jupyter"],
+    runnerKey: "released-jupyter",
+    declaredProgressSections: [],
+    evidenceSceneIds: []
   },
   {
     phaseId: "jupyter-remote",

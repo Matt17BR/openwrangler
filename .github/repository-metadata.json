@@ -1,5 +1,5 @@
 {
-  "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, local PySpark 4.2 notebook viewing, and preview native R.",
+  "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.",
   "homepage": "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler",
   "topics": [
     "csv",
