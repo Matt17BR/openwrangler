@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 
@@ -164,6 +165,13 @@ function settleBeforeDeadline(operation, signal, timeoutMs, controller, deadline
       (error) => finish(rejectPromise, error)
     );
   });
+}
+
+function enforceAggregateDeadline(deadline, controller) {
+  if (performance.now() < deadline) return;
+  const error = contractFailure("remote R lock fetch aggregate deadline expired.");
+  controller.abort(error);
+  throw error;
 }
 
 function isPlainObject(value) {
@@ -525,6 +533,7 @@ async function fetchBounded(
     allowArchiveRedirect = false,
     hashOnly = false,
     signal,
+    aggregateDeadline,
     requestHeaderTimeoutMs,
     bodyProgressTimeoutMs
   } = {}
@@ -540,8 +549,12 @@ async function fetchBounded(
     fail("network generation accepts only canonical P3M HTTPS URLs.");
   }
   if (!(signal instanceof AbortSignal)) throw new TypeError("Remote R lock generation requires an AbortSignal.");
+  if (!Number.isFinite(aggregateDeadline)) {
+    throw new TypeError("Remote R lock generation requires one absolute aggregate deadline.");
+  }
   const { controller, detach } = linkedAbortController(signal);
   try {
+    enforceAggregateDeadline(aggregateDeadline, controller);
     const response = await settleBeforeDeadline(
       Promise.resolve().then(() =>
         fetchImpl(url, {
@@ -578,6 +591,7 @@ async function fetchBounded(
     const digest = hashOnly ? createHash("sha256") : undefined;
     let total = 0;
     for (;;) {
+      enforceAggregateDeadline(aggregateDeadline, controller);
       const item = await settleBeforeDeadline(
         Promise.resolve().then(() => iterator.next()),
         controller.signal,
@@ -585,8 +599,10 @@ async function fetchBounded(
         controller,
         `download ${url} body-progress`
       );
+      enforceAggregateDeadline(aggregateDeadline, controller);
       if (item.done) break;
       const bytes = Buffer.from(item.value);
+      if (bytes.length === 0) fail(`download ${url} returned a zero-byte body chunk.`);
       total += bytes.length;
       if (total > maximumBytes || (expectedBytes !== undefined && total > expectedBytes)) {
         fail(`download ${url} exceeded its streaming bound.`);
@@ -613,11 +629,13 @@ export async function generateRemoteRPackageLock({ fetchImpl = globalThis.fetch,
   if (typeof fetchImpl !== "function") throw new TypeError("Remote R lock generation requires a fetch implementation.");
   const fetchDeadlines = normalizeFetchDeadlines(deadlines);
   const aggregateController = new AbortController();
+  const aggregateDeadline = performance.now() + fetchDeadlines.aggregateMs;
   const aggregateTimer = setTimeout(() => {
     aggregateController.abort(contractFailure("remote R lock fetch aggregate deadline expired."));
   }, fetchDeadlines.aggregateMs);
   const deadlineOptions = {
     signal: aggregateController.signal,
+    aggregateDeadline,
     requestHeaderTimeoutMs: fetchDeadlines.requestHeaderMs,
     bodyProgressTimeoutMs: fetchDeadlines.bodyProgressMs
   };

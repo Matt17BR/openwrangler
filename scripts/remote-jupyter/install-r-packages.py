@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -30,6 +31,10 @@ COMMAND_LOG_MAX_BYTES = 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 300
 COMMAND_TERMINATION_GRACE_SECONDS = 2
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
+COMMAND_PROCESS_SCAN_MAX_ENTRIES = 32 * 1024
+COMMAND_PROCESS_STAT_MAX_BYTES = 4096
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PACKAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,63}$")
 PACKAGE_VERSION = re.compile(r"^[0-9][0-9A-Za-z.+-]{0,63}$")
@@ -343,31 +348,234 @@ def isolated_environment(root: Path, library: Path) -> dict[str, str]:
     }
 
 
-def process_group_exists(process_group: int) -> bool:
+ProcessIdentity = tuple[int, int]
+ProcessRecord = tuple[int, int]
+
+
+def read_linux_process_record(process_id: int) -> ProcessRecord | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        os.killpg(process_group, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        descriptor = os.open(f"/proc/{process_id}/stat", flags)
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except PermissionError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux process ownership record was inaccessible"
+        ) from error
+    try:
+        payload = os.read(descriptor, COMMAND_PROCESS_STAT_MAX_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(payload) > COMMAND_PROCESS_STAT_MAX_BYTES:
+        fail("Linux process ownership record exceeded its fixed bound")
+    marker = payload.rfind(b") ")
+    fields = payload[marker + 2 :].split() if marker >= 0 else []
+    if len(fields) < 20:
+        fail("Linux process ownership record was malformed")
+    try:
+        return int(fields[1]), int(fields[19])
+    except ValueError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux process ownership record was malformed"
+        ) from error
 
 
-def terminate_owned_process_group(process: subprocess.Popen[bytes]) -> None:
-    process_group = process.pid
-    for termination_signal in (signal.SIGTERM, signal.SIGKILL):
-        if process_group_exists(process_group):
+def linux_process_snapshot() -> dict[int, ProcessRecord]:
+    records: dict[int, ProcessRecord] = {}
+    numeric_entries = 0
+    try:
+        with os.scandir("/proc") as entries:
+            for entry in entries:
+                if not entry.name.isdecimal():
+                    continue
+                numeric_entries += 1
+                if numeric_entries > COMMAND_PROCESS_SCAN_MAX_ENTRIES:
+                    fail("Linux process ownership inventory exceeded its fixed bound")
+                process_id = int(entry.name)
+                record = read_linux_process_record(process_id)
+                if record is not None:
+                    records[process_id] = record
+    except OSError as error:
+        raise ContractError(
+            "Remote R package installation failed: Linux process ownership inventory was unavailable"
+        ) from error
+    return records
+
+
+def enable_linux_child_subreaper() -> None:
+    if (
+        platform.system() != "Linux"
+        or not hasattr(os, "pidfd_open")
+        or not hasattr(signal, "pidfd_send_signal")
+    ):
+        fail("Linux descendant ownership primitives are unavailable")
+    library = ctypes.CDLL(None, use_errno=True)
+    prctl = library.prctl
+    prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    prctl.restype = ctypes.c_int
+    if prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise ContractError(
+            "Remote R package installation failed: Linux descendant subreaper could not be established"
+        ) from OSError(error_number, os.strerror(error_number))
+    enabled = ctypes.c_int(0)
+    if (
+        prctl(PR_GET_CHILD_SUBREAPER, ctypes.addressof(enabled), 0, 0, 0) != 0
+        or enabled.value != 1
+    ):
+        fail("Linux descendant subreaper could not be verified")
+
+
+class LinuxProcessBoundary:
+    def __init__(self, owner_identity: ProcessIdentity):
+        self.owner_identity = owner_identity
+        self.owned: set[ProcessIdentity] = set()
+        self.root: ProcessIdentity | None = None
+
+    @classmethod
+    def establish(cls) -> LinuxProcessBoundary:
+        enable_linux_child_subreaper()
+        snapshot = linux_process_snapshot()
+        owner_id = os.getpid()
+        owner_record = snapshot.get(owner_id)
+        if owner_record is None:
+            fail("Linux descendant owner identity was unavailable")
+        if any(parent_id == owner_id for parent_id, _ in snapshot.values()):
+            fail("Linux descendant owner was not exclusive before dispatch")
+        return cls((owner_id, owner_record[1]))
+
+    def discover(self) -> dict[int, ProcessRecord]:
+        snapshot = linux_process_snapshot()
+        owner_id, owner_start_time = self.owner_identity
+        owner_record = snapshot.get(owner_id)
+        if owner_record is None or owner_record[1] != owner_start_time:
+            fail("Linux descendant owner identity changed")
+        children: dict[ProcessIdentity, list[ProcessIdentity]] = {}
+        pending = [
+            identity
+            for identity in self.owned
+            if snapshot.get(identity[0]) is not None
+            and snapshot[identity[0]][1] == identity[1]
+        ]
+        for process_id, (parent_id, start_time) in snapshot.items():
+            identity = (process_id, start_time)
+            parent_record = snapshot.get(parent_id)
+            if parent_record is not None:
+                children.setdefault((parent_id, parent_record[1]), []).append(identity)
+            if (
+                parent_id == owner_id
+                and start_time >= owner_start_time
+                and identity not in self.owned
+            ):
+                self.owned.add(identity)
+                pending.append(identity)
+                if len(self.owned) > COMMAND_PROCESS_SCAN_MAX_ENTRIES:
+                    fail("Linux descendant ownership exceeded its fixed bound")
+        while pending:
+            parent_identity = pending.pop()
+            for identity in children.get(parent_identity, ()):
+                if identity in self.owned:
+                    continue
+                self.owned.add(identity)
+                pending.append(identity)
+                if len(self.owned) > COMMAND_PROCESS_SCAN_MAX_ENTRIES:
+                    fail("Linux descendant ownership exceeded its fixed bound")
+        return snapshot
+
+    def attach(self, process: subprocess.Popen[bytes]) -> None:
+        snapshot = self.discover()
+        record = snapshot.get(process.pid)
+        if record is None:
+            if process.poll() is None:
+                fail("Linux descendant root identity was unavailable after dispatch")
+            return
+        identity = (process.pid, record[1])
+        if identity not in self.owned or record[0] != self.owner_identity[0]:
+            fail("Linux descendant root ownership was not exact after dispatch")
+        self.root = identity
+
+    def live(self) -> list[ProcessIdentity]:
+        snapshot = self.discover()
+        return sorted(
+            identity
+            for identity in self.owned
+            if snapshot.get(identity[0]) is not None
+            and snapshot[identity[0]][1] == identity[1]
+        )
+
+    def signal(
+        self, identity: ProcessIdentity, termination_signal: signal.Signals
+    ) -> None:
+        process_id, start_time = identity
+        before = read_linux_process_record(process_id)
+        if before is None:
+            return
+        if before[1] != start_time:
+            fail("Linux descendant identity changed before termination")
+        try:
+            descriptor = os.pidfd_open(process_id, 0)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise ContractError(
+                "Remote R package installation failed: Linux descendant identity could not be pinned"
+            ) from error
+        try:
+            after = read_linux_process_record(process_id)
+            if after is None:
+                return
+            if after[1] != start_time:
+                fail("Linux descendant identity changed after pinning")
+            signal.pidfd_send_signal(descriptor, termination_signal, None, 0)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise ContractError(
+                "Remote R package installation failed: Linux descendant could not be terminated"
+            ) from error
+        finally:
+            os.close(descriptor)
+
+    def reap(self, process: subprocess.Popen[bytes]) -> None:
+        process.poll()
+        for process_id, _ in tuple(self.owned):
+            if self.root is not None and process_id == self.root[0]:
+                continue
             try:
-                os.killpg(process_group, termination_signal)
-            except ProcessLookupError:
+                os.waitpid(process_id, os.WNOHANG)
+            except (ChildProcessError, ProcessLookupError):
                 pass
+
+
+def terminate_owned_processes(
+    process: subprocess.Popen[bytes], boundary: LinuxProcessBoundary
+) -> None:
+    settled = False
+    for termination_signal in (signal.SIGTERM, signal.SIGKILL):
         deadline = time.monotonic() + COMMAND_TERMINATION_GRACE_SECONDS
+        empty_observations = 0
         while time.monotonic() < deadline:
-            process.poll()
-            if not process_group_exists(process_group):
-                break
+            boundary.reap(process)
+            live = boundary.live()
+            if live:
+                empty_observations = 0
+                for identity in sorted(
+                    live, key=lambda candidate: candidate == boundary.root
+                ):
+                    boundary.signal(identity, termination_signal)
+            elif process.poll() is not None:
+                empty_observations += 1
+                if empty_observations >= 2:
+                    settled = True
+                    break
             time.sleep(0.01)
-        if not process_group_exists(process_group):
+        if settled:
             break
     try:
         process.wait(timeout=COMMAND_TERMINATION_GRACE_SECONDS)
@@ -375,20 +583,27 @@ def terminate_owned_process_group(process: subprocess.Popen[bytes]) -> None:
         raise ContractError(
             "Remote R package installation failed: isolated R command could not be reaped"
         ) from error
-    if process_group_exists(process_group):
+    boundary.reap(process)
+    if boundary.live():
         raise ContractError(
             "Remote R package installation failed: isolated R command descendants did not settle"
         )
 
 
-def bounded_command(arguments: list[str], environment: dict[str, str], log_path: Path) -> bytes:
-    descriptor = os.open(log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+def bounded_command(
+    arguments: list[str], environment: dict[str, str], log_path: Path
+) -> bytes:
+    descriptor = os.open(
+        log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600
+    )
     process: subprocess.Popen[bytes] | None = None
+    boundary: LinuxProcessBoundary | None = None
     selector: selectors.BaseSelector | None = None
     stdout = bytearray()
     total = 0
     try:
         with os.fdopen(descriptor, "wb", closefd=True) as log:
+            boundary = LinuxProcessBoundary.establish()
             process = subprocess.Popen(
                 arguments,
                 stdin=subprocess.DEVNULL,
@@ -397,6 +612,7 @@ def bounded_command(arguments: list[str], environment: dict[str, str], log_path:
                 env=environment,
                 start_new_session=True,
             )
+            boundary.attach(process)
             if process.stdout is None or process.stderr is None:
                 fail("isolated R command pipes were not created")
             selector = selectors.DefaultSelector()
@@ -425,8 +641,14 @@ def bounded_command(arguments: list[str], environment: dict[str, str], log_path:
             if remaining <= 0:
                 fail("isolated R command exceeded its deadline")
             return_code = process.wait(timeout=remaining)
-            if process_group_exists(process.pid):
-                terminate_owned_process_group(process)
+            boundary.reap(process)
+            live_descendants = boundary.live()
+            if not live_descendants:
+                time.sleep(0.01)
+                boundary.reap(process)
+                live_descendants = boundary.live()
+            if live_descendants:
+                terminate_owned_processes(process, boundary)
                 fail("isolated R command left a live descendant")
             log.flush()
             os.fsync(log.fileno())
@@ -437,16 +659,16 @@ def bounded_command(arguments: list[str], environment: dict[str, str], log_path:
         primary: BaseException = ContractError(
             "Remote R package installation failed: isolated R command did not settle"
         )
-        if process is not None:
+        if process is not None and boundary is not None:
             try:
-                terminate_owned_process_group(process)
+                terminate_owned_processes(process, boundary)
             except ContractError as settlement_error:
                 raise settlement_error from error
         raise primary from error
     except BaseException as error:
-        if process is not None:
+        if process is not None and boundary is not None:
             try:
-                terminate_owned_process_group(process)
+                terminate_owned_processes(process, boundary)
             except ContractError as settlement_error:
                 raise settlement_error from error
         raise

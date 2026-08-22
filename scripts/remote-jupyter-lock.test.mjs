@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 
 import {
   REMOTE_JUPYTER_INPUT_PATH,
@@ -241,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-output-") as directory:
   assert.equal(probe.signal, null);
 });
 
-test("the installer settles a timed-out process group before descendants can mutate", () => {
+test("the installer settles a timed-out owned process tree before descendants can mutate", () => {
   const probe = runInstallerProbe(String.raw`
 import importlib.util
 import os
@@ -276,7 +277,7 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-timeout-") as directory:
   assert.equal(probe.signal, null);
 });
 
-test("the installer settles an output-overflow process group before descendants can mutate", () => {
+test("the installer settles an output-overflow owned process tree before descendants can mutate", () => {
   const probe = runInstallerProbe(String.raw`
 import importlib.util
 import os
@@ -305,6 +306,83 @@ with tempfile.TemporaryDirectory(prefix="ow-r-installer-overflow-") as directory
         raise AssertionError("the overflowing command unexpectedly succeeded")
     time.sleep(0.7)
     assert not marker.exists(), "an overflowing descendant remained alive"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer reaps session-escaped closed-fd descendants on every terminal path", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+installer.COMMAND_TIMEOUT_SECONDS = 0.2
+installer.COMMAND_TERMINATION_GRACE_SECONDS = 0.5
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-setsid-") as directory:
+    root = Path(directory)
+    descendant = "import os; from pathlib import Path; import sys,time; Path(sys.argv[2]).write_text(str(os.getpid()), encoding='ascii'); time.sleep(0.5); Path(sys.argv[1]).write_text('survived', encoding='utf8')"
+    parent = "import os,subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[1], sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True); deadline=time.monotonic()+0.5;\nwhile not os.path.exists(sys.argv[2]) and time.monotonic()<deadline: time.sleep(0.005)\nassert os.path.exists(sys.argv[2])\nif sys.argv[4] == 'overflow': os.write(1, b'x' * (1048576 + 65536))\nelif sys.argv[4] == 'timeout': time.sleep(10)"
+    for mode in ("success", "timeout", "overflow"):
+        marker = root / f"{mode}-descendant-survived"
+        process_id_path = root / f"{mode}-descendant-pid"
+        try:
+            installer.bounded_command(
+                [sys.executable, "-c", parent, str(marker), str(process_id_path), descendant, mode],
+                dict(os.environ),
+                root / f"{mode}-command.log",
+            )
+        except installer.ContractError:
+            pass
+        else:
+            raise AssertionError(f"{mode} command with a live escaped descendant unexpectedly succeeded")
+        process_id = int(process_id_path.read_text(encoding="ascii"))
+        assert not Path(f"/proc/{process_id}").exists(), f"{mode} descendant was not reaped"
+        time.sleep(0.7)
+        assert not marker.exists(), f"{mode} escaped descendant mutated after settlement"
+`);
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.signal, null);
+});
+
+test("the installer fails closed before dispatch rather than claiming an unrelated child", () => {
+  const probe = runInstallerProbe(String.raw`
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("ow_installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+with tempfile.TemporaryDirectory(prefix="ow-r-installer-exclusive-") as directory:
+    root = Path(directory)
+    marker = root / "command-dispatched"
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], start_new_session=True)
+    try:
+        try:
+            installer.bounded_command(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)],
+                dict(os.environ),
+                root / "command.log",
+            )
+        except installer.ContractError as error:
+            assert "was not exclusive before dispatch" in str(error)
+        else:
+            raise AssertionError("command dispatched without an exclusive descendant owner")
+        assert unrelated.poll() is None, "the unrelated child was affected"
+        assert not marker.exists(), "the command ran before descendant ownership was established"
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=2)
 `);
   assert.equal(probe.status, 0, probe.stderr);
   assert.equal(probe.signal, null);
@@ -404,6 +482,72 @@ test("lock generation has request-header, body-progress, and aggregate deadlines
   );
   assert.equal(aggregateSignals.length, 1);
   assert.equal(aggregateSignals[0].aborted, true);
+
+  const zeroByteSignals = [];
+  const zeroByteBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => Promise.resolve({ done: false, value: new Uint8Array(0) }) };
+    }
+  };
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 25, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        zeroByteSignals.push(signal);
+        return { body: zeroByteBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /zero-byte body chunk/u
+  );
+  assert.equal(zeroByteSignals.length, 1);
+  assert.equal(zeroByteSignals[0].aborted, true);
+
+  const microtaskSignals = [];
+  const endlessPositiveBody = {
+    [Symbol.asyncIterator]() {
+      return { next: () => Promise.resolve({ done: false, value: Uint8Array.of(1) }) };
+    }
+  };
+  await expectBoundedDeadline(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 5, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url, { signal }) => {
+        microtaskSignals.push(signal);
+        return { body: endlessPositiveBody, headers: { get: () => null }, status: 200, url };
+      }
+    }),
+    /aggregate deadline/u
+  );
+  assert.equal(microtaskSignals.length, 1);
+  assert.equal(microtaskSignals[0].aborted, true);
+
+  const boundedMetadata = gzipSync("Package: bounded\nVersion: 1.0.0\n\n");
+  let boundedBodyReads = 0;
+  await assert.rejects(
+    generateRemoteRPackageLock({
+      deadlines: { aggregateMs: 250, bodyProgressMs: 100, requestHeaderMs: 100 },
+      fetchImpl: async (url) => ({
+        body: {
+          [Symbol.asyncIterator]() {
+            let emitted = false;
+            return {
+              next: () => {
+                boundedBodyReads += 1;
+                if (emitted) return Promise.resolve({ done: true });
+                emitted = true;
+                return Promise.resolve({ done: false, value: boundedMetadata });
+              }
+            };
+          }
+        },
+        headers: { get: () => String(boundedMetadata.byteLength) },
+        status: 200,
+        url
+      })
+    }),
+    /does not contain required package/u
+  );
+  assert.equal(boundedBodyReads, 4);
 });
 
 test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
