@@ -1872,6 +1872,51 @@ test("cleaning-history explicit owners fence anaphors and adversative Undo claus
   }
 });
 
+test("cleaning-history owner phrases use the latest explicit bounded owner", () => {
+  const model = cleaningHistoryModel();
+  const contradictions = [
+    "The already committed step cannot be edited.",
+    "The already-committed step cannot be edited.",
+    "Already-committed steps cannot be edited.",
+    "The report says committed steps cannot be edited.",
+    "Report says the committed step is unavailable for editing.",
+    "Reports say committed steps can be reordered."
+  ];
+  const truthful = [
+    "The already-committed report cannot be edited.",
+    "Committed steps remain visible. Editing them makes the editing report unavailable.",
+    "Committed steps remain visible. Editing them makes editing report unavailable.",
+    "Committed steps remain visible. Editing them makes edit report unavailable.",
+    "Committed steps remain visible. Editing them makes modification report unavailable.",
+    "Committed steps remain visible. Editing them makes report unavailable.",
+    "Committed steps remain visible. Editing them makes reports unavailable."
+  ];
+
+  for (const example of contradictions) {
+    assert.throws(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      /contradictory cleaning-history capability claim/u,
+      example
+    );
+  }
+  for (const example of truthful) {
+    assert.doesNotThrow(
+      () =>
+        assertCleaningHistoryClaimsCurrent({
+          modelSource: JSON.stringify(model),
+          productionAuthoritySource: cleaningHistoryProductionAuthoritySource(),
+          documents: cleaningHistoryDocumentsWithReadmeClaim(model, example)
+        }),
+      example
+    );
+  }
+});
+
 test("cleaning-history rendered soft and hard breaks preserve claim continuity and block boundaries", () => {
   const model = cleaningHistoryModel();
   const contradictions = [
