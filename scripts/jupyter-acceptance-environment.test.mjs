@@ -2109,6 +2109,13 @@ test(
       });
       launch = artifact.preparePipLaunch(["-I", "-m", "pip", "install"], "linux");
       const bootstrap = pySparkPipBootstrapBody(launch);
+      assert.ok(Buffer.byteLength(launch.args[2], "utf8") <= 16_384);
+      assert.match(bootstrap, /metadata\.st_nlink != 0/u);
+      assert.match(
+        bootstrap,
+        /Released-Jupyter PySpark pip source lost its anonymous zero-link sealed-memfd identity\./u
+      );
+      assert.doesNotMatch(bootstrap, /single-link artifact identity/u);
       const pipBoundary = bootstrap.indexOf("server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)");
       assert.ok(pipBoundary > 0);
       const adversary = `${bootstrap.slice(0, pipBoundary)}
@@ -2274,9 +2281,24 @@ test(
           sha256: distribution.sha256,
           expected: /OSError: \[Errno 5\] primary raw-close test denial/u,
           cleanupExpected:
-            /Released-Jupyter PySpark sealed descriptor cleanup also failed: OSError: \[Errno 9\] secondary sealed-close test denial/u,
+            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
           primaryText: "OSError: [Errno 5] primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] primary raw-close test denial/u
+        },
+        {
+          name: "add-note-bounds-private-primary-and-cleanup-close-failure",
+          prelude:
+            "import builtins, errno, os, sys\nif not hasattr(BaseException, 'add_note'):\n    _ow_getattr = builtins.getattr\n    def _ow_force_add_note(value, name, default=None):\n        if name == 'add_note' and isinstance(value, OSError):\n            def _ow_record_note(note): value._ow_bounded_note = note\n            return _ow_record_note\n        return _ow_getattr(value, name, default)\n    builtins.getattr = _ow_force_add_note\n    def _ow_print_forced_note(exc_type, exc_value, exc_traceback):\n        sys.__excepthook__(exc_type, exc_value, exc_traceback)\n        note = exc_value.__dict__.get('_ow_bounded_note')\n        if note is not None:\n            sys.stderr.write(note + '\\n')\n            sys.stderr.flush()\n    sys.excepthook = _ow_print_forced_note\n_ow_private_cleanup = type('PRIVATE_CLEANUP_TYPE\\nFORGED_TYPE', (OSError,), {})\ndef _ow_fail_bounded_primary_and_cleanup_close(fd):\n    if fd == 3: raise OSError(errno.EIO, 'bounded primary raw-close test denial')\n    raise _ow_private_cleanup('/private/add-note-cleanup-path\\nFORGED_CLEANUP_EXCEPTION\\n' + 'X' * (2 * 1024 * 1024))\nos.close = _ow_fail_bounded_primary_and_cleanup_close\n",
+          sha256: distribution.sha256,
+          expected: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
+          cleanupExpected:
+            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=BaseException errno=unavailable\)\./u,
+          primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
+          terminalPrimary: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
+          tracebackExpected: /os\.close\(raw_descriptor\)/u,
+          maxStderrBytes: 8_192,
+          unexpected:
+            /PRIVATE_CLEANUP_TYPE|FORGED_TYPE|\/private\/add-note-cleanup-path|FORGED_CLEANUP_EXCEPTION|X{128}/u
         },
         {
           name: "python-3.10-primary-and-cleanup-close-failure",
@@ -2285,7 +2307,7 @@ test(
           sha256: distribution.sha256,
           expected: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           cleanupExpected:
-            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(OSError errno=9\)\./u,
+            /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
           primaryText: "OSError: [Errno 5] python310 primary raw-close test denial",
           terminalPrimary: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           tracebackExpected: /os\.close\(raw_descriptor\)/u,
@@ -2323,6 +2345,9 @@ test(
         );
         assert.notEqual(result.status, 0, scenario.name);
         assert.match(result.stderr, scenario.expected);
+        if (scenario.maxStderrBytes !== undefined) {
+          assert.ok(Buffer.byteLength(result.stderr, "utf8") <= scenario.maxStderrBytes, scenario.name);
+        }
         if (scenario.unexpected !== undefined) assert.doesNotMatch(result.stderr, scenario.unexpected);
         if (scenario.cleanupExpected !== undefined) {
           assert.match(result.stderr, scenario.cleanupExpected);

@@ -216,17 +216,8 @@ except BaseException as primary_failure:
     try:
         os.close(sealed_descriptor)
     except BaseException as cleanup_failure:
-        add_note = getattr(primary_failure, "add_note", None)
-        if add_note is not None:
-            cleanup_note = (
-                "Released-Jupyter PySpark sealed descriptor cleanup also failed: "
-                + type(cleanup_failure).__name__
-                + ": "
-                + str(cleanup_failure)
-            )
-            add_note(cleanup_note)
-        else:
-            cleanup_type = type(cleanup_failure).__name__
+        def bounded_cleanup_diagnostic(failure):
+            cleanup_type = type(failure).__name__
             if (
                 not cleanup_type
                 or len(cleanup_type) > 64
@@ -234,19 +225,22 @@ except BaseException as primary_failure:
                 or any(not (character.isalnum() or character == "_") for character in cleanup_type)
             ):
                 cleanup_type = "BaseException"
-            cleanup_errno = getattr(cleanup_failure, "errno", None)
+            cleanup_errno = getattr(failure, "errno", None)
             cleanup_errno_text = (
-                " errno=" + str(cleanup_errno)
+                str(cleanup_errno)
                 if type(cleanup_errno) is int and -(2**31) <= cleanup_errno <= 2**31 - 1
-                else ""
+                else "unavailable"
             )
-            cleanup_diagnostic = (
-                "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception ("
-                + cleanup_type
-                + cleanup_errno_text
-                + ")."
+            return (
+                "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception "
+                "(type=" + cleanup_type + " errno=" + cleanup_errno_text + ")."
             )
 
+        cleanup_diagnostic = bounded_cleanup_diagnostic(cleanup_failure)
+        add_note = getattr(primary_failure, "add_note", None)
+        if callable(add_note):
+            add_note(cleanup_diagnostic)
+        else:
             def report_primary_with_cleanup(exc_type, exc_value, exc_traceback):
                 sys.__excepthook__(exc_type, exc_value, exc_traceback)
                 sys.stderr.write(cleanup_diagnostic + "\n")
@@ -366,7 +360,7 @@ def serve_once():
         offset = 0
         while offset < expected_size:
             if snapshot(descriptor) != artifact_identity:
-                raise RuntimeError("Released-Jupyter PySpark pip source lost its descriptor-bound, single-link artifact identity.")
+                raise RuntimeError("Released-Jupyter PySpark pip source lost its anonymous zero-link sealed-memfd identity.")
             chunk = os.pread(descriptor, min(65536, expected_size - offset), offset)
             if not chunk:
                 raise RuntimeError("Released-Jupyter PySpark pip source reached an early artifact boundary.")
