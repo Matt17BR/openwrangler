@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -27,7 +27,12 @@ interface DependencyGuardFixtureOwnershipReceipt {
   readonly recordSource: string;
 }
 
-type DependencyGuardFixtureRecordMutation = (recordSource: string) => string | null;
+interface DependencyGuardFixtureRecordMutationResult {
+  readonly recordSource: string | null;
+  readonly materializedFile?: string;
+}
+
+type DependencyGuardFixtureRecordMutation = (recordSource: string) => DependencyGuardFixtureRecordMutationResult;
 
 const expectedDependencyGuardFixtureRecordSource = [
   `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
@@ -49,6 +54,61 @@ const testPython =
   process.env.OPEN_WRANGLER_PYTHON ??
   (process.platform === "win32" ? "python" : "python3");
 
+function isContainedChild(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+}
+
+function materializeHostileRecordFile(directory: string, recordFile: string): void {
+  const segments = recordFile.split("/");
+  if (
+    segments.length !== 2 ||
+    path.posix.isAbsolute(recordFile) ||
+    path.win32.isAbsolute(recordFile) ||
+    path.posix.normalize(recordFile) !== recordFile ||
+    segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.includes("\\"))
+  ) {
+    throw new Error("The hostile RECORD file must be a normalized contained two-segment path.");
+  }
+
+  const directoryStatus = lstatSync(directory);
+  if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink()) {
+    throw new Error("The hostile RECORD fixture root must be a real directory.");
+  }
+  const canonicalDirectory = realpathSync(directory);
+  const target = path.resolve(canonicalDirectory, ...segments);
+  if (!isContainedChild(canonicalDirectory, target)) {
+    throw new Error("The hostile RECORD file escaped its private fixture root.");
+  }
+
+  const parent = path.dirname(target);
+  try {
+    mkdirSync(parent, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
+  }
+  const parentStatus = lstatSync(parent);
+  if (!parentStatus.isDirectory() || parentStatus.isSymbolicLink()) {
+    throw new Error("The hostile RECORD file parent must be a real directory.");
+  }
+  const canonicalParent = realpathSync(parent);
+  if (!isContainedChild(canonicalDirectory, canonicalParent)) {
+    throw new Error("The hostile RECORD file parent escaped its private fixture root.");
+  }
+
+  const canonicalTarget = path.resolve(canonicalParent, segments[1]);
+  if (!isContainedChild(canonicalDirectory, canonicalTarget)) {
+    throw new Error("The canonical hostile RECORD file escaped its private fixture root.");
+  }
+  writeFileSync(canonicalTarget, "", { encoding: "utf8", flag: "wx" });
+  const targetStatus = lstatSync(canonicalTarget);
+  if (!targetStatus.isFile() || targetStatus.isSymbolicLink()) {
+    throw new Error("The hostile RECORD fixture did not create one contained regular file.");
+  }
+}
+
 function inspectFixtureOwnership(
   mutateRecord?: DependencyGuardFixtureRecordMutation
 ): DependencyGuardFixtureOwnershipReceipt {
@@ -58,14 +118,22 @@ function inspectFixtureOwnership(
     const recordPath = path.join(directory, DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY, "RECORD");
     const recordSource = readFileSync(recordPath, "utf8");
     if (mutateRecord !== undefined) {
-      const mutatedRecordSource = mutateRecord(recordSource);
-      if (mutatedRecordSource === null) {
+      const mutation = mutateRecord(recordSource);
+      if (mutation.recordSource === null) {
         rmSync(recordPath);
       } else {
-        if (mutatedRecordSource === recordSource) {
+        if (mutation.recordSource === recordSource) {
           throw new Error("The hostile RECORD mutation must change the isolated fixture copy.");
         }
-        writeFileSync(recordPath, mutatedRecordSource, { encoding: "utf8" });
+        if (mutation.materializedFile !== undefined) {
+          if (
+            mutation.recordSource.split("\n").filter((entry) => entry === `${mutation.materializedFile},,`).length !== 1
+          ) {
+            throw new Error("The materialized hostile file must match exactly one mutated RECORD entry.");
+          }
+          materializeHostileRecordFile(directory, mutation.materializedFile);
+        }
+        writeFileSync(recordPath, mutation.recordSource, { encoding: "utf8" });
       }
     }
     // This owner tests RECORD mapping. The dependency-guard owners separately
@@ -158,24 +226,33 @@ describe("dependency-guard recovery fixture", () => {
   const hostileRecordMutations: ReadonlyArray<
     readonly [string, DependencyGuardFixtureRecordMutation, readonly string[] | null]
   > = [
-    ["an absent RECORD", () => null, null],
+    ["an absent RECORD", () => ({ recordSource: null }), null],
     [
       "a mismatched module entry",
-      (recordSource) =>
-        recordSource.replace(
+      (recordSource) => ({
+        recordSource: recordSource.replace(
           `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
           `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py,,`
         ),
+        materializedFile: `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py`
+      }),
       [
+        `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/fixture.py`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
       ]
     ],
     [
       "a foreign module entry",
-      (recordSource) =>
-        recordSource.replace(`${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`, "foreign_guard_fixture/__init__.py,,"),
+      (recordSource) => ({
+        recordSource: recordSource.replace(
+          `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
+          "foreign_guard_fixture/__init__.py,,"
+        ),
+        materializedFile: "foreign_guard_fixture/__init__.py"
+      }),
       [
+        "foreign_guard_fixture/__init__.py",
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA`,
         `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD`
       ]
