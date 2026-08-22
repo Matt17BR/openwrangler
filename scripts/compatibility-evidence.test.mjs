@@ -813,6 +813,30 @@ test("fenced code owns literal comment markers before HTML comment stripping", (
     inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${adversary}` }).join(" "),
     /compatibility-sensitive Cursor ownership/u
   );
+
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n> \`\`\`text\n> Cursor governs released-Jupyter.\n> \`\`\`\n`
+    }),
+    []
+  );
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\n> Cursor governs released-Jupyter.\n`
+    }).join(" "),
+    /compatibility-sensitive Cursor ownership/u
+  );
+});
+
+test("indented code owns literal comment openers before comment state", () => {
+  for (const indent of ["    ", "\t"]) {
+    assert.match(
+      inspect({
+        ciDocumentationSource: `${sources.ciDocumentationSource}\n${indent}<!--\nCursor governs released-Jupyter.\n-->\n`
+      }).join(" "),
+      /compatibility-sensitive Cursor ownership/u
+    );
+  }
 });
 
 test("synonym and passive compatibility claims cannot escape the canonical records", () => {
@@ -963,6 +987,16 @@ test("CommonMark autolinks remain visible and reference labels stop at 999 chara
     }).join(" "),
     /compatibility-sensitive Cursor ownership/u
   );
+  for (const malformed of [
+    "<Cursor@example.com data-owner=wrong> governs released-Jupyter.",
+    "<Cursor@example.com data-owner> governs released-Jupyter."
+  ]) {
+    assert.match(
+      inspect({ ciDocumentationSource: `${sources.ciDocumentationSource}\n${malformed}\n` }).join(" "),
+      /compatibility-sensitive Cursor ownership/u,
+      malformed
+    );
+  }
 
   const maximumLabel = "a".repeat(999);
   assert.match(
@@ -977,6 +1011,13 @@ test("CommonMark autolinks remain visible and reference labels stop at 999 chara
       ciDocumentationSource: `${sources.ciDocumentationSource}\n[${oversizedLabel}]: https://example.com/editor\n`
     }).join(" "),
     /invalid, duplicate, or unbounded Markdown references/u
+  );
+  const oversizedUseLabel = `${maximumLabel} `;
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nC[urs][${oversizedUseLabel}]or governs released-Jupyter.\n\n[${maximumLabel}]: https://example.com/editor\n`
+    }),
+    []
   );
 });
 
@@ -1095,6 +1136,8 @@ test("authority and guarantee wording remains ownership-sensitive", () => {
     "Cursor is accountable for released-Jupyter.",
     "Cursor warrants released-Jupyter.",
     "Cursor assures released-Jupyter.",
+    "Cursor manages released-Jupyter.",
+    "Cursor govεrns released-Jupyter.",
     "Cursor gοverns released-Jupyter.",
     "Cursor cοntrols released-Jupyter.",
     "Cursor is in chargе of released-Jupyter.",
@@ -1109,6 +1152,18 @@ test("authority and guarantee wording remains ownership-sensitive", () => {
       outsideClaim
     );
   }
+  assert.match(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\ncursor govεrns the release matrix.\n`
+    }).join(" "),
+    /exact canonical case/u
+  );
+  assert.deepEqual(
+    inspect({
+      ciDocumentationSource: `${sources.ciDocumentationSource}\nOpen Wrangler documents the Greek words μέγεθος and ελευθερία as unrelated prose.\n`
+    }),
+    []
+  );
 });
 
 test("visible HTML tag inspection rejects before retaining tag 4,097", () => {

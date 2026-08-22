@@ -49,6 +49,7 @@ const MAX_MARKDOWN_REFERENCES = 256;
 const MAX_MARKDOWN_CONSTRUCTS = 4_096;
 const MAX_MARKDOWN_LABEL_BYTES = 4 * 1024;
 const MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS = 999;
+const MAX_MARKDOWN_CONTAINER_DEPTH = 8;
 const EDITOR_VERSION_ENVIRONMENT_KEY = "VSCODE_TEST_VERSION";
 const MOVING_EDITOR_VERSION = "stable";
 const NON_VISIBLE_HTML_CONTAINERS = new Set([
@@ -121,6 +122,7 @@ const EVIDENCE_CONFUSABLES = new Map([
   ["Υ", "Y"],
   ["Χ", "X"],
   ["ο", "o"],
+  ["ε", "e"],
   ["ρ", "p"],
   ["σ", "C"],
   ["υ", "u"],
@@ -1534,7 +1536,17 @@ function inspectSemanticCandidateClaims(workflow, problems) {
 }
 
 function htmlTagPattern() {
-  return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
+  return /<(?<closing>\/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=[\t\n\f />])(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>/gisu;
+}
+
+function withoutMarkdownBlockquoteContainers(line) {
+  let content = line;
+  for (let depth = 0; depth < MAX_MARKDOWN_CONTAINER_DEPTH; depth += 1) {
+    const container = /^ {0,3}>[\t ]?/u.exec(content);
+    if (!container) break;
+    content = content.slice(container[0].length);
+  }
+  return content;
 }
 
 function commonmarkAutolinkContent(candidate) {
@@ -1762,13 +1774,14 @@ function visibleMarkdown(source, label, problems) {
   let fence;
   let htmlComment = false;
   for (const line of source.split("\n")) {
-    const fenceCandidate = /^ {0,3}(?<marker>`{3,}|~{3,})(?<info>.*)$/u.exec(line)?.groups;
+    const containerLine = withoutMarkdownBlockquoteContainers(line);
+    const fenceCandidate = /^ {0,3}(?<marker>`{3,}|~{3,})(?<info>.*)$/u.exec(containerLine)?.groups;
     const fenceMarker =
       fenceCandidate && !(fenceCandidate.marker[0] === "`" && fenceCandidate.info.includes("`"))
         ? fenceCandidate.marker
         : undefined;
     if (fence) {
-      const close = /^ {0,3}(?<marker>`{3,}|~{3,})\s*$/u.exec(line)?.groups?.marker;
+      const close = /^ {0,3}(?<marker>`{3,}|~{3,})\s*$/u.exec(containerLine)?.groups?.marker;
       if (close?.[0] === fence.character && close.length >= fence.length) fence = undefined;
       renderableLines.push("");
       continue;
@@ -1778,34 +1791,34 @@ function visibleMarkdown(source, label, problems) {
       renderableLines.push("");
       continue;
     }
+    if (!htmlComment && /^(?: {4}|\t)/u.test(containerLine)) {
+      renderableLines.push("");
+      continue;
+    }
     const uncommented = [];
     let cursor = 0;
-    while (cursor < line.length) {
+    while (cursor < containerLine.length) {
       if (htmlComment) {
-        const commentEnd = line.indexOf("-->", cursor);
+        const commentEnd = containerLine.indexOf("-->", cursor);
         if (commentEnd < 0) {
-          cursor = line.length;
+          cursor = containerLine.length;
           continue;
         }
         htmlComment = false;
         cursor = commentEnd + 3;
         continue;
       }
-      const commentStart = line.indexOf("<!--", cursor);
+      const commentStart = containerLine.indexOf("<!--", cursor);
       if (commentStart < 0) {
-        uncommented.push(line.slice(cursor));
-        cursor = line.length;
+        uncommented.push(containerLine.slice(cursor));
+        cursor = containerLine.length;
         continue;
       }
-      uncommented.push(line.slice(cursor, commentStart));
+      uncommented.push(containerLine.slice(cursor, commentStart));
       htmlComment = true;
       cursor = commentStart + 4;
     }
     const visibleLine = uncommented.join("");
-    if (/^(?: {4}|\t)/u.test(visibleLine)) {
-      renderableLines.push("");
-      continue;
-    }
     renderableLines.push(visibleLine);
   }
   if (fence) problems.push(`${label} contains an unterminated fenced code block.`);
@@ -1951,6 +1964,13 @@ function normalizedReferenceLabel(value) {
   return decodeRenderedEntities(markdownUnescape(value)).trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
+function commonmarkReferenceLabelWithinBounds(value) {
+  return (
+    [...value].length <= MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS &&
+    Buffer.byteLength(value, "utf8") <= MAX_MARKDOWN_LABEL_BYTES
+  );
+}
+
 function markdownReferenceDefinition(line) {
   let cursor = 0;
   while (cursor < line.length && line[cursor] === " " && cursor < 4) cursor += 1;
@@ -2000,8 +2020,7 @@ function extractMarkdownReferences(source, label, problems) {
     const reference = normalizedReferenceLabel(match.label);
     if (
       reference.length === 0 ||
-      [...match.label].length > MAX_MARKDOWN_REFERENCE_LABEL_CHARACTERS ||
-      Buffer.byteLength(match.label, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
+      !commonmarkReferenceLabelWithinBounds(match.label) ||
       Buffer.byteLength(body, "utf8") > MAX_MARKDOWN_LABEL_BYTES ||
       references.size >= MAX_MARKDOWN_REFERENCES ||
       references.has(reference)
@@ -2232,15 +2251,16 @@ function renderedInlineMarkdown(claim, references) {
       const referenceEnd = closingMarkdownBracket(claim, labelEnd + 2);
       if (referenceEnd >= 0) {
         const explicitReference = claim.slice(labelEnd + 2, referenceEnd);
-        const reference = normalizedReferenceLabel(explicitReference.length === 0 ? label : explicitReference);
-        if (references.has(reference)) {
+        const rawReference = explicitReference.length === 0 ? label : explicitReference;
+        const reference = normalizedReferenceLabel(rawReference);
+        if (commonmarkReferenceLabelWithinBounds(rawReference) && references.has(reference)) {
           linked = true;
           consumedEnd = referenceEnd + 1;
         }
       } else {
         unsupported = true;
       }
-    } else if (references.has(normalizedReferenceLabel(label))) {
+    } else if (commonmarkReferenceLabelWithinBounds(label) && references.has(normalizedReferenceLabel(label))) {
       linked = true;
     }
     if (!linked) {
@@ -2340,6 +2360,26 @@ function hasTokenStem(tokens, stems) {
   return [...tokens].some((token) => stems.some((stem) => token.startsWith(stem)));
 }
 
+function structurallyOwnsCursorTarget(claim) {
+  const tokens =
+    foldEvidenceConfusables(claim)
+      .toLowerCase()
+      .match(/[a-z0-9]+(?:\.[0-9]+)*/gu) ?? [];
+  for (let index = 0; index + 2 < tokens.length; index += 1) {
+    if (tokens[index] !== "cursor" || !/^[a-z]{2,63}(?:s|ed)$/u.test(tokens[index + 1])) continue;
+    let target = index + 2;
+    if (["a", "an", "every", "the"].includes(tokens[target])) target += 1;
+    if (
+      (tokens[target] === "released" && tokens[target + 1] === "jupyter") ||
+      (tokens[target] === "native" && tokens[target + 1] === "r") ||
+      (tokens[target] === "installed" && tokens[target + 1] === "performance")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function structuredOwnershipViolation(claim, references) {
   const rendered = renderedProseClaim(claim, references);
   const renderedProse = rendered.text;
@@ -2387,13 +2427,18 @@ function structuredOwnershipViolation(claim, references) {
     (tokens.has("pinned") && tokens.has("linux") && (tokens.has("compatibility") || tokens.has("smoke")));
   const namedProductContext = products.length > 0;
   const cursorProduct = products.some((product) => product.name === "Cursor");
+  const cursorStructuralOwnership = cursorProduct && structurallyOwnsCursorTarget(renderedProse);
   if (rendered.unsupportedMarkdown && ownsEvidence) {
     return "evidence-sensitive Markdown must remain inside the supported structural bounds";
   }
-  if (ownsEvidence && (cursorProductContext || namedProductContext) && products.some((product) => !product.canonical)) {
+  if (
+    (ownsEvidence || cursorStructuralOwnership) &&
+    (cursorProductContext || namedProductContext) &&
+    products.some((product) => !product.canonical)
+  ) {
     return "named product and editor claims must retain exact canonical case";
   }
-  if (cursorProduct && cursorRestrictedTarget && ownsEvidence) {
+  if (cursorProduct && cursorRestrictedTarget && (ownsEvidence || cursorStructuralOwnership)) {
     return "compatibility-sensitive Cursor ownership must remain inside its bounded canonical record";
   }
   if (
