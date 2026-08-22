@@ -2584,17 +2584,53 @@ async function showAppliedStep(page) {
 }
 
 async function waitForFocusedGridCell(page, row, column) {
-  await page.waitForFunction(
-    ({ expectedRow, expectedColumn }) => {
-      const active = document.activeElement;
-      return (
-        active instanceof HTMLElement &&
-        active.dataset.gridRow === String(expectedRow) &&
-        active.dataset.gridColumn === String(expectedColumn)
-      );
-    },
-    { expectedRow: row, expectedColumn: column }
-  );
+  try {
+    await page.waitForFunction(
+      ({ expectedRow, expectedColumn }) => {
+        const active = document.activeElement;
+        return (
+          active instanceof HTMLElement &&
+          active.dataset.gridRow === String(expectedRow) &&
+          active.dataset.gridColumn === String(expectedColumn)
+        );
+      },
+      { expectedRow: row, expectedColumn: column }
+    );
+  } catch (error) {
+    const diagnostic = await page.evaluate(() => ({
+      active: {
+        column: document.activeElement?.getAttribute("data-grid-column") ?? null,
+        row: document.activeElement?.getAttribute("data-grid-row") ?? null,
+        tag: document.activeElement?.tagName ?? null
+      },
+      projectedResponses: globalThis.openWranglerProjectedResponses.slice(-8).map((response) => ({
+        columnLimit: response.columnLimit,
+        columnOffset: response.columnOffset,
+        limit: response.limit,
+        offset: response.offset,
+        rowCount: response.rowWidths.length,
+        viewRequestId: response.viewRequestId
+      })),
+      requests: globalThis.openWranglerMessages
+        .filter((message) => message.kind === "runtimeRequest" && message.request?.kind === "getPage")
+        .slice(-8)
+        .map((message) => ({
+          columnLimit: message.request.columnLimit,
+          columnOffset: message.request.columnOffset,
+          limit: message.request.limit,
+          offset: message.request.offset,
+          viewRequestId: message.request.viewRequestId
+        })),
+      rovingCells: [...document.querySelectorAll("td[tabindex='0']")].map((cell) => ({
+        column: cell.getAttribute("data-grid-column"),
+        row: cell.getAttribute("data-grid-row")
+      })),
+      status: document.querySelector("[aria-label='Visible rows']")?.textContent?.trim() ?? null
+    }));
+    throw new Error(`Grid focus did not reach row ${row}, column ${column}: ${JSON.stringify(diagnostic)}.`, {
+      cause: error
+    });
+  }
 }
 
 async function focusedGridRow(page) {

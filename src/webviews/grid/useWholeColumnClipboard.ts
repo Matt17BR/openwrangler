@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ColumnSchema, FilterModel, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { liveGridPageHasMore } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
@@ -8,9 +8,9 @@ import {
   clipboardCellLimitError,
   createGridClipboardColumnAccumulator,
   maximumClipboardCells,
+  tryAcquireGridClipboardWrite,
   type GridClipboardColumnAccumulator,
-  type GridClipboardResult,
-  writeGridClipboardText
+  type GridClipboardResult
 } from "./gridClipboard";
 
 type WholeColumnClipboardPhase = "idle" | "preparing" | "ready" | "error";
@@ -37,7 +37,7 @@ interface ActiveColumnPreparation {
 
 export interface WholeColumnClipboardController {
   announcement: string;
-  copy(): Promise<void>;
+  copy(ownsResult?: () => boolean): Promise<boolean>;
   isColumnSelected(columnId: string): boolean;
   reset(): void;
   result: GridClipboardResult;
@@ -62,6 +62,7 @@ export function useWholeColumnClipboard({
   const [announcement, setAnnouncement] = useState("");
   const stateRef = useRef(state);
   const activeRef = useRef<ActiveColumnPreparation | undefined>(undefined);
+  const copyActionGenerationRef = useRef(0);
   const mountedRef = useRef(true);
   const preparationIdentity = `${metadata.sessionId}:${metadata.revision}:${viewContextId ?? "unavailable"}:${metadata.schema.map((column) => column.id).join("\u0000")}`;
   const preparationIdentityRef = useRef(preparationIdentity);
@@ -71,6 +72,7 @@ export function useWholeColumnClipboard({
       : undefined;
 
   const publishState = useCallback((next: WholeColumnClipboardState): void => {
+    copyActionGenerationRef.current += 1;
     stateRef.current = next;
     if (mountedRef.current) setState(next);
   }, []);
@@ -220,19 +222,20 @@ export function useWholeColumnClipboard({
     return () => window.removeEventListener("message", receive);
   }, [handleResponse]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (preparationIdentityRef.current === preparationIdentity) return;
     preparationIdentityRef.current = preparationIdentity;
     cancelActive(true);
   }, [cancelActive, preparationIdentity]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
+      copyActionGenerationRef.current += 1;
       cancelActive(false);
-    },
-    [cancelActive]
-  );
+    };
+  }, [cancelActive]);
 
   const selectColumn = useCallback(
     (column: ColumnSchema): void => {
@@ -285,19 +288,45 @@ export function useWholeColumnClipboard({
     ]
   );
 
-  const copy = useCallback(async (): Promise<void> => {
-    const current = stateRef.current;
-    if (current.phase !== "ready" || !current.result?.ok || !current.column) {
-      setAnnouncement(current.reason ?? "Wait for the selected column to finish preparing.");
-      return;
+  const copy = useCallback(async (additionalOwnership?: () => boolean): Promise<boolean> => {
+    const clipboardWrite = tryAcquireGridClipboardWrite();
+    if (!clipboardWrite) {
+      if (mountedRef.current) setAnnouncement("Wait for the current clipboard copy to finish.");
+      return false;
     }
     try {
-      await writeGridClipboardText(current.result.payload.text);
-      setAnnouncement(
-        `Copied ${current.result.payload.rowCount.toLocaleString()} cells from column ${current.column.name}.`
-      );
-    } catch {
-      setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+      const current = stateRef.current;
+      const actionGeneration = ++copyActionGenerationRef.current;
+      const actionIdentity = preparationIdentityRef.current;
+      const ownsAction = (): boolean =>
+        mountedRef.current &&
+        copyActionGenerationRef.current === actionGeneration &&
+        preparationIdentityRef.current === actionIdentity &&
+        stateRef.current === current;
+      const ownsResult = (): boolean => {
+        if (!ownsAction() || !(additionalOwnership?.() ?? true)) return false;
+        return ownsAction();
+      };
+      if (current.phase !== "ready" || !current.result?.ok || !current.column) {
+        if (ownsResult()) setAnnouncement(current.reason ?? "Wait for the selected column to finish preparing.");
+        return ownsResult();
+      }
+      try {
+        await clipboardWrite.write(current.result.payload.text, ownsResult);
+        if (!ownsResult()) return false;
+        setAnnouncement(
+          `Copied ${current.result.payload.rowCount.toLocaleString()} cells from column ${current.column.name}.`
+        );
+        return true;
+      } catch {
+        if (ownsResult()) {
+          setAnnouncement("Could not write to the clipboard. Check this editor's clipboard permissions.");
+          return true;
+        }
+        return false;
+      }
+    } finally {
+      clipboardWrite.release();
     }
   }, []);
 
