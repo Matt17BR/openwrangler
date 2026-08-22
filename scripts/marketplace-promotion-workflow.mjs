@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "6b96a4cf7f7126512f25745255f2095a61c7412318f23862f4c02da99f3b2c83";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "69becb12303029d8678bbc4a7e5e0544ff1a729e71c3a4356fce7b6c16655f0c";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
