@@ -82,6 +82,7 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
     const sourceBytes = await readFixture(fixture);
     let lastTestOwnedClipboard: string | undefined;
     let surface: PackagedGridColumnCopySurface | undefined;
+    let failurePresent = false;
     let failure: unknown;
     try {
       await readBoundedClipboardText(readClipboardText, "initial", createMonotonicDeadline(sessionTimeoutMs));
@@ -198,6 +199,7 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
       );
       recordProgress("grid-column-copy:complete");
     } catch (error) {
+      failurePresent = true;
       failure = error;
     }
 
@@ -245,7 +247,7 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
         cleanupFailures.push(error);
       }
     }
-    const failures = failure === undefined ? cleanupFailures : [failure, ...cleanupFailures];
+    const failures = failurePresent ? [failure, ...cleanupFailures] : cleanupFailures;
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) {
       throw new AggregateError(failures, "The packaged whole-column journey and its cleanup both failed.");
