@@ -100,6 +100,33 @@ describe("executed notebook cell result action", () => {
     expect(trailingItemsRead).toBe(0);
   });
 
+  it("rejects an initial cross-cell candidate before reading an early output getter", async () => {
+    const document = notebook("file:///initial-cross-cell-output-container-cap.ipynb");
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
+      get: () => {
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
+      }
+    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const matchedCell = codeCell(document, 3, [output("<table><tr><td>candidate</td></tr></table>", "text/html")]);
+    const overLimitCell = codeCell(document, 4, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    setCells(document, [earlyCell, matchedCell, overLimitCell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    await expect(
+      tracker.bindInlineUpgrade(exactEditor, { byteLength: 1, sha256: "a".repeat(64) })
+    ).resolves.toBeUndefined();
+
+    expect(earlyItemsRead).toBe(0);
+    tracker.dispose();
+  });
+
   it("publishes an eligible status item without waiting for another kernel lookup", async () => {
     const document = notebook("file:///synchronous-status-item.ipynb");
     const cell = codeCell(document, 4);

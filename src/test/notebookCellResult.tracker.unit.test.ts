@@ -95,7 +95,7 @@ describe("executed notebook cell result tracker", () => {
     tracker.dispose();
   });
 
-  it("rejects a pending inline candidate when outputs expand beyond the container budget", async () => {
+  it("rejects a pending inline candidate before an early cross-cell items getter", async () => {
     const document = notebook("file:///inline-upgrade-pending-output-expansion.ipynb");
     const bytes = new TextEncoder().encode("<table><tr><td>pending</td></tr></table>");
     const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
@@ -111,26 +111,25 @@ describe("executed notebook cell result tracker", () => {
       byteLength: bytes.byteLength,
       sha256: createHash("sha256").update(bytes).digest("hex")
     });
-    let trailingItemsRead = 0;
-    const trailingOutput = Object.defineProperty({}, "items", {
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
       get: () => {
-        trailingItemsRead += 1;
-        return [{ mime: "text/html", data: new Uint8Array(bytes.byteLength) }];
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
       }
     });
-    Object.defineProperty(cell, "outputs", {
-      configurable: true,
-      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
-    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const overLimitCell = codeCell(document, 3, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    setCells(document, [earlyCell, cell, overLimitCell]);
 
     await recordExecutionAndWait(cell);
 
     expect(await queued).toBeUndefined();
-    expect(trailingItemsRead).toBe(0);
+    expect(earlyItemsRead).toBe(0);
     tracker.dispose();
   });
 
-  it("rejects a published inline binding when outputs expand beyond the container budget", async () => {
+  it("rejects a published inline binding before an early cross-cell items getter", async () => {
     const document = notebook("file:///inline-upgrade-published-output-expansion.ipynb");
     const bytes = new TextEncoder().encode("<table><tr><td>published</td></tr></table>");
     const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
@@ -148,20 +147,45 @@ describe("executed notebook cell result tracker", () => {
     });
     expect(binding?.isCurrent()).toBe(true);
 
-    let trailingItemsRead = 0;
-    const trailingOutput = Object.defineProperty({}, "items", {
+    let earlyItemsRead = 0;
+    const earlyOutput = Object.defineProperty({}, "items", {
       get: () => {
-        trailingItemsRead += 1;
-        return [{ mime: "text/html", data: new Uint8Array(bytes.byteLength) }];
+        earlyItemsRead += 1;
+        throw new Error("The global container preflight must reject before reading early items.");
       }
     });
-    Object.defineProperty(cell, "outputs", {
-      configurable: true,
-      value: [matchedOutput, ...Array.from({ length: 100_000 }, () => ({ items: [] })), trailingOutput]
-    });
+    const earlyCell = codeCell(document, 2, [earlyOutput] as never);
+    const overLimitCell = codeCell(document, 3, Array.from({ length: 100_000 }, () => ({ items: [] })) as never);
+    setCells(document, [earlyCell, cell, overLimitCell]);
 
     expect(binding?.isCurrent()).toBe(false);
-    expect(trailingItemsRead).toBe(0);
+    expect(earlyItemsRead).toBe(0);
+    binding?.dispose();
+    tracker.dispose();
+  });
+
+  it("accepts the exact one-cell output-container boundary", async () => {
+    const document = notebook("file:///inline-upgrade-output-container-boundary.ipynb");
+    const bytes = new TextEncoder().encode("<table><tr><td>boundary</td></tr></table>");
+    const matchedOutput = output(new TextDecoder().decode(bytes), "text/html");
+    const cell = codeCell(document, 1, [
+      matchedOutput,
+      ...Array.from({ length: 99_999 }, () => ({ items: [] }))
+    ] as never);
+    setCells(document, [cell]);
+    const exactEditor = { notebook: document } as NotebookEditor;
+    mocks.notebookDocuments.push(document);
+    mocks.visibleEditors.push(exactEditor);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    await recordExecutionAndWait(cell);
+
+    const binding = await tracker.bindInlineUpgrade(exactEditor, {
+      byteLength: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+
+    expect(binding?.isCurrent()).toBe(true);
     binding?.dispose();
     tracker.dispose();
   });

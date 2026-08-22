@@ -49,6 +49,24 @@ interface InlineRawOutputMatch {
   readonly item: vscode.NotebookCellOutputItem;
 }
 
+interface InlineRawOutputCellSnapshot {
+  readonly cell: vscode.NotebookCell;
+  readonly outputArray: readonly vscode.NotebookCellOutput[];
+  readonly outputs: readonly vscode.NotebookCellOutput[];
+}
+
+interface InlineRawOutputSnapshot {
+  readonly editor: vscode.NotebookEditor;
+  readonly notebook: vscode.NotebookDocument;
+  readonly cells: readonly InlineRawOutputCellSnapshot[];
+}
+
+interface InlineRawOutputItemsSnapshot {
+  readonly output: vscode.NotebookCellOutput;
+  readonly itemArray: readonly vscode.NotebookCellOutputItem[];
+  readonly items: readonly vscode.NotebookCellOutputItem[];
+}
+
 export interface NotebookCellResultTrackerDiagnostics {
   readonly stage: "unseen" | "awaiting-result" | "completion-kernel" | "probe" | "eligible" | "rejected";
   readonly statusItem: "not-requested" | "withheld" | "offered";
@@ -833,37 +851,110 @@ function findInlineRawOutputMatch(
   editor: vscode.NotebookEditor,
   candidate: InlineNotebookOutputCandidate
 ): InlineRawOutputMatch | undefined {
-  if (!isExactVisibleNotebookEditor(editor)) return undefined;
-  let cells: readonly vscode.NotebookCell[];
+  const snapshot = snapshotInlineRawOutputContainers(editor);
+  if (!snapshot) return undefined;
+  let visitedItems = 0;
+  let scannedBytes = 0;
+  let match: InlineRawOutputMatch | undefined;
+  const itemSnapshots: InlineRawOutputItemsSnapshot[] = [];
   try {
-    cells = editor.notebook.getCells();
+    for (const cellSnapshot of snapshot.cells) {
+      for (const output of cellSnapshot.outputs) {
+        const itemArray = output.items;
+        if (itemArray.length > INLINE_UPGRADE_MAX_OUTPUT_ITEMS - visitedItems) return undefined;
+        visitedItems += itemArray.length;
+        itemSnapshots.push({ output, itemArray, items: [...itemArray] });
+      }
+    }
+    if (!isInlineRawOutputSnapshotCurrent(snapshot) || !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)) {
+      return undefined;
+    }
+    let itemSnapshotIndex = 0;
+    for (const cellSnapshot of snapshot.cells) {
+      for (const output of cellSnapshot.outputs) {
+        const itemSnapshot = itemSnapshots[itemSnapshotIndex];
+        itemSnapshotIndex += 1;
+        if (!itemSnapshot || itemSnapshot.output !== output) return undefined;
+        for (const item of itemSnapshot.items) {
+          if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
+          if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
+          scannedBytes += item.data.byteLength;
+          if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
+          if (match) return undefined;
+          match = { cell: cellSnapshot.cell, output, item };
+        }
+      }
+    }
+    if (
+      itemSnapshotIndex !== itemSnapshots.length ||
+      !isInlineRawOutputSnapshotCurrent(snapshot) ||
+      !areInlineRawOutputItemsSnapshotsCurrent(itemSnapshots)
+    ) {
+      return undefined;
+    }
   } catch {
     return undefined;
   }
-  if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+  return match;
+}
 
-  let visitedItems = 0;
-  let visitedOutputs = 0;
-  let scannedBytes = 0;
-  let match: InlineRawOutputMatch | undefined;
-  for (const cell of cells) {
-    const outputs = cell.outputs;
-    if (outputs.length > INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs) return undefined;
-    visitedOutputs += outputs.length;
-    for (const output of outputs) {
-      visitedItems += output.items.length;
-      if (visitedItems > INLINE_UPGRADE_MAX_OUTPUT_ITEMS) return undefined;
-      for (const item of output.items) {
-        if (item.mime !== "text/html" || item.data.byteLength !== candidate.byteLength) continue;
-        if (scannedBytes > INLINE_UPGRADE_MAX_SCAN_BYTES - item.data.byteLength) return undefined;
-        scannedBytes += item.data.byteLength;
-        if (!matchesInlineUpgradeBytes(item.data, candidate)) continue;
-        if (match) return undefined;
-        match = { cell, output, item };
+function snapshotInlineRawOutputContainers(editor: vscode.NotebookEditor): InlineRawOutputSnapshot | undefined {
+  if (!isExactVisibleNotebookEditor(editor)) return undefined;
+  const notebook = editor.notebook;
+  try {
+    const cells = notebook.getCells();
+    if (cells.length > INLINE_UPGRADE_MAX_CELLS) return undefined;
+    let visitedOutputs = 0;
+    const cellSnapshots: InlineRawOutputCellSnapshot[] = [];
+    for (const cell of cells) {
+      if (cell.notebook !== notebook) return undefined;
+      const outputArray = cell.outputs;
+      if (outputArray.length > INLINE_UPGRADE_MAX_OUTPUT_CONTAINERS - visitedOutputs) return undefined;
+      visitedOutputs += outputArray.length;
+      cellSnapshots.push({ cell, outputArray, outputs: [...outputArray] });
+    }
+    const snapshot = { editor, notebook, cells: cellSnapshots };
+    return isInlineRawOutputSnapshotCurrent(snapshot) ? snapshot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isInlineRawOutputSnapshotCurrent(snapshot: InlineRawOutputSnapshot): boolean {
+  const { editor, notebook } = snapshot;
+  if (editor.notebook !== notebook || !isExactVisibleNotebookEditor(editor)) return false;
+  try {
+    const cells = notebook.getCells();
+    if (cells.length !== snapshot.cells.length) return false;
+    for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
+      const cellSnapshot = snapshot.cells[cellIndex];
+      const cell = cells[cellIndex];
+      if (!cellSnapshot || cell !== cellSnapshot.cell || cell.notebook !== notebook) return false;
+      const outputArray = cell.outputs;
+      if (outputArray !== cellSnapshot.outputArray || outputArray.length !== cellSnapshot.outputs.length) return false;
+      for (let outputIndex = 0; outputIndex < outputArray.length; outputIndex += 1) {
+        if (outputArray[outputIndex] !== cellSnapshot.outputs[outputIndex]) return false;
       }
     }
+    return true;
+  } catch {
+    return false;
   }
-  return match;
+}
+
+function areInlineRawOutputItemsSnapshotsCurrent(snapshots: readonly InlineRawOutputItemsSnapshot[]): boolean {
+  try {
+    for (const snapshot of snapshots) {
+      const itemArray = snapshot.output.items;
+      if (itemArray !== snapshot.itemArray || itemArray.length !== snapshot.items.length) return false;
+      for (let itemIndex = 0; itemIndex < itemArray.length; itemIndex += 1) {
+        if (itemArray[itemIndex] !== snapshot.items[itemIndex]) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function matchesInlineRawOutput(
