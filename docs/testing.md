@@ -154,8 +154,9 @@ matrix for release candidates or changes that cross those boundaries.
   direct R subprocess. These runner bounds do not change editor phase, editor inactivity, or runtime-operation
   deadlines. The current PR workflow starts two selected R 4.5 owners after classification and beside the invariant
   core: the kernel-agent shard and a fail-complete serial pair containing the remaining protocol shards. The temporary R 4.4 pull-request carrier is retired; the
-  manual and scheduled Cross workflow owns the lock-backed R 4.4 qualification. Every owner consumes its exact dated
-  lock through the strict private-library path above. The contract also
+  manual and scheduled Cross workflow owns the exact `python-runtime-dependency-cohorts` job that installs and exercises
+  every declared dependency/Python qualification pair, plus the lock-backed R 4.4 qualification. Every R owner consumes
+  its exact dated lock through the strict private-library path above. The contract also
   runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
@@ -322,9 +323,10 @@ median calculated separately by market and segment.
 Every required context has one primary evidence owner. [CI and release checks](ci.md) maps the pull-request, scheduled,
 and release tiers. `validate` runs after every selected PR workflow owner and is the sole parser of their exact
 results. Cross runs only on manual dispatch and schedule, retaining its macOS/Windows runtime, Windows dependency
-guards, and R 4.4 qualification. CodeQL retains both analyzer names and one result gate; neither workflow invents
-another classifier. Draft and ready heads use the same pull-request evidence mapping, and superseded PR heads alone
-are cancelled.
+guards, the exact `python-runtime-dependency-cohorts` job that installs and exercises every declared
+dependency/Python qualification pair, and R 4.4 qualification. CodeQL retains both analyzer names and one result gate;
+neither workflow invents another classifier. Draft and ready heads use the same pull-request evidence mapping, and only
+superseded PR heads are cancelled.
 
 `package.json`, `package-lock.json`, toolchain, workflow, classifier, validation, and lock-owner changes self-select the
 complete four-flag union. There is no narrow dependency-lock or release-infrastructure classifier mode in the current PR workflow.
@@ -1674,10 +1676,12 @@ the complete four-owner union. Documentation-only changes may select no conditio
 documentation, and license boundary. The selected canonical owner runs both TypeScript typechecks and the complete
 TypeScript unit/component inventory; every tracked
 TypeScript product, protocol, fixture, package, or configuration path selects that owner. Protected-main pushes run
-the complete `npm run check:pr` source gate. The selected R owners are the two lock-backed R 4.5 pull-request jobs. Cross has no pull-request trigger; its
-manual dispatch and weekly schedule retain the macOS/Windows runtime matrix, Windows dependency guards, and lock-backed
-R 4.4 qualification. Missing, failed, cancelled, or unexpectedly skipped selected results block the sole `validate`
-owner. CodeQL independently runs the always-on JavaScript/TypeScript and Python analyzers and requires both through
+the complete `npm run check:pr` source gate. The selected R owners are the two lock-backed R 4.5 pull-request jobs.
+Cross has no pull-request trigger; its manual dispatch and weekly schedule retain the macOS/Windows runtime matrix,
+Windows dependency guards, the exact `python-runtime-dependency-cohorts` job that installs and exercises every declared
+dependency/Python qualification pair, and lock-backed R 4.4 qualification. Missing, failed, cancelled, or unexpectedly
+skipped selected results block the sole `validate` owner. CodeQL independently runs the always-on JavaScript/TypeScript
+and Python analyzers and requires both through
 `CodeQL gate`. Every external workflow action occurrence and both local reusable-workflow targets are an exact reviewed
 inventory. The topology contract makes no job-count, compute, or wall-time claim before separate hosted measurement.
 Remote SSH remains opt-in through the

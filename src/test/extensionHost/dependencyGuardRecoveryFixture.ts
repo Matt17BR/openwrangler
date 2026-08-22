@@ -7,6 +7,10 @@ import { sameAcceptanceExecutable } from "./dependencyInstallLifecycleFixture";
 export const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
 export const DEPENDENCY_GUARD_ACCEPTANCE_TOKEN = "22222222-2222-4222-8222-222222222222";
 export const DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE = 197;
+export const DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE = "openwrangler_guard_fixture";
+export const DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE = `${DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE}/__init__.py`;
+export const DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION = "openwrangler-guard-fixture";
+export const DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY = "openwrangler_guard_fixture-1.0.0.dist-info";
 
 export interface DependencyGuardAcceptanceEnvironment {
   executable: string;
@@ -80,6 +84,32 @@ export function dependencyGuardProbeRecorderSource(dependencyProbeLog: string): 
     "importlib.util.find_spec = _recording_find_spec",
     ""
   ].join("\n");
+}
+
+export function dependencyGuardFixtureRecordSource(): string {
+  return [
+    `${DEPENDENCY_GUARD_FIXTURE_IMPORT_FILE},,`,
+    `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/METADATA,,`,
+    `${DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY}/RECORD,,`,
+    ""
+  ].join("\n");
+}
+
+export function createDependencyGuardFixtureDistribution(environmentSitePackages: string): void {
+  const fixturePackage = path.join(environmentSitePackages, DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE);
+  mkdirSync(fixturePackage);
+  writeFileSync(path.join(fixturePackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  const fixtureMetadata = path.join(environmentSitePackages, DEPENDENCY_GUARD_FIXTURE_METADATA_DIRECTORY);
+  mkdirSync(fixtureMetadata);
+  writeFileSync(
+    path.join(fixtureMetadata, "METADATA"),
+    ["Metadata-Version: 2.1", `Name: ${DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION}`, "Version: 1.0.0", ""].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  writeFileSync(path.join(fixtureMetadata, "RECORD"), dependencyGuardFixtureRecordSource(), {
+    encoding: "utf8",
+    flag: "wx"
+  });
 }
 
 export function dependencyGuardFakePipSource(started: string, release: string, completed: string): string {
@@ -342,16 +372,7 @@ export function createDependencyGuardRecoveryFixture(
     { encoding: "utf8", flag: "wx" }
   );
 
-  const fixturePackage = path.join(environmentSitePackages, "openwrangler_guard_fixture");
-  mkdirSync(fixturePackage);
-  writeFileSync(path.join(fixturePackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
-  const fixtureMetadata = path.join(environmentSitePackages, "openwrangler_guard_fixture-1.0.0.dist-info");
-  mkdirSync(fixtureMetadata);
-  writeFileSync(
-    path.join(fixtureMetadata, "METADATA"),
-    ["Metadata-Version: 2.1", "Name: openwrangler-guard-fixture", "Version: 1.0.0", ""].join("\n"),
-    { encoding: "utf8", flag: "wx" }
-  );
+  createDependencyGuardFixtureDistribution(environmentSitePackages);
 
   const pipStarted = path.join(directory, "guarded-pip-started.json");
   const pipRelease = path.join(directory, "release-guarded-pip");
@@ -481,9 +502,9 @@ export function createDependencyGuardRecoveryFixture(
   assert.equal(sameAcceptanceExecutable(environment.packageRoot, environmentRoot), true);
 
   const dependency: DependencyGuardAcceptanceDependency = {
-    importModule: "openwrangler_guard_fixture",
-    distribution: "openwrangler-guard-fixture",
-    installSpec: "openwrangler-guard-fixture>=1.0.0,<2.0.0",
+    importModule: DEPENDENCY_GUARD_FIXTURE_IMPORT_MODULE,
+    distribution: DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION,
+    installSpec: `${DEPENDENCY_GUARD_FIXTURE_DISTRIBUTION}>=1.0.0,<2.0.0`,
     exactVersion: null,
     minimumVersion: "1.0.0",
     maximumVersionExclusive: "2.0.0"

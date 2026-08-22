@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import {
   CI_CLASSIFIER_OUTPUTS,
   classifyCiChange,
@@ -46,6 +47,7 @@ import {
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
 import { LOCK_ROOTS, readLock, sha256 } from "./r-dependency-lock.mjs";
+import { inspectVsixEntries } from "./vsix-contents.mjs";
 import {
   BOUNDED_WORKFLOW_FILE_OPEN_FLAGS,
   WORKFLOW_DIRECTORY,
@@ -65,6 +67,9 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const pythonProjectMetadata = readFileSync("python/pyproject.toml", "utf8");
 const CAPABILITY_FILE_LIMIT = 128 * 1024;
+const MAX_BOUNDED_REPOSITORY_FILE_BYTES = 512 * 1024;
+const PACKAGE_IGNORE_FILE_LIMIT = 64 * 1024;
+const TESTING_DOCUMENTATION_FILE_LIMIT = 512 * 1024;
 const CAPABILITY_JSON_DEPTH_LIMIT = 64;
 const CAPABILITY_JSON_NODE_LIMIT = 20_000;
 const CAPABILITY_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
@@ -101,6 +106,31 @@ const CAPABILITY_WORKFLOW_TERMINALS = Object.freeze({
   release: "qualify"
 });
 const CAPABILITY_FILES = new Set([CAPABILITY_GRAPH_PATH, ...Object.values(CAPABILITY_WORKFLOW_FILES)]);
+
+function readBoundedRepositoryText(relativePath, maxBytes) {
+  assert.equal(typeof relativePath, "string", "bounded repository paths must be strings");
+  assert.doesNotMatch(relativePath, /[\\\0]/u, `${relativePath} must use a canonical repository-relative path`);
+  assert.equal(posix.normalize(relativePath), relativePath, `${relativePath} must be normalized`);
+  assert.equal(
+    relativePath.startsWith("../") || relativePath.startsWith("/"),
+    false,
+    `${relativePath} escapes the root`
+  );
+  assert.ok(
+    Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= MAX_BOUNDED_REPOSITORY_FILE_BYTES,
+    "bounded repository file limit is invalid"
+  );
+  const canonicalRoot = resolve(REPOSITORY_ROOT);
+  const bytes = readBoundedRegularFile(resolve(canonicalRoot, ...relativePath.split("/")), maxBytes, {
+    containedBy: canonicalRoot,
+    label: relativePath
+  });
+  try {
+    return CAPABILITY_UTF8_DECODER.decode(bytes);
+  } catch (cause) {
+    throw new Error(`${relativePath} is not valid UTF-8`, { cause });
+  }
+}
 
 function readExactChildReadinessMarker(
   stream,
@@ -507,6 +537,11 @@ function loadCapabilityDocuments(graph, workflowInventory = repositoryWorkflowIn
 
 const capabilityGraph = parseBoundedCapabilityJson(CAPABILITY_GRAPH_PATH);
 const repositoryWorkflowInventory = loadRepositoryWorkflowInventory();
+const packageIgnore = readBoundedRepositoryText(".vscodeignore", PACKAGE_IGNORE_FILE_LIMIT);
+const testingDocumentation = readBoundedRepositoryText("docs/testing.md", TESTING_DOCUMENTATION_FILE_LIMIT).replace(
+  /\s+/gu,
+  " "
+);
 const repositoryWorkflowNames = Object.keys(repositoryWorkflowInventory)
   .map((path) => posix.basename(path))
   .sort();
@@ -635,7 +670,7 @@ const APPROVED_LOCAL_WORKFLOW_USES = Object.freeze([
     "./.github/workflows/candidate-acceptance.yml"
   ])
 ]);
-const WORKFLOW_USE_INVENTORY_SHA256 = "2d17c23d0758803c3adb70758c6905c766c243605a136bdd24383122f3bb0b97";
+const WORKFLOW_USE_INVENTORY_SHA256 = "eee8854b6d9b4e9589d84782165b438da210f8e18e50af5359d2020872ab2497";
 const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[2].uses", SETUP_PYTHON],
   ["candidate-acceptance.yml", "$.jobs.jupyter.steps[3].uses", SETUP_JAVA],
@@ -651,6 +686,7 @@ const REVIEWED_DEPENDENCY_ACTION_CALLSITES = Object.freeze([
   ["ci.yml", "$.jobs.visual-accessibility.steps[2].uses", SETUP_PYTHON],
   ["ci.yml", "$.jobs.windows-unique.steps[2].uses", SETUP_PYTHON],
   ["cross-platform.yml", "$.jobs.dependency-guard-windows.steps[1].uses", SETUP_PYTHON],
+  ["cross-platform.yml", "$.jobs.python-runtime-dependency-cohorts.steps[1].uses", SETUP_PYTHON],
   ["cross-platform.yml", "$.jobs.r-4-4-scheduled-qualification.steps[6].uses", CACHE_RESTORE],
   ["cross-platform.yml", "$.jobs.runtime.steps[2].uses", SETUP_PYTHON],
   ["daily-preview.yml", "$.jobs.build.steps[4].uses", SETUP_PYTHON],
@@ -839,7 +875,7 @@ function validateWorkflowUseRows(rows, { exactInventory = true } = {}) {
     external.push([name, path, uses]);
   }
   if (!exactInventory) return Object.freeze({ external, local });
-  assert.equal(external.length, 147);
+  assert.equal(external.length, 149);
   assert.deepEqual(local, APPROVED_LOCAL_WORKFLOW_USES);
   const inventoryBytes = `${rows.map((row) => row.join("\0")).join("\n")}\n`;
   assert.equal(createHash("sha256").update(inventoryBytes).digest("hex"), WORKFLOW_USE_INVENTORY_SHA256);
@@ -1318,6 +1354,7 @@ function assertCrossScheduledOwners(document) {
   assert.deepEqual(Object.keys(document?.jobs ?? {}), [
     "runtime",
     "dependency-guard-windows",
+    "python-runtime-dependency-cohorts",
     "r-4-4-scheduled-qualification"
   ]);
 
@@ -1345,6 +1382,45 @@ function assertCrossScheduledOwners(document) {
   assert.deepEqual(windows.strategy.matrix.python, ["3.10", "3.12"]);
   assert.ok(windows.steps.every((step) => step.if === undefined));
   assert.ok(stepRunning(windows, "python -m pytest python/tests/test_dependency_guard.py -q"));
+
+  const cohorts = document.jobs["python-runtime-dependency-cohorts"];
+  assert.equal(cohorts.needs, undefined);
+  assert.equal(cohorts.if, undefined);
+  assert.equal(cohorts["runs-on"], "ubuntu-24.04");
+  assert.equal(cohorts["timeout-minutes"], 15);
+  assert.equal(
+    cohorts.name,
+    "Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})"
+  );
+  assert.ok(
+    cohorts.strategy.matrix.include.every(
+      (row) =>
+        Object.keys(row).sort().join(",") === "id,python,requirement,version" &&
+        row.requirement.endsWith(`==${row.version}`)
+    )
+  );
+  assert.deepEqual(
+    cohorts.strategy.matrix.include.filter((row) => row.id === "ipython"),
+    [
+      { id: "ipython", python: "3.10", version: "8.39.0", requirement: "ipython==8.39.0" },
+      { id: "ipython", python: "3.12", version: "9.15.0", requirement: "ipython==9.15.0" },
+      { id: "ipython", python: "3.12", version: "9.16.1", requirement: "ipython==9.16.1" }
+    ]
+  );
+  assert.deepEqual(stepsUsing(cohorts, "actions/setup-python@"), [
+    {
+      uses: SETUP_PYTHON,
+      with: { "python-version": "${{ matrix.python }}" }
+    }
+  ]);
+  const qualifiedProbe = cohorts.steps.find((step) =>
+    step?.run?.includes("python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe")
+  );
+  assert.deepEqual(qualifiedProbe?.env, {
+    OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: "${{ matrix.id }}",
+    OPENWRANGLER_QUALIFIED_PYTHON_VERSION: "${{ matrix.python }}",
+    OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: "${{ matrix.version }}"
+  });
 
   const scheduled = document.jobs["r-4-4-scheduled-qualification"];
   assert.equal(scheduled.if, "${{ !cancelled() }}");
@@ -3470,8 +3546,23 @@ test("required result owner rejects missing, skipped, cancelled, failed, and sel
   assert.equal(resultEnvironmentKey("r-contract-kernel"), "R_CONTRACT_KERNEL_RESULT");
 });
 
-test("Cross is manual and scheduled only with exact platform and R 4.4 owners", () => {
+test("Cross is manual and scheduled only with exact platform, dependency-cohort, and R 4.4 owners", () => {
   assertCrossScheduledOwners(cross);
+
+  const exhaustiveCrossTopologyRecords = [
+    /Cross runs only on manual dispatch and schedule,[^.]+R 4\.4 qualification\./u,
+    /Cross has no pull-request trigger; its manual dispatch and weekly schedule retain [^.]+R 4\.4 qualification\./u
+  ].map((pattern) => {
+    const record = testingDocumentation.match(pattern)?.[0];
+    assert.ok(record, `missing exhaustive Cross topology record: ${pattern.source}`);
+    return record;
+  });
+  for (const record of exhaustiveCrossTopologyRecords) {
+    assert.match(
+      record,
+      /the exact `python-runtime-dependency-cohorts` job that installs and exercises every declared dependency\/Python qualification pair/u
+    );
+  }
 
   const pullRequestDrift = structuredClone(cross);
   pullRequestDrift.on.pull_request = { branches: ["main"] };
@@ -3568,7 +3659,7 @@ test("workflow action inventory is exact, immutable, recursive, and fail closed"
   const names = repositoryWorkflowNames;
   const rows = workflowUseRows(names.map((name) => [name, workflow(name)]));
   const inventory = validateWorkflowUseRows(rows);
-  assert.equal(inventory.external.length, 147);
+  assert.equal(inventory.external.length, 149);
   assert.deepEqual(inventory.local, APPROVED_LOCAL_WORKFLOW_USES);
   assertReviewedDependencyActionCallsites(rows);
 
@@ -4180,7 +4271,8 @@ test("pull-request and merge-group workflows cancel only obsolete candidates whi
 });
 
 test("repository-only roots remain excluded from the VSIX inventory", () => {
-  const ignored = new Set(readFileSync(".vscodeignore", "utf8").split(/\r?\n/gu).filter(Boolean));
+  const ignored = new Set(packageIgnore.split(/\r?\n/gu).filter(Boolean));
+  const dependencyAuthoritySource = "python/runtime-dependencies.json";
   for (const path of [
     "docs/**",
     "AGENTS.md",
@@ -4188,10 +4280,19 @@ test("repository-only roots remain excluded from the VSIX inventory", () => {
     "SECURITY.md",
     "SUPPORT.md",
     ".node-version",
-    ".npmrc"
+    ".npmrc",
+    dependencyAuthoritySource
   ]) {
     assert.equal(ignored.has(path), true, `${path} must stay outside the extension package.`);
   }
+  const packagedDependencyAuthority = `extension/${dependencyAuthoritySource}`;
+  assert.deepEqual(
+    inspectVsixEntries([packagedDependencyAuthority], {
+      requireRFrameContract: false,
+      requireVendoredJsYaml: false
+    }).forbidden,
+    [packagedDependencyAuthority]
+  );
   const rSubtreeExclusions = [...ignored].filter((path) => path.startsWith("r/"));
   assert.deepEqual(rSubtreeExclusions, ["r/tests/**", "r/dependencies/**"]);
   const excludedRRoots = rSubtreeExclusions.map((path) => path.slice(0, -3));
