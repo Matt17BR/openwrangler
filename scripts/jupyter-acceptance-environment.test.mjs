@@ -304,6 +304,17 @@ function assertPySparkTracebackReceiptMutationControls(stderr, options) {
   const reversedCleanup = stderr
     .replace(`${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n`, "")
     .replace(`${options.primaryText}\n`, `${PYSPARK_CLEANUP_FAILURE_RECEIPT}\n${options.primaryText}\n`);
+  assert.match(options.privacyMutationText, options.unexpected, `${options.name} privacy mutation fixture`);
+  const privateWrapperName = `${options.wrapperName}_${options.privacyMutationText}`;
+  const privacyMutation = excerptFree.replace(
+    wrapperFrame.text,
+    `  File "<string>", line ${wrapperFrame.line}, in ${privateWrapperName}`
+  );
+  const privacyMutationOptions = { ...options, wrapperName: privateWrapperName };
+  assertPySparkPrimaryCleanupTracebackReceipt(privacyMutation, {
+    ...privacyMutationOptions,
+    unexpected: /a^/u
+  });
   const mutations = [
     ["missing wrapper frame", excerptFree.replace(`${wrapperFrame.text}\n`, "")],
     [
@@ -347,12 +358,12 @@ function assertPySparkTracebackReceiptMutationControls(stderr, options) {
     ["changed identity", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=different;errno=5")],
     ["changed errno", stderr.replace(PYSPARK_PRIMARY_IDENTITY_RECEIPT, "__OW_PRIMARY_IDENTITY__=same;errno=6")],
     ["cleanup before primary", reversedCleanup],
-    ["hostile text leak", stderr.replace(/\n$/u, "\nPRIVATE_HOSTILE_TRACEBACK_LEAK\n")]
+    ["configured private wrapper text", privacyMutation, privacyMutationOptions]
   ];
-  for (const [label, mutation] of mutations) {
+  for (const [label, mutation, validationOptions = options] of mutations) {
     assert.notEqual(mutation, stderr, `${options.name} ${label} fixture`);
     assert.throws(
-      () => assertPySparkPrimaryCleanupTracebackReceipt(mutation, options),
+      () => assertPySparkPrimaryCleanupTracebackReceipt(mutation, validationOptions),
       { name: "AssertionError" },
       `${options.name} must reject ${label}`
     );
@@ -2339,6 +2350,7 @@ test(
       maxStderrBytes: 8_192,
       name: "portable-primary-and-cleanup-traceback",
       primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
+      privacyMutationText: "PRIVATE_PORTABLE_TRACEBACK_OUTPUT",
       unexpected: /PRIVATE_PORTABLE_TRACEBACK_OUTPUT|\/private\/portable-traceback|FORGED_PORTABLE_TRACEBACK_OUTPUT/u,
       wrapperName: "_ow_fail_bounded_primary_and_cleanup_close"
     };
@@ -2586,6 +2598,7 @@ os.close = _ow_fail_bounded_primary_and_cleanup_close
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
           identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] bounded primary raw-close test denial",
+          privacyMutationText: "PRIVATE_HOSTILE_ADD_NOTE_OVERRIDE",
           terminalPrimary: /OSError: \[Errno 5\] bounded primary raw-close test denial/u,
           tracebackWrapper: "_ow_fail_bounded_primary_and_cleanup_close",
           maxStderrBytes: 8_192,
@@ -2631,6 +2644,7 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
             /Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception \(type=OSError errno=9\)\./u,
           identityExpected: /__OW_PRIMARY_IDENTITY__=same;errno=5/u,
           primaryText: "OSError: [Errno 5] python310 primary raw-close test denial",
+          privacyMutationText: "PRIVATE_PYTHON310_ADD_NOTE_OVERRIDE",
           terminalPrimary: /OSError: \[Errno 5\] python310 primary raw-close test denial/u,
           tracebackWrapper: "_ow_fail_python310_primary_and_cleanup_close",
           maxStderrBytes: 8_192,
@@ -2691,6 +2705,7 @@ os.close = _ow_fail_python310_primary_and_cleanup_close
             maxStderrBytes: scenario.maxStderrBytes,
             name: scenario.name,
             primaryText: scenario.primaryText,
+            privacyMutationText: scenario.privacyMutationText,
             unexpected: scenario.unexpected,
             wrapperName: scenario.tracebackWrapper
           };
