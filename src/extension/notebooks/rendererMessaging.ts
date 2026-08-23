@@ -20,7 +20,10 @@ import {
 } from "./kernelBridge";
 import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
-import { onDidTerminateNotebookPreviewProviderPrompt } from "./notebookPreviewCoordinator";
+import {
+  isNotebookPreviewProviderPromptTerminated,
+  onDidTerminateNotebookPreviewProviderPrompt
+} from "./notebookPreviewCoordinator";
 
 interface OpenInOpenWranglerMessage {
   kind: "openInOpenWrangler";
@@ -37,6 +40,7 @@ const INLINE_UPGRADE_MAX_RETAINED = 128;
 const INLINE_UPGRADE_MAX_RETIRED_RECEIPTS = 128;
 const INLINE_UPGRADE_MAX_ACTIONS = INLINE_UPGRADE_MAX_OPERATIONS;
 const INLINE_UPGRADE_MAX_TERMINAL_SENDS = INLINE_UPGRADE_MAX_OPERATIONS;
+const INLINE_UPGRADE_MAX_PENDING_TERMINAL_SENDS = INLINE_UPGRADE_MAX_RETAINED;
 const INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS = 10_000;
 const INLINE_UPGRADE_ACTION_DEADLINE_MS = 10_000;
 
@@ -172,6 +176,7 @@ export function registerNotebookRendererMessaging(
         state.disposed = true;
         state.workQueue.length = 0;
         state.settlingWork.clear();
+        state.actions.clear();
         state.retiredTokens.clear();
         state.terminalSends.clear();
       }
@@ -351,6 +356,10 @@ function receiveInlineUpgradeMessage(
   if (!originatingNotebook(editor)) return;
   const provider = inlineUpgradeProviderState();
   if (provider === "foreign") return;
+  if (provider === "terminated") {
+    postInlineUpgradeTerminal(state, messaging, editor, candidate);
+    return;
+  }
   if (state.retiredTokens.has(candidate.token)) {
     postInlineUpgradeTerminal(state, messaging, editor, candidate);
     return;
@@ -455,12 +464,13 @@ function startInlineUpgradeOperation(
   pumpInlineUpgradeWork(context, tracker, state);
 }
 
-function inlineUpgradeProviderState(): "owned" | "pending" | "foreign" {
+function inlineUpgradeProviderState(): "owned" | "pending" | "terminated" | "foreign" {
   if (shouldRegisterNotebookFormatters()) return "owned";
   const preference = getSetting<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
-  return preference === "ask" && vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) !== undefined
-    ? "pending"
-    : "foreign";
+  if (preference === "ask" && vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) !== undefined) {
+    return isNotebookPreviewProviderPromptTerminated() ? "terminated" : "pending";
+  }
+  return "foreign";
 }
 
 function pumpInlineUpgradeWork(
@@ -846,6 +856,7 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   if (!operation.active) return;
   const editor = operation.editor;
   const messaging = operation.messaging;
+  const awaitingProvider = operation.awaitingProvider;
   operation.active = false;
   if (operation.action) cancelInlineUpgradeAction(operation.action);
   if (state.operations.get(operation.candidate.token) === operation) state.operations.delete(operation.candidate.token);
@@ -863,18 +874,20 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   operation.publishedReceipt = undefined;
   operation.editor = undefined;
   operation.messaging = undefined;
-  if (messaging && editor) postInlineUpgradeTerminal(state, messaging, editor, operation.candidate);
+  if (messaging && editor) postInlineUpgradeTerminal(state, messaging, editor, operation.candidate, awaitingProvider);
 }
 
 function postInlineUpgradeTerminal(
   state: InlineUpgradeState,
   messaging: ReturnType<typeof vscode.notebooks.createRendererMessaging>,
   editor: vscode.NotebookEditor,
-  candidate: InlineUpgradeCandidateMessage
+  candidate: InlineUpgradeCandidateMessage,
+  retainedPending = false
 ): void {
   if (state.disposed) return;
   const key = JSON.stringify([candidate.token, candidate.outputItemId, candidate.byteLength, candidate.sha256]);
-  if (state.terminalSends.has(key) || state.terminalSends.size >= INLINE_UPGRADE_MAX_TERMINAL_SENDS) return;
+  const maximumSends = retainedPending ? INLINE_UPGRADE_MAX_PENDING_TERMINAL_SENDS : INLINE_UPGRADE_MAX_TERMINAL_SENDS;
+  if (state.terminalSends.has(key) || state.terminalSends.size >= maximumSends) return;
   const send: InlineUpgradeTerminalSend = { key };
   state.terminalSends.set(key, send);
   let posted: Thenable<boolean>;

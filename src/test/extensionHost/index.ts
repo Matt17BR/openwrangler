@@ -32,7 +32,7 @@ import {
   type Request,
   type Response
 } from "playwright-core";
-import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
+import type { Jupyter, JupyterServerCollection, Kernel } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import {
   DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
@@ -1350,6 +1350,102 @@ function dataWranglerCoexistenceExpectation(phase: DataWranglerCoexistencePhase)
   };
 }
 
+interface DataWranglerSelectedKernelIdentity {
+  readonly executable: string;
+  readonly pid: number;
+}
+
+async function attestDataWranglerSelectedKernel(
+  jupyter: Jupyter,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  phase: DataWranglerCoexistencePhase,
+  testPython: string
+): Promise<DataWranglerSelectedKernelIdentity> {
+  const cells = [...notebook.getCells()];
+  const sources = cells.map((cell) => cell.document.getText());
+  const outputs = cells.map((cell) => [...cell.outputs]);
+  const executionOrders = cells.map((cell) => cell.executionSummary?.executionOrder);
+  const dirty = notebook.isDirty;
+  const deadline = Date.now() + 30_000;
+  let kernel: Kernel | undefined;
+  do {
+    assertExactOpenNotebookDocument(notebook, "before acquiring its selected coexistence kernel");
+    assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "before acquiring its selected kernel");
+    kernel = await jupyter.kernels.getKernel(notebook.uri);
+    assertExactOpenNotebookDocument(notebook, "after acquiring its selected coexistence kernel");
+    assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after acquiring its selected kernel");
+    if (kernel) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  assert.ok(kernel, "The selected released-Jupyter kernel did not become available for identity attestation.");
+  assert.equal(kernel.language.toLowerCase(), "python", "The selected coexistence kernel must be Python.");
+
+  const marker = `__open_wrangler_coexistence_kernel_${phase}__`;
+  const code = [
+    "import json, os, sys",
+    `print(${JSON.stringify(marker)} + json.dumps({'executable': sys.executable, 'pid': os.getpid()}, sort_keys=True))`
+  ].join("\n");
+  const cancellation = new vscode.CancellationTokenSource();
+  const collect = async (): Promise<string> => {
+    let text = "";
+    for await (const output of kernel.executeCode(code, cancellation.token)) {
+      assertExactOpenNotebookDocument(notebook, "while attesting its selected coexistence kernel");
+      assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "while attesting its selected kernel");
+      for (const item of output.items) {
+        if (item.mime === "application/vnd.code.notebook.error") {
+          throw new Error("The selected coexistence kernel identity probe failed.");
+        }
+        if (item.mime !== "application/x.notebook.stream.stdout" && item.mime !== "text/plain") continue;
+        if (text.length + item.data.byteLength > 4_096) {
+          throw new Error("The selected coexistence kernel identity probe exceeded its output bound.");
+        }
+        text += new TextDecoder().decode(item.data);
+      }
+    }
+    return text;
+  };
+  let text: string;
+  try {
+    text = await withBoundedAcceptancePromise(collect(), 30_000, "the selected coexistence kernel identity probe");
+  } finally {
+    cancellation.cancel();
+    cancellation.dispose();
+  }
+  assertExactOpenNotebookDocument(notebook, "after attesting its selected coexistence kernel");
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after attesting its selected kernel");
+  const reacquired = await jupyter.kernels.getKernel(notebook.uri);
+  assertExactOpenNotebookDocument(notebook, "after reacquiring its attested coexistence kernel");
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after reacquiring its attested kernel");
+  assert.equal(reacquired, kernel, "The selected coexistence kernel changed during identity attestation.");
+
+  const markerOffset = text.indexOf(marker);
+  assert.notEqual(markerOffset, -1, "The selected coexistence kernel identity marker was missing.");
+  const line = text.slice(markerOffset + marker.length).split(/\r?\n/u, 1)[0];
+  const identity = JSON.parse(line ?? "") as Record<string, unknown>;
+  const executable = String(identity.executable);
+  const pid = Number(identity.pid);
+  assert.equal(
+    canonicalAcceptancePath(executable),
+    canonicalAcceptancePath(testPython),
+    "The selected coexistence kernel must use the runner-selected private Python environment."
+  );
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, "The selected coexistence kernel must report one positive PID.");
+  assert.equal(notebook.isDirty, dirty, "Kernel identity attestation must not dirty the notebook.");
+  const currentCells = notebook.getCells();
+  assert.equal(currentCells.length, cells.length, "Kernel identity attestation must retain every notebook cell.");
+  for (let index = 0; index < cells.length; index += 1) {
+    assert.equal(currentCells[index], cells[index], "Kernel identity attestation replaced a notebook cell.");
+    assert.equal(cells[index]!.document.getText(), sources[index]);
+    assert.equal(cells[index]!.outputs.length, outputs[index]!.length);
+    for (let outputIndex = 0; outputIndex < outputs[index]!.length; outputIndex += 1) {
+      assert.equal(cells[index]!.outputs[outputIndex], outputs[index]![outputIndex]);
+    }
+    assert.equal(cells[index]!.executionSummary?.executionOrder, executionOrders[index]);
+  }
+  return { executable, pid };
+}
+
 async function exerciseReleasedDataWranglerCoexistence(
   testing: TestApi,
   extension: vscode.Extension<ExtensionApi>,
@@ -1443,11 +1539,20 @@ async function exerciseReleasedDataWranglerCoexistence(
     }
 
     recordAcceptanceProgress(`${phase}:kernel-discovery`);
-    await jupyterExtension.activate();
+    const jupyterApi = await jupyterExtension.activate();
     assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for coexistence");
     recordAcceptanceProgress(`${phase}:kernel-select`);
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     recordAcceptanceProgress(`${phase}:kernel-selected`);
+    recordAcceptanceProgress(`${phase}:kernel-attestation`);
+    const selectedKernel = await attestDataWranglerSelectedKernel(
+      jupyterApi,
+      notebook,
+      notebookEditor,
+      phase,
+      testPython
+    );
+    recordAcceptanceProgress(`${phase}:kernel-attested`);
     if (!expectation.selection) {
       const ownership = assertDataWranglerCoexistenceOwnership(
         workbench,
@@ -1525,6 +1630,11 @@ async function exerciseReleasedDataWranglerCoexistence(
       canonicalAcceptancePath(String(initialKernel.executable)),
       canonicalAcceptancePath(testPython),
       "Data Wrangler coexistence must use the private released-Jupyter interpreter."
+    );
+    assert.equal(
+      Number(initialKernel.pid),
+      selectedKernel.pid,
+      "The first notebook execution must use the exact silently attested released-Jupyter kernel."
     );
     assert.ok(Number.isSafeInteger(Number(initialKernel.pid)) && Number(initialKernel.pid) > 0);
     if (expectation.provider === "dataWrangler") {

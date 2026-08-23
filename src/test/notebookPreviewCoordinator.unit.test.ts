@@ -138,6 +138,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 
 import { NotebookFormatterPreparationPendingError } from "../extension/notebooks/kernelBridge";
 import {
+  isNotebookPreviewProviderPromptTerminated,
   NotebookPreviewCoordinator,
   onDidTerminateNotebookPreviewProviderPrompt
 } from "../extension/notebooks/notebookPreviewCoordinator";
@@ -293,10 +294,44 @@ describe("NotebookPreviewCoordinator", () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(termination).toHaveBeenCalledOnce();
+    expect(isNotebookPreviewProviderPromptTerminated()).toBe(true);
     expect(mocks.updateSetting).not.toHaveBeenCalled();
+    const lateTermination = vi.fn();
+    const lateSubscription = onDidTerminateNotebookPreviewProviderPrompt(lateTermination);
+    expect(lateTermination).toHaveBeenCalledOnce();
+    lateSubscription.dispose();
     subscription.dispose();
     coordinator.dispose();
   });
+
+  it.each(["Use Open Wrangler", "Keep Data Wrangler"])(
+    "publishes terminal prompt state and preserves a rejected %s preference write",
+    async (selection) => {
+      const notebook = fakeNotebook();
+      mocks.documents.push(notebook);
+      mocks.visibleEditors.push({ notebook });
+      mocks.extensions.add("ms-toolsai.datawrangler");
+      mocks.information.mockResolvedValue(selection);
+      mocks.updateSetting.mockRejectedValueOnce(new Error("configuration write rejected"));
+      const coordinator = new NotebookPreviewCoordinator({} as never);
+      const termination = vi.fn();
+      const subscription = onDidTerminateNotebookPreviewProviderPrompt(termination);
+
+      await expect(
+        (
+          coordinator as unknown as {
+            promptForConflictProvider(): Promise<boolean>;
+          }
+        ).promptForConflictProvider()
+      ).rejects.toThrow("configuration write rejected");
+
+      expect(termination).toHaveBeenCalledOnce();
+      expect(isNotebookPreviewProviderPromptTerminated()).toBe(true);
+      expect(mocks.preference).toBe("ask");
+      subscription.dispose();
+      coordinator.dispose();
+    }
+  );
 
   it("reinstalls the Open Wrangler formatter after a kernel invalidation", async () => {
     const notebook = fakeNotebook();

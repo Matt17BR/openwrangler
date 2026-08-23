@@ -13,10 +13,16 @@ const JUPYTER_EXTENSION_ID = "ms-toolsai.jupyter";
 const CHOOSE_PREVIEW_PROVIDER_COMMAND = "openWrangler.chooseNotebookPreviewProvider";
 const RETRY_DELAYS_MS = [500, 1_000, 2_000, 5_000, 15_000] as const;
 const providerPromptTerminationListeners = new Set<() => void>();
+let providerPromptTerminated = false;
 
 export function onDidTerminateNotebookPreviewProviderPrompt(listener: () => void): vscode.Disposable {
   providerPromptTerminationListeners.add(listener);
+  if (providerPromptTerminated) listener();
   return { dispose: () => providerPromptTerminationListeners.delete(listener) };
+}
+
+export function isNotebookPreviewProviderPromptTerminated(): boolean {
+  return providerPromptTerminated;
 }
 
 interface NotebookPreviewEntry {
@@ -37,6 +43,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   private disposed = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    providerPromptTerminated = false;
     const executionPreparationProvider: vscode.NotebookCellStatusBarItemProvider = {
       provideCellStatusBarItems: (cell) => {
         // VS Code invokes status providers when a cell enters Pending, before
@@ -70,6 +77,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       this.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration((event) => {
           if (!event.affectsConfiguration("openWrangler.notebookPreviewProvider")) return;
+          providerPromptTerminated = false;
           this.conflictPromptDismissed = false;
           this.resetEntries();
           this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
@@ -310,11 +318,21 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       throw error;
     }
     if (selection === "Use Open Wrangler") {
-      await updateSetting("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Global);
+      try {
+        await updateSetting("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Global);
+      } catch (error) {
+        this.publishProviderPromptTermination();
+        throw error;
+      }
       return true;
     }
     if (selection === "Keep Data Wrangler") {
-      await updateSetting("notebookPreviewProvider", "dataWrangler", vscode.ConfigurationTarget.Global);
+      try {
+        await updateSetting("notebookPreviewProvider", "dataWrangler", vscode.ConfigurationTarget.Global);
+      } catch (error) {
+        this.publishProviderPromptTermination();
+        throw error;
+      }
       return false;
     }
     this.publishProviderPromptTermination();
@@ -324,6 +342,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   private publishProviderPromptTermination(): void {
     if (this.conflictPromptDismissed) return;
     this.conflictPromptDismissed = true;
+    providerPromptTerminated = true;
     for (const listener of providerPromptTerminationListeners) listener();
   }
 

@@ -31,6 +31,7 @@ const rendererMocks = vi.hoisted(() => ({
   registerFormatters: true,
   previewProvider: "ask" as "ask" | "openWrangler" | "dataWrangler" | "disabled",
   dataWranglerInstalled: false,
+  providerPromptTerminated: false,
   configurationListeners: [] as Array<(event: { affectsConfiguration(section: string): boolean }) => void>,
   extensionListeners: [] as Array<() => void>,
   visibleEditorListeners: [] as Array<() => void>,
@@ -40,8 +41,10 @@ const rendererMocks = vi.hoisted(() => ({
 vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
   onDidTerminateNotebookPreviewProviderPrompt: (listener: () => void) => {
     rendererMocks.providerPromptTerminationListeners.push(listener);
+    if (rendererMocks.providerPromptTerminated) listener();
     return { dispose: () => undefined };
-  }
+  },
+  isNotebookPreviewProviderPromptTerminated: () => rendererMocks.providerPromptTerminated
 }));
 
 vi.mock("vscode", () => ({
@@ -169,6 +172,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.registerFormatters = true;
     rendererMocks.previewProvider = "ask";
     rendererMocks.dataWranglerInstalled = false;
+    rendererMocks.providerPromptTerminated = false;
     rendererMocks.configurationListeners.length = 0;
     rendererMocks.extensionListeners.length = 0;
     rendererMocks.visibleEditorListeners.length = 0;
@@ -1347,6 +1351,89 @@ describe("notebook renderer messaging", () => {
     expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
     expect(rendererMocks.capture).not.toHaveBeenCalled();
   });
+
+  it("terminally rejects an exact candidate that arrives after provider-prompt dismissal", async () => {
+    const document = notebook("file:///workspace/provider-post-dismissal.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    rendererMocks.providerPromptTerminated = true;
+    const tracker = { bindInlineUpgrade: vi.fn() };
+    register(tracker);
+
+    const candidate = indexedInlineCandidate(31);
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: candidate });
+    await settleMessages();
+
+    expect(rendererMocks.inlinePosts).toEqual([
+      {
+        editor: exactEditor,
+        message: {
+          kind: "openWrangler.inlineRevoke",
+          protocol: 1,
+          token: candidate.token,
+          outputItemId: candidate.outputItemId,
+          byteLength: candidate.byteLength,
+          sha256: candidate.sha256
+        }
+      }
+    ]);
+    expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
+  });
+
+  it.each(["dismissal", "disposal"])(
+    "attempts one exact terminal revoke for nine acknowledged pending candidates during %s",
+    async (termination) => {
+      const documents = Array.from({ length: 9 }, (_, index) =>
+        notebook(`file:///workspace/provider-bulk-${termination}-${index}.ipynb`)
+      );
+      const editors = documents.map((document) => editor(document));
+      rendererMocks.notebookDocuments.push(...documents);
+      rendererMocks.visibleNotebookEditors.push(...editors);
+      rendererMocks.registerFormatters = false;
+      rendererMocks.previewProvider = "ask";
+      rendererMocks.dataWranglerInstalled = true;
+      const never = new Promise<boolean>(() => undefined);
+      rendererMocks.inlinePostResult = async (message) =>
+        (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? never : true;
+      const { context } = register({ bindInlineUpgrade: vi.fn() });
+      const candidates = editors.map((candidateEditor, index) => {
+        const candidate = indexedInlineCandidate(index + 40);
+        rendererMocks.inlineListener?.({ editor: candidateEditor, message: candidate });
+        return candidate;
+      });
+      await settleMessages();
+
+      if (termination === "dismissal") {
+        rendererMocks.providerPromptTerminated = true;
+        for (const listener of rendererMocks.providerPromptTerminationListeners) listener();
+      } else {
+        for (const subscription of context.subscriptions) subscription.dispose();
+      }
+      await settleMicrotasks();
+
+      const revokes = rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
+      );
+      expect(revokes).toHaveLength(9);
+      expect(revokes).toEqual(
+        candidates.map((candidate, index) => ({
+          editor: editors[index],
+          message: {
+            kind: "openWrangler.inlineRevoke",
+            protocol: 1,
+            token: candidate.token,
+            outputItemId: candidate.outputItemId,
+            byteLength: candidate.byteLength,
+            sha256: candidate.sha256
+          }
+        }))
+      );
+    }
+  );
 
   it("sends provider-pending revocation before renderer messaging disposal latches", async () => {
     const document = notebook("file:///workspace/provider-pending-disposal.ipynb");
