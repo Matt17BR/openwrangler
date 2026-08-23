@@ -140,7 +140,8 @@ import { NotebookFormatterPreparationPendingError } from "../extension/notebooks
 import {
   isNotebookPreviewProviderPromptTerminated,
   NotebookPreviewCoordinator,
-  onDidTerminateNotebookPreviewProviderPrompt
+  onDidTerminateNotebookPreviewProviderPrompt,
+  requestNotebookPreviewProviderPrompt
 } from "../extension/notebooks/notebookPreviewCoordinator";
 
 describe("NotebookPreviewCoordinator", () => {
@@ -241,7 +242,25 @@ describe("NotebookPreviewCoordinator", () => {
     coordinator.dispose();
   });
 
-  it("prompts once and leaves the kernel untouched when the user keeps Data Wrangler", async () => {
+  it("keeps idle and kernel-selection-era status queries prompt-free", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    for (const { provider } of mocks.statusBarProviders) {
+      expect(provider.provideCellStatusBarItems({ notebook })).toBeUndefined();
+    }
+    for (const listener of mocks.channels.active) listener({ notebook });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mocks.information).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+
+  it("prompts once from concurrent exact candidates and leaves the kernel untouched for Data Wrangler", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
@@ -249,11 +268,9 @@ describe("NotebookPreviewCoordinator", () => {
     mocks.information.mockResolvedValue("Keep Data Wrangler");
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
-    await vi.runOnlyPendingTimersAsync();
-    expect(mocks.information).not.toHaveBeenCalled();
-    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
-
-    await vi.runOnlyPendingTimersAsync();
+    const first = requestNotebookPreviewProviderPrompt(notebook);
+    const concurrent = requestNotebookPreviewProviderPrompt(notebook);
+    await Promise.all([first, concurrent]);
 
     expect(mocks.information).toHaveBeenCalledOnce();
     expect(mocks.updateSetting).toHaveBeenCalledWith("notebookPreviewProvider", "dataWrangler", 1);
@@ -271,8 +288,7 @@ describe("NotebookPreviewCoordinator", () => {
 
     await vi.runOnlyPendingTimersAsync();
     expect(mocks.information).not.toHaveBeenCalled();
-    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
-
+    await requestNotebookPreviewProviderPrompt(notebook);
     await vi.runOnlyPendingTimersAsync();
 
     expect(mocks.information).toHaveBeenCalledOnce();
@@ -286,12 +302,11 @@ describe("NotebookPreviewCoordinator", () => {
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
     mocks.extensions.add("ms-toolsai.datawrangler");
+    const coordinator = new NotebookPreviewCoordinator({} as never);
     const termination = vi.fn();
     const subscription = onDidTerminateNotebookPreviewProviderPrompt(termination);
-    const coordinator = new NotebookPreviewCoordinator({} as never);
 
-    mocks.statusBarProviders[0]!.provider.provideCellStatusBarItems({ notebook });
-    await vi.runOnlyPendingTimersAsync();
+    await requestNotebookPreviewProviderPrompt(notebook);
 
     expect(termination).toHaveBeenCalledOnce();
     expect(isNotebookPreviewProviderPromptTerminated()).toBe(true);
@@ -302,6 +317,28 @@ describe("NotebookPreviewCoordinator", () => {
     lateSubscription.dispose();
     subscription.dispose();
     coordinator.dispose();
+  });
+
+  it("terminates a retained provider request on disposal without replaying a late selection", async () => {
+    const notebook = fakeNotebook();
+    const selection = deferred<string | undefined>();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    mocks.information.mockImplementationOnce(() => selection.promise);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+    const termination = vi.fn();
+    const subscription = onDidTerminateNotebookPreviewProviderPrompt(termination);
+
+    const request = requestNotebookPreviewProviderPrompt(notebook);
+    await vi.runAllTicks();
+    coordinator.dispose();
+
+    expect(termination).toHaveBeenCalledOnce();
+    selection.resolve("Use Open Wrangler");
+    await expect(request).resolves.toBe(false);
+    expect(mocks.updateSetting).not.toHaveBeenCalled();
+    subscription.dispose();
   });
 
   it.each(["Use Open Wrangler", "Keep Data Wrangler"])(
@@ -418,6 +455,8 @@ describe("NotebookPreviewCoordinator", () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    mocks.preference = "openWrangler";
     mocks.prepare.mockRejectedValueOnce(new Error("Kernel is not started")).mockResolvedValueOnce(undefined);
     const coordinator = new NotebookPreviewCoordinator({} as never);
 

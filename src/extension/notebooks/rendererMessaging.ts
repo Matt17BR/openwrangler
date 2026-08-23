@@ -22,7 +22,8 @@ import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from 
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import {
   isNotebookPreviewProviderPromptTerminated,
-  onDidTerminateNotebookPreviewProviderPrompt
+  onDidTerminateNotebookPreviewProviderPrompt,
+  requestNotebookPreviewProviderPrompt
 } from "./notebookPreviewCoordinator";
 
 interface OpenInOpenWranglerMessage {
@@ -401,9 +402,24 @@ function receiveInlineUpgradeMessage(
   state.operations.set(candidate.token, operation);
   if (operation.awaitingProvider) {
     postInlineUpgradePending(state, operation, messaging, editor);
+    void requestNotebookPreviewProviderPrompt(editor.notebook).then(
+      () => settleInlineUpgradeProviderRequest(context, tracker, state, operation),
+      () => terminateInlineUpgradeOperation(state, operation)
+    );
     return;
   }
   startInlineUpgradeOperation(context, tracker, state, operation);
+}
+
+function settleInlineUpgradeProviderRequest(
+  context: vscode.ExtensionContext,
+  tracker: NotebookCellResultTracker,
+  state: InlineUpgradeState,
+  operation: InlineUpgradeOperation
+): void {
+  if (!isInlineUpgradeOperationOwned(state.operations, operation)) return;
+  if (inlineUpgradeProviderState() === "owned") startInlineUpgradeOperation(context, tracker, state, operation);
+  else terminateInlineUpgradeOperation(state, operation);
 }
 
 function postInlineUpgradePending(

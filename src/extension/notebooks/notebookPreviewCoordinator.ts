@@ -14,6 +14,7 @@ const CHOOSE_PREVIEW_PROVIDER_COMMAND = "openWrangler.chooseNotebookPreviewProvi
 const RETRY_DELAYS_MS = [500, 1_000, 2_000, 5_000, 15_000] as const;
 const providerPromptTerminationListeners = new Set<() => void>();
 let providerPromptTerminated = false;
+let providerPromptOwner: NotebookPreviewCoordinator | undefined;
 
 export function onDidTerminateNotebookPreviewProviderPrompt(listener: () => void): vscode.Disposable {
   providerPromptTerminationListeners.add(listener);
@@ -23,6 +24,14 @@ export function onDidTerminateNotebookPreviewProviderPrompt(listener: () => void
 
 export function isNotebookPreviewProviderPromptTerminated(): boolean {
   return providerPromptTerminated;
+}
+
+export function requestNotebookPreviewProviderPrompt(notebook: vscode.NotebookDocument): Promise<boolean> {
+  return providerPromptOwner?.requestProviderPrompt(notebook) ?? Promise.resolve(false);
+}
+
+function setNotebookPreviewProviderPromptOwner(owner: NotebookPreviewCoordinator | undefined): void {
+  providerPromptOwner = owner;
 }
 
 interface NotebookPreviewEntry {
@@ -46,11 +55,10 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     providerPromptTerminated = false;
     const executionPreparationProvider: vscode.NotebookCellStatusBarItemProvider = {
       provideCellStatusBarItems: (cell) => {
-        // VS Code invokes status providers when a cell enters Pending, before
-        // the later notebook-document execution update. Wake preparation here
-        // so a newly started kernel can install the formatter before the first
-        // user result is produced. This provider intentionally renders no item.
-        this.schedule(cell.notebook, 0, true, true);
+        // VS Code also invokes status providers for idle cells and while the
+        // kernel picker is active. This callback may expedite an explicitly
+        // selected Open Wrangler provider, but it never owns the provider prompt.
+        this.schedule(cell.notebook, 0, true);
         return undefined;
       }
     };
@@ -87,6 +95,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
         vscode.commands.registerCommand(CHOOSE_PREVIEW_PROVIDER_COMMAND, () => this.chooseProvider())
       );
       this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
+      setNotebookPreviewProviderPromptOwner(this);
     } catch (error) {
       throw combinedFailure(
         error,
@@ -105,14 +114,9 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     }
   }
 
-  private schedule(
-    notebook: vscode.NotebookDocument,
-    delayMs = 0,
-    expedite = false,
-    allowProviderPrompt = false
-  ): void {
+  private schedule(notebook: vscode.NotebookDocument, delayMs = 0, expedite = false): void {
     if (this.disposed || !this.canPrepare(notebook)) return;
-    if (!allowProviderPrompt && this.hasUnresolvedProviderConflict()) return;
+    if (this.hasUnresolvedProviderConflict()) return;
     const entry = this.entry(notebook);
     if (entry.prepared) return;
     if (entry.running) {
@@ -253,6 +257,8 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
 
   private disposeResources(): unknown[] {
     this.disposed = true;
+    if (providerPromptOwner === this) setNotebookPreviewProviderPromptOwner(undefined);
+    if (this.conflictPrompt) this.publishProviderPromptTermination();
     const failures: unknown[] = [];
     for (const subscription of this.subscriptions.splice(0).reverse()) {
       captureCleanup(() => subscription.dispose(), failures);
@@ -304,6 +310,11 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     return this.conflictPrompt;
   }
 
+  requestProviderPrompt(notebook: vscode.NotebookDocument): Promise<boolean> {
+    if (this.disposed || !this.canPrepare(notebook)) return Promise.resolve(false);
+    return this.resolveOpenWranglerProvider();
+  }
+
   private async promptForConflictProvider(): Promise<boolean> {
     let selection: string | undefined;
     try {
@@ -316,6 +327,10 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     } catch (error) {
       this.publishProviderPromptTermination();
       throw error;
+    }
+    if (this.disposed) {
+      this.publishProviderPromptTermination();
+      return false;
     }
     if (selection === "Use Open Wrangler") {
       try {
