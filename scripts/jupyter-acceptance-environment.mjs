@@ -150,21 +150,40 @@ raw_identity = snapshot(raw_descriptor)
 if digest_descriptor(raw_descriptor) != expected_sha256 or snapshot(raw_descriptor) != raw_identity:
     raise RuntimeError("Released-Jupyter PySpark pip bootstrap rejected changed verified bytes.")
 
-required_memfd_symbols = (
-    "F_ADD_SEALS",
-    "F_GET_SEALS",
-    "F_SEAL_GROW",
-    "F_SEAL_SEAL",
-    "F_SEAL_SHRINK",
-    "F_SEAL_WRITE",
-)
 if (
-    not hasattr(os, "memfd_create")
+    sys.platform != "linux"
+    or not hasattr(fcntl, "fcntl")
+    or not hasattr(os, "memfd_create")
     or not hasattr(os, "MFD_ALLOW_SEALING")
     or not hasattr(os, "MFD_CLOEXEC")
-    or any(not hasattr(fcntl, name) for name in required_memfd_symbols)
 ):
     raise RuntimeError("Released-Jupyter PySpark pip bootstrap requires Linux memfd sealing support.")
+
+# Stable Linux UAPI values; the syscall and exact seal readback below remain authoritative.
+linux_memfd_constants = {
+    "F_ADD_SEALS": 1033,
+    "F_GET_SEALS": 1034,
+    "F_SEAL_SEAL": 0x0001,
+    "F_SEAL_SHRINK": 0x0002,
+    "F_SEAL_GROW": 0x0004,
+    "F_SEAL_WRITE": 0x0008,
+}
+resolved_memfd_constants = {}
+for constant_name, expected_value in linux_memfd_constants.items():
+    exposed_value = getattr(fcntl, constant_name, expected_value)
+    if type(exposed_value) is not int or exposed_value != expected_value:
+        raise RuntimeError(
+            "Released-Jupyter PySpark pip bootstrap rejected unexpected Linux memfd constant " + constant_name + "."
+        )
+    resolved_memfd_constants[constant_name] = exposed_value
+f_add_seals = resolved_memfd_constants["F_ADD_SEALS"]
+f_get_seals = resolved_memfd_constants["F_GET_SEALS"]
+required_seals = (
+    resolved_memfd_constants["F_SEAL_WRITE"]
+    | resolved_memfd_constants["F_SEAL_GROW"]
+    | resolved_memfd_constants["F_SEAL_SHRINK"]
+    | resolved_memfd_constants["F_SEAL_SEAL"]
+)
 
 sealed_descriptor = os.memfd_create(
     "openwrangler-pyspark-artifact",
@@ -198,14 +217,8 @@ try:
         raise RuntimeError("Released-Jupyter PySpark pip bootstrap rejected its sealed artifact copy.")
     os.fsync(sealed_descriptor)
     os.fchmod(sealed_descriptor, 0o400)
-    required_seals = (
-        fcntl.F_SEAL_WRITE
-        | fcntl.F_SEAL_GROW
-        | fcntl.F_SEAL_SHRINK
-        | fcntl.F_SEAL_SEAL
-    )
-    fcntl.fcntl(sealed_descriptor, fcntl.F_ADD_SEALS, required_seals)
-    if fcntl.fcntl(sealed_descriptor, fcntl.F_GET_SEALS) & required_seals != required_seals:
+    fcntl.fcntl(sealed_descriptor, f_add_seals, required_seals)
+    if fcntl.fcntl(sealed_descriptor, f_get_seals) & required_seals != required_seals:
         raise RuntimeError("Released-Jupyter PySpark pip bootstrap did not apply every immutable memfd seal.")
     sealed_identity = snapshot(sealed_descriptor)
     os.close(raw_descriptor)
@@ -258,10 +271,9 @@ else:
 
 descriptor = raw_descriptor
 artifact_identity = snapshot(descriptor)
-required_seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 if (
     os.get_inheritable(descriptor)
-    or fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & required_seals != required_seals
+    or fcntl.fcntl(descriptor, f_get_seals) & required_seals != required_seals
     or digest_descriptor(descriptor) != expected_sha256
 ):
     raise RuntimeError("Released-Jupyter PySpark pip bootstrap lost its sealed descriptor contract.")
@@ -323,7 +335,7 @@ for permission_change in (
 if (
     digest_descriptor(descriptor) != expected_sha256
     or snapshot(descriptor) != artifact_identity
-    or fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & required_seals != required_seals
+    or fcntl.fcntl(descriptor, f_get_seals) & required_seals != required_seals
 ):
     raise RuntimeError("Released-Jupyter PySpark pip bootstrap changed its sealed bytes during mutation proof.")
 
@@ -409,7 +421,7 @@ if (
     not served["complete"]
     or digest_descriptor(descriptor) != expected_sha256
     or snapshot(descriptor) != artifact_identity
-    or fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & required_seals != required_seals
+    or fcntl.fcntl(descriptor, f_get_seals) & required_seals != required_seals
 ):
     raise RuntimeError("Released-Jupyter PySpark pip source did not complete exact consumption.")
 if pip_exit_code != 0:
