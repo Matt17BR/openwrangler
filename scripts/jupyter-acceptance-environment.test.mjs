@@ -183,6 +183,10 @@ const PYSPARK_PRIMARY_IDENTITY_RECEIPT = "__OW_PRIMARY_IDENTITY__=same;errno=5";
 const PYSPARK_CLEANUP_FAILURE_RECEIPT =
   "Released-Jupyter PySpark sealed descriptor cleanup also failed after the primary exception (type=OSError errno=9).";
 const PYSPARK_MISSING_MEMFD_CAPABILITY_PRELUDE = "import os\nif hasattr(os, 'memfd_create'): del os.memfd_create\n";
+const PYSPARK_MISSING_FCNTL_BINDINGS_PRELUDE = `import fcntl
+for _ow_fcntl_name in ("F_ADD_SEALS", "F_GET_SEALS", "F_SEAL_GROW", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_WRITE"):
+    if hasattr(fcntl, _ow_fcntl_name): delattr(fcntl, _ow_fcntl_name)
+`;
 const PYTHON_TRACEBACK_FRAME_PATTERN = /^ {2}File "<string>", line ([1-9]\d*), in (.+)$/u;
 
 let testPythonMemfdSealingAvailable;
@@ -194,14 +198,22 @@ function testPythonSupportsMemfdSealing() {
     [
       "-I",
       "-c",
-      `import fcntl, os
-required = ("F_ADD_SEALS", "F_GET_SEALS", "F_SEAL_GROW", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_WRITE")
-available = (
-    hasattr(os, "memfd_create")
-    and hasattr(os, "MFD_ALLOW_SEALING")
-    and hasattr(os, "MFD_CLOEXEC")
-    and all(hasattr(fcntl, name) for name in required)
-)
+      `import fcntl, os, sys
+available = False
+descriptor = None
+try:
+    if sys.platform == "linux" and hasattr(os, "memfd_create") and hasattr(os, "MFD_ALLOW_SEALING") and hasattr(os, "MFD_CLOEXEC"):
+        expected = {"F_ADD_SEALS": 1033, "F_GET_SEALS": 1034, "F_SEAL_SEAL": 1, "F_SEAL_SHRINK": 2, "F_SEAL_GROW": 4, "F_SEAL_WRITE": 8}
+        resolved = {name: getattr(fcntl, name, value) for name, value in expected.items()}
+        if all(type(resolved[name]) is int and resolved[name] == value for name, value in expected.items()):
+            descriptor = os.memfd_create("openwrangler-capability-probe", os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC)
+            required = resolved["F_SEAL_SEAL"] | resolved["F_SEAL_SHRINK"] | resolved["F_SEAL_GROW"] | resolved["F_SEAL_WRITE"]
+            fcntl.fcntl(descriptor, resolved["F_ADD_SEALS"], required)
+            available = fcntl.fcntl(descriptor, resolved["F_GET_SEALS"]) & required == required
+except OSError:
+    available = False
+finally:
+    if descriptor is not None: os.close(descriptor)
 print("available" if available else "missing")
 `
     ],
@@ -2360,7 +2372,7 @@ test(
 );
 
 test(
-  "PySpark trusted bootstrap replaces raw fd3 with one immutable sealed memfd before pip",
+  "PySpark trusted bootstrap replaces raw fd3 with one immutable sealed memfd without Python fcntl bindings",
   { skip: process.platform !== "linux" || !testPythonSupportsMemfdSealing() },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-pyspark-sealed-bootstrap-"));
@@ -2385,7 +2397,7 @@ test(
       assert.doesNotMatch(bootstrap, /single-link artifact identity/u);
       const pipBoundary = bootstrap.indexOf("server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)");
       assert.ok(pipBoundary > 0);
-      const adversary = `${bootstrap.slice(0, pipBoundary)}
+      const adversary = `${PYSPARK_MISSING_FCNTL_BINDINGS_PRELUDE}${bootstrap.slice(0, pipBoundary)}
 import json
 
 def mutation_result(active_descriptor):
@@ -2438,7 +2450,7 @@ result = {
     "fchmodReopen": fchmod_reopen,
     "rawPresent": raw_present,
     "readWrite": read_write,
-    "seals": fcntl.fcntl(descriptor, fcntl.F_GET_SEALS),
+    "seals": fcntl.fcntl(descriptor, f_get_seals),
     "writeOnly": write_only,
 }
 print("__OW_SEALED_MEMFD__" + json.dumps(result, sort_keys=True))
@@ -2522,9 +2534,15 @@ test(
           expected: /requires Linux memfd sealing support/u
         },
         {
+          name: "unexpected-binding",
+          prelude: "import fcntl\nfcntl.F_ADD_SEALS = 1032\n",
+          sha256: distribution.sha256,
+          expected: /rejected unexpected Linux memfd constant F_ADD_SEALS/u
+        },
+        {
           name: "seal-failure",
           prelude:
-            "import errno, fcntl\n_ow_fcntl = fcntl.fcntl\ndef _ow_fail_seal(fd, command, *args):\n    if command == fcntl.F_ADD_SEALS: raise OSError(errno.EPERM, 'sealed test denial')\n    return _ow_fcntl(fd, command, *args)\nfcntl.fcntl = _ow_fail_seal\n",
+            "import errno, fcntl\n_ow_fcntl = fcntl.fcntl\ndef _ow_fail_seal(fd, command, *args):\n    if command == 1033: raise OSError(errno.EPERM, 'sealed test denial')\n    return _ow_fcntl(fd, command, *args)\nfcntl.fcntl = _ow_fail_seal\n",
           sha256: distribution.sha256,
           requiresNativeSealing: true,
           expected: /sealed test denial/u
