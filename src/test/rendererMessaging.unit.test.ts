@@ -972,7 +972,7 @@ describe("notebook renderer messaging", () => {
       bindInlineUpgrade: vi.fn(async () => {
         bindCount += 1;
         if (bindCount === 1) return originalBinding;
-        if (bindCount === 130) return replacementBinding;
+        if (bindCount === 129) return replacementBinding;
         return undefined;
       })
     };
@@ -991,19 +991,21 @@ describe("notebook renderer messaging", () => {
       rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(index) });
       await settleMicrotasks();
     }
-    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(129);
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(128);
     expect(
       rendererMocks.inlinePosts.filter(
         ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
       )
-    ).toHaveLength(8);
+    ).toHaveLength(128);
 
-    rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
+    terminal.resolve(true);
+    await settleMicrotasks();
+    const replacement = indexedInlineCandidate(128);
+    installCanonicalRuntimeResponses(document, replacement.token);
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: replacement });
     await settleMessages();
     const replacementUpgrade = rendererMocks.inlinePosts.at(-1)?.message as { kind?: string; payload?: unknown };
     expect(replacementUpgrade.kind).toBe("openWrangler.inlineUpgrade");
-    terminal.resolve(true);
-    await settleMicrotasks();
     rendererMocks.inlineListener?.({
       editor: exactEditor,
       message: { kind: "openInOpenWrangler", payload: replacementUpgrade.payload }
@@ -1434,6 +1436,47 @@ describe("notebook renderer messaging", () => {
       );
     }
   );
+
+  it("reserves one terminal attempt for every admitted pending candidate across hanging eviction and disposal", async () => {
+    const document = notebook("file:///workspace/provider-reservation-cap.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const never = new Promise<boolean>(() => undefined);
+    rendererMocks.inlinePostResult = async (message) =>
+      (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? never : true;
+    const { context } = register({ bindInlineUpgrade: vi.fn() });
+    const admitted = Array.from({ length: 128 }, (_, index) => indexedInlineCandidate(index));
+    for (const candidate of admitted) rendererMocks.inlineListener?.({ editor: exactEditor, message: candidate });
+    await settleMessages();
+
+    const unreserved = indexedInlineCandidate(128);
+    for (let index = 0; index < 4; index += 1) {
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: unreserved });
+    }
+    rendererMocks.providerPromptTerminated = true;
+    for (const listener of rendererMocks.providerPromptTerminationListeners) listener();
+    for (const subscription of context.subscriptions) subscription.dispose();
+    await settleMicrotasks();
+
+    const pending = rendererMocks.inlinePosts.filter(
+      ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlinePending"
+    );
+    const revokes = rendererMocks.inlinePosts.filter(
+      ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
+    );
+    expect(pending).toHaveLength(128);
+    expect(revokes).toHaveLength(128);
+    expect(new Set(revokes.map(({ message }) => (message as { token: string }).token))).toEqual(
+      new Set(admitted.map(({ token }) => token))
+    );
+    expect(
+      rendererMocks.inlinePosts.some(({ message }) => (message as { token?: string }).token === unreserved.token)
+    ).toBe(false);
+  });
 
   it("sends provider-pending revocation before renderer messaging disposal latches", async () => {
     const document = notebook("file:///workspace/provider-pending-disposal.ipynb");

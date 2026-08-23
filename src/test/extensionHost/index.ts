@@ -32,7 +32,7 @@ import {
   type Request,
   type Response
 } from "playwright-core";
-import type { Jupyter, JupyterServerCollection, Kernel } from "@vscode/jupyter-extension";
+import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import {
   DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
@@ -107,6 +107,7 @@ import {
   verifyInstrumentedPythonEnvironmentMarker
 } from "./instrumentedPythonEnvironment";
 import {
+  DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT,
   DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
   writeDataWranglerCoexistenceNotebook
 } from "./dataWranglerCoexistenceNotebookFixture";
@@ -1360,24 +1361,23 @@ async function attestDataWranglerSelectedKernel(
   notebook: vscode.NotebookDocument,
   notebookEditor: vscode.NotebookEditor,
   phase: DataWranglerCoexistencePhase,
-  testPython: string
+  testPython: string,
+  firstExecution: DataWranglerSelectedKernelIdentity
 ): Promise<DataWranglerSelectedKernelIdentity> {
   const cells = [...notebook.getCells()];
   const sources = cells.map((cell) => cell.document.getText());
   const outputs = cells.map((cell) => [...cell.outputs]);
   const executionOrders = cells.map((cell) => cell.executionSummary?.executionOrder);
   const dirty = notebook.isDirty;
-  const deadline = Date.now() + 30_000;
-  let kernel: Kernel | undefined;
-  do {
-    assertExactOpenNotebookDocument(notebook, "before acquiring its selected coexistence kernel");
-    assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "before acquiring its selected kernel");
-    kernel = await jupyter.kernels.getKernel(notebook.uri);
-    assertExactOpenNotebookDocument(notebook, "after acquiring its selected coexistence kernel");
-    assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after acquiring its selected kernel");
-    if (kernel) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  } while (Date.now() < deadline);
+  assertExactOpenNotebookDocument(notebook, "before acquiring its selected coexistence kernel");
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "before acquiring its selected kernel");
+  const kernel = await withBoundedAcceptancePromise(
+    jupyter.kernels.getKernel(notebook.uri),
+    10_000,
+    "the selected coexistence kernel after its first dataframe execution"
+  );
+  assertExactOpenNotebookDocument(notebook, "after acquiring its selected coexistence kernel");
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after acquiring its selected kernel");
   assert.ok(kernel, "The selected released-Jupyter kernel did not become available for identity attestation.");
   assert.equal(kernel.language.toLowerCase(), "python", "The selected coexistence kernel must be Python.");
 
@@ -1414,7 +1414,11 @@ async function attestDataWranglerSelectedKernel(
   }
   assertExactOpenNotebookDocument(notebook, "after attesting its selected coexistence kernel");
   assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after attesting its selected kernel");
-  const reacquired = await jupyter.kernels.getKernel(notebook.uri);
+  const reacquired = await withBoundedAcceptancePromise(
+    jupyter.kernels.getKernel(notebook.uri),
+    10_000,
+    "the attested selected coexistence kernel"
+  );
   assertExactOpenNotebookDocument(notebook, "after reacquiring its attested coexistence kernel");
   assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "after reacquiring its attested kernel");
   assert.equal(reacquired, kernel, "The selected coexistence kernel changed during identity attestation.");
@@ -1431,6 +1435,11 @@ async function attestDataWranglerSelectedKernel(
     "The selected coexistence kernel must use the runner-selected private Python environment."
   );
   assert.ok(Number.isSafeInteger(pid) && pid > 0, "The selected coexistence kernel must report one positive PID.");
+  assert.deepEqual(
+    { executable: canonicalAcceptancePath(executable), pid },
+    { executable: canonicalAcceptancePath(firstExecution.executable), pid: firstExecution.pid },
+    "The non-history probe must bind to the kernel that produced the first dataframe output."
+  );
   assert.equal(notebook.isDirty, dirty, "Kernel identity attestation must not dirty the notebook.");
   const currentCells = notebook.getCells();
   assert.equal(currentCells.length, cells.length, "Kernel identity attestation must retain every notebook cell.");
@@ -1544,15 +1553,6 @@ async function exerciseReleasedDataWranglerCoexistence(
     recordAcceptanceProgress(`${phase}:kernel-select`);
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     recordAcceptanceProgress(`${phase}:kernel-selected`);
-    recordAcceptanceProgress(`${phase}:kernel-attestation`);
-    const selectedKernel = await attestDataWranglerSelectedKernel(
-      jupyterApi,
-      notebook,
-      notebookEditor,
-      phase,
-      testPython
-    );
-    recordAcceptanceProgress(`${phase}:kernel-attested`);
     if (!expectation.selection) {
       const ownership = assertDataWranglerCoexistenceOwnership(
         workbench,
@@ -1604,6 +1604,18 @@ async function exerciseReleasedDataWranglerCoexistence(
       );
     }
 
+    const firstExecutionKernel = dataWranglerCoexistenceFirstExecutionResult(notebook.cellAt(0));
+    recordAcceptanceProgress(`${phase}:kernel-attestation`);
+    const selectedKernel = await attestDataWranglerSelectedKernel(
+      jupyterApi,
+      notebook,
+      notebookEditor,
+      phase,
+      testPython,
+      firstExecutionKernel
+    );
+    recordAcceptanceProgress(`${phase}:kernel-attested`);
+
     if (firstOutputReceipt && expectation.provider === "openWrangler") {
       recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
@@ -1634,7 +1646,7 @@ async function exerciseReleasedDataWranglerCoexistence(
     assert.equal(
       Number(initialKernel.pid),
       selectedKernel.pid,
-      "The first notebook execution must use the exact silently attested released-Jupyter kernel."
+      "The setup cell must use the exact kernel bound to the first dataframe execution."
     );
     assert.ok(Number.isSafeInteger(Number(initialKernel.pid)) && Number(initialKernel.pid) > 0);
     if (expectation.provider === "dataWrangler") {
@@ -1847,9 +1859,9 @@ async function assertDataWranglerCoexistenceOwnership(
   checkpoint: string
 ): Promise<void> {
   if (provider === "openWrangler") {
-    await executeReleasedNotebookCellUntilMime(notebook, 0, OPEN_WRANGLER_MIME_V2, checkpoint, notebookEditor);
+    await executeReleasedNotebookCell(notebook, 0, undefined, `${checkpoint}:dataframe-cell`, notebookEditor);
     const mimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
-    assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2));
+    assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2), "The first dataframe execution must use Open Wrangler MIME.");
     return;
   }
 
@@ -1926,6 +1938,15 @@ async function assertNotebookPreviewConflictAbsent(
 
 function dataWranglerCoexistenceSetupResult(cell: vscode.NotebookCell): Record<string, unknown> {
   return releasedNotebookJsonResult(cell, DATA_WRANGLER_COEXISTENCE_SETUP_RESULT, "Data Wrangler coexistence setup");
+}
+
+function dataWranglerCoexistenceFirstExecutionResult(cell: vscode.NotebookCell): DataWranglerSelectedKernelIdentity {
+  const result = releasedNotebookJsonResult(
+    cell,
+    DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT,
+    "Data Wrangler coexistence first execution"
+  );
+  return { executable: String(result.executable), pid: Number(result.pid) };
 }
 
 const {

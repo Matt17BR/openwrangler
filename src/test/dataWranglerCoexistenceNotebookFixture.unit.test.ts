@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT,
   DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
   DATA_WRANGLER_COEXISTENCE_VARIABLE,
   dataWranglerCoexistenceNotebookFixture
@@ -43,6 +44,9 @@ describe("Data Wrangler coexistence notebook fixture", () => {
     expect(setup).toContain("'order_id': [2400001, 2400002, 2400003, 2400004]");
     expect(setup).toContain("'market': ['DACH', 'Nordics', 'Iberia', 'France']");
     expect(setup).toContain("'revenue': [620.50, 1840.75, 991.00, 2420.25]");
+    expect(setup).toContain(JSON.stringify(DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT));
+    expect(setup).toContain("sys.executable");
+    expect(setup).toContain("os.getpid()");
     expect(setup.endsWith(`${DATA_WRANGLER_COEXISTENCE_VARIABLE}\n`)).toBe(true);
     const attestation = cellSource(fixture, 1);
     expect(attestation).toContain(JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT));

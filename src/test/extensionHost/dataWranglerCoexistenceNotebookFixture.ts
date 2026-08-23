@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 
 export const DATA_WRANGLER_COEXISTENCE_SETUP_RESULT = "__OW_DATA_WRANGLER_COEXISTENCE_SETUP__";
+export const DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT = "__OW_DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION__";
 export const DATA_WRANGLER_COEXISTENCE_VARIABLE = "coexist_frame";
 
 export interface DataWranglerCoexistenceKernelTarget {
@@ -28,6 +29,10 @@ export function dataWranglerCoexistenceNotebookFixture(target: DataWranglerCoexi
         "    'market': ['DACH', 'Nordics', 'Iberia', 'France'],",
         "    'revenue': [620.50, 1840.75, 991.00, 2420.25],",
         "})",
+        `print(${JSON.stringify(DATA_WRANGLER_COEXISTENCE_FIRST_EXECUTION_RESULT)} + json.dumps({`,
+        "    'executable': sys.executable,",
+        "    'pid': os.getpid(),",
+        "}, sort_keys=True))",
         DATA_WRANGLER_COEXISTENCE_VARIABLE
       ]),
       cell([

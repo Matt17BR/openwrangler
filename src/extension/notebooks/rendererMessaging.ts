@@ -40,7 +40,6 @@ const INLINE_UPGRADE_MAX_RETAINED = 128;
 const INLINE_UPGRADE_MAX_RETIRED_RECEIPTS = 128;
 const INLINE_UPGRADE_MAX_ACTIONS = INLINE_UPGRADE_MAX_OPERATIONS;
 const INLINE_UPGRADE_MAX_TERMINAL_SENDS = INLINE_UPGRADE_MAX_OPERATIONS;
-const INLINE_UPGRADE_MAX_PENDING_TERMINAL_SENDS = INLINE_UPGRADE_MAX_RETAINED;
 const INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS = 10_000;
 const INLINE_UPGRADE_ACTION_DEADLINE_MS = 10_000;
 
@@ -68,6 +67,7 @@ interface InlineUpgradeOperation {
   awaitingProvider: boolean;
   active: boolean;
   published: boolean;
+  terminalReserved: boolean;
 }
 
 interface InlineUpgradePublishedReceipt {
@@ -380,10 +380,11 @@ function receiveInlineUpgradeMessage(
     if (!exactReplay) postInlineUpgradeTerminal(state, messaging, editor, candidate);
     return;
   }
-  if (state.operations.size >= INLINE_UPGRADE_MAX_RETAINED) {
+  if (state.operations.size + state.terminalSends.size >= INLINE_UPGRADE_MAX_RETAINED) {
     const oldest = state.operations.values().next().value as InlineUpgradeOperation | undefined;
     if (oldest) terminateInlineUpgradeOperation(state, oldest);
   }
+  if (state.operations.size + state.terminalSends.size >= INLINE_UPGRADE_MAX_RETAINED) return;
   const operation: InlineUpgradeOperation = {
     ownerId: inlineUpgradeOwnerId(state, editor),
     editor,
@@ -393,7 +394,8 @@ function receiveInlineUpgradeMessage(
     permitsSettlingReplacement: false,
     awaitingProvider: provider === "pending",
     active: true,
-    published: false
+    published: false,
+    terminalReserved: true
   };
   state.operations.set(candidate.token, operation);
   if (operation.awaitingProvider) {
@@ -856,8 +858,9 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   if (!operation.active) return;
   const editor = operation.editor;
   const messaging = operation.messaging;
-  const awaitingProvider = operation.awaitingProvider;
+  const terminalReserved = operation.terminalReserved;
   operation.active = false;
+  operation.terminalReserved = false;
   if (operation.action) cancelInlineUpgradeAction(operation.action);
   if (state.operations.get(operation.candidate.token) === operation) state.operations.delete(operation.candidate.token);
   rememberRetiredInlineUpgradeToken(state, operation.candidate.token);
@@ -874,7 +877,9 @@ function terminateInlineUpgradeOperation(state: InlineUpgradeState, operation: I
   operation.publishedReceipt = undefined;
   operation.editor = undefined;
   operation.messaging = undefined;
-  if (messaging && editor) postInlineUpgradeTerminal(state, messaging, editor, operation.candidate, awaitingProvider);
+  if (messaging && editor) {
+    postInlineUpgradeTerminal(state, messaging, editor, operation.candidate, terminalReserved);
+  }
 }
 
 function postInlineUpgradeTerminal(
@@ -882,12 +887,17 @@ function postInlineUpgradeTerminal(
   messaging: ReturnType<typeof vscode.notebooks.createRendererMessaging>,
   editor: vscode.NotebookEditor,
   candidate: InlineUpgradeCandidateMessage,
-  retainedPending = false
+  reserved = false
 ): void {
   if (state.disposed) return;
   const key = JSON.stringify([candidate.token, candidate.outputItemId, candidate.byteLength, candidate.sha256]);
-  const maximumSends = retainedPending ? INLINE_UPGRADE_MAX_PENDING_TERMINAL_SENDS : INLINE_UPGRADE_MAX_TERMINAL_SENDS;
-  if (state.terminalSends.has(key) || state.terminalSends.size >= maximumSends) return;
+  if (state.terminalSends.has(key)) return;
+  if (
+    (!reserved && state.terminalSends.size >= INLINE_UPGRADE_MAX_TERMINAL_SENDS) ||
+    state.operations.size + state.terminalSends.size >= INLINE_UPGRADE_MAX_RETAINED
+  ) {
+    return;
+  }
   const send: InlineUpgradeTerminalSend = { key };
   state.terminalSends.set(key, send);
   let posted: Thenable<boolean>;
