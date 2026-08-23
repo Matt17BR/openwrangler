@@ -1691,43 +1691,76 @@ async function verifyColumnHeaderControlLayout(browser) {
             }
           }
           if (control.classList.contains("columnResizeHandle")) {
+            const failedState = (code) => ({
+              animationStates: [],
+              focused: false,
+              opacity: "unavailable",
+              stateError: { code, type: "resize-opacity-transition-state" }
+            });
             const opacitySettlement = await new Promise((resolveTransition) => {
               const startedAt = performance.now();
               let done = false;
               let frame;
               let timer;
               const readState = () => {
-                const opacityTransitions = control
-                  .getAnimations()
-                  .filter(
-                    (animation) =>
-                      animation instanceof CSSTransition &&
-                      animation.effect?.target === control &&
-                      animation.transitionProperty === "opacity"
-                  );
-                return {
-                  animationStates: opacityTransitions.map((animation) => ({
-                    pending: animation.pending,
-                    playState: animation.playState
-                  })),
-                  focused: document.activeElement === control,
-                  opacity: getComputedStyle(control).opacity
-                };
+                try {
+                  const Transition = globalThis.CSSTransition;
+                  if (
+                    typeof control.getAnimations !== "function" ||
+                    typeof Transition !== "function" ||
+                    !("transitionProperty" in Transition.prototype)
+                  ) {
+                    return failedState("transition-observation-unavailable");
+                  }
+                  const opacityTransitions = control
+                    .getAnimations()
+                    .filter(
+                      (animation) =>
+                        animation instanceof Transition &&
+                        animation.effect?.target === control &&
+                        animation.transitionProperty === "opacity"
+                    );
+                  return {
+                    animationStates: opacityTransitions.map((animation) => ({
+                      pending: animation.pending,
+                      playState: animation.playState
+                    })),
+                    focused: document.activeElement === control,
+                    opacity: getComputedStyle(control).opacity,
+                    stateError: undefined
+                  };
+                } catch {
+                  return failedState("transition-state-read-failed");
+                }
               };
-              const settle = (settled) => {
+              const settle = (settled, state) => {
                 if (done) return;
                 done = true;
-                if (frame !== undefined) cancelAnimationFrame(frame);
-                if (timer !== undefined) clearTimeout(timer);
+                let cleanupFailed = false;
+                try {
+                  if (frame !== undefined) cancelAnimationFrame(frame);
+                } catch {
+                  cleanupFailed = true;
+                }
+                try {
+                  if (timer !== undefined) clearTimeout(timer);
+                } catch {
+                  cleanupFailed = true;
+                }
+                const finalState = cleanupFailed ? failedState("transition-wait-cleanup-failed") : state;
                 resolveTransition({
                   elapsedMilliseconds: performance.now() - startedAt,
-                  settled,
-                  ...readState()
+                  settled: settled && finalState.stateError === undefined,
+                  ...finalState
                 });
               };
               const sample = () => {
                 frame = undefined;
                 const state = readState();
+                if (state.stateError !== undefined) {
+                  settle(false, state);
+                  return;
+                }
                 if (
                   state.focused &&
                   state.opacity === "1" &&
@@ -1735,33 +1768,62 @@ async function verifyColumnHeaderControlLayout(browser) {
                     ({ pending, playState }) => !pending && (playState === "finished" || playState === "idle")
                   )
                 ) {
-                  settle(true);
+                  settle(true, state);
                   return;
                 }
-                frame = requestAnimationFrame(sample);
+                try {
+                  frame = requestAnimationFrame(sample);
+                } catch {
+                  settle(false, failedState("animation-frame-scheduling-failed"));
+                }
               };
-              timer = setTimeout(() => settle(false), 500);
-              frame = requestAnimationFrame(sample);
+              try {
+                timer = setTimeout(() => settle(false, readState()), 500);
+                frame = requestAnimationFrame(sample);
+              } catch {
+                settle(false, failedState("transition-wait-scheduling-failed"));
+              }
             });
-            const gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
-            const opacity = getComputedStyle(control).opacity;
-            const focused = document.activeElement === control;
+            let finalState = opacitySettlement;
+            let gripperWidth = Number.NaN;
+            if (finalState.stateError === undefined) {
+              try {
+                gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
+                finalState = {
+                  ...finalState,
+                  focused: document.activeElement === control,
+                  opacity: getComputedStyle(control).opacity
+                };
+              } catch {
+                finalState = {
+                  ...failedState("final-resize-state-read-failed"),
+                  elapsedMilliseconds: opacitySettlement.elapsedMilliseconds,
+                  settled: false
+                };
+              }
+            }
             if (
-              !opacitySettlement.settled ||
+              !finalState.settled ||
               !Number.isFinite(gripperWidth) ||
               gripperWidth <= 0 ||
               gripperWidth >= target ||
-              opacity !== "1" ||
-              !focused
+              finalState.opacity !== "1" ||
+              !finalState.focused
             ) {
               failures.push({
-                animationStates: opacitySettlement.animationStates,
-                elapsedMilliseconds: opacitySettlement.elapsedMilliseconds,
-                focused,
+                animationStates: finalState.animationStates,
+                elapsedMilliseconds: finalState.elapsedMilliseconds,
+                focused: finalState.focused,
                 gripperWidth,
                 header: header.getAttribute("data-column"),
-                opacity,
-                reason: opacitySettlement.settled ? "invalid-resize-gripper" : "resize-opacity-transition-timeout",
+                opacity: finalState.opacity,
+                reason:
+                  finalState.stateError !== undefined
+                    ? "resize-opacity-transition-state-error"
+                    : finalState.settled
+                      ? "invalid-resize-gripper"
+                      : "resize-opacity-transition-timeout",
+                stateError: finalState.stateError,
                 target
               });
             }
