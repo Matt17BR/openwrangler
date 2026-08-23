@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
@@ -622,6 +622,53 @@ function heldSignalHandle(identity, signals, beforeSignal = () => {}) {
     }
   };
 }
+
+test(
+  "Linux /proc enumeration ignores only a numeric entry that disappears during type resolution",
+  { skip: process.platform !== "linux" },
+  () => {
+    const runnerUrl = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
+    const program = [
+      'import assert from "node:assert/strict";',
+      'import fs from "node:fs";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      `const runnerUrl = ${JSON.stringify(runnerUrl)};`,
+      "const originalReaddirSync = fs.readdirSync;",
+      "const observationError = (code) => Object.assign(new Error(`${code}: numeric process entry disappeared`), { code, path: '/proc/2147483646' });",
+      "const setReadDirectory = (implementation) => { fs.readdirSync = implementation; syncBuiltinESMExports(); };",
+      "try {",
+      "  const { createPosixProcessTracker } = await import(runnerUrl);",
+      "  for (const code of ['ENOENT', 'ESRCH']) {",
+      "    setReadDirectory((path, options) => {",
+      "      assert.equal(path, '/proc');",
+      "      if (options?.withFileTypes === true) throw observationError(code);",
+      "      return ['2147483646'];",
+      "    });",
+      "    const tracker = createPosixProcessTracker(process.pid, 'owner', { observationIntervalMs: 60_000 });",
+      "    tracker.assertHealthy();",
+      "    tracker.stop();",
+      "  }",
+      "  setReadDirectory(() => { throw observationError('EACCES'); });",
+      "  const tracker = createPosixProcessTracker(process.pid, 'owner', { observationIntervalMs: 60_000 });",
+      "  assert.throws(() => tracker.assertHealthy(), /numeric process entry disappeared/u);",
+      "  const failure = await tracker.failure;",
+      "  assert.equal(failure.processTreeUnsettled, true);",
+      "  assert.equal(failure.cause.code, 'EACCES');",
+      "  tracker.stop();",
+      "} finally {",
+      "  setReadDirectory(originalReaddirSync);",
+      "}"
+    ].join("\n");
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      timeout: 10_000
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+);
 
 test("POSIX ownership follows marker-free descendants and binds every signal to a stable identity", () => {
   const processes = new Map([

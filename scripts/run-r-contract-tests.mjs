@@ -480,9 +480,9 @@ function listPosixProcessIdentities(ownerToken) {
       .map((identity) => Object.freeze({ ...identity, ownerMarked: identity.command.includes(marker) }));
   }
   const identities = [];
-  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[1-9][0-9]*$/u.test(entry.name)) continue;
-    const pid = Number(entry.name);
+  for (const name of readdirSync("/proc")) {
+    if (!/^[1-9][0-9]*$/u.test(name)) continue;
+    const pid = Number(name);
     try {
       const identity = readLinuxProcessIdentity(pid);
       if (identity) identities.push(Object.freeze({ ...identity, ownerMarked: linuxProcessHasOwner(pid, ownerToken) }));
