@@ -94,6 +94,7 @@ interface InlineUpgradeState {
   readonly actions: Set<InlineUpgradeAction>;
   readonly terminalSends: Map<string, InlineUpgradeTerminalSend>;
   readonly editorOwners: WeakMap<vscode.NotebookEditor, number>;
+  providerRequest?: Promise<boolean>;
   nextOwnerId: number;
   disposed: boolean;
 }
@@ -180,6 +181,7 @@ export function registerNotebookRendererMessaging(
         state.actions.clear();
         state.retiredTokens.clear();
         state.terminalSends.clear();
+        state.providerRequest = undefined;
       }
     });
   }
@@ -402,24 +404,61 @@ function receiveInlineUpgradeMessage(
   state.operations.set(candidate.token, operation);
   if (operation.awaitingProvider) {
     postInlineUpgradePending(state, operation, messaging, editor);
-    void requestNotebookPreviewProviderPrompt(editor.notebook).then(
-      () => settleInlineUpgradeProviderRequest(context, tracker, state, operation),
-      () => terminateInlineUpgradeOperation(state, operation)
-    );
+    ensureInlineUpgradeProviderRequest(context, tracker, state, editor.notebook);
     return;
   }
   startInlineUpgradeOperation(context, tracker, state, operation);
+}
+
+function ensureInlineUpgradeProviderRequest(
+  context: vscode.ExtensionContext,
+  tracker: NotebookCellResultTracker,
+  state: InlineUpgradeState,
+  notebook: vscode.NotebookDocument
+): void {
+  if (state.providerRequest) return;
+  let request: Promise<boolean>;
+  try {
+    request = requestNotebookPreviewProviderPrompt(notebook);
+  } catch {
+    settleInlineUpgradeProviderOperations(context, tracker, state);
+    return;
+  }
+  state.providerRequest = request;
+  void request.then(
+    () => settleInlineUpgradeProviderRequest(context, tracker, state, request),
+    () => settleInlineUpgradeProviderRequest(context, tracker, state, request)
+  );
 }
 
 function settleInlineUpgradeProviderRequest(
   context: vscode.ExtensionContext,
   tracker: NotebookCellResultTracker,
   state: InlineUpgradeState,
-  operation: InlineUpgradeOperation
+  request: Promise<boolean>
 ): void {
-  if (!isInlineUpgradeOperationOwned(state.operations, operation)) return;
-  if (inlineUpgradeProviderState() === "owned") startInlineUpgradeOperation(context, tracker, state, operation);
-  else terminateInlineUpgradeOperation(state, operation);
+  if (state.providerRequest !== request) return;
+  state.providerRequest = undefined;
+  settleInlineUpgradeProviderOperations(context, tracker, state);
+}
+
+function settleInlineUpgradeProviderOperations(
+  context: vscode.ExtensionContext,
+  tracker: NotebookCellResultTracker,
+  state: InlineUpgradeState
+): void {
+  const provider = inlineUpgradeProviderState();
+  for (const operation of [...state.operations.values()]) {
+    if (
+      !isInlineUpgradeOperationOwned(state.operations, operation) ||
+      !operation.awaitingProvider ||
+      operation.published
+    ) {
+      continue;
+    }
+    if (provider === "owned") startInlineUpgradeOperation(context, tracker, state, operation);
+    else terminateInlineUpgradeOperation(state, operation);
+  }
 }
 
 function postInlineUpgradePending(

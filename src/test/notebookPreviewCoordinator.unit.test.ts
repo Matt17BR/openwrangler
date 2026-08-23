@@ -341,6 +341,55 @@ describe("NotebookPreviewCoordinator", () => {
     subscription.dispose();
   });
 
+  it("runs every termination listener and completes coordinator cleanup before surfacing their failures", async () => {
+    const notebook = fakeNotebook();
+    const selection = deferred<string | undefined>();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    mocks.information.mockImplementationOnce(() => selection.promise);
+    const first = vi.fn(() => {
+      throw new Error("first termination listener failed");
+    });
+    const middle = vi.fn();
+    const last = vi.fn(() => {
+      throw new Error("last termination listener failed");
+    });
+    const subscriptions = [
+      onDidTerminateNotebookPreviewProviderPrompt(first),
+      onDidTerminateNotebookPreviewProviderPrompt(middle),
+      onDidTerminateNotebookPreviewProviderPrompt(last)
+    ];
+    const request = requestNotebookPreviewProviderPrompt(notebook);
+    await vi.runAllTicks();
+
+    let failure: unknown;
+    try {
+      coordinator.dispose();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(middle).toHaveBeenCalledOnce();
+    expect(last).toHaveBeenCalledOnce();
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "first termination listener failed" }),
+      expect.objectContaining({ message: "last termination listener failed" })
+    ]);
+    expect(mocks.statusBarProviders).toEqual([]);
+    expect(mocks.commands.size).toBe(0);
+    expect(mocks.invalidationListeners.size).toBe(0);
+    expect(mocks.disposeBridge).toHaveBeenCalledOnce();
+    for (const listeners of Object.values(mocks.channels)) expect(listeners.size).toBe(0);
+
+    selection.resolve(undefined);
+    await expect(request).resolves.toBe(false);
+    for (const subscription of subscriptions) subscription.dispose();
+  });
+
   it.each(["Use Open Wrangler", "Keep Data Wrangler"])(
     "publishes terminal prompt state and preserves a rejected %s preference write",
     async (selection) => {

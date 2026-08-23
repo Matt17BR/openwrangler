@@ -1259,6 +1259,8 @@ describe("notebook renderer messaging", () => {
     rendererMocks.registerFormatters = false;
     rendererMocks.previewProvider = "ask";
     rendererMocks.dataWranglerInstalled = true;
+    const providerRequest = deferred<boolean>();
+    rendererMocks.requestProviderPrompt.mockReturnValue(providerRequest.promise);
     const binding = inlineBinding(document, exactEditor);
     const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
     register(tracker);
@@ -1304,6 +1306,22 @@ describe("notebook renderer messaging", () => {
     });
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
     expect(rendererMocks.activeEditorReads).toBe(0);
+
+    providerRequest.resolve(true);
+    await settleMessages();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(rendererMocks.capture).toHaveBeenCalledOnce();
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
+      )
+    ).toHaveLength(1);
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineRevoke"
+      )
+    ).toHaveLength(0);
   });
 
   it("revokes a provider-pending candidate without runtime work when Data Wrangler is selected", async () => {
@@ -1474,6 +1492,8 @@ describe("notebook renderer messaging", () => {
     rendererMocks.registerFormatters = false;
     rendererMocks.previewProvider = "ask";
     rendererMocks.dataWranglerInstalled = true;
+    const providerRequest = deferred<boolean>();
+    rendererMocks.requestProviderPrompt.mockReturnValue(providerRequest.promise);
     const never = new Promise<boolean>(() => undefined);
     rendererMocks.inlinePostResult = async (message) =>
       (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? never : true;
@@ -1486,6 +1506,7 @@ describe("notebook renderer messaging", () => {
     for (let index = 0; index < 4; index += 1) {
       rendererMocks.inlineListener?.({ editor: exactEditor, message: unreserved });
     }
+    expect(rendererMocks.requestProviderPrompt).toHaveBeenCalledOnce();
     rendererMocks.providerPromptTerminated = true;
     for (const listener of rendererMocks.providerPromptTerminationListeners) listener();
     for (const subscription of context.subscriptions) subscription.dispose();

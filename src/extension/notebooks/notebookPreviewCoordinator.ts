@@ -258,8 +258,8 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   private disposeResources(): unknown[] {
     this.disposed = true;
     if (providerPromptOwner === this) setNotebookPreviewProviderPromptOwner(undefined);
-    if (this.conflictPrompt) this.publishProviderPromptTermination();
     const failures: unknown[] = [];
+    if (this.conflictPrompt) failures.push(...this.publishProviderPromptTermination());
     for (const subscription of this.subscriptions.splice(0).reverse()) {
       captureCleanup(() => subscription.dispose(), failures);
     }
@@ -325,19 +325,28 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
         "Keep Data Wrangler"
       );
     } catch (error) {
-      this.publishProviderPromptTermination();
-      throw error;
+      throw combinedFailure(
+        error,
+        this.publishProviderPromptTermination(),
+        "Open Wrangler notebook preview provider prompt termination encountered multiple failures."
+      );
     }
     if (this.disposed) {
-      this.publishProviderPromptTermination();
+      throwFailures(
+        this.publishProviderPromptTermination(),
+        "Open Wrangler notebook preview provider prompt termination encountered multiple failures."
+      );
       return false;
     }
     if (selection === "Use Open Wrangler") {
       try {
         await updateSetting("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Global);
       } catch (error) {
-        this.publishProviderPromptTermination();
-        throw error;
+        throw combinedFailure(
+          error,
+          this.publishProviderPromptTermination(),
+          "Open Wrangler notebook preview provider prompt termination encountered multiple failures."
+        );
       }
       return true;
     }
@@ -345,20 +354,28 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       try {
         await updateSetting("notebookPreviewProvider", "dataWrangler", vscode.ConfigurationTarget.Global);
       } catch (error) {
-        this.publishProviderPromptTermination();
-        throw error;
+        throw combinedFailure(
+          error,
+          this.publishProviderPromptTermination(),
+          "Open Wrangler notebook preview provider prompt termination encountered multiple failures."
+        );
       }
       return false;
     }
-    this.publishProviderPromptTermination();
+    throwFailures(
+      this.publishProviderPromptTermination(),
+      "Open Wrangler notebook preview provider prompt termination encountered multiple failures."
+    );
     return false;
   }
 
-  private publishProviderPromptTermination(): void {
-    if (this.conflictPromptDismissed) return;
+  private publishProviderPromptTermination(): unknown[] {
+    if (this.conflictPromptDismissed) return [];
     this.conflictPromptDismissed = true;
     providerPromptTerminated = true;
-    for (const listener of providerPromptTerminationListeners) listener();
+    const failures: unknown[] = [];
+    for (const listener of [...providerPromptTerminationListeners]) captureCleanup(listener, failures);
+    return failures;
   }
 
   private async chooseProvider(): Promise<void> {
@@ -418,6 +435,11 @@ function combinedFailure(primary: unknown, cleanupFailures: readonly unknown[], 
   return cleanupFailures.length === 0
     ? primary
     : new AggregateError([...flattenFailures(primary), ...cleanupFailures.flatMap(flattenFailures)], message);
+}
+
+function throwFailures(failures: readonly unknown[], message: string): void {
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, message);
 }
 
 function flattenFailures(error: unknown): unknown[] {
