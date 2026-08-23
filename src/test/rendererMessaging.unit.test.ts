@@ -1478,6 +1478,65 @@ describe("notebook renderer messaging", () => {
     ).toBe(false);
   });
 
+  it("refuses exact tuple reuse until its evicted retirement terminal settles", async () => {
+    const document = notebook("file:///workspace/terminal-tuple-aba.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const key = indexedInlineCandidate(0);
+    const hangingTerminal = deferred<boolean>();
+    let firstKeyTerminal = true;
+    rendererMocks.inlinePostResult = async (message) => {
+      const terminal = message as { kind?: string; token?: string };
+      if (terminal.kind === "openWrangler.inlineRevoke" && terminal.token === key.token && firstKeyTerminal) {
+        firstKeyTerminal = false;
+        return hangingTerminal.promise;
+      }
+      return true;
+    };
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    register(tracker);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: key });
+    await settleMessages();
+    for (let index = 1; index <= 129; index += 1) {
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: indexedInlineCandidate(index) });
+      await settleMessages();
+    }
+    const postsBeforeReplay = rendererMocks.inlinePosts.length;
+    const bindsBeforeReplay = tracker.bindInlineUpgrade.mock.calls.length;
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: key });
+    await settleMessages();
+    expect(rendererMocks.inlinePosts).toHaveLength(postsBeforeReplay);
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(bindsBeforeReplay);
+
+    hangingTerminal.resolve(true);
+    await settleMicrotasks();
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: key });
+    await settleMessages();
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledTimes(bindsBeforeReplay);
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) =>
+          (message as { kind?: string; token?: string }).kind === "openWrangler.inlinePending" &&
+          (message as { token?: string }).token === key.token
+      )
+    ).toHaveLength(1);
+    rendererMocks.providerPromptTerminated = true;
+    for (const listener of rendererMocks.providerPromptTerminationListeners) listener();
+    await settleMicrotasks();
+    expect(
+      rendererMocks.inlinePosts.filter(
+        ({ message }) =>
+          (message as { kind?: string; token?: string }).kind === "openWrangler.inlineRevoke" &&
+          (message as { token?: string }).token === key.token
+      )
+    ).toHaveLength(2);
+  });
+
   it("sends provider-pending revocation before renderer messaging disposal latches", async () => {
     const document = notebook("file:///workspace/provider-pending-disposal.ipynb");
     const exactEditor = editor(document);

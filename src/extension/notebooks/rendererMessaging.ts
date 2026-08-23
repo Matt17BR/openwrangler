@@ -354,6 +354,7 @@ function receiveInlineUpgradeMessage(
   const candidate = parseInlineUpgradeCandidate(message);
   if (!candidate) return;
   if (!originatingNotebook(editor)) return;
+  if (state.terminalSends.has(inlineUpgradeTerminalKey(candidate))) return;
   const provider = inlineUpgradeProviderState();
   if (provider === "foreign") return;
   if (provider === "terminated") {
@@ -890,7 +891,7 @@ function postInlineUpgradeTerminal(
   reserved = false
 ): void {
   if (state.disposed) return;
-  const key = JSON.stringify([candidate.token, candidate.outputItemId, candidate.byteLength, candidate.sha256]);
+  const key = inlineUpgradeTerminalKey(candidate);
   if (state.terminalSends.has(key)) return;
   if (
     (!reserved && state.terminalSends.size >= INLINE_UPGRADE_MAX_TERMINAL_SENDS) ||
@@ -921,6 +922,10 @@ function postInlineUpgradeTerminal(
     () => settleInlineUpgradeTerminalSend(state, send),
     () => settleInlineUpgradeTerminalSend(state, send)
   );
+}
+
+function inlineUpgradeTerminalKey(candidate: InlineUpgradeCandidateMessage): string {
+  return JSON.stringify([candidate.token, candidate.outputItemId, candidate.byteLength, candidate.sha256]);
 }
 
 function parseInlineUpgradeCandidate(message: unknown): InlineUpgradeCandidateMessage | undefined {
