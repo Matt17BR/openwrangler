@@ -1691,15 +1691,77 @@ async function verifyColumnHeaderControlLayout(browser) {
             }
           }
           if (control.classList.contains("columnResizeHandle")) {
-            await new Promise((resolveTransition) => setTimeout(resolveTransition, 100));
+            const opacitySettlement = await new Promise((resolveTransition) => {
+              const startedAt = performance.now();
+              let done = false;
+              let frame;
+              let timer;
+              const readState = () => {
+                const opacityTransitions = control
+                  .getAnimations()
+                  .filter(
+                    (animation) =>
+                      animation instanceof CSSTransition &&
+                      animation.effect?.target === control &&
+                      animation.transitionProperty === "opacity"
+                  );
+                return {
+                  animationStates: opacityTransitions.map((animation) => ({
+                    pending: animation.pending,
+                    playState: animation.playState
+                  })),
+                  focused: document.activeElement === control,
+                  opacity: getComputedStyle(control).opacity
+                };
+              };
+              const settle = (settled) => {
+                if (done) return;
+                done = true;
+                if (frame !== undefined) cancelAnimationFrame(frame);
+                if (timer !== undefined) clearTimeout(timer);
+                resolveTransition({
+                  elapsedMilliseconds: performance.now() - startedAt,
+                  settled,
+                  ...readState()
+                });
+              };
+              const sample = () => {
+                frame = undefined;
+                const state = readState();
+                if (
+                  state.focused &&
+                  state.opacity === "1" &&
+                  state.animationStates.every(
+                    ({ pending, playState }) => !pending && (playState === "finished" || playState === "idle")
+                  )
+                ) {
+                  settle(true);
+                  return;
+                }
+                frame = requestAnimationFrame(sample);
+              };
+              timer = setTimeout(() => settle(false), 500);
+              frame = requestAnimationFrame(sample);
+            });
             const gripperWidth = Number.parseFloat(getComputedStyle(control, "::before").width);
             const opacity = getComputedStyle(control).opacity;
-            if (!Number.isFinite(gripperWidth) || gripperWidth <= 0 || gripperWidth >= target || opacity !== "1") {
+            const focused = document.activeElement === control;
+            if (
+              !opacitySettlement.settled ||
+              !Number.isFinite(gripperWidth) ||
+              gripperWidth <= 0 ||
+              gripperWidth >= target ||
+              opacity !== "1" ||
+              !focused
+            ) {
               failures.push({
+                animationStates: opacitySettlement.animationStates,
+                elapsedMilliseconds: opacitySettlement.elapsedMilliseconds,
+                focused,
                 gripperWidth,
                 header: header.getAttribute("data-column"),
                 opacity,
-                reason: "invalid-resize-gripper",
+                reason: opacitySettlement.settled ? "invalid-resize-gripper" : "resize-opacity-transition-timeout",
                 target
               });
             }
