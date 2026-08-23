@@ -1755,6 +1755,7 @@ async function verifyColumnHeaderControlLayout(browser) {
                 });
               };
               const sample = () => {
+                if (done) return;
                 frame = undefined;
                 const state = readState();
                 if (state.stateError !== undefined) {
@@ -1778,7 +1779,10 @@ async function verifyColumnHeaderControlLayout(browser) {
                 }
               };
               try {
-                timer = setTimeout(() => settle(false, readState()), 500);
+                timer = setTimeout(() => {
+                  if (done) return;
+                  settle(false, readState());
+                }, 500);
                 frame = requestAnimationFrame(sample);
               } catch {
                 settle(false, failedState("transition-wait-scheduling-failed"));
