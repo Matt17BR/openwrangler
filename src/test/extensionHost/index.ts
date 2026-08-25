@@ -1616,12 +1616,6 @@ async function exerciseReleasedDataWranglerCoexistence(
     );
     recordAcceptanceProgress(`${phase}:kernel-attested`);
 
-    if (firstOutputReceipt && expectation.provider === "openWrangler") {
-      recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
-      const consent = await waitForReleasedJupyterConsent(workbench, testing);
-      await consent.allow.click();
-      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    }
     if (firstOutputReceipt) {
       if (expectation.provider === "openWrangler") {
         await waitForDataWranglerInlineUpgrade(workbench, firstOutputReceipt);
@@ -1884,36 +1878,110 @@ async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
   keepDataWrangler: Locator;
 }> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  let consentAccepted = false;
   do {
-    for (const frame of [workbench.mainFrame()]) {
-      const dialog = frame
-        .locator(".monaco-dialog-box:visible")
-        .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
-        .last();
-      if ((await dialog.count().catch(() => 0)) === 0 || !(await dialog.isVisible().catch(() => false))) continue;
-      const message = await dialog.locator(".dialog-message-text").innerText();
-      const detail = await dialog.locator(".dialog-message-detail").innerText();
-      assert.equal(message, NOTEBOOK_PREVIEW_CONFLICT_MESSAGE);
-      assert.equal(detail, NOTEBOOK_PREVIEW_CONFLICT_DETAIL);
-      const useOpenWrangler = dialog.getByRole("button", {
+    const dialogs = workbench.mainFrame().locator(".monaco-dialog-box:visible");
+    const dialogCount = await dialogs.count().catch(() => 0);
+    if (dialogCount > 1) {
+      await failNotebookPreviewDialogSequence(
+        workbench,
+        `The provider-choice sequence exposed ${dialogCount} simultaneous dialogs.`
+      );
+    }
+    if (dialogCount === 1) {
+      const dialog = dialogs.first();
+      const messageNodes = dialog.locator(".dialog-message-text");
+      const detailNodes = dialog.locator(".dialog-message-detail");
+      if ((await messageNodes.count()) !== 1 || (await detailNodes.count()) !== 1) {
+        await failNotebookPreviewDialogSequence(workbench, "The provider-choice sequence exposed a malformed dialog.");
+      }
+      const message = await messageNodes.innerText();
+      const detail = await detailNodes.innerText();
+      if (message === RELEASED_JUPYTER_CONSENT_MESSAGE) {
+        if (consentAccepted) {
+          await failNotebookPreviewDialogSequence(
+            workbench,
+            "Released Jupyter repeated Open Wrangler kernel consent during one provider choice."
+          );
+        }
+        if (detail !== RELEASED_JUPYTER_CONSENT_DETAIL) {
+          await failNotebookPreviewDialogSequence(
+            workbench,
+            "Released Jupyter kernel consent had an unexpected detail."
+          );
+        }
+        await assertExactNotebookPreviewDialogActions(workbench, dialog, ["Allow", "Deny", "Learn more", "Cancel"]);
+        consentAccepted = true;
+        await dialog.getByRole("button", { name: "Allow", exact: true }).click();
+        try {
+          await dialogs
+            .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
+            .waitFor({ state: "hidden", timeout: Math.max(1, deadline - Date.now()) });
+        } catch {
+          await failNotebookPreviewDialogSequence(
+            workbench,
+            "Released Jupyter kernel consent did not close within the provider-choice deadline."
+          );
+        }
+        continue;
+      }
+      if (message !== NOTEBOOK_PREVIEW_CONFLICT_MESSAGE) {
+        await failNotebookPreviewDialogSequence(
+          workbench,
+          "The provider-choice sequence exposed an unexpected dialog."
+        );
+      }
+      if (!consentAccepted) {
+        await failNotebookPreviewDialogSequence(
+          workbench,
+          "The notebook provider conflict appeared before released Jupyter kernel consent."
+        );
+      }
+      if (detail !== NOTEBOOK_PREVIEW_CONFLICT_DETAIL) {
+        await failNotebookPreviewDialogSequence(workbench, "The notebook provider conflict had an unexpected detail.");
+      }
+      await assertExactNotebookPreviewDialogActions(workbench, dialog, [
+        NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
+        NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
+        "Cancel"
+      ]);
+      const conflictDialog = dialogs.filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE });
+      const useOpenWrangler = conflictDialog.getByRole("button", {
         name: NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
         exact: true
       });
-      const keepDataWrangler = dialog.getByRole("button", {
+      const keepDataWrangler = conflictDialog.getByRole("button", {
         name: NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
         exact: true
       });
-      assert.equal(await useOpenWrangler.count(), 1);
-      assert.equal(await keepDataWrangler.count(), 1);
-      return { dialog, useOpenWrangler, keepDataWrangler };
+      return { dialog: conflictDialog, useOpenWrangler, keepDataWrangler };
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  const diagnostics = await boundedImportPromptDiagnostics(workbench);
-  throw new Error(
-    "Timed out waiting for the real Open Wrangler/Data Wrangler provider conflict prompt. " +
-      `Dialogs: ${JSON.stringify(diagnostics.dialogs)}.`
+  await failNotebookPreviewDialogSequence(
+    workbench,
+    consentAccepted
+      ? "Timed out waiting for the real Open Wrangler/Data Wrangler provider conflict prompt."
+      : "Timed out waiting for released Jupyter kernel consent before the provider conflict."
   );
+  throw new Error("Unreachable notebook preview dialog sequence.");
+}
+
+async function assertExactNotebookPreviewDialogActions(
+  workbench: Page,
+  dialog: Locator,
+  expected: readonly string[]
+): Promise<void> {
+  const actual = (await dialog.getByRole("button").allInnerTexts()).map((label) => label.trim()).sort();
+  if (actual.length !== expected.length || actual.some((label, index) => label !== [...expected].sort()[index])) {
+    await failNotebookPreviewDialogSequence(workbench, "A provider-choice dialog exposed unexpected actions.");
+  }
+}
+
+async function failNotebookPreviewDialogSequence(workbench: Page, reason: string): Promise<never> {
+  const diagnostics = await boundedImportPromptDiagnostics(workbench);
+  const dialogs = diagnostics.dialogs.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 1_000));
+  throw new Error(`${reason} Dialogs: ${JSON.stringify(dialogs)}.`);
 }
 
 async function assertNotebookPreviewConflictAbsent(
