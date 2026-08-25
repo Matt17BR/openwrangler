@@ -12,7 +12,37 @@ import fs, {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MAX_VSIX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import { MAX_VSIX_BYTES, packagedOpenWranglerIdentity, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+
+test("uses the packaged extension version for installed-editor checks", () => {
+  assert.deepEqual(
+    packagedOpenWranglerIdentity(
+      JSON.stringify({ name: "openwrangler", publisher: "Matt17BR", version: "0.1642098161781.14196006313" })
+    ),
+    {
+      id: "Matt17BR.openwrangler",
+      version: "0.1642098161781.14196006313",
+      qualified: "matt17br.openwrangler@0.1642098161781.14196006313"
+    }
+  );
+});
+
+test("rejects a malformed or different packaged extension identity", () => {
+  for (const manifest of [
+    { name: "other", publisher: "Matt17BR", version: "1.99.7" },
+    { name: "openwrangler", publisher: "other", version: "1.99.7" },
+    { name: "openwrangler", publisher: "Matt17BR", version: "latest" }
+  ]) {
+    assert.throws(() => packagedOpenWranglerIdentity(JSON.stringify(manifest)), /invalid Open Wrangler identity/u);
+  }
+  assert.throws(
+    () =>
+      packagedOpenWranglerIdentity(
+        '{"name":"openwrangler","publisher":"Matt17BR","version":"1.99.7","version":"2.0.0"}'
+      ),
+    /duplicate/u
+  );
+});
 
 test("reads one bounded VSIX through a descriptor-bound immutable snapshot", (context) => {
   const root = mkdtempSync(join(tmpdir(), "ow-vsix-snapshot-"));
