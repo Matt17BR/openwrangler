@@ -93,8 +93,8 @@ The minimum extension-host contract remains independently pinned to `engines.vsc
 development tree.
 
 Every repository, CI, candidate, packaging, promotion, and release install uses `npm ci --ignore-scripts`; `.npmrc`
-makes the same boundary the contributor default. `npm run check:install-policy` inventories all 29 executable
-install invocations across 26 owners in 11 GitHub and Azure automation files and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
+makes the same boundary the contributor default. `npm run check:install-policy` checks every GitHub and Azure install
+and rejects any unowned or plain install, lifecycle re-enablement, rebuild, package-manager alias, dynamic
 install, or lock entry with `hasInstallScript`. The lock has no native `keytar` or `prebuild-install`. A tracked
 fail-closed credential shim selects VSCE's existing file/PAT path, while a script-free signing bridge resolves only
 the exact lockfile-authenticated `@vscode/vsce-sign-*` package for the current platform. Missing platform bytes
@@ -427,11 +427,9 @@ The same installed-editor report must prove that the production renderer and for
 ## GitHub workflow (current policy and historical recovery details)
 
 Each coherent change uses a feature branch and pull request. The current PR workflow applies the same triggers to draft
-and ready changes; there is no separate draft-only feedback context. The unconditional `invariant-core` owns the
-portable, TypeScript, Python 3.10, audit, schema, documentation, and license boundary. Four conservative classifier
-outputs select the paired R 4.5 owners, canonical package/editor owner,
-visual/accessibility owner, and Windows unique-risk owner. Missing or malformed classification fails open to all four,
-and the sole `validate` fan-in fails closed on every required result. Scheduled/manual Cross retains its
+and ready changes. JavaScript/TypeScript checks run for every change; Python, R, package/editor, web, and Windows jobs
+are selected by path. Missing or malformed classification runs every lane, and the final `validate` job blocks merge
+for every selected failure or unknown result. Scheduled/manual Cross retains its
 macOS/Windows runtime, Windows dependency checks, the exact `python-runtime-dependency-cohorts` job that installs and
 exercises every declared dependency/Python qualification pair, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
 and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
@@ -462,7 +460,10 @@ runtime, test, media, and documentation slice in its own commit. If a pull reque
 merge it without squashing so the boundaries remain visible on `main`. The final release commit changes only the
 version, changelog, release notes, and required release metadata.
 
-For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR package from the same run's run-, attempt-, commit-, and producer-digest-bound cache key and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. The cache is untrusted transport: a missing entry or any mismatch with the producer job's exact digest and size fails closed, and each consumer also revalidates the VSIX inventory. Successful pull-request runs retain no ordinary artifacts; visual and coverage output is failure-only, while sealed packaged-editor diagnostics keep their exact emitted path and seven-day retention. Release and stable-performance workflows retain their canonical artifact-ID and provenance contracts unchanged and never consume the pull-request cache. A failed candidate is recorded and is not automatically retried.
+Pull-request CI builds and verifies one VSIX inside the package-and-editor job and tests it in stable VS Code. It does
+not pass that VSIX between jobs or retain successful-run artifacts. Failed visual checks and sanitized packaged-editor
+diagnostics may be uploaded for seven days. Remote SSH remains part of release-candidate acceptance rather than an
+opt-in pull-request job. Release and stable-performance workflows keep their separate artifact and provenance checks.
 
 `npm run docs:check` semantically parses the release-candidate, stable-promotion, and shared candidate-acceptance
 workflows. The candidate producer owns the sole package and full VSIX proof. Every acceptance lane downloads the same
@@ -545,7 +546,7 @@ an ambiguous submission and continues to the exact public-package check. Missing
 fail after the bounded wait; identity, authentication, and artifact checks remain fail-fast.
 
 Draft and ready pull requests share the CI and CodeQL triggers; Cross is scheduled/manual only, and the current PR
-workflow defines no draft-only check name. Readiness and merge eligibility remain repository-policy decisions outside the four-output classifier. When
+workflow defines no draft-only check name. Readiness and merge eligibility remain repository-policy decisions outside CI path selection. When
 several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time
 on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days,
 groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.

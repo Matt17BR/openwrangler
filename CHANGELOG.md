@@ -32,6 +32,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Pull-request CI now uses plainly named, path-scoped JavaScript/TypeScript, Python, R, web, Windows, and
+  package/editor jobs. Python and TypeScript coverage remain required, and `validate` blocks merge when a selected job
+  fails.
 - Unexpected workbench render, effect, and message-handler failures now show a keyboard-focused **Reload Open
   Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
   and the extension host records only a fixed failure category.
@@ -47,11 +50,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   `engines.vscode` `^1.106.0`, `@types/vscode` 1.106.0, and `@types/node` 22.20.1. The standard check includes a strict
   dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains Nano ID
   3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
-- Successful pull-request checks no longer retain coverage, visual, or VSIX run artifacts. The canonical PR package
-  moves between same-run consumers through a run-, attempt-, commit-, and producer-digest-bound cache key. Cache misses
-  and producer digest or size mismatches fail closed before repeated inventory verification; coverage, visual, and
-  sealed packaged-editor evidence remains available only for failures. Canonical release artifacts and provenance are
-  unchanged.
+- Pull-request checks now build and verify the VSIX once in the package-and-editor job. Successful runs retain no
+  coverage, visual, or VSIX artifacts; failed visual checks and sanitized packaged-editor diagnostics remain available.
+  Canonical release artifacts and provenance are unchanged.
 - Supported live dataframes can return from Editing to Viewing while the cleaning plan is empty and no draft is open. The
   mode control now explains what Viewing preserves, why PySpark, live DuckDB relations, and saved notebook snapshots
   do not offer cleaning, and how to enable cleaning when an Editing transition is available.
