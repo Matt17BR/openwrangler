@@ -1581,7 +1581,8 @@ async function exerciseReleasedDataWranglerCoexistence(
         notebookEditor
       );
       recordAcceptanceProgress(`${phase}:provider-prompt`);
-      const conflict = await waitForNotebookPreviewConflict(workbench);
+      const providerChoiceDeadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+      const conflict = await waitForNotebookPreviewConflict(workbench, providerChoiceDeadline);
       firstOutputReceipt = await captureDataWranglerFirstOutput(workbench, notebook, notebookEditor);
       assert.equal(testing.diagnostics().sessionCount, 0, "The unresolved first dataframe must not open a panel.");
       assert.equal(
@@ -1589,9 +1590,7 @@ async function exerciseReleasedDataWranglerCoexistence(
         "ask",
         "The first physical dataframe output must render before the provider choice resolves."
       );
-      const action = expectation.provider === "openWrangler" ? conflict.useOpenWrangler : conflict.keepDataWrangler;
-      await action.click();
-      await conflict.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await chooseNotebookPreviewProvider(workbench, conflict, expectation.provider);
       await firstExecution;
       await waitFor(
         () =>
@@ -1872,116 +1871,445 @@ async function assertDataWranglerCoexistenceOwnership(
   );
 }
 
-async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
-  dialog: Locator;
-  useOpenWrangler: Locator;
-  keepDataWrangler: Locator;
-}> {
-  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+const RELEASED_JUPYTER_CONSENT_ACTIONS = ["Allow", "Deny", "Learn more", "Cancel"] as const;
+const NOTEBOOK_PREVIEW_CONFLICT_ACTIONS = [
+  NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
+  NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
+  "Cancel"
+] as const;
+const NOTEBOOK_PREVIEW_DIALOG_MAX_ACTION_COUNT = Math.max(
+  RELEASED_JUPYTER_CONSENT_ACTIONS.length,
+  NOTEBOOK_PREVIEW_CONFLICT_ACTIONS.length
+);
+const NOTEBOOK_PREVIEW_DIALOG_MAX_ACTION_LABEL_LENGTH = Math.max(
+  ...RELEASED_JUPYTER_CONSENT_ACTIONS.map((label) => label.length),
+  ...NOTEBOOK_PREVIEW_CONFLICT_ACTIONS.map((label) => label.length)
+);
+
+interface NotebookPreviewDialogSnapshot {
+  readonly visibleDialogCount: number;
+  readonly pinnedIsSole: boolean | null;
+  readonly messageNodeCount: number;
+  readonly detailNodeCount: number;
+  readonly buttonCount: number;
+  readonly consentMessage: string;
+  readonly conflictMessage: string;
+  readonly consentDetail: string;
+  readonly conflictDetail: string;
+  readonly buttonLabels: readonly string[];
+  readonly pinnedActionsMatch: boolean | null;
+  readonly pinnedActionLabels: readonly string[];
+}
+
+interface PinnedNotebookPreviewAction {
+  readonly label: string;
+  readonly element: ElementHandle<unknown>;
+}
+
+interface NotebookPreviewConflictReceipt {
+  readonly deadline: number;
+  readonly dialog: ElementHandle<unknown>;
+  readonly actions: readonly PinnedNotebookPreviewAction[];
+}
+
+async function waitForNotebookPreviewConflict(
+  workbench: Page,
+  deadline: number
+): Promise<NotebookPreviewConflictReceipt> {
   let consentAccepted = false;
   do {
-    const dialogs = workbench.mainFrame().locator(".monaco-dialog-box:visible");
-    const dialogCount = await dialogs.count().catch(() => 0);
-    if (dialogCount > 1) {
-      await failNotebookPreviewDialogSequence(
-        workbench,
-        `The provider-choice sequence exposed ${dialogCount} simultaneous dialogs.`
-      );
+    const structure = await inspectNotebookPreviewDialogOrFail(
+      workbench,
+      deadline,
+      consentAccepted,
+      "dialog-inspection-failed"
+    );
+    if (structure.visibleDialogCount > 1) {
+      await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "ambiguous-dialogs", structure);
     }
-    if (dialogCount === 1) {
-      const dialog = dialogs.first();
-      const messageNodes = dialog.locator(".dialog-message-text");
-      const detailNodes = dialog.locator(".dialog-message-detail");
-      if ((await messageNodes.count()) !== 1 || (await detailNodes.count()) !== 1) {
-        await failNotebookPreviewDialogSequence(workbench, "The provider-choice sequence exposed a malformed dialog.");
+    if (structure.visibleDialogCount === 1) {
+      const dialogs = workbench.mainFrame().locator(".monaco-dialog-box:visible");
+      let dialog: ElementHandle<unknown> | undefined;
+      try {
+        dialog = await dialogs.elementHandle({ timeout: remainingNotebookPreviewDeadline(deadline) });
+      } catch {
+        await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "dialog-pinning-failed");
       }
-      const message = await messageNodes.innerText();
-      const detail = await detailNodes.innerText();
-      if (message === RELEASED_JUPYTER_CONSENT_MESSAGE) {
+      if (!dialog) {
+        await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "dialog-pinning-failed");
+      }
+      assert.ok(dialog, "The provider-choice dialog must be pinned before validation.");
+      const snapshot = await inspectNotebookPreviewDialogOrFail(
+        workbench,
+        deadline,
+        consentAccepted,
+        "dialog-inspection-failed",
+        dialog
+      );
+      if (!snapshot.pinnedIsSole || snapshot.messageNodeCount !== 1 || snapshot.detailNodeCount !== 1) {
+        await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "malformed-dialog", snapshot);
+      }
+      const isConsent = snapshot.consentMessage === RELEASED_JUPYTER_CONSENT_MESSAGE;
+      const isConflict = snapshot.conflictMessage === NOTEBOOK_PREVIEW_CONFLICT_MESSAGE;
+      if (isConsent) {
         if (consentAccepted) {
-          await failNotebookPreviewDialogSequence(
-            workbench,
-            "Released Jupyter repeated Open Wrangler kernel consent during one provider choice."
-          );
+          await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "repeated-consent", snapshot);
         }
-        if (detail !== RELEASED_JUPYTER_CONSENT_DETAIL) {
-          await failNotebookPreviewDialogSequence(
-            workbench,
-            "Released Jupyter kernel consent had an unexpected detail."
-          );
+        if (snapshot.consentDetail !== RELEASED_JUPYTER_CONSENT_DETAIL) {
+          await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "malformed-consent", snapshot);
         }
-        await assertExactNotebookPreviewDialogActions(workbench, dialog, ["Allow", "Deny", "Learn more", "Cancel"]);
+        const actions = await pinNotebookPreviewDialogActions(
+          workbench,
+          deadline,
+          dialog,
+          RELEASED_JUPYTER_CONSENT_ACTIONS,
+          RELEASED_JUPYTER_CONSENT_MESSAGE,
+          RELEASED_JUPYTER_CONSENT_DETAIL,
+          consentAccepted
+        );
         consentAccepted = true;
-        await dialog.getByRole("button", { name: "Allow", exact: true }).click();
         try {
-          await dialogs
-            .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
-            .waitFor({ state: "hidden", timeout: Math.max(1, deadline - Date.now()) });
-        } catch {
-          await failNotebookPreviewDialogSequence(
-            workbench,
-            "Released Jupyter kernel consent did not close within the provider-choice deadline."
-          );
+          try {
+            await actions[0]!.element.click({ timeout: remainingNotebookPreviewDeadline(deadline) });
+          } catch {
+            await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "consent-click-failed");
+          }
+          try {
+            await dialog.waitForElementState("hidden", { timeout: remainingNotebookPreviewDeadline(deadline) });
+          } catch {
+            await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "consent-dismissal-failed");
+          }
+        } finally {
+          await disposePinnedNotebookPreviewDialog(dialog, actions);
         }
         continue;
       }
-      if (message !== NOTEBOOK_PREVIEW_CONFLICT_MESSAGE) {
-        await failNotebookPreviewDialogSequence(
-          workbench,
-          "The provider-choice sequence exposed an unexpected dialog."
-        );
+      if (!isConflict) {
+        await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "unexpected-dialog", snapshot);
       }
       if (!consentAccepted) {
         await failNotebookPreviewDialogSequence(
           workbench,
-          "The notebook provider conflict appeared before released Jupyter kernel consent."
+          deadline,
+          consentAccepted,
+          "conflict-before-consent",
+          snapshot
         );
       }
-      if (detail !== NOTEBOOK_PREVIEW_CONFLICT_DETAIL) {
-        await failNotebookPreviewDialogSequence(workbench, "The notebook provider conflict had an unexpected detail.");
+      if (snapshot.conflictDetail !== NOTEBOOK_PREVIEW_CONFLICT_DETAIL) {
+        await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, "malformed-conflict", snapshot);
       }
-      await assertExactNotebookPreviewDialogActions(workbench, dialog, [
-        NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
-        NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
-        "Cancel"
-      ]);
-      const conflictDialog = dialogs.filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE });
-      const useOpenWrangler = conflictDialog.getByRole("button", {
-        name: NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
-        exact: true
-      });
-      const keepDataWrangler = conflictDialog.getByRole("button", {
-        name: NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
-        exact: true
-      });
-      return { dialog: conflictDialog, useOpenWrangler, keepDataWrangler };
+      const actions = await pinNotebookPreviewDialogActions(
+        workbench,
+        deadline,
+        dialog,
+        NOTEBOOK_PREVIEW_CONFLICT_ACTIONS,
+        NOTEBOOK_PREVIEW_CONFLICT_MESSAGE,
+        NOTEBOOK_PREVIEW_CONFLICT_DETAIL,
+        consentAccepted
+      );
+      return { deadline, dialog, actions };
     }
-    await workbench.waitForTimeout(50);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs < 1) break;
+    await workbench.waitForTimeout(Math.min(50, remainingMs));
   } while (Date.now() < deadline);
   await failNotebookPreviewDialogSequence(
     workbench,
-    consentAccepted
-      ? "Timed out waiting for the real Open Wrangler/Data Wrangler provider conflict prompt."
-      : "Timed out waiting for released Jupyter kernel consent before the provider conflict."
+    deadline,
+    consentAccepted,
+    consentAccepted ? "conflict-timeout" : "consent-timeout"
   );
   throw new Error("Unreachable notebook preview dialog sequence.");
 }
 
-async function assertExactNotebookPreviewDialogActions(
+async function chooseNotebookPreviewProvider(
   workbench: Page,
-  dialog: Locator,
-  expected: readonly string[]
+  receipt: NotebookPreviewConflictReceipt,
+  provider: "openWrangler" | "dataWrangler"
 ): Promise<void> {
-  const actual = (await dialog.getByRole("button").allInnerTexts()).map((label) => label.trim()).sort();
-  if (actual.length !== expected.length || actual.some((label, index) => label !== [...expected].sort()[index])) {
-    await failNotebookPreviewDialogSequence(workbench, "A provider-choice dialog exposed unexpected actions.");
+  try {
+    const snapshot = await inspectNotebookPreviewDialogOrFail(
+      workbench,
+      receipt.deadline,
+      true,
+      "conflict-inspection-failed",
+      receipt.dialog,
+      receipt.actions.map((action) => action.element)
+    );
+    await assertExactNotebookPreviewDialog(
+      workbench,
+      receipt.deadline,
+      true,
+      snapshot,
+      NOTEBOOK_PREVIEW_CONFLICT_MESSAGE,
+      NOTEBOOK_PREVIEW_CONFLICT_DETAIL,
+      NOTEBOOK_PREVIEW_CONFLICT_ACTIONS,
+      "conflict-revalidation-failed"
+    );
+    const label =
+      provider === "openWrangler" ? NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER : NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER;
+    const action = receipt.actions.find((candidate) => candidate.label === label);
+    if (!action) {
+      await failNotebookPreviewDialogSequence(
+        workbench,
+        receipt.deadline,
+        true,
+        "selected-conflict-action-missing",
+        snapshot
+      );
+    }
+    assert.ok(action, "The pinned provider-conflict receipt must contain its selected action.");
+    try {
+      await action.element.click({ timeout: remainingNotebookPreviewDeadline(receipt.deadline) });
+    } catch {
+      await failNotebookPreviewDialogSequence(workbench, receipt.deadline, true, "conflict-click-failed");
+    }
+    try {
+      await receipt.dialog.waitForElementState("hidden", {
+        timeout: remainingNotebookPreviewDeadline(receipt.deadline)
+      });
+    } catch {
+      await failNotebookPreviewDialogSequence(workbench, receipt.deadline, true, "conflict-dismissal-failed");
+    }
+    const after = await inspectNotebookPreviewDialogOrFail(
+      workbench,
+      receipt.deadline,
+      true,
+      "post-conflict-inspection-failed"
+    );
+    if (after.visibleDialogCount !== 0) {
+      await failNotebookPreviewDialogSequence(workbench, receipt.deadline, true, "dialog-after-conflict", after);
+    }
+  } finally {
+    await disposePinnedNotebookPreviewDialog(receipt.dialog, receipt.actions);
   }
 }
 
-async function failNotebookPreviewDialogSequence(workbench: Page, reason: string): Promise<never> {
-  const diagnostics = await boundedImportPromptDiagnostics(workbench);
-  const dialogs = diagnostics.dialogs.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 1_000));
-  throw new Error(`${reason} Dialogs: ${JSON.stringify(dialogs)}.`);
+async function pinNotebookPreviewDialogActions(
+  workbench: Page,
+  deadline: number,
+  dialog: ElementHandle<unknown>,
+  expected: readonly string[],
+  expectedMessage: string,
+  expectedDetail: string,
+  consentAccepted: boolean
+): Promise<readonly PinnedNotebookPreviewAction[]> {
+  const dialogs = workbench.mainFrame().locator(".monaco-dialog-box:visible");
+  const actions: PinnedNotebookPreviewAction[] = [];
+  try {
+    for (const label of expected) {
+      const element = await dialogs
+        .getByRole("button", { name: label, exact: true })
+        .elementHandle({ timeout: remainingNotebookPreviewDeadline(deadline) });
+      actions.push({ label, element });
+    }
+    const snapshot = await inspectNotebookPreviewDialogOrFail(
+      workbench,
+      deadline,
+      consentAccepted,
+      "dialog-action-inspection-failed",
+      dialog,
+      actions.map((action) => action.element)
+    );
+    await assertExactNotebookPreviewDialog(
+      workbench,
+      deadline,
+      consentAccepted,
+      snapshot,
+      expectedMessage,
+      expectedDetail,
+      expected,
+      "dialog-action-pinning-failed"
+    );
+    return actions;
+  } catch {
+    await Promise.allSettled(actions.map((action) => action.element.dispose()));
+    return await failNotebookPreviewDialogSequence(
+      workbench,
+      deadline,
+      consentAccepted,
+      "dialog-action-pinning-failed"
+    );
+  }
+}
+
+async function assertExactNotebookPreviewDialog(
+  workbench: Page,
+  deadline: number,
+  consentAccepted: boolean,
+  snapshot: NotebookPreviewDialogSnapshot,
+  message: string,
+  detail: string,
+  expectedActions: readonly string[],
+  failure: string
+): Promise<void> {
+  const actualMessage =
+    message === RELEASED_JUPYTER_CONSENT_MESSAGE ? snapshot.consentMessage : snapshot.conflictMessage;
+  const actualDetail = detail === RELEASED_JUPYTER_CONSENT_DETAIL ? snapshot.consentDetail : snapshot.conflictDetail;
+  const expectedLabels = [...expectedActions].sort();
+  const actualLabels = [...snapshot.buttonLabels].sort();
+  if (
+    snapshot.visibleDialogCount !== 1 ||
+    !snapshot.pinnedIsSole ||
+    snapshot.messageNodeCount !== 1 ||
+    snapshot.detailNodeCount !== 1 ||
+    snapshot.buttonCount !== expectedActions.length ||
+    actualMessage !== message ||
+    actualDetail !== detail ||
+    actualLabels.length !== expectedLabels.length ||
+    actualLabels.some((label, index) => label !== expectedLabels[index]) ||
+    snapshot.pinnedActionsMatch !== true ||
+    snapshot.pinnedActionLabels.length !== expectedActions.length ||
+    snapshot.pinnedActionLabels.some((label, index) => label !== expectedActions[index])
+  ) {
+    await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, failure, snapshot);
+  }
+}
+
+async function inspectNotebookPreviewDialog(
+  workbench: Page,
+  deadline: number,
+  pinnedDialog?: ElementHandle<unknown>,
+  pinnedActions: readonly ElementHandle<unknown>[] = []
+): Promise<NotebookPreviewDialogSnapshot> {
+  return workbench.locator("body").evaluate(
+    (body, rawArguments: unknown) => {
+      type DialogDomDocument = {
+        readonly defaultView?: {
+          getComputedStyle(element: unknown): { readonly display: string; readonly visibility: string };
+        };
+        querySelectorAll(selector: string): ArrayLike<unknown>;
+      };
+      type DialogDomElement = {
+        readonly innerText?: string;
+        readonly isConnected: boolean;
+        readonly ownerDocument: DialogDomDocument;
+        getClientRects(): ArrayLike<unknown>;
+        querySelectorAll(selector: string): ArrayLike<unknown>;
+      };
+      const args = rawArguments as {
+        readonly pinnedDialog: DialogDomElement | null;
+        readonly pinnedActions: readonly DialogDomElement[];
+        readonly consentMessageCap: number;
+        readonly conflictMessageCap: number;
+        readonly consentDetailCap: number;
+        readonly conflictDetailCap: number;
+        readonly actionCountCap: number;
+        readonly actionLabelCap: number;
+      };
+      const isVisible = (element: unknown): boolean => {
+        const html = element as DialogDomElement;
+        const style = html.ownerDocument.defaultView?.getComputedStyle(html);
+        return (
+          html.isConnected &&
+          html.getClientRects().length > 0 &&
+          style?.display !== "none" &&
+          style?.visibility !== "hidden"
+        );
+      };
+      const root = body as unknown as DialogDomElement;
+      const visibleDialogs = Array.from(root.ownerDocument.querySelectorAll(".monaco-dialog-box"))
+        .filter(isVisible)
+        .slice(0, 2) as DialogDomElement[];
+      const dialog = visibleDialogs.length === 1 ? visibleDialogs[0]! : undefined;
+      const messages = dialog ? Array.from(dialog.querySelectorAll(".dialog-message-text")).slice(0, 2) : [];
+      const details = dialog ? Array.from(dialog.querySelectorAll(".dialog-message-detail")).slice(0, 2) : [];
+      const buttons = dialog
+        ? (Array.from(dialog.querySelectorAll("button")).slice(0, args.actionCountCap) as DialogDomElement[])
+        : [];
+      const messageText = messages.length === 1 ? ((messages[0] as DialogDomElement).innerText ?? "") : "";
+      const detailText = details.length === 1 ? ((details[0] as DialogDomElement).innerText ?? "") : "";
+      return {
+        visibleDialogCount: visibleDialogs.length,
+        pinnedIsSole: args.pinnedDialog === null ? null : dialog === args.pinnedDialog,
+        messageNodeCount: messages.length,
+        detailNodeCount: details.length,
+        buttonCount: buttons.length,
+        consentMessage: messageText.slice(0, args.consentMessageCap),
+        conflictMessage: messageText.slice(0, args.conflictMessageCap),
+        consentDetail: detailText.slice(0, args.consentDetailCap),
+        conflictDetail: detailText.slice(0, args.conflictDetailCap),
+        buttonLabels: buttons.map((button) => (button.innerText ?? "").trim().slice(0, args.actionLabelCap)),
+        pinnedActionsMatch:
+          args.pinnedActions.length === 0
+            ? null
+            : args.pinnedActions.length === buttons.length &&
+              args.pinnedActions.every((action) => buttons.includes(action)),
+        pinnedActionLabels: args.pinnedActions.map((action) =>
+          (action.innerText ?? "").trim().slice(0, args.actionLabelCap)
+        )
+      };
+    },
+    {
+      pinnedDialog: pinnedDialog ?? null,
+      pinnedActions,
+      consentMessageCap: RELEASED_JUPYTER_CONSENT_MESSAGE.length + 1,
+      conflictMessageCap: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE.length + 1,
+      consentDetailCap: RELEASED_JUPYTER_CONSENT_DETAIL.length + 1,
+      conflictDetailCap: NOTEBOOK_PREVIEW_CONFLICT_DETAIL.length + 1,
+      actionCountCap: NOTEBOOK_PREVIEW_DIALOG_MAX_ACTION_COUNT + 1,
+      actionLabelCap: NOTEBOOK_PREVIEW_DIALOG_MAX_ACTION_LABEL_LENGTH + 1
+    },
+    { timeout: remainingNotebookPreviewDeadline(deadline) }
+  );
+}
+
+async function inspectNotebookPreviewDialogOrFail(
+  workbench: Page,
+  deadline: number,
+  consentAccepted: boolean,
+  failure: string,
+  pinnedDialog?: ElementHandle<unknown>,
+  pinnedActions: readonly ElementHandle<unknown>[] = []
+): Promise<NotebookPreviewDialogSnapshot> {
+  try {
+    return await inspectNotebookPreviewDialog(workbench, deadline, pinnedDialog, pinnedActions);
+  } catch {
+    return await failNotebookPreviewDialogSequence(workbench, deadline, consentAccepted, failure);
+  }
+}
+
+function remainingNotebookPreviewDeadline(deadline: number): number {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1) throw new Error("The notebook provider-choice deadline expired.");
+  return remainingMs;
+}
+
+async function failNotebookPreviewDialogSequence(
+  workbench: Page,
+  deadline: number,
+  consentAccepted: boolean,
+  reason: string,
+  snapshot?: NotebookPreviewDialogSnapshot
+): Promise<never> {
+  let structural = snapshot;
+  if (!structural && deadline > Date.now()) {
+    try {
+      structural = await inspectNotebookPreviewDialog(workbench, deadline);
+    } catch {
+      structural = undefined;
+    }
+  }
+  throw new Error(
+    `Notebook provider-choice dialog sequence failed: ${reason}. ` +
+      `Structural state: ${JSON.stringify({
+        consentAccepted,
+        visibleDialogCount: structural?.visibleDialogCount ?? "unavailable",
+        pinnedIsSole: structural?.pinnedIsSole ?? "unavailable",
+        messageNodeCount: structural?.messageNodeCount ?? "unavailable",
+        detailNodeCount: structural?.detailNodeCount ?? "unavailable",
+        buttonCount: structural?.buttonCount ?? "unavailable",
+        pinnedActionsMatch: structural?.pinnedActionsMatch ?? "unavailable"
+      })}.`
+  );
+}
+
+async function disposePinnedNotebookPreviewDialog(
+  dialog: ElementHandle<unknown>,
+  actions: readonly PinnedNotebookPreviewAction[]
+): Promise<void> {
+  await Promise.allSettled([dialog.dispose(), ...actions.map((action) => action.element.dispose())]);
 }
 
 async function assertNotebookPreviewConflictAbsent(
