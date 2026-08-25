@@ -15,6 +15,7 @@ updates:
           - "*"
         exclude-patterns:
           - "@types/vscode"
+          - "js-yaml"
           - "playwright-core"
         update-types:
           - minor
