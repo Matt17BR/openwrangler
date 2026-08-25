@@ -11,23 +11,23 @@ on:
 permissions:
   contents: read
 
-env:
-  OPEN_WRANGLER_CI_CAPABILITY_GRAPH: scripts/fixtures/ci-capabilities.json
-
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
-  classify:
-    name: CI change classification
+  changes:
+    name: Changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      r_contract_required: ${{ steps.classify.outputs.r_contract_required }}
-      canonical_editor_required: ${{ steps.classify.outputs.canonical_editor_required }}
-      visual_accessibility_required: ${{ steps.classify.outputs.visual_accessibility_required }}
-      windows_unique_required: ${{ steps.classify.outputs.windows_unique_required }}
+      python_required: ${{ steps.classify.outputs.python_required }}
+      r_required: ${{ steps.classify.outputs.r_required }}
+      package_editor_required: ${{ steps.classify.outputs.package_editor_required }}
+      web_required: ${{ steps.classify.outputs.web_required }}
+      windows_required: ${{ steps.classify.outputs.windows_required }}
+      node_dependencies_required: ${{ steps.classify.outputs.node_dependencies_required }}
+      python_dependencies_required: ${{ steps.classify.outputs.python_dependencies_required }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -45,70 +45,107 @@ jobs:
           CI_STACK_POSITION: ${{ github.event.pull_request.stack.position }}
           CI_STACK_SIZE: ${{ github.event.pull_request.stack.size }}
 
-  invariant-core:
-    name: Invariant core
+  javascript:
+    name: JavaScript / TypeScript (Node ${{ matrix.node }})
+    needs: [changes]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24.19.0, 22.23.2]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Shared checks
+        if: ${{ matrix.node == '24.19.0' }}
+        run: >-
+          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
+          format:check lint protocol:check reference:check docs:check brand:check check:remote-jupyter-lock
+          check:r-dependency-lock check:install-policy license:check typecheck typecheck:dependencies test:scripts:workflow
+      - name: Dependency audit
+        if: ${{ matrix.node == '24.19.0' && needs.changes.outputs.node_dependencies_required == 'true' }}
+        run: npm run audit:node
+      - name: Node 22 compatibility
+        if: ${{ matrix.node == '22.23.2' }}
+        run: |
+          test "$(node --version)" = "v22.23.2"
+          npm version --json | grep --fixed-strings --line-regexp '  "npm": "10.9.8",' > /dev/null
+          test -z "$(git status --porcelain --untracked-files=no)"
+          npm run check:fast-feedback
+          npm run test:scripts:workflow
+
+  python:
+    name: Python
+    needs: [changes]
+    if: >-
+      ${{
+        !cancelled() &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
+        (needs.changes.result != 'success' || needs.changes.outputs.python_required != 'false')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
           node-version-file: .node-version
           cache: npm
-      - id: reference_python
+      - id: python_runtime
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.10"
           cache: pip
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
-      - name: Install the exact remote-Jupyter lock compiler
+      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
+      - name: Verify exact coverage runtimes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pandas
+          import pyspark
+          from packaging.version import Version
+
+          assert pyspark.__version__ == "4.2.0", pyspark.__version__
+          assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
+          PY
+          java -XshowSettings:properties -version 2>&1 |
+            grep -Eq "^[[:space:]]*java\.specification\.version = 17$"
+      - name: Install the remote Jupyter lock compiler
+        if: ${{ needs.changes.outputs.python_dependencies_required == 'true' }}
         run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - name: Portable, Python 3.10, schema, protocol, reference, docs, and license invariants
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+      - name: Python lint and coverage
         run: >-
           npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          check:invariants test:scripts test:python
+          lint:python test:coverage:python
         env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
-      - name: Complete protected-main source gate
-        if: ${{ github.event_name == 'push' }}
-        run: npm run check:pr
+          OPEN_WRANGLER_PYTHON: ${{ steps.python_runtime.outputs.python-path }}
+      - name: Python dependency checks
+        if: ${{ needs.changes.outputs.python_dependencies_required == 'true' }}
+        run: npm run lock:remote-jupyter:check && npm run audit:python
         env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
-      - name: Remote Jupyter lock reproducibility
-        run: npm run lock:remote-jupyter:check
-      - name: Full development dependency audit
-        run: npm audit
-      - name: Full Python and fixture dependency audits
-        run: npm run audit:python
-      - name: Select the Node 22 maintained-LTS compatibility runtime
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22.23.2
-          cache: npm
-      - name: Node 22 maintained-LTS compatibility smoke
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          test "$(node --version)" = "v22.23.2"
-          npm version --json | grep --fixed-strings --line-regexp '  "npm": "10.9.8",' > /dev/null
-          npm ci --ignore-scripts --no-audit
-          test -z "$(git status --porcelain --untracked-files=no)"
-          npm run check:invariants
-          npm run typecheck
-          npm run test:scripts:workflow
+          OPEN_WRANGLER_PYTHON: ${{ steps.python_runtime.outputs.python-path }}
 
-  r-contract-kernel:
-    name: R 4.5 kernel contract
-    needs: [classify]
+  r:
+    name: R
+    needs: [changes]
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
+        (needs.changes.result != 'success' || needs.changes.outputs.r_required != 'false')
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -118,155 +155,18 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install the authenticated R 4.5.3 runtime
-        run: |
-          set -euo pipefail
-          export LC_ALL=C
-          provisioning_checkpoint() {
-            printf 'R 4.5.3 provisioning checkpoint: %s\n' "$1"
-          }
-          readonly artifact_count="27"
-          readonly artifact_bytes="82619754"
-          readonly artifact_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
-          readonly artifact_manifest="$(cat <<'ARTIFACTS'
-          libbz2-1.0_1.0.8-5.1build0.1_amd64.deb|libbz2-1.0|1.0.8-5.1build0.1|amd64|34370|d557ab12b42ab370249142099fae3cbb979948934e4dfa58c2ab59bf5bbbda73|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1build0.1_amd64.deb
-          libbz2-dev_1.0.8-5.1build0.1_amd64.deb|libbz2-dev|1.0.8-5.1build0.1|amd64|33608|012b1118932f20ae3fa706fa44f8ebe203a21f4765893bc7a9f6861aa09fa4c5|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-dev_1.0.8-5.1build0.1_amd64.deb
-          libdeflate0_1.19-1build1.1_amd64.deb|libdeflate0|1.19-1build1.1|amd64|43914|8e7dfa9e63a9b5058071b84da48bb2e30dea07de169e80fbc759fe0e68639269|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate0_1.19-1build1.1_amd64.deb
-          libdeflate-dev_1.19-1build1.1_amd64.deb|libdeflate-dev|1.19-1build1.1|amd64|50936|78eed26d8875d0e5457d08c18d1ace9ba784f6cf84665cd2d4cba30530fb11c7|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate-dev_1.19-1build1.1_amd64.deb
-          liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma5|5.6.1+really5.4.5-1ubuntu0.3|amd64|127352|d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb
-          liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma-dev|5.6.1+really5.4.5-1ubuntu0.3|amd64|176166|a36f21970809e5ec58b6fb1186b1a819276f92c081eb109aeebf00e82e78d068|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb
-          libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0-pthread|0.3.26+ds-1ubuntu0.1|amd64|7183128|7dc3b4384c02aecb87eb8b70fa26c5843a08af242f4638aa4b36922bdc4f5b04|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0|0.3.26+ds-1ubuntu0.1|amd64|6190|ecadb5ba865e59a3eeafdad7f15908e59cdd827a80033d12bcc54ebddc72f5ae|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-pthread-dev|0.3.26+ds-1ubuntu0.1|amd64|4898570|01ae4d0433927e4109ae614c047f9df55dc3c8515e6369423f36f5e18d59101e|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-dev|0.3.26+ds-1ubuntu0.1|amd64|19590|3e4f39838e163d35bc7778fb3bec4f4d5ce2ae3e8e081dec49759217282c4770|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libpaper1_1.1.29build1_amd64.deb|libpaper1|1.1.29build1|amd64|13414|63d0cc29eda7adc7d9269273e9b5542b8b6aacabc5e7caaa859995269bfe3cff|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper1_1.1.29build1_amd64.deb
-          libpaper-utils_1.1.29build1_amd64.deb|libpaper-utils|1.1.29build1|amd64|8650|364e323bc54ecf17c0301ee51a07b1bdc9fe6646e5126b8ddb3bed6ff008b2e9|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper-utils_1.1.29build1_amd64.deb
-          libpthread-stubs0-dev_0.4-1build3_amd64.deb|libpthread-stubs0-dev|0.4-1build3|amd64|4746|b8f278da7b1907d3014c01f9bc89748208a8cd3b770f0f55f1528afcc98dc6c0|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpthread-stubs/libpthread-stubs0-dev_0.4-1build3_amd64.deb
-          libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb|libtirpc3t64|1.3.4+ds-1.1build1|amd64|82558|3a3cd37160399ab235fdf2f13159fd288940abb9660e0ed1afb418b44c73d43a|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb
-          libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb|libtirpc-dev|1.3.4+ds-1.1build1|amd64|193418|439322bbb8d0b1d44f92593edb6c8ba9693bcfb3b5f1f3bd152998f42cdf7a5d|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb
-          libxau6_1.0.9-1build6_amd64.deb|libxau6|1:1.0.9-1build6|amd64|7160|e40d29f1d1a62393bacaedebe0da3d9006084152a9f7e5e029293f08ce1c5c80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau6_1.0.9-1build6_amd64.deb
-          libxdmcp6_1.1.3-0ubuntu6_amd64.deb|libxdmcp6|1:1.1.3-0ubuntu6|amd64|10254|bcd336fce11ce2a45f34d0f95e6980af22529f22147e8f98c156e5cee8ee42bb|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp6_1.1.3-0ubuntu6_amd64.deb
-          libxcb1_1.15-1ubuntu2_amd64.deb|libxcb1|1.15-1ubuntu2|amd64|47730|e1c6611d11ad7398326f1bf028afc34c3b14c51d917a3426b966ed4b9687fa58|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1_1.15-1ubuntu2_amd64.deb
-          libx11-6_1.8.7-1build1_amd64.deb|libx11-6|2:1.8.7-1build1|amd64|649780|397f84347476a3c5786b39f3ff6f0f82866eb3d8be6d2ad3efeadf019efe5b80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-6_1.8.7-1build1_amd64.deb
-          xorg-sgml-doctools_1.11-1.1_all.deb|xorg-sgml-doctools|1:1.11-1.1|all|10936|277f662c6d94606c22078f2af82ac1b6e01386d5a4dec6ca7487bca4c5b23c07|https://archive.ubuntu.com/ubuntu/pool/main/x/xorg-sgml-doctools/xorg-sgml-doctools_1.11-1.1_all.deb
-          x11proto-dev_2023.2-1_all.deb|x11proto-dev|2023.2-1|all|602398|3bf13a2ffb79ecd4014d438936014e5863f79eb59ebf76e8f43356271c90e7ce|https://archive.ubuntu.com/ubuntu/pool/main/x/xorgproto/x11proto-dev_2023.2-1_all.deb
-          libxau-dev_1.0.9-1build6_amd64.deb|libxau-dev|1:1.0.9-1build6|amd64|9570|46783c6af2d87c06394d55dfaa21dac07396f13cfc5ea6afbd9313ab49fc0e50|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau-dev_1.0.9-1build6_amd64.deb
-          libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb|libxdmcp-dev|1:1.1.3-0ubuntu6|amd64|26546|ba2f2230b391c292f5f399d6e04d48181be6b3100556f7870591ca95c9d00667|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb
-          libxcb1-dev_1.15-1ubuntu2_amd64.deb|libxcb1-dev|1.15-1ubuntu2|amd64|85790|1bafe3432feafc9e57f858721da524dfb3ee1f6fc4ef6b0c73023e79eadb9c28|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1-dev_1.15-1ubuntu2_amd64.deb
-          xtrans-dev_1.4.0-1_all.deb|xtrans-dev|1.4.0-1|all|68900|45277c51d5d83db351b61859314b59595c9626ac372fbb2fc0d5542e169d9086|https://archive.ubuntu.com/ubuntu/pool/main/x/xtrans/xtrans-dev_1.4.0-1_all.deb
-          libx11-dev_1.8.7-1build1_amd64.deb|libx11-dev|2:1.8.7-1build1|amd64|732214|1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-dev_1.8.7-1build1_amd64.deb
-          r-4.5.3_1_amd64.deb|r-4.5.3|1|amd64|67491866|93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8|https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb
-          ARTIFACTS
-          )"
-          timeout --signal=TERM --kill-after=10s 300s bash -c '
-            set -euo pipefail
-            artifact_dir="$1"
-            while IFS="|" read -r filename package version architecture size sha256 url; do
-              case "$filename" in ""|*/*) exit 1 ;; esac
-              artifact_path="${artifact_dir}/${filename}"
-              timeout --signal=TERM --kill-after=5s 180s \
-                curl --fail --location --proto "=https" --tlsv1.2 --connect-timeout 20 --max-time 175 --max-filesize "$size" \
-                --output "$artifact_path" "$url"
-              test ! -L "$artifact_path"
-              test -f "$artifact_path"
-              test "$(stat --format="%F" -- "$artifact_path")" = "regular file"
-              test "$(stat --format="%h" -- "$artifact_path")" = "1"
-              artifact_identity="$(stat --format="%d:%i:%f:%h" -- "$artifact_path")"
-              test "$(stat --format="%s" -- "$artifact_path")" = "$size"
-              read -r actual_sha256 _ < <(sha256sum -- "$artifact_path")
-              test "$actual_sha256" = "$sha256"
-              test "$(dpkg-deb --field "$artifact_path" Package)" = "$package"
-              test "$(dpkg-deb --field "$artifact_path" Version)" = "$version"
-              test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"
-              test "$(stat --format="%d:%i:%f:%h" -- "$artifact_path")" = "$artifact_identity"
-            done
-          ' bash "$artifact_dir" <<< "$artifact_manifest"
-          install_paths=()
-          verified_count=0
-          verified_bytes=0
-          while IFS="|" read -r filename package version architecture size sha256 url; do
-            artifact_path="${artifact_dir}/${filename}"
-            test ! -L "$artifact_path"
-            test -f "$artifact_path"
-            test "$(stat --format='%F' -- "$artifact_path")" = "regular file"
-            test "$(stat --format='%h' -- "$artifact_path")" = "1"
-            artifact_identity="$(stat --format='%d:%i:%f:%h' -- "$artifact_path")"
-            test "$(stat --format='%s' -- "$artifact_path")" = "$size"
-            read -r actual_sha256 _ < <(sha256sum -- "$artifact_path")
-            test "$actual_sha256" = "$sha256"
-            test "$(dpkg-deb --field "$artifact_path" Package)" = "$package"
-            test "$(dpkg-deb --field "$artifact_path" Version)" = "$version"
-            test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"
-            test "$(stat --format='%d:%i:%f:%h' -- "$artifact_path")" = "$artifact_identity"
-            install_paths+=("$artifact_path")
-            verified_count=$((verified_count + 1))
-            verified_bytes=$((verified_bytes + size))
-          done <<< "$artifact_manifest"
-          test "$verified_count" = "$artifact_count"
-          test "$verified_bytes" = "$artifact_bytes"
-          test "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 | wc -l)" = "$artifact_count"
-          sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \
-            dpkg --install -- "${install_paths[@]}"
-          provisioning_checkpoint "offline install complete"
-          dpkg_audit_path="${artifact_dir}/dpkg-audit.txt"
-          provisioning_checkpoint "package database audit command"
-          timeout --signal=TERM --kill-after=5s 30s dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"
-          dpkg_audit_size="$(stat --format='%s' -- "$dpkg_audit_path")"
-          provisioning_checkpoint "package database audit output bound"
-          test "$dpkg_audit_size" -le 65536
-          provisioning_checkpoint "package database audit output empty"
-          test ! -s "$dpkg_audit_path"
-          while IFS="|" read -r filename package version architecture size sha256 url; do
-            provisioning_checkpoint "package ${package}"
-            test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' "$package")" = \
-              "install ok installed|${version}|${architecture}"
-          done <<< "$artifact_manifest"
-          provisioning_checkpoint "libx11-dev package"
-          test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' libx11-dev)" = \
-            "install ok installed|2:1.8.7-1build1|amd64"
-          readonly r_library_dir="/opt/R/4.5.3/lib/R/lib"
-          provisioning_checkpoint "R library directory not a symlink"
-          test ! -L "$r_library_dir"
-          provisioning_checkpoint "R library directory type"
-          test -d "$r_library_dir"
-          ldd_index=0
-          for r_binary in /opt/R/4.5.3/lib/R/bin/exec/R /opt/R/4.5.3/lib/R/lib/libR.so; do
-            provisioning_checkpoint "R shared object ${ldd_index} not a symlink"
-            test ! -L "$r_binary"
-            provisioning_checkpoint "R shared object ${ldd_index} type"
-            test -f "$r_binary"
-            ldd_output_path="${artifact_dir}/ldd-${ldd_index}.txt"
-            provisioning_checkpoint "R shared object ${ldd_index} dependency command"
-            timeout --signal=TERM --kill-after=5s 30s \
-              env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary" | \
-              head --bytes=65537 > "$ldd_output_path"
-            ldd_output_size="$(stat --format='%s' -- "$ldd_output_path")"
-            provisioning_checkpoint "R shared object ${ldd_index} output bound"
-            test "$ldd_output_size" -le 65536
-            provisioning_checkpoint "R shared object ${ldd_index} dependencies resolved"
-            while IFS= read -r dependency_line; do
-              case "$dependency_line" in *"not found"*) exit 1 ;; esac
-            done < "$ldd_output_path"
-            ldd_index=$((ldd_index + 1))
-          done
-          provisioning_checkpoint "R shared object count"
-          test "$ldd_index" = "2"
-          provisioning_checkpoint "R package status"
-          test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' r-4.5.3)" = \
-            "install ok installed|1|amd64"
-          provisioning_checkpoint "R version"
-          test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
-          provisioning_checkpoint "R executable path export"
-          printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
-          provisioning_checkpoint "complete"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           r-version: "4.5.3"
-          install-r: false
           use-public-rspm: false
+      - name: Install the R lock's system requirement
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
       - run: npm ci --ignore-scripts
       - id: r_prepare
-        name: Validate the R 4.5 lock before cache or network mutation
+        name: Prepare R dependencies
         run: >-
           node scripts/r-dependency-lock.mjs prepare
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
@@ -275,14 +175,14 @@ jobs:
           --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-archives"
           --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-receipt.json"
       - id: r_cache
-        name: Restore the untrusted exact R archive cache
+        name: Restore R package cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
       - id: r_install
-        name: Verify archives and cold-install the exact R library
+        name: Install R dependencies
         run: >-
           node scripts/r-dependency-lock.mjs install
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
@@ -291,224 +191,30 @@ jobs:
           --archives "${{ steps.r_prepare.outputs.archives }}"
           --receipt "${{ steps.r_prepare.outputs.receipt }}"
           --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly authenticated R archive cache
+      - name: Save R package cache
         if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
+      - name: R runner tests
+        run: node --test scripts/run-r-contract-tests.test.mjs
       - run: npm run test:r-contract -- --shard kernel-agent
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
-
-  r-contract-protocol:
-    name: R 4.5 protocol contracts
-    needs: [classify]
-    if: >-
-      ${{
-        !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-        (needs.classify.result != 'success' || needs.classify.outputs.r_contract_required != 'false')
-      }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Install the authenticated R 4.5.3 runtime
-        run: |
-          set -euo pipefail
-          export LC_ALL=C
-          provisioning_checkpoint() {
-            printf 'R 4.5.3 provisioning checkpoint: %s\n' "$1"
-          }
-          readonly artifact_count="27"
-          readonly artifact_bytes="82619754"
-          readonly artifact_dir="$(mktemp -d "${RUNNER_TEMP}/openwrangler-r-4.5.3-XXXXXX")"
-          readonly artifact_manifest="$(cat <<'ARTIFACTS'
-          libbz2-1.0_1.0.8-5.1build0.1_amd64.deb|libbz2-1.0|1.0.8-5.1build0.1|amd64|34370|d557ab12b42ab370249142099fae3cbb979948934e4dfa58c2ab59bf5bbbda73|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1build0.1_amd64.deb
-          libbz2-dev_1.0.8-5.1build0.1_amd64.deb|libbz2-dev|1.0.8-5.1build0.1|amd64|33608|012b1118932f20ae3fa706fa44f8ebe203a21f4765893bc7a9f6861aa09fa4c5|https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-dev_1.0.8-5.1build0.1_amd64.deb
-          libdeflate0_1.19-1build1.1_amd64.deb|libdeflate0|1.19-1build1.1|amd64|43914|8e7dfa9e63a9b5058071b84da48bb2e30dea07de169e80fbc759fe0e68639269|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate0_1.19-1build1.1_amd64.deb
-          libdeflate-dev_1.19-1build1.1_amd64.deb|libdeflate-dev|1.19-1build1.1|amd64|50936|78eed26d8875d0e5457d08c18d1ace9ba784f6cf84665cd2d4cba30530fb11c7|https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate-dev_1.19-1build1.1_amd64.deb
-          liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma5|5.6.1+really5.4.5-1ubuntu0.3|amd64|127352|d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb
-          liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb|liblzma-dev|5.6.1+really5.4.5-1ubuntu0.3|amd64|176166|a36f21970809e5ec58b6fb1186b1a819276f92c081eb109aeebf00e82e78d068|https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb
-          libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0-pthread|0.3.26+ds-1ubuntu0.1|amd64|7183128|7dc3b4384c02aecb87eb8b70fa26c5843a08af242f4638aa4b36922bdc4f5b04|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0-pthread_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas0|0.3.26+ds-1ubuntu0.1|amd64|6190|ecadb5ba865e59a3eeafdad7f15908e59cdd827a80033d12bcc54ebddc72f5ae|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas0_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-pthread-dev|0.3.26+ds-1ubuntu0.1|amd64|4898570|01ae4d0433927e4109ae614c047f9df55dc3c8515e6369423f36f5e18d59101e|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-pthread-dev_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb|libopenblas-dev|0.3.26+ds-1ubuntu0.1|amd64|19590|3e4f39838e163d35bc7778fb3bec4f4d5ce2ae3e8e081dec49759217282c4770|https://archive.ubuntu.com/ubuntu/pool/universe/o/openblas/libopenblas-dev_0.3.26+ds-1ubuntu0.1_amd64.deb
-          libpaper1_1.1.29build1_amd64.deb|libpaper1|1.1.29build1|amd64|13414|63d0cc29eda7adc7d9269273e9b5542b8b6aacabc5e7caaa859995269bfe3cff|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper1_1.1.29build1_amd64.deb
-          libpaper-utils_1.1.29build1_amd64.deb|libpaper-utils|1.1.29build1|amd64|8650|364e323bc54ecf17c0301ee51a07b1bdc9fe6646e5126b8ddb3bed6ff008b2e9|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpaper/libpaper-utils_1.1.29build1_amd64.deb
-          libpthread-stubs0-dev_0.4-1build3_amd64.deb|libpthread-stubs0-dev|0.4-1build3|amd64|4746|b8f278da7b1907d3014c01f9bc89748208a8cd3b770f0f55f1528afcc98dc6c0|https://archive.ubuntu.com/ubuntu/pool/main/libp/libpthread-stubs/libpthread-stubs0-dev_0.4-1build3_amd64.deb
-          libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb|libtirpc3t64|1.3.4+ds-1.1build1|amd64|82558|3a3cd37160399ab235fdf2f13159fd288940abb9660e0ed1afb418b44c73d43a|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc3t64_1.3.4+ds-1.1build1_amd64.deb
-          libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb|libtirpc-dev|1.3.4+ds-1.1build1|amd64|193418|439322bbb8d0b1d44f92593edb6c8ba9693bcfb3b5f1f3bd152998f42cdf7a5d|https://archive.ubuntu.com/ubuntu/pool/main/libt/libtirpc/libtirpc-dev_1.3.4+ds-1.1build1_amd64.deb
-          libxau6_1.0.9-1build6_amd64.deb|libxau6|1:1.0.9-1build6|amd64|7160|e40d29f1d1a62393bacaedebe0da3d9006084152a9f7e5e029293f08ce1c5c80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau6_1.0.9-1build6_amd64.deb
-          libxdmcp6_1.1.3-0ubuntu6_amd64.deb|libxdmcp6|1:1.1.3-0ubuntu6|amd64|10254|bcd336fce11ce2a45f34d0f95e6980af22529f22147e8f98c156e5cee8ee42bb|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp6_1.1.3-0ubuntu6_amd64.deb
-          libxcb1_1.15-1ubuntu2_amd64.deb|libxcb1|1.15-1ubuntu2|amd64|47730|e1c6611d11ad7398326f1bf028afc34c3b14c51d917a3426b966ed4b9687fa58|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1_1.15-1ubuntu2_amd64.deb
-          libx11-6_1.8.7-1build1_amd64.deb|libx11-6|2:1.8.7-1build1|amd64|649780|397f84347476a3c5786b39f3ff6f0f82866eb3d8be6d2ad3efeadf019efe5b80|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-6_1.8.7-1build1_amd64.deb
-          xorg-sgml-doctools_1.11-1.1_all.deb|xorg-sgml-doctools|1:1.11-1.1|all|10936|277f662c6d94606c22078f2af82ac1b6e01386d5a4dec6ca7487bca4c5b23c07|https://archive.ubuntu.com/ubuntu/pool/main/x/xorg-sgml-doctools/xorg-sgml-doctools_1.11-1.1_all.deb
-          x11proto-dev_2023.2-1_all.deb|x11proto-dev|2023.2-1|all|602398|3bf13a2ffb79ecd4014d438936014e5863f79eb59ebf76e8f43356271c90e7ce|https://archive.ubuntu.com/ubuntu/pool/main/x/xorgproto/x11proto-dev_2023.2-1_all.deb
-          libxau-dev_1.0.9-1build6_amd64.deb|libxau-dev|1:1.0.9-1build6|amd64|9570|46783c6af2d87c06394d55dfaa21dac07396f13cfc5ea6afbd9313ab49fc0e50|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxau/libxau-dev_1.0.9-1build6_amd64.deb
-          libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb|libxdmcp-dev|1:1.1.3-0ubuntu6|amd64|26546|ba2f2230b391c292f5f399d6e04d48181be6b3100556f7870591ca95c9d00667|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxdmcp/libxdmcp-dev_1.1.3-0ubuntu6_amd64.deb
-          libxcb1-dev_1.15-1ubuntu2_amd64.deb|libxcb1-dev|1.15-1ubuntu2|amd64|85790|1bafe3432feafc9e57f858721da524dfb3ee1f6fc4ef6b0c73023e79eadb9c28|https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcb/libxcb1-dev_1.15-1ubuntu2_amd64.deb
-          xtrans-dev_1.4.0-1_all.deb|xtrans-dev|1.4.0-1|all|68900|45277c51d5d83db351b61859314b59595c9626ac372fbb2fc0d5542e169d9086|https://archive.ubuntu.com/ubuntu/pool/main/x/xtrans/xtrans-dev_1.4.0-1_all.deb
-          libx11-dev_1.8.7-1build1_amd64.deb|libx11-dev|2:1.8.7-1build1|amd64|732214|1969e200607ffe34070b92fe1bd3ba76ac2e2bd2f3a54530800c5872076fad24|https://archive.ubuntu.com/ubuntu/pool/main/libx/libx11/libx11-dev_1.8.7-1build1_amd64.deb
-          r-4.5.3_1_amd64.deb|r-4.5.3|1|amd64|67491866|93a403f207fa6c8d50754106097f551ba0c55c5b756363d070ac76e880334ca8|https://cdn.posit.co/r/ubuntu-2404/pkgs/r-4.5.3_1_amd64.deb
-          ARTIFACTS
-          )"
-          timeout --signal=TERM --kill-after=10s 300s bash -c '
-            set -euo pipefail
-            artifact_dir="$1"
-            while IFS="|" read -r filename package version architecture size sha256 url; do
-              case "$filename" in ""|*/*) exit 1 ;; esac
-              artifact_path="${artifact_dir}/${filename}"
-              timeout --signal=TERM --kill-after=5s 180s \
-                curl --fail --location --proto "=https" --tlsv1.2 --connect-timeout 20 --max-time 175 --max-filesize "$size" \
-                --output "$artifact_path" "$url"
-              test ! -L "$artifact_path"
-              test -f "$artifact_path"
-              test "$(stat --format="%F" -- "$artifact_path")" = "regular file"
-              test "$(stat --format="%h" -- "$artifact_path")" = "1"
-              artifact_identity="$(stat --format="%d:%i:%f:%h" -- "$artifact_path")"
-              test "$(stat --format="%s" -- "$artifact_path")" = "$size"
-              read -r actual_sha256 _ < <(sha256sum -- "$artifact_path")
-              test "$actual_sha256" = "$sha256"
-              test "$(dpkg-deb --field "$artifact_path" Package)" = "$package"
-              test "$(dpkg-deb --field "$artifact_path" Version)" = "$version"
-              test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"
-              test "$(stat --format="%d:%i:%f:%h" -- "$artifact_path")" = "$artifact_identity"
-            done
-          ' bash "$artifact_dir" <<< "$artifact_manifest"
-          install_paths=()
-          verified_count=0
-          verified_bytes=0
-          while IFS="|" read -r filename package version architecture size sha256 url; do
-            artifact_path="${artifact_dir}/${filename}"
-            test ! -L "$artifact_path"
-            test -f "$artifact_path"
-            test "$(stat --format='%F' -- "$artifact_path")" = "regular file"
-            test "$(stat --format='%h' -- "$artifact_path")" = "1"
-            artifact_identity="$(stat --format='%d:%i:%f:%h' -- "$artifact_path")"
-            test "$(stat --format='%s' -- "$artifact_path")" = "$size"
-            read -r actual_sha256 _ < <(sha256sum -- "$artifact_path")
-            test "$actual_sha256" = "$sha256"
-            test "$(dpkg-deb --field "$artifact_path" Package)" = "$package"
-            test "$(dpkg-deb --field "$artifact_path" Version)" = "$version"
-            test "$(dpkg-deb --field "$artifact_path" Architecture)" = "$architecture"
-            test "$(stat --format='%d:%i:%f:%h' -- "$artifact_path")" = "$artifact_identity"
-            install_paths+=("$artifact_path")
-            verified_count=$((verified_count + 1))
-            verified_bytes=$((verified_bytes + size))
-          done <<< "$artifact_manifest"
-          test "$verified_count" = "$artifact_count"
-          test "$verified_bytes" = "$artifact_bytes"
-          test "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 | wc -l)" = "$artifact_count"
-          sudo --non-interactive timeout --signal=TERM --kill-after=10s 180s \
-            dpkg --install -- "${install_paths[@]}"
-          provisioning_checkpoint "offline install complete"
-          dpkg_audit_path="${artifact_dir}/dpkg-audit.txt"
-          provisioning_checkpoint "package database audit command"
-          timeout --signal=TERM --kill-after=5s 30s dpkg --audit | head --bytes=65537 > "$dpkg_audit_path"
-          dpkg_audit_size="$(stat --format='%s' -- "$dpkg_audit_path")"
-          provisioning_checkpoint "package database audit output bound"
-          test "$dpkg_audit_size" -le 65536
-          provisioning_checkpoint "package database audit output empty"
-          test ! -s "$dpkg_audit_path"
-          while IFS="|" read -r filename package version architecture size sha256 url; do
-            provisioning_checkpoint "package ${package}"
-            test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' "$package")" = \
-              "install ok installed|${version}|${architecture}"
-          done <<< "$artifact_manifest"
-          provisioning_checkpoint "libx11-dev package"
-          test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' libx11-dev)" = \
-            "install ok installed|2:1.8.7-1build1|amd64"
-          readonly r_library_dir="/opt/R/4.5.3/lib/R/lib"
-          provisioning_checkpoint "R library directory not a symlink"
-          test ! -L "$r_library_dir"
-          provisioning_checkpoint "R library directory type"
-          test -d "$r_library_dir"
-          ldd_index=0
-          for r_binary in /opt/R/4.5.3/lib/R/bin/exec/R /opt/R/4.5.3/lib/R/lib/libR.so; do
-            provisioning_checkpoint "R shared object ${ldd_index} not a symlink"
-            test ! -L "$r_binary"
-            provisioning_checkpoint "R shared object ${ldd_index} type"
-            test -f "$r_binary"
-            ldd_output_path="${artifact_dir}/ldd-${ldd_index}.txt"
-            provisioning_checkpoint "R shared object ${ldd_index} dependency command"
-            timeout --signal=TERM --kill-after=5s 30s \
-              env LD_LIBRARY_PATH="${r_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "$r_binary" | \
-              head --bytes=65537 > "$ldd_output_path"
-            ldd_output_size="$(stat --format='%s' -- "$ldd_output_path")"
-            provisioning_checkpoint "R shared object ${ldd_index} output bound"
-            test "$ldd_output_size" -le 65536
-            provisioning_checkpoint "R shared object ${ldd_index} dependencies resolved"
-            while IFS= read -r dependency_line; do
-              case "$dependency_line" in *"not found"*) exit 1 ;; esac
-            done < "$ldd_output_path"
-            ldd_index=$((ldd_index + 1))
-          done
-          provisioning_checkpoint "R shared object count"
-          test "$ldd_index" = "2"
-          provisioning_checkpoint "R package status"
-          test "$(dpkg-query --show --showformat='${Status}|${Version}|${Architecture}' r-4.5.3)" = \
-            "install ok installed|1|amd64"
-          provisioning_checkpoint "R version"
-          test "$(/opt/R/4.5.3/bin/Rscript --vanilla -e 'cat(as.character(getRversion()))')" = "4.5.3"
-          provisioning_checkpoint "R executable path export"
-          printf '%s\n' '/opt/R/4.5.3/bin' >> "$GITHUB_PATH"
-          provisioning_checkpoint "complete"
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          r-version: "4.5.3"
-          install-r: false
-          use-public-rspm: false
-      - run: npm ci --ignore-scripts
-      - id: r_prepare
-        name: Validate the R 4.5 lock before cache or network mutation
-        run: >-
-          node scripts/r-dependency-lock.mjs prepare
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-library"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-archives"
-          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-protocol-receipt.json"
-      - id: r_cache
-        name: Restore the untrusted exact R archive cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-          fail-on-cache-miss: false
-      - name: Verify archives and cold-install the exact R library
-        run: >-
-          node scripts/r-dependency-lock.mjs install
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "${{ steps.r_prepare.outputs.archives }}"
-          --receipt "${{ steps.r_prepare.outputs.receipt }}"
-          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - name: Save only a newly authenticated R archive cache
-        if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-      - name: Run both independent protocol shards fail-complete
+      - name: R protocol tests
         run: npm run test:r-contract:protocol
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
 
-  canonical-editor:
-    name: Canonical package and editor
-    needs: [classify]
+  package-editor:
+    name: Package and editor
+    needs: [changes]
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-        (needs.classify.result != 'success' || needs.classify.outputs.canonical_editor_required != 'false')
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
+        (needs.changes.result != 'success' || needs.changes.outputs.package_editor_required != 'false')
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -520,7 +226,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - id: canonical_python
+      - id: editor_python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -529,12 +235,12 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean
       - run: npm run build
+      - run: npm run build:test-extension
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
-      - run: npm run test:extension-host
+      - run: node scripts/run-extension-tests.mjs
         env:
           VSCODE_TEST_VERSION: stable
-      - run: npm run build:test-extension
       - id: packaged_editor
         name: Test packaged editor
         run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
@@ -550,22 +256,25 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
-      - name: TypeScript owner contracts
+      - name: TypeScript tests
         if: ${{ !cancelled() }}
         run: >-
           npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          typecheck typecheck:dependencies test:ts
+          typecheck typecheck:dependencies test:coverage:ts
         env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.canonical_python.outputs.python-path }}
+          OPEN_WRANGLER_PYTHON: ${{ steps.editor_python.outputs.python-path }}
+      - name: Script tests
+        if: ${{ !cancelled() }}
+        run: npm run test:scripts:portable
 
-  visual-accessibility:
-    name: Visual and accessibility
-    needs: [classify]
+  web:
+    name: Web UI and accessibility
+    needs: [changes]
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-        (needs.classify.result != 'success' || needs.classify.outputs.visual_accessibility_required != 'false')
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
+        (needs.changes.result != 'success' || needs.changes.outputs.web_required != 'false')
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -594,14 +303,14 @@ jobs:
           retention-days: 7
           include-hidden-files: false
 
-  windows-unique:
-    name: Windows unique-risk contracts
-    needs: [classify]
+  windows:
+    name: Windows
+    needs: [changes]
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-        (needs.classify.result != 'success' || needs.classify.outputs.windows_unique_required != 'false')
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
+        (needs.changes.result != 'success' || needs.changes.outputs.windows_required != 'false')
       }}
     runs-on: windows-latest
     timeout-minutes: 30
@@ -617,7 +326,7 @@ jobs:
           cache: pip
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
-      - name: Windows publication, identity, dependency, and cleanup contracts
+      - name: Windows filesystem, dependency, and cleanup tests
         run: >-
           python -m pytest -q
           python/tests/test_export_target.py
@@ -635,13 +344,13 @@ jobs:
   validate:
     name: validate
     needs:
-      - classify
-      - invariant-core
-      - r-contract-kernel
-      - r-contract-protocol
-      - canonical-editor
-      - visual-accessibility
-      - windows-unique
+      - changes
+      - javascript
+      - python
+      - r
+      - package-editor
+      - web
+      - windows
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -650,17 +359,18 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
-      - name: Require every owned CI result
+      - name: Check selected jobs
         run: node scripts/require-ci-results.mjs
         env:
-          R_CONTRACT_REQUIRED: ${{ needs.classify.outputs.r_contract_required }}
-          CANONICAL_EDITOR_REQUIRED: ${{ needs.classify.outputs.canonical_editor_required }}
-          VISUAL_ACCESSIBILITY_REQUIRED: ${{ needs.classify.outputs.visual_accessibility_required }}
-          WINDOWS_UNIQUE_REQUIRED: ${{ needs.classify.outputs.windows_unique_required }}
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          INVARIANT_CORE_RESULT: ${{ needs.invariant-core.result }}
-          R_CONTRACT_KERNEL_RESULT: ${{ needs.r-contract-kernel.result }}
-          R_CONTRACT_PROTOCOL_RESULT: ${{ needs.r-contract-protocol.result }}
-          CANONICAL_EDITOR_RESULT: ${{ needs.canonical-editor.result }}
-          VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
-          WINDOWS_UNIQUE_RESULT: ${{ needs.windows-unique.result }}
+          PYTHON_REQUIRED: ${{ needs.changes.outputs.python_required }}
+          R_REQUIRED: ${{ needs.changes.outputs.r_required }}
+          PACKAGE_EDITOR_REQUIRED: ${{ needs.changes.outputs.package_editor_required }}
+          WEB_REQUIRED: ${{ needs.changes.outputs.web_required }}
+          WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows_required }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JAVASCRIPT_RESULT: ${{ needs.javascript.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+          R_RESULT: ${{ needs.r.result }}
+          PACKAGE_EDITOR_RESULT: ${{ needs.package-editor.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}

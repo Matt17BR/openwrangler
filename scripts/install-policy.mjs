@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const INSTALL = "npm ci --ignore-scripts";
-export const COMPATIBILITY_INSTALL = "npm ci --ignore-scripts --no-audit";
 const PREFIXED_INSTALL = "npm ci --ignore-scripts --prefix release-source";
 const SHIM_PATHS = Object.freeze({
   "@vscode/vsce-sign": "scripts/npm-shims/vsce-sign",
@@ -29,12 +28,12 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/candidate-acceptance.yml", "performance", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "jupyter", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "r_local", [INSTALL]],
-  [".github/workflows/ci.yml", "invariant-core", [INSTALL, COMPATIBILITY_INSTALL]],
-  [".github/workflows/ci.yml", "r-contract-kernel", [INSTALL]],
-  [".github/workflows/ci.yml", "r-contract-protocol", [INSTALL]],
-  [".github/workflows/ci.yml", "canonical-editor", [INSTALL]],
-  [".github/workflows/ci.yml", "visual-accessibility", [INSTALL]],
-  [".github/workflows/ci.yml", "windows-unique", [INSTALL]],
+  [".github/workflows/ci.yml", "javascript", [INSTALL]],
+  [".github/workflows/ci.yml", "python", [INSTALL]],
+  [".github/workflows/ci.yml", "r", [INSTALL]],
+  [".github/workflows/ci.yml", "package-editor", [INSTALL]],
+  [".github/workflows/ci.yml", "web", [INSTALL]],
+  [".github/workflows/ci.yml", "windows", [INSTALL]],
   [".github/workflows/cross-platform.yml", "runtime", [INSTALL]],
   [".github/workflows/cross-platform.yml", "r-4-4-scheduled-qualification", [INSTALL]],
   [".github/workflows/daily-preview.yml", "build", [INSTALL]],

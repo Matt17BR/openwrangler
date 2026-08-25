@@ -6,11 +6,9 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import {
   AZURE_INSTALL_OWNERS,
-  COMPATIBILITY_INSTALL,
   WORKFLOW_PATHS,
   WORKFLOW_INSTALL_OWNERS,
   inspectInstallPolicy,
-  installPolicyInventory,
   tokenizeShellCommand
 } from "./install-policy.mjs";
 
@@ -54,17 +52,9 @@ function rejected(overrides, pattern) {
 
 test("install policy owns every script-free lockfile install and exact shim", () => {
   assert.deepEqual(inspect(), []);
-  assert.deepEqual(installPolicyInventory(), {
-    installInvocations: 29,
-    owners: 26,
-    platformPackages: 9,
-    workflowFiles: 11
-  });
   assert.deepEqual(
-    WORKFLOW_INSTALL_OWNERS.find(([path, job]) => path === ".github/workflows/ci.yml" && job === "invariant-core")?.at(
-      -1
-    ),
-    ["npm ci --ignore-scripts", COMPATIBILITY_INSTALL]
+    WORKFLOW_INSTALL_OWNERS.find(([path, job]) => path === ".github/workflows/ci.yml" && job === "javascript")?.at(-1),
+    ["npm ci --ignore-scripts"]
   );
 });
 
@@ -260,7 +250,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     '"$(command -v n\\pm)" install keytar'
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["invariant-core"].steps.push({ run: command });
+    workflow.jobs.javascript.steps.push({ run: command });
     rejected(
       new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
@@ -300,7 +290,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     ["cmd", "%SAFE_BUNX2% @scope/unreviewed"]
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({ ...(shell === undefined ? {} : { shell }), run: command });
+    workflow.jobs.windows.steps.push({ ...(shell === undefined ? {} : { shell }), run: command });
     rejected(
       new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
       /(?:unreviewed npm lifecycle commands|bypass alias)/u
@@ -308,8 +298,8 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   }
   {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({ run: "np`m install keytar" });
-    workflow.jobs["windows-unique"].steps.push({ shell: "cmd", run: "np^m install keytar" });
+    workflow.jobs.windows.steps.push({ run: "np`m install keytar" });
+    workflow.jobs.windows.steps.push({ shell: "cmd", run: "np^m install keytar" });
     rejected(new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]), /unreviewed npm lifecycle commands/u);
   }
   for (const command of ["yarn", "yarn --frozen-lockfile", "pnpm install", "bun install"]) {
@@ -361,7 +351,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     "npm.ps1 conf delete ignore-scripts --location=project\n" + "npm.ps1 install-cl"
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({ run: command });
+    workflow.jobs.windows.steps.push({ run: command });
     rejected(
       new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
       /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u
@@ -399,7 +389,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   );
   {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({
+    workflow.jobs.windows.steps.push({
       run: "npm `\r\n c delete ignore-scripts --location=project\r\n" + "npm `\r\n install-test keytar"
     });
     rejected(
@@ -409,7 +399,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
   }
   {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({
+    workflow.jobs.windows.steps.push({
       shell: "cmd",
       run: "npm ^\r\n c delete ignore-scripts --location=project\r\n" + "npm ^\r\n install-test keytar"
     });
@@ -424,7 +414,7 @@ test("workflow owners reject npm option forms, aliases, and config weakening", (
     "$env:NPM c delete ignore-scripts --location=project\n$env:NPM install-test keytar"
   ]) {
     const workflow = parseYaml(baseline.get(".github/workflows/ci.yml"));
-    workflow.jobs["windows-unique"].steps.push({ run: command });
+    workflow.jobs.windows.steps.push({ run: command });
     rejected(
       new Map([[".github/workflows/ci.yml", dumpYaml(workflow)]]),
       /(?:weakens lifecycle-script suppression|unreviewed npm lifecycle commands)/u

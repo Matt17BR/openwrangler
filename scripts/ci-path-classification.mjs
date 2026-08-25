@@ -7,26 +7,28 @@ const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/u;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 export const CI_CLASSIFIER_OUTPUTS = Object.freeze([
-  "r_contract_required",
-  "canonical_editor_required",
-  "visual_accessibility_required",
-  "windows_unique_required"
+  "python_required",
+  "r_required",
+  "package_editor_required",
+  "web_required",
+  "windows_required",
+  "node_dependencies_required",
+  "python_dependencies_required"
 ]);
 
 const SELF_SELECTING_PATHS = new Set([
   ".node-version",
   "package.json",
   "package-lock.json",
-  "python/pyproject.toml",
   "scripts/ci-path-classification.mjs",
   "scripts/ci-workflow.test.mjs",
-  "scripts/fixtures/ci-capabilities.json",
   "scripts/require-ci-results.mjs",
   "scripts/r-dependency-lock.mjs",
   "scripts/r-dependency-lock.test.mjs"
 ]);
 const DOCUMENTATION_ROOTS = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
-const R_CONTRACT_PATHS = new Set([
+const SHARED_R_PATHS = new Set([
+  "fixtures/view-literal-contract.json",
   "protocol/openwrangler.v2.schema.json",
   "python/openwrangler_runtime/protocol.py",
   "python/openwrangler_runtime/server.py",
@@ -35,7 +37,7 @@ const R_CONTRACT_PATHS = new Set([
   "src/shared/operationCatalog.generated.ts",
   "python/openwrangler_runtime/operation_catalog_generated.py"
 ]);
-const WINDOWS_UNIQUE_PATHS = new Set([
+const WINDOWS_PATHS = new Set([
   "python/openwrangler_runtime/dependency_guard.py",
   "python/openwrangler_runtime/engines/base.py",
   "python/openwrangler_runtime/engines/duckdb_engine.py",
@@ -94,25 +96,34 @@ function selfSelectingPath(path) {
     SELF_SELECTING_PATHS.has(path) ||
     path.startsWith(".github/workflows/") ||
     path.startsWith(".github/actions/") ||
-    path.startsWith(".github/dependabot") ||
     path.startsWith("r/dependencies/native-r-contract/") ||
     path.startsWith("scripts/toolchain") ||
     path.startsWith("scripts/validate")
   );
 }
 
-function rContractPath(path) {
+function pythonPath(path) {
+  return (
+    path.startsWith("python/") ||
+    path.startsWith("scripts/remote-jupyter/") ||
+    path === "protocol/openwrangler.v2.schema.json" ||
+    path === "schemas/operation-catalog.v1.json" ||
+    path.startsWith("fixtures/")
+  );
+}
+
+function rPath(path) {
   return (
     path.startsWith("r/") ||
     path.startsWith("src/extension/r/") ||
     /^src\/test\/.*(?:releasedR|rKernel|rContract|R[A-Z])/u.test(path) ||
-    R_CONTRACT_PATHS.has(path) ||
+    SHARED_R_PATHS.has(path) ||
     path.startsWith("scripts/run-r-contract-tests.") ||
     path.startsWith("scripts/generate-operation-catalog.")
   );
 }
 
-function visualAccessibilityPath(path) {
+function webPath(path) {
   return (
     path.startsWith("src/webviews/") ||
     path.startsWith("src/test/__snapshots__/") ||
@@ -123,9 +134,9 @@ function visualAccessibilityPath(path) {
   );
 }
 
-function windowsUniquePath(path) {
+function windowsPath(path) {
   return (
-    WINDOWS_UNIQUE_PATHS.has(path) ||
+    WINDOWS_PATHS.has(path) ||
     path === ".github/workflows/cross-platform.yml" ||
     /^python\/(?:openwrangler_runtime|tests)\/.*(?:windows|reparse|hardlink|publication|process|dependency)/iu.test(
       path
@@ -134,16 +145,17 @@ function windowsUniquePath(path) {
   );
 }
 
-function canonicalEditorPath(path) {
+function packageEditorPath(path) {
   return (
     path === "package.json" ||
     path === "package-lock.json" ||
     path.startsWith("src/") ||
-    path.startsWith("python/") ||
-    path.startsWith("r/") ||
+    (path.startsWith("python/") && !path.startsWith("python/tests/")) ||
+    (path.startsWith("r/") && !path.startsWith("r/tests/")) ||
     path.startsWith("protocol/") ||
     path.startsWith("schemas/") ||
     path.startsWith("fixtures/") ||
+    path.startsWith("media/") ||
     path.startsWith("scripts/packaged-") ||
     path.startsWith("scripts/editor-") ||
     path.startsWith("scripts/run-extension-") ||
@@ -151,12 +163,23 @@ function canonicalEditorPath(path) {
   );
 }
 
-function fullSelection() {
+function dependencyChecks(changedPaths) {
   return {
-    rContractRequired: true,
-    canonicalEditorRequired: true,
-    visualAccessibilityRequired: true,
-    windowsUniqueRequired: true
+    nodeDependenciesRequired: changedPaths.some((path) => path === "package.json" || path === "package-lock.json"),
+    pythonDependenciesRequired: changedPaths.some(
+      (path) => path === "python/pyproject.toml" || path.startsWith("scripts/remote-jupyter/requirements")
+    )
+  };
+}
+
+function fullSelection(checks = { nodeDependenciesRequired: false, pythonDependenciesRequired: false }) {
+  return {
+    pythonRequired: true,
+    rRequired: true,
+    packageEditorRequired: true,
+    webRequired: true,
+    windowsRequired: true,
+    ...checks
   };
 }
 
@@ -167,27 +190,39 @@ export function classifyCiChange({ eventName, changedPaths }) {
   }
   if (eventName !== "pull_request") return fullSelection();
   if (changedPaths.length === 0 || changedPaths.some((path) => !canonicalPath(path))) return fullSelection();
-  if (changedPaths.some((path) => selfSelectingPath(path))) return fullSelection();
+  const checks = dependencyChecks(changedPaths);
+  if (changedPaths.some((path) => selfSelectingPath(path))) return fullSelection(checks);
 
   const substantive = changedPaths.filter((path) => !documentationOnlyPath(path));
   if (substantive.length === 0) {
     return {
-      rContractRequired: false,
-      canonicalEditorRequired: false,
-      visualAccessibilityRequired: false,
-      windowsUniqueRequired: false
+      pythonRequired: false,
+      rRequired: false,
+      packageEditorRequired: false,
+      webRequired: false,
+      windowsRequired: false,
+      nodeDependenciesRequired: false,
+      pythonDependenciesRequired: false
     };
   }
   const known = substantive.every(
     (path) =>
-      rContractPath(path) || visualAccessibilityPath(path) || windowsUniquePath(path) || canonicalEditorPath(path)
+      pythonPath(path) ||
+      rPath(path) ||
+      webPath(path) ||
+      windowsPath(path) ||
+      packageEditorPath(path) ||
+      path === ".github/dependabot.yml" ||
+      path === ".github/dependabot.yaml"
   );
-  if (!known) return fullSelection();
+  if (!known) return fullSelection(checks);
   return {
-    rContractRequired: substantive.some((path) => rContractPath(path)),
-    canonicalEditorRequired: substantive.some((path) => canonicalEditorPath(path)),
-    visualAccessibilityRequired: substantive.some((path) => visualAccessibilityPath(path)),
-    windowsUniqueRequired: substantive.some((path) => windowsUniquePath(path))
+    pythonRequired: substantive.some((path) => pythonPath(path)),
+    rRequired: substantive.some((path) => rPath(path)),
+    packageEditorRequired: substantive.some((path) => packageEditorPath(path)),
+    webRequired: substantive.some((path) => webPath(path) || path === "python/pyproject.toml"),
+    windowsRequired: substantive.some((path) => windowsPath(path) || path === "python/pyproject.toml"),
+    ...checks
   };
 }
 
@@ -333,10 +368,13 @@ function main(environment) {
   appendFileSync(
     environment.GITHUB_OUTPUT,
     [
-      `r_contract_required=${classification.rContractRequired}`,
-      `canonical_editor_required=${classification.canonicalEditorRequired}`,
-      `visual_accessibility_required=${classification.visualAccessibilityRequired}`,
-      `windows_unique_required=${classification.windowsUniqueRequired}`,
+      `python_required=${classification.pythonRequired}`,
+      `r_required=${classification.rRequired}`,
+      `package_editor_required=${classification.packageEditorRequired}`,
+      `web_required=${classification.webRequired}`,
+      `windows_required=${classification.windowsRequired}`,
+      `node_dependencies_required=${classification.nodeDependenciesRequired}`,
+      `python_dependencies_required=${classification.pythonDependenciesRequired}`,
       ""
     ].join("\n"),
     "utf8"
