@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVSIX } from "@vscode/vsce";
@@ -97,6 +97,7 @@ import {
   runRemoteJupyterAcceptanceLifecycle,
   startRemoteJupyterAcceptanceFixture
 } from "./remote-jupyter-acceptance.mjs";
+import { readPackagedEditorIdentity } from "./packaged-editor-candidate.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localEvidenceArtifactBase = resolve(root, "tmp", "editor-acceptance-artifacts");
@@ -188,8 +189,7 @@ try {
           validateEditorAcceptancePrivatePathOverrides();
           const vsix = resolve(root, process.argv[2] ?? "openwrangler.vsix");
           if (!existsSync(vsix)) throw new Error("The packaged extension was not found.");
-          const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-          const expectedExtension = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
+          const expectedExtension = (await readPackagedEditorIdentity(vsix)).qualified;
           const pythonExtensionInstallTarget = resolvePythonExtensionAcceptanceInstallTarget();
           let jupyterExtensionInstallTarget = resolveJupyterExtensionAcceptanceInstallTarget();
           const dataWranglerExtensionInstallTarget = resolveDataWranglerExtensionAcceptanceInstallTarget();

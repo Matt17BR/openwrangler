@@ -12,6 +12,25 @@ export const MAX_VSIX_ENTRY_BYTES = 32 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
 export const VENDORED_JS_YAML_BYTES = 122_488;
 export const VENDORED_JS_YAML_SHA256 = "f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965";
+const OPEN_WRANGLER_PUBLISHER = "Matt17BR";
+const OPEN_WRANGLER_NAME = "openwrangler";
+const NUMERIC_EXTENSION_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+
+export function packagedOpenWranglerIdentity(packagedPackageJson) {
+  const manifest = parseStrictJson(packagedPackageJson);
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    Array.isArray(manifest) ||
+    manifest.publisher !== OPEN_WRANGLER_PUBLISHER ||
+    manifest.name !== OPEN_WRANGLER_NAME ||
+    !NUMERIC_EXTENSION_VERSION.test(manifest.version ?? "")
+  ) {
+    throw new Error("The packaged extension manifest has an invalid Open Wrangler identity.");
+  }
+  const id = `${manifest.publisher}.${manifest.name}`;
+  return Object.freeze({ id, version: manifest.version, qualified: `${id}@${manifest.version}`.toLowerCase() });
+}
 
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;

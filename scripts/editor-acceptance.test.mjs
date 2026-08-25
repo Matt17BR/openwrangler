@@ -19,6 +19,7 @@ import { PassThrough } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import test from "node:test";
 import { ZipFile } from "yazl";
+import { readPackagedEditorIdentity } from "./packaged-editor-candidate.mjs";
 import {
   acceptancePathSnapshotShowsAtomicPublication,
   acceptanceProgressCheckpoint,
@@ -91,6 +92,33 @@ const posixTest = process.platform === "win32" ? test.skip : test;
 const SYNTHETIC_EDITOR_USER_DATA = "/__open_wrangler_fake_phase__/u";
 const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
   createAcceptanceProgressEnvelope(runId, phase, checkpoint);
+
+test("packaged-editor checks use the identity inside the VSIX", async () => {
+  const candidateBytes = Buffer.from("packaged candidate");
+  let inspectedPath;
+  let requiredOwner;
+  const identity = await readPackagedEditorIdentity("/tmp/openwrangler-preview.vsix", {
+    readSnapshot(vsixPath, options) {
+      inspectedPath = vsixPath;
+      requiredOwner = options.requireOwner;
+      return { bytes: candidateBytes };
+    },
+    async inspectArchive(bytes) {
+      assert.equal(bytes, candidateBytes);
+      return {
+        packagedPackageJson: JSON.stringify({
+          publisher: "Matt17BR",
+          name: "openwrangler",
+          version: "9.8.7"
+        })
+      };
+    }
+  });
+
+  assert.equal(inspectedPath, "/tmp/openwrangler-preview.vsix");
+  assert.equal(requiredOwner, true);
+  assert.equal(identity.qualified, "matt17br.openwrangler@9.8.7");
+});
 
 test("focused literate acceptance owns and probes its exact private Python kernel", async () => {
   const source = await readFile(resolve("scripts/run-packaged-editor-tests.mjs"), "utf8");
