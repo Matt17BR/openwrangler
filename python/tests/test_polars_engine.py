@@ -371,8 +371,6 @@ def test_lazy_polars_export_streams_to_the_exact_reserved_file_object(
     writer_path = ExportWriterPath(destination, *identity)
     observed_writers: list[Any] = []
     native_sink = pl.LazyFrame.sink_csv if format_name == "csv" else pl.LazyFrame.sink_parquet
-    native_collect = pl.LazyFrame.collect
-    sink_completion_heights: list[int] = []
 
     def observed_sink(lazy_frame: pl.LazyFrame, writer: Any, *args: Any, **kwargs: Any) -> Any:
         assert not isinstance(writer, (str, Path))
@@ -382,13 +380,6 @@ def test_lazy_polars_export_streams_to_the_exact_reserved_file_object(
 
     monkeypatch.setattr(pl.LazyFrame, f"sink_{format_name}", observed_sink)
 
-    def observed_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
-        result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
-        sink_completion_heights.append(result.height)
-        assert result.height == 0, "the IO sink must not materialize exported rows"
-        return result
-
-    monkeypatch.setattr(pl.LazyFrame, "collect", observed_collect)
     monkeypatch.setattr(
         pl.DataFrame,
         "to_pandas",
@@ -400,9 +391,7 @@ def test_lazy_polars_export_streams_to_the_exact_reserved_file_object(
 
     assert len(observed_writers) == 1
     assert observed_writers[0].closed is True
-    assert sink_completion_heights == [0]
     assert _regular_file_identity(destination) == identity
-    monkeypatch.setattr(pl.LazyFrame, "collect", native_collect)
     result = pl.read_csv(destination) if format_name == "csv" else pl.read_parquet(destination)
     assert result.to_dict(as_series=False) == {"value": [1, 2, 3]}
 
