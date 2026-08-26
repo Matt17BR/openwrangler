@@ -15,6 +15,19 @@ test("Open VSX checks accept updated action commits", () => {
   assert.deepEqual(inspectOpenVsxPromotionWorkflow(repinned), []);
 });
 
+test("Open VSX checks reject every unpinned external action reference", () => {
+  const references = ["actions/checkout@v6", "actions/checkout@deadbeef", "actions/checkout"];
+  for (const reference of references) {
+    const candidate = source.replace(/actions\/checkout@[0-9a-f]{40}/u, reference);
+    assert.notEqual(candidate, source);
+    assert.match(inspectOpenVsxPromotionWorkflow(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
+  }
+
+  const extraAction = source.replace("    steps:\n", "    steps:\n      - uses: example/unreviewed-action@v1\n");
+  assert.notEqual(extraAction, source);
+  assert.match(inspectOpenVsxPromotionWorkflow(extraAction).join("\n"), /full 40-character hexadecimal commit SHA/u);
+});
+
 test("Open VSX duplicate publication accepts the registry's exact message", () => {
   assert.match(
     OPEN_VSX_PUBLISH_RUN,

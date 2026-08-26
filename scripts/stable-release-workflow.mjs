@@ -1,4 +1,5 @@
 import { load as parseYaml } from "js-yaml";
+import { inspectPinnedExternalActions, usesPinnedAction } from "./workflow-action-pins.mjs";
 
 const CHECKOUT = "actions/checkout";
 const SETUP_NODE = "actions/setup-node";
@@ -23,12 +24,6 @@ function command(value) {
 
 function steps(job) {
   return Array.isArray(job?.steps) ? job.steps : [];
-}
-
-function usesPinnedAction(step, action) {
-  return (
-    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
-  );
 }
 
 function actionSteps(job, action) {
@@ -98,6 +93,7 @@ export function inspectReleaseCandidateWorkflow(source) {
   const problems = [];
   const workflow = parse(source, problems);
   if (!workflow) return problems;
+  problems.push(...inspectPinnedExternalActions(workflow));
   const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Release candidate" ||
@@ -216,6 +212,7 @@ export function inspectStableReleaseWorkflow(source) {
   const problems = [];
   const workflow = parse(source, problems);
   if (!workflow) return problems;
+  problems.push(...inspectPinnedExternalActions(workflow));
   const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Stable release promotion" ||

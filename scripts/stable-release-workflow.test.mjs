@@ -34,6 +34,28 @@ test("release checks accept updated action commits", () => {
   assert.deepEqual(inspectStableReleaseWorkflow(repinActions(stableSource)), []);
 });
 
+test("release inspectors reject tag, short, malformed, and extra external action references", () => {
+  const inspectors = [
+    [candidateSource, inspectReleaseCandidateWorkflow],
+    [stableSource, inspectStableReleaseWorkflow]
+  ];
+  for (const [source, inspect] of inspectors) {
+    for (const reference of ["actions/checkout@v6", "actions/checkout@deadbeef", "actions/checkout"]) {
+      const candidate = source.replace(/actions\/checkout@[0-9a-f]{40}/u, reference);
+      assert.notEqual(candidate, source);
+      assert.match(inspect(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
+    }
+    const candidate = mutate(source, (workflow) => {
+      Object.values(workflow.jobs)
+        .find((job) => Array.isArray(job.steps))
+        .steps.push({
+          uses: "example/unreviewed-action@v1"
+        });
+    });
+    assert.match(inspect(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
+  }
+});
+
 test("release-candidate inspector rejects publication, rebuilding, artifact, and fan-in drift", () => {
   const cases = [
     (workflow) => {

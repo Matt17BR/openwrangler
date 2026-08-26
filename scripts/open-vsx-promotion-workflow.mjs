@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
+import { inspectPinnedExternalActions, usesPinnedAction } from "./workflow-action-pins.mjs";
 
 const MAX_WORKFLOW_BYTES = 64 * 1024;
 const CHECKOUT = "actions/checkout";
@@ -114,12 +115,6 @@ function runSteps(job) {
   return job.steps.filter((step) => typeof step?.run === "string").map((step) => step.run);
 }
 
-function usesPinnedAction(step, action) {
-  return (
-    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
-  );
-}
-
 function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
 }
@@ -156,6 +151,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
   } catch {
     return ["Open VSX promotion workflow must be valid YAML."];
   }
+  problems.push(...inspectPinnedExternalActions(workflow));
   if (
     !exactKeys(workflow, ["name", "on", "permissions", "concurrency", "jobs"]) ||
     workflow.name !== "Promote GitHub release to Open VSX"
