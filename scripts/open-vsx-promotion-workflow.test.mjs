@@ -9,6 +9,12 @@ test("Open VSX promotion is the protected exact-public-release flow", () => {
   assert.deepEqual(inspectOpenVsxPromotionWorkflow(source), []);
 });
 
+test("Open VSX checks accept updated action commits", () => {
+  const repinned = source.replace(/@[0-9a-f]{40}/gu, `@${"a".repeat(40)}`);
+  assert.notEqual(repinned, source);
+  assert.deepEqual(inspectOpenVsxPromotionWorkflow(repinned), []);
+});
+
 test("Open VSX duplicate publication accepts the registry's exact message", () => {
   assert.match(
     OPEN_VSX_PUBLISH_RUN,

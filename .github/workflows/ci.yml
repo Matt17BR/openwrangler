@@ -2,9 +2,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, stacked]
-  merge_group:
-    types: [checks_requested]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
 
@@ -13,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -41,9 +39,6 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_STACK_BASE_SHA: ${{ github.event.pull_request.stack.base.sha }}
-          CI_STACK_POSITION: ${{ github.event.pull_request.stack.position }}
-          CI_STACK_SIZE: ${{ github.event.pull_request.stack.size }}
 
   javascript:
     name: JavaScript / TypeScript (Node ${{ matrix.node }})
@@ -87,7 +82,6 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
         (needs.changes.result != 'success' || needs.changes.outputs.python_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -144,7 +138,6 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
         (needs.changes.result != 'success' || needs.changes.outputs.r_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -213,7 +206,6 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
         (needs.changes.result != 'success' || needs.changes.outputs.package_editor_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -271,7 +263,6 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
         (needs.changes.result != 'success' || needs.changes.outputs.web_required != 'false')
       }}
     runs-on: ubuntu-24.04
@@ -307,7 +298,6 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') &&
         (needs.changes.result != 'success' || needs.changes.outputs.windows_required != 'false')
       }}
     runs-on: windows-latest
@@ -353,7 +343,7 @@ jobs:
       - package-editor
       - web
       - windows
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

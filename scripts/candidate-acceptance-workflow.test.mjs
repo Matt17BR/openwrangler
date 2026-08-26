@@ -31,6 +31,18 @@ test("accepts the fixed parallel candidate acceptance topology", () => {
   assert.deepEqual(inspectCandidateAcceptanceWorkflow(source), []);
 });
 
+test("accepts updated action commits", () => {
+  const value = workflow();
+  for (const job of Object.values(value.jobs)) {
+    for (const entry of job.steps ?? []) {
+      if (typeof entry.uses === "string" && !entry.uses.startsWith("./")) {
+        entry.uses = entry.uses.replace(/@[0-9a-f]{40}$/u, `@${"a".repeat(40)}`);
+      }
+    }
+  }
+  assert.deepEqual(inspectCandidateAcceptanceWorkflow(dumpYaml(value, { lineWidth: 120 })), []);
+});
+
 test("released Python Jupyter uses the fixed candidate one-owner profile", () => {
   const value = workflow();
   const runner = step(value.jobs.jupyter, (entry) => entry.id === "packaged_editor");
@@ -115,7 +127,7 @@ test("generic platform cells use one VS Code smoke and leave fork compatibility 
 test("generic platform acceptance contains no hosted-R setup or R-Jupyter tail", () => {
   expectRejected((value) => {
     value.jobs.platform.steps.push({
-      uses: "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6",
+      uses: `r-lib/actions/setup-r@${"a".repeat(40)}`,
       with: { "r-version": "4.5.2", "use-public-rspm": true }
     });
   }, /must stay generic/u);
@@ -291,7 +303,7 @@ test("performance prepares one authoritative remote tar-inspection interpreter b
   expectRejected((mutated) => {
     const setupIndex = mutated.jobs.performance.steps.findIndex((entry) => entry.id === "inspection_python");
     mutated.jobs.performance.steps.splice(setupIndex + 1, 0, {
-      uses: "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+      uses: `actions/setup-python@${"b".repeat(40)}`,
       with: { "python-version": "3.12", cache: "pip" }
     });
   }, /one pinned setup-python/u);
@@ -332,7 +344,7 @@ test("linux acceptance does not rerun pull-request suites or their private setup
   }, /artifact-focused.*source suites, harness setup/u);
   expectRejected((mutated) => {
     mutated.jobs.linux.steps.splice(3, 0, {
-      uses: "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e",
+      uses: `actions/setup-java@${"c".repeat(40)}`,
       with: { distribution: "temurin", "java-version": "17" }
     });
   }, /artifact-focused.*Jupyter-owned Java/u);

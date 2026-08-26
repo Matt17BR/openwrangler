@@ -2,13 +2,13 @@ import { load as parseYaml } from "js-yaml";
 import { NATIVE_R_CANDIDATE_CACHE_VERSION, NATIVE_R_CANDIDATE_PACKAGE_SPECS } from "./r-dependency-lock.mjs";
 import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
 
-const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
-const DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
-const SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97";
-const SETUP_JAVA = "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961";
-const SETUP_R = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const SETUP_R_DEPENDENCIES = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
+const CHECKOUT = "actions/checkout";
+const DOWNLOAD = "actions/download-artifact";
+const UPLOAD = "actions/upload-artifact";
+const SETUP_PYTHON = "actions/setup-python";
+const SETUP_JAVA = "actions/setup-java";
+const SETUP_R = "r-lib/actions/setup-r";
+const SETUP_R_DEPENDENCIES = "r-lib/actions/setup-r-dependencies";
 const CALL_PATH = "./.github/workflows/candidate-acceptance.yml";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const EVENT_SHA = "${{ github.sha }}";
@@ -58,6 +58,12 @@ function command(value) {
 
 function steps(job) {
   return Array.isArray(job?.steps) ? job.steps : [];
+}
+
+function usesPinnedAction(step, action) {
+  return (
+    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
+  );
 }
 
 function runs(job) {
@@ -111,7 +117,7 @@ export function inspectCandidateCaller(workflow, channel) {
 }
 
 function inspectCheckout(jobName, job, problems) {
-  const checkouts = steps(job).filter((step) => step?.uses === CHECKOUT);
+  const checkouts = steps(job).filter((step) => usesPinnedAction(step, CHECKOUT));
   const checkout = checkouts[0];
   if (
     checkouts.length !== 1 ||
@@ -127,7 +133,7 @@ function inspectCheckout(jobName, job, problems) {
 
 function inspectCanonicalConsumer(jobName, job, problems) {
   inspectCheckout(jobName, job, problems);
-  const downloads = steps(job).filter((step) => step?.uses === DOWNLOAD);
+  const downloads = steps(job).filter((step) => usesPinnedAction(step, DOWNLOAD));
   const download = downloads[0];
   if (
     downloads.length !== 1 ||
@@ -188,7 +194,7 @@ function inspectImmediateRunner(jobName, job, specification, problems) {
     verifier?.env?.EXPECTED_SHA !== "${{ inputs.expected_sha }}" ||
     verifier?.env?.RELEASE_TAG !== "${{ inputs.release_tag }}" ||
     upload?.name !== specification.uploadName ||
-    upload?.uses !== UPLOAD ||
+    !usesPinnedAction(upload, UPLOAD) ||
     upload?.if !== specification.uploadIf ||
     upload?.with?.name !== specification.artifactName ||
     upload?.with?.path !== `\${{ steps.${specification.id}.outputs.evidence_path }}` ||
@@ -235,8 +241,8 @@ function inspectXvfb(jobName, job, beforeRunnerIds, problems) {
 }
 
 function inspectRPackages(jobName, job, problems) {
-  const setupR = steps(job).filter((step) => step?.uses === SETUP_R);
-  const dependencies = steps(job).filter((step) => step?.uses === SETUP_R_DEPENDENCIES);
+  const setupR = steps(job).filter((step) => usesPinnedAction(step, SETUP_R));
+  const dependencies = steps(job).filter((step) => usesPinnedAction(step, SETUP_R_DEPENDENCIES));
   const dependency = dependencies[0];
   if (
     setupR.length !== 1 ||
@@ -414,8 +420,9 @@ export function inspectCandidateAcceptanceWorkflow(source) {
         { os: "macos-latest", python: "3.12" },
         { os: "windows-latest", python: "3.14" }
       ]) ||
-    steps(platform).filter((step) => step?.uses === SETUP_PYTHON).length !== 1 ||
-    steps(platform).find((step) => step?.uses === SETUP_PYTHON)?.with?.["python-version"] !== "${{ matrix.python }}"
+    steps(platform).filter((step) => usesPinnedAction(step, SETUP_PYTHON)).length !== 1 ||
+    steps(platform).find((step) => usesPinnedAction(step, SETUP_PYTHON))?.with?.["python-version"] !==
+      "${{ matrix.python }}"
   ) {
     problems.push("platform must run the exact non-cancelling macOS and Windows matrix internally.");
   }
@@ -426,8 +433,8 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   if (
     steps(platform).some(
       (step) =>
-        step?.uses === SETUP_R ||
-        step?.uses === SETUP_R_DEPENDENCIES ||
+        usesPinnedAction(step, SETUP_R) ||
+        usesPinnedAction(step, SETUP_R_DEPENDENCIES) ||
         step?.id === "rscript" ||
         step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" ||
         step?.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY !== undefined
@@ -474,11 +481,12 @@ export function inspectCandidateAcceptanceWorkflow(source) {
         { os: "macos-latest", python: "3.12", r: "4.5.2" },
         { os: "windows-latest", python: "3.14", r: "4.5.2" }
       ]) ||
-    steps(rPlatform).filter((step) => step?.uses === SETUP_PYTHON).length !== 1 ||
-    steps(rPlatform).find((step) => step?.uses === SETUP_PYTHON)?.with?.["python-version"] !== "${{ matrix.python }}" ||
-    steps(rPlatform).filter((step) => step?.uses === SETUP_R).length !== 1 ||
-    steps(rPlatform).find((step) => step?.uses === SETUP_R)?.with?.["r-version"] !== "${{ matrix.r }}" ||
-    steps(rPlatform).find((step) => step?.uses === SETUP_R)?.with?.["use-public-rspm"] !== true ||
+    steps(rPlatform).filter((step) => usesPinnedAction(step, SETUP_PYTHON)).length !== 1 ||
+    steps(rPlatform).find((step) => usesPinnedAction(step, SETUP_PYTHON))?.with?.["python-version"] !==
+      "${{ matrix.python }}" ||
+    steps(rPlatform).filter((step) => usesPinnedAction(step, SETUP_R)).length !== 1 ||
+    steps(rPlatform).find((step) => usesPinnedAction(step, SETUP_R))?.with?.["r-version"] !== "${{ matrix.r }}" ||
+    steps(rPlatform).find((step) => usesPinnedAction(step, SETUP_R))?.with?.["use-public-rspm"] !== true ||
     steps(rPlatform).filter((step) => step?.id === "rscript").length !== 1 ||
     platformRscript?.shell !== "Rscript {0}" ||
     platformRscript?.env?.EXPECTED_R_VERSION !== "${{ matrix.r }}" ||
@@ -488,7 +496,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       'if (!nzchar(executable) || grepl("[\\r\\n]", executable))',
       'cat(sprintf("executable=%s\\nversion=%s\\n"'
     ]) ||
-    steps(rPlatform).some((step) => step?.uses === SETUP_R_DEPENDENCIES)
+    steps(rPlatform).some((step) => usesPinnedAction(step, SETUP_R_DEPENDENCIES))
   ) {
     problems.push("r_platform must run the exact non-cancelling R 4.4 compatibility and R 4.5 platform matrix.");
   }
@@ -691,7 +699,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     performancePythonSetups.length !== 1 ||
     !exactKeys(performancePythonSetup, ["id", "uses", "with"]) ||
     performancePythonSetup?.id !== "inspection_python" ||
-    performancePythonSetup?.uses !== SETUP_PYTHON ||
+    !usesPinnedAction(performancePythonSetup, SETUP_PYTHON) ||
     !exactKeys(performancePythonSetup?.with, ["python-version", "cache"]) ||
     performancePythonSetup?.with?.["python-version"] !== "3.12" ||
     performancePythonSetup?.with?.cache !== "pip" ||
@@ -725,7 +733,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     command(performanceReport?.run) !==
       "node scripts/release-candidate.mjs performance ${{ runner.temp }}/release-candidate-performance.json" ||
     performanceReport?.if !== "${{ steps.installed_performance.outcome == 'success' }}" ||
-    performanceArtifact?.uses !== UPLOAD ||
+    !usesPinnedAction(performanceArtifact, UPLOAD) ||
     performanceArtifact?.if !== "${{ steps.installed_performance.outcome == 'success' }}" ||
     performanceArtifact?.with?.name !== "openwrangler-release-candidate-performance" ||
     performanceSteps.indexOf(performanceRunner) >= performanceSteps.indexOf(performanceReport) ||
@@ -743,9 +751,11 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     jupyter.strategy["max-parallel"] !== 2 ||
     !exactKeys(jupyter.strategy.matrix, ["phase"]) ||
     !sameArray(jupyter.strategy.matrix.phase, ["python", "r-remote"]) ||
-    steps(jupyter).some((step) => step?.uses === SETUP_R || command(step?.run) === "npm run test:r-contract") ||
-    steps(jupyter).filter((step) => step?.uses === SETUP_JAVA).length !== 1 ||
-    steps(jupyter).find((step) => step?.uses === SETUP_JAVA)?.if !== "${{ matrix.phase == 'python' }}"
+    steps(jupyter).some(
+      (step) => usesPinnedAction(step, SETUP_R) || command(step?.run) === "npm run test:r-contract"
+    ) ||
+    steps(jupyter).filter((step) => usesPinnedAction(step, SETUP_JAVA)).length !== 1 ||
+    steps(jupyter).find((step) => usesPinnedAction(step, SETUP_JAVA))?.if !== "${{ matrix.phase == 'python' }}"
   ) {
     problems.push("jupyter must run only independent Python and remote-R cells; local R belongs to its shards.");
   }
@@ -1002,7 +1012,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
         problems.push(`${jobName} action ${step.uses} must be pinned to one full commit.`);
       }
       if (
-        step?.uses === UPLOAD &&
+        usesPinnedAction(step, UPLOAD) &&
         typeof step?.with?.name === "string" &&
         !step.with.name.startsWith("candidate-") &&
         step.with.name !== "openwrangler-release-candidate-performance"

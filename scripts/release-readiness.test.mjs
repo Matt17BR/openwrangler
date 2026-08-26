@@ -2556,6 +2556,16 @@ test("retains the historical 1.99.x preview recovery workflow contract", () => {
   const workflowSource = readFileSync(new URL("./fixtures/historical-preview-release.yml", import.meta.url), "utf8");
   assert.deepEqual(inspectReleaseWorkflow(workflowSource), []);
 
+  const repinnedWorkflow = parseYaml(workflowSource);
+  for (const job of Object.values(repinnedWorkflow.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.uses === "string" && !step.uses.startsWith("./")) {
+        step.uses = step.uses.replace(/@[0-9a-f]{40}$/u, `@${"a".repeat(40)}`);
+      }
+    }
+  }
+  assert.deepEqual(inspectReleaseWorkflow(dumpYaml(repinnedWorkflow)), []);
+
   const mutate = (change) => {
     const workflow = parseYaml(workflowSource);
     change(workflow);

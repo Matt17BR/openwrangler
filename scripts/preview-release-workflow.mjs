@@ -13,11 +13,11 @@ const EVENT_REF = "${{ github.ref }}";
 const EVENT_REF_TYPE = "${{ github.ref_type }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
-const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
-const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
-const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
-const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+const CHECKOUT_ACTION = "actions/checkout";
+const SETUP_NODE_ACTION = "actions/setup-node";
+const SETUP_PYTHON_ACTION = "actions/setup-python";
+const UPLOAD_ACTION = "actions/upload-artifact";
+const DOWNLOAD_ACTION = "actions/download-artifact";
 const JOBS = ["package", "candidate-acceptance", "remote-ssh", "release"];
 const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix",
@@ -52,6 +52,12 @@ function steps(job) {
   return Array.isArray(job?.steps) ? job.steps : [];
 }
 
+function usesPinnedAction(step, action) {
+  return (
+    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
+  );
+}
+
 function runs(job) {
   return steps(job)
     .map((step) => command(step?.run))
@@ -63,7 +69,7 @@ function findRun(job, expected) {
 }
 
 function inspectCheckout(job, label, problems) {
-  const matches = steps(job).filter((step) => step?.uses === CHECKOUT_ACTION);
+  const matches = steps(job).filter((step) => usesPinnedAction(step, CHECKOUT_ACTION));
   const checkout = matches[0];
   if (
     matches.length !== 1 ||
@@ -93,7 +99,7 @@ function inspectPackageSourceBinding(job, problems) {
     problems.push("package must reject tags and every source other than protected main before checkout.");
   }
 
-  const checkout = jobSteps.find((step) => step?.uses === CHECKOUT_ACTION);
+  const checkout = jobSteps.find((step) => usesPinnedAction(step, CHECKOUT_ACTION));
   const exactGuards = jobSteps.filter((step) => step?.name === "Require exact protected main commit");
   const exactGuard = exactGuards[0];
   if (
@@ -106,13 +112,13 @@ function inspectPackageSourceBinding(job, problems) {
     problems.push("package must bind the clean checkout and protected main ref to the exact event commit.");
   }
 
-  const setupNodeSteps = jobSteps.filter((step) => step?.uses === SETUP_NODE_ACTION);
+  const setupNodeSteps = jobSteps.filter((step) => usesPinnedAction(step, SETUP_NODE_ACTION));
   const setupNode = setupNodeSteps[0];
   const remotePreflights = jobSteps.filter(
     (step) => command(step?.run) === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote"
   );
   const remotePreflight = remotePreflights[0];
-  const setupPythonSteps = jobSteps.filter((step) => step?.uses === SETUP_PYTHON_ACTION);
+  const setupPythonSteps = jobSteps.filter((step) => usesPinnedAction(step, SETUP_PYTHON_ACTION));
   const setupPython = setupPythonSteps[0];
   const metadataSteps = jobSteps.filter((step) => step?.id === "release_metadata");
   const metadata = metadataSteps[0];
@@ -160,7 +166,7 @@ function inspectPackageSourceBinding(job, problems) {
 
 function inspectCanonicalConsumer(job, label, problems) {
   const jobSteps = steps(job);
-  const downloads = jobSteps.filter((step) => step?.uses === DOWNLOAD_ACTION);
+  const downloads = jobSteps.filter((step) => usesPinnedAction(step, DOWNLOAD_ACTION));
   const download = downloads[0];
   if (
     downloads.length !== 1 ||
@@ -330,7 +336,7 @@ export function inspectPreviewReleaseWorkflow(source) {
     problems.push("package must author exactly one canonical preview VSIX/checksum/provenance triple.");
   }
   const packageVerifier = findRun(packaging, "node scripts/verify-preview-release-artifact.mjs canonical-release");
-  const uploads = steps(packaging).filter((step) => step?.uses === UPLOAD_ACTION);
+  const uploads = steps(packaging).filter((step) => usesPinnedAction(step, UPLOAD_ACTION));
   const upload = uploads[0];
   if (
     uploads.length !== 1 ||

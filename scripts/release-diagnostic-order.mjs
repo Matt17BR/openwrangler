@@ -12,6 +12,12 @@ function failureCondition(step) {
   return typeof step?.if === "string" ? FAILURE_CONDITION.exec(step.if) : null;
 }
 
+function usesPinnedAction(step, action) {
+  return (
+    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
+  );
+}
+
 export function isExplicitOutcomeFailureStep(step) {
   const match = failureCondition(step);
   return match !== null && match[2] === undefined && step?.uses === undefined && command(step?.run) === "exit 1";
@@ -51,7 +57,7 @@ export function inspectDeferredDiagnosticFailures(workflow, uploadAction) {
 
     for (let index = 0; index < jobSteps.length; index += 1) {
       const upload = jobSteps[index];
-      const match = upload?.uses === uploadAction ? failureCondition(upload) : null;
+      const match = usesPinnedAction(upload, uploadAction) ? failureCondition(upload) : null;
       if (match === null) continue;
 
       const [, runnerId, evidenceClause] = match;

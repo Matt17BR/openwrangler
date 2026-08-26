@@ -13,8 +13,25 @@ function mutate(source, change) {
   return dumpYaml(workflow);
 }
 
+function repinActions(source) {
+  return mutate(source, (workflow) => {
+    for (const job of Object.values(workflow.jobs)) {
+      for (const step of job.steps ?? []) {
+        if (typeof step.uses === "string" && !step.uses.startsWith("./")) {
+          step.uses = step.uses.replace(/@[0-9a-f]{40}$/u, `@${"a".repeat(40)}`);
+        }
+      }
+    }
+  });
+}
+
 test("release candidate packages once and seals read-only qualification", () => {
   assert.deepEqual(inspectReleaseCandidateWorkflow(candidateSource), []);
+});
+
+test("release checks accept updated action commits", () => {
+  assert.deepEqual(inspectReleaseCandidateWorkflow(repinActions(candidateSource)), []);
+  assert.deepEqual(inspectStableReleaseWorkflow(repinActions(stableSource)), []);
 });
 
 test("release-candidate inspector rejects publication, rebuilding, artifact, and fan-in drift", () => {

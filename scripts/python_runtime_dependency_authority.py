@@ -553,7 +553,40 @@ def _render_host(dependencies: tuple[Dependency, ...]) -> str:
     return "\n".join(lines)
 
 
-def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
+def _generated_workflow_action_use(workflow_source: str, action: str) -> str:
+    lines = workflow_source.split("\n")
+    try:
+        start = lines.index(WORKFLOW_START)
+        end = lines.index(WORKFLOW_END)
+    except ValueError:
+        _fail("missing_generation_marker")
+    if start >= end:
+        _fail("reversed_generation_marker")
+    matches: list[str] = []
+    prefix = f"{action}@"
+    for line in lines[start + 1 : end]:
+        stripped = line.strip()
+        if not stripped.startswith("- uses:"):
+            continue
+        use = stripped.removeprefix("- uses:").strip()
+        reference = use.partition("#")[0].strip()
+        if not reference.startswith(prefix):
+            continue
+        if re.fullmatch(rf"{re.escape(action)}@[0-9a-f]{{40}}", reference) is None:
+            _fail("workflow_action_invalid")
+        matches.append(use)
+    if len(matches) != 1:
+        _fail("workflow_action_invalid")
+    return matches[0]
+
+
+def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str) -> str:
+    checkout_action = _generated_workflow_action_use(
+        workflow_source, "actions/checkout"
+    )
+    setup_python_action = _generated_workflow_action_use(
+        workflow_source, "actions/setup-python"
+    )
     lines = [
         "  python-runtime-dependency-cohorts:",
         "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})",
@@ -577,8 +610,8 @@ def _render_workflow(dependencies: tuple[Dependency, ...]) -> str:
     lines.extend(
         (
             "    steps:",
-            "      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0",
-            "      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
+            f"      - uses: {checkout_action}",
+            f"      - uses: {setup_python_action}",
             "        with:",
             "          python-version: ${{ matrix.python }}",
             "      - name: Install Open Wrangler and exact qualified dependency",
@@ -643,7 +676,7 @@ def rendered_consumers(
         ),
         WORKFLOW_PATH: _replace_blocks(
             workflow,
-            ((WORKFLOW_START, WORKFLOW_END, _render_workflow(dependencies)),),
+            ((WORKFLOW_START, WORKFLOW_END, _render_workflow(dependencies, workflow)),),
         ),
     }
 

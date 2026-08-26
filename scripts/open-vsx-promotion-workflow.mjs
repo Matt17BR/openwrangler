@@ -4,8 +4,8 @@ import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 64 * 1024;
-const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
-const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const CHECKOUT = "actions/checkout";
+const SETUP_NODE = "actions/setup-node";
 const TAG_EXPRESSION = "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}";
 const COMMIT_EXPRESSION = "${{ steps.release_source.outputs.release_commit }}";
 const PRERELEASE_EXPRESSION = "${{ steps.release_source.outputs.release_prerelease }}";
@@ -114,6 +114,12 @@ function runSteps(job) {
   return job.steps.filter((step) => typeof step?.run === "string").map((step) => step.run);
 }
 
+function usesPinnedAction(step, action) {
+  return (
+    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
+  );
+}
+
 function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
 }
@@ -195,7 +201,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     problems.push("Open VSX promotion must use the fixed protected publishing job.");
     return problems;
   }
-  const checkouts = job.steps.filter((step) => step?.uses === CHECKOUT);
+  const checkouts = job.steps.filter((step) => usesPinnedAction(step, CHECKOUT));
   if (
     checkouts.length !== 2 ||
     JSON.stringify(checkouts[0]?.with) !==
@@ -208,7 +214,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
         "fetch-tags": true,
         "persist-credentials": false
       }) ||
-    job.steps.filter((step) => step?.uses === SETUP_NODE).length !== 1
+    job.steps.filter((step) => usesPinnedAction(step, SETUP_NODE)).length !== 1
   ) {
     problems.push("Open VSX promotion must separately check out reviewed main and the exact public release tag.");
   }
