@@ -17,8 +17,8 @@ versions. Other jobs run only for files they own:
 
 A Dependabot-configuration-only change runs only the shared JavaScript/TypeScript checks. A Python-test-only change
 runs those shared checks and Python. Package and lockfile changes run every lane that consumes the changed build or
-dependency metadata. Dependency-changing pull requests run the matching audit. Main and merge-queue runs repeat all
-behavior lanes but do not repeat an audit that already passed on the pull request.
+dependency metadata. Dependency-changing pull requests run the matching audit. Main runs repeat all behavior lanes
+but do not repeat an audit that already passed on the pull request.
 
 Unknown paths and changes to CI's own selection code run every lane. A missing or failed change-detection result also
 prevents merge.
@@ -28,9 +28,8 @@ skipped, and fails for selected jobs that failed, were cancelled, or returned a 
 rejects a job that ran despite not being selected. The main-branch ruleset requires both `validate` and `CodeQL gate`,
 so failing code cannot merge.
 
-Pull requests, including drafts, run on open, synchronize, reopen, base edit, and stack changes. A stacked pull request
-uses the cumulative stack range when GitHub supplies complete stack metadata. Merge-queue candidates run all lanes on
-the merged tree. Superseded pull-request and merge-group runs are cancelled.
+Pull requests, including drafts, run when they are opened, reopened, or receive new commits. A newer run for the same
+pull request cancels its older run.
 
 Visual diffs and packaged-editor diagnostics are uploaded only when their job fails. Ordinary successful pull-request
 runs do not retain build artifacts.

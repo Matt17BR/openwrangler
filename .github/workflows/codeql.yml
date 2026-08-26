@@ -5,9 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited, stacked]
-  merge_group:
-    types: [checks_requested]
+    types: [opened, synchronize, reopened]
   schedule:
     - cron: "23 4 * * 2"
 
@@ -18,7 +16,7 @@ permissions:
 
 concurrency:
   group: codeql-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze-javascript-typescript:

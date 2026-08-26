@@ -155,8 +155,8 @@ test("path selection keeps small changes small", () => {
     windowsRequired: true,
     pythonDependenciesRequired: true
   });
-  assert.deepEqual(classifyCiChange({ eventName: "merge_group", changedPaths: [] }), allLanes);
   assert.deepEqual(classifyCiChange({ eventName: "push", changedPaths: [] }), allLanes);
+  assert.throws(() => classifyCiChange({ eventName: "merge_group", changedPaths: [] }), /Unsupported CI event/u);
 });
 
 test("Dependabot covers each dependency source with bounded routine updates", () => {
@@ -180,59 +180,33 @@ test("Dependabot covers each dependency source with bounded routine updates", ()
   }
 });
 
-test("changed path and stacked pull-request inputs are validated", () => {
+test("changed paths and pull-request revisions are validated", () => {
   assert.deepEqual(parseChangedPathBuffer(Buffer.from("a\0docs/b.md\0")), ["a", "docs/b.md"]);
   assert.throws(() => parseChangedPathBuffer(Buffer.from("missing terminator")), /NUL terminated/u);
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
   const base = "1".repeat(40);
   const head = "2".repeat(40);
-  const stack = "3".repeat(40);
   assert.deepEqual(
     resolvePullRequestClassificationRange({
       pullRequestBaseSha: base,
-      pullRequestHeadSha: head,
-      stackBaseSha: stack,
-      stackPosition: "2",
-      stackSize: "3"
+      pullRequestHeadSha: head
     }),
-    { baseSha: stack, headSha: head, stackedEvent: true, stackPosition: 2, stackSize: 3, partialPrefix: true }
+    { baseSha: base, headSha: head }
   );
   assert.throws(() =>
     resolvePullRequestClassificationRange({
       pullRequestBaseSha: base,
-      pullRequestHeadSha: head,
-      stackBaseSha: stack,
-      stackPosition: "0",
-      stackSize: "3"
+      pullRequestHeadSha: "not-a-commit"
     })
   );
 });
 
-test("pull-request jobs have plain names and independent path owners", () => {
-  assert.deepEqual(Object.keys(ci.jobs), [
-    "changes",
-    "javascript",
-    "python",
-    "r",
-    "package-editor",
-    "web",
-    "windows",
-    "validate"
-  ]);
-  assert.deepEqual(
-    Object.values(ci.jobs).map((job) => job.name),
-    [
-      "Changes",
-      "JavaScript / TypeScript (Node ${{ matrix.node }})",
-      "Python",
-      "R",
-      "Package and editor",
-      "Web UI and accessibility",
-      "Windows",
-      "validate"
-    ]
-  );
+test("pull-request checks use the real triggers and read-only defaults", () => {
+  assert.deepEqual(ci.on.pull_request.types, ["opened", "synchronize", "reopened"]);
+  assert.deepEqual(ci.on.push.branches, ["main"]);
+  assert.equal(ci.on.merge_group, undefined);
   assert.deepEqual(ci.permissions, { contents: "read" });
+  assert.equal(ci.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
   assert.deepEqual(Object.keys(ci.jobs.changes.outputs), CI_CLASSIFIER_OUTPUTS);
   assert.deepEqual(ci.jobs.javascript.needs, ["changes"]);
   assert.deepEqual(ci.jobs.javascript.strategy.matrix.node, ["24.19.0", "22.23.2"]);
@@ -437,10 +411,7 @@ test("validate accepts expected skips and rejects every bad or missing result", 
 
 test("validate is the stable required fan-in", () => {
   assert.deepEqual(ci.jobs.validate.needs, REQUIRED_CI_JOBS);
-  assert.equal(
-    ci.jobs.validate.if,
-    "${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
-  );
+  assert.equal(ci.jobs.validate.if, "${{ always() && github.event_name == 'pull_request' }}");
   const validation = stepRunning(ci.jobs.validate, "node scripts/require-ci-results.mjs");
   assert.ok(validation);
   assert.deepEqual(Object.keys(validation.env).sort(), [
@@ -473,12 +444,17 @@ test("all workflow actions use fixed revisions", () => {
   }
 });
 
-test("other workflows retain their existing final jobs", () => {
+test("CodeQL covers source changes and keeps write access limited to results", () => {
   const codeql = workflow("codeql.yml");
+  assert.deepEqual(codeql.on.pull_request.types, ["opened", "synchronize", "reopened"]);
+  assert.deepEqual(codeql.on.pull_request.branches, ["main"]);
+  assert.deepEqual(codeql.on.push.branches, ["main"]);
+  assert.equal(codeql.on.merge_group, undefined);
+  assert.deepEqual(codeql.permissions, { actions: "read", contents: "read", "security-events": "write" });
+  assert.equal(codeql.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
   assert.equal(codeql.jobs["codeql-gate"].name, "CodeQL gate");
   assert.equal(codeql.jobs["codeql-gate"].if, "${{ always() }}");
   assert.deepEqual(codeql.jobs["codeql-gate"].needs, ["analyze-javascript-typescript", "analyze-python"]);
-
   for (const [name, jobId, needs] of [
     [
       "candidate-acceptance.yml",

@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
-const POSITIVE_INTEGER = /^[1-9][0-9]*$/u;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 export const CI_CLASSIFIER_OUTPUTS = Object.freeze([
   "python_required",
@@ -185,7 +184,7 @@ function fullSelection(checks = { nodeDependenciesRequired: false, pythonDepende
 
 export function classifyCiChange({ eventName, changedPaths }) {
   if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
-  if (!["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
+  if (!["pull_request", "push"].includes(eventName)) {
     throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
   }
   if (eventName !== "pull_request") return fullSelection();
@@ -299,47 +298,13 @@ function readPullRequestPaths({ baseSha, headSha }) {
   );
 }
 
-export function resolvePullRequestClassificationRange({
-  pullRequestBaseSha,
-  pullRequestHeadSha,
-  stackBaseSha,
-  stackPosition,
-  stackSize
-}) {
+export function resolvePullRequestClassificationRange({ pullRequestBaseSha, pullRequestHeadSha }) {
   if (!COMMIT_SHA.test(pullRequestBaseSha ?? "") || !COMMIT_SHA.test(pullRequestHeadSha ?? "")) {
     throw new Error("Pull-request base and head revisions must be exact lowercase commit SHAs.");
   }
-
-  const stackFields = [stackBaseSha, stackPosition, stackSize].map((value) => value ?? "");
-  const presentStackFields = stackFields.filter((value) => value !== "").length;
-  if (presentStackFields === 0) {
-    return Object.freeze({
-      baseSha: pullRequestBaseSha,
-      headSha: pullRequestHeadSha,
-      stackedEvent: false,
-      stackPosition: null,
-      stackSize: null,
-      partialPrefix: false
-    });
-  }
-  if (presentStackFields !== stackFields.length) {
-    throw new Error("Stack classification requires an exact base SHA, position, and size together.");
-  }
-  if (!COMMIT_SHA.test(stackBaseSha) || !POSITIVE_INTEGER.test(stackPosition) || !POSITIVE_INTEGER.test(stackSize)) {
-    throw new Error("Stack classification metadata is malformed.");
-  }
-  const position = Number.parseInt(stackPosition, 10);
-  const size = Number.parseInt(stackSize, 10);
-  if (!Number.isSafeInteger(position) || !Number.isSafeInteger(size) || position > size) {
-    throw new Error("Stack classification position must be within the exact stack size.");
-  }
   return Object.freeze({
-    baseSha: stackBaseSha,
-    headSha: pullRequestHeadSha,
-    stackedEvent: true,
-    stackPosition: position,
-    stackSize: size,
-    partialPrefix: position < size
+    baseSha: pullRequestBaseSha,
+    headSha: pullRequestHeadSha
   });
 }
 
@@ -349,20 +314,13 @@ function main(environment) {
     eventName === "pull_request"
       ? resolvePullRequestClassificationRange({
           pullRequestBaseSha: environment.CI_BASE_SHA,
-          pullRequestHeadSha: environment.CI_HEAD_SHA,
-          stackBaseSha: environment.CI_STACK_BASE_SHA,
-          stackPosition: environment.CI_STACK_POSITION,
-          stackSize: environment.CI_STACK_SIZE
+          pullRequestHeadSha: environment.CI_HEAD_SHA
         })
       : undefined;
   const changedPaths = range ? readPullRequestPaths(range) : [];
   const classification = classifyCiChange({ eventName, changedPaths });
   if (range) {
-    process.stdout.write(
-      `CI classification range: base=${range.baseSha} head=${range.headSha} stacked=${range.stackedEvent} ` +
-        `position=${range.stackPosition ?? "ordinary"} size=${range.stackSize ?? "ordinary"} ` +
-        `partial-prefix=${range.partialPrefix}\n`
-    );
+    process.stdout.write(`CI classification range: base=${range.baseSha} head=${range.headSha}\n`);
   }
   if (!environment.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT is required.");
   appendFileSync(

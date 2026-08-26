@@ -1,9 +1,9 @@
 import { load as parseYaml } from "js-yaml";
 
-const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
-const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
-const DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+const CHECKOUT = "actions/checkout";
+const SETUP_NODE = "actions/setup-node";
+const DOWNLOAD = "actions/download-artifact";
+const UPLOAD = "actions/upload-artifact";
 const SOURCE_SHA = "${{ needs.select.outputs.candidate-source-sha }}";
 const RUN_ID = "${{ needs.select.outputs.candidate-run-id }}";
 
@@ -25,8 +25,14 @@ function steps(job) {
   return Array.isArray(job?.steps) ? job.steps : [];
 }
 
+function usesPinnedAction(step, action) {
+  return (
+    typeof step?.uses === "string" && step.uses.startsWith(`${action}@`) && /^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)
+  );
+}
+
 function actionSteps(job, action) {
-  return steps(job).filter((step) => step?.uses === action);
+  return steps(job).filter((step) => usesPinnedAction(step, action));
 }
 
 function runSteps(job, fragment) {
@@ -193,7 +199,7 @@ export function inspectReleaseCandidateWorkflow(source) {
 
 function inspectCrossRunDownload(step, artifactId, path, problems) {
   if (
-    step?.uses !== DOWNLOAD ||
+    !usesPinnedAction(step, DOWNLOAD) ||
     !exactKeys(step.with, ["artifact-ids", "github-token", "repository", "run-id", "path", "merge-multiple"]) ||
     step.with["artifact-ids"] !== artifactId ||
     step.with["github-token"] !== "${{ github.token }}" ||

@@ -5,6 +5,7 @@ import importlib
 import importlib.metadata
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -472,6 +473,7 @@ def test_installed_dependencies_exercise_the_probe_contract(
 
 def test_generated_cohort_job_maps_each_qualification_once() -> None:
     dependencies = authority.load_authority()
+    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
     expected = tuple(
         (
             dependency.identifier,
@@ -482,7 +484,11 @@ def test_generated_cohort_job_maps_each_qualification_once() -> None:
         for dependency in dependencies
         for case in dependency.executable_qualification_cases
     )
-    rendered = authority._render_workflow(dependencies)
+    rendered = authority._render_workflow(dependencies, workflow)
+    repinned_workflow = re.sub(r"@[0-9a-f]{40}", f"@{'a' * 40}", workflow)
+    repinned = authority._render_workflow(dependencies, repinned_workflow)
+    assert f"actions/checkout@{'a' * 40}" in repinned
+    assert f"actions/setup-python@{'a' * 40}" in repinned
     assert rendered.count("          - id: ") == len(expected)
     expected_install = 'python -m pip install -e "python[dev]" "' + "$" + '{{ matrix.requirement }}"'
     assert expected_install in rendered
@@ -501,8 +507,6 @@ def test_generated_cohort_job_maps_each_qualification_once() -> None:
         ("3.12", "9.15.0"),
         ("3.12", "9.16.1"),
     }
-
-
 def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
     identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
     python_version = os.environ.get("OPENWRANGLER_QUALIFIED_PYTHON_VERSION")
