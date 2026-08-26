@@ -74,7 +74,8 @@ def test_generated_consumers_match_the_dependency_authority() -> None:
     assert f"{authority.HOST_START}\n{authority._render_host(dependencies)}\n{authority.HOST_END}" in host
     workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
     assert (
-        f"{authority.WORKFLOW_START}\n{authority._render_workflow(dependencies)}\n{authority.WORKFLOW_END}" in workflow
+        f"{authority.WORKFLOW_START}\n{authority._render_workflow(dependencies, workflow)}\n{authority.WORKFLOW_END}"
+        in workflow
     )
 
 
@@ -507,6 +508,8 @@ def test_generated_cohort_job_maps_each_qualification_once() -> None:
         ("3.12", "9.15.0"),
         ("3.12", "9.16.1"),
     }
+
+
 def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
     identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
     python_version = os.environ.get("OPENWRANGLER_QUALIFIED_PYTHON_VERSION")
