@@ -43,7 +43,8 @@ Scheduled workflows cover dependencies that can change without a repository comm
   editor action, render the grid, sort one column, and close the session and runtime. Only a passing VSIX is retained;
   it expires after 14 days and cannot be promoted. Failures retain only the usual sanitized editor diagnostics.
 - **Cross-platform runtime** runs Mondays at 04:17 UTC. It covers macOS with Python 3.12, Windows with Python 3.14,
-  focused Windows dependency behavior, supported Python dependency versions, and R 4.4.
+  focused Windows dependency behavior, four whole Python environments spanning the supported dependency versions,
+  and lock-backed R 4.4 and current R runs.
 - **Performance gates** run Tuesdays at 05:41 UTC for the Polars runtime. The larger PySpark profile is manual.
 - **CodeQL** runs Tuesdays at 04:23 UTC in addition to pull requests and protected-main pushes.
 

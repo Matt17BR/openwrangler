@@ -175,8 +175,8 @@ the complete allowed Variables/renderer journey, PySpark, and remote Python. It 
 Python-environment, seed, verify, or generic packaged setup phases already owned by Linux packaged-editor acceptance.
 Unset and manual packaged runs keep their complete prior editor matrix.
 
-Protected pull-request CI owns the direct R 4.5 contract, while scheduled/manual Cross retains direct R 4.4
-evidence. Candidate qualification installs the same canonical VSIX against both R 4.4 and R 4.5 platform seams.
+Protected pull-request CI owns fast direct R 4.5 feedback, while scheduled/manual Cross runs lock-backed R 4.4 and
+current R environments. Candidate qualification installs the same canonical VSIX against both R 4.4 and R 4.5 platform seams.
 VS Code owns the R operation semantics; Cursor does not repeat the R catalog. Stable promotion accepts that evidence only
 through the sealed candidate manifest.
 
@@ -430,8 +430,9 @@ Each coherent change uses a feature branch and pull request. The current PR work
 and ready changes. JavaScript/TypeScript checks run for every change; Python, R, package/editor, web, and Windows jobs
 are selected by path. Missing or malformed classification runs every lane, and the final `validate` job blocks merge
 for every selected failure or unknown result. Scheduled/manual Cross retains its
-macOS/Windows runtime, Windows dependency checks, the exact `python-runtime-dependency-cohorts` job that installs and
-exercises every declared dependency/Python qualification pair, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
+macOS/Windows runtime, Windows dependency checks, four whole Python compatibility environments, and lock-backed R
+4.4/current checks. The pinned Python rows collectively cover every declared qualified version; the latest row checks
+one current in-range resolved environment. CodeQL runs explicit always-on JavaScript/TypeScript
 and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
 publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 

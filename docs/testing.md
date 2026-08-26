@@ -154,10 +154,12 @@ matrix for release candidates or changes that cross those boundaries.
   `scripts/r-performance-harness.R` and requires a nonempty expression on both hosted R versions; this adds no fourth
   direct R subprocess. These runner bounds do not change editor phase, editor inactivity, or runtime-operation
   deadlines. The current PR workflow has one selected R 4.5 job. It checks the runner, runs the kernel-agent shard,
-  and then runs the remaining protocol tests. The temporary R 4.4 pull-request carrier is retired; the
-  manual and scheduled Cross workflow owns the exact `python-runtime-dependency-cohorts` job that installs and exercises
-  every declared dependency/Python qualification pair, plus the lock-backed R 4.4 qualification. Every R owner consumes
-  its exact dated lock through the strict private-library path above. The contract also
+  and then runs the remaining protocol tests. The temporary R 4.4 pull-request carrier is retired. Manual and scheduled
+  Cross runs four whole Python environments: the minimum supported set, a pinned known-good set, the newest packages
+  allowed by the declared ranges, and the newer notebook/backend boundary set. The three pinned rows collectively run
+  every declared qualified dependency version; the newest-packages row prints the versions chosen by pip and never
+  claims to isolate one package. Cross also runs the lock-backed R 4.4 and current R environments. Every R owner consumes
+  its dated lock through the strict private-library path above. The contract also
   runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
@@ -297,8 +299,9 @@ benchmark. Actual comparisons remain manual or release-owned.
   shard matrix; mutation tests prove that an unknown shard or sibling cancellation blocks the candidate. The only steps
   allowed to use `continue-on-error` are named diagnostic producers, and each must be followed immediately by its upload
   while the shard's explicit raw-outcome failure is deferred until all assigned phases finish.
-  Protected pull-request CI owns the direct R 4.5 contracts; scheduled/manual Cross owns direct R 4.4 evidence. The
-  release-candidate workflow additionally installs the exact candidate VSIX against both R 4.4 and R 4.5 platform
+  Protected pull-request CI owns fast direct R 4.5 feedback; scheduled/manual Cross checks lock-backed R 4.4 and the
+  current R environment together. The release-candidate workflow additionally installs the exact candidate VSIX
+  against both R 4.4 and R 4.5 platform
   seams before any later stable promotion can select it.
 - Microsoft Marketplace tests parse and pin the complete Azure Pipeline, require its WIF service connection and
   protected environment, and reject PATs, rebuilds, mutable artifact paths, channel omissions, and intervening
@@ -323,8 +326,9 @@ median calculated separately by market and segment.
 Every required context has one primary evidence owner. [CI and release checks](ci.md) maps the pull-request, scheduled,
 and release tiers. `validate` runs after every selected PR workflow owner and is the sole parser of their exact
 results. Cross runs only on manual dispatch and schedule, retaining its macOS/Windows runtime, Windows dependency
-guards, the exact `python-runtime-dependency-cohorts` job that installs and exercises every declared
-dependency/Python qualification pair, and R 4.4 qualification. CodeQL retains both analyzer names and one result gate;
+guards, four coherent Python compatibility environments, and lock-backed R 4.4/current evidence. The pinned Python
+rows collectively cover every declared qualified version, while the latest row checks the current in-range resolver
+result as one whole environment. CodeQL retains both analyzer names and one result gate;
 neither workflow invents another classifier. Draft and ready heads use the same pull-request evidence mapping, and only
 superseded PR heads are cancelled.
 
@@ -1064,7 +1068,7 @@ It then opens a fresh Python file and uses Jupyter's ordinary **Run Cell** comma
 active, Operations must find the new Pandas dataframe automatically. Opening it from the Interactive action must reuse
 the same kernel and completed cell; the later source cell must not run, and neither file may change.
 
-The PR workflow's R 4.5 job and scheduled/manual Cross R 4.4 job receive `readr` and `dplyr` plus their
+The PR workflow's R 4.5 job and scheduled/manual Cross R 4.4/current rows receive `readr` and `dplyr` plus their
 complete hard-dependency closure from the two dated lock registries because the suite opens actual readr and grouped
 tibbles rather than hand-built stand-ins.
 R 4.4 and R 4.5 are tested qualification environments, not a declared public support range; the release-candidate

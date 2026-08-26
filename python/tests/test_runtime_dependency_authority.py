@@ -5,7 +5,6 @@ import importlib
 import importlib.metadata
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -72,11 +71,6 @@ def test_generated_consumers_match_the_dependency_authority() -> None:
 
     host = authority.HOST_PATH.read_text(encoding="utf-8")
     assert f"{authority.HOST_START}\n{authority._render_host(dependencies)}\n{authority.HOST_END}" in host
-    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert (
-        f"{authority.WORKFLOW_START}\n{authority._render_workflow(dependencies, workflow)}\n{authority.WORKFLOW_END}"
-        in workflow
-    )
 
 
 def test_authority_rejects_bad_ranges_qualification_and_duplicate_names(
@@ -276,10 +270,9 @@ def test_consumer_reads_normalize_windows_line_endings(tmp_path: Path) -> None:
         authority._read_consumer(consumer)
 
 
-def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, Path]:
+def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     pyproject = tmp_path / "pyproject.toml"
     host = tmp_path / "pythonEnvironmentModel.ts"
-    workflow = tmp_path / "cross-platform.yml"
     pyproject.write_text(
         authority.PYPROJECT_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
         encoding="utf-8",
@@ -288,14 +281,9 @@ def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
         authority.HOST_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
         encoding="utf-8",
     )
-    workflow.write_text(
-        authority.WORKFLOW_PATH.read_text(encoding="utf-8").replace('version: "1.35.2"', 'version: "0.1.0"', 1),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(authority, "PYPROJECT_PATH", pyproject)
     monkeypatch.setattr(authority, "HOST_PATH", host)
-    monkeypatch.setattr(authority, "WORKFLOW_PATH", workflow)
-    return pyproject, host, workflow
+    return pyproject, host
 
 
 def test_write_repairs_each_generated_file_and_check_confirms_it(
@@ -472,63 +460,63 @@ def test_installed_dependencies_exercise_the_probe_contract(
         _exercise_dependency(dependency, module, tmp_path)
 
 
-def test_generated_cohort_job_maps_each_qualification_once() -> None:
+def test_cross_platform_dependency_profile(tmp_path: Path) -> None:
+    profile_identifier = os.environ.get("OPENWRANGLER_DEPENDENCY_PROFILE")
+    profile_mode = os.environ.get("OPENWRANGLER_DEPENDENCY_MODE")
+    expected_python = os.environ.get("OPENWRANGLER_DEPENDENCY_PYTHON")
+    expected_requirements = os.environ.get("OPENWRANGLER_DEPENDENCY_REQUIREMENTS")
+    if all(
+        value is None
+        for value in (
+            profile_identifier,
+            profile_mode,
+            expected_python,
+            expected_requirements,
+        )
+    ):
+        pytest.skip("workflow-only compatibility profile")
+    assert profile_identifier
+    assert profile_mode in {"exact", "latest"}
+    assert expected_python is not None
+    assert expected_requirements is not None
+
     dependencies = authority.load_authority()
-    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
-    expected = tuple(
-        (
-            dependency.identifier,
-            case.python_version,
-            case.version,
-            f"{dependency.distribution}=={case.version}",
-        )
-        for dependency in dependencies
-        for case in dependency.executable_qualification_cases
-    )
-    rendered = authority._render_workflow(dependencies, workflow)
-    repinned_workflow = re.sub(r"@[0-9a-f]{40}", f"@{'a' * 40}", workflow)
-    repinned = authority._render_workflow(dependencies, repinned_workflow)
-    assert f"actions/checkout@{'a' * 40}" in repinned
-    assert f"actions/setup-python@{'a' * 40}" in repinned
-    assert rendered.count("          - id: ") == len(expected)
-    expected_install = 'python -m pip install -e "python[dev]" "' + "$" + '{{ matrix.requirement }}"'
-    assert expected_install in rendered
-    for identifier, python_version, version, requirement in expected:
-        row = (
-            f"          - id: {json.dumps(identifier)}\n"
-            f"            python: {json.dumps(python_version)}\n"
-            f"            version: {json.dumps(version)}\n"
-            f"            requirement: {json.dumps(requirement)}"
-        )
-        assert rendered.count(row) == 1
-    assert {
-        (python_version, version) for identifier, python_version, version, _ in expected if identifier == "ipython"
-    } == {
-        ("3.10", "8.39.0"),
-        ("3.12", "9.15.0"),
-        ("3.12", "9.16.1"),
-    }
+    current_python = ".".join(str(part) for part in sys.version_info[:2])
+    assert current_python == expected_python
+    declared = {canonicalize_name(dependency.distribution): dependency for dependency in dependencies}
+    expected_versions: dict[str, Version] = {}
+    for text in expected_requirements.split():
+        requirement = Requirement(text)
+        specifiers = tuple(requirement.specifier)
+        name = canonicalize_name(requirement.name)
+        assert name in declared
+        assert not requirement.extras
+        assert requirement.marker is None
+        assert requirement.url is None
+        assert len(specifiers) == 1
+        assert specifiers[0].operator == "=="
+        assert name not in expected_versions
+        expected_versions[name] = Version(specifiers[0].version)
+    if profile_mode == "exact":
+        assert set(expected_versions) == set(declared)
+    else:
+        assert expected_versions == {}
 
-
-def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
-    identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
-    python_version = os.environ.get("OPENWRANGLER_QUALIFIED_PYTHON_VERSION")
-    version = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION")
-    if identifier is None and python_version is None and version is None:
-        pytest.skip("workflow-only exact-version qualification probe")
-    assert identifier is not None
-    assert python_version is not None
-    assert version is not None
-    assert python_version == ".".join(str(part) for part in sys.version_info[:2])
-    matches = tuple(dependency for dependency in authority.load_authority() if dependency.identifier == identifier)
-    assert len(matches) == 1
-    dependency = matches[0]
-    assert (
-        authority.QualificationCase(python_version=python_version, version=version)
-        in dependency.executable_qualification_cases
-    )
-    module = _import_qualified_module(dependency, version)
-    _exercise_dependency(dependency, module, tmp_path)
+    for dependency in dependencies:
+        installed_version = importlib.metadata.version(dependency.distribution)
+        if profile_mode == "exact":
+            assert Version(installed_version) == expected_versions[canonicalize_name(dependency.distribution)]
+        else:
+            compatibility = dependency.python_compatibility
+            if compatibility is not None and Version(current_python) < Version(
+                compatibility.python_maximum_version_exclusive
+            ):
+                supported = SpecifierSet(compatibility.specifier)
+            else:
+                supported = SpecifierSet(dependency.specifier)
+            assert supported.contains(Version(installed_version), prereleases=False)
+        module = _import_qualified_module(dependency, installed_version)
+        _exercise_dependency(dependency, module, tmp_path)
     _exercise_openwrangler_runtime(tmp_path)
 
 

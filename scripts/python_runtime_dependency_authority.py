@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Python dependency ranges and keep their three consumers in sync."""
+"""Validate Python dependency ranges and keep their package/host consumers in sync."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY_PATH = ROOT / "python" / "runtime-dependencies.json"
 PYPROJECT_PATH = ROOT / "python" / "pyproject.toml"
 HOST_PATH = ROOT / "src" / "extension" / "pythonEnvironmentModel.ts"
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "cross-platform.yml"
 
 MAX_AUTHORITY_BYTES = 65_536
 MAX_DEPENDENCIES = 64
@@ -37,8 +36,6 @@ PYPROJECT_DEV_START = "  # BEGIN GENERATED PYTHON OPTIONAL RUNTIME DEPENDENCIES"
 PYPROJECT_DEV_END = "  # END GENERATED PYTHON OPTIONAL RUNTIME DEPENDENCIES"
 HOST_START = "// BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES"
 HOST_END = "// END GENERATED PYTHON RUNTIME DEPENDENCIES"
-WORKFLOW_START = "  # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS"
-WORKFLOW_END = "  # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS"
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -553,83 +550,6 @@ def _render_host(dependencies: tuple[Dependency, ...]) -> str:
     return "\n".join(lines)
 
 
-def _generated_workflow_action_use(workflow_source: str, action: str) -> str:
-    lines = workflow_source.split("\n")
-    try:
-        start = lines.index(WORKFLOW_START)
-        end = lines.index(WORKFLOW_END)
-    except ValueError:
-        _fail("missing_generation_marker")
-    if start >= end:
-        _fail("reversed_generation_marker")
-    matches: list[str] = []
-    prefix = f"{action}@"
-    for line in lines[start + 1 : end]:
-        stripped = line.strip()
-        if not stripped.startswith("- uses:"):
-            continue
-        use = stripped.removeprefix("- uses:").strip()
-        reference = use.partition("#")[0].strip()
-        if not reference.startswith(prefix):
-            continue
-        if re.fullmatch(rf"{re.escape(action)}@[0-9a-f]{{40}}", reference) is None:
-            _fail("workflow_action_invalid")
-        matches.append(use)
-    if len(matches) != 1:
-        _fail("workflow_action_invalid")
-    return matches[0]
-
-
-def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str) -> str:
-    checkout_action = _generated_workflow_action_use(
-        workflow_source, "actions/checkout"
-    )
-    setup_python_action = _generated_workflow_action_use(
-        workflow_source, "actions/setup-python"
-    )
-    lines = [
-        "  python-runtime-dependency-cohorts:",
-        "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})",
-        "    runs-on: ubuntu-24.04",
-        "    timeout-minutes: 15",
-        "    strategy:",
-        "      fail-fast: false",
-        "      matrix:",
-        "        include:",
-    ]
-    for dependency in dependencies:
-        for case in dependency.executable_qualification_cases:
-            lines.extend(
-                (
-                    f"          - id: {json.dumps(dependency.identifier)}",
-                    f"            python: {json.dumps(case.python_version)}",
-                    f"            version: {json.dumps(case.version)}",
-                    f"            requirement: {json.dumps(f'{dependency.distribution}=={case.version}')}",
-                )
-            )
-    lines.extend(
-        (
-            "    steps:",
-            f"      - uses: {checkout_action}",
-            f"      - uses: {setup_python_action}",
-            "        with:",
-            "          python-version: ${{ matrix.python }}",
-            "      - name: Install Open Wrangler and exact qualified dependency",
-            '        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"',
-            "      - name: Exercise exact qualified dependency",
-            "        run: >-",
-            "          python -m pytest",
-            "          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe",
-            "          -q",
-            "        env:",
-            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}",
-            "          OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}",
-            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}",
-        )
-    )
-    return "\n".join(lines)
-
-
 def _read_consumer(path: Path) -> str:
     try:
         raw = path.read_bytes()
@@ -653,7 +573,6 @@ def rendered_consumers(
 ) -> dict[Path, str]:
     pyproject = _read_consumer(PYPROJECT_PATH)
     host = _read_consumer(HOST_PATH)
-    workflow = _read_consumer(WORKFLOW_PATH)
     return {
         PYPROJECT_PATH: _replace_blocks(
             pyproject,
@@ -673,10 +592,6 @@ def rendered_consumers(
         HOST_PATH: _replace_blocks(
             host,
             ((HOST_START, HOST_END, _render_host(dependencies)),),
-        ),
-        WORKFLOW_PATH: _replace_blocks(
-            workflow,
-            ((WORKFLOW_START, WORKFLOW_END, _render_workflow(dependencies, workflow)),),
         ),
     }
 

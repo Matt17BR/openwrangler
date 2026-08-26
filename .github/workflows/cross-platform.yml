@@ -34,8 +34,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            python/pyproject.toml
+            python/runtime-dependencies.json
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
+      - name: Show resolved versions
+        run: |
+          python --version
+          python -m pip list --format=freeze
       - run: npm run test:python-environment-smoke
       - run: python -m pytest python/tests -q
       - run: npm run test:extension-host
@@ -58,104 +65,93 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
+      - run: python --version
       - run: python -m pytest python/tests/test_dependency_guard.py -q
 
-  # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
-  python-runtime-dependency-cohorts:
-    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})
+  python-compatibility:
+    name: Python (${{ matrix.name }}, ${{ matrix.python }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: "polars"
-            python: "3.12"
-            version: "1.35.2"
-            requirement: "polars==1.35.2"
-          - id: "polars"
-            python: "3.12"
-            version: "1.43.2"
-            requirement: "polars==1.43.2"
-          - id: "duckdb"
-            python: "3.12"
-            version: "1.5.4"
-            requirement: "duckdb==1.5.4"
-          - id: "duckdb"
-            python: "3.12"
-            version: "1.5.5"
-            requirement: "duckdb==1.5.5"
-          - id: "fsspec"
-            python: "3.12"
-            version: "2026.7.0"
-            requirement: "fsspec==2026.7.0"
-          - id: "pytz"
-            python: "3.12"
-            version: "2026.3.post1"
-            requirement: "pytz==2026.3.post1"
-          - id: "pandas"
-            python: "3.12"
-            version: "2.3.3"
-            requirement: "pandas==2.3.3"
-          - id: "pandas"
-            python: "3.12"
-            version: "3.0.5"
-            requirement: "pandas==3.0.5"
-          - id: "pyarrow"
-            python: "3.12"
-            version: "25.0.0"
-            requirement: "pyarrow==25.0.0"
-          - id: "pyarrow"
-            python: "3.12"
-            version: "25.0.1"
-            requirement: "pyarrow==25.0.1"
-          - id: "openpyxl"
-            python: "3.12"
-            version: "3.1.5"
-            requirement: "openpyxl==3.1.5"
-          - id: "xlrd"
-            python: "3.12"
-            version: "2.0.2"
-            requirement: "xlrd==2.0.2"
-          - id: "ipython"
+          - id: "minimum-supported"
+            name: "Minimum supported"
             python: "3.10"
-            version: "8.39.0"
-            requirement: "ipython==8.39.0"
-          - id: "ipython"
+            mode: "exact"
+            pip_options: ""
+            requirements: "polars==1.35.2 duckdb==1.5.4 fsspec==2026.7.0 pytz==2026.3.post1 pandas==2.3.3 pyarrow==25.0.0 openpyxl==3.1.5 xlrd==2.0.2 ipython==8.39.0 fastexcel==0.20.2"
+          - id: "pinned-known-good"
+            name: "Pinned known-good"
             python: "3.12"
-            version: "9.15.0"
-            requirement: "ipython==9.15.0"
-          - id: "ipython"
+            mode: "exact"
+            pip_options: ""
+            requirements: "polars==1.35.2 duckdb==1.5.4 fsspec==2026.7.0 pytz==2026.3.post1 pandas==2.3.3 pyarrow==25.0.0 openpyxl==3.1.5 xlrd==2.0.2 ipython==9.15.0 fastexcel==0.20.2"
+          - id: "latest-supported"
+            name: "Latest supported"
+            python: "3.14"
+            mode: "latest"
+            pip_options: "--upgrade --upgrade-strategy eager"
+            requirements: ""
+          - id: "notebook-backend-boundary"
+            name: "Notebook and backend boundary"
             python: "3.12"
-            version: "9.16.1"
-            requirement: "ipython==9.16.1"
-          - id: "fastexcel"
-            python: "3.12"
-            version: "0.20.2"
-            requirement: "fastexcel==0.20.2"
+            mode: "exact"
+            pip_options: ""
+            requirements: "polars==1.43.2 duckdb==1.5.5 fsspec==2026.7.0 pytz==2026.3.post1 pandas==3.0.5 pyarrow==25.0.1 openpyxl==3.1.5 xlrd==2.0.2 ipython==9.16.1 fastexcel==0.20.2"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-      - name: Install Open Wrangler and exact qualified dependency
-        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"
-      - name: Exercise exact qualified dependency
+          cache: pip
+          cache-dependency-path: |
+            python/pyproject.toml
+            python/runtime-dependencies.json
+      - name: Install the environment
+        run: >-
+          python -m pip install ${{ matrix.pip_options }}
+          -e "python[dev]" ${{ matrix.requirements }}
+      - name: Show resolved versions
+        run: |
+          python --version
+          python -m pip list --format=freeze
+      - name: Exercise the resolved environment
         run: >-
           python -m pytest
-          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe
+          python/tests/test_runtime_dependency_authority.py::test_cross_platform_dependency_profile
           -q
         env:
-          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}
-          OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}
-          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}
-  # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
-
-  r-4-4-scheduled-qualification:
-    name: Scheduled R 4.4 lock qualification
+          OPENWRANGLER_DEPENDENCY_PROFILE: ${{ matrix.id }}
+          OPENWRANGLER_DEPENDENCY_MODE: ${{ matrix.mode }}
+          OPENWRANGLER_DEPENDENCY_PYTHON: ${{ matrix.python }}
+          OPENWRANGLER_DEPENDENCY_REQUIREMENTS: ${{ matrix.requirements }}
+      - name: Exercise notebook and kernel boundaries
+        if: ${{ matrix.id == 'notebook-backend-boundary' }}
+        run: >-
+          python -m pytest
+          python/tests/test_notebook.py
+          python/tests/test_kernel_agent.py
+          python/tests/test_real_kernel.py
+          -q
+  r-compatibility:
+    name: R (${{ matrix.name }})
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "4.4"
+            id: "r-4-4"
+            version: "4.4.3"
+            lock: "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json"
+          - name: "Current"
+            id: "r-current"
+            version: "4.5.3"
+            lock: "r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -164,8 +160,9 @@ jobs:
           cache: npm
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          r-version: "4.4"
+          r-version: ${{ matrix.version }}
           use-public-rspm: false
+      - run: Rscript --version
       - name: Install the declared system requirement
         run: |
           sudo apt-get update
@@ -175,11 +172,11 @@ jobs:
       - id: r_prepare
         run: >-
           node scripts/r-dependency-lock.mjs prepare
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --lock "${{ matrix.lock }}"
           --rscript "$(command -v Rscript)"
-          --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-library"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives"
-          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-receipt.json"
+          --library "$RUNNER_TEMP/openwrangler-${{ matrix.id }}-library"
+          --archives "$RUNNER_TEMP/openwrangler-${{ matrix.id }}-archives"
+          --receipt "$RUNNER_TEMP/openwrangler-${{ matrix.id }}-receipt.json"
       - id: r_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -188,7 +185,7 @@ jobs:
           fail-on-cache-miss: false
       - run: >-
           node scripts/r-dependency-lock.mjs install
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
+          --lock "${{ matrix.lock }}"
           --rscript "$(command -v Rscript)"
           --library "${{ steps.r_prepare.outputs.library }}"
           --archives "${{ steps.r_prepare.outputs.archives }}"
