@@ -26,6 +26,34 @@ export function usesPinnedAction(step, action) {
   return step.uses.slice(0, -41) === action;
 }
 
+function actionName(reference) {
+  if (typeof reference !== "string") return undefined;
+  if (isLocalReference(reference)) return reference;
+  return FULL_COMMIT_ACTION.exec(reference)?.groups?.action;
+}
+
+function inspectAllowedReference(problems, jobName, location, reference, allowed) {
+  const name = actionName(reference);
+  if (name === undefined || allowed.includes(name)) return;
+  problems.push(`${jobName} ${location} ${displayReference(reference)} is not allowed in this workflow.`);
+}
+
+export function inspectAllowedWorkflowActions(workflow, allowedByJob) {
+  const problems = [];
+  for (const [jobName, job] of Object.entries(workflow?.jobs ?? {})) {
+    const allowed = allowedByJob[jobName] ?? {};
+    if (job?.uses !== undefined) {
+      inspectAllowedReference(problems, jobName, "reusable workflow", job.uses, allowed.job ?? []);
+    }
+    for (const step of steps(job)) {
+      if (step?.uses !== undefined) {
+        inspectAllowedReference(problems, jobName, "action", step.uses, allowed.steps ?? []);
+      }
+    }
+  }
+  return problems;
+}
+
 export function inspectPinnedExternalActions(workflow) {
   const problems = [];
   for (const [jobName, job] of Object.entries(workflow?.jobs ?? {})) {
