@@ -321,11 +321,6 @@ def _import_qualified_module(dependency: authority.Dependency, version: str) -> 
     module = importlib.import_module(dependency.import_module)
     if not dependency_guard._distribution_owns_module(distribution, module):
         raise AssertionError("qualified_module_not_distribution_owned")
-    root_module = dependency.import_module.partition(".")[0]
-    owners = importlib.metadata.packages_distributions().get(root_module, ())
-    canonical_owners = {canonicalize_name(owner) for owner in owners}
-    if canonicalize_name(dependency.distribution) not in canonical_owners:
-        raise AssertionError("qualified_module_distribution_mapping_mismatch")
     return module
 
 
@@ -545,6 +540,20 @@ def test_qualified_module_binding_rejects_local_shadowing(tmp_path: Path, monkey
             if name == "fsspec" or name.startswith("fsspec."):
                 sys.modules.pop(name, None)
         sys.modules.update(saved_modules)
+
+
+def test_qualified_module_binding_does_not_require_optional_top_level_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = pytest.importorskip("duckdb")
+    dependency = next(item for item in authority.load_authority() if item.identifier == "duckdb")
+    observed_version = importlib.metadata.version(dependency.distribution)
+
+    def reject_optional_mapping() -> dict[str, list[str]]:
+        raise AssertionError("optional package mapping must not decide module ownership")
+
+    monkeypatch.setattr(importlib.metadata, "packages_distributions", reject_optional_mapping)
+    assert _import_qualified_module(dependency, observed_version) is module
 
 
 def test_qualified_probe_exercises_all_runtime_engines(
