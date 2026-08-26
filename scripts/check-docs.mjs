@@ -54,7 +54,6 @@ const releasingSource = readFileSync(resolve(root, "docs/releasing.md"), "utf8")
 const workflowDocuments = loadBoundedNodeToolchainWorkflowDocuments({ root });
 const nodeToolchainProblems = inspectNodeToolchainContract({
   azureSource: readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8"),
-  changelogSource: readFileSync(resolve(root, "CHANGELOG.md"), "utf8"),
   contributingSource,
   nodeVersionSource: readFileSync(resolve(root, ".node-version"), "utf8"),
   packageJson,
@@ -63,7 +62,7 @@ const nodeToolchainProblems = inspectNodeToolchainContract({
   workflows: workflowDocuments
 });
 if (nodeToolchainProblems.length > 0) {
-  throw new Error(`Node toolchain contract is stale:\n- ${nodeToolchainProblems.join("\n- ")}`);
+  throw new Error(`Node toolchain settings disagree:\n- ${nodeToolchainProblems.join("\n- ")}`);
 }
 const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
   contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),

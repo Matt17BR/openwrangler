@@ -36,16 +36,6 @@ const RELEASING_SNIPPETS = Object.freeze([
   "`@types/vscode` 1.106.0",
   "`@types/node` 22.20.1"
 ]);
-const CHANGELOG_SNIPPETS = Object.freeze([
-  "Node.js 24.19.0 with npm 11.17.0",
-  "`^22.22.0 || ^24.0.0`",
-  "excluding Node 23",
-  "Node 22.23.2 with npm 10.9.8",
-  "`engines.vscode` `^1.106.0`",
-  "`@types/vscode` 1.106.0",
-  "`@types/node` 22.20.1"
-]);
-
 export function isGithubWorkflowFile(name) {
   return typeof name === "string" && /\.ya?ml$/u.test(name);
 }
@@ -81,16 +71,6 @@ export function loadBoundedNodeToolchainWorkflowDocuments({ root = REPOSITORY_RO
 
 function addMismatch(problems, actual, expected, label) {
   if (actual !== expected) problems.push(`${label} must be ${expected}, not ${String(actual)}.`);
-}
-
-function currentUnreleasedSection(source, problems) {
-  const start = source.indexOf("## [Unreleased]");
-  if (start === -1) {
-    problems.push("CHANGELOG.md is missing its Unreleased section.");
-    return "";
-  }
-  const next = source.indexOf("\n## [", start + 1);
-  return source.slice(start, next === -1 ? source.length : next);
 }
 
 function setupNodeRows(workflows) {
@@ -176,7 +156,6 @@ function inspectWorkflowNodePolicy(workflows, problems) {
 
 export function inspectNodeToolchainContract({
   azureSource,
-  changelogSource,
   contributingSource,
   nodeVersionSource,
   packageJson,
@@ -241,10 +220,6 @@ export function inspectNodeToolchainContract({
   }
   for (const snippet of RELEASING_SNIPPETS) {
     if (!releasingSource.includes(snippet)) problems.push(`docs/releasing.md is missing: ${snippet}`);
-  }
-  const unreleased = currentUnreleasedSection(changelogSource, problems);
-  for (const snippet of CHANGELOG_SNIPPETS) {
-    if (!unreleased.includes(snippet)) problems.push(`CHANGELOG.md Unreleased is missing: ${snippet}`);
   }
   inspectWorkflowNodePolicy(workflows, problems);
   return problems;

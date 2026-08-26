@@ -258,9 +258,7 @@ jobs:
           compression-level: 9
       - name: TypeScript tests
         if: ${{ !cancelled() }}
-        run: >-
-          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          typecheck typecheck:dependencies test:coverage:ts
+        run: npm run test:coverage:ts
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.editor_python.outputs.python-path }}
       - name: Script tests

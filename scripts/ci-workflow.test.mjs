@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { load as parseYaml } from "js-yaml";
+import { parseCLI as parseVitestCli, resolveConfig as resolveVitestConfig } from "vitest/node";
 import {
   CI_CLASSIFIER_OUTPUTS,
   classifyCiChange,
@@ -32,7 +34,6 @@ function readSource(path) {
 function inspectCurrentNodePolicy(workflows = loadBoundedNodeToolchainWorkflowDocuments()) {
   return inspectNodeToolchainContract({
     azureSource: readSource("azure-pipelines-marketplace.yml"),
-    changelogSource: readSource("CHANGELOG.md"),
     contributingSource: readSource("CONTRIBUTING.md"),
     nodeVersionSource: readSource(".node-version"),
     packageJson: JSON.parse(readSource("package.json")),
@@ -57,6 +58,22 @@ const allLanes = Object.freeze({
   nodeDependenciesRequired: false,
   pythonDependenciesRequired: false
 });
+const packageJson = JSON.parse(readSource("package.json"));
+const repositoryRoot = resolve(".");
+
+function packageVitestCommands(scripts) {
+  return Object.entries(scripts).filter(([, command]) => {
+    const trimmed = command.trim();
+    return trimmed === "vitest" || trimmed.startsWith("vitest ");
+  });
+}
+
+async function resolveVitestCommand(command, root = repositoryRoot) {
+  const { filter, options } = parseVitestCli(command);
+  const invocationRoot = options.root === undefined ? root : resolve(root, options.root);
+  const resolved = await resolveVitestConfig({ ...options, root: invocationRoot });
+  return { ...resolved, filter, options };
+}
 
 function stepRunning(job, command) {
   return (job?.steps ?? []).find((step) => step?.run === command);
@@ -235,6 +252,25 @@ test("pull-request jobs have plain names and independent path owners", () => {
 });
 
 test("each selected job retains its behavior checks", () => {
+  const sharedCheckSteps = ci.jobs.javascript.steps.filter((step) => step.if === "${{ matrix.node == '24.19.0' }}");
+  assert.equal(sharedCheckSteps.length, 1);
+  const sharedChecks = sharedCheckSteps[0];
+  assert.equal(sharedChecks.if, "${{ matrix.node == '24.19.0' }}");
+  const sharedCommands = sharedChecks.run.trim().split(/\s+/u);
+  assert.deepEqual(sharedCommands.slice(0, 8), [
+    "npx",
+    "--no-install",
+    "npm-run-all",
+    "--parallel",
+    "--continue-on-error",
+    "--max-parallel",
+    "2",
+    "--print-label"
+  ]);
+  const sharedTasks = sharedCommands.slice(8);
+  assert.equal(sharedTasks.filter((command) => command === "typecheck").length, 1);
+  assert.equal(sharedTasks.filter((command) => command === "typecheck:dependencies").length, 1);
+
   const python = ci.jobs.python;
   assert.equal(stepsUsing(python, "actions/setup-python@")[0].with["python-version"], "3.10");
   assert.equal(stepsUsing(python, "actions/setup-java@").length, 1);
@@ -268,11 +304,82 @@ test("each selected job retains its behavior checks", () => {
   assert.ok(stepRunning(packageEditor, "npm run package:prepared -- --out openwrangler.vsix"));
   assert.ok(stepRunning(packageEditor, "npm run verify:vsix -- openwrangler.vsix"));
   assert.ok(stepRunning(packageEditor, "npm run test:scripts:portable"));
-  assert.match(packageEditor.steps.find((step) => step.name === "TypeScript tests").run, /test:coverage:ts/u);
+  assert.equal(packageEditor.steps.find((step) => step.name === "TypeScript tests").run, "npm run test:coverage:ts");
   assert.equal(stepRunning(packageEditor, "npm run test:extension-host"), undefined);
 
   assert.ok(stepRunning(ci.jobs.web, "env -u CHROME_BIN npm run test:webview-acceptance"));
   assert.ok(stepRunning(ci.jobs.windows, "npm run test:scripts:native"));
+});
+
+test("every top-level script test belongs to one suite", () => {
+  const suites = {
+    workflow: packageJson.scripts["test:scripts:workflow"],
+    portable: packageJson.scripts["test:scripts:portable:run"],
+    media: packageJson.scripts["test:scripts:media:run"],
+    native: packageJson.scripts["test:scripts:native"]
+  };
+  const files = readdirSync("scripts", { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
+    .map((entry) => `scripts/${entry.name}`)
+    .sort();
+  const owners = new Map(files.map((file) => [file, []]));
+  for (const [suite, command] of Object.entries(suites)) {
+    for (const match of command.matchAll(/scripts\/[A-Za-z0-9._/-]+\.test\.mjs/gu)) {
+      assert.ok(owners.has(match[0]), `${suite} names an unexpected top-level test: ${match[0]}`);
+      owners.get(match[0]).push(suite);
+    }
+  }
+  assert.deepEqual(
+    [...owners].filter(([, suitesForFile]) => suitesForFile.length !== 1),
+    []
+  );
+});
+
+test("every package Vitest invocation resolves bounded workers", async () => {
+  const commands = packageVitestCommands(packageJson.scripts);
+  assert.deepEqual(commands.map(([scriptName]) => scriptName).sort(), [
+    "test:coverage:ts",
+    "test:python-environment-smoke",
+    "test:ts"
+  ]);
+
+  const resolved = new Map();
+  for (const [scriptName, command] of commands) resolved.set(scriptName, await resolveVitestCommand(command));
+
+  for (const scriptName of ["test:ts", "test:coverage:ts"]) {
+    const invocation = resolved.get(scriptName);
+    assert.equal(relative(repositoryRoot, invocation.viteConfig.configFile), "vite.config.ts");
+    assert.equal(invocation.vitestConfig.maxWorkers, 4);
+    assert.equal(invocation.vitestConfig.coverage.processingConcurrency, 4);
+  }
+  assert.equal(resolved.get("test:ts").vitestConfig.coverage.enabled, false);
+  assert.equal(resolved.get("test:coverage:ts").vitestConfig.coverage.enabled, true);
+
+  const smoke = resolved.get("test:python-environment-smoke");
+  assert.equal(relative(repositoryRoot, smoke.viteConfig.configFile), "vite.python-environment-smoke.config.ts");
+  assert.equal(smoke.vitestConfig.fileParallelism, false);
+  assert.equal(smoke.vitestConfig.maxWorkers, 1);
+  assert.equal(smoke.vitestConfig.minWorkers, 1);
+});
+
+test("Vitest resolution honors short configs, implicit precedence, and CLI worker overrides", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "openwrangler-vitest-resolution-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  writeFileSync(join(root, "package.json"), '{"type":"module"}\n', "utf8");
+  writeFileSync(join(root, "vite.config.ts"), "export default { test: { maxWorkers: 2 } };\n", "utf8");
+  writeFileSync(join(root, "vitest.config.ts"), "export default { test: { maxWorkers: 3 } };\n", "utf8");
+
+  const implicit = await resolveVitestCommand("vitest run", root);
+  assert.equal(relative(root, implicit.viteConfig.configFile), "vitest.config.ts");
+  assert.equal(implicit.vitestConfig.maxWorkers, 3);
+
+  const shortConfig = await resolveVitestCommand("vitest run -c vite.config.ts", root);
+  assert.equal(relative(root, shortConfig.viteConfig.configFile), "vite.config.ts");
+  assert.equal(shortConfig.vitestConfig.maxWorkers, 2);
+
+  const overridden = await resolveVitestCommand("vitest run --maxWorkers=9", root);
+  assert.equal(relative(root, overridden.viteConfig.configFile), "vitest.config.ts");
+  assert.equal(overridden.vitestConfig.maxWorkers, 9);
 });
 
 test("dependency audits are selected only by dependency changes", () => {
