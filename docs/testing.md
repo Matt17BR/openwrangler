@@ -1,9 +1,10 @@
 # Testing
 
-## Release qualification ownership
+## Preview and release checks
 
-Daily previews are disposable protected-`main` artifacts, retained for 14 days and checked with the authoritative
-pull-request command plus one representative installed VS Code journey. They create no tag or public channel.
+Daily previews are disposable protected-`main` builds. One job installs the exact packaged VSIX in stable VS Code and
+checks activation, the public CSV action, the grid, one column sort, and clean shutdown. A passing VSIX is retained
+for 14 days; a failure retains only sanitized editor diagnostics. Daily previews create no tag or public channel.
 
 Manual release-candidate qualification packages once and retains one canonical VSIX/checksum/provenance triple for 21
 days. The reusable acceptance workflow consumes only its numeric artifact ID. VS Code owns the semantic editor,
@@ -33,7 +34,7 @@ matrix for release candidates or changes that cross those boundaries.
   budget, and `--continue-on-error` plus `--print-label` prefixes every interleaved output line so one early failure
   cannot hide or obscure the other result.
 
-- `npm run check:install-policy` owns all 28 lockfile install invocations across 26 contributor, CI, candidate,
+- `npm run check:install-policy` owns all 27 lockfile install invocations across 25 contributor, CI, candidate,
   package, promotion, and release owners in 11 GitHub and Azure automation files. `.npmrc` disables lifecycle scripts by default and every
   executable owner repeats `npm ci --ignore-scripts`; the checker rejects plain installs, lifecycle re-enablement,
   rebuilds, dynamic installs, package-manager aliases, and unowned install sites. Its install-script allowlist is

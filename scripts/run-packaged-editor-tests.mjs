@@ -84,9 +84,9 @@ import {
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
 import {
-  resolvePackagedGridRangeCopySelector,
+  resolvePackagedPlatformSmokeSelector,
   runPackagedPlatformSmokePhase
-} from "./packaged-grid-range-copy-selector.mjs";
+} from "./packaged-platform-smoke-selector.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
@@ -228,7 +228,7 @@ try {
             .map((value) => value.trim())
             .filter(Boolean);
           const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
-          const platformSmokeSelector = resolvePackagedGridRangeCopySelector({
+          const platformSmokeSelector = resolvePackagedPlatformSmokeSelector({
             acceptanceMode,
             selector: process.env.OPEN_WRANGLER_TEST_SELECTOR
           });

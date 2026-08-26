@@ -5,10 +5,10 @@
 Open Wrangler has three deliberately separate paths. None depends on a 1.99.7 release event.
 
 1. `.github/workflows/daily-preview.yml` produces a tagless, disposable build from protected `main` each day. It
-   assigns a source-derived `0.<odd>.<patch>` identity that cannot equal the checked-in release version, runs the
-   authoritative pull-request checks plus one representative installed-VS-Code seam, and retains the exact
-   VSIX/checksum/provenance triple for 14 days. It does not create a tag, GitHub Release, or registry publication and
-   is not a release candidate.
+   assigns a source-derived `0.<odd>.<patch>` identity that cannot equal the checked-in release version, builds and
+   checks one VSIX, then installs those exact bytes in stable VS Code for a short CSV/grid/sort/cleanup journey. A
+   passing VSIX is retained for 14 days. It does not create a tag, GitHub Release, checksum/provenance bundle, or
+   registry publication and is not a release candidate.
 2. `.github/workflows/release-candidate.yml` is a manual, nonpublishing qualification run. A first-attempt dispatch
    from protected `main` validates stable metadata, packages one canonical triple, and reuses its numeric artifact ID
    across VS Code, one pinned Cursor lifecycle/responsive-grid seam, Python/Jupyter, R 4.4 and 4.5 compatibility,

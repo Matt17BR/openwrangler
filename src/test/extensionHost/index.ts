@@ -1029,6 +1029,11 @@ export async function run(): Promise<void> {
       recordAcceptanceProgress("platform-smoke:start");
       const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
       await dispatchPlatformSmokeJourney(phaseSelection, {
+        dailyCore: async () => {
+          await exercisePackagedDailyCore(testing, extension, firstUseFixture);
+          recordAcceptanceProgress("platform-smoke:complete");
+          console.log("Open Wrangler daily preview smoke passed.");
+        },
         gridRangeCopy: async () => {
           await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
           recordAcceptanceProgress("platform-smoke:complete");
@@ -7492,6 +7497,129 @@ async function exercisePackagedGridRangeCopyAcceptance(testing: TestApi, fixture
       }
     }
   );
+}
+
+async function exercisePackagedDailyCore(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  fixture: vscode.Uri
+): Promise<void> {
+  assert.equal(
+    process.env.OPEN_WRANGLER_TEST_EDITOR,
+    "vscode",
+    "The daily preview journey runs in the representative VS Code editor."
+  );
+  assert.equal(testing.diagnostics().sessionCount, 0, "The daily preview journey must start without a session.");
+  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  const failures: unknown[] = [];
+  let editorMayBeOpen = false;
+
+  try {
+    const page = await connectToEditorWorkbench();
+    const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
+    recordAcceptanceProgress("platform-smoke:daily-core:open-csv");
+    editorMayBeOpen = true;
+    await vscode.commands.executeCommand("vscode.open", fixture, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One
+    });
+    await waitFor(
+      () => {
+        const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+        return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+      },
+      10_000,
+      "the CSV source editor before its Open Wrangler title action"
+    );
+    await page.bringToFront();
+    const titleAction = activeEditorGroup
+      .locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible')
+      .first();
+    await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+    await titleAction.click();
+    await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:daily-core:import");
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the public CSV action to open a dataframe session"
+    );
+
+    const active = testing.activeSession();
+    assert.ok(active, "The daily preview journey must publish an active dataframe session.");
+    assert.equal(extension.isActive, true, "Opening the CSV must activate the installed extension.");
+    assert.equal(active.metadata.backend, "polars");
+    assert.deepEqual(active.metadata.shape, {
+      rows: PACKAGED_FIRST_USE_ROW_COUNT,
+      columns: PACKAGED_SCREENSHOT_COLUMNS.length
+    });
+
+    recordAcceptanceProgress("platform-smoke:daily-core:grid");
+    const target = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
+    const grid = target.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
+    await grid.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(await grid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
+    const firstCell = target.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+    await firstCell.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await firstCell.innerText()).trim(), "2400001");
+
+    recordAcceptanceProgress("platform-smoke:daily-core:sort");
+    const marketHeader = target.frame.locator('th[data-column="market"]').first();
+    const marketMenu = marketHeader.locator("details.columnMenu").first();
+    await marketMenu.getByLabel("Column actions for market").click();
+    await marketMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+    await waitFor(
+      () => {
+        const sort = testing.activeSession()?.viewState.filterModel.sort;
+        return (
+          sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc" && sort[0].nulls === "last"
+        );
+      },
+      10_000,
+      "the daily preview sort to update the visible dataframe"
+    );
+    await target.frame
+      .locator('td[data-grid-row="0"][data-grid-column="1"]')
+      .filter({ hasText: "UK & Ireland" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    assertExactBytes(
+      await vscode.workspace.fs.readFile(fixture),
+      sourceBytes,
+      "The daily preview sort must leave the CSV unchanged."
+    );
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    if (editorMayBeOpen) {
+      try {
+        recordAcceptanceProgress("platform-smoke:daily-core:cleanup");
+        await withBoundedAcceptancePromise(
+          vscode.commands.executeCommand("workbench.action.closeAllEditors"),
+          10_000,
+          "the daily preview editors to close"
+        );
+        await waitFor(
+          () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+          10_000,
+          "the daily preview session and runtime to terminate"
+        );
+        assert.deepEqual(testing.diagnostics().sessions, []);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      assertExactBytes(
+        await vscode.workspace.fs.readFile(fixture),
+        sourceBytes,
+        "Daily preview cleanup must preserve the CSV."
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "The daily preview journey had multiple failures.");
 }
 
 async function exercisePackagedPlatformSmoke(

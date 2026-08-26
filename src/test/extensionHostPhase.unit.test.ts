@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  DAILY_CORE_SELECTOR,
   dispatchExtensionHostPhase,
   dispatchPlatformSmokeJourney,
   EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR,
@@ -118,12 +119,12 @@ describe("extension-host phase selection", () => {
     }
   });
 
-  it("accepts the grid range-copy selector only for the platform smoke", () => {
-    expect(selection("platform-smoke", GRID_RANGE_COPY_SELECTOR, "vscode").selector).toBe(GRID_RANGE_COPY_SELECTOR);
-    for (const phase of ["verify", "jupyter-r"]) {
-      expect(() => selection(phase, GRID_RANGE_COPY_SELECTOR, "vscode")).toThrow(
-        EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR
-      );
+  it("accepts focused selectors only for the platform smoke", () => {
+    for (const selector of [DAILY_CORE_SELECTOR, GRID_RANGE_COPY_SELECTOR]) {
+      expect(selection("platform-smoke", selector, "vscode").selector).toBe(selector);
+      for (const phase of ["verify", "jupyter-r"]) {
+        expect(() => selection(phase, selector, "vscode")).toThrow(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
+      }
     }
   });
 
@@ -154,6 +155,7 @@ describe("extension-host phase dispatch", () => {
     ["jupyter-r-remote", undefined, undefined, "jupyter:jupyter-r-remote:default"],
     ["python-environment", undefined, undefined, "python-environment"],
     ["platform-smoke", undefined, undefined, "platform-smoke"],
+    ["platform-smoke", "daily-core", "vscode", "platform-smoke"],
     ["platform-smoke", "grid-range-copy", "vscode", "platform-smoke"],
     ["remote-workspace", undefined, undefined, "remote-workspace"],
     ["seed", undefined, undefined, "seed"]
@@ -171,9 +173,12 @@ describe("extension-host phase dispatch", () => {
     expect(calls).toEqual([]);
   });
 
-  it("dispatches the focused grid journey without running the ordinary platform smoke", async () => {
+  it("dispatches focused journeys without running the ordinary platform smoke", async () => {
     const calls: string[] = [];
     const handlers = {
+      dailyCore: async () => {
+        calls.push("daily-core");
+      },
       gridRangeCopy: async () => {
         calls.push("grid-range-copy");
       },
@@ -186,6 +191,10 @@ describe("extension-host phase dispatch", () => {
     expect(calls).toEqual(["grid-range-copy"]);
 
     calls.length = 0;
+    await dispatchPlatformSmokeJourney(selection("platform-smoke", DAILY_CORE_SELECTOR, "vscode"), handlers);
+    expect(calls).toEqual(["daily-core"]);
+
+    calls.length = 0;
     await dispatchPlatformSmokeJourney(selection("platform-smoke", undefined, "vscode"), handlers);
     expect(calls).toEqual(["standard"]);
   });
@@ -194,6 +203,9 @@ describe("extension-host phase dispatch", () => {
     const calls: string[] = [];
     await expect(
       dispatchPlatformSmokeJourney(selection("verify"), {
+        dailyCore: async () => {
+          calls.push("daily-core");
+        },
         gridRangeCopy: async () => {
           calls.push("grid-range-copy");
         },

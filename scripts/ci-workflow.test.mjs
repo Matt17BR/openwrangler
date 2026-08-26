@@ -480,7 +480,6 @@ test("other workflows retain their existing final jobs", () => {
   assert.deepEqual(codeql.jobs["codeql-gate"].needs, ["analyze-javascript-typescript", "analyze-python"]);
 
   for (const [name, jobId, needs] of [
-    ["daily-preview.yml", "result", ["build", "representative-editor"]],
     [
       "candidate-acceptance.yml",
       "acceptance",
