@@ -7,11 +7,14 @@ import {
 import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./releasedJupyterScenarios";
 
 export const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
+export const DAILY_CORE_SELECTOR = "daily-core";
 export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
   ...RELEASED_JUPYTER_TEST_SELECTORS,
+  DAILY_CORE_SELECTOR,
   GRID_RANGE_COPY_SELECTOR
 ] as const);
-type ExtensionHostPhaseSelector = ExtensionHostTestSelector | typeof GRID_RANGE_COPY_SELECTOR;
+type ExtensionHostPhaseSelector =
+  ExtensionHostTestSelector | typeof DAILY_CORE_SELECTOR | typeof GRID_RANGE_COPY_SELECTOR;
 export { CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, PYSPARK_PRERELEASE_DENIAL_SELECTOR };
 export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
@@ -52,15 +55,16 @@ export interface ExtensionHostPhaseHandlers {
 }
 
 export interface PlatformSmokeJourneyHandlers {
+  readonly dailyCore: () => Promise<void>;
   readonly gridRangeCopy: () => Promise<void>;
   readonly standard: () => Promise<void>;
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
-  "candidate-compatibility-seam requires jupyter-allow in Cursor; pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r; grid-range-copy requires platform-smoke.";
+  "candidate-compatibility-seam requires jupyter-allow in Cursor; pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r; daily-core and grid-range-copy require platform-smoke.";
 
 const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
 
@@ -74,11 +78,12 @@ export function parseExtensionHostPhaseSelection(
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ERROR);
   }
   const selector = rawSelector as ExtensionHostPhaseSelector | undefined;
-  if (selector === GRID_RANGE_COPY_SELECTOR && phase !== "platform-smoke") {
+  if ((selector === DAILY_CORE_SELECTOR || selector === GRID_RANGE_COPY_SELECTOR) && phase !== "platform-smoke") {
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
   }
   if (
     selector !== undefined &&
+    selector !== DAILY_CORE_SELECTOR &&
     selector !== GRID_RANGE_COPY_SELECTOR &&
     !releasedJupyterScenario({
       editor: environment.OPEN_WRANGLER_TEST_EDITOR,
@@ -119,7 +124,10 @@ export async function dispatchExtensionHostPhase(
     editor: selection.editor,
     phaseId: selection.phase,
     platform: selection.platform,
-    selector: selection.selector === GRID_RANGE_COPY_SELECTOR ? undefined : selection.selector
+    selector:
+      selection.selector === DAILY_CORE_SELECTOR || selection.selector === GRID_RANGE_COPY_SELECTOR
+        ? undefined
+        : selection.selector
   });
   if (releasedJupyter?.runnerKey === "focused-r-interactive") {
     await handlers.focusedRInteractive();
@@ -168,6 +176,10 @@ export async function dispatchPlatformSmokeJourney(
   }
   if (selection.selector === GRID_RANGE_COPY_SELECTOR) {
     await handlers.gridRangeCopy();
+    return;
+  }
+  if (selection.selector === DAILY_CORE_SELECTOR) {
+    await handlers.dailyCore();
     return;
   }
   await handlers.standard();

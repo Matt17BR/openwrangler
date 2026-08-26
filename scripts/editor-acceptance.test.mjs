@@ -3106,7 +3106,7 @@ test("editor phases validate and forward exact focused selectors", async () => {
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", or "grid-range-copy"/u
+      /test selector must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -3114,6 +3114,10 @@ test("editor phases validate and forward exact focused selectors", async () => {
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "grid-range-copy" }, options),
+      /requires the "platform-smoke" phase/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "daily-core" }, options),
       /requires the "platform-smoke" phase/u
     );
     await assert.rejects(
@@ -3194,6 +3198,23 @@ test("editor phases validate and forward exact focused selectors", async () => {
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "grid-range-copy");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "platform-smoke");
+
+    await runEditorAcceptancePhase(
+      { ...input, phase: "platform-smoke", testSelector: "daily-core" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "daily-core");
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "platform-smoke");
 
     await runEditorAcceptancePhase(

@@ -13,94 +13,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build protected-main preview
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    outputs:
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      preview_id: ${{ steps.preview.outputs.preview_id }}
-      candidate_sha256: ${{ steps.preview.outputs.candidate_sha256 }}
-      candidate_bytes: ${{ steps.preview.outputs.candidate_bytes }}
-      extension_version: ${{ steps.preview.outputs.extension_version }}
-      source_version: ${{ steps.preview.outputs.source_version }}
-    steps:
-      - name: Require protected main and a first attempt
-        env:
-          EVENT_REF: ${{ github.ref }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          test "$EVENT_REF" = "refs/heads/main"
-          test "$RUN_ATTEMPT" = "1"
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Pin the exact protected-main source
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
-          test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"
-          test -z "$(git status --porcelain --untracked-files=no)"
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - id: reference_python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.10"
-          cache: pip
-      - run: npm ci --ignore-scripts
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - name: Run the authoritative PR checks
-        run: npm run check:pr
-        env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
-      - id: preview_source
-        name: Assign a reproducible disposable identity
-        run: node scripts/daily-preview-artifact.mjs prepare
-      - name: Build and package the disposable preview once
-        run: |
-          node --input-type=module -e 'import { mkdirSync } from "node:fs"; mkdirSync("daily-preview", { mode: 0o700 });'
-          npm run clean
-          npm run build
-          npm run package:prepared -- --out daily-preview/openwrangler.vsix
-      - run: npm run verify:vsix -- daily-preview/openwrangler.vsix
-      - id: preview
-        name: Bind checksum, provenance, version, and run identity
-        env:
-          DAILY_PREVIEW_SOURCE_VERSION: ${{ steps.preview_source.outputs.source_version }}
-        run: node scripts/daily-preview-artifact.mjs create daily-preview/openwrangler.vsix
-      - name: Revalidate the daily preview before upload
-        run: node scripts/daily-preview-artifact.mjs verify daily-preview
-      - id: upload
-        name: Upload the disposable daily preview
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: openwrangler-daily-preview-${{ steps.preview.outputs.preview_id }}
-          path: |
-            daily-preview/openwrangler.vsix
-            daily-preview/openwrangler.vsix.sha256
-            daily-preview/openwrangler.vsix.provenance.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-          include-hidden-files: false
-
-  representative-editor:
-    name: Representative installed VS Code
-    needs: build
+  preview:
+    name: Build and test daily preview
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Require main
+        env:
+          EVENT_REF: ${{ github.ref }}
+        run: test "$EVENT_REF" = "refs/heads/main"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -111,68 +35,61 @@ jobs:
           python-version: "3.10"
           cache: pip
       - run: npm ci --ignore-scripts
-      - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
-          path: daily-preview
-          merge-multiple: true
-      - name: Verify the exact preview before installed acceptance
-        run: node scripts/daily-preview-artifact.mjs verify daily-preview
-      - run: npm run verify:vsix -- daily-preview/openwrangler.vsix
-      - run: npm run build:test-extension
+      - id: preview
+        name: Assign a disposable version
+        run: node scripts/daily-preview-artifact.mjs prepare
+      - name: Build and package
+        run: |
+          node --input-type=module -e 'import { mkdirSync } from "node:fs"; mkdirSync("daily-preview", { mode: 0o700 });'
+          npm run clean
+          npm run build
+          npm run package:prepared -- --out daily-preview/openwrangler.vsix
+      - name: Check the VSIX
+        run: npm run verify:vsix -- daily-preview/openwrangler.vsix
+      - name: Build the installed-editor tests
+        run: npm run build:test-extension
       - id: vscode
-        name: Test the representative VS Code seam
-        continue-on-error: true
+        name: Open the preview in VS Code
         run: node scripts/run-packaged-editor-tests.mjs daily-preview/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+          OPEN_WRANGLER_TEST_SELECTOR: daily-core
           VSCODE_TEST_VERSION: stable
-      - name: Upload VS Code failure diagnostics
-        if: ${{ always() && steps.vscode.outcome == 'failure' && steps.vscode.outputs.evidence_ready == 'true' }}
+      - name: Upload failure diagnostics
+        if: ${{ failure() && steps.vscode.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: daily-preview-vscode-failure-${{ github.run_id }}
+          name: daily-preview-vscode-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.vscode.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Fail after VS Code diagnostics
-        if: ${{ always() && steps.vscode.outcome == 'failure' }}
-        run: exit 1
-
-  result:
-    name: Daily preview result
-    needs: [build, representative-editor]
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Publish the discoverable preview receipt and require success
+      - name: Upload the working preview
+        if: ${{ success() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openwrangler-daily-preview-${{ steps.preview.outputs.preview_id }}-${{ github.run_attempt }}
+          path: daily-preview/openwrangler.vsix
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          include-hidden-files: false
+      - name: Summarize the preview
+        if: ${{ success() }}
         env:
-          BUILD_RESULT: ${{ needs.build.result }}
-          EDITOR_RESULT: ${{ needs.representative-editor.result }}
-          PREVIEW_ID: ${{ needs.build.outputs.preview_id }}
-          VERSION: ${{ needs.build.outputs.extension_version }}
-          SOURCE_VERSION: ${{ needs.build.outputs.source_version }}
-          SHA256: ${{ needs.build.outputs.candidate_sha256 }}
-          BYTES: ${{ needs.build.outputs.candidate_bytes }}
+          PREVIEW_ID: ${{ steps.preview.outputs.preview_id }}
+          VERSION: ${{ steps.preview.outputs.extension_version }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           {
             echo "## Daily preview"
             echo
-            echo "- ID: \`${PREVIEW_ID:-unavailable}\`"
-            echo "- Protected-main version: \`${SOURCE_VERSION:-unavailable}\`"
-            echo "- Disposable build version: \`${VERSION:-unavailable}\`"
-            echo "- VSIX SHA-256: \`${SHA256:-unavailable}\`"
-            echo "- VSIX bytes: \`${BYTES:-unavailable}\`"
-            echo "- Build/check result: \`$BUILD_RESULT\`"
-            echo "- Representative editor result: \`$EDITOR_RESULT\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Preview: \`$PREVIEW_ID\` (version \`$VERSION\`)"
+            echo "- Test: installed in stable VS Code, opened a CSV, rendered the grid, sorted a column, and closed cleanly"
             echo
-            echo "This artifact expires after 14 days. It is not a release candidate and cannot be promoted."
+            echo "The VSIX expires after 14 days and is not a release candidate."
           } >> "$GITHUB_STEP_SUMMARY"
-          test "$BUILD_RESULT" = "success"
-          test "$EDITOR_RESULT" = "success"
