@@ -1,17 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fromBuffer as openZipBuffer } from "yauzl";
 import { ZipFile } from "yazl";
 import { requiredVsixEntries, VENDORED_JS_YAML_ENTRY } from "./vsix-contents.mjs";
-import {
-  MAX_VSIX_BYTES,
-  MAX_VSIX_ENTRY_BYTES,
-  VENDORED_JS_YAML_BYTES,
-  VENDORED_JS_YAML_SHA256
-} from "./vsix-archive.mjs";
+import { MAX_VENDORED_JS_YAML_BYTES, MAX_VSIX_BYTES, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
 import {
   assertReproducibleVsixArchive,
   canonicalizeVsixArchive,
@@ -22,8 +16,8 @@ const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
 const ZIP_END_SIGNATURE = 0x06054b50;
 const ZIP_UTF8_FLAG = 0x0800;
 const CANONICAL_FILE_MODE = 0o100644;
-const FIXED_FIXTURE_CANONICAL_SHA256 = "40cb45b6792ebdc080aaa8921b60b7e105391f27ada6cbcbee9ec776d851dd9b";
-const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
+const FIXED_FIXTURE_CANONICAL_SHA256 = "2ea335a689c5b3f83886aa88d35532d08a08f3228be1fbfd94d8e3d697276657";
+const vendoredJsYaml = Buffer.from("module.exports = Object.freeze({ load() {} });\n");
 
 function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -203,8 +197,8 @@ function addCentralExtraField(bytes, name) {
 }
 
 test("canonicalizes a validated VSIX to one strict deterministic ZIP and receipt", async () => {
-  assert.equal(vendoredJsYaml.length, VENDORED_JS_YAML_BYTES);
-  assert.equal(digest(vendoredJsYaml), VENDORED_JS_YAML_SHA256);
+  assert.ok(vendoredJsYaml.length > 0);
+  assert.ok(vendoredJsYaml.length <= MAX_VENDORED_JS_YAML_BYTES);
   const input = await createArchive(productionEntries());
   const result = await canonicalizeVsixArchive(input);
   const metadata = await archiveMetadata(result.bytes);

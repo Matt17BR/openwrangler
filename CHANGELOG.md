@@ -37,6 +37,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   fails.
 - Pandas row labels now accept dateutil's bundled timezone implementation on Windows as well as its normal system
   timezone implementation.
+- Updated js-yaml to 5.3.0. Packaging no longer hard-codes one js-yaml release's file size and checksum in several
+  places; it verifies the installed CommonJS file, copies it exactly, includes it in the normal package checks, and
+  verifies its MIT notice.
 - Unexpected workbench render, effect, and message-handler failures now show a keyboard-focused **Reload Open
   Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
   and the extension host records only a fixed failure category.

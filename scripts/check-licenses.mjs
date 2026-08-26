@@ -8,13 +8,6 @@ const APPROVED_PROJECT_LICENSE = Object.freeze({
   sha256: "1436578df6da613a94af2095a3bc369ec565175f8b32d4d89f7af5cd5de9ca16"
 });
 
-const VENDORED_JS_YAML = Object.freeze({
-  version: "5.2.3",
-  runtimeBytes: 122_488,
-  runtimeSha256: "f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965",
-  licenseSha256: "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550"
-});
-
 const allowedLicenses = new Set(["MIT", "CC-BY-4.0"]);
 const noticeGroups = [
   {
@@ -103,7 +96,7 @@ export function inspectVendoredRuntimeLicensePolicy({
   packageJsonSource,
   lock,
   notices,
-  jsYamlRuntimeBytes,
+  jsYamlPackageJsonSource,
   jsYamlLicenseBytes
 }) {
   if (
@@ -111,46 +104,44 @@ export function inspectVendoredRuntimeLicensePolicy({
     typeof lock !== "object" ||
     lock === null ||
     typeof notices !== "string" ||
-    !Buffer.isBuffer(jsYamlRuntimeBytes) ||
+    typeof jsYamlPackageJsonSource !== "string" ||
     !Buffer.isBuffer(jsYamlLicenseBytes)
   ) {
-    throw new TypeError("Vendored runtime license policy requires package metadata, exact bytes, and notices text.");
+    throw new TypeError("Vendored runtime license policy requires package metadata, license text, and notices text.");
   }
 
   let packageJson;
+  let jsYamlPackageJson;
   try {
     packageJson = JSON.parse(packageJsonSource);
+    jsYamlPackageJson = JSON.parse(jsYamlPackageJsonSource);
   } catch {
-    return ["package.json must contain valid JSON before the vendored runtime can be checked."];
+    return ["Package metadata must contain valid JSON before the vendored runtime can be checked."];
   }
 
   const errors = [];
   if (packageJson.dependencies?.["js-yaml"] !== undefined) {
-    errors.push("js-yaml must remain a development dependency because only its reviewed runtime asset is vendored.");
-  }
-  if (packageJson.devDependencies?.["js-yaml"] !== `^${VENDORED_JS_YAML.version}`) {
-    errors.push(`package.json must retain js-yaml ^${VENDORED_JS_YAML.version} as a development dependency.`);
+    errors.push("js-yaml must remain a development dependency because only its CommonJS runtime is bundled.");
   }
   const locked = lock.packages?.["node_modules/js-yaml"];
-  if (locked?.version !== VENDORED_JS_YAML.version || locked.dev !== true || locked.license !== "MIT") {
-    errors.push(`package-lock.json must pin js-yaml ${VENDORED_JS_YAML.version} as an MIT development dependency.`);
+  if (
+    typeof locked?.version !== "string" ||
+    locked.dev !== true ||
+    locked.license !== "MIT" ||
+    packageJson.devDependencies?.["js-yaml"] !== `^${locked.version}`
+  ) {
+    errors.push("package.json and package-lock.json must agree on one MIT js-yaml development dependency.");
   }
   if (
-    jsYamlRuntimeBytes.length !== VENDORED_JS_YAML.runtimeBytes ||
-    createHash("sha256").update(jsYamlRuntimeBytes).digest("hex") !== VENDORED_JS_YAML.runtimeSha256
+    jsYamlPackageJson?.name !== "js-yaml" ||
+    jsYamlPackageJson?.version !== locked?.version ||
+    jsYamlPackageJson?.license !== "MIT"
   ) {
-    errors.push("The vendored js-yaml runtime source must byte-match its reviewed release asset.");
-  }
-  if (createHash("sha256").update(jsYamlLicenseBytes).digest("hex") !== VENDORED_JS_YAML.licenseSha256) {
-    errors.push("The js-yaml LICENSE must byte-match its reviewed MIT notice.");
+    errors.push("The installed js-yaml package must match the lockfile and declare the MIT license.");
   }
   const exactLicense = jsYamlLicenseBytes.toString("utf8");
-  if (
-    !notices.includes(`js-yaml ${VENDORED_JS_YAML.version}`) ||
-    !notices.includes("Copyright (C) 2011-2015 by Vitaly Puzrin") ||
-    !notices.includes(exactLicense)
-  ) {
-    errors.push("THIRD_PARTY_NOTICES.md must include the full reviewed js-yaml MIT notice.");
+  if (exactLicense.length === 0 || !notices.includes("js-yaml") || !notices.includes(exactLicense)) {
+    errors.push("THIRD_PARTY_NOTICES.md must include js-yaml's complete installed MIT notice.");
   }
   return errors;
 }
@@ -170,7 +161,7 @@ export function runLicenseCheck(root = resolve(import.meta.dirname, "..")) {
       packageJsonSource,
       lock,
       notices,
-      jsYamlRuntimeBytes: readFileSync(resolve(root, "node_modules/js-yaml/dist/js-yaml.cjs.js")),
+      jsYamlPackageJsonSource: readFileSync(resolve(root, "node_modules/js-yaml/package.json"), "utf8"),
       jsYamlLicenseBytes: readFileSync(resolve(root, "node_modules/js-yaml/LICENSE"))
     })
   );
@@ -181,7 +172,7 @@ export function runLicenseCheck(root = resolve(import.meta.dirname, "..")) {
   for (const dependency of dependencyPolicy.productionPackages) {
     counts.set(dependency.license, (counts.get(dependency.license) ?? 0) + 1);
   }
-  return `Verified the ${APPROVED_PROJECT_LICENSE.spdx} project license, the exact vendored js-yaml runtime, and ${
+  return `Verified the ${APPROVED_PROJECT_LICENSE.spdx} project license, js-yaml's bundled MIT notice, and ${
     dependencyPolicy.productionPackages.length
   } bundled production packages: ${[...counts.entries()].map(([license, count]) => `${count} ${license}`).join(", ")}.`;
 }

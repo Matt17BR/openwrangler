@@ -13,8 +13,17 @@ const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
 const licenseBytes = readFileSync(resolve(root, "LICENSE"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
 const notices = readFileSync(resolve(root, "THIRD_PARTY_NOTICES.md"), "utf8");
-const jsYamlRuntimeBytes = readFileSync(resolve(root, "node_modules/js-yaml/dist/js-yaml.cjs.js"));
+const jsYamlPackageJsonSource = readFileSync(resolve(root, "node_modules/js-yaml/package.json"), "utf8");
 const jsYamlLicenseBytes = readFileSync(resolve(root, "node_modules/js-yaml/LICENSE"));
+
+function nextCompatibleVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/u.exec(version);
+  assert.notEqual(match, null);
+  const patch = Number(match[3]);
+  assert.ok(Number.isSafeInteger(patch));
+  assert.ok(patch < Number.MAX_SAFE_INTEGER);
+  return `${match[1]}.${match[2]}.${patch + 1}`;
+}
 
 test("accepts only the reviewed MIT project license and matching package declaration", () => {
   assert.deepEqual(inspectProjectLicensePolicy({ packageJsonSource, licenseBytes }), []);
@@ -66,56 +75,68 @@ test("classifies linked packages from their lockfile-owned target", () => {
   ]);
 });
 
-test("accepts only the exact vendored js-yaml runtime, development pin, and full MIT notice", () => {
-  const input = { packageJsonSource, lock, notices, jsYamlRuntimeBytes, jsYamlLicenseBytes };
+test("accepts a lockfile-owned js-yaml development dependency and its complete MIT notice", () => {
+  const input = { packageJsonSource, lock, notices, jsYamlPackageJsonSource, jsYamlLicenseBytes };
   assert.deepEqual(inspectVendoredRuntimeLicensePolicy(input), []);
 
   const productionManifest = JSON.parse(packageJsonSource);
-  productionManifest.dependencies = { ...productionManifest.dependencies, "js-yaml": "^5.2.3" };
+  productionManifest.dependencies = {
+    ...productionManifest.dependencies,
+    "js-yaml": productionManifest.devDependencies["js-yaml"]
+  };
   assert.deepEqual(
     inspectVendoredRuntimeLicensePolicy({ ...input, packageJsonSource: JSON.stringify(productionManifest) }),
-    ["js-yaml must remain a development dependency because only its reviewed runtime asset is vendored."]
+    ["js-yaml must remain a development dependency because only its CommonJS runtime is bundled."]
   );
 
   const unlocked = structuredClone(lock);
   unlocked.packages["node_modules/js-yaml"].dev = false;
   assert.deepEqual(inspectVendoredRuntimeLicensePolicy({ ...input, lock: unlocked }), [
-    "package-lock.json must pin js-yaml 5.2.3 as an MIT development dependency."
+    "package.json and package-lock.json must agree on one MIT js-yaml development dependency."
   ]);
 
+  const updatedManifest = JSON.parse(packageJsonSource);
+  const installedPackage = JSON.parse(jsYamlPackageJsonSource);
+  const compatibleVersion = nextCompatibleVersion(installedPackage.version);
+  assert.notEqual(compatibleVersion, installedPackage.version);
+  updatedManifest.devDependencies["js-yaml"] = `^${compatibleVersion}`;
+  const updatedLock = structuredClone(lock);
+  updatedLock.packages["node_modules/js-yaml"].version = compatibleVersion;
+  const updatedPackage = { ...installedPackage, version: compatibleVersion };
   assert.deepEqual(
     inspectVendoredRuntimeLicensePolicy({
       ...input,
-      jsYamlRuntimeBytes: Buffer.concat([jsYamlRuntimeBytes.subarray(0, -1), Buffer.from("!")])
+      packageJsonSource: JSON.stringify(updatedManifest),
+      lock: updatedLock,
+      jsYamlPackageJsonSource: JSON.stringify(updatedPackage)
     }),
-    ["The vendored js-yaml runtime source must byte-match its reviewed release asset."]
+    []
+  );
+
+  const wrongLicense = { ...JSON.parse(jsYamlPackageJsonSource), license: "Apache-2.0" };
+  assert.deepEqual(
+    inspectVendoredRuntimeLicensePolicy({
+      ...input,
+      jsYamlPackageJsonSource: JSON.stringify(wrongLicense)
+    }),
+    ["The installed js-yaml package must match the lockfile and declare the MIT license."]
   );
   assert.deepEqual(
     inspectVendoredRuntimeLicensePolicy({
       ...input,
       jsYamlLicenseBytes: Buffer.concat([jsYamlLicenseBytes, Buffer.from("drift")])
     }),
-    [
-      "The js-yaml LICENSE must byte-match its reviewed MIT notice.",
-      "THIRD_PARTY_NOTICES.md must include the full reviewed js-yaml MIT notice."
-    ]
-  );
-  assert.deepEqual(
-    inspectVendoredRuntimeLicensePolicy({
-      ...input,
-      notices: notices.replace("Copyright (C) 2011-2015 by Vitaly Puzrin", "Copyright removed")
-    }),
-    ["THIRD_PARTY_NOTICES.md must include the full reviewed js-yaml MIT notice."]
+    ["THIRD_PARTY_NOTICES.md must include js-yaml's complete installed MIT notice."]
   );
 });
 
 test("fails closed on malformed vendored-runtime license inputs", () => {
-  const input = { packageJsonSource, lock, notices, jsYamlRuntimeBytes, jsYamlLicenseBytes };
+  const input = { packageJsonSource, lock, notices, jsYamlPackageJsonSource, jsYamlLicenseBytes };
   assert.deepEqual(inspectVendoredRuntimeLicensePolicy({ ...input, packageJsonSource: "{" }), [
-    "package.json must contain valid JSON before the vendored runtime can be checked."
+    "Package metadata must contain valid JSON before the vendored runtime can be checked."
   ]);
   assert.throws(
     () => inspectVendoredRuntimeLicensePolicy({ ...input, jsYamlLicenseBytes: "MIT" }),
-    /requires package metadata, exact bytes, and notices text/u
+    /requires package metadata, license text, and notices text/u
   );
 });

@@ -10,8 +10,7 @@ export const MAX_VSIX_ENTRIES = 4096;
 export const MAX_VSIX_ENTRY_NAME_BYTES = 1024;
 export const MAX_VSIX_ENTRY_BYTES = 32 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
-export const VENDORED_JS_YAML_BYTES = 122_488;
-export const VENDORED_JS_YAML_SHA256 = "f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965";
+export const MAX_VENDORED_JS_YAML_BYTES = 1024 * 1024;
 const OPEN_WRANGLER_PUBLISHER = "Matt17BR";
 const OPEN_WRANGLER_NAME = "openwrangler";
 const NUMERIC_EXTENSION_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
@@ -138,7 +137,7 @@ const REQUIRED_CAPTURE_LIMITS = new Map([
   ["extension/LICENSE.txt", 1024 * 1024],
   ["extension/THIRD_PARTY_NOTICES.md", 2 * 1024 * 1024],
   ["extension/dist/extension/webviewPanel.js", 8 * 1024 * 1024],
-  [VENDORED_JS_YAML_ENTRY, VENDORED_JS_YAML_BYTES],
+  [VENDORED_JS_YAML_ENTRY, MAX_VENDORED_JS_YAML_BYTES],
   ["extension/media/webview.css", 8 * 1024 * 1024],
   ["extension/media/notebookRenderer.js", 8 * 1024 * 1024],
   ["extension/python/openwrangler_runtime/version.py", 64 * 1024]
@@ -438,10 +437,13 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true, 
   if (
     (requireVendoredJsYaml || vendoredJsYamlContents !== undefined) &&
     (vendoredJsYamlContents === undefined ||
-      entrySizes.get(VENDORED_JS_YAML_ENTRY) !== VENDORED_JS_YAML_BYTES ||
-      entryDigests.get(VENDORED_JS_YAML_ENTRY) !== VENDORED_JS_YAML_SHA256)
+      entryKinds.get(VENDORED_JS_YAML_ENTRY) !== "file" ||
+      entrySizes.get(VENDORED_JS_YAML_ENTRY) <= 0 ||
+      entrySizes.get(VENDORED_JS_YAML_ENTRY) > MAX_VENDORED_JS_YAML_BYTES)
   ) {
-    throw new Error("VSIX vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt.");
+    throw new Error(
+      `VSIX bundled js-yaml runtime must be one non-empty regular file within ${MAX_VENDORED_JS_YAML_BYTES} bytes.`
+    );
   }
 
   const packageBytes = contents.get("extension/package.json");

@@ -149,15 +149,15 @@ and pins the report, revalidates the candidate while that report descriptor rema
 verification, and then revalidates the candidate once more; a report validator that cannot expose this joint read
 window fails closed. Stable intake never invokes that self-package path.
 
-The only vendored extension-host runtime is `dist/extension/vendor/js-yaml.js`, copied from the reviewed js-yaml
-5.2.3 CommonJS entrypoint during production and test builds. Its generated package-source receipt is exactly 122,488
-bytes with SHA-256 `f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965`. The VSIX inventory
-requires `extension/dist/extension/vendor/js-yaml.js`, rejects every other file in that vendor directory, captures
-the entry under its exact bound, and independently verifies the same size and digest. When historical verification
-permits the entry to be absent, a present entry still has to match that receipt. Omission from a current package, mutation, stale
-generated output, or a package-only addition blocks canonical authoring. js-yaml remains a development dependency;
-`npm run license:check` pins its source runtime and upstream LICENSE bytes and requires the full Vitaly Puzrin MIT
-notice in `THIRD_PARTY_NOTICES.md`.
+The only bundled extension-host runtime is `dist/extension/vendor/js-yaml.js`, copied from the installed js-yaml
+CommonJS entrypoint during production and test builds. The build verifies the package name and CommonJS entrypoint,
+copies the file exactly, and rejects a noncanonical repository root, symbolic-link source files or parent directories,
+oversized files, and unexpected output siblings. Regular hard-linked package files are allowed: staging copies their
+bytes into a new temporary file, and replacing the generated vendor pathname never mutates another link to the old
+inode. The VSIX inventory requires that one bounded regular file and includes its bytes in the package receipt and
+reproducibility checks. js-yaml remains a development dependency, and `npm run license:check` requires the installed
+MIT license text in `THIRD_PARTY_NOTICES.md`. Routine compatible updates do not require hard-coded byte counts or
+release hashes.
 
 Both extension builds reconcile the compiler-emitted static CommonJS dependency graph after staging that asset.
 Current product output may retain only the exact host `vscode` specifier, while the Remote acceptance output may

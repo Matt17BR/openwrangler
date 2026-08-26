@@ -308,6 +308,7 @@ test("each selected job retains its behavior checks", () => {
   assert.equal(stepRunning(packageEditor, "npm run test:extension-host"), undefined);
 
   assert.ok(stepRunning(ci.jobs.web, "env -u CHROME_BIN npm run test:webview-acceptance"));
+  assert.ok(stepRunning(ci.jobs.windows, "node --test scripts/copy-extension-vendor-assets.test.mjs"));
   assert.ok(stepRunning(ci.jobs.windows, "npm run test:scripts:native"));
 });
 
