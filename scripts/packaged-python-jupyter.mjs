@@ -45,12 +45,12 @@ export function resolvePackagedPythonJupyterProfile({
     !jupyterExtensionEnabled ||
     dataWranglerCoexistenceEnabled ||
     !remoteJupyterEnabled ||
-    !sameEditors(requestedEditors, ["vscode", "cursor"])
+    (!sameEditors(requestedEditors, ["vscode"]) && !sameEditors(requestedEditors, ["vscode", "cursor"]))
   ) {
     throw new Error(
       `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV}=${JSON.stringify(
         CANDIDATE_PYTHON_JUPYTER_PROFILE
-      )} is valid only for ordinary released-Python Jupyter acceptance with real remote Jupyter and exactly VS Code plus Cursor.`
+      )} is valid only for ordinary released-Python Jupyter acceptance with real remote Jupyter and VS Code, optionally followed by Cursor.`
     );
   }
   return CANDIDATE_PYTHON_JUPYTER_PROFILE;

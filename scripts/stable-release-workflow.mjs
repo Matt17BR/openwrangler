@@ -1,4 +1,5 @@
 import { load as parseYaml } from "js-yaml";
+import { inspectCandidateCaller } from "./candidate-acceptance-workflow.mjs";
 import {
   inspectAllowedWorkflowActions,
   inspectPinnedExternalActions,
@@ -11,8 +12,7 @@ const SETUP_PYTHON = "actions/setup-python";
 const DOWNLOAD = "actions/download-artifact";
 const UPLOAD = "actions/upload-artifact";
 const CANDIDATE_WORKFLOW = "./.github/workflows/candidate-acceptance.yml";
-const SOURCE_SHA = "${{ needs.select.outputs.candidate-source-sha }}";
-const RUN_ID = "${{ needs.select.outputs.candidate-run-id }}";
+const OPEN_VSX_WORKFLOW = "./.github/workflows/open-vsx-promotion.yml";
 const RELEASE_CANDIDATE_ACTIONS = Object.freeze({
   package: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, SETUP_PYTHON, UPLOAD]) }),
   "candidate-acceptance": Object.freeze({ job: Object.freeze([CANDIDATE_WORKFLOW]) }),
@@ -21,367 +21,217 @@ const RELEASE_CANDIDATE_ACTIONS = Object.freeze({
 });
 const STABLE_RELEASE_ACTIONS = Object.freeze({
   select: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE]) }),
-  promote: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, DOWNLOAD]) })
+  publish: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, DOWNLOAD]) }),
+  "open-vsx": Object.freeze({ job: Object.freeze([OPEN_VSX_WORKFLOW]) })
 });
 
 function object(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function exactKeys(value, expected) {
-  return object(value) && Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
+  return object(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
 }
 
-function command(value) {
-  return String(value ?? "")
-    .trim()
-    .replace(/\s+/gu, " ");
+function parse(source, label, limit, problems) {
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > limit) {
+    problems.push(`${label} must be a bounded workflow file.`);
+    return undefined;
+  }
+  try {
+    const workflow = parseYaml(source);
+    if (!object(workflow)) throw new Error("top level is not an object");
+    return workflow;
+  } catch (error) {
+    problems.push(`${label} YAML does not parse: ${error instanceof Error ? error.message : "unknown error"}.`);
+    return undefined;
+  }
 }
 
 function steps(job) {
   return Array.isArray(job?.steps) ? job.steps : [];
 }
 
-function actionSteps(job, action) {
-  return steps(job).filter((step) => usesPinnedAction(step, action));
+function commands(job) {
+  return steps(job)
+    .map((step) => (typeof step?.run === "string" ? step.run.replace(/\s+/gu, " ").trim() : ""))
+    .filter(Boolean);
 }
 
-function runSteps(job, fragment) {
-  return steps(job).filter((step) => command(step?.run).includes(fragment));
+function hasCommand(job, text) {
+  return commands(job).some((run) => run.includes(text));
 }
 
-function parse(source, problems) {
-  try {
-    const workflow = parseYaml(source);
-    if (!object(workflow)) throw new Error("not an object");
-    return workflow;
-  } catch (error) {
-    problems.push(`Workflow YAML must parse: ${error instanceof Error ? error.message : "unknown error"}.`);
-    return undefined;
-  }
+function actionSteps(job, name) {
+  return steps(job).filter((step) => usesPinnedAction(step, name));
 }
 
-function inspectPinnedNode(job, label, problems) {
-  const setup = actionSteps(job, SETUP_NODE);
-  if (
-    setup.length !== 1 ||
-    !exactKeys(setup[0], ["uses", "with"]) ||
-    !exactKeys(setup[0].with, ["node-version-file", "cache"]) ||
-    setup[0].with["node-version-file"] !== ".node-version" ||
-    setup[0].with.cache !== "npm"
-  ) {
-    problems.push(`${label} must use the one pinned repository Node runtime with the npm cache.`);
-  }
-}
-
-function inspectCheckout(job, ref, fetchDepth, label, problems) {
-  const checkout = actionSteps(job, CHECKOUT);
-  if (
-    checkout.length !== 1 ||
-    !exactKeys(
-      checkout[0],
-      ["name", "uses", "with"].filter((key) => key !== "name" || checkout[0].name !== undefined)
-    ) ||
-    !exactKeys(checkout[0].with, ["ref", "fetch-depth", "persist-credentials"]) ||
-    checkout[0].with.ref !== ref ||
-    checkout[0].with["fetch-depth"] !== fetchDepth ||
-    checkout[0].with["persist-credentials"] !== false
-  ) {
-    problems.push(`${label} must check out only its exact source without persisted credentials.`);
-  }
-}
-
-function inspectNoReleaseWrites(workflow, label, problems) {
-  const forbidden = [
-    "push-stable-release-tag.mjs",
-    "publish-github-stable-release.mjs",
-    "ovsx publish",
-    "verify-open-vsx-github-release.mjs",
-    "gh release"
-  ];
-  const runs = Object.values(workflow.jobs ?? {}).flatMap((job) => steps(job).map((step) => command(step?.run)));
-  if (runs.some((run) => forbidden.some((fragment) => run.includes(fragment)))) {
-    problems.push(`${label} must never publish a tag, release, or registry artifact.`);
-  }
+function exactCrossRunDownload(step, artifact, path) {
+  return (
+    step?.with?.["artifact-ids"] === artifact &&
+    step?.with?.["github-token"] === "${{ github.token }}" &&
+    step?.with?.repository === "${{ github.repository }}" &&
+    step?.with?.["run-id"] === "${{ needs.select.outputs.candidate-run-id }}" &&
+    step?.with?.path === path &&
+    step?.with?.["merge-multiple"] === true
+  );
 }
 
 export function inspectReleaseCandidateWorkflow(source) {
   const problems = [];
-  const workflow = parse(source, problems);
+  const workflow = parse(source, "Release candidate", 32 * 1024, problems);
   if (!workflow) return problems;
-  problems.push(...inspectPinnedExternalActions(workflow));
-  problems.push(...inspectAllowedWorkflowActions(workflow, RELEASE_CANDIDATE_ACTIONS));
-  const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Release candidate" ||
     workflow["run-name"] !== "Release candidate ${{ inputs.release_tag }}" ||
-    workflow.concurrency?.group !== "release-train-${{ inputs.release_tag }}" ||
+    workflow.permissions?.contents !== "read" ||
+    !exactKeys(workflow.concurrency, ["group", "cancel-in-progress", "queue"]) ||
+    workflow.concurrency?.group !== "release-candidate-${{ inputs.release_tag }}" ||
     workflow.concurrency?.["cancel-in-progress"] !== false ||
-    !exactKeys(inputs, ["release_tag"]) ||
-    !exactKeys(inputs?.release_tag, ["description", "required", "type"]) ||
-    inputs.release_tag.required !== true ||
-    inputs.release_tag.type !== "string" ||
-    !exactKeys(workflow.permissions, ["contents"]) ||
-    workflow.permissions.contents !== "read"
-  ) {
-    problems.push("Release candidates must be one read-only manual stable-tag qualification workflow.");
-  }
-  if (!exactKeys(workflow.jobs, ["package", "candidate-acceptance", "remote-ssh", "qualify"])) {
-    problems.push("Release candidates must have one package owner, two bounded consumers, and one manifest fan-in.");
-    return problems;
-  }
-  const packaging = workflow.jobs.package;
-  inspectCheckout(packaging, "${{ github.sha }}", 0, "Candidate packaging", problems);
-  inspectPinnedNode(packaging, "Candidate packaging", problems);
-  const packagingRuns = steps(packaging).map((step) => command(step?.run));
-  if (
-    packaging.name !== "Package the immutable candidate" ||
-    packaging.environment !== undefined ||
-    packaging.permissions !== undefined ||
-    runSteps(
-      packaging,
-      "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix"
-    ).length !== 1 ||
-    runSteps(
-      packaging,
-      "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
-    ).length !== 1 ||
-    runSteps(packaging, "node scripts/verify-canonical-release-artifact.mjs canonical-release").length !== 1 ||
-    runSteps(packaging, "RUN_ATTEMPT").length !== 1 ||
-    !packagingRuns.some((run) => run.includes('test "$RUN_ATTEMPT" = "1"'))
+    workflow.concurrency?.queue !== "max" ||
+    JSON.stringify(Object.keys(workflow.jobs ?? {})) !==
+      JSON.stringify(["package", "candidate-acceptance", "remote-ssh", "qualify"])
   ) {
     problems.push(
-      "Candidate packaging must build once on first-attempt protected main and create one canonical triple."
+      "Release candidate must be one read-only manual build with acceptance, Remote SSH, and qualification."
     );
+    return problems;
   }
-  const candidateUpload = actionSteps(packaging, UPLOAD);
-  if (
-    candidateUpload.length !== 1 ||
-    candidateUpload[0].with?.name !== "openwrangler-release-candidate" ||
-    candidateUpload[0].with?.["retention-days"] !== 21 ||
-    candidateUpload[0].with?.["compression-level"] !== 0 ||
-    candidateUpload[0].with?.["if-no-files-found"] !== "error"
-  ) {
-    problems.push("Candidate packaging must retain the one uncompressed canonical triple for 21 days.");
-  }
-  const acceptance = workflow.jobs["candidate-acceptance"];
-  if (
-    acceptance.name !== "Candidate acceptance" ||
-    acceptance.needs !== "package" ||
-    acceptance.uses !== CANDIDATE_WORKFLOW ||
-    !exactKeys(acceptance.with, ["artifact_id", "expected_sha", "release_tag"]) ||
-    acceptance.with.artifact_id !== "${{ needs.package.outputs.artifact-id }}" ||
-    acceptance.with.expected_sha !== "${{ github.sha }}" ||
-    acceptance.with.release_tag !== "${{ inputs.release_tag }}"
-  ) {
-    problems.push("Candidate acceptance must consume the exact package without a preview channel or rebuilt bytes.");
-  }
-  const remote = workflow.jobs["remote-ssh"];
-  inspectCheckout(remote, "${{ github.sha }}", 0, "Remote SSH", problems);
-  inspectPinnedNode(remote, "Remote SSH", problems);
-  const remoteDownloads = actionSteps(remote, DOWNLOAD);
-  if (
-    remote.name !== "Remote SSH acceptance" ||
-    remote.needs !== "package" ||
-    remoteDownloads.length !== 1 ||
-    remoteDownloads[0].with?.["artifact-ids"] !== "${{ needs.package.outputs.artifact-id }}" ||
-    runSteps(remote, "test:remote-workspace").length !== 1 ||
-    runSteps(remote, "verify-canonical-release-artifact.mjs canonical-release").length !== 2
-  ) {
-    problems.push("Remote SSH must independently verify and exercise the exact candidate artifact.");
-  }
-  const qualify = workflow.jobs.qualify;
-  const qualificationUpload = actionSteps(qualify, UPLOAD);
-  if (
-    qualify.name !== "Seal candidate qualification" ||
-    qualify.if !== "${{ always() }}" ||
-    JSON.stringify(qualify.needs) !== JSON.stringify(["package", "candidate-acceptance", "remote-ssh"]) ||
-    runSteps(qualify, 'test "$PACKAGE_RESULT" = "success"').length !== 1 ||
-    runSteps(qualify, 'test "$CANDIDATE_ACCEPTANCE_RESULT" = "success"').length !== 1 ||
-    runSteps(qualify, 'test "$REMOTE_SSH_RESULT" = "success"').length !== 1 ||
-    runSteps(qualify, "release-candidate.mjs create qualification/release-candidate.json").length !== 1 ||
-    qualificationUpload.length !== 1 ||
-    qualificationUpload[0].with?.name !== "openwrangler-release-candidate-qualification" ||
-    qualificationUpload[0].with?.["retention-days"] !== 21
-  ) {
-    problems.push("Candidate qualification must fail closed across all owners and seal one bounded 21-day manifest.");
-  }
-  inspectNoReleaseWrites(workflow, "Release-candidate qualification", problems);
-  return problems;
-}
+  problems.push(...inspectPinnedExternalActions(workflow));
+  problems.push(...inspectAllowedWorkflowActions(workflow, RELEASE_CANDIDATE_ACTIONS));
+  problems.push(...inspectCandidateCaller(workflow));
 
-function inspectCrossRunDownload(step, artifactId, path, problems) {
+  const packaging = workflow.jobs.package;
+  const packageUploads = actionSteps(packaging, "actions/upload-artifact");
+  const packageText = commands(packaging).join("\n");
   if (
-    !usesPinnedAction(step, DOWNLOAD) ||
-    !exactKeys(step.with, ["artifact-ids", "github-token", "repository", "run-id", "path", "merge-multiple"]) ||
-    step.with["artifact-ids"] !== artifactId ||
-    step.with["github-token"] !== "${{ github.token }}" ||
-    step.with.repository !== "${{ github.repository }}" ||
-    step.with["run-id"] !== RUN_ID ||
-    step.with.path !== path ||
-    step.with["merge-multiple"] !== true
+    packaging.name !== "Build the candidate once" ||
+    !packageText.includes('test "$EVENT_REF" = "refs/heads/main"') ||
+    /RUN_ATTEMPT|first-attempt|first attempt/u.test(packageText) ||
+    (packageText.match(/package:prepared/gu) ?? []).length !== 1 ||
+    (packageText.match(/create-canonical-release-artifact/gu) ?? []).length !== 1 ||
+    packageUploads.length !== 1 ||
+    packageUploads[0]?.with?.name !== "openwrangler-release-candidate-${{ github.run_attempt }}" ||
+    packageUploads[0]?.with?.["retention-days"] !== 30 ||
+    packageUploads[0]?.with?.["compression-level"] !== 0
   ) {
-    problems.push(`Stable promotion must download ${path} only by the selected run and artifact IDs.`);
+    problems.push("Candidate packaging must build once, allow reruns, and upload one attempt-bound canonical triple.");
   }
+
+  const remote = workflow.jobs["remote-ssh"];
+  const remoteDownload = actionSteps(remote, "actions/download-artifact");
+  if (
+    remote?.needs !== "package" ||
+    remoteDownload.length !== 1 ||
+    remoteDownload[0]?.with?.["artifact-ids"] !== "${{ needs.package.outputs.artifact-id }}" ||
+    !hasCommand(remote, "verify-canonical-release-artifact.mjs canonical-release") ||
+    !hasCommand(remote, "node scripts/run-remote-workspace-smoke.mjs")
+  ) {
+    problems.push("Remote SSH must verify and exercise the exact package in its own job.");
+  }
+
+  const qualify = workflow.jobs.qualify;
+  const qualificationUpload = actionSteps(qualify, "actions/upload-artifact");
+  if (
+    qualify?.if !== "${{ always() }}" ||
+    JSON.stringify(qualify?.needs) !== JSON.stringify(["package", "candidate-acceptance", "remote-ssh"]) ||
+    !hasCommand(qualify, "release-candidate.mjs create qualification/release-candidate.json") ||
+    qualificationUpload.length !== 1 ||
+    qualificationUpload[0]?.with?.name !== "openwrangler-release-candidate-qualification-${{ github.run_attempt }}" ||
+    qualificationUpload[0]?.with?.["retention-days"] !== 30
+  ) {
+    problems.push("Qualification must require every owner and record one attempt-bound receipt.");
+  }
+
+  const allRuns = Object.values(workflow.jobs).flatMap(commands).join("\n");
+  if (/ovsx publish|vsce publish|publish-github|push-stable-release-tag|gh release/u.test(allRuns)) {
+    problems.push("Release-candidate qualification must never publish.");
+  }
+  return problems;
 }
 
 export function inspectStableReleaseWorkflow(source) {
   const problems = [];
-  const workflow = parse(source, problems);
+  const workflow = parse(source, "Stable release", 24 * 1024, problems);
   if (!workflow) return problems;
-  problems.push(...inspectPinnedExternalActions(workflow));
-  problems.push(...inspectAllowedWorkflowActions(workflow, STABLE_RELEASE_ACTIONS));
-  const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
-    workflow.name !== "Stable release promotion" ||
+    workflow.name !== "Stable release" ||
+    workflow.permissions?.contents !== "read" ||
+    !exactKeys(workflow.concurrency, ["group", "cancel-in-progress", "queue"]) ||
     workflow.concurrency?.group !== "release-train-${{ inputs.release_tag }}" ||
     workflow.concurrency?.["cancel-in-progress"] !== false ||
-    !exactKeys(inputs, ["candidate_run_id", "release_tag"]) ||
-    !["candidate_run_id", "release_tag"].every(
-      (key) =>
-        exactKeys(inputs?.[key], ["description", "required", "type"]) &&
-        inputs[key].required === true &&
-        inputs[key].type === "string"
-    ) ||
-    !exactKeys(workflow.permissions, ["contents"]) ||
-    workflow.permissions.contents !== "read" ||
-    !exactKeys(workflow.jobs, ["select", "promote"])
+    workflow.concurrency?.queue !== "max" ||
+    JSON.stringify(Object.keys(workflow.jobs ?? {})) !== JSON.stringify(["select", "publish", "open-vsx"])
   ) {
-    problems.push("Stable release must be a two-job candidate selection and exact-byte promotion workflow.");
+    problems.push("Stable release must select one qualified run and publish its exact bytes.");
     return problems;
   }
+  problems.push(...inspectPinnedExternalActions(workflow));
+  problems.push(...inspectAllowedWorkflowActions(workflow, STABLE_RELEASE_ACTIONS));
+
   const select = workflow.jobs.select;
-  inspectCheckout(select, "${{ github.sha }}", 0, "Candidate selection", problems);
-  inspectPinnedNode(select, "Candidate selection", problems);
+  const selectText = commands(select).join("\n");
   if (
-    select.environment !== undefined ||
-    !exactKeys(select.permissions, ["actions", "contents"]) ||
-    select.permissions.actions !== "read" ||
-    select.permissions.contents !== "read" ||
-    !exactKeys(select.outputs, [
-      "candidate-artifact-id",
-      "candidate-run-id",
-      "candidate-source-sha",
-      "performance-artifact-id",
-      "qualification-artifact-id"
-    ]) ||
-    runSteps(select, 'test "$EVENT_REF" = "refs/heads/main"').length !== 1 ||
-    runSteps(select, 'test "$RUN_ATTEMPT" = "1"').length !== 1 ||
-    runSteps(select, "node scripts/release-candidate.mjs select").length !== 1 ||
-    runSteps(select, 'git merge-base --is-ancestor "$CANDIDATE_SOURCE_SHA" "$CURRENT_MAIN_SHA"').length !== 1
+    select?.permissions?.actions !== "read" ||
+    select?.permissions?.contents !== "read" ||
+    !hasCommand(select, "release-candidate.mjs select") ||
+    !hasCommand(select, 'test "$CANDIDATE_SOURCE_SHA" = "$CURRENT_MAIN_SHA"') ||
+    hasCommand(select, "git merge-base --is-ancestor") ||
+    select?.outputs?.["candidate-run-attempt"] !== "${{ steps.candidate.outputs.candidate_run_attempt }}" ||
+    /RUN_ATTEMPT|soak|first-attempt|first attempt/u.test(selectText)
+  ) {
+    problems.push("Candidate selection must allow reruns and require the chosen source to equal current main.");
+  }
+
+  const publish = workflow.jobs.publish;
+  if (
+    publish?.needs !== "select" ||
+    publish?.environment !== "publishing" ||
+    publish?.permissions?.actions !== "read" ||
+    publish?.permissions?.contents !== "write" ||
+    !exactKeys(publish?.concurrency, ["group", "cancel-in-progress", "queue"]) ||
+    publish?.concurrency?.group !== "openwrangler-release-publication" ||
+    publish?.concurrency?.["cancel-in-progress"] !== false ||
+    publish?.concurrency?.queue !== "max"
+  ) {
+    problems.push("GitHub publication must be one protected, serialized, retryable job with minimal write access.");
+    return problems;
+  }
+
+  const downloads = actionSteps(publish, "actions/download-artifact");
+  if (
+    downloads.length !== 3 ||
+    !exactCrossRunDownload(downloads[0], "${{ needs.select.outputs.candidate-artifact-id }}", "canonical-release") ||
+    !exactCrossRunDownload(downloads[1], "${{ needs.select.outputs.qualification-artifact-id }}", "qualification") ||
+    !exactCrossRunDownload(downloads[2], "${{ needs.select.outputs.performance-artifact-id }}", "performance")
+  ) {
+    problems.push("Publication must download candidate, qualification, and performance only by selected IDs.");
+  }
+
+  const publishText = commands(publish).join("\n");
+  const verifyManifest = steps(publish).find((step) =>
+    String(step?.run ?? "").includes("release-candidate.mjs verify")
+  );
+  if (
+    verifyManifest?.env?.CANDIDATE_RUN_ATTEMPT !== "${{ needs.select.outputs.candidate-run-attempt }}" ||
+    !hasCommand(publish, "verify-canonical-release-artifact.mjs canonical-release") ||
+    !hasCommand(publish, "push-stable-release-tag.mjs") ||
+    !hasCommand(publish, "publish-github-stable-release.mjs canonical-release") ||
+    /ovsx publish|verify-open-vsx|vsce publish|npm run build|npm run package/u.test(publishText)
   ) {
     problems.push(
-      "Candidate selection must be a read-only, first-attempt protected-main inspection with exact outputs."
+      "Stable publication must verify and publish the selected GitHub bytes without rebuilds or registry work."
     );
   }
-  const selection = runSteps(select, "node scripts/release-candidate.mjs select")[0];
+  const openVsx = workflow.jobs["open-vsx"];
   if (
-    !exactKeys(selection?.env, ["CANDIDATE_RUN_ID", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "RELEASE_TAG"]) ||
-    selection.env.CANDIDATE_RUN_ID !== "${{ inputs.candidate_run_id }}" ||
-    selection.env.RELEASE_TAG !== "${{ inputs.release_tag }}"
+    openVsx?.needs !== "publish" ||
+    openVsx?.uses !== "./.github/workflows/open-vsx-promotion.yml" ||
+    openVsx?.permissions?.contents !== "read" ||
+    openVsx?.with?.release_tag !== "${{ inputs.release_tag }}" ||
+    openVsx?.secrets !== undefined
   ) {
-    problems.push("Candidate selection must bind the requested run and tag through the authenticated inspector.");
-  }
-  const ancestry = runSteps(select, 'git merge-base --is-ancestor "$CANDIDATE_SOURCE_SHA" "$CURRENT_MAIN_SHA"')[0];
-  if (
-    !exactKeys(ancestry?.env, ["CANDIDATE_SOURCE_SHA", "CURRENT_MAIN_SHA"]) ||
-    ancestry.env.CANDIDATE_SOURCE_SHA !== "${{ steps.candidate.outputs.source_sha }}" ||
-    ancestry.env.CURRENT_MAIN_SHA !== "${{ github.sha }}"
-  ) {
-    problems.push("Candidate selection must prove the historical source remains on the dispatched protected main.");
-  }
-  const promote = workflow.jobs.promote;
-  inspectCheckout(promote, SOURCE_SHA, 0, "Stable promotion", problems);
-  inspectPinnedNode(promote, "Stable promotion", problems);
-  if (
-    promote.needs !== "select" ||
-    promote.environment !== "publishing" ||
-    !exactKeys(promote.permissions, ["actions", "contents"]) ||
-    promote.permissions.actions !== "read" ||
-    promote.permissions.contents !== "write" ||
-    promote.concurrency?.group !== "openwrangler-release-publication" ||
-    promote.concurrency?.["cancel-in-progress"] !== false
-  ) {
-    problems.push(
-      "Only exact-byte promotion may enter the serialized protected publishing environment with write access."
-    );
-  }
-  const downloads = actionSteps(promote, DOWNLOAD);
-  if (downloads.length !== 3) {
-    problems.push("Stable promotion must download exactly the candidate, manifest, and performance artifacts.");
-  } else {
-    inspectCrossRunDownload(
-      downloads[0],
-      "${{ needs.select.outputs.candidate-artifact-id }}",
-      "canonical-release",
-      problems
-    );
-    inspectCrossRunDownload(
-      downloads[1],
-      "${{ needs.select.outputs.qualification-artifact-id }}",
-      "qualification",
-      problems
-    );
-    inspectCrossRunDownload(
-      downloads[2],
-      "${{ needs.select.outputs.performance-artifact-id }}",
-      "performance",
-      problems
-    );
-  }
-  const promoteRuns = steps(promote).map((step) => command(step?.run));
-  if (
-    promoteRuns.some((run) => /(?:^|\s)npm run (?:build|package)(?::|\s|$)/u.test(run)) ||
-    promoteRuns.some((run) => run.includes("create-canonical-release-artifact.mjs"))
-  ) {
-    problems.push("Stable promotion must never build, package, or recreate candidate bytes.");
-  }
-  const requiredRuns = [
-    "node scripts/release-candidate.mjs verify qualification/release-candidate.json",
-    "node scripts/prepare-stable-candidate-tag.mjs --verify-remote",
-    "node scripts/push-stable-release-tag.mjs",
-    "node scripts/publish-github-stable-release.mjs canonical-release",
-    "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
-    "ovsx publish --skip-duplicate canonical-release/openwrangler.vsix",
-    "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
-    "node scripts/prepare-stable-candidate-tag.mjs --require-remote",
-    "verify-public-media-surfaces.mjs"
-  ];
-  for (const required of requiredRuns) {
-    if (promoteRuns.filter((run) => run.includes(required)).length !== 1) {
-      problems.push(`Stable promotion must retain exactly one ${required} boundary.`);
-    }
-  }
-  if (runSteps(promote, "verify-canonical-release-artifact.mjs canonical-release").length !== 3) {
-    problems.push(
-      "Stable promotion must reverify the same candidate before inspection, publication, and registry upload."
-    );
-  }
-  const manifest = runSteps(promote, "release-candidate.mjs verify qualification/release-candidate.json")[0];
-  if (
-    !exactKeys(manifest?.env, [
-      "CANDIDATE_ARTIFACT_ID",
-      "CANDIDATE_BYTES",
-      "CANDIDATE_RUN_ID",
-      "CANDIDATE_SHA256",
-      "CANDIDATE_SOURCE_SHA",
-      "GITHUB_REPOSITORY",
-      "PERFORMANCE_ARTIFACT_ID",
-      "PERFORMANCE_REPORT",
-      "RELEASE_TAG"
-    ]) ||
-    manifest.env.CANDIDATE_SOURCE_SHA !== SOURCE_SHA ||
-    manifest.env.PERFORMANCE_REPORT !== "performance/release-candidate-performance.json"
-  ) {
-    problems.push(
-      "Stable promotion must bind candidate bytes, source, run, manifest, and performance report together."
-    );
-  }
-  for (const step of steps(promote).filter((entry) => entry?.env?.EXPECTED_SHA !== undefined)) {
-    if (step.env.EXPECTED_SHA !== SOURCE_SHA) {
-      problems.push("Every promotion verifier must use the historical candidate source, never the dispatch source.");
-      break;
-    }
+    problems.push("Stable release must hand the public GitHub release to the one reusable Open VSX publisher.");
   }
   return problems;
 }

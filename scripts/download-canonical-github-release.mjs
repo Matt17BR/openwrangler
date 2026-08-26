@@ -24,7 +24,7 @@ export const CANONICAL_RELEASE_FILES = Object.freeze([
 export const PREVIEW_RELEASE_FILES = Object.freeze([...CANONICAL_RELEASE_FILES]);
 const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const RELEASE_JSON_MAX_BYTES = 1024 * 1024;
-const MAX_RELEASE_POLL_ATTEMPTS = 240;
+const MAX_RELEASE_POLL_ATTEMPTS = 60;
 const FILE_LIMITS = new Map([
   ["openwrangler.vsix", MAX_VSIX_BYTES],
   ["openwrangler.vsix.provenance.json", 4096],
@@ -158,7 +158,7 @@ function parseReleaseMetadata(bytes, prerelease, releaseTag) {
   return assets;
 }
 
-async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
+async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag, signal }) {
   const releaseUrl = `https://api.github.com/repos/${GITHUB_RELEASE_REPOSITORY}/releases/tags/${encodeURIComponent(
     releaseTag
   )}`;
@@ -168,7 +168,8 @@ async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
       "User-Agent": "OpenWrangler-marketplace-promotion/1",
       "X-GitHub-Api-Version": "2022-11-28"
     },
-    redirect: "error"
+    redirect: "error",
+    signal
   });
   if (response.status === 404) {
     throw new GithubReleasePendingError(`GitHub release ${releaseTag} is not public yet.`);
@@ -197,7 +198,8 @@ async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
           Accept: "application/octet-stream",
           "User-Agent": "OpenWrangler-marketplace-promotion/1"
         },
-        redirect: "follow"
+        redirect: "follow",
+        signal
       }
     );
     if (!assetResponse.ok) {
@@ -256,7 +258,8 @@ export async function downloadCanonicalGithubRelease({
   outputDirectory,
   prerelease,
   releaseTag,
-  sleep = delay
+  sleep = delay,
+  timeoutMs = 45 * 60_000
 }) {
   assertStableTag(releaseTag);
   const expectedFiles = releaseFiles(prerelease);
@@ -268,18 +271,38 @@ export async function downloadCanonicalGithubRelease({
   if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
     throw new TypeError("GitHub release polling delay must be an integer from 0 through 60000 milliseconds.");
   }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60 * 60_000) {
+    throw new TypeError("GitHub release handoff timeout must be an integer from 1 through 3600000 milliseconds.");
+  }
   const output = canonicalOutputDirectory(outputDirectory);
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
   let files;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      files = await fetchReleaseAssets({ fetchImpl, prerelease, releaseTag });
-      break;
-    } catch (error) {
-      if (!(error instanceof GithubReleasePendingError) || attempt === attempts) {
-        throw error;
+  try {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        files = await fetchReleaseAssets({ fetchImpl, prerelease, releaseTag, signal: controller.signal });
+        break;
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new Error("GitHub release handoff exceeded its overall deadline.");
+        }
+        if (!(error instanceof GithubReleasePendingError) || attempt === attempts) {
+          throw error;
+        }
+        try {
+          await sleep(delayMs, undefined, { signal: controller.signal });
+        } catch (sleepError) {
+          if (controller.signal.aborted) {
+            throw new Error("GitHub release handoff exceeded its overall deadline.");
+          }
+          throw sleepError;
+        }
       }
-      await sleep(delayMs);
     }
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
   mkdirSync(output, { mode: 0o700, recursive: false });
   for (const fileName of expectedFiles) {
@@ -291,14 +314,26 @@ export async function downloadCanonicalGithubRelease({
   });
 }
 
+export function githubReleasePollingOptions(environment = process.env) {
+  return Object.freeze({
+    attempts: environment.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS
+      ? Number(environment.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS)
+      : undefined,
+    delayMs: environment.OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS
+      ? Number(environment.OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS)
+      : undefined,
+    timeoutMs: environment.OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS
+      ? Number(environment.OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS)
+      : undefined
+  });
+}
+
 async function runCli() {
   if (process.argv.length !== 3) {
     throw new Error("Pass exactly one canonical release output directory.");
   }
   const receipt = await downloadCanonicalGithubRelease({
-    attempts: process.env.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS
-      ? Number(process.env.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS)
-      : undefined,
+    ...githubReleasePollingOptions(process.env),
     outputDirectory: process.argv[2],
     prerelease:
       process.env.RELEASE_PRERELEASE === "true" ? true : process.env.RELEASE_PRERELEASE === "false" ? false : undefined,

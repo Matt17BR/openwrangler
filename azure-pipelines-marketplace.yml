@@ -3,8 +3,8 @@ name: marketplace-$(Date:yyyyMMdd).$(Rev:r)
 trigger:
   batch: false
   branches:
-    include:
-      - main
+    exclude:
+      - "*"
   tags:
     include:
       - "v*"
@@ -62,7 +62,7 @@ stages:
     jobs:
       - deployment: Marketplace
         displayName: Publish and verify Microsoft Marketplace
-        timeoutInMinutes: 240
+        timeoutInMinutes: 60
         pool:
           vmImage: ubuntu-24.04
         workspace:
@@ -91,9 +91,11 @@ stages:
                   displayName: Restore the reviewed lockfile
                 - script: node scripts/download-canonical-github-release.mjs canonical-release
                   displayName: Download the exact public GitHub release
+                  timeoutInMinutes: 6
                   env:
-                    OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210
-                    OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000
+                    OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 30
+                    OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 10000
+                    OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: 330000
                     RELEASE_PRERELEASE: $(releasePrerelease)
                     RELEASE_TAG: $(releaseTag)
                 - script: node scripts/verify-registry-release-artifact.mjs canonical-release

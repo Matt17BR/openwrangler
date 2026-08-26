@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   CANONICAL_RELEASE_FILES,
   downloadCanonicalGithubRelease,
+  githubReleasePollingOptions,
   GithubReleasePendingError,
   PREVIEW_RELEASE_FILES
 } from "./download-canonical-github-release.mjs";
@@ -412,12 +413,12 @@ test("polls only while a public release is genuinely pending", async (context) =
   assert.equal(sleeps, 1);
 });
 
-test("allows a bounded long registry-promotion poll without accepting an unbounded retry count", async (context) => {
+test("keeps release handoff polling bounded", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-bounded-poll-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));
 
   await downloadCanonicalGithubRelease({
-    attempts: 210,
+    attempts: 60,
     fetchImpl: successfulFetch(),
     outputDirectory: join(parent, "canonical-release"),
     prerelease: false,
@@ -426,14 +427,45 @@ test("allows a bounded long registry-promotion poll without accepting an unbound
 
   await assert.rejects(
     downloadCanonicalGithubRelease({
-      attempts: 241,
+      attempts: 61,
       fetchImpl: successfulFetch(),
       outputDirectory: join(parent, "too-many-attempts"),
       prerelease: false,
       releaseTag
     }),
-    /integer from 1 through 240/u
+    /integer from 1 through 60/u
   );
+});
+
+test("reads the complete Azure handoff polling deadline", () => {
+  assert.deepEqual(
+    githubReleasePollingOptions({
+      OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: "30",
+      OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: "10000",
+      OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: "330000"
+    }),
+    { attempts: 30, delayMs: 10_000, timeoutMs: 330_000 }
+  );
+});
+
+test("aborts a stalled GitHub handoff at its overall deadline", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-timeout-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 1,
+      fetchImpl: (_url, { signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      outputDirectory: join(parent, "canonical-release"),
+      prerelease: false,
+      releaseTag,
+      timeoutMs: 10
+    }),
+    /overall deadline/u
+  );
+  assert.deepEqual(readdirSync(parent), []);
 });
 
 test("rejects malformed release inventory, URLs, and byte drift without retrying", async (context) => {

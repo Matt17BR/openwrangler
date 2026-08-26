@@ -6,185 +6,46 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 const source = readFileSync(new URL("../azure-pipelines-marketplace.yml", import.meta.url), "utf8");
 const packageJson = readFileSync(new URL("../package.json", import.meta.url), "utf8");
 const packageLock = readFileSync(new URL("../package-lock.json", import.meta.url), "utf8");
-const canonicalStep = `                - script: node scripts/verify-registry-release-artifact.mjs canonical-release
-                  displayName: Verify the canonical release before authentication
-                  env:
-                    AUTOMATION_SHA: $(Build.SourceVersion)
-                    EXPECTED_SHA: $(releaseCommit)
-                    RELEASE_PRERELEASE: $(releasePrerelease)
-                    RELEASE_TAG: $(releaseTag)
-`;
-const materializeStep = `                - script: |
-                    set -euo pipefail
-                    pwd -P | grep -Fqx -- "$AUTOMATION_ROOT"
-                    test ! -e release-source
-                    test ! -L release-source
-                    git worktree add --detach release-source "$RELEASE_COMMIT"
-                    git -C release-source rev-parse --verify HEAD^{commit} | grep -Fqx -- "$RELEASE_COMMIT"
-                    git -C release-source rev-parse --show-toplevel | grep -Fqx -- "$AUTOMATION_ROOT/release-source"
-                    git -C release-source status --porcelain=v1 --untracked-files=all | cmp -s - /dev/null
-                  displayName: Materialize the exact clean release source
-                  env:
-                    AUTOMATION_ROOT: $(System.DefaultWorkingDirectory)
-                    RELEASE_COMMIT: $(releaseCommit)
-`;
-const publicMediaStep = `                - script: |
-                    set -euo pipefail
-                    required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
-                    case "$required" in
-                      true)
-                        npm ci --ignore-scripts --prefix release-source
-                        node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
-                        ;;
-                      false)
-                        printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' "$RELEASE_VERSION"
-                        ;;
-                      *) exit 64 ;;
-                    esac
-                  displayName: Preflight immutable public README media
-                  env:
-                    RELEASE_SOURCE_SHA: $(releaseCommit)
-                    RELEASE_VERSION: $(releaseVersion)
-`;
 
-test("Marketplace promotion pipeline is the reviewed exact-artifact WIF flow", () => {
+test("Marketplace promotion consumes the tagged GitHub release without main-branch polling", () => {
   assert.deepEqual(inspectMarketplacePromotionPipeline(source), []);
+  assert.doesNotMatch(source, /branches:\s+include:\s+- main/u);
+  assert.match(source, /OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 30/u);
+  assert.match(source, /OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 10000/u);
+  assert.match(source, /OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: 330000/u);
 });
 
-test("Marketplace promotion inspector rejects credentials, rebuilding, and promotion drift", () => {
-  const mutations = [
-    source.replace('      - "v*"', '      - "main"'),
-    source.replace("  batch: false", "  batch: true"),
-    source.replace("      - main", '      - "*"'),
-    source.replace("      - main\n", ""),
+test("Marketplace promotion rejects trigger, wait, identity, rebuild, and byte-verification drift", () => {
+  const cases = [
+    source.replace('branches:\n    exclude:\n      - "*"', "branches:\n    include:\n      - main"),
+    source.replace("OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 30", "OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210"),
+    source.replace("OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 10000", "OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000"),
     source.replace(
-      '  tags:\n    include:\n      - "v*"',
-      '  tags:\n    include:\n      - "v*"\n  paths:\n    include:\n      - scripts/marketplace-release-intake.mjs'
+      "OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: 330000",
+      "OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: 3600000"
     ),
-    source.replace("pr: none", "pr:\n  branches:\n    include:\n      - main"),
-    source.replace("default: openwrangler-marketplace-publishing", "default: arbitrary-connection"),
-    source.replace('    default: ""', '    default: "v1.0.1"'),
-    source.replace("lockBehavior: sequential", "lockBehavior: runLatest"),
+    source.replace("timeoutInMinutes: 6", "timeoutInMinutes: 60"),
+    source.replace("timeoutInMinutes: 60", "timeoutInMinutes: 240"),
     source.replace("environment: openwrangler-marketplace-publishing", "environment: unprotected"),
-    source.replace("persistCredentials: false", "persistCredentials: true"),
-    source.replace(
-      "releaseVersion: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseVersion']]",
-      "releaseVersion: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]"
-    ),
-    source.replace("npm ci --ignore-scripts", "npm ci --ignore-scripts && npm run build"),
-    source.replace(
-      "node scripts/download-canonical-github-release.mjs canonical-release",
-      "curl -L https://example.com/openwrangler.vsix -o canonical-release/openwrangler.vsix"
-    ),
-    source.replace(
-      "node scripts/verify-registry-release-artifact.mjs canonical-release",
-      "node scripts/verify-vsix.mjs canonical-release/openwrangler.vsix"
-    ),
     source.replace("AzureCLI@2", "AzureCLI@1"),
-    source.replace(
-      "azureSubscription: ${{ parameters.marketplaceServiceConnection }}",
-      "azureSubscription: arbitraryServiceConnection"
-    ),
     source.replace("addSpnToEnvironment: false", "addSpnToEnvironment: true"),
-    source.replace("node scripts/marketplace-identity-profile.mjs", "echo unknown-marketplace-profile"),
-    source.replace(
-      "node scripts/marketplace-identity-profile.mjs\n                      npx --no-install vsce verify-pat Matt17BR --azure-credential",
-      "npx --no-install vsce verify-pat Matt17BR --azure-credential\n                      node scripts/marketplace-identity-profile.mjs"
-    ),
-    source.replace(
-      "npx --no-install vsce verify-pat Matt17BR --azure-credential",
-      "npx --no-install vsce verify-pat Matt17BR --pat $(VSCE_PAT)"
-    ),
-    source.replace(
-      "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate",
-      "npx --no-install vsce publish --pat $(VSCE_PAT) --packagePath canonical-release/openwrangler.vsix"
-    ),
-    source.replace(
-      "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate",
-      "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate"
-    ),
-    source.replace(" || publish_status=$?", ""),
-    source.replace("public verification will determine the result", "publication failure ignored"),
-    source.replace("BUILD_REASON: $(Build.Reason)", "BUILD_REASON: Manual"),
-    source.replace("EXPECTED_SHA: $(releaseCommit)", "EXPECTED_SHA: $(Build.SourceVersion)"),
-    source.replace("OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40", "OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 39"),
-    source.replace(
-      'git worktree add --detach release-source "$RELEASE_COMMIT"',
-      'git checkout --detach "$RELEASE_COMMIT"'
-    ),
-    source.replace('                    pwd -P | grep -Fqx -- "$AUTOMATION_ROOT"\n', ""),
-    source.replace("                    test ! -L release-source\n", ""),
-    source.replace(
-      'git -C release-source rev-parse --verify HEAD^{commit} | grep -Fqx -- "$RELEASE_COMMIT"',
-      'git -C release-source rev-parse --verify HEAD^{commit} | grep -Fqx -- "$(Build.SourceVersion)"'
-    ),
-    source.replace(
-      'git -C release-source rev-parse --show-toplevel | grep -Fqx -- "$AUTOMATION_ROOT/release-source"',
-      "git -C release-source rev-parse --show-toplevel"
-    ),
-    source.replace(
-      "                    git -C release-source status --porcelain=v1 --untracked-files=all | cmp -s - /dev/null\n",
-      ""
-    ),
-    source.replace("publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)", "false"),
-    source.replace("npm ci --ignore-scripts --prefix release-source", "npm ci --ignore-scripts"),
-    source.replace(
-      "node release-source/scripts/verify-public-media-surfaces.mjs",
-      "node scripts/verify-public-media-surfaces.mjs"
-    ),
-    source.replace("Prepublication public-media verification starts with v1.99.4", "starts whenever"),
-    source.replace("RELEASE_VERSION: $(releaseVersion)", "RELEASE_VERSION: $(releaseTag)"),
-    source.replace(
-      "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing",
-      "echo assume-existing-public"
-    ),
-    source.replace(
-      "condition: and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))",
-      "condition: succeeded()"
-    ),
-    source.replace(
-      `${canonicalStep}${materializeStep}${publicMediaStep}`,
-      `${publicMediaStep}${canonicalStep}${materializeStep}`
-    ),
-    source.replace("node scripts/verify-marketplace-publication.mjs canonical-release", "echo published"),
-    source.replace(
-      "condition: and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.promote'], 'true'))",
-      "condition: succeededOrFailed()"
-    ),
-    `${source}\n# drift\n`
+    source.replace("node scripts/verify-registry-release-artifact.mjs canonical-release", "npm run build"),
+    source.replace("--skip-duplicate", "--force"),
+    source.replace("node scripts/verify-marketplace-publication.mjs canonical-release", "echo published")
   ];
-  for (const [index, candidate] of mutations.entries()) {
-    assert.notEqual(candidate, source, `mutation ${index + 1} must change the pipeline`);
-    assert.notDeepEqual(inspectMarketplacePromotionPipeline(candidate), [], `mutation ${index + 1} must fail`);
+  for (const [index, candidate] of cases.entries()) {
+    assert.notEqual(candidate, source);
+    assert.notDeepEqual(inspectMarketplacePromotionPipeline(candidate), [], `mutation ${index + 1}`);
   }
 });
 
-test("Marketplace promotion uses one exact integrity-pinned VSCE package", () => {
+test("Marketplace publishing uses the ordinary lockfile-owned VSCE package", () => {
   assert.deepEqual(inspectMarketplaceVsceLock({ packageJson, packageLock }), []);
-});
-
-test("Marketplace VSCE lock inspector rejects dependency range, tarball, and integrity drift", () => {
-  const mutations = [
-    {
-      packageJson: packageJson.replace('"@vscode/vsce": "^3.9.2"', '"@vscode/vsce": "^4.0.0"'),
-      packageLock
-    },
-    {
+  assert.notDeepEqual(
+    inspectMarketplaceVsceLock({
       packageJson,
-      packageLock: packageLock.replace(
-        "https://registry.npmjs.org/@vscode/vsce/-/vsce-3.9.2.tgz",
-        "https://example.com/vsce-3.9.2.tgz"
-      )
-    },
-    {
-      packageJson,
-      packageLock: packageLock.replace(
-        "sha512-XSxMosEEDO6vLxELAHVkwmhC0qe0ijZni2jB9Rcs8kQsW4lhTDQ/wMzmwFs/buotAWSnpmUp/dRWD2ufG3UYKA==",
-        "sha512-invalid"
-      )
-    }
-  ];
-  for (const [index, candidate] of mutations.entries()) {
-    assert.notDeepEqual(inspectMarketplaceVsceLock(candidate), [], `dependency mutation ${index + 1} must fail`);
-  }
+      packageLock: packageLock.replace("https://registry.npmjs.org/@vscode/vsce/", "https://example.com/")
+    }),
+    []
+  );
 });

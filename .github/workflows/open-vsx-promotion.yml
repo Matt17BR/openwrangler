@@ -1,9 +1,12 @@
 name: Promote GitHub release to Open VSX
 
 on:
-  release:
-    types:
-      - published
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Existing canonical GitHub release tag to promote
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       release_tag:
@@ -24,10 +27,10 @@ jobs:
     name: Promote exact public GitHub release
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 105
+    timeout-minutes: 75
     environment: publishing
     env:
-      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - name: Check out reviewed promotion code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -65,6 +68,9 @@ jobs:
         run: node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source
       - name: Download the exact public GitHub release
         env:
+          OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 12
+          OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 5000
+          OPEN_WRANGLER_GITHUB_RELEASE_TIMEOUT_MS: 90000
           RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
         run: node scripts/download-canonical-github-release.mjs canonical-release
       - name: Verify the downloaded release before authentication
@@ -99,18 +105,7 @@ jobs:
             echo "OVSX_PAT is unavailable in the publishing environment." >&2
             exit 1
           fi
-          if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
-          printf '%s\n' "$output"
-          if ! grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"; then
-            echo "ovsx did not confirm the Matt17BR publisher token." >&2
-            exit 1
-          fi
+          npx --no-install ovsx verify-pat Matt17BR
       - name: Reverify the release before Open VSX preflight
         env:
           AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
@@ -145,20 +140,7 @@ jobs:
             true|false) ;;
             *) exit 1 ;;
           esac
-          if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
-          printf '%s\n' "$output"
-          published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
-          duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
-          if ! grep -Fq "$published" <<< "$output" && ! grep -Fq "$duplicate" <<< "$output"; then
-            echo "ovsx did not confirm publication or an exact duplicate." >&2
-            exit 1
-          fi
+          npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
       - name: Verify the exact public Open VSX release
         env:
           AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}

@@ -319,18 +319,7 @@ jobs:
             echo "OVSX_PAT is unavailable in the publishing environment." >&2
             exit 1
           fi
-          if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
-          printf '%s\n' "$output"
-          if ! grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"; then
-            echo "ovsx did not confirm the Matt17BR publisher token." >&2
-            exit 1
-          fi
+          npx --no-install ovsx verify-pat Matt17BR
       - name: Reject a conflicting Open VSX preview
         env:
           AUTOMATION_SHA: ${{ github.sha }}
@@ -357,20 +346,7 @@ jobs:
             true|false) ;;
             *) exit 1 ;;
           esac
-          if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then
-            :
-          else
-            status=$?
-            printf '%s\n' "$output"
-            exit "$status"
-          fi
-          printf '%s\n' "$output"
-          published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
-          duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
-          if ! grep -Fq "$published" <<< "$output" && ! grep -Fq "$duplicate" <<< "$output"; then
-            echo "ovsx did not confirm publication or an exact duplicate." >&2
-            exit 1
-          fi
+          npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
       - name: Verify the exact public Open VSX preview
         env:
           AUTOMATION_SHA: ${{ github.sha }}

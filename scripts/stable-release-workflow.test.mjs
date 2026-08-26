@@ -14,221 +14,141 @@ function mutate(source, change) {
 }
 
 function repinActions(source) {
-  return mutate(source, (workflow) => {
-    for (const job of Object.values(workflow.jobs)) {
-      for (const step of job.steps ?? []) {
-        if (typeof step.uses === "string" && !step.uses.startsWith("./")) {
-          step.uses = step.uses.replace(/@[0-9a-f]{40}$/u, `@${"a".repeat(40)}`);
-        }
-      }
-    }
-  });
+  return source.replace(/@[0-9a-f]{40}/gu, `@${"a".repeat(40)}`);
 }
 
-test("release candidate packages once and seals read-only qualification", () => {
+test("release candidate builds once and qualifies ten expanded jobs", () => {
   assert.deepEqual(inspectReleaseCandidateWorkflow(candidateSource), []);
+  assert.doesNotMatch(candidateSource, /test "\$RUN_ATTEMPT" = "1"|seven-day|soak/u);
 });
 
-test("release checks accept updated action commits", () => {
-  assert.deepEqual(inspectReleaseCandidateWorkflow(repinActions(candidateSource)), []);
-  assert.deepEqual(inspectStableReleaseWorkflow(repinActions(stableSource)), []);
+test("release workflows accept routine action commit updates", () => {
+  const repinnedCandidate = repinActions(candidateSource);
+  const repinnedStable = repinActions(stableSource);
+  assert.notEqual(repinnedCandidate, candidateSource);
+  assert.notEqual(repinnedStable, stableSource);
+  assert.deepEqual(inspectReleaseCandidateWorkflow(repinnedCandidate), []);
+  assert.deepEqual(inspectStableReleaseWorkflow(repinnedStable), []);
 });
 
-test("release inspectors reject tag, short, malformed, and extra external action references", () => {
-  const inspectors = [
-    [candidateSource, inspectReleaseCandidateWorkflow],
-    [stableSource, inspectStableReleaseWorkflow]
-  ];
-  for (const [source, inspect] of inspectors) {
-    for (const reference of ["actions/checkout@v6", "actions/checkout@deadbeef", "actions/checkout"]) {
-      const candidate = source.replace(/actions\/checkout@[0-9a-f]{40}/u, reference);
-      assert.notEqual(candidate, source);
-      assert.match(inspect(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
-    }
-    const candidate = mutate(source, (workflow) => {
-      Object.values(workflow.jobs)
-        .find((job) => Array.isArray(job.steps))
-        .steps.push({
-          uses: "example/unreviewed-action@v1"
-        });
-    });
-    assert.match(inspect(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
-  }
-});
-
-test("release jobs reject unexpected fully pinned actions and reusable workflows", () => {
-  const commit = "b".repeat(40);
-  const candidateCases = [
-    (workflow) => {
-      workflow.jobs.package.steps.push({ uses: `example/unexpected-action@${commit}` });
-    },
-    (workflow) => {
-      workflow.jobs["remote-ssh"].steps.push({ uses: `actions/setup-python@${commit}` });
-    },
-    (workflow) => {
-      workflow.jobs.qualify.steps.push({
-        uses: `example/unexpected-action@${commit}`,
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
-      });
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].uses = `example/workflows/.github/workflows/accept.yml@${commit}`;
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
-    }
-  ];
-  for (const change of candidateCases) {
-    assert.match(
-      inspectReleaseCandidateWorkflow(mutate(candidateSource, change)).join("\n"),
-      /is not allowed in this workflow/u
-    );
+test("release workflows reject unpinned and unexpected actions or reusable workflows", () => {
+  for (const reference of ["actions/checkout@v7", "actions/checkout@deadbeef", "actions/checkout"]) {
+    const candidate = candidateSource.replace(/actions\/checkout@[0-9a-f]{40}/u, reference);
+    assert.notEqual(candidate, candidateSource);
+    assert.match(inspectReleaseCandidateWorkflow(candidate).join("\n"), /full 40-character hexadecimal commit SHA/u);
   }
 
-  const stableCases = [
-    (workflow) => {
-      workflow.jobs.select.steps.push({ uses: `actions/download-artifact@${commit}` });
-    },
-    (workflow) => {
-      workflow.jobs.promote.steps.push({
-        uses: `example/unexpected-action@${commit}`,
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
-      });
-    }
-  ];
-  for (const change of stableCases) {
-    assert.match(
-      inspectStableReleaseWorkflow(mutate(stableSource, change)).join("\n"),
-      /is not allowed in this workflow/u
-    );
-  }
+  const unexpectedCandidate = mutate(candidateSource, (workflow) => {
+    workflow.jobs.package.steps.push({ uses: `example/unexpected-action@${"b".repeat(40)}` });
+  });
+  assert.match(inspectReleaseCandidateWorkflow(unexpectedCandidate).join("\n"), /is not allowed in this workflow/u);
+
+  const unexpectedStable = mutate(stableSource, (workflow) => {
+    workflow.jobs.publish.steps.push({ uses: `example/unexpected-action@${"b".repeat(40)}` });
+  });
+  assert.match(inspectStableReleaseWorkflow(unexpectedStable).join("\n"), /is not allowed in this workflow/u);
+
+  const wrongReusable = mutate(stableSource, (workflow) => {
+    workflow.jobs["open-vsx"].uses = "./.github/workflows/candidate-acceptance.yml";
+  });
+  assert.match(inspectStableReleaseWorkflow(wrongReusable).join("\n"), /is not allowed in this workflow/u);
 });
 
-test("release-candidate inspector rejects publication, rebuilding, artifact, and fan-in drift", () => {
+test("release candidate rejects rebuild, publication, unbound artifact, and missing owner drift", () => {
   const cases = [
     (workflow) => {
       workflow.permissions.contents = "write";
     },
     (workflow) => {
-      workflow.concurrency.group = "release-candidate-${{ inputs.release_tag }}";
+      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("package:prepared")).run +=
+        "\nnpm run package:prepared -- --out second.vsix";
     },
     (workflow) => {
-      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("package:prepared")).run =
-        "npm run build && npm run package:prepared -- --out first.vsix && npm run package:prepared -- --out second.vsix";
-    },
-    (workflow) => {
-      workflow.jobs.package.steps.find((step) => step.id === "canonical_artifact").with["retention-days"] = 6;
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].with.channel = "preview";
-    },
-    (workflow) => {
-      workflow.jobs["remote-ssh"].needs = "candidate-acceptance";
+      workflow.jobs.package.steps.find((step) => step.id === "candidate_artifact").with.name = "candidate";
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) => step.uses?.startsWith("actions/download-artifact@")).with[
         "artifact-ids"
-      ] = "123";
+      ] = "99";
     },
     (workflow) => {
-      workflow.jobs.qualify.if = "${{ success() }}";
-    },
-    (workflow) => {
-      workflow.jobs.qualify.needs = ["package", "candidate-acceptance"];
-    },
-    (workflow) => {
-      workflow.jobs.qualify.steps.find((step) => String(step.run ?? "").includes("REMOTE_SSH_RESULT")).run =
-        "echo ignored";
-    },
-    (workflow) => {
-      workflow.jobs.qualify.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@")).with.name =
-        "unbounded-evidence";
+      workflow.jobs.qualify.needs = ["package", "remote-ssh"];
     },
     (workflow) => {
       workflow.jobs.qualify.steps.push({ run: "node scripts/push-stable-release-tag.mjs" });
+    },
+    (workflow) => {
+      workflow.jobs.package.steps.find((step) => step.uses?.startsWith("actions/checkout@")).uses =
+        "actions/checkout@v6";
+    },
+    (workflow) => {
+      delete workflow.concurrency.queue;
+    },
+    (workflow) => {
+      workflow.concurrency.unsupported = true;
     }
   ];
   for (const [index, change] of cases.entries()) {
-    assert.notDeepEqual(
-      inspectReleaseCandidateWorkflow(mutate(candidateSource, change)),
-      [],
-      `candidate mutation ${index + 1} must fail closed`
-    );
+    assert.notDeepEqual(inspectReleaseCandidateWorkflow(mutate(candidateSource, change)), [], `mutation ${index + 1}`);
   }
 });
 
-test("stable release promotes only one soaked candidate without rebuilding", () => {
+test("stable release publishes GitHub once from one selected candidate", () => {
   assert.deepEqual(inspectStableReleaseWorkflow(stableSource), []);
+  assert.doesNotMatch(stableSource, /ovsx publish|verify-open-vsx|seven-day|soak/u);
 });
 
-test("stable-release inspector rejects selection, identity, permission, download, and publication drift", () => {
+test("stable release rejects selection, permission, download, rebuild, and duplicate publisher drift", () => {
   const cases = [
-    (workflow) => {
-      workflow.on.workflow_dispatch.inputs.publish = { required: true, type: "boolean" };
-    },
-    (workflow) => {
-      workflow.permissions.contents = "write";
-    },
-    (workflow) => {
-      workflow.concurrency.group = "stable-release-${{ inputs.release_tag }}";
-    },
     (workflow) => {
       workflow.jobs.select.permissions.actions = "write";
     },
     (workflow) => {
-      workflow.jobs.select.steps.find((step) => String(step.run ?? "").includes("RUN_ATTEMPT")).run =
-        'test "$EVENT_REF" = "refs/heads/main"';
+      workflow.jobs.select.steps.find((step) => step.id === "candidate").run = "echo selected";
     },
     (workflow) => {
-      workflow.jobs.select.steps.find((step) => step.id === "candidate").env.CANDIDATE_RUN_ID = "99";
+      delete workflow.jobs.select.outputs["candidate-run-attempt"];
     },
     (workflow) => {
-      workflow.jobs.select.steps.find((step) => String(step.run ?? "").includes("merge-base")).run = "echo ancestor";
+      workflow.jobs.select.steps.find((step) => String(step.name ?? "").includes("current main")).run =
+        'git merge-base --is-ancestor "$CANDIDATE_SOURCE_SHA" "$CURRENT_MAIN_SHA"';
     },
     (workflow) => {
-      workflow.jobs.promote.environment = "unprotected";
+      delete workflow.concurrency.queue;
     },
     (workflow) => {
-      workflow.jobs.promote.permissions.contents = "read";
+      workflow.jobs.publish.environment = "unprotected";
     },
     (workflow) => {
-      workflow.jobs.promote.steps.find((step) => step.name === "Check out the historical candidate source").with.ref =
-        "${{ github.sha }}";
+      workflow.jobs.publish.permissions.contents = "read";
     },
     (workflow) => {
-      workflow.jobs.promote.steps.find((step) => step.name === "Download the exact candidate artifact").with["run-id"] =
+      delete workflow.jobs.publish.concurrency.queue;
+    },
+    (workflow) => {
+      workflow.jobs.publish.concurrency.unsupported = true;
+    },
+    (workflow) => {
+      workflow.jobs.publish.steps.find((step) => step.name === "Download the candidate bytes").with["run-id"] =
         "${{ github.run_id }}";
     },
     (workflow) => {
-      workflow.jobs.promote.steps.find((step) => step.name === "Download the bounded candidate manifest").with[
-        "artifact-ids"
-      ] = "${{ needs.select.outputs.candidate-artifact-id }}";
+      workflow.jobs.publish.steps.find((step) => String(step.run ?? "").includes("release-candidate.mjs verify")).env[
+        "CANDIDATE_RUN_ATTEMPT"
+      ] = "1";
     },
     (workflow) => {
-      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("release-candidate.mjs verify")).env[
-        "CANDIDATE_SOURCE_SHA"
-      ] = "${{ github.sha }}";
+      workflow.jobs.publish.steps.push({ run: "npm run build && npx ovsx publish rebuilt.vsix" });
     },
     (workflow) => {
-      workflow.jobs.promote.steps.push({ run: "npm run build && npm run package -- --out rebuilt.vsix" });
+      workflow.jobs.publish.steps.find((step) => step.uses?.startsWith("actions/checkout@")).uses =
+        "actions/checkout@v6";
     },
     (workflow) => {
-      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("--preflight")).run = "echo safe";
-    },
-    (workflow) => {
-      workflow.jobs.promote.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).run =
-        "echo published";
-    },
-    (workflow) => {
-      workflow.jobs.promote.steps.find((step) => step.id === "canonical_release").env.EXPECTED_SHA =
-        "${{ github.sha }}";
+      workflow.jobs["open-vsx"].secrets = "inherit";
     }
   ];
   for (const [index, change] of cases.entries()) {
-    assert.notDeepEqual(
-      inspectStableReleaseWorkflow(mutate(stableSource, change)),
-      [],
-      `stable mutation ${index + 1} must fail closed`
-    );
+    assert.notDeepEqual(inspectStableReleaseWorkflow(mutate(stableSource, change)), [], `mutation ${index + 1}`);
   }
 });

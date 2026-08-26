@@ -23,11 +23,10 @@ const PLATFORM_SIGN_PACKAGES = Object.freeze([
 
 export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/candidate-acceptance.yml", "platform", [INSTALL]],
-  [".github/workflows/candidate-acceptance.yml", "r_platform", [INSTALL]],
+  [".github/workflows/candidate-acceptance.yml", "r-platform", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "linux", [INSTALL]],
   [".github/workflows/candidate-acceptance.yml", "performance", [INSTALL]],
-  [".github/workflows/candidate-acceptance.yml", "jupyter", [INSTALL]],
-  [".github/workflows/candidate-acceptance.yml", "r_local", [INSTALL]],
+  [".github/workflows/candidate-acceptance.yml", "r-local", [INSTALL]],
   [".github/workflows/ci.yml", "javascript", [INSTALL]],
   [".github/workflows/ci.yml", "python", [INSTALL]],
   [".github/workflows/ci.yml", "r", [INSTALL]],
@@ -45,7 +44,7 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/released-jupyter.yml", "macos-r", [INSTALL]],
   [".github/workflows/released-jupyter.yml", "windows-r", [INSTALL]],
   [".github/workflows/stable-release.yml", "select", [INSTALL]],
-  [".github/workflows/stable-release.yml", "promote", [INSTALL]]
+  [".github/workflows/stable-release.yml", "publish", [INSTALL]]
 ]);
 
 export const AZURE_INSTALL_OWNERS = Object.freeze([

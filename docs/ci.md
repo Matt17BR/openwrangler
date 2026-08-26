@@ -56,21 +56,26 @@ The **Release candidate** workflow starts manually from protected `main`. It bui
 and source revision. Every acceptance job downloads and verifies those same bytes; consumers do not rebuild the
 extension.
 
-Candidate acceptance covers installed VS Code and Cursor behavior, macOS and Windows compatibility, native R,
-Jupyter, Remote SSH, and installed performance. The candidate result waits for all of those jobs. Any failure stops
-promotion.
+The workflow expands to ten jobs in total. Linux owns the full installed-product run, the first Python/Jupyter use,
+native R lifecycle, native-frame, and restart depth. macOS and Windows each run one installed VS Code smoke and one
+native R smoke. Remote SSH and installed performance stay separate. Any failure stops publication, and editor details
+are uploaded only for failed phases.
 
 The daily preview is deliberately separate from a release candidate. A passing preview is useful early warning, but
 it is not eligible for release.
 
 ## Publication
 
-Stable publication is a separate manual action. It selects a successful, sufficiently aged release-candidate run,
-downloads its recorded VSIX, and verifies the source revision and checksums again. Only the publication job receives
-write permission.
+Stable publication is a separate manual action. It selects a successful release-candidate run, downloads its recorded
+VSIX, and verifies the source revision, checksum, provenance, qualification receipt, and performance report again.
+The candidate source must still be the current protected `main` commit; an older candidate must be qualified again.
+There is no arbitrary waiting period. If a workflow retry is needed, rerun the whole candidate workflow; artifact
+names and the qualification receipt bind the selected run attempt. Manual release requests queue instead of replacing
+an older pending request. Only the GitHub publication job receives write permission.
 
-The GitHub release is created first. Open VSX promotion consumes the GitHub release, and the tagged release starts the
-Azure Marketplace pipeline. Each registry receives the accepted VSIX; none rebuilds or substitutes it.
+The GitHub release is created first. Stable release then calls the one reusable Open VSX publisher; its explicit
+manual dispatch is recovery only. The release tag starts the Azure Marketplace pipeline, which waits up to five
+minutes for the GitHub handoff. Each registry receives the accepted VSIX; none rebuilds or substitutes it.
 
 ## Reading a red check
 

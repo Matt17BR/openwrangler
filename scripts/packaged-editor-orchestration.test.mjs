@@ -62,6 +62,24 @@ test("candidate Python Jupyter gives comprehensive evidence to VS Code and one c
   });
 });
 
+test("candidate Python Jupyter may run only the comprehensive VS Code owner", () => {
+  const candidate = resolvePackagedPythonJupyterProfile({
+    value: CANDIDATE_PYTHON_JUPYTER_PROFILE,
+    acceptanceMode: "full",
+    jupyterExtensionEnabled: true,
+    dataWranglerCoexistenceEnabled: false,
+    remoteJupyterEnabled: true,
+    requestedEditors: ["vscode"]
+  });
+  assert.deepEqual(packagedPythonJupyterEditorPlan(candidate, "vscode", true), {
+    phases: ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"],
+    remote: true,
+    allowSelector: undefined,
+    pysparkSelector: undefined,
+    integrationOnly: true
+  });
+});
+
 test("unset Python Jupyter profile preserves complete manual coverage in both editors", () => {
   const profile = resolvePackagedPythonJupyterProfile({
     value: undefined,
@@ -149,7 +167,7 @@ test("candidate Python Jupyter profile rejects every non-candidate context", () 
     { jupyterExtensionEnabled: false },
     { dataWranglerCoexistenceEnabled: true },
     { remoteJupyterEnabled: false },
-    { requestedEditors: ["vscode"] },
+    { requestedEditors: ["cursor"] },
     { requestedEditors: ["cursor", "vscode"] }
   ]) {
     assert.throws(() => resolvePackagedPythonJupyterProfile({ ...base, ...overrides }), /must be unset|valid only/u);

@@ -456,11 +456,6 @@ test("CodeQL covers source changes and keeps write access limited to results", (
   assert.equal(codeql.jobs["codeql-gate"].if, "${{ always() }}");
   assert.deepEqual(codeql.jobs["codeql-gate"].needs, ["analyze-javascript-typescript", "analyze-python"]);
   for (const [name, jobId, needs] of [
-    [
-      "candidate-acceptance.yml",
-      "acceptance",
-      ["contract", "platform", "r_platform", "linux", "performance", "jupyter", "r_local"]
-    ],
     ["release-candidate.yml", "qualify", ["package", "candidate-acceptance", "remote-ssh"]]
   ]) {
     const job = workflow(name).jobs[jobId];

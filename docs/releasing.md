@@ -9,25 +9,22 @@ Open Wrangler has three deliberately separate paths. None depends on a 1.99.7 re
    checks one VSIX, then installs those exact bytes in stable VS Code for a short CSV/grid/sort/cleanup journey. A
    passing VSIX is retained for 14 days. It does not create a tag, GitHub Release, checksum/provenance bundle, or
    registry publication and is not a release candidate.
-2. `.github/workflows/release-candidate.yml` is a manual, nonpublishing qualification run. A first-attempt dispatch
-   from protected `main` validates stable metadata, packages one canonical triple, and reuses its numeric artifact ID
-   across VS Code, one pinned Cursor lifecycle/responsive-grid seam, Python/Jupyter, R 4.4 and 4.5 compatibility,
-   installed performance, and Remote SSH. It retains the candidate and bounded qualification manifest for 21 days;
-   failure diagnostics are failure-only and no job has write permission or a publishing environment.
+2. `.github/workflows/release-candidate.yml` is a manual, nonpublishing qualification run. It validates stable
+   metadata on protected `main`, builds one production VSIX, and passes that VSIX, checksum, and provenance to ten
+   expanded jobs. Those jobs cover Linux, macOS, Windows, first-use Python/Jupyter, native R 4.4 and 4.5, Remote SSH,
+   and installed performance. The candidate and qualification receipt are retained for 30 days. Editor diagnostics
+   are uploaded only when a phase fails, and no candidate job can publish.
 3. `.github/workflows/stable-release.yml` accepts only `candidate_run_id` and `release_tag`. Its read-only selector
-   requires a successful first-attempt candidate completed 168–336 hours earlier, rejects a newer successful
-   candidate for the same tag, and requires the candidate, manifest, and performance artifacts to remain unexpired.
-   The protected `publishing` job checks out the historical candidate source, downloads those exact numeric artifact
-   IDs from that exact run, and revalidates source, bytes, checksum, provenance, performance, and manifest. It never
-   builds or packages. The existing fail-closed tag, GitHub Release, Open VSX, and public-media transactions then
-   promote the same VSIX bytes.
+   requires a successful candidate and unexpired candidate, qualification, and performance artifacts. The protected
+   `publishing` job checks out that candidate's source, downloads the three exact artifact IDs from that run, and
+   revalidates source, bytes, checksum, provenance, performance, and qualification. It never builds or packages. It
+   creates or verifies the tag and GitHub Release only. Open VSX and Microsoft Marketplace then consume that public
+   GitHub release through their own protected publishers.
 
-Do not rerun a failed candidate: create a new first-attempt candidate from the corrected protected `main`. A source
-change, artifact expiry or replacement, manifest mismatch, failed owner, soak outside the window, public-byte
-conflict, or newer same-tag candidate invalidates promotion. Before public promotion, rollback means selecting no
-candidate at all; after a tag or registry write, recovery is verification-first and must never rebuild, retag, or
-overwrite conflicting public bytes. The retired 1.99.x preview inspectors remain only for historical recovery tests;
-they are not a current publication entry point.
+Fix deterministic failures before retrying. For an infrastructure failure, rerun all jobs so packaging, acceptance,
+performance, and qualification share one run-attempt suffix. A source change needs a new candidate. Artifact expiry,
+replacement, receipt mismatch, failed checks, or a public-byte conflict invalidates publication. After a tag or
+registry write, recovery verifies existing bytes and never rebuilds, retags, or overwrites a conflict.
 
 ## Release copy
 
@@ -45,7 +42,7 @@ Wrangler 2 previews. Both require `package.json.preview` to be `true`; other num
 `false`. The workflows use the same rule, so stable and preview metadata cannot be mixed.
 
 Every future release candidate starts from the exact protected `main` head. Stable publication promotes that
-candidate's already-qualified bytes after the bounded soak; it never rebuilds them. Releases through v1.2.2 predate this branch policy. Automatic `main`
+candidate's already-qualified bytes without rebuilding them or adding a time-based waiting period. Releases through v1.2.2 predate this branch policy. Automatic `main`
 recovery ignores them; an operator may recover one explicitly from its immutable tag, but never rebuild or retag it.
 Update `package.json`,
 `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the release pull request. Do not put
@@ -130,7 +127,7 @@ canonical/source validation. Destination, parent, raw-candidate, source, write, 
 cleanup uncertainty fails. On failure, the exact produced public inode is removed only while its identity remains
 attributable; a substituted or otherwise unknown path is retained and reported as cleanup uncertainty rather than
 being deleted. Disposable nonpublishing previews from protected `main` may exercise this path. A future release
-candidate requires explicit review, a soak of those same bytes, and a separate one-shot promotion.
+candidate requires explicit review, qualification of those same bytes, and a separate protected promotion.
 
 This foundation does not change the checksum/provenance triple, release readiness, or publication policy.
 
@@ -203,60 +200,15 @@ release-candidate run authors the required R performance record and resolves the
 without reusing, rebuilding, or blessing a diagnostic candidate. Until that record and the installed all-32 evidence
 exist, no 2.x stable source is ready.
 
-Every candidate core cell runs that same Clone lifecycle; Linux VS Code retains all-block grid depth, while macOS and
-Windows VS Code retain representative single-round-trip grid/profile/view seams within the same
-hard deadline. Explicit candidate core disables native-frame and embedded-restart work on every platform. A fresh
-`value-operations` invocation owns exactly Find and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling,
-Capitalize, Lowercase, Uppercase, Strip text, and Split text as its targeted slice. A fresh
-`categorical-operations` invocation owns exactly the One-hot encode and Multi-label binarize visible-form,
-boundary-value, generated-call, preview, apply, and undo journeys as its targeted slice. Candidate-only
-`core-operations`, `value-operations`, and `categorical-operations` do not duplicate the native-frame scaffold. A fresh
-`native-frames` invocation makes Linux VS Code the comprehensive collapse/viewing and native tibble/data-table
-Rename/Drop owner. macOS and Windows retain the representative tibble-Rename and keyed-data-table-Drop seams. Linux VS Code owns the full value and
-categorical installed catalogs. The one Cursor compatibility invocation covers lifecycle, responsive-grid, and reveal-state behavior rather than R phases. Installed journeys still validate the advertised operation
-registry at their integration boundary, but direct suites own exhaustive operation semantics. Explicit candidate
-core omits embedded restart on Linux, macOS, and Windows because a separately verified `kernel-restart` invocation owns
-restart/reopen on each platform. Focused native, value, and categorical selectors are restart-free. The candidate is
-verified again before fresh phases cover the active R terminal, then once more before fresh phases cover plain `.R`,
-`.Rmd`, `.qmd`, and Python Quarto. Ordinary `.qmd` acceptance owns the Open Wrangler title action plus exact
-session/source/code/cleanup, not Quarto's third-party preview lifecycle; only Linux media capture owns one bounded
-preview and cleanup through the exact prefixed `TabInputWebview`. macOS retains plain `.R` in the core invocation, and
-Windows skips direct R documents.
-Direct R/runtime/webview suites retain the complete R operation and document matrix. The release-candidate workflow
-invokes the shared acceptance workflow through one non-matrix caller; stable promotion consumes its sealed result without rerunning it. The reusable workflow owns fixed
-parallel Python, remote-R, generic-platform, `r_platform`, performance, and Linux local-R jobs, and all
-candidate consumers download and semantically reverify the same VSIX. The producer is the sole owner of the full
-`verify:vsix` inventory/content proof. Each consumer freshly checks the canonical checksum, provenance, and archive
-semantics immediately before use instead of repeating that verifier. The generic macOS/Windows platform matrix owns
-only packaged VS Code `platform-smoke` compatibility without rerunning the pull request's extension-host suite or
-preparing R. Linux VS Code owns the full generic packaged journey; one pinned Linux Cursor run owns the focused fork-
-compatibility smoke instead of multiplying the same seam across operating systems. Each
-separate `r_platform` cell prepares R once, then
-runs freshly verified VS Code-only `core-operations`, `native-frames`, and `kernel-restart` phases, with distinct
-immediate uploads followed by an exact three-outcome verdict. Linux local R is a two-cell non-cancelling shard matrix:
-lifecycle runs `core-operations`, `kernel-restart`, `interactive-terminal`, then `literate-documents`; editing runs
-`native-frames`, `value-operations`, then `categorical-operations`. Setup is shared only within a shard or platform
-cell. Every phase freshly verifies the exact candidate immediately before a fresh requested-editor invocation with
-private roots, then immediately exposes only its distinct sealed failure diagnostic. Each cell defers its raw-outcome
-failure until all assigned phase uploads have run. One output-free
-acceptance fan-in requires literal success of every internal job; publication separately requires literal package,
-candidate-acceptance, and Remote SSH success. Only the focused
-`literate-documents` invocation creates a private core Python compatibility environment under its verified temporary
-root, pins Jupyter Client 8.9.1 alongside the reviewed runtime versions, registers that exact interpreter in the
-R-owned Jupyter data directory, and directly proves one start/execute/shutdown cycle before launching VS Code. The
-probe and bounded cleanup remain in the runner-owned process tree or Windows Job, and the editor receives that same
-interpreter. This closes the unreviewed hosted-IPykernel 7.x drift observed in the failed gate without claiming that
-version caused the stall; it does not add a retry or relax either deadline. The categorical Undo assertion dispatches
-once, keeps that authoritative receipt, and gives the queued mutation 75 seconds to complete; it never retries after
-the dispatch boundary. Generated-R acceptance reacquires Code Preview only when it proves the prior renderer
-generation was replaced, reads one exact bounded code receipt, selects one unique complete logical line with
-receipt-only diagnostics, changes only the exact CodeMirror scroller, and requires two stable same-generation
-visibility measurements with bounded diagnostics.
+Release candidates deliberately sample installed behavior instead of repeating every unit and scheduled test. Linux
+runs the complete installed VS Code journey plus the released Python/Jupyter first-use profile. macOS and Windows run
+the focused platform smoke. Linux R 4.4 runs core operations, native frames, and kernel restart in three fresh editor
+phases; macOS and Windows run one representative R 4.5 core journey each. The direct R/runtime/webview suites remain
+the exhaustive operation owners. Remote SSH and installed performance each have a separate job.
 
-Candidate editor coverage keeps one complete installed Clone lifecycle, targeted value/categorical catalogs,
-one comprehensive Linux VS Code native-frame owner, representative macOS/Windows R seams, and exactly one Cursor
-lifecycle/responsive-grid/reveal-state seam. Every editor phase retains its 300-second hard deadline, 180-second
-changed-checkpoint inactivity deadline, and no-retry rule.
+Every consumer downloads the package job's numeric artifact ID and verifies the VSIX/checksum/provenance set before
+use. The package job is the only production builder. Each editor phase retains its 300-second hard deadline,
+180-second changed-checkpoint inactivity deadline, private profile, and failure-only sanitized diagnostic upload.
 
 Only the focused interactive and literate selectors acquire the four pinned R/Quarto tooling artifacts. Core, focused
 restart, native-frame, value, categorical, and remote-only selectors do not prepare or install them. Acquisition may
@@ -284,7 +236,7 @@ the packaged extension-host, candidate-workflow, and testing-record references. 
 `collapse::qDF()`/`qTBL()`/`qDT()` frames; all 32 catalog operations and their generated-code surfaces; R transport,
 document, insertion, and export journeys; a release-candidate R performance record; complete VS Code acceptance; and
 the bounded Cursor lifecycle/responsive-grid/reveal-state compatibility seam. The active R-terminal transport and export rows claim Linux only, matching the platform where the
-candidate installs and exercises the native R editor tooling. Cursor does not own an R literate-document row. The current prior-27 suites plus
+candidate exercises the native R notebook tooling in depth. Cursor does not own an R literate-document row. The current prior-27 suites plus
 focused Custom Code, multi-output split, public regex extraction, Pivot longer, and Pivot wider contracts cannot satisfy either all-32 catalog row by themselves. The dedicated
 `r/tests/complete_catalog_contract.R` runtime/generated-code contract and
 `src/test/rCompleteCatalogCodeExport.unit.test.ts` code-export contract now provide the required local-source
@@ -298,7 +250,7 @@ Source and packaged READMEs must each contain exactly one bounded generated `ope
 
 VS Code owns the complete release semantics and operating-system matrix. Cursor is a first-class supported fork through one pinned Linux lifecycle/responsive-grid/reveal-state seam, backed by focused component and panel contracts; it does not repeat the R catalog, installed-performance, Jupyter, or macOS/Windows matrices. Other VS Code-based desktop IDEs are experimental and may receive only bounded, isolated install/activation/file-open/cleanup smokes after their registry path is verified; those smokes are tracked in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and never replace a first-class gate. Google says [Antigravity is based on the VS Code codebase and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity), so Open VSX is its documented discovery route. Microsoft states that [alternative Code - OSS products cannot access the Visual Studio Marketplace](https://code.visualstudio.com/docs/supporting/FAQ#_i-cant-access-the-visual-studio-marketplace-from-product-fill-in-the-blank-why-not), so a Marketplace upload must never be presented as distribution to forks. Open Wrangler 1.2.0 has one bounded Linux x64 Antigravity smoke through Open VSX; [the exact record](testing.md#experimental-antigravity-smoke) remains experimental and non-release-blocking, and does not cover macOS, Windows, notebooks, the full product matrix, or a future editor version.
 
-Historical macOS and Windows Cursor evidence used the fixed official `downloads.cursor.com` packages. `scripts/cursor-acquisition.mjs` retains those recovery receipts and the current Linux Cursor 3.13.10 receipt for the one candidate compatibility seam. Installed performance acquires only official VS Code 1.130.0 Linux x64 (`356,926,919` bytes, SHA-256 `7d6ad3d3a78ac4551c14631f78d7e03c85282ab505c3ce8b1bc04e01fafe88ea`); the Cursor seam uses its separately pinned Linux x64 package (`209,277,476` bytes, SHA-256 `8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c`). A target change requires updating those receipts and their tests in one reviewed pull request. Every downloaded editor package is a temporary test input under one disposable per-run private root: never commit, bundle in the VSIX, cache as a release output, upload, publish, or redistribute it.
+Historical macOS and Windows Cursor evidence used the fixed official `downloads.cursor.com` packages. `scripts/cursor-acquisition.mjs` retains those recovery receipts and the current Linux Cursor 3.13.10 receipt for the scheduled compatibility seam. Installed performance acquires only official VS Code 1.130.0 Linux x64 (`356,926,919` bytes, SHA-256 `7d6ad3d3a78ac4551c14631f78d7e03c85282ab505c3ce8b1bc04e01fafe88ea`); the Cursor seam uses its separately pinned Linux x64 package (`209,277,476` bytes, SHA-256 `8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c`). A target change requires updating those receipts and their tests in one reviewed pull request. Every downloaded editor package is a temporary test input under one disposable per-run private root: never commit, bundle in the VSIX, cache as a release output, upload, publish, or redistribute it.
 
 The VSIX may contain production extension bundles, webview assets, the Python and R runtime sources, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, benchmark sources, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. `verify:vsix` and stable readiness use the same bounded in-memory ZIP reader. It streams every entry, checks its actual uncompressed size and CRC-32, rejects encrypted or unsupported flags/methods, non-regular Unix entries, name and file/directory collisions, and per-entry or aggregate expansion beyond fixed limits, then requires the OPC metadata, legal notices, production bundles/assets, and runtime boundary files. Every local main, icon, view-container, notebook-renderer, command-icon, and walkthrough asset referenced by packaged `package.json` must resolve to a regular archive file. The allowlist requires the stdlib-only `python/openwrangler_runtime/dependency_guard.py` and both native-R `frame_contract.R` and `kernel_agent.R` files; omitting any of them is a package failure. Allowlist verification also reads packaged `webview.css`, the compiled webview host, the exact notebook-renderer entry, and all four shipped source documents. Packaged `README.md`, `CHANGELOG.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` must byte-match their tracked sources, so ordinary verification catches VSCE rewriting or substitution before canonical release staging. `npm run license:check` independently pins `package.json` and the exact reviewed `LICENSE` bytes to the MIT project license; archive parity cannot legitimize a changed license. The Codicon font URL must be bundle-relative so the checked-in font resolves beside the stylesheet, the CSP must allow `webview.cspSource` through `font-src`, `media/notebookRenderer.js` must be non-empty valid JavaScript with a named `activate` export and no static imports, dynamic imports, or dependency re-exports, and every HTML `<source srcset>` candidate must be an absolute HTTPS URL because `vsce` does not rewrite it like a normal Markdown image. Shared renderer validation is inlined, so a separate renderer `protocolValidation.js` chunk is neither required nor allowlisted. After allowlist verification, `npm run test:packaged-editors -- openwrangler.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute. The packaged gate uses three editor processes per product: an untrusted Restricted Mode phase, then trusted seed and verify phases that prove backend-pinned persisted-plan replay, concurrent Pandas/Polars/DuckDB crash recovery for supported file sessions, guarded dependency interruption/revalidation, export source safety, and final process cleanup. Released-Jupyter acceptance separately gates native, viewing-only DuckDB notebook relations: the exact originating `DuckDBPyRelation` must survive paging, filtering, sorting, profiling, and Open Wrangler cleanup without conversion through Pandas, Polars, or Arrow; editing, code insertion, and data export remain unavailable for that path.
 
@@ -323,9 +275,8 @@ partition. The manual macOS and Windows lanes install R 4.5.2 with the pinned se
 VSIX. Default core retains its embedded native-frame and restart behavior. macOS includes the local plain `.R`
 subjourney; Windows skips direct documents.
 
-Release-candidate acceptance, rather than this manual workflow, owns the separate macOS/Windows `r_platform`
-core/native/restart phases and the Linux VS Code native, restart, plain `.R`, `.Rmd`, `.qmd`, and Python Quarto
-invocations. Local Windows file menus are hidden, while remote-resource and Command Palette entry points remain
+Release-candidate acceptance, rather than this manual workflow, owns focused macOS and Windows native-R smoke jobs
+plus the Linux native-frame and restart journeys. Local Windows file menus are hidden, while remote-resource and Command Palette entry points remain
 available because static client keys cannot identify the extension-host platform. The runtime guard is authoritative;
 remote R-document execution is experimental and is not part of the release matrix.
 
@@ -335,7 +286,7 @@ A released-Jupyter run is not release evidence while freshly executed MIME-v2 ou
 
 The packaged split-notebook renderer-provenance scenario proves notebook B is active immediately before dispatching notebook A's visible renderer action with a real user click. Synthetic DOM activation cannot satisfy this release gate. The run must retain the exact notebook A/B origin, variable, kernel, insertion, and cleanup assertions, including that notebook B never receives notebook A's session. Bounded timeout diagnostics may contain only safe origin classifications, coordinator state, and A/B generation/execution counters.
 
-Linux packaged-editor release gates and pull-request extension-host gates run on the zero-window headless Ozone platform by default, with desktop display/editor-IPC variables removed, persistent auxiliary services disabled, and private runtime, home, config, cache, and data directories. Candidate exact-artifact validation keeps its full VS Code invocation on that path and runs the focused Cursor `platform-smoke` separately on the repository-pinned private Xvfb after Cursor 3.13.10 reproducibly failed before harness activation in headless Ozone; each invocation immediately follows a fresh canonical artifact verification, while the isolation rules, deadlines, and failure-only diagnostics remain identical, with no automatic retry or fallback. The checked workflow contract rejects inherited environment or shell defaults, conditional/non-fatal evidence gates, unapproved shells, and unbound checkout/download/verifier or consumer steps, so the exact-success fan-in cannot turn skipped evidence into a release signal. Its semantic and structural inspectors validate the parsed job topology and the release-critical ordered steps, commands, environments, action inputs, and evidence-upload structure; an intentional workflow edit must update the corresponding reviewed contract. Every artifact-consuming cross-platform, performance, Jupyter, Remote SSH, Linux editor, upload, and final-publication step immediately follows its own fresh canonical verification; an intervening workspace command therefore invalidates the checked structure instead of substituting the bytes under test. Editor CLI, workbench, and private-display processes on every platform receive only the explicit platform/isolation allowlist plus runner-owned test values; the caller's remaining environment is not inherited. CI and release workflows must not opt into the user's current display, attach commands to a live editor, touch normal editor profiles, or silently fall back to it. Hosted Cursor compatibility starts inside `dbus-run-session` and receives only that isolated, runner-owned GTK session-bus address; it never reuses a caller or desktop session bus and does not restore display or editor IPC access. `OPEN_WRANGLER_EDITOR_DISPLAY=current` is reserved for an intentional visible local debugging run and is forbidden in hosted evidence; `OPEN_WRANGLER_EDITOR_DISPLAY=xvfb` remains an explicit isolated compatibility mode, never an implicit local-desktop fallback. Late child errors cannot prove exit, and uncertainty from a downloader, editor, or private display propagates to cleanup. On Windows, every editor command and workbench is created suspended by a private supervisor, assigned to a kill-on-close Job Object with an explicit inherited-handle list, and resumed only after ownership succeeds. Completion requires exactly one random supervisor attestation that is excluded from the target environment and emitted only after `ActiveProcessCount == 0`; the runner closes the private control stdin on every settled path. If any editor/display ownership remains unverified, caller-environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and no inherited private runtime/root/profile/result/progress/log path may be inspected or removed. Pull requests run stable VS Code extension-host coverage in the existing macOS and Windows runtime cells. Release candidates add focused exact-package compatibility seams on those platforms without repeating that source suite. The launch contract and local controls are documented in `docs/testing.md`.
+Linux packaged-editor release gates use VS Code in the isolated zero-window headless mode described in `docs/testing.md`. Candidate jobs remove desktop and editor IPC state, use private runtime/profile directories, verify the downloaded candidate immediately before the installed phase, and retain only sanitized failure diagnostics after process cleanup is proven. macOS and Windows jobs use the same candidate bytes and focused platform smokes; the Windows harness keeps its Job Object ownership check. The release candidate does not run Cursor. Scheduled compatibility CI owns the pinned Cursor lifecycle/responsive-grid/reveal-state seam, so fork coverage stays visible without duplicating the release matrix.
 
 The final pathname and Git-ref handoffs trust the GitHub-hosted runner, the pinned actions, the protected candidate source, and authorized repository writers. A detached same-UID process racing an already verified VSIX/Xvfb path, or another writer creating the intended tag between the final absence check and GitHub Release creation, is outside the release threat model. Before dispatching stable promotion, the release operator must confirm that no other tag-writing workflow is active and that the intended tag is still absent; the workflow then repeats the exact remote-tag check immediately before publication.
 
@@ -447,13 +398,11 @@ security alerts reported on changed pull-request lines. A successful workflow is
 before changing this rule, query the code-scanning API for the fresh protected-main analysis and require zero open
 high or critical CodeQL alerts. Preserve the complete current ruleset request when adding or changing that one rule,
 then read the ruleset back and compare every retained rule.
-The release-candidate, stable-promotion, and shared candidate-acceptance workflows are owned by mutation-sensitive
-semantic inspectors plus the repository-wide immutable-action inventory. Their parsers and candidate-boundary tests
-execute in the focused workflow lane, while workflow edits conservatively select the full pull-request owner union.
-The Open VSX promotion workflow forces full CI until its inspector rejects unknown steps; its parser and focused tests
-still execute in the focused lane. The Azure Marketplace pipeline also forces full CI because its hash-owning
-inspector is an allowed release script; changing both files must not bless a new baseline in the narrow tier. No
-workflow or pipeline YAML is eligible until an exact inventory is independent of every allowlisted hash owner.
+Focused workflow tests parse the release-candidate, stable-release, candidate-acceptance, Open VSX, and Marketplace
+files. They check the properties that protect a release: one package build, exact artifact handoffs, full-SHA GitHub
+actions, read-only defaults, protected publishers, and no rebuild in a registry job. They do not freeze whole YAML
+files or require a particular dependency version merely because yesterday's workflow used it. Workflow changes still
+run the normal CI owners selected for their affected paths.
 
 Do not turn a release pull request into one oversized squash commit. Keep each independently reviewable product,
 runtime, test, media, and documentation slice in its own commit. If a pull request contains several such commits,
@@ -465,35 +414,33 @@ not pass that VSIX between jobs or retain successful-run artifacts. Failed visua
 diagnostics may be uploaded for seven days. Remote SSH remains part of release-candidate acceptance rather than an
 opt-in pull-request job. Release and stable-performance workflows keep their separate artifact and provenance checks.
 
-`npm run docs:check` semantically parses the release-candidate, stable-promotion, and shared candidate-acceptance
-workflows. The candidate producer owns the sole package and full VSIX proof. Every acceptance lane downloads the same
-numeric artifact ID and revalidates its checksum/provenance immediately before use. VS Code owns product semantics;
-Cursor runs exactly one pinned Linux lifecycle/responsive-grid/reveal-state seam and owns no operation catalog,
-Jupyter, R catalog, performance, or operating-system matrix. The R compatibility evidence contains R 4.4 and 4.5,
-while performance publishes one bounded, digest-bound VS Code report. Remote SSH starts alongside shared acceptance.
-The always-evaluated manifest fan-in requires literal success from packaging, shared acceptance, and Remote SSH, then
-records the canonical artifact identity and the exact performance artifact identity. Candidate jobs are read-only,
-external actions are commit-pinned, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` parses the three candidate and stable workflow files. The package job owns the only production
+build. Seven installed acceptance jobs consume its numeric artifact ID: Linux owns the full product and released
+Python/Jupyter journey; macOS and Windows own focused installed smokes; Linux owns R lifecycle, frames, and restart;
+macOS and Windows own one R 4.5 smoke each; and the last job records installed performance. Remote SSH runs beside
+them. The final receipt is written only after packaging, installed acceptance, performance, and Remote SSH succeed.
+Candidate jobs are read-only, GitHub actions use full commit SHAs, and consumers cannot rebuild the VSIX.
 
-Stable promotion is a later independent dispatch. Selection is read-only; publication alone receives `contents: write`
-inside the protected environment. Cross-run downloads bind the selected workflow run and each numeric artifact ID.
-The manifest binds that run, stable tag, historical source SHA, canonical VSIX bytes/digest, acceptance results, and
-performance report bytes/digest. Canonical verification runs before manifest inspection, immediately before tag and
-GitHub publication, and immediately before Open VSX publication. Missing, skipped, cancelled, expired, changed,
-conflicting, too-young, too-old, rerun, or superseded evidence fails closed without a retry.
+Stable release is a later independent dispatch. Selection is read-only; GitHub publication alone receives
+`contents: write` inside the protected environment. Cross-run downloads bind the selected run and each numeric
+artifact ID. The receipt binds the run attempt, stable tag, source SHA, VSIX bytes and digest, acceptance results, and
+performance report. Missing, skipped, cancelled, expired, changed, or conflicting evidence fails. A complete rerun
+is supported because artifact names and the receipt carry the workflow-attempt number. The candidate source must
+still equal the current protected `main` commit; if `main` advanced, qualify a new candidate instead of publishing an
+older ancestor.
 
-Each local-R shard and `r_platform` cell provisions its packages once through the same pinned dependency action and
-exact configuration as the pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created
+The Linux native-R candidate job provisions packages once and runs core, native-frame, and kernel-restart journeys.
+The macOS and Windows jobs each run one native-R core smoke. Exhaustive value, categorical, terminal, and document
+selectors remain owned by pull-request or focused manual workflows instead of being repeated in every release cell.
+The pinned dependency action reconciles the resolved lock and may restore a compatible versioned cache created
 by an earlier candidate dispatch on `main`. GitHub's pull-request merge-ref cache is not available to the release
 dispatch, so the first matching `main` dispatch performs a valid cold install. The cache is neither immutable package
-pinning nor supply-chain evidence. Protected pull-request CI remains the sole direct R-contract owner. Core, restart,
-value, categorical, native-frame, active-terminal, and R Markdown/Quarto packaged-editor journeys each retain their own artifact revalidation and remain
-required release evidence.
+pinning nor supply-chain evidence. Protected pull-request CI remains the direct owner for the deeper R contracts.
 
-Candidate qualification keeps sibling cancellation disabled so every bounded owner can finish cleanup and emit
-failure-only diagnostics, but any failed, cancelled, or skipped owner prevents the qualification manifest. No failed
-candidate is rerun or promoted. The stable workflow has no validation-only or publish boolean: it is solely the
-explicit, protected promotion of one already-qualified candidate selected by run ID after its required soak.
+Candidate qualification keeps sibling cancellation disabled so each owner can finish cleanup and emit failure-only
+diagnostics, but any failed, cancelled, or skipped owner prevents the qualification receipt. A failed candidate is
+never promoted. The stable workflow has no rehearsal or publish toggle: it promotes one already-qualified candidate
+selected by run ID.
 
 GitHub publication is then resumable at a draft boundary. The exact lightweight tag must already resolve to the
 accepted commit. An absent release becomes a draft; an exact partial draft receives only its missing canonical
@@ -525,11 +472,12 @@ and registry promotion. The migration preserved publication throughout by mergin
 temporary false expectation, enabling the repository setting, and only then requiring true. Do not reverse that order
 when recreating this setup in another repository.
 
-After GitHub publication, the same protected release job verifies `OVSX_PAT` against `Matt17BR`, rejects a conflicting
-version, and sends the accepted VSIX to Open VSX with the lockfile-pinned `ovsx` CLI. It then checks the public
-metadata, publisher, checksum, download, and gallery icon. Stable and preview publication share the global
-`openwrangler-release-publication` queue, so releases are not displaced by newer runs. If Open VSX is unavailable,
-the exact GitHub release remains available for the recovery workflow; nothing is rebuilt or replaced.
+GitHub publication calls the one reusable Open VSX workflow after the public release is complete. That workflow
+verifies the tag and all three canonical assets, publishes with the lockfile-owned `ovsx` CLI, and checks the public
+bytes. An explicit recovery dispatch uses the same publisher. The protected environment supplies `OVSX_PAT`; the
+caller does not inherit or forward unrelated secrets. The shared `openwrangler-release-publication` queue serializes
+publishers without replacing an older pending request. If Open VSX is unavailable, the GitHub release remains
+available for a safe retry; nothing is rebuilt or replaced.
 
 The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure
 pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted
@@ -551,10 +499,10 @@ several ready pull requests share a base, merge them one at a time so strict up-
 on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days,
 groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.
 
-Dispatch **Release candidate** from protected `main` only when the intended stable tag and version metadata have
-already been reviewed. The run cannot publish. After it succeeds, let the exact artifacts soak for at least 168 and
-at most 336 hours. Then dispatch **Stable release promotion** with that candidate run ID and the same tag. Do not
-rerun the candidate, select a superseded run, create the tag manually, or dispatch promotion merely to rehearse it.
+Dispatch **Release candidate** from protected `main` after the intended stable tag and version metadata are reviewed.
+The run cannot publish. When it succeeds, dispatch **Stable release** with that run ID and the same tag. There is no
+week-long timer. If an infrastructure failure needs a retry, rerun the whole candidate workflow so all three retained
+artifacts belong to the same attempt. Do not create the tag manually or use publication as a rehearsal.
 
 The shared candidate validator binds the requested runner label to its own input variable. Do not use a `RUNNER_*`
 name for that value: GitHub reserves those variables for host metadata and ignores attempts to override them.
@@ -566,10 +514,9 @@ authorized. Publisher identity conflicts stop the release rather than changing t
 optional domain badge is not required; Open VSX must report the publishing account verified for the `Matt17BR`
 namespace. Never store tokens in repository files, workflow text, artifacts, or logs.
 
-GitHub Releases remain the source-of-truth distribution channel. Stable and preview release jobs publish the same
-accepted VSIX to Open VSX after creating the GitHub release. A separate workflow handles releases created outside
-these jobs and protected-main recovery for an existing tag. Visual Studio Marketplace promotion stays in Azure
-Pipelines because its publisher identity lives in Azure DevOps. Neither registry path may rebuild the VSIX.
+GitHub Releases remain the source-of-truth distribution channel. One Open VSX workflow handles the stable workflow's
+handoff and explicit recovery for an existing tag. Visual Studio Marketplace promotion stays in Azure Pipelines because its
+publisher identity lives in Azure DevOps. Neither registry path may rebuild the VSIX.
 
 ### Current non-secret readiness
 
@@ -589,18 +536,13 @@ The Microsoft pipeline, its fixed service connection, and its exclusive-lock env
 
 ### Automatic Open VSX promotion
 
-The stable and preview release jobs already run in the protected `publishing` environment, so they publish to Open
-VSX directly after GitHub. Only token verification and publication receive `OVSX_PAT`. Both commands require a
-non-empty token and explicit success output; the CLI's exit code alone is not accepted. The job rechecks the artifact,
-rejects a conflicting version, publishes with lockfile-pinned `ovsx --skip-duplicate`, and waits up to fifteen minutes
-for matching channel metadata, the verified `Matt17BR` namespace-publisher relationship, checksum, download, and
-packaged gallery icon.
-
-`.github/workflows/open-vsx-promotion.yml` covers a public `release: published` event created by another principal and
-an explicit protected-main recovery dispatch. It checks out reviewed `main` separately from the release tag and
-downloads that GitHub Release's VSIX, checksum, and provenance. This separate route is needed because releases created
-with the repository `GITHUB_TOKEN` do not start another release workflow run. Preview packages must also carry the
-matching preview provenance and VSIX pre-release marker.
+`.github/workflows/open-vsx-promotion.yml` is the only Open VSX publisher. The stable workflow calls it once after
+GitHub publication; an explicit dispatch recovers an existing release. It checks out reviewed automation separately
+from the release tag and downloads the GitHub Release's VSIX, checksum, and provenance. Only token verification and
+publication receive the protected environment's `OVSX_PAT`. The job rejects conflicting public bytes, uses
+`ovsx --skip-duplicate`, and then verifies the published metadata, checksum, download, and gallery icon instead of
+parsing human-readable CLI output. Preview packages must carry matching preview provenance and the VSIX pre-release
+marker.
 
 For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the publishing path installs Chromium
 from the reviewed lockfile and runs the media verifier against the exact release source. This keeps a historical
@@ -648,21 +590,11 @@ release tag, because historical releases intentionally do not contain the review
 
 ### Automatic Microsoft Marketplace promotion
 
-`azure-pipelines-marketplace.yml` subscribes to immutable `v*` Git tags and protected `main`, with batching
-disabled so intake always reasons about one exact event commit. The trigger deliberately has no YAML path filter:
-Microsoft documents [branch and tag filters as an OR](https://learn.microsoft.com/en-us/azure/devops/pipelines/repos/github?view=azure-devops#tags),
-while path filters are defined in terms of changed files on an included branch. Keeping tags path-independent
-prevents a later release tag from being silently suppressed by an unrelated path decision.
-
-The protected branch subscriptions are recovery signals only. Before authentication, intake requires the checkout to
-match the event commit. Automatic recovery continues only for a single-parent commit that changes a reviewed path.
-The canonical allowlist is `MARKETPLACE_RECOVERY_PATHS` in `scripts/marketplace-release-intake.mjs`; its unit test
-checks the complete list so this guide does not maintain a second copy. A promotable intake exports the exact tag
-commit, semantic version, and channel. The deployment's full-history clean checkout then creates a contained detached
-`release-source` worktree at that commit and proves its `HEAD`, root, and empty status. For `1.99.4` and later it
-restores that exact source's lockfile and runs its deterministic `--prepublish` media verifier after canonical artifact
-verification but before AzureCLI obtains the federated Marketplace identity. This independent gate applies to tag
-events and protected-main recovery alike; earlier exact releases retain their historical recovery behavior.
+`azure-pipelines-marketplace.yml` starts automatically only for immutable `v*` Git tags; ordinary `main` pushes do
+not start a publishing pipeline. A manual run may name an existing release tag for recovery. Intake exports the exact
+tag commit, semantic version, and channel. The deployment checks out that source, downloads the public GitHub release,
+and verifies it before AzureCLI obtains the federated Marketplace identity. Because the tag is pushed immediately
+before GitHub publication, this handoff polls for at most five minutes (30 attempts, ten seconds apart), not hours.
 
 The next anonymous step performs one complete exact-byte Marketplace probe. If the requested version is already
 public with matching channel metadata, checksum, archive semantics, and gallery icons, the deployment marks that

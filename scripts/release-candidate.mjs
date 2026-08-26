@@ -17,8 +17,6 @@ const QUALIFICATION_ARTIFACT = "openwrangler-release-candidate-qualification";
 const PERFORMANCE_ARTIFACT = "openwrangler-release-candidate-performance";
 const MANIFEST_MAX_BYTES = 16 * 1024;
 const PERFORMANCE_MAX_BYTES = 1024 * 1024;
-const MINIMUM_SOAK_MS = 7 * 24 * 60 * 60 * 1000;
-const MAXIMUM_SOAK_MS = 14 * 24 * 60 * 60 * 1000;
 
 function positiveInteger(value, label) {
   if (!POSITIVE_INTEGER.test(String(value ?? ""))) throw new Error(`${label} must be a positive decimal integer.`);
@@ -52,13 +50,16 @@ function workflowIdentity(environment) {
   }
   if (!FULL_SHA.test(sourceSha ?? "")) throw new Error("GITHUB_SHA must be one lowercase commit SHA.");
   const runAttempt = positiveInteger(environment.GITHUB_RUN_ATTEMPT, "GITHUB_RUN_ATTEMPT");
-  if (runAttempt !== 1) throw new Error("Release candidates may come only from the first workflow attempt.");
   return Object.freeze({
     repository,
     runAttempt,
     runId: positiveInteger(environment.GITHUB_RUN_ID, "GITHUB_RUN_ID"),
     sourceSha
   });
+}
+
+function attemptArtifactName(base, runAttempt) {
+  return `${base}-${positiveInteger(runAttempt, "GITHUB_RUN_ATTEMPT")}`;
 }
 
 function readBoundedOwnedFile(path, { label, maxBytes }) {
@@ -121,12 +122,13 @@ function validateManifest(manifest) {
     manifest.workflow.path !== WORKFLOW_PATH ||
     !Number.isSafeInteger(manifest.workflow.runId) ||
     manifest.workflow.runId <= 0 ||
-    manifest.workflow.runAttempt !== 1 ||
+    !Number.isSafeInteger(manifest.workflow.runAttempt) ||
+    manifest.workflow.runAttempt <= 0 ||
     !FULL_SHA.test(manifest.workflow.sourceSha ?? "") ||
     manifest.release.version !== releaseVersion(manifest.release.tag) ||
     !Number.isSafeInteger(manifest.canonicalArtifact.id) ||
     manifest.canonicalArtifact.id <= 0 ||
-    manifest.canonicalArtifact.name !== CANDIDATE_ARTIFACT ||
+    manifest.canonicalArtifact.name !== attemptArtifactName(CANDIDATE_ARTIFACT, manifest.workflow.runAttempt) ||
     !Number.isSafeInteger(manifest.canonicalArtifact.vsixBytes) ||
     manifest.canonicalArtifact.vsixBytes <= 0 ||
     !SHA256.test(manifest.canonicalArtifact.vsixSha256 ?? "") ||
@@ -134,7 +136,8 @@ function validateManifest(manifest) {
     manifest.qualification.remoteSsh !== "success" ||
     !Number.isSafeInteger(manifest.qualification.performance.artifactId) ||
     manifest.qualification.performance.artifactId <= 0 ||
-    manifest.qualification.performance.artifactName !== PERFORMANCE_ARTIFACT ||
+    manifest.qualification.performance.artifactName !==
+      attemptArtifactName(PERFORMANCE_ARTIFACT, manifest.workflow.runAttempt) ||
     !Number.isSafeInteger(manifest.qualification.performance.reportBytes) ||
     manifest.qualification.performance.reportBytes <= 0 ||
     manifest.qualification.performance.reportBytes > PERFORMANCE_MAX_BYTES ||
@@ -170,7 +173,7 @@ export function createReleaseCandidateManifest({
     release: { tag: releaseTag, version: releaseVersion(releaseTag) },
     canonicalArtifact: {
       id: positiveInteger(candidateArtifactId, "CANDIDATE_ARTIFACT_ID"),
-      name: CANDIDATE_ARTIFACT,
+      name: attemptArtifactName(CANDIDATE_ARTIFACT, identity.runAttempt),
       vsixBytes: positiveInteger(candidateBytes, "CANDIDATE_BYTES"),
       vsixSha256: candidateSha256
     },
@@ -179,7 +182,7 @@ export function createReleaseCandidateManifest({
       remoteSsh: remoteSshResult,
       performance: {
         artifactId: positiveInteger(performanceArtifactId, "PERFORMANCE_ARTIFACT_ID"),
-        artifactName: PERFORMANCE_ARTIFACT,
+        artifactName: attemptArtifactName(PERFORMANCE_ARTIFACT, identity.runAttempt),
         reportBytes: positiveInteger(performanceBytes, "PERFORMANCE_BYTES"),
         reportSha256: performanceSha256
       }
@@ -203,6 +206,7 @@ export function verifyReleaseCandidateManifest({
   candidateArtifactId,
   candidateBytes,
   candidateRunId,
+  candidateRunAttempt,
   candidateSha256,
   performanceArtifactId,
   performancePath,
@@ -225,6 +229,7 @@ export function verifyReleaseCandidateManifest({
   if (
     manifest.repository !== repository ||
     manifest.workflow.runId !== positiveInteger(candidateRunId, "CANDIDATE_RUN_ID") ||
+    manifest.workflow.runAttempt !== positiveInteger(candidateRunAttempt, "CANDIDATE_RUN_ATTEMPT") ||
     manifest.workflow.sourceSha !== sourceSha ||
     manifest.release.tag !== releaseTag ||
     manifest.canonicalArtifact.id !== positiveInteger(candidateArtifactId, "CANDIDATE_ARTIFACT_ID") ||
@@ -275,26 +280,16 @@ function artifactByName(artifacts, name) {
   return matches[0];
 }
 
-export async function inspectReleaseCandidateRun({
-  repository,
-  candidateRunId,
-  releaseTag,
-  token,
-  now = Date.now(),
-  fetch_ = fetch
-}) {
+export async function inspectReleaseCandidateRun({ repository, candidateRunId, releaseTag, token, fetch_ = fetch }) {
   if (!REPOSITORY.test(repository ?? "")) throw new Error("GITHUB_REPOSITORY is invalid.");
   const runId = positiveInteger(candidateRunId, "CANDIDATE_RUN_ID");
   releaseVersion(releaseTag);
   if (typeof token !== "string" || token.length === 0 || /[\r\n]/u.test(token))
     throw new Error("GITHUB_TOKEN is required.");
-  if (!Number.isFinite(now)) throw new Error("Candidate selection requires the current time.");
   const headers = { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` };
   const root = `https://api.github.com/repos/${repository}`;
   const run = await readJson(await fetch_(`${root}/actions/runs/${runId}`, { headers }), "Candidate run");
-  const completedAt = Date.parse(run.updated_at ?? "");
-  const createdAt = Date.parse(run.created_at ?? "");
-  const age = now - completedAt;
+  const runAttempt = positiveInteger(run.run_attempt, "Candidate run attempt");
   if (
     run.id !== runId ||
     run.path !== WORKFLOW_PATH ||
@@ -303,39 +298,9 @@ export async function inspectReleaseCandidateRun({
     !FULL_SHA.test(run.head_sha ?? "") ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
-    run.run_attempt !== 1 ||
-    run.display_title !== `Release candidate ${releaseTag}` ||
-    !Number.isFinite(completedAt) ||
-    !Number.isFinite(createdAt) ||
-    age < MINIMUM_SOAK_MS ||
-    age > MAXIMUM_SOAK_MS
+    run.display_title !== `Release candidate ${releaseTag}`
   ) {
-    throw new Error("The selected run is not one successfully soaked first-attempt protected-main candidate.");
-  }
-
-  const jobsResponse = await readJson(
-    await fetch_(`${root}/actions/runs/${runId}/jobs?per_page=100`, { headers }),
-    "Candidate jobs"
-  );
-  if (
-    !Number.isSafeInteger(jobsResponse.total_count) ||
-    jobsResponse.total_count <= 0 ||
-    jobsResponse.total_count > 100 ||
-    !Array.isArray(jobsResponse.jobs) ||
-    jobsResponse.jobs.length !== jobsResponse.total_count
-  ) {
-    throw new Error("The candidate job inventory is malformed or too large.");
-  }
-  for (const name of [
-    "Package the immutable candidate",
-    "Candidate acceptance / Candidate acceptance",
-    "Remote SSH acceptance",
-    "Seal candidate qualification"
-  ]) {
-    const matches = jobsResponse.jobs.filter((job) => job?.name === name);
-    if (matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success") {
-      throw new Error(`The candidate is missing one successful ${name} job.`);
-    }
+    throw new Error("The selected run is not one successful protected-main candidate for that release tag.");
   }
 
   const artifactResponse = await readJson(
@@ -351,43 +316,25 @@ export async function inspectReleaseCandidateRun({
   ) {
     throw new Error("The candidate artifact inventory is malformed or too large.");
   }
-  const candidateArtifact = artifactByName(artifactResponse.artifacts, CANDIDATE_ARTIFACT);
-  const qualificationArtifact = artifactByName(artifactResponse.artifacts, QUALIFICATION_ARTIFACT);
-  const performanceArtifact = artifactByName(artifactResponse.artifacts, PERFORMANCE_ARTIFACT);
-
-  const runsResponse = await readJson(
-    await fetch_(
-      `${root}/actions/workflows/${encodeURIComponent(WORKFLOW_PATH)}/runs?branch=main&event=workflow_dispatch&status=success&per_page=100`,
-      { headers }
-    ),
-    "Successful candidate runs"
+  const candidateArtifact = artifactByName(
+    artifactResponse.artifacts,
+    attemptArtifactName(CANDIDATE_ARTIFACT, runAttempt)
   );
-  if (
-    !Number.isSafeInteger(runsResponse.total_count) ||
-    runsResponse.total_count <= 0 ||
-    !Array.isArray(runsResponse.workflow_runs) ||
-    runsResponse.workflow_runs.length > 100 ||
-    !runsResponse.workflow_runs.some((entry) => entry?.id === runId)
-  ) {
-    throw new Error("The successful candidate run inventory is incomplete.");
-  }
-  if (
-    runsResponse.workflow_runs.some(
-      (entry) =>
-        entry?.id !== runId &&
-        entry?.display_title === `Release candidate ${releaseTag}` &&
-        Date.parse(entry?.created_at ?? "") > createdAt
-    )
-  ) {
-    throw new Error("A newer successful candidate invalidates the selected run.");
-  }
+  const qualificationArtifact = artifactByName(
+    artifactResponse.artifacts,
+    attemptArtifactName(QUALIFICATION_ARTIFACT, runAttempt)
+  );
+  const performanceArtifact = artifactByName(
+    artifactResponse.artifacts,
+    attemptArtifactName(PERFORMANCE_ARTIFACT, runAttempt)
+  );
 
   return Object.freeze({
     candidateArtifactId: candidateArtifact.id,
-    completedAt: run.updated_at,
     performanceArtifactId: performanceArtifact.id,
     qualificationArtifactId: qualificationArtifact.id,
     runId,
+    runAttempt,
     sourceSha: run.head_sha
   });
 }
@@ -401,8 +348,8 @@ function appendOutputs(result, outputPath) {
       `qualification_artifact_id=${result.qualificationArtifactId}`,
       `performance_artifact_id=${result.performanceArtifactId}`,
       `candidate_run_id=${result.runId}`,
+      `candidate_run_attempt=${result.runAttempt}`,
       `source_sha=${result.sourceSha}`,
-      `completed_at=${result.completedAt}`,
       ""
     ].join("\n"),
     "utf8"
@@ -432,6 +379,7 @@ async function main(arguments_, environment) {
       candidateArtifactId: environment.CANDIDATE_ARTIFACT_ID,
       candidateBytes: environment.CANDIDATE_BYTES,
       candidateRunId: environment.CANDIDATE_RUN_ID,
+      candidateRunAttempt: environment.CANDIDATE_RUN_ATTEMPT,
       candidateSha256: environment.CANDIDATE_SHA256,
       performanceArtifactId: environment.PERFORMANCE_ARTIFACT_ID,
       performancePath: environment.PERFORMANCE_REPORT,
