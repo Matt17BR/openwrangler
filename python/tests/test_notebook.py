@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 import pytz
 from dateutil import tz as dateutil_tz
+from dateutil.zoneinfo import get_zonefile_instance
 
 import openwrangler_runtime.engines.pandas_engine as pandas_engine
 import openwrangler_runtime.notebook as notebook
@@ -124,7 +125,9 @@ def test_pandas_snapshot_matches_the_shared_row_axis_contract():
 def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
     pytz_zone = pytz.timezone("Europe/Berlin")
     dateutil_zone = dateutil_tz.gettz("Europe/Berlin")
+    dateutil_bundled_zone = get_zonefile_instance().get("Europe/Berlin")
     assert dateutil_zone is not None
+    assert dateutil_bundled_zone is not None
     values = [
         None,
         True,
@@ -140,6 +143,7 @@ def test_pandas_row_axis_formatter_preserves_bounded_normalized_displays():
         datetime(2026, 8, 21, 12, 30),
         pytz_zone.localize(datetime(2026, 8, 21, 12, 30)),
         datetime(2026, 8, 21, 12, 30, tzinfo=dateutil_zone),
+        datetime(2026, 8, 21, 12, 30, tzinfo=dateutil_bundled_zone),
         timedelta(days=1, seconds=2),
         np.int64(7),
         np.float32(1.5),

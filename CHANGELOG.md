@@ -35,6 +35,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Pull-request CI now uses plainly named, path-scoped JavaScript/TypeScript, Python, R, web, Windows, and
   package/editor jobs. Python and TypeScript coverage remain required, and `validate` blocks merge when a selected job
   fails.
+- Pandas row labels now accept dateutil's bundled timezone implementation on Windows as well as its normal system
+  timezone implementation.
 - Unexpected workbench render, effect, and message-handler failures now show a keyboard-focused **Reload Open
   Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
   and the extension host records only a fixed failure category.

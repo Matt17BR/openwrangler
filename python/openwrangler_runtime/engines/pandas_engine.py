@@ -138,8 +138,9 @@ def _pandas_row_axis_trusted_scalar_types() -> tuple[tuple[type[Any], ...], type
 def _pandas_row_axis_trusted_timezone_types() -> tuple[type[Any], ...]:
     import pytz
     from dateutil.tz.tz import tzfile
+    from dateutil.zoneinfo import tzfile as bundled_tzfile
 
-    return (timezone, ZoneInfo, tzfile, type(pytz.UTC))
+    return (timezone, ZoneInfo, tzfile, bundled_tzfile, type(pytz.UTC))
 
 
 def _pandas_row_axis_decimal_text(value: Decimal) -> str:

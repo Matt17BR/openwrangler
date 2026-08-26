@@ -333,6 +333,7 @@ jobs:
           python/tests/test_duckdb_export_filesystem.py
           python/tests/test_dependency_guard.py
           python/tests/test_dependency_guard_exact_version.py
+          python/tests/test_notebook.py::test_pandas_row_axis_formatter_preserves_bounded_normalized_displays
           python/tests/test_session_editing.py
       - run: npm run test:scripts:native
       - run: >-
