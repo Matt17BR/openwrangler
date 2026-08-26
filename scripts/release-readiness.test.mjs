@@ -20,12 +20,7 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { COMPARISON_TEST_SHA, createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
-import {
-  inspectVsixArchive,
-  MAX_VSIX_ENTRY_BYTES,
-  VENDORED_JS_YAML_BYTES,
-  VENDORED_JS_YAML_SHA256
-} from "./vsix-archive.mjs";
+import { inspectVsixArchive, MAX_VENDORED_JS_YAML_BYTES, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
 import { VENDORED_JS_YAML_ENTRY } from "./vsix-contents.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import {
@@ -2367,14 +2362,21 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
   assert.equal(payload.packagedChangelog, "# Changelog\n");
   assert.equal(payload.packagedLicense, "MIT License\n");
   assert.equal(payload.packagedThirdPartyNotices, "# Third-party notices\n");
-  assert.equal(new Map(payload.entrySizes).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_BYTES);
-  assert.equal(new Map(payload.entryDigests).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_SHA256);
+  assert.equal(new Map(payload.entrySizes).get(VENDORED_JS_YAML_ENTRY), vendoredJsYaml.length);
+  assert.ok(vendoredJsYaml.length <= MAX_VENDORED_JS_YAML_BYTES);
+  assert.equal(
+    new Map(payload.entryDigests).get(VENDORED_JS_YAML_ENTRY),
+    createHash("sha256").update(vendoredJsYaml).digest("hex")
+  );
 
   const packageWithoutR = await inspectVsixArchive(
     await createReleaseVsixBuffer({ omitted: new Set(rRuntimeEntries) }),
     { requireRFrameContract: false }
   );
-  assert.equal(new Map(packageWithoutR.entryDigests).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_SHA256);
+  assert.equal(
+    new Map(packageWithoutR.entryDigests).get(VENDORED_JS_YAML_ENTRY),
+    createHash("sha256").update(vendoredJsYaml).digest("hex")
+  );
   await assert.rejects(
     inspectVsixArchive(
       await createReleaseVsixBuffer({ omitted: new Set([...rRuntimeEntries, VENDORED_JS_YAML_ENTRY]) }),
@@ -2407,15 +2409,17 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
   assert.notEqual(asciiMutation, -1);
   mutatedVendor[asciiMutation] = "g".charCodeAt(0);
   mutatedVendorEntries.set(VENDORED_JS_YAML_ENTRY, mutatedVendor);
-  await assert.rejects(
-    inspectVsixArchive(await createReleaseVsixBuffer({ entries: mutatedVendorEntries })),
-    /vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt/u
+  const mutatedPayload = await inspectVsixArchive(await createReleaseVsixBuffer({ entries: mutatedVendorEntries }));
+  assert.equal(
+    new Map(mutatedPayload.entryDigests).get(VENDORED_JS_YAML_ENTRY),
+    createHash("sha256").update(mutatedVendor).digest("hex")
   );
+
+  const oversizedVendorEntries = releaseVsixEntries();
+  oversizedVendorEntries.set(VENDORED_JS_YAML_ENTRY, Buffer.alloc(MAX_VENDORED_JS_YAML_BYTES + 1));
   await assert.rejects(
-    inspectVsixArchive(await createReleaseVsixBuffer({ entries: mutatedVendorEntries }), {
-      requireVendoredJsYaml: false
-    }),
-    /vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt/u
+    inspectVsixArchive(await createReleaseVsixBuffer({ entries: oversizedVendorEntries })),
+    /exceeds its capture limit/u
   );
 
   const unexpectedVendorEntries = releaseVsixEntries();

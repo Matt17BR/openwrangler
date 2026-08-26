@@ -6,8 +6,8 @@ Open Wrangler is distributed under the MIT License. Its production webview bundl
 - React, React DOM, and Scheduler: MIT License.
 - Codicons font from `@vscode/codicons`: Creative Commons Attribution 4.0 International (CC-BY-4.0).
 
-The extension host bundles the exact CommonJS runtime from js-yaml 5.2.3 for bounded Quarto and R Markdown front
-matter parsing. js-yaml remains a build-time development dependency; only this reviewed runtime file is shipped.
+The extension host bundles js-yaml's CommonJS runtime for bounded Quarto and R Markdown front matter parsing.
+js-yaml remains a build-time development dependency; only that runtime file is shipped.
 The upstream notice follows in full:
 
 ```text
