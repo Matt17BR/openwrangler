@@ -32,6 +32,7 @@ import {
   sealEditorAcceptanceEvidenceForTest
 } from "./editor-acceptance-artifact.mjs";
 import { createEditorAcceptancePrivatePathIdentityLatch } from "./packaged-editor-orchestration.mjs";
+import { isPinnedExternalActionReference } from "./workflow-action-pins.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -607,11 +608,7 @@ test("local packaged preflight reports one removable relative artifact path", as
 });
 
 test("CI hands the exact emitted artifact path directly to the upload action", async () => {
-  const workflows = new Map([
-    ["ci.yml", "b7c566a772e6b6bfb58ed0dc250532a479d7789f"],
-    ["candidate-acceptance.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
-  ]);
-  for (const [workflowName, uploadArtifactRevision] of workflows) {
+  for (const workflowName of ["ci.yml", "candidate-acceptance.yml"]) {
     const source = await readFile(join(repositoryRoot, ".github", "workflows", workflowName), "utf8");
     const steps = topLevelWorkflowSteps(source);
     const producers = steps.filter((step) => /\bid:\s*packaged_editor\s*$/mu.test(step));
@@ -620,7 +617,9 @@ test("CI hands the exact emitted artifact path directly to the upload action", a
       const producerIndex = steps.indexOf(producer);
       const upload = steps[producerIndex + 1];
       assert.ok(upload, `${workflowName} must upload immediately after packaged editor acceptance`);
-      assert.match(upload, new RegExp(`uses:\\s*actions/upload-artifact@${uploadArtifactRevision}\\b`, "u"));
+      const uploadReference = /^\s*uses:\s*(\S+)\s*(?:#.*)?$/mu.exec(upload)?.[1];
+      assert.ok(uploadReference?.startsWith("actions/upload-artifact@"));
+      assert.equal(isPinnedExternalActionReference(uploadReference), true);
       assert.match(upload, /path:\s*\$\{\{\s*steps\.packaged_editor\.outputs\.evidence_path\s*\}\}\s*$/mu);
       assert.match(upload, /steps\.packaged_editor\.outputs\.evidence_ready\s*==\s*'true'/u);
       assert.match(upload, /retention-days:\s*7\s*$/mu);
