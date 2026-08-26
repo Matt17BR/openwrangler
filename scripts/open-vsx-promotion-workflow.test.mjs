@@ -28,6 +28,16 @@ test("Open VSX checks reject every unpinned external action reference", () => {
   assert.match(inspectOpenVsxPromotionWorkflow(extraAction).join("\n"), /full 40-character hexadecimal commit SHA/u);
 });
 
+test("Open VSX rejects an unexpected fully pinned action in the publishing job", () => {
+  const action = `example/unexpected-action@${"b".repeat(40)}`;
+  const candidate = source.replace(
+    "    steps:\n",
+    `    steps:\n      - uses: ${action}\n        env:\n          OVSX_PAT: \${{ secrets.OVSX_PAT }}\n`
+  );
+  assert.notEqual(candidate, source);
+  assert.match(inspectOpenVsxPromotionWorkflow(candidate).join("\n"), /action .* is not allowed in this workflow/u);
+});
+
 test("Open VSX duplicate publication accepts the registry's exact message", () => {
   assert.match(
     OPEN_VSX_PUBLISH_RUN,

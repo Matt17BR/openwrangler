@@ -1,12 +1,28 @@
 import { load as parseYaml } from "js-yaml";
-import { inspectPinnedExternalActions, usesPinnedAction } from "./workflow-action-pins.mjs";
+import {
+  inspectAllowedWorkflowActions,
+  inspectPinnedExternalActions,
+  usesPinnedAction
+} from "./workflow-action-pins.mjs";
 
 const CHECKOUT = "actions/checkout";
 const SETUP_NODE = "actions/setup-node";
+const SETUP_PYTHON = "actions/setup-python";
 const DOWNLOAD = "actions/download-artifact";
 const UPLOAD = "actions/upload-artifact";
+const CANDIDATE_WORKFLOW = "./.github/workflows/candidate-acceptance.yml";
 const SOURCE_SHA = "${{ needs.select.outputs.candidate-source-sha }}";
 const RUN_ID = "${{ needs.select.outputs.candidate-run-id }}";
+const RELEASE_CANDIDATE_ACTIONS = Object.freeze({
+  package: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, SETUP_PYTHON, UPLOAD]) }),
+  "candidate-acceptance": Object.freeze({ job: Object.freeze([CANDIDATE_WORKFLOW]) }),
+  "remote-ssh": Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, DOWNLOAD]) }),
+  qualify: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, DOWNLOAD, UPLOAD]) })
+});
+const STABLE_RELEASE_ACTIONS = Object.freeze({
+  select: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE]) }),
+  promote: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE, DOWNLOAD]) })
+});
 
 function object(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -94,6 +110,7 @@ export function inspectReleaseCandidateWorkflow(source) {
   const workflow = parse(source, problems);
   if (!workflow) return problems;
   problems.push(...inspectPinnedExternalActions(workflow));
+  problems.push(...inspectAllowedWorkflowActions(workflow, RELEASE_CANDIDATE_ACTIONS));
   const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Release candidate" ||
@@ -151,7 +168,7 @@ export function inspectReleaseCandidateWorkflow(source) {
   if (
     acceptance.name !== "Candidate acceptance" ||
     acceptance.needs !== "package" ||
-    acceptance.uses !== "./.github/workflows/candidate-acceptance.yml" ||
+    acceptance.uses !== CANDIDATE_WORKFLOW ||
     !exactKeys(acceptance.with, ["artifact_id", "expected_sha", "release_tag"]) ||
     acceptance.with.artifact_id !== "${{ needs.package.outputs.artifact-id }}" ||
     acceptance.with.expected_sha !== "${{ github.sha }}" ||
@@ -213,6 +230,7 @@ export function inspectStableReleaseWorkflow(source) {
   const workflow = parse(source, problems);
   if (!workflow) return problems;
   problems.push(...inspectPinnedExternalActions(workflow));
+  problems.push(...inspectAllowedWorkflowActions(workflow, STABLE_RELEASE_ACTIONS));
   const inputs = workflow.on?.workflow_dispatch?.inputs;
   if (
     workflow.name !== "Stable release promotion" ||

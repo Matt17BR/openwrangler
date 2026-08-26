@@ -56,6 +56,54 @@ test("release inspectors reject tag, short, malformed, and extra external action
   }
 });
 
+test("release jobs reject unexpected fully pinned actions and reusable workflows", () => {
+  const commit = "b".repeat(40);
+  const candidateCases = [
+    (workflow) => {
+      workflow.jobs.package.steps.push({ uses: `example/unexpected-action@${commit}` });
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.push({ uses: `actions/setup-python@${commit}` });
+    },
+    (workflow) => {
+      workflow.jobs.qualify.steps.push({
+        uses: `example/unexpected-action@${commit}`,
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+      });
+    },
+    (workflow) => {
+      workflow.jobs["candidate-acceptance"].uses = `example/workflows/.github/workflows/accept.yml@${commit}`;
+    },
+    (workflow) => {
+      workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
+    }
+  ];
+  for (const change of candidateCases) {
+    assert.match(
+      inspectReleaseCandidateWorkflow(mutate(candidateSource, change)).join("\n"),
+      /is not allowed in this workflow/u
+    );
+  }
+
+  const stableCases = [
+    (workflow) => {
+      workflow.jobs.select.steps.push({ uses: `actions/download-artifact@${commit}` });
+    },
+    (workflow) => {
+      workflow.jobs.promote.steps.push({
+        uses: `example/unexpected-action@${commit}`,
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+      });
+    }
+  ];
+  for (const change of stableCases) {
+    assert.match(
+      inspectStableReleaseWorkflow(mutate(stableSource, change)).join("\n"),
+      /is not allowed in this workflow/u
+    );
+  }
+});
+
 test("release-candidate inspector rejects publication, rebuilding, artifact, and fan-in drift", () => {
   const cases = [
     (workflow) => {

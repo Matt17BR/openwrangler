@@ -2,11 +2,18 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
-import { inspectPinnedExternalActions, usesPinnedAction } from "./workflow-action-pins.mjs";
+import {
+  inspectAllowedWorkflowActions,
+  inspectPinnedExternalActions,
+  usesPinnedAction
+} from "./workflow-action-pins.mjs";
 
 const MAX_WORKFLOW_BYTES = 64 * 1024;
 const CHECKOUT = "actions/checkout";
 const SETUP_NODE = "actions/setup-node";
+const ALLOWED_ACTIONS = Object.freeze({
+  promote: Object.freeze({ steps: Object.freeze([CHECKOUT, SETUP_NODE]) })
+});
 const TAG_EXPRESSION = "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}";
 const COMMIT_EXPRESSION = "${{ steps.release_source.outputs.release_commit }}";
 const PRERELEASE_EXPRESSION = "${{ steps.release_source.outputs.release_prerelease }}";
@@ -152,6 +159,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     return ["Open VSX promotion workflow must be valid YAML."];
   }
   problems.push(...inspectPinnedExternalActions(workflow));
+  problems.push(...inspectAllowedWorkflowActions(workflow, ALLOWED_ACTIONS));
   if (
     !exactKeys(workflow, ["name", "on", "permissions", "concurrency", "jobs"]) ||
     workflow.name !== "Promote GitHub release to Open VSX"
