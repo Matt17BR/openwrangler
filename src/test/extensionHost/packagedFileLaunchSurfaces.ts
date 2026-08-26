@@ -354,6 +354,7 @@ export function createPackagedFileLaunchSurfaces(
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the editor-title action to open the selected source"
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:source-confirmed");
     const active = testing.activeSession();
     assert.ok(active, "The editor-title action must publish its dataframe session.");
     assert.deepEqual(
@@ -361,11 +362,13 @@ export function createPackagedFileLaunchSurfaces(
       { rows: PACKAGED_FIRST_USE_ROW_COUNT, columns: PACKAGED_SCREENSHOT_COLUMNS.length },
       "The file-launch journey must exercise the complete realistic first-use dataframe."
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:shape-verified");
     assert.deepEqual(
       active.metadata.schema.map((column) => column.name),
       [...PACKAGED_SCREENSHOT_COLUMNS],
       "The file-launch journey must retain every realistic first-use column before interaction."
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:schema-verified");
     await waitFor(
       () => testing.panelHydrated(active.metadata.sessionId),
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -377,6 +380,7 @@ export function createPackagedFileLaunchSurfaces(
           activeTab: activeEditorTabDiagnostic()
         })
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:panel-hydrated");
     assert.equal(
       await withAcceptanceOperationDeadline(
         testing.synchronizePanel(active.metadata.sessionId),
@@ -386,6 +390,7 @@ export function createPackagedFileLaunchSurfaces(
       true,
       "The editor-title session must own a synchronized Open Wrangler grid panel."
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:panel-synchronized");
     await waitFor(
       () => {
         const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
@@ -397,16 +402,19 @@ export function createPackagedFileLaunchSurfaces(
       "the editor-title Open Wrangler session tab to remain active",
       () => JSON.stringify(activeEditorTabDiagnostic())
     );
+    recordAcceptanceProgress("verify:file-launch:title-action:tab-confirmed");
     const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
-    recordAcceptanceProgress("verify:file-launch:title-action:histogram-modes");
+    recordAcceptanceProgress("verify:file-launch:title-action:grid-discovered");
     const insightsToggle = gridTarget.frame.getByRole("button", { name: "Column profiles and filters" });
     if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
     const insights = gridTarget.frame.getByRole("complementary", { name: "Column profiles and filters" });
     await insights.waitFor({ state: "visible", timeout: 10_000 });
+    recordAcceptanceProgress("verify:file-launch:title-action:drawer-visible");
     const histogramControl = insights.locator(".numericHistogramHitTarget");
     const histogramStatus = insights.locator(".summaryDistributionChart .miniChartCaption");
     await histogramControl.waitFor({ state: "visible", timeout: 30_000 });
     assert.equal(await histogramControl.count(), 1, "The full packaged journey must expose one histogram control.");
+    recordAcceptanceProgress("verify:file-launch:title-action:histogram-visible");
     await histogramControl.focus();
     await histogramControl.press("Home");
     const countLabel = await histogramControl.getAttribute("aria-label");
@@ -422,9 +430,11 @@ export function createPackagedFileLaunchSurfaces(
     const percent = insights.getByRole("button", { name: "%", exact: true });
     assert.equal(await counts.getAttribute("aria-pressed"), "true");
     assert.equal(await percent.getAttribute("aria-pressed"), "false");
+    recordAcceptanceProgress("verify:file-launch:title-action:count-mode-verified");
     await percent.click();
     assert.equal(await counts.getAttribute("aria-pressed"), "false");
     assert.equal(await percent.getAttribute("aria-pressed"), "true");
+    recordAcceptanceProgress("verify:file-launch:title-action:percent-selected");
     await histogramControl.focus();
     await histogramControl.press("Home");
     const percentLabel = await histogramControl.getAttribute("aria-label");
@@ -434,10 +444,13 @@ export function createPackagedFileLaunchSurfaces(
     assert.match(percentLabel ?? "", /: [\d.,]+% \([\d,.]+ rows?\);/u);
     assert.ok(percentLabel?.startsWith(`${percentStatus} (`));
     assert.equal(await histogramStatus.getAttribute("title"), percentLabel);
+    recordAcceptanceProgress("verify:file-launch:title-action:percent-mode-verified");
     await counts.click();
     assert.equal(await counts.getAttribute("aria-pressed"), "true");
+    recordAcceptanceProgress("verify:file-launch:title-action:count-restored");
     await insights.getByRole("button", { name: "Close panel" }).click();
     await insights.waitFor({ state: "hidden", timeout: 10_000 });
+    recordAcceptanceProgress("verify:file-launch:title-action:drawer-closed");
     await exercisePrimarySortJourney(
       testing,
       page,
