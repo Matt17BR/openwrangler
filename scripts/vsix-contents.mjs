@@ -47,7 +47,6 @@ const requiredVsixEntriesBeforeR = Object.freeze([
   "extension/changelog.md",
   "extension/THIRD_PARTY_NOTICES.md",
   "extension/dist/extension/activate.js",
-  "extension/dist/extension/webviewPanel.js",
   "extension/media/webview.js",
   "extension/media/webview.css",
   "extension/media/codicon.ttf",

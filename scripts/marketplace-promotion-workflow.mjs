@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "0f840f36c2959faaa99490446b231204f1a387e8d87649f85d890fb0d3000325";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "228d5b3e690cd5c52afd71659437414abc06f16563bd40497e5d3efcd90e0bf7";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -20,6 +20,12 @@ const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azu
 const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
 const PROBE_PUBLICATION_COMMAND = "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing";
 const SKIP_EXISTING_PUBLIC_CONDITION = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
+const PINNED_NODE_TASK = Object.freeze({
+  task: "UseNode@1",
+  displayName: "Use pinned Node.js",
+  inputs: Object.freeze({ version: "24.19.0", checkLatest: false })
+});
+
 function exactKeys(value, expected) {
   return (
     typeof value === "object" &&
@@ -27,6 +33,10 @@ function exactKeys(value, expected) {
     !Array.isArray(value) &&
     JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort())
   );
+}
+
+function isPinnedNodeTask(step) {
+  return JSON.stringify(step) === JSON.stringify(PINNED_NODE_TASK);
 }
 
 function steps(job) {
@@ -154,11 +164,14 @@ export function inspectMarketplacePromotionPipeline(source) {
   const intakeSteps = steps(intake?.jobs?.[0]);
   const intakeScript = intakeSteps.find((step) => step?.name === "release_intake");
   if (
+    intakeSteps.length !== 3 ||
     intakeSteps[0]?.checkout !== "self" ||
     intakeSteps[0]?.clean !== true ||
     intakeSteps[0]?.fetchDepth !== 0 ||
     intakeSteps[0]?.fetchTags !== true ||
     intakeSteps[0]?.persistCredentials !== false ||
+    !isPinnedNodeTask(intakeSteps[1]) ||
+    intakeSteps[2] !== intakeScript ||
     intakeScript?.script !== "node scripts/marketplace-release-intake.mjs" ||
     intakeScript?.env?.BUILD_REASON !== "$(Build.Reason)" ||
     intakeScript?.env?.BUILD_SOURCEBRANCH !== "$(Build.SourceBranch)" ||
@@ -317,6 +330,7 @@ export function inspectMarketplacePromotionPipeline(source) {
   const publicProbeIndex = promotionSteps.indexOf(publicProbe);
   if (
     promotionSteps.length !== 8 ||
+    !isPinnedNodeTask(promotionSteps[1]) ||
     npmIndex < 0 ||
     downloadIndex !== npmIndex + 1 ||
     canonicalVerifierIndex !== downloadIndex + 1 ||

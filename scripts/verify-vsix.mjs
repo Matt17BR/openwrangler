@@ -26,7 +26,7 @@ const {
   packagedReadme,
   vsixManifest,
   webviewCss,
-  webviewPanel,
+  extensionHostBundle,
   notebookRenderer
 } = payload;
 reconcileGeneratedCommonJsModuleClosure({
@@ -62,7 +62,7 @@ const notebookRendererProblems = inspectNotebookRendererBundle(notebookRenderer)
 if (!bundleRelativeCodicon.test(webviewCss)) {
   throw new Error(`Invalid ${basename(vsix)}. webview.css must load codicon.ttf from its own bundle directory.`);
 }
-if (!webviewFontPolicy.test(webviewPanel)) {
+if (!webviewFontPolicy.test(extensionHostBundle)) {
   throw new Error(`Invalid ${basename(vsix)}. The main webview CSP must allow its bundled font origin.`);
 }
 if (packagedDocumentProblems.length > 0) {

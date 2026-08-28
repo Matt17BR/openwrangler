@@ -213,9 +213,3 @@ test("extension vendor staging accepts regular hard-linked files without mutatin
   assert.deepEqual(readFileSync(sourceAlias), updatedSource);
   assert.deepEqual(readFileSync(outputAlias), source);
 });
-
-test("extension watch prepares the exact vendored runtime before incremental compilation", () => {
-  const manifest = JSON.parse(readFileSync(join(repositoryRoot, "package.json"), "utf8"));
-  assert.equal(manifest.scripts["prewatch:extension"], undefined);
-  assert.equal(manifest.scripts["watch:extension"], "npm run build:extension && tsc -w -p tsconfig.extension.json");
-});

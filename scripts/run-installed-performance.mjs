@@ -117,7 +117,10 @@ const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
   "media/webview.css",
   "media/webview.js"
 ]);
-const GENERATED_EXTENSION_PACKAGE_FILES = Object.freeze(["dist/extension/vendor/js-yaml.js"]);
+const GENERATED_EXTENSION_PACKAGE_FILES = Object.freeze([
+  "dist/extension/activate.js",
+  "dist/extension/vendor/js-yaml.js"
+]);
 
 export function parseInstalledPerformanceArguments(arguments_) {
   const options = {
@@ -2081,14 +2084,8 @@ function packagePathIdentity(file) {
   return identity;
 }
 
-function expectedGeneratedPackageFiles(trackedFiles) {
-  const generated = new Set([...GENERATED_MEDIA_PACKAGE_FILES, ...GENERATED_EXTENSION_PACKAGE_FILES]);
-  for (const file of trackedFiles) {
-    if (/^src\/(?:extension|shared)\/.+\.ts$/u.test(file) && !file.endsWith(".d.ts")) {
-      generated.add(`dist/${file.slice("src/".length, -".ts".length)}.js`);
-    }
-  }
-  return generated;
+function expectedGeneratedPackageFiles() {
+  return new Set([...GENERATED_MEDIA_PACKAGE_FILES, ...GENERATED_EXTENSION_PACKAGE_FILES]);
 }
 
 function readPackageSourceReceipt(file, { sourceKind, requireNonEmpty }) {
@@ -2433,7 +2430,8 @@ async function createInstalledPerformanceVsix(destination, channel) {
 async function verifyInstalledPerformanceVsix(receipt, _environment) {
   const snapshot = readInstalledPerformanceVsixSnapshot(receipt);
   const payload = await inspectVsixArchive(snapshot.bytes);
-  const { packagedPackageJson, packagedReadme, vsixManifest, webviewCss, webviewPanel, notebookRenderer } = payload;
+  const { packagedPackageJson, packagedReadme, vsixManifest, webviewCss, extensionHostBundle, notebookRenderer } =
+    payload;
   const problems = [
     ...inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest),
     ...inspectReadmeSourceSrcsets(packagedReadme),
@@ -2442,7 +2440,7 @@ async function verifyInstalledPerformanceVsix(receipt, _environment) {
   if (!/url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u.test(webviewCss)) {
     problems.push("webview.css must load codicon.ttf from its own bundle directory.");
   }
-  if (!/font-src \$\{webview\.cspSource\};/u.test(webviewPanel)) {
+  if (!/font-src \$\{webview\.cspSource\};/u.test(extensionHostBundle)) {
     problems.push("The main webview CSP must allow its bundled font origin.");
   }
   if (problems.length > 0) {

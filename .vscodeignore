@@ -44,4 +44,4 @@ python/pyproject.toml
 python/runtime-dependencies.json
 tsconfig*.json
 dist-test/**
-vite*.config.ts
+vite*.config.mts

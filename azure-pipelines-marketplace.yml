@@ -40,10 +40,10 @@ stages:
             fetchDepth: 0
             fetchTags: true
             persistCredentials: false
-          - task: NodeTool@0
+          - task: UseNode@1
             displayName: Use pinned Node.js
             inputs:
-              versionSpec: 24.19.0
+              version: 24.19.0
               checkLatest: false
           - script: node scripts/marketplace-release-intake.mjs
             name: release_intake
@@ -81,10 +81,10 @@ stages:
                   fetchDepth: 0
                   fetchTags: true
                   persistCredentials: false
-                - task: NodeTool@0
+                - task: UseNode@1
                   displayName: Use pinned Node.js
                   inputs:
-                    versionSpec: 24.19.0
+                    version: 24.19.0
                     checkLatest: false
                 - script: npm ci --ignore-scripts
                   displayName: Restore the reviewed lockfile
