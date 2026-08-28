@@ -332,6 +332,49 @@ describe("notebook renderer", () => {
     ).toBe(false);
   });
 
+  it.each([
+    {
+      name: "named index",
+      rowAxis: { kind: "index", levelNames: ["sample_id"] },
+      rowLabel: "SP0230700005-1",
+      expectedHeader: "sample_id"
+    },
+    {
+      name: "unnamed index",
+      rowAxis: { kind: "index", levelNames: [null] },
+      rowLabel: "SP0230700005-1",
+      expectedHeader: "Index"
+    },
+    {
+      name: "named multi-index",
+      rowAxis: { kind: "multiIndex", levelNames: ["cohort", "sample_id"] },
+      rowLabel: "A · SP0230700005-1",
+      expectedHeader: "cohort · sample_id"
+    }
+  ])("renders a Pandas $name as the leading accessible row header", ({ rowAxis, rowLabel, expectedHeader }) => {
+    const element = document.createElement("div");
+    const base = canonicalPayload(1, "sample_meta");
+    const payload = {
+      ...base,
+      metadata: { ...base.metadata, backend: "pandas", rowAxis },
+      page: {
+        ...base.page,
+        rows: [{ ...base.page.rows[0]!, rowLabel }]
+      }
+    };
+
+    activate({ postMessage: vi.fn() }).renderOutputItem({ json: () => payload }, element);
+
+    expect(Array.from(element.querySelectorAll("thead th"), (cell) => cell.textContent)).toEqual([
+      expectedHeader,
+      "value"
+    ]);
+    const rowHeader = element.querySelector("tbody th");
+    expect(rowHeader?.getAttribute("scope")).toBe("row");
+    expect(rowHeader?.textContent).toBe(rowLabel);
+    expect(Array.from(element.querySelectorAll("tbody td"), (cell) => cell.textContent)).toEqual(["1"]);
+  });
+
   it("renders every captured column and pages rows at 10, 20, 50, or 100 per page", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
