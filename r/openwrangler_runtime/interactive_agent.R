@@ -135,7 +135,6 @@ openwrangler_r_interactive_agent <- local({
     flush(connection)
     close(connection)
     connection <- NULL
-    if (file.exists(target_path)) unlink(target_path, force = TRUE)
     if (!file.rename(temporary, target_path)) {
       stop("Open Wrangler could not publish its interactive R discovery notification.", call. = FALSE)
     }
