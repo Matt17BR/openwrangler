@@ -1727,7 +1727,7 @@ export function DataGrid({
                               title={
                                 cellFilterMenuTarget.clipboardSelection === "column"
                                   ? gridClipboard.wholeColumnResult.ok
-                                    ? "Copy whole filtered and sorted column"
+                                    ? "Copy column"
                                     : gridClipboard.wholeColumnResult.reason
                                   : gridClipboard.results.range.ok
                                     ? "Copy selected cells"
@@ -2232,9 +2232,7 @@ function ColumnHeader({
   clipboardSelected: boolean;
   clipboardAction: {
     ariaLabel: string;
-    busy: boolean;
     disabled: boolean;
-    icon: "check" | "copy" | "loading" | "warning";
     menuLabel: string;
     title: string;
   };
@@ -2430,15 +2428,6 @@ function ColumnHeader({
             <small>{column.rawType}</small>
           </span>
           <div className="columnHeaderActions">
-            <button
-              type="button"
-              className={`columnSortIndicator codicon codicon-${clipboardAction.icon}${clipboardAction.busy ? " codicon-modifier-spin" : ""}`}
-              aria-label={clipboardAction.ariaLabel}
-              aria-busy={clipboardAction.busy}
-              disabled={clipboardAction.disabled}
-              title={clipboardAction.title}
-              onClick={() => void runClipboardAction()}
-            />
             {activeSort && (
               <button
                 type="button"
@@ -2483,6 +2472,7 @@ function ColumnHeader({
                 )}
                 <button
                   type="button"
+                  aria-label={clipboardAction.ariaLabel}
                   disabled={clipboardAction.disabled}
                   title={clipboardAction.title}
                   onClick={() => void runClipboardMenuAction()}

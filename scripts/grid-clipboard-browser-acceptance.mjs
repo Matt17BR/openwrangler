@@ -223,7 +223,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
     !arraysEqual(hostileActual.fallbackAttempts, [hostileExpected]) ||
     !arraysEqual(hostileActual.fallbackWrites, [hostileExpected]) ||
     hostileActual.navigatorAttempts.length !== 0 ||
-    hostileActual.announcement !== "Copied 64 cells from column hostile_text without its header." ||
+    hostileActual.announcement !== "Copied column hostile_text with 64 values and its header." ||
     hostileActual.fallbackTextareaCount !== 0
   ) {
     throw new Error("Whole-column fallback copy did not preserve the exact hostile TSV and focus contract.");
@@ -238,7 +238,9 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
   );
   await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
   await page.keyboard.press("Control+C");
-  const typedExpected = Array.from({ length: 64 }, (_, index) => String(-(index + 1))).join("\n");
+  const typedExpected = ["typed_negative", ...Array.from({ length: 64 }, (_, index) => String(-(index + 1)))].join(
+    "\n"
+  );
   await page.waitForFunction(
     (expected) =>
       globalThis.openWranglerClipboardBoundary.navigatorWrites[0] === expected &&
@@ -271,7 +273,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
     exactCap.attemptLength !== 4 * 1024 * 1024 ||
     exactCap.writeLength !== 4 * 1024 * 1024 ||
     exactCap.fallbackAttemptCount !== 0 ||
-    exactCap.announcement !== "Copied 64 cells from column exact_cap without its header." ||
+    exactCap.announcement !== "Copied column exact_cap with 64 values and its header." ||
     exactCap.activeAriaLabel !== "Copy column"
   ) {
     throw new Error(`The exact-cap whole-column copy failed: ${JSON.stringify(exactCap)}.`);
@@ -332,12 +334,15 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
 }
 
 function wholeColumnHostileExpected() {
-  return Array.from({ length: 64 }, (_, rowNumber) => {
-    if (rowNumber === 0) return "' \u0000=SUM(A1:A2)";
-    if (rowNumber === 1) return '"\'\t\uFEFF@IMPORT()"';
-    if (rowNumber === 2) return '"contains\t""quote"""';
-    return `value-${rowNumber + 1}`;
-  }).join("\n");
+  return [
+    "hostile_text",
+    ...Array.from({ length: 64 }, (_, rowNumber) => {
+      if (rowNumber === 0) return "' \u0000=SUM(A1:A2)";
+      if (rowNumber === 1) return '"\'\t\uFEFF@IMPORT()"';
+      if (rowNumber === 2) return '"contains\t""quote"""';
+      return `value-${rowNumber + 1}`;
+    })
+  ].join("\n");
 }
 
 function installClipboardBoundary() {

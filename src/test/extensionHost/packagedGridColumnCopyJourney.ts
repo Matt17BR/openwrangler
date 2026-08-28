@@ -7,7 +7,6 @@ import type { TestApi } from "./extensionHostTestApi";
 const FIXTURE_ROWS = 2_005;
 const FILTERED_ROWS = 1_003;
 const NARROW_VIEWPORT = Object.freeze({ width: 640, height: 800 });
-const GRID_COPY_SENTINEL = "open-wrangler-grid-copy-sentinel";
 const GRID_SHORTCUT_SENTINEL = "open-wrangler-grid-shortcut-sentinel";
 const MAXIMUM_CLIPBOARD_BYTES = 4 * 1024 * 1024;
 
@@ -17,10 +16,6 @@ interface MonotonicDeadline {
 
 export interface PackagedGridColumnCopySurface {
   readonly restoreViewport: () => Promise<void>;
-  activateHeaderCopy(
-    column: string,
-    retainReceipt: (receipt: PackagedGridColumnCopyWriteReceipt) => void
-  ): Promise<PackagedGridColumnCopyWriteReceipt>;
   assertHeaderFocused(column: string): Promise<void>;
   pressHeaderCopyShortcut(
     column: string,
@@ -28,7 +23,6 @@ export interface PackagedGridColumnCopySurface {
     retainReceipt: (receipt: PackagedGridColumnCopyWriteReceipt) => void
   ): Promise<PackagedGridColumnCopyWriteReceipt>;
   waitForColumnValues(columnPosition: number, expected: readonly string[]): Promise<void>;
-  waitForHeaderCopyState(column: string, state: "copying" | "ready", rowCount: number): Promise<void>;
 }
 
 export interface PackagedGridColumnCopyWriteReceipt {
@@ -142,31 +136,9 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
       const workbench = await connectToEditorWorkbench();
       const activeSurface = await createSurface(workbench, testing, active.sessionId);
       surface = activeSurface;
-      const city = active.metadata.schema.find((column) => column.name === "city");
       const sales = active.metadata.schema.find((column) => column.name === "sales");
-      assert.ok(city && sales, "The packaged fixture must expose city and sales columns.");
+      assert.ok(sales, "The packaged fixture must expose the sales column.");
       await activeSurface.waitForColumnValues(sales.position, ["2004", "2002"]);
-
-      recordProgress("grid-column-copy:header-action");
-      await writeOwnedClipboardText(writeClipboardText, GRID_COPY_SENTINEL, createMonotonicDeadline(sessionTimeoutMs));
-      lastTestOwnedClipboard = GRID_COPY_SENTINEL;
-      const cityText = await dispatchAndRetainClipboardWriteSettlement(
-        (retainReceipt) => activeSurface.activateHeaderCopy("city", retainReceipt),
-        async () => {
-          await activeSurface.waitForHeaderCopyState("city", "copying", FILTERED_ROWS);
-          const expected = packagedGridColumnCopyExpectedCityText();
-          await waitForClipboardText(
-            readClipboardText,
-            expected,
-            createMonotonicDeadline(sessionTimeoutMs),
-            "the visible header action to copy the exact filtered and sorted city column"
-          );
-          lastTestOwnedClipboard = expected;
-          await activeSurface.waitForHeaderCopyState("city", "ready", FILTERED_ROWS);
-          return expected;
-        }
-      );
-      assert.equal(cityText.startsWith("city\n"), false, "The explicit column contract must exclude its header.");
 
       recordProgress("grid-column-copy:first-shortcut");
       await writeOwnedClipboardText(
@@ -186,12 +158,11 @@ export function createPackagedGridColumnCopyJourney(dependencies: PackagedGridCo
             "one first platform shortcut to prepare and copy the exact filtered and sorted sales column"
           );
           lastTestOwnedClipboard = expected;
-          await activeSurface.waitForHeaderCopyState("sales", "ready", FILTERED_ROWS);
           await activeSurface.assertHeaderFocused("sales");
           return expected;
         }
       );
-      assert.equal(salesText.startsWith("sales\n"), false, "The shortcut contract must also exclude its header.");
+      assert.equal(salesText.startsWith("sales\n"), true, "The shortcut contract must include its column header.");
       assert.deepEqual(
         await readFixture(fixture),
         sourceBytes,
@@ -266,20 +237,8 @@ export async function createPlaywrightGridColumnCopySurface(
   await workbench.setViewportSize(NARROW_VIEWPORT);
 
   const header = (column: string): Locator => frame.locator(`th[data-column=${JSON.stringify(column)}]`).first();
-  const copyAction = (column: string, name: RegExp): Locator => header(column).getByRole("button", { name }).first();
   return {
     restoreViewport: () => workbench.setViewportSize(previousViewport),
-    activateHeaderCopy: async (column, retainReceipt) => {
-      const action = copyAction(column, new RegExp(`^Copy column ${escapeRegExp(column)}; header excluded$`, "u"));
-      await action.waitFor({ state: "visible", timeout: 10_000 });
-      assert.equal(await action.isEnabled(), true, "The narrow header copy action must be enabled.");
-      const previousGeneration = await readClipboardOperationGeneration(header(column));
-      const receipt = createClipboardWriteReceipt(header(column), previousGeneration);
-      const dispatchSettlement = action.click();
-      retainReceipt(receipt);
-      await dispatchSettlement;
-      return receipt;
-    },
     assertHeaderFocused: async (column) => {
       assert.equal(await header(column).evaluate((element) => element === element.ownerDocument.activeElement), true);
     },
@@ -301,18 +260,6 @@ export async function createPlaywrightGridColumnCopySurface(
         (await cells.allInnerTexts()).slice(0, expected.length).map((value) => value.trim()),
         expected
       );
-    },
-    waitForHeaderCopyState: async (column, state, rowCount) => {
-      const name =
-        state === "copying"
-          ? new RegExp(`^Copying column ${escapeRegExp(column)}(?: when ready)?; header excluded$`, "u")
-          : new RegExp(
-              `^Copy column ${escapeRegExp(column)}; ${rowCount.toLocaleString()} values ready; header excluded$`,
-              "u"
-            );
-      const action = copyAction(column, name);
-      await action.waitFor({ state: "visible", timeout: 10_000 });
-      assert.equal(await action.getAttribute("aria-busy"), state === "copying" ? "true" : "false");
     }
   };
 }
@@ -389,12 +336,8 @@ export function packagedGridColumnCopyFilterModel(): FilterModel {
   };
 }
 
-export function packagedGridColumnCopyExpectedCityText(): string {
-  return Array.from({ length: FILTERED_ROWS }, () => "München").join("\n");
-}
-
 export function packagedGridColumnCopyExpectedSalesText(): string {
-  return Array.from({ length: FILTERED_ROWS }, (_, index) => String(2_004 - index * 2)).join("\n");
+  return ["sales", ...Array.from({ length: FILTERED_ROWS }, (_, index) => String(2_004 - index * 2))].join("\n");
 }
 
 async function waitForClipboardText(
@@ -584,8 +527,4 @@ async function settleBeforeDeadline<T>(
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

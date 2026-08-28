@@ -7,6 +7,7 @@ import {
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
   gridClipboardSelectionDescription,
+  maximumClipboardColumnValues,
   tryAcquireGridClipboardWrite,
   writeGridClipboardText
 } from "../webviews/grid/gridClipboard";
@@ -265,9 +266,9 @@ describe("grid clipboard contract", () => {
       })
     ).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
 
-    const accumulator = createGridClipboardColumnAccumulator();
+    const accumulator = createGridClipboardColumnAccumulator("=unknown");
     expect(accumulator.append(unknown)).toBeUndefined();
-    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
+    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "'=unknown\n'=CMD()" } });
   });
 
   it("copies the focused cell independently of the selection anchor", () => {
@@ -405,7 +406,7 @@ describe("grid clipboard contract", () => {
   });
 
   it("accumulates a logical column with exact quoting, formula safety, and typed negatives", () => {
-    const accumulator = createGridClipboardColumnAccumulator();
+    const accumulator = createGridClipboardColumnAccumulator("status");
     expect(accumulator.append(cell(" \t+cmd"))).toBeUndefined();
     expect(accumulator.append(cell('contains\t"quote"'))).toBeUndefined();
     expect(
@@ -415,7 +416,7 @@ describe("grid clipboard contract", () => {
     expect(accumulator.finish()).toEqual({
       ok: true,
       payload: {
-        text: '"\' \t+cmd"\n"contains\t""quote"""\n-42.5',
+        text: 'status\n"\' \t+cmd"\n"contains\t""quote"""\n-42.5',
         rowCount: 3,
         columnCount: 1,
         includesRowLabel: false,
@@ -424,8 +425,8 @@ describe("grid clipboard contract", () => {
     });
   });
 
-  it("keeps empty, null, quoted, and Unicode values distinct without adding a header", () => {
-    const accumulator = createGridClipboardColumnAccumulator();
+  it("includes the column header while keeping empty, null, quoted, and Unicode values distinct", () => {
+    const accumulator = createGridClipboardColumnAccumulator("city");
     expect(accumulator.append(cell(""))).toBeUndefined();
     expect(accumulator.append({ kind: "null", raw: null, display: "", isNull: true, isNaN: false })).toBeUndefined();
     expect(accumulator.append(cell('München\t"Süd"'))).toBeUndefined();
@@ -433,7 +434,7 @@ describe("grid clipboard contract", () => {
     expect(accumulator.finish()).toEqual({
       ok: true,
       payload: {
-        text: '\n\n"München\t""Süd"""',
+        text: 'city\n\n\n"München\t""Süd"""',
         rowCount: 3,
         columnCount: 1,
         includesRowLabel: false,
@@ -446,11 +447,11 @@ describe("grid clipboard contract", () => {
     const maximumBytes = 4 * 1024 * 1024;
     const fieldCount = 4_096;
     const unicodeChunk = "😀".repeat(255);
-    const baseBytes = fieldCount * 255 * 4 + fieldCount - 1;
+    const baseBytes = fieldCount * 255 * 4 + fieldCount + 1;
     const exactPadding = maximumBytes - baseBytes;
 
     for (const delta of [-1, 0, 1]) {
-      const accumulator = createGridClipboardColumnAccumulator();
+      const accumulator = createGridClipboardColumnAccumulator("h");
       let failure;
       for (let index = 0; index < fieldCount; index += 1) {
         failure = accumulator.append(
@@ -474,9 +475,11 @@ describe("grid clipboard contract", () => {
     }
   });
 
-  it("rejects a 100,001st logical-column cell without returning accumulated data", () => {
-    const accumulator = createGridClipboardColumnAccumulator();
-    for (let index = 0; index < 100_000; index += 1) expect(accumulator.append(cell("x"))).toBeUndefined();
+  it("counts the header within the 100,000-cell whole-column limit", () => {
+    const accumulator = createGridClipboardColumnAccumulator("column");
+    for (let index = 0; index < maximumClipboardColumnValues; index += 1) {
+      expect(accumulator.append(cell("x"))).toBeUndefined();
+    }
 
     const rejection = accumulator.append(cell("hostile-payload"));
     expect(rejection).toEqual({

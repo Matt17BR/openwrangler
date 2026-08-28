@@ -680,7 +680,7 @@ describe("DataGrid clipboard interactions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy column" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(writeText).toHaveBeenLastCalledWith("Milan\nParis");
+    expect(writeText).toHaveBeenLastCalledWith("city\nMilan\nParis");
   });
 
   it("bounds repeated changed-column copies behind one unresolved write and settles the queued copy once", async () => {
@@ -708,7 +708,7 @@ describe("DataGrid clipboard interactions", () => {
     }
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(writeText).toHaveBeenLastCalledWith("10.5\n-20");
+    expect(writeText).toHaveBeenLastCalledWith("sales\n10.5\n-20");
     await act(async () => Promise.resolve());
     expect(writeText).toHaveBeenCalledTimes(2);
   });
@@ -737,37 +737,7 @@ describe("DataGrid clipboard interactions", () => {
     await act(async () => Promise.resolve());
 
     expect(writeText).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Copied 2 cells from column sales without its header.")).toBeNull();
-  });
-
-  it("clears only the matching queued column busy state after its menu owner escapes", async () => {
-    const cityWrite = deferred<void>();
-    writeText.mockImplementationOnce(() => cityWrite.promise).mockResolvedValue(undefined);
-    renderGrid();
-    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
-    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
-    fireEvent.click(await screen.findByRole("button", { name: "Copy column" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole("columnheader", { name: "sales" }));
-    dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [numberCell(10.5), numberCell(-20)]);
-    const emptySales = screen.getByRole("cell", { name: "" });
-    openClipboardMenu(emptySales, 176);
-    const menu = screen.getByRole("menu", { name: "Cell and column actions for sales" });
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy column" }));
-    expect(screen.getByRole("button", { name: "Copying column sales; header excluded" })).toBeDisabled();
-
-    fireEvent.keyDown(menu, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-    await act(async () => cityWrite.resolve());
-
-    const reusable = await screen.findByRole("button", {
-      name: "Copy column sales; 2 values ready; header excluded"
-    });
-    expect(reusable).toBeEnabled();
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Copied 2 cells from column sales without its header.")).toBeNull();
-    expect(document.activeElement).toBe(emptySales);
+    expect(screen.queryByText(/^Copied column sales/u)).toBeNull();
   });
 
   it("keeps a disposed grid's unresolved write ahead of its replacement grid", async () => {
@@ -1079,7 +1049,7 @@ describe("DataGrid clipboard interactions", () => {
     fireEvent.click(copyColumn);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy();
+    expect(writeText).toHaveBeenLastCalledWith("city\nMilan\nParis");
   });
 
   it("routes every copy action to the visible whole column instead of a stale prior rectangle", async () => {
@@ -1109,7 +1079,7 @@ describe("DataGrid clipboard interactions", () => {
     expect(within(menu).queryByRole("menuitem", { name: "Copy selection" })).toBeNull();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy column" }));
 
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Milan\nParis"));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("city\nMilan\nParis"));
     expect(writeText).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(document.activeElement).toBe(paris));
     expect(screen.getByText("Whole filtered and sorted column city selected, 2 rows.")).toBeTruthy();
@@ -1117,7 +1087,7 @@ describe("DataGrid clipboard interactions", () => {
 
     fireEvent.keyDown(paris, { key: "c", ctrlKey: true });
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(writeText).toHaveBeenLastCalledWith("Milan\nParis");
+    expect(writeText).toHaveBeenLastCalledWith("city\nMilan\nParis");
     expect(writeText).not.toHaveBeenCalledWith("Milan\t10.5\nParis\t");
   });
 
@@ -1336,49 +1306,17 @@ describe("DataGrid clipboard interactions", () => {
 
     const copyColumn = await screen.findByRole("button", { name: "Copy column" });
     expect(copyColumn).toBeEnabled();
+    expect(copyColumn).toHaveAccessibleName("Copy column");
+    expect(copyColumn).toHaveAttribute("title", "Copy column");
     expect(screen.getByText("Whole filtered and sorted column city selected, 3 rows.")).toBeTruthy();
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(3);
     fireEvent.click(copyColumn);
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('\'=2+2\n"\'\t@cmd"\n"contains\nline"'));
-    expect(screen.getByText("Copied 3 cells from column city without its header.")).toBeTruthy();
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('city\n\'=2+2\n"\'\t@cmd"\n"contains\nline"'));
+    expect(screen.getByText("Copied column city with 3 values and its header.")).toBeTruthy();
   });
 
-  it("keeps the header copy action and its progress visible at narrow layouts", async () => {
-    const threeRowMetadata: SessionMetadata = {
-      ...metadata,
-      shape: { rows: 3, columns: 2 },
-      filteredShape: { rows: 3, columns: 2 }
-    };
-    renderGrid("view-a", { ...page, totalRows: 3 }, threeRowMetadata);
-    const cityHeader = screen.getByRole("columnheader", { name: "city" });
-    const copy = within(cityHeader).getByRole("button", {
-      name: "Copy column city; header excluded"
-    });
-
-    fireEvent.click(copy);
-    const firstRequest = latestColumnRequest();
-    expect(
-      within(cityHeader).getByRole("button", {
-        name: "Copying column city when ready; header excluded"
-      })
-    ).toHaveAttribute("aria-busy", "true");
-
-    dispatchPage(firstRequest, threeRowMetadata, 0, 2, 3, [cell("Milan"), cell("Paris")]);
-    const secondRequest = latestColumnRequest();
-    dispatchPage(secondRequest, threeRowMetadata, 2, 1, 3, [cell("Zürich")]);
-
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-    expect(writeText).toHaveBeenCalledWith("Milan\nParis\nZürich");
-    expect(
-      within(cityHeader).getByRole("button", {
-        name: "Copy column city; 3 values ready; header excluded"
-      })
-    ).toBeEnabled();
-    expect(screen.getByText("Copied 3 cells from column city without its header.")).toBeTruthy();
-  });
-
-  it("exposes copy, sort, menu, and resize as distinct focusable header controls", () => {
+  it("keeps sort, menu, and resize as distinct focusable header controls", () => {
     renderGrid("view-a", page, {
       ...metadata,
       filterModel: { filters: [], sort: [{ column: "city", direction: "asc", nulls: "last" }] }
@@ -1386,9 +1324,6 @@ describe("DataGrid clipboard interactions", () => {
     const cityHeader = screen.getByRole("columnheader", { name: /city, sorted ascending/u });
     const controls = cityHeader.querySelector(".columnHeaderActions");
     expect(controls).not.toBeNull();
-    expect(
-      within(controls as HTMLElement).getByRole("button", { name: "Copy column city; header excluded" })
-    ).toHaveClass("columnSortIndicator");
     expect(within(controls as HTMLElement).getByRole("button", { name: /Clear sort for city/u })).toHaveClass(
       "columnSortIndicator"
     );
@@ -1398,12 +1333,11 @@ describe("DataGrid clipboard interactions", () => {
     expect(resize).toHaveClass("columnResizeHandle");
 
     const headerControls = [
-      within(controls as HTMLElement).getByRole("button", { name: "Copy column city; header excluded" }),
       within(controls as HTMLElement).getByRole("button", { name: /Clear sort for city/u }),
       menu,
       resize
     ];
-    expect(new Set(headerControls).size).toBe(4);
+    expect(new Set(headerControls).size).toBe(3);
     for (const control of headerControls) {
       expect(control).toBeTruthy();
       control?.focus();
@@ -1413,7 +1347,6 @@ describe("DataGrid clipboard interactions", () => {
     resize.focus();
     fireEvent.keyDown(resize, { key: "Home" });
     expect(resize).toHaveFocus();
-    expect(within(cityHeader).getByRole("button", { name: "Copy column city; header excluded" })).toBeEnabled();
     expect(cityHeader.querySelector('.columnMenu > summary[aria-label="Column actions for city"]')).toBe(menu);
   });
 
@@ -1431,7 +1364,7 @@ describe("DataGrid clipboard interactions", () => {
     dispatchPage(request, metadata, 0, 2, 2, [numberCell(999), numberCell(999)]);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-    expect(writeText).toHaveBeenCalledWith("-10.5\n-20");
+    expect(writeText).toHaveBeenCalledWith("sales\n-10.5\n-20");
     expect(document.activeElement).toBe(salesHeader);
   });
 
@@ -1450,7 +1383,7 @@ describe("DataGrid clipboard interactions", () => {
     await waitFor(() => expect(execCommand).toHaveBeenCalledTimes(1));
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(cityHeader);
-    expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith("city\n\nMünchen");
   });
 
   it("keeps the exact visible column-menu action through fallback before closing the menu", async () => {
@@ -1468,7 +1401,9 @@ describe("DataGrid clipboard interactions", () => {
     expect(summary).not.toBeNull();
     fireEvent.click(summary!);
     details!.open = true;
-    const menuAction = within(details!).getByRole("button", { name: "Copy column (header excluded)" });
+    const menuAction = within(details!).getByRole("button", { name: "Copy column city" });
+    expect(menuAction).toHaveAccessibleName("Copy column city");
+    expect(menuAction).toHaveAttribute("title", "Copy column");
     act(() => menuAction.focus());
     expect(menuAction).toHaveFocus();
 
@@ -1476,8 +1411,7 @@ describe("DataGrid clipboard interactions", () => {
     expect(details).toHaveAttribute("open");
     await waitFor(() => expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy"));
     await waitFor(() => expect(details).not.toHaveAttribute("open"));
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("Milan\nParis");
-    expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("city\nMilan\nParis");
   });
 
   it("does not let an old menu copy completion close a reopened header menu", async () => {
@@ -1495,8 +1429,8 @@ describe("DataGrid clipboard interactions", () => {
     fireEvent.click(summary!);
     details!.open = true;
     fireEvent(details!, new Event("toggle", { bubbles: true }));
-    fireEvent.click(within(details!).getByRole("button", { name: "Copy column (header excluded)" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("Milan\nParis"));
+    fireEvent.click(within(details!).getByRole("button", { name: "Copy column city" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("city\nMilan\nParis"));
 
     details!.open = false;
     fireEvent(details!, new Event("toggle", { bubbles: true }));
@@ -1505,10 +1439,10 @@ describe("DataGrid clipboard interactions", () => {
     act(() => summary!.focus());
 
     delayedWrite.resolve();
-    await waitFor(() => expect(screen.getByText("Copied 2 cells from column city without its header.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Copied column city with 2 values and its header.")).toBeTruthy());
     expect(details).toHaveAttribute("open");
     expect(summary).toHaveFocus();
-    expect(within(details!).getByRole("button", { name: "Copy column (header excluded)" })).toBeEnabled();
+    expect(within(details!).getByRole("button", { name: "Copy column city" })).toBeEnabled();
   });
 
   it("does not let a prior logical view close or defocus the preserved header menu", async () => {
@@ -1520,13 +1454,13 @@ describe("DataGrid clipboard interactions", () => {
     expect(details).not.toBeNull();
     details!.open = true;
     fireEvent(details!, new Event("toggle", { bubbles: true }));
-    fireEvent.click(within(details!).getByRole("button", { name: "Copy column when ready (header excluded)" }));
+    fireEvent.click(within(details!).getByRole("button", { name: "Copy column city when ready" }));
 
     rendered.rerender(grid("view-b"));
     const currentDetails = screen
       .getByRole("columnheader", { name: /^city(?:,|$)/u })
       .querySelector<HTMLDetailsElement>("details.columnMenu");
-    const currentAction = within(currentDetails!).getByRole("button", { name: "Copy column (header excluded)" });
+    const currentAction = within(currentDetails!).getByRole("button", { name: "Copy column city" });
     expect(currentDetails).toBe(details);
     expect(currentDetails).toHaveAttribute("open");
     act(() => currentAction.focus());
@@ -1534,32 +1468,6 @@ describe("DataGrid clipboard interactions", () => {
     expect(currentDetails).toHaveAttribute("open");
     expect(currentAction).toHaveFocus();
     expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it("keeps an initiated header operation pending through the actual adapter settlement", async () => {
-    vi.useFakeTimers();
-    const delayedWrite = deferred<void>();
-    try {
-      writeText.mockImplementationOnce(() => delayedWrite.promise);
-      renderGrid();
-      const cityHeader = screen.getByRole("columnheader", { name: "city" });
-      fireEvent.click(within(cityHeader).getByRole("button", { name: "Copy column city; header excluded" }));
-      dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [cell("Milan"), cell("Paris")]);
-      await act(async () => Promise.resolve());
-
-      expect(writeText).toHaveBeenCalledExactlyOnceWith("Milan\nParis");
-      expect(cityHeader).toHaveAttribute("data-clipboard-operation-generation", "1");
-      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "true");
-
-      await act(async () => vi.advanceTimersByTimeAsync(10_001));
-      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "true");
-
-      await act(async () => delayedWrite.resolve());
-      expect(cityHeader).toHaveAttribute("data-clipboard-operation-pending", "false");
-    } finally {
-      delayedWrite.resolve();
-      vi.useRealTimers();
-    }
   });
 
   it.each([
@@ -1582,8 +1490,8 @@ describe("DataGrid clipboard interactions", () => {
       viewContextId: "view-a",
       activeMetadata: {
         ...metadata,
-        shape: { rows: 100_001, columns: 2 },
-        filteredShape: { rows: 100_001, columns: 2 }
+        shape: { rows: 100_000, columns: 2 },
+        filteredShape: { rows: 100_000, columns: 2 }
       },
       activePage: page,
       reason: "Copy is limited to 100,000 cells. Select a smaller range."
@@ -1593,14 +1501,10 @@ describe("DataGrid clipboard interactions", () => {
     ({ viewContextId, activeMetadata, activePage, reason }) => {
       renderGrid(viewContextId, activePage, activeMetadata);
       const cityHeader = screen.getByRole("columnheader", { name: "city" });
-      const headerAction = within(cityHeader).getByRole("button", { name: "Copy column city; header excluded" });
-      expect(headerAction).toBeDisabled();
-      expect(headerAction).toHaveAttribute("title", reason);
-
       const details = cityHeader.querySelector<HTMLDetailsElement>("details.columnMenu");
       expect(details).not.toBeNull();
       details!.open = true;
-      const menuAction = within(details!).getByRole("button", { name: "Copy column (header excluded)" });
+      const menuAction = within(details!).getByRole("button", { name: "Copy column city" });
       expect(menuAction).toBeDisabled();
       expect(menuAction).toHaveAttribute("title", reason);
       const footerAction = screen.getByRole("button", { name: "Copy column" });
@@ -1661,7 +1565,7 @@ describe("DataGrid clipboard interactions", () => {
     expect(execCommand).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(cityHeader);
     expect(document.querySelector("textarea")).toBeNull();
-    expect(screen.queryByText("Copied 2 cells from column city without its header.")).toBeNull();
+    expect(screen.queryByText(/^Copied column city/u)).toBeNull();
     expect(
       screen.getByText(
         "The data view or focus changed before the prepared column could be copied. Select the column again."
@@ -1690,14 +1594,9 @@ describe("DataGrid clipboard interactions", () => {
 
     first.resolve();
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(writeText).toHaveBeenNthCalledWith(1, "Milan\nParis");
-    expect(writeText).toHaveBeenNthCalledWith(2, "10.5\n-20");
-    expect(screen.getByText("Copied 2 cells from column sales without its header.")).toBeTruthy();
-    expect(
-      within(salesHeader).getByRole("button", {
-        name: "Copy column sales; 2 values ready; header excluded"
-      })
-    ).toBeEnabled();
+    expect(writeText).toHaveBeenNthCalledWith(1, "city\nMilan\nParis");
+    expect(writeText).toHaveBeenNthCalledWith(2, "sales\n10.5\n-20");
+    expect(screen.getByRole("button", { name: "Copy column" })).toBeEnabled();
   });
 
   it("terminal-latches one never-settling adapter write and immediately rejects later owners", async () => {
@@ -1760,15 +1659,15 @@ describe("DataGrid clipboard interactions", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy column" })).toBeEnabled());
     fireEvent.keyDown(salesHeader, { key: "c", ctrlKey: true });
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("-10.5\n-20"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("sales\n-10.5\n-20"));
     expect(document.activeElement).toBe(salesHeader);
   });
 
   it("rejects a known oversized column before any page or clipboard adapter call", () => {
     renderGrid("view-a", page, {
       ...metadata,
-      shape: { rows: 100_001, columns: 2 },
-      filteredShape: { rows: 100_001, columns: 2 }
+      shape: { rows: 100_000, columns: 2 },
+      filteredShape: { rows: 100_000, columns: 2 }
     });
 
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));

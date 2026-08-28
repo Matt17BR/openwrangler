@@ -48,8 +48,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
   and the extension host records only a fixed failure category.
 - Selecting a grid column header now prepares its complete filtered and sorted data column for **Copy column**.
-  Preparation reads one projected page at a time, leaves the visible page unchanged, and retains the existing
-  100,000-cell and 4 MiB clipboard limits.
+  Copied columns start with the column header. Preparation reads one projected page at a time, leaves the visible
+  page unchanged, and retains the existing 100,000-cell and 4 MiB clipboard limits. The redundant inline copy icon
+  has been removed; the footer, column-actions menu, and platform shortcut remain available.
 - The data grid now selects rectangular ranges by mouse or pen drag without native text selection. Shift-modified
   pointer and keyboard selection still extend the current anchor; Ctrl/Cmd+click explicitly starts a new rectangle
   because non-contiguous selections are not supported.
