@@ -15,7 +15,15 @@ from typing import Any
 
 import pytest
 
+import openwrangler_runtime.protocol as runtime_protocol
 import openwrangler_runtime.server as server
+from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
+from openwrangler_runtime.session import (
+    LiveSourceInvalidatedError,
+    PySparkConnectStateLostError,
+    PySparkConnectUnavailableError,
+    SessionCleanupError,
+)
 
 
 class _PassthroughRequestScope:
@@ -658,7 +666,7 @@ def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypa
 def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
     class FailingManager(_PassthroughRequestScope):
         def prepare_backend(self, _source: dict[str, Any], _backend: str | None) -> None:
-            raise server.EngineError("native import failed")
+            raise EngineError("native import failed")
 
         def close_all(self) -> None:
             return None
@@ -693,7 +701,7 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
 def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monkeypatch) -> None:
     class AmbiguousManager(_PassthroughRequestScope):
         def get_page(self, *_args: Any) -> dict[str, Any]:
-            raise server.AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
+            raise AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
         def close_all(self) -> None:
             return None
@@ -764,7 +772,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
                 "columnLimit": 64,
                 "filterModel": {"filters": [], "sort": []},
             },
-            server.LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced."),
+            LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced."),
             {
                 "kind": "error",
                 "code": "live_source_invalidated",
@@ -786,7 +794,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
                 "columnLimit": 64,
                 "filterModel": {"filters": [], "sort": []},
             },
-            server.PySparkConnectUnavailableError(
+            PySparkConnectUnavailableError(
                 "spark-session",
                 "Spark Connect is temporarily unavailable.",
             ),
@@ -811,7 +819,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
                 "columnLimit": 64,
                 "filterModel": {"filters": [], "sort": []},
             },
-            server.PySparkConnectStateLostError(
+            PySparkConnectStateLostError(
                 "spark-session",
                 "The Spark Connect dataframe no longer exists.",
             ),
@@ -826,7 +834,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
         ),
         (
             {"kind": "closeSession", "sessionId": "cleanup-session", "revision": 0},
-            server.SessionCleanupError("cleanup-session", "Could not release the Spark cache."),
+            SessionCleanupError("cleanup-session", "Could not release the Spark cache."),
             {
                 "kind": "error",
                 "code": "session_cleanup_failed",
@@ -1345,7 +1353,7 @@ def test_stdio_server_parses_an_accepted_frame_exactly_once(monkeypatch: pytest.
 
     output = StringIO()
     monkeypatch.setattr(server, "SessionManager", lambda: manager)
-    monkeypatch.setattr(server.json, "loads", counting_loads)
+    monkeypatch.setattr(runtime_protocol.json, "loads", counting_loads)
     monkeypatch.setattr(server.sys, "stdin", StringIO(f"{json.dumps(envelope)}\n"))
     monkeypatch.setattr(server.sys, "stdout", output)
 
@@ -1714,7 +1722,7 @@ def test_server_bounds_user_controlled_engine_diagnostics(monkeypatch: pytest.Mo
 
     class FailingManager(_PassthroughRequestScope):
         def prepare_backend(self, *_args: Any) -> None:
-            raise server.EngineError(marker + ("é" * 20_000))
+            raise EngineError(marker + ("é" * 20_000))
 
         def close_all(self) -> None:
             return None

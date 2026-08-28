@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import CancelledError
+from io import StringIO
 from typing import Any
 
 import pandas as pd
 import pytest
 
 from openwrangler_runtime import kernel_agent, notebook, server
+from openwrangler_runtime import protocol as runtime_protocol
 from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime.by_example import evaluate_program
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
@@ -112,6 +114,121 @@ def test_standalone_and_kernel_dispatch_share_generated_code_preflight(tmp_path,
     assert manager.sessions[session_id].revision == 0
     assert manager.sessions[session_id].draft_step is None
     manager.close_session(session_id, 0)
+
+
+@pytest.mark.parametrize(
+    ("case", "request_payload"),
+    (
+        ("success", {"kind": "initialize"}),
+        ("identifier", {"kind": "closeSession", "sessionId": "s" * 257, "revision": 0}),
+        ("payload", _view_request("getPage", "session", "view-payload")),
+        ("diagnostic", _view_request("getPage", "session", "view-diagnostic")),
+    ),
+    ids=("success", "bounded-identifier", "payload-code", "bounded-diagnostic"),
+)
+def test_standalone_and_notebook_transports_share_protocol_conformance_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    request_payload: dict[str, Any],
+) -> None:
+    request_id = f"transport-{case}"
+    payload = _envelope(request_payload, request_id=request_id)
+    dispatches: list[str] = []
+
+    class CorpusManager:
+        def close_all(self) -> None:
+            return None
+
+    def corpus_dispatch(
+        _manager: CorpusManager,
+        _request: dict[str, Any],
+        correlated_request_id: str,
+    ) -> dict[str, Any]:
+        dispatches.append(correlated_request_id)
+        if case == "success":
+            return {"kind": "initialized", "message": "café"}
+        if case == "payload":
+            raise ResponsePayloadError("The page payload is invalid.", "page_payload_invalid")
+        if case == "diagnostic":
+            raise EngineError("password=transport-secret " + ("é" * 5_000))
+        raise AssertionError("An invalid identifier reached dispatch.")
+
+    def run_transport(transport: str) -> str:
+        manager = CorpusManager()
+        with monkeypatch.context() as scoped:
+            if transport == "standalone":
+                response_written = threading.Event()
+
+                class SignallingOutput(StringIO):
+                    def write(self, value: str) -> int:
+                        result = super().write(value)
+                        if value.endswith("\n"):
+                            response_written.set()
+                        return result
+
+                def input_lines():
+                    yield f"{payload}\n"
+                    assert response_written.wait(5)
+
+                output = SignallingOutput()
+                scoped.setattr(server, "SessionManager", lambda: manager)
+                scoped.setattr(server, "dispatch", corpus_dispatch)
+                scoped.setattr(server.sys, "stdin", input_lines())
+                scoped.setattr(server.sys, "stdout", output)
+                scoped.setattr(server.sys, "stderr", StringIO())
+                assert server.main() == 0
+                return output.getvalue()
+            scoped.setattr(kernel_agent, "_manager", manager)
+            scoped.setattr(kernel_agent, "_request_registry", kernel_agent._NotebookRequestRegistry())
+            scoped.setattr(kernel_agent, "dispatch", corpus_dispatch)
+            return kernel_agent.dispatch_json(payload)
+
+    standalone = run_transport("standalone")
+    notebook = run_transport("notebook")
+    assert standalone == f"{notebook}\n"
+    decoded = json.loads(notebook)
+    assert decoded["protocolVersion"] == 2
+    assert decoded["requestId"] == request_id
+    if case == "success":
+        assert decoded["response"] == {"kind": "initialized", "message": "café"}
+        assert "café" in notebook and "\\u00e9" not in notebook
+    elif case == "identifier":
+        assert decoded["response"] == {
+            "kind": "error",
+            "code": "invalid_request",
+            "message": "sessionId must not exceed 256 UTF-8 bytes.",
+            "recoverable": False,
+        }
+    elif case == "payload":
+        assert decoded["response"] == {
+            "kind": "error",
+            "code": "page_payload_invalid",
+            "message": "The page payload is invalid.",
+            "recoverable": True,
+            "viewRequestId": "view-payload",
+        }
+    else:
+        response = decoded["response"]
+        assert response["code"] == "engine_error"
+        assert response["viewRequestId"] == "view-diagnostic"
+        assert "transport-secret" not in response["message"]
+        assert "password=<redacted>" in response["message"]
+        assert response["message"].endswith("...[truncated]")
+        assert len(response["message"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_BYTES
+    assert dispatches == ([] if case == "identifier" else [request_id, request_id])
+
+
+def test_unexpected_error_mapper_redacts_traceback_detail() -> None:
+    try:
+        raise RuntimeError("password=traceback-secret")
+    except RuntimeError as error:
+        response = runtime_protocol.response_for_error(error)
+
+    assert response["code"] == "runtime_error"
+    assert "traceback-secret" not in response["message"]
+    assert "traceback-secret" not in response["detail"]
+    assert "password=<redacted>" in response["detail"]
+    assert len(response["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
 
 
 def test_kernel_agent_opens_an_opaque_live_result_handle(monkeypatch) -> None:
@@ -324,48 +441,6 @@ def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeyp
             "message": "Could not release the Spark cache.",
             "recoverable": False,
             "sessionId": "cleanup-session",
-        },
-    }
-
-
-def test_mutation_response_preflight_failure_preserves_its_structured_code(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
-        raise ResponsePayloadError(
-            "The correlated mutation response is not valid strict JSON.",
-            "response_encoding_failed",
-        )
-
-    monkeypatch.setattr(kernel_agent, "dispatch", fail)
-    result = json.loads(
-        kernel_agent.dispatch_json(
-            _envelope(
-                {
-                    "kind": "previewStep",
-                    "sessionId": "session",
-                    "revision": 0,
-                    "step": {
-                        "id": "preview",
-                        "kind": "dropColumns",
-                        "params": {"columns": [{"id": "c:source:0", "name": "value"}]},
-                    },
-                    "offset": 0,
-                    "limit": 20,
-                    "columnOffset": 0,
-                    "columnLimit": 64,
-                },
-                request_id="mutation-preflight-request",
-            )
-        )
-    )
-
-    assert result == {
-        "protocolVersion": 2,
-        "requestId": "mutation-preflight-request",
-        "response": {
-            "kind": "error",
-            "code": "response_encoding_failed",
-            "message": "The correlated mutation response is not valid strict JSON.",
-            "recoverable": True,
         },
     }
 
@@ -823,7 +898,39 @@ def test_malformed_json_still_returns_a_canonical_envelope() -> None:
     assert result["protocolVersion"] == 2
     assert result["requestId"] == "unknown"
     assert result["response"]["kind"] == "error"
-    assert result["response"]["code"] == "runtime_error"
+    assert result["response"]["code"] == "invalid_request"
+
+
+def test_oversized_notebook_input_is_rejected_before_json_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_loads = json.loads
+
+    def reject_decode(_value: object) -> object:
+        raise AssertionError("Oversized notebook input reached JSON decoding.")
+
+    def reject_dispatch(*_args: object) -> dict[str, Any]:
+        raise AssertionError("Oversized notebook input reached runtime dispatch.")
+
+    monkeypatch.setattr(kernel_agent, "MAX_REQUEST_FRAME_BYTES", 128)
+    monkeypatch.setattr(runtime_protocol.json, "loads", reject_decode)
+    monkeypatch.setattr(kernel_agent, "dispatch", reject_dispatch)
+
+    encoded = kernel_agent.dispatch_json("private-oversized-notebook-input-" + ("é" * 128))
+    result = original_loads(encoded)
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "unknown",
+        "response": {
+            "kind": "error",
+            "code": "invalid_request",
+            "message": "request frame exceeds the 128-byte limit including LF",
+            "recoverable": False,
+        },
+    }
+    assert "private-oversized-notebook-input" not in encoded
+    assert len(encoded.encode("utf-8")) < 512
 
 
 def test_malformed_envelope_preserves_its_available_request_id() -> None:

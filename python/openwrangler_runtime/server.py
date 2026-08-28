@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import sys
 import threading
-import traceback
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
 from contextlib import suppress
@@ -11,8 +9,20 @@ from time import monotonic
 from typing import Any
 
 from .custom_code_output import isolate_standalone_protocol_output
-from .engines import AmbiguousViewColumnError, EngineError
-from .protocol import MAX_TRANSPORT_ID_BYTES, ProtocolError, decode_envelope, error_response, response_envelope
+from .protocol import (
+    MAX_DIAGNOSTIC_BYTES,
+    MAX_REQUEST_FRAME_BYTES,
+    ProtocolError,
+    RequestFrameError,
+    bounded_diagnostic,
+    decode_envelope,
+    decode_request_payload,
+    error_response,
+    request_id_for_payload,
+    response_envelope,
+    response_for_error,
+    view_request_id_for_payload,
+)
 from .response_framing import (
     MAX_RESPONSE_FRAME_BYTES,
     ResponseEncodingError,
@@ -21,19 +31,11 @@ from .response_framing import (
     strict_json_byte_length,
 )
 from .session import (
-    LiveSourceInvalidatedError,
-    PySparkConnectStateLostError,
-    PySparkConnectUnavailableError,
     ResponsePayloadError,
-    SessionCleanupError,
     SessionManager,
-    UnknownSessionError,
 )
 
 SHUTDOWN_GRACE_SECONDS = 1.5
-MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
-MAX_DIAGNOSTIC_BYTES = 4 * 1024
-MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
 INTERACTIVE_WORKERS = 4
 BACKGROUND_WORKERS = 2
 MAX_INTERACTIVE_LIVE_REQUESTS = 64
@@ -338,7 +340,7 @@ def main() -> int:
                 except CancelledError:
                     response = {"kind": "cancelled", "targetRequestId": request_id}
                 except Exception as error:
-                    response = _response_for_error(error)
+                    response = response_for_error(error)
             if response.get("kind") in {"error", "cancelled"} and view_request_id:
                 response["viewRequestId"] = view_request_id
             publisher.publish(response_envelope(request_id, response))
@@ -363,17 +365,16 @@ def main() -> int:
         for payload in _iter_request_payloads(sys.stdin):
             if transport_failed.is_set():
                 break
-            request_id = _request_id_for_payload(payload)
+            request_id = request_id_for_payload(payload)
             if request_id is None:
                 raise _TerminalTransportError("request frame has no bounded correlation ID")
-            view_request_id = _view_request_id_for_payload(payload)
+            view_request_id = view_request_id_for_payload(payload)
             if _is_live_request(live_priorities, pending_lock, request_id):
                 raise _TerminalTransportError("request frame reused a live correlation ID")
             admitted = False
             submitted = False
             try:
                 request_id, priority, request = decode_envelope(payload)
-                _validate_transport_ids(request_id, request)
                 view_request_id = request.get("viewRequestId")
                 if request["kind"] == "cancelRequest":
                     target = str(request["targetRequestId"])
@@ -424,7 +425,7 @@ def main() -> int:
             except _TerminalTransportError:
                 raise
             except Exception as error:
-                response = _response_for_error(error)
+                response = response_for_error(error)
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
                 if not publisher.publish(response_envelope(request_id, response)):
@@ -518,63 +519,14 @@ def _iter_request_payloads(stream: Any) -> Iterator[Any]:
 
 
 def _decode_request_frame(frame: Any) -> Any | None:
-    if isinstance(frame, str):
-        try:
-            encoded = frame.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise _TerminalTransportError("request frame is not valid UTF-8") from error
-    elif isinstance(frame, (bytes, bytearray)):
-        encoded = bytes(frame)
-    else:
-        raise _TerminalTransportError("stdin returned a non-byte request frame")
-    if len(encoded) > MAX_REQUEST_FRAME_BYTES:
-        raise _TerminalTransportError(f"request frame exceeds the {MAX_REQUEST_FRAME_BYTES}-byte limit including LF")
-    if not encoded.endswith(b"\n"):
-        raise _TerminalTransportError("request frame ended before its LF terminator")
     try:
-        text = encoded.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise _TerminalTransportError("request frame is not valid UTF-8") from error
-    if not text.strip():
-        return None
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, RecursionError) as error:
-        raise _TerminalTransportError("request frame is not valid JSON") from error
-
-
-def _request_id_for_payload(payload: Any) -> str | None:
-    if not isinstance(payload, Mapping):
-        return None
-    request_id = payload.get("requestId")
-    return request_id if _is_bounded_transport_id(request_id) else None
-
-
-def _view_request_id_for_payload(payload: Any) -> str | None:
-    if not isinstance(payload, Mapping):
-        return None
-    request = payload.get("request")
-    if not isinstance(request, Mapping):
-        return None
-    view_request_id = request.get("viewRequestId")
-    return view_request_id if _is_bounded_transport_id(view_request_id) else None
-
-
-def _validate_transport_ids(request_id: str, request: Mapping[str, Any]) -> None:
-    if not _is_bounded_transport_id(request_id):
-        raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
-    for field in ("sessionId", "requestedSessionId", "viewRequestId"):
-        if field in request and not _is_bounded_transport_id(request[field]):
-            raise ProtocolError(f"{field} must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
-
-
-def _is_bounded_transport_id(value: Any) -> bool:
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        return len(value.encode("utf-8")) <= MAX_TRANSPORT_ID_BYTES
-    except UnicodeEncodeError:
-        return False
+        return decode_request_payload(
+            frame,
+            lf_terminated=True,
+            maximum_bytes=MAX_REQUEST_FRAME_BYTES,
+        )
+    except RequestFrameError as error:
+        raise _TerminalTransportError(str(error)) from error
 
 
 def _is_live_request(
@@ -618,48 +570,8 @@ def _release_live_request(
             live_counts[priority] -= 1
 
 
-def _response_for_error(error: Exception) -> dict[str, Any]:
-    message = _bounded_diagnostic(str(error), MAX_DIAGNOSTIC_BYTES)
-    if isinstance(error, ProtocolError):
-        return error_response(message, code="invalid_request", recoverable=False)
-    if isinstance(error, UnknownSessionError):
-        return error_response(message, code="unknown_session", session_id=error.session_id)
-    if isinstance(error, LiveSourceInvalidatedError):
-        return error_response(message, code="live_source_invalidated", session_id=error.session_id)
-    if isinstance(error, PySparkConnectUnavailableError):
-        return error_response(message, code="pyspark_connect_unavailable", session_id=error.session_id)
-    if isinstance(error, PySparkConnectStateLostError):
-        return error_response(message, code="pyspark_connect_state_lost", session_id=error.session_id)
-    if isinstance(error, SessionCleanupError):
-        return error_response(
-            message,
-            code="session_cleanup_failed",
-            recoverable=False,
-            session_id=error.session_id,
-        )
-    if isinstance(error, ResponsePayloadError):
-        return error_response(message, code=error.code)
-    if isinstance(error, AmbiguousViewColumnError):
-        return error_response(message, code="ambiguous_view_column")
-    if isinstance(error, EngineError):
-        return error_response(message, code="engine_error")
-    return error_response(
-        message,
-        detail=_bounded_diagnostic(traceback.format_exc(), MAX_DIAGNOSTIC_DETAIL_BYTES),
-    )
-
-
-def _bounded_diagnostic(value: str, maximum_bytes: int) -> str:
-    encoded = value.encode("utf-8", errors="replace")
-    if len(encoded) <= maximum_bytes:
-        return value
-    suffix = b"...[truncated]"
-    prefix = encoded[: maximum_bytes - len(suffix)].decode("utf-8", errors="ignore")
-    return f"{prefix}{suffix.decode('ascii')}"
-
-
 def _report_terminal_transport_error(error: _TerminalTransportError) -> None:
-    diagnostic = _bounded_diagnostic(str(error), MAX_DIAGNOSTIC_BYTES)
+    diagnostic = bounded_diagnostic(str(error), MAX_DIAGNOSTIC_BYTES)
     try:
         sys.stderr.write(f"Open Wrangler runtime transport error: {diagnostic}\n")
         sys.stderr.flush()

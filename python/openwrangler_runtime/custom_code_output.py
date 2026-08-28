@@ -53,9 +53,9 @@ class CapturedCustomCodeOutput:
     def diagnostic_suffix(self) -> str:
         parts = []
         if self.stdout:
-            parts.append(f"stdout:\n{_redact_diagnostic(self.stdout)}")
+            parts.append(f"stdout:\n{redact_diagnostic(self.stdout)}")
         if self.stderr:
-            parts.append(f"stderr:\n{_redact_diagnostic(self.stderr)}")
+            parts.append(f"stderr:\n{redact_diagnostic(self.stderr)}")
         return "" if not parts else "\nCaptured custom-code output:\n" + "\n".join(parts)
 
 
@@ -346,7 +346,7 @@ def _restore_transient_routers_if_idle() -> None:
 
 
 def custom_code_error_message(engine: str, error: BaseException | str, output: CapturedCustomCodeOutput) -> str:
-    message = _redact_diagnostic(str(error))
+    message = redact_diagnostic(str(error))
     return f"Custom {engine} code failed: {message}{output.diagnostic_suffix()}"
 
 
@@ -354,7 +354,8 @@ def append_custom_code_output(message: str, output: CapturedCustomCodeOutput) ->
     return f"{message}{output.diagnostic_suffix()}"
 
 
-def _redact_diagnostic(value: str) -> str:
+def redact_diagnostic(value: str) -> str:
+    """Remove credential-shaped and unsafe content from diagnostic text."""
     bounded = _bounded_text(value, MAX_CUSTOM_DIAGNOSTIC_BYTES)
     if _PRIVATE_KEY_PATTERN.search(bounded):
         return _PRIVATE_KEY_OUTPUT
