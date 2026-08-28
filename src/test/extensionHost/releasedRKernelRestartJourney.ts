@@ -155,7 +155,7 @@ export function createReleasedRKernelRestartJourney({
     let failureCheckpoint: string | undefined;
     try {
       await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
-      await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
+      await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
       recordReleasedRKernelLifecycleCheckpoint(phase, "fixture-open:start");
       notebook = await vscode.workspace.openNotebookDocument(notebookUri);
       const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
