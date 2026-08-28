@@ -4,21 +4,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
-### Added
-
-- **Pivot wider** reshapes one exact text/factor key and one scalar value column into 2–64 fixed ordered outputs.
-  Every non-null key must be declared, duplicate identifier/key rows fail without aggregation, missing combinations
-  become typed nulls, and Pandas, Polars, DuckDB, and Native R preserve engine-native values and generated code.
-- **Pivot longer** reshapes 2–64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
-  unselected columns, emits selected-column-major rows, preserves native scalar metadata without common-type
-  coercion, and runs natively in Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
-- **Extract regex group** retains its source column and creates one stable output from the selected capture group in
-  the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
-  engine-native live and generated execution; PySpark remains viewing-only.
-- **Split text into columns** retains its source column and atomically creates 2–64 ordered output columns from one
-  non-empty literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts
-  are ignored across engine-native Pandas, Polars, DuckDB, and Native R execution; PySpark remains viewing-only.
-
 ### Security
 
 - Dependency lifecycle scripts are now disabled for contributor, CI, candidate, packaging, promotion, and release
@@ -67,7 +52,22 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   mode control now explains what Viewing preserves, why PySpark, live DuckDB relations, and saved notebook snapshots
   do not offer cleaning, and how to enable cleaning when an Editing transition is available.
 
-## [1.99.7] - 2026-08-16
+## [1.99.7] - 2026-08-28
+
+### Added
+
+- **Pivot wider** reshapes one exact text/factor key and one scalar value column into 2–64 fixed ordered outputs.
+  Every non-null key must be declared, duplicate identifier/key rows fail without aggregation, missing combinations
+  become typed nulls, and Pandas, Polars, DuckDB, and Native R preserve engine-native values and generated code.
+- **Pivot longer** reshapes 2–64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
+  unselected columns, emits selected-column-major rows, preserves native scalar metadata without common-type
+  coercion, and runs natively in Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
+- **Extract regex group** retains its source column and creates one stable output from the selected capture group in
+  the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
+  engine-native live and generated execution; PySpark remains viewing-only.
+- **Split text into columns** retains its source column and atomically creates 2–64 ordered output columns from one
+  non-empty literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts
+  are ignored across engine-native Pandas, Polars, DuckDB, and Native R execution; PySpark remains viewing-only.
 
 ### Changed
 
@@ -98,7 +98,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   unknown path is retained and reported as cleanup uncertainty. Disposable nonpublishing previews may exercise this
   path; any future release candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.
   Candidate workflow topology, readiness, provenance, and registry publication contracts are unchanged.
-- Native R now exposes all 28 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
+- Native R now exposes all 32 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
   accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
   evaluation, and requires a local non-active `result` with the same canonical dataframe flavor and at least one
   column. It supports dynamic rows, columns, row names, and `data.table` keys; duplicate output names reuse input
@@ -108,9 +108,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   ordinary `collapse` frames. Source/result publication is atomic, but the feature executes trusted arbitrary R, not
   sandboxed code: deliberate filesystem, network, global-environment, or aliased-object side effects are outside the
   transaction. The public protocol remains v2 while the private R transport advances to v14. Dedicated local-source
-  contracts now enumerate the exact ordered 28-operation catalog, execute production-generated R for every operation,
+  contracts now enumerate the exact ordered 32-operation catalog, execute production-generated R for every operation,
   and separately prove byte-exact clipboard and atomic `.R` saves with distinct executable operation-labelled buffers
-  across that catalog. Candidate acceptance requires all 28 advertised capabilities and exercises Custom Code through
+  across that catalog. Candidate acceptance requires all 32 advertised capabilities and exercises Custom Code through
   representative installed R paths, but exhaustive installed execution of every operation and a reviewed performance
   record remain outstanding, so Native R stays **Partial**. No candidate selector, job, phase,
   300-second/180-second deadline, or retry changes.
