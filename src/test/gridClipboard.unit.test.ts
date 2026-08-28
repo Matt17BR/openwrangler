@@ -7,7 +7,6 @@ import {
   extendGridClipboardSelection,
   gridClipboardSelectionContains,
   gridClipboardSelectionDescription,
-  maximumClipboardColumnValues,
   tryAcquireGridClipboardWrite,
   writeGridClipboardText
 } from "../webviews/grid/gridClipboard";
@@ -266,9 +265,9 @@ describe("grid clipboard contract", () => {
       })
     ).toMatchObject({ ok: true, payload: { text: "'=CMD()" } });
 
-    const accumulator = createGridClipboardColumnAccumulator("=unknown");
+    const accumulator = createGridClipboardColumnAccumulator("unknown");
     expect(accumulator.append(unknown)).toBeUndefined();
-    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "'=unknown\n'=CMD()" } });
+    expect(accumulator.finish()).toMatchObject({ ok: true, payload: { text: "unknown\n'=CMD()" } });
   });
 
   it("copies the focused cell independently of the selection anchor", () => {
@@ -443,6 +442,19 @@ describe("grid clipboard contract", () => {
     });
   });
 
+  it.each([
+    ["empty", "", "\nvalue"],
+    ["quoted Unicode", 'München "Süd"', '"München ""Süd"""\nvalue'],
+    ["whitespace/BOM-prefixed formula-like", " \uFEFF=1", "' \uFEFF=1\nvalue"]
+  ])("serializes a %s column header", (_label, header, expectedText) => {
+    const accumulator = createGridClipboardColumnAccumulator(header);
+    expect(accumulator.append(cell("value"))).toBeUndefined();
+
+    const result = accumulator.finish();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.payload.text).toBe(expectedText);
+  });
+
   it("enforces the exact UTF-8 cap incrementally across many logical-column pages", () => {
     const maximumBytes = 4 * 1024 * 1024;
     const fieldCount = 4_096;
@@ -475,10 +487,16 @@ describe("grid clipboard contract", () => {
     }
   });
 
-  it("counts the header within the 100,000-cell whole-column limit", () => {
+  it("accepts 99,999 values after the header and rejects the next cell", () => {
     const accumulator = createGridClipboardColumnAccumulator("column");
-    for (let index = 0; index < maximumClipboardColumnValues; index += 1) {
+    for (let index = 0; index < 99_999; index += 1) {
       expect(accumulator.append(cell("x"))).toBeUndefined();
+    }
+    const exactLimit = accumulator.finish();
+    expect(exactLimit.ok).toBe(true);
+    if (exactLimit.ok) {
+      expect(exactLimit.payload.rowCount).toBe(99_999);
+      expect(exactLimit.payload.rowCount + 1).toBe(100_000);
     }
 
     const rejection = accumulator.append(cell("hostile-payload"));

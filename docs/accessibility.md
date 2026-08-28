@@ -46,7 +46,7 @@ Select a column header with the pointer or `Enter`/`Space`; `Ctrl/Cmd+Space` is 
 shortcut. The footer reports that the whole filtered and sorted column is selected while Open Wrangler prepares it one
 projected page at a time. **Copy column** becomes available only after preparation succeeds. A later click or
 `Ctrl/Cmd+C` writes the prepared data in that user gesture, and moving to another cell or data view discards the
-prepared column. Column copy does not include the header or row labels.
+prepared column. Column copy starts with the column header and does not include row labels.
 
 PySpark traversal remains contiguous even after the total becomes exact. In that backend, `Ctrl/Cmd+End` advances
 only to the next permitted block instead of skipping directly to the final row.
