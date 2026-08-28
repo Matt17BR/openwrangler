@@ -12,7 +12,6 @@ import type {
   ColumnSchema,
   ColumnSummary,
   DataDiff,
-  OpenWranglerResponse,
   LiveGridPage,
   OperationKind,
   SessionMetadata,
@@ -36,7 +35,7 @@ import {
   viewSortModelSignature,
   type FilterModel
 } from "../shared/filterModel";
-import { decodeGridViewState, emptyGridViewState, encodeGridViewState, type GridViewState } from "../shared/viewState";
+import { emptyGridViewState, encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { sessionModeAction } from "../shared/sessionMode";
@@ -65,8 +64,8 @@ import {
   backgroundDiagnosticKey,
   cloneBackgroundDiagnostics,
   columnWindowFromPage,
+  decodeAppHostMessage,
   filterModelForColumnValues,
-  isSessionOpenProgressStage,
   isSwitchableFileBackend,
   pageCoversColumnWindow,
   sameFilterModel,
@@ -82,8 +81,6 @@ import {
   type ConfirmedView,
   type ConfirmedViewState,
   type DiffBeforeState,
-  type EditorActionMessage,
-  type ImportOptionsStateMessage,
   type OperationIntent,
   type PageRequestOptions,
   type PendingBackgroundRequest,
@@ -92,16 +89,8 @@ import {
   type QueuedOperationIntent,
   type QueuedStepSelection,
   type RendererSynchronizationMessage,
-  type RequestImportOptionsChangeMessage,
-  type RuntimeDependencyInstallStateMessage,
-  type SessionModeChangeStateMessage,
-  type SessionOpenProgressMessage,
-  type SessionPresentationMessage,
-  type StepInspectionClearedMessage,
-  type StepInspectionResultMessage,
   type SummaryRequestOwner,
-  type ViewSortActionTarget,
-  type ViewStateMessage
+  type ViewSortActionTarget
 } from "./appState";
 
 const webviewConfig = readWebviewConfig();
@@ -1158,30 +1147,12 @@ export function App() {
 
   useEffect(() => {
     const timers = retryTimers.current;
-    const handleMessage = (
-      event: MessageEvent<
-        | OpenWranglerResponse
-        | EditorActionMessage
-        | RequestImportOptionsChangeMessage
-        | RendererSynchronizationMessage
-        | ImportOptionsStateMessage
-        | RuntimeDependencyInstallStateMessage
-        | SessionModeChangeStateMessage
-        | SessionOpenProgressMessage
-        | SessionPresentationMessage
-        | ViewStateMessage
-        | StepInspectionResultMessage
-        | StepInspectionClearedMessage
-      >
-    ) => {
+    const handleMessage = (event: MessageEvent<unknown>) => {
       if (event.origin !== window.location.origin) return;
-      const response = event.data;
+      const response = decodeAppHostMessage(event.data);
+      if (!response) return;
       if (response.kind === "sessionOpenProgress") {
-        if (response.stage === null) {
-          setSessionOpenProgress(undefined);
-        } else if (isSessionOpenProgressStage(response.stage)) {
-          setSessionOpenProgress(response.stage);
-        }
+        setSessionOpenProgress(response.stage ?? undefined);
         return;
       }
       if (response.kind === "rendererSynchronization") {
@@ -1281,7 +1252,6 @@ export function App() {
         }
         const currentMetadata = metadataRef.current;
         if (
-          result.kind !== "stepInspection" ||
           result.stepId !== response.stepId ||
           result.revision !== currentMetadata?.revision ||
           result.inputPage.offset !== response.offset ||
@@ -1300,14 +1270,12 @@ export function App() {
         return;
       }
       if (response.kind === "viewState") {
-        const state = decodeGridViewState(response.state);
-        if (!state) return;
         pendingGridViewState.current = undefined;
         if (gridViewStateTimer.current !== undefined) {
           window.clearTimeout(gridViewStateTimer.current);
           gridViewStateTimer.current = undefined;
         }
-        storeGridViewState(state);
+        storeGridViewState(response.state);
         setViewStateRestoreVersion((current) => current + 1);
         return;
       }
@@ -1354,45 +1322,41 @@ export function App() {
           requestOperationIntent({ action: "editLatest" }, response.expectedSessionId, response.expectedRevision);
         } else if (response.action === "editStep") {
           const currentMetadata = metadataRef.current;
+          const stepId = response.stepId;
           if (
             !currentMetadata ||
-            typeof response.stepId !== "string" ||
-            typeof response.expectedSessionId !== "string" ||
-            !Number.isInteger(response.expectedRevision) ||
-            response.expectedSessionId !== currentMetadata?.sessionId ||
+            response.expectedSessionId !== currentMetadata.sessionId ||
             response.expectedRevision !== currentMetadata.revision ||
-            !currentMetadata.steps.some((step) => step.id === response.stepId)
+            !currentMetadata.steps.some((step) => step.id === stepId)
           ) {
             return;
           }
-          if (stepInspectionRef.current?.stepId === response.stepId) {
+          if (stepInspectionRef.current?.stepId === stepId) {
             requestOperationIntent(
-              { action: "editStep", stepId: response.stepId },
+              { action: "editStep", stepId },
               response.expectedSessionId,
               response.expectedRevision
             );
           } else {
             setQueuedOperationIntent({
               action: "editStep",
-              stepId: response.stepId,
+              stepId,
               sessionId: currentMetadata.sessionId,
               revision: currentMetadata.revision
             });
-            requestStepInspection(response.stepId);
+            requestStepInspection(stepId);
           }
         } else if (response.action === "deleteStep") {
           const currentMetadata = metadataRef.current;
+          const stepId = response.stepId;
           if (
             !currentMetadata ||
-            typeof response.stepId !== "string" ||
-            typeof response.expectedSessionId !== "string" ||
-            !Number.isInteger(response.expectedRevision) ||
-            response.expectedSessionId !== currentMetadata?.sessionId ||
+            response.expectedSessionId !== currentMetadata.sessionId ||
             response.expectedRevision !== currentMetadata.revision
           ) {
             return;
           }
-          deleteStep(response.stepId);
+          deleteStep(stepId);
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
@@ -1417,17 +1381,7 @@ export function App() {
           sidePanelOpenRef.current = true;
           setSidePanelOpen(true);
         } else if (response.action === "changeViewSort") {
-          if (
-            !metadataRef.current ||
-            !supportsViewingCapability(metadataRef.current.capabilities, "sort") ||
-            typeof response.column !== "string" ||
-            (response.sortAction !== "moveUp" &&
-              response.sortAction !== "moveDown" &&
-              response.sortAction !== "remove") ||
-            typeof response.expectedSessionId !== "string" ||
-            typeof response.expectedSortModelSignature !== "string" ||
-            !Number.isInteger(response.expectedSortIndex)
-          ) {
+          if (!metadataRef.current || !supportsViewingCapability(metadataRef.current.capabilities, "sort")) {
             return;
           }
           changeViewSortActionRef.current({

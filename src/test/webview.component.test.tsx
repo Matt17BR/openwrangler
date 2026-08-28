@@ -2894,6 +2894,29 @@ describe("App toolbar", () => {
     expect(shape).not.toHaveTextContent("rows");
   });
 
+  it("ignores malformed same-origin session messages without replacing confirmed state", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    webviewPostMessage.mockClear();
+
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        sessionId: "forged-session",
+        schema: metadata.schema.map((column) => ({ ...column, position: column.position + 1 }))
+      },
+      page,
+      summaries: []
+    });
+
+    expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Open Wrangler needs to reload" })).not.toBeInTheDocument();
+    expect(webviewPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "webviewFailure" }));
+  });
+
   it("uses the file backend badge as an engine switch without styling notebook badges as controls", async () => {
     const { rerender } = render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -3746,7 +3769,8 @@ describe("App file import options", () => {
               kind: "rendererSynchronization",
               syncId: "S".repeat(32),
               sessionId: metadata.sessionId,
-              revision: metadata.revision
+              revision: metadata.revision,
+              layoutTransitionPending: false
             },
             origin: window.location.origin
           })
@@ -3779,7 +3803,8 @@ describe("App file import options", () => {
         kind: "rendererSynchronization",
         syncId: "F".repeat(32),
         sessionId: metadata.sessionId,
-        revision: metadata.revision
+        revision: metadata.revision,
+        layoutTransitionPending: false
       });
 
       const synchronizationMessages = webviewPostMessage.mock.calls
@@ -3878,7 +3903,8 @@ describe("App file import options", () => {
         kind: "rendererSynchronization",
         syncId: "W".repeat(32),
         sessionId: metadata.sessionId,
-        revision: metadata.revision + 1
+        revision: metadata.revision + 1,
+        layoutTransitionPending: false
       });
       act(() => vi.advanceTimersByTime(500));
       expect(
@@ -3889,7 +3915,8 @@ describe("App file import options", () => {
         kind: "rendererSynchronization",
         syncId: "N".repeat(32),
         sessionId: null,
-        revision: null
+        revision: null,
+        layoutTransitionPending: false
       });
       act(() => vi.advanceTimersByTime(1_000));
       expect(
@@ -3900,7 +3927,8 @@ describe("App file import options", () => {
         kind: "rendererSynchronization",
         syncId: "S".repeat(32),
         sessionId: metadata.sessionId,
-        revision: metadata.revision
+        revision: metadata.revision,
+        layoutTransitionPending: false
       });
       expect(webviewPostMessage).toHaveBeenCalledWith({
         kind: "rendererSynchronized",

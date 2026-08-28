@@ -93,7 +93,7 @@ describe("App saved notebook snapshots", () => {
     });
     expect(latestGridProps().page.rows[0].values[0]?.display).toBe("Zurich");
 
-    const sortedRows = [page.rows[1], page.rows[0]];
+    const sortedRows = [page.rows[1], page.rows[0]].map((row, rowNumber) => ({ ...row, rowNumber }));
     dispatch({
       kind: "page",
       revision: 0,

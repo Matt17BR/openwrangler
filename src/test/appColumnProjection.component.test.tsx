@@ -377,7 +377,8 @@ describe("App column projection", () => {
         kind: "rendererSynchronization",
         syncId: "S".repeat(32),
         sessionId: previewMetadata.sessionId,
-        revision: previewMetadata.revision
+        revision: previewMetadata.revision,
+        layoutTransitionPending: false
       }
     ]);
 
@@ -605,7 +606,13 @@ type HostMessage =
       kind: "viewState";
       state: { columnWidths: Array<[string, number]>; viewport: { firstVisibleRow: number; scrollLeft: number } };
     }
-  | { kind: "rendererSynchronization"; syncId: string; sessionId: string; revision: number }
+  | {
+      kind: "rendererSynchronization";
+      syncId: string;
+      sessionId: string;
+      revision: number;
+      layoutTransitionPending: boolean;
+    }
   | { kind: "editorAction"; action: "applyDraft" }
   | { kind: "editorAction"; action: "selectStep"; stepId: string }
   | {
