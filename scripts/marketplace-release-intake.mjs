@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { inspectDailyPreviewSourceCommit } from "./daily-preview-artifact.mjs";
 import {
   inspectReleaseMetadata,
+  isDailyPreviewVersion,
   isHistoricalTagRecoveryVersion,
   MAIN_RELEASE_BRANCH,
   NUMERIC_RELEASE_VERSION,
@@ -28,6 +30,7 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/canonical-release-assets.mjs",
   "scripts/copy-extension-test-runtime-assets.mjs",
   "scripts/cursor-acquisition.mjs",
+  "scripts/daily-preview-artifact.mjs",
   "scripts/download-canonical-github-release.mjs",
   "scripts/editor-acceptance-evidence.mjs",
   "scripts/editor-acceptance.mjs",
@@ -616,11 +619,15 @@ function runCli() {
       : undefined;
   const selectedPolicy =
     selectedMetadata?.problems.length === 0 ? releaseSourcePolicyForVersion(selectedMetadata.version) : undefined;
+  const dailySource =
+    releaseCommit !== undefined && releaseTag !== undefined && isDailyPreviewVersion(selectedMetadata?.version)
+      ? inspectDailyPreviewSourceCommit({ commit: releaseCommit, releaseTag, root })
+      : undefined;
   const requireMainContainment =
     selectedMetadata?.version !== undefined && !isHistoricalTagRecoveryVersion(selectedMetadata.version);
   const branchEvidence =
     releaseCommit !== undefined && selectedPolicy !== undefined && requireMainContainment
-      ? releaseBranchEvidence(root, selectedPolicy.ref, releaseCommit)
+      ? releaseBranchEvidence(root, selectedPolicy.ref, dailySource?.parentCommit ?? releaseCommit)
       : undefined;
   const result = inspectMarketplaceReleaseIntake({
     buildReason,

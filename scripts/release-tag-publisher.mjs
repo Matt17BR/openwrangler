@@ -464,19 +464,48 @@ function assertRepositoryCheckout({ expectedCommit, gitRunner, root }) {
   }
 }
 
-function assertFreshTagSource({ expectedCommit, gitRunner, root, sourceRef }) {
-  if (resolveCommit(root, sourceRef, "configured release source", gitRunner) !== expectedCommit) {
-    throw new Error("Release-tag publication requires EXPECTED_SHA to equal the configured source ref.");
+function assertFreshTagSource({ expectedCommit, expectedParentCommit, gitRunner, root, sourceRef, sourceRelation }) {
+  if (sourceRelation === "exact") {
+    if (resolveCommit(root, sourceRef, "configured release source", gitRunner) !== expectedCommit) {
+      throw new Error("Release-tag publication requires EXPECTED_SHA to equal the configured source ref.");
+    }
+    return;
+  }
+  const history = git(
+    root,
+    ["rev-list", "--parents", "-n", "1", expectedCommit],
+    "inspect the generated release source parent",
+    gitRunner
+  )
+    .trim()
+    .split(" ");
+  if (history.length !== 2 || history[0] !== expectedCommit || history[1] !== expectedParentCommit) {
+    throw new Error("Generated release-tag publication requires EXPECTED_SHA to be the exact source child.");
+  }
+  resolveCommit(root, sourceRef, "configured release source", gitRunner);
+  try {
+    git(
+      root,
+      ["merge-base", "--is-ancestor", expectedParentCommit, sourceRef],
+      "verify the generated release parent on the configured source",
+      gitRunner
+    );
+  } catch (error) {
+    throw new Error("Generated release-tag publication requires its parent to remain on the configured source.", {
+      cause: error
+    });
   }
 }
 
 export function pushExactReleaseTag({
   expectedCommit,
+  expectedParentCommit,
   gitRunner = defaultGitRunner,
   releaseTag,
   repository,
   root,
   sourceRef,
+  sourceRelation = "exact",
   token
 }) {
   if (repository !== EXPECTED_REPOSITORY) {
@@ -487,6 +516,13 @@ export function pushExactReleaseTag({
   }
   validateToken(token);
   validateSourceRef(sourceRef);
+  if (
+    (sourceRelation !== "exact" && sourceRelation !== "direct-child") ||
+    (sourceRelation === "exact" && expectedParentCommit !== undefined) ||
+    (sourceRelation === "direct-child" && !FULL_COMMIT.test(expectedParentCommit ?? ""))
+  ) {
+    throw new Error("Release-tag source relation must be exact or one direct child with its parent commit.");
+  }
   const repositoryRoot = realpathSync.native(resolve(root));
   const version = readVersion(repositoryRoot);
   if (releaseTag !== `v${version}`) {
@@ -501,13 +537,27 @@ export function pushExactReleaseTag({
   }
 
   assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
-  assertFreshTagSource({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
+  assertFreshTagSource({
+    expectedCommit,
+    expectedParentCommit,
+    gitRunner,
+    root: repositoryRoot,
+    sourceRef,
+    sourceRelation
+  });
   pushTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot, token });
   const after = inspectRemoteTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot });
   if (!after.exists) {
     throw new Error("The exact release tag was not visible after its Git push completed.");
   }
   assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
-  assertFreshTagSource({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
+  assertFreshTagSource({
+    expectedCommit,
+    expectedParentCommit,
+    gitRunner,
+    root: repositoryRoot,
+    sourceRef,
+    sourceRelation
+  });
   return Object.freeze({ created: true, releaseTag, sourceCommit: expectedCommit });
 }

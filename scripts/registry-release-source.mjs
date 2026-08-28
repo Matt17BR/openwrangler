@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { inspectDailyPreviewSourceCommit } from "./daily-preview-artifact.mjs";
 import {
   inspectReleaseMetadata,
+  isDailyPreviewVersion,
   isHistoricalTagRecoveryVersion,
   releaseSourcePolicyForVersion
 } from "./release-metadata.mjs";
@@ -110,6 +112,10 @@ export function readRegistryReleaseSource({ releaseTag, sourceRoot }) {
   if (sourcePolicy === undefined) {
     throw new Error("The release source version does not have a protected source-branch policy.");
   }
+  const dailySource = isDailyPreviewVersion(inspected.version)
+    ? inspectDailyPreviewSourceCommit({ commit, releaseTag, root })
+    : undefined;
+  const protectedSourceCommit = dailySource?.parentCommit ?? commit;
   if (!isHistoricalTagRecoveryVersion(inspected.version)) {
     const remoteSourceRef = `refs/remotes/origin/${sourcePolicy.branch}`;
     const remoteSourceCommit = git(root, ["rev-parse", "--verify", `${remoteSourceRef}^{commit}`]).trim();
@@ -117,9 +123,9 @@ export function readRegistryReleaseSource({ releaseTag, sourceRoot }) {
       throw new Error("The protected release source did not resolve to one full lowercase Git commit.");
     }
     try {
-      git(root, ["merge-base", "--is-ancestor", commit, remoteSourceRef]);
+      git(root, ["merge-base", "--is-ancestor", protectedSourceCommit, remoteSourceRef]);
     } catch {
-      throw new Error(`The release commit is not on the protected ${sourcePolicy.branch} branch.`);
+      throw new Error(`The release source commit is not on the protected ${sourcePolicy.branch} branch.`);
     }
   }
   return Object.freeze({

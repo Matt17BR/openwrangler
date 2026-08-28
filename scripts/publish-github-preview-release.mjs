@@ -2,12 +2,20 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
+import { dailyPreviewReleaseNotes, inspectDailyPreviewSourceCommit } from "./daily-preview-artifact.mjs";
 import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
+import { isDailyPreviewVersion } from "./release-metadata.mjs";
 import { readReleaseNotesFromCommit } from "./release-notes.mjs";
 import { verifyPinnedPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 
 export async function publishGitHubPreviewRelease(options) {
   return publishGitHubRelease({ ...options, channel: "preview" });
+}
+
+export function readPreviewReleaseNotesFromCommit({ commit, releaseTag, root, version }) {
+  if (!isDailyPreviewVersion(version)) return readReleaseNotesFromCommit({ commit, root, version });
+  const source = inspectDailyPreviewSourceCommit({ commit, releaseTag, root });
+  return dailyPreviewReleaseNotes({ sourceSha: source.parentCommit, version });
 }
 
 export async function publishVerifiedGitHubPreviewRelease({
@@ -58,8 +66,9 @@ async function runCli() {
     expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
     releaseTag: process.env.RELEASE_TAG,
-    releaseNotes: readReleaseNotesFromCommit({
+    releaseNotes: readPreviewReleaseNotesFromCommit({
       commit: process.env.EXPECTED_SHA,
+      releaseTag: process.env.RELEASE_TAG,
       root,
       version: process.env.RELEASE_TAG?.slice(1)
     }),

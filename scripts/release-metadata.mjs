@@ -6,6 +6,31 @@ import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 export const NUMERIC_RELEASE_VERSION = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)$/u;
 export const MAIN_RELEASE_BRANCH = "main";
 const LAST_HISTORICAL_TAG_RECOVERY = Object.freeze([1n, 2n, 2n]);
+const LAST_MANUAL_V2_PREVIEW = 7n;
+const DAILY_PREVIEW_VERSION = /^1\.99\.(?<year>[2-9]\d{3})(?<month>0[1-9]|1[0-2])(?<day>0[1-9]|[12]\d|3[01])$/u;
+
+export function dailyPreviewDateFromVersion(version) {
+  const match = typeof version === "string" ? DAILY_PREVIEW_VERSION.exec(version) : null;
+  if (match === null) return undefined;
+  const year = Number(match.groups?.year);
+  const month = Number(match.groups?.month);
+  const day = Number(match.groups?.day);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return undefined;
+  }
+  return `${match.groups.year}${match.groups.month}${match.groups.day}`;
+}
+
+export function dailyPreviewVersionFromDate(date) {
+  if (typeof date !== "string" || !/^\d{8}$/u.test(date)) return undefined;
+  const version = `1.99.${date}`;
+  return dailyPreviewDateFromVersion(version) === date ? version : undefined;
+}
+
+export function isDailyPreviewVersion(version) {
+  return dailyPreviewDateFromVersion(version) !== undefined;
+}
 
 function numericVersionParts(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
@@ -46,9 +71,11 @@ export function classifyNumericReleaseVersion(version) {
   const major = BigInt(match.groups?.major ?? "");
   const minor = BigInt(match.groups?.minor ?? "");
   const isLegacyPreview = major === 0n && minor % 2n === 1n;
-  const isV2Preview = major === 1n && minor === 99n;
+  const patch = BigInt(match.groups?.patch ?? "");
+  const isV2PreviewLine = major === 1n && minor === 99n;
+  if (isV2PreviewLine && patch > LAST_MANUAL_V2_PREVIEW && !isDailyPreviewVersion(version)) return undefined;
   return Object.freeze({
-    channel: isLegacyPreview || isV2Preview ? "preview" : "stable",
+    channel: isLegacyPreview || isV2PreviewLine ? "preview" : "stable",
     version
   });
 }
@@ -80,6 +107,10 @@ export function inspectReleaseMetadata({ releaseTag, packageJson }) {
         manifest.version
       )}.`
     );
+  }
+  const parts = numericVersionParts(version);
+  if (parts?.[0] === 1n && parts[1] === 99n && parts[2] > LAST_MANUAL_V2_PREVIEW && !isDailyPreviewVersion(version)) {
+    problems.push("Manual 1.99.N previews end at 1.99.7; automatic previews must use 1.99.YYYYMMDD.");
   }
   if (typeof manifest.preview !== "boolean") {
     problems.push('package.json "preview" must be an explicit boolean for every release.');
