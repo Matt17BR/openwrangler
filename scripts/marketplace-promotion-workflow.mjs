@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "69becb12303029d8678bbc4a7e5e0544ff1a729e71c3a4356fce7b6c16655f0c";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "0f840f36c2959faaa99490446b231204f1a387e8d87649f85d890fb0d3000325";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -20,31 +20,6 @@ const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azu
 const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
 const PROBE_PUBLICATION_COMMAND = "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing";
 const SKIP_EXISTING_PUBLIC_CONDITION = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
-const VERIFY_PUBLIC_MEDIA_LINES = Object.freeze([
-  "set -euo pipefail",
-  `required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"`,
-  'case "$required" in',
-  "true)",
-  "npm ci --ignore-scripts --prefix release-source",
-  'node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish',
-  ";;",
-  "false)",
-  "printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' \"$RELEASE_VERSION\"",
-  ";;",
-  "*) exit 64 ;;",
-  "esac"
-]);
-const MATERIALIZE_RELEASE_SOURCE_LINES = Object.freeze([
-  "set -euo pipefail",
-  'pwd -P | grep -Fqx -- "$AUTOMATION_ROOT"',
-  "test ! -e release-source",
-  "test ! -L release-source",
-  'git worktree add --detach release-source "$RELEASE_COMMIT"',
-  'git -C release-source rev-parse --verify HEAD^{commit} | grep -Fqx -- "$RELEASE_COMMIT"',
-  'git -C release-source rev-parse --show-toplevel | grep -Fqx -- "$AUTOMATION_ROOT/release-source"',
-  "git -C release-source status --porcelain=v1 --untracked-files=all | cmp -s - /dev/null"
-]);
-
 function exactKeys(value, expected) {
   return (
     typeof value === "object" &&
@@ -213,8 +188,7 @@ export function inspectMarketplacePromotionPipeline(source) {
       JSON.stringify({
         releaseCommit: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseCommit']]",
         releasePrerelease: "$[stageDependencies.Intake.Bind.outputs['release_intake.releasePrerelease']]",
-        releaseTag: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]",
-        releaseVersion: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseVersion']]"
+        releaseTag: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]"
       }) ||
     deployment?.strategy?.runOnce?.deploy === undefined
   ) {
@@ -225,12 +199,6 @@ export function inspectMarketplacePromotionPipeline(source) {
     (step) => step?.script === "node scripts/download-canonical-github-release.mjs canonical-release"
   );
   const canonicalVerifier = promotionSteps.find((step) => step?.script === VERIFY_ARTIFACT_COMMAND);
-  const releaseSource = promotionSteps.find(
-    (step) => step?.displayName === "Materialize the exact clean release source"
-  );
-  const publicMediaPreflight = promotionSteps.find(
-    (step) => step?.displayName === "Preflight immutable public README media"
-  );
   const publicProbe = promotionSteps.find((step) => step?.script === PROBE_PUBLICATION_COMMAND);
   const publicVerifier = promotionSteps.find(
     (step) => step?.script === "node scripts/verify-marketplace-publication.mjs canonical-release"
@@ -257,19 +225,6 @@ export function inspectMarketplacePromotionPipeline(source) {
         RELEASE_TAG: "$(releaseTag)"
       }) ||
     JSON.stringify(canonicalVerifier?.env) !== JSON.stringify(verifierEnvironment) ||
-    JSON.stringify(releaseSource?.env) !==
-      JSON.stringify({
-        AUTOMATION_ROOT: "$(System.DefaultWorkingDirectory)",
-        RELEASE_COMMIT: "$(releaseCommit)"
-      }) ||
-    JSON.stringify(normalizedLines(releaseSource?.script)) !== JSON.stringify(MATERIALIZE_RELEASE_SOURCE_LINES) ||
-    publicMediaPreflight?.displayName !== "Preflight immutable public README media" ||
-    JSON.stringify(normalizedLines(publicMediaPreflight?.script)) !== JSON.stringify(VERIFY_PUBLIC_MEDIA_LINES) ||
-    JSON.stringify(publicMediaPreflight?.env) !==
-      JSON.stringify({
-        RELEASE_SOURCE_SHA: "$(releaseCommit)",
-        RELEASE_VERSION: "$(releaseVersion)"
-      }) ||
     publicProbe?.displayName !== "Reuse an exact existing public Marketplace payload" ||
     JSON.stringify(publicProbe?.env) !== JSON.stringify(verifierEnvironment) ||
     JSON.stringify(publicVerifier?.env) !== JSON.stringify(publicVerifierEnvironment)
@@ -325,14 +280,13 @@ export function inspectMarketplacePromotionPipeline(source) {
     commands.filter((command) => command === VERIFY_IDENTITY_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_ARTIFACT_COMMAND).length !== 2 ||
     commands.filter((command) => command === PROBE_PUBLICATION_COMMAND).length !== 1 ||
-    promotionSteps.filter((step) => step?.displayName === "Preflight immutable public README media").length !== 1 ||
     commands.filter((command) => command === "node scripts/download-canonical-github-release.mjs canonical-release")
       .length !== 1 ||
     commands.filter((command) => command === "node scripts/verify-marketplace-publication.mjs canonical-release")
       .length !== 1
   ) {
     problems.push(
-      "Marketplace promotion must install its lockfile, download, reverify, preflight exact-source media, channel-publish, and publicly verify one canonical artifact."
+      "Marketplace promotion must install its lockfile, download, reverify, channel-publish, and publicly verify one canonical artifact."
     );
   }
   if (
@@ -360,21 +314,17 @@ export function inspectMarketplacePromotionPipeline(source) {
     (step) => step?.script === "node scripts/download-canonical-github-release.mjs canonical-release"
   );
   const npmIndex = promotionSteps.findIndex((step) => step?.script === "npm ci --ignore-scripts");
-  const releaseSourceIndex = promotionSteps.indexOf(releaseSource);
-  const publicMediaPreflightIndex = promotionSteps.indexOf(publicMediaPreflight);
   const publicProbeIndex = promotionSteps.indexOf(publicProbe);
   if (
-    promotionSteps.length !== 10 ||
+    promotionSteps.length !== 8 ||
     npmIndex < 0 ||
     downloadIndex !== npmIndex + 1 ||
     canonicalVerifierIndex !== downloadIndex + 1 ||
-    releaseSourceIndex !== canonicalVerifierIndex + 1 ||
-    publicMediaPreflightIndex !== releaseSourceIndex + 1 ||
-    publicProbeIndex !== publicMediaPreflightIndex + 1 ||
+    publicProbeIndex !== canonicalVerifierIndex + 1 ||
     azureIndex !== publicProbeIndex + 1
   ) {
     problems.push(
-      "Canonical verification, exact-source materialization, media preflight, existing-public probe, and authenticated promotion must retain their reviewed order."
+      "Canonical verification, existing-public probe, and authenticated promotion must retain their reviewed order."
     );
   }
   if (createHash("sha256").update(source, "utf8").digest("hex") !== AUDITED_MARKETPLACE_PIPELINE_SHA256) {

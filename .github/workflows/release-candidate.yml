@@ -78,15 +78,6 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - name: Run the authoritative PR checks before packaging
         run: npm run check:pr
-      - name: Preflight immutable public README media
-        env:
-          RELEASE_SOURCE_SHA: ${{ github.sha }}
-          RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
-        run: >-
-          node scripts/verify-public-media-surfaces.mjs
-          --source-sha "$RELEASE_SOURCE_SHA"
-          --version "$RELEASE_VERSION"
-          --prepublish
       - name: Prepare the local candidate tag without publishing it
         env:
           EXPECTED_SHA: ${{ github.sha }}

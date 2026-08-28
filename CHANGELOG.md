@@ -32,6 +32,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Registry promotion now verifies only the canonical VSIX, checksum, provenance, channel, and downloaded public VSIX
+  identity. README and gallery image hosting no longer blocks Open VSX or Marketplace publication.
 - Manual `v1.99.7` preview publication now qualifies one canonical protected-main artifact in stable VS Code before an
   explicit run may hand the same public bytes to the existing Open VSX and Azure Marketplace promoters.
 - Pull-request CI now uses plainly named, path-scoped JavaScript/TypeScript, Python, R, web, Windows, and
