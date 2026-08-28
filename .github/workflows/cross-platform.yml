@@ -41,6 +41,9 @@ jobs:
       - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: stable
+      - run: npm run test:scripts:native
+        if: ${{ runner.os == 'Windows' }}
+
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
     runs-on: windows-latest

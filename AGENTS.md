@@ -134,7 +134,8 @@ that merged-tree proof.
     product/editor/visual assertions and never fall through to ambient PATH or desktop state. One comprehensive
     end-to-end owner proves each behavior; every additional editor, operating system, transport, or registry lane must
     name a distinct seam or be removed. Ordinary pull requests own the five always-run product boundaries documented
-    in `docs/ci.md`; coverage and browser/harness suites remain local/manual or release-owned. Release candidates consume the immutable artifact and prove only installed
+    in `docs/ci.md`; browser and installed-editor harness suites run only in their documented manual, scheduled, or
+    release owners. Release candidates consume the immutable artifact and prove only installed
     compatibility, external integrations, performance, cleanup, provenance, and publication. Do not respond to
     nondeterminism with an automatic retry, a larger deadline, or another orchestration layer. Fix, isolate, replace,
     or delete the check. The rolling last ten first-attempt candidate failures must contain at least nine product,

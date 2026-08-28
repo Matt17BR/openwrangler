@@ -1,8 +1,10 @@
 # Testing
 
 Keep a test only when it catches a distinct product, package, runtime, or platform failure that a cheaper direct test
-cannot catch. Test product behavior at the lowest useful boundary. Do not add tests whose subject is another test,
-fixture, workflow topology, runner, diagnostic bundle, or test selector.
+cannot catch. Test product behavior at the lowest useful boundary. Retain direct security and privacy boundary tests
+for credential redaction, no-follow identity checks, sealed artifacts, and exact output-path handoff. Beyond those
+boundaries, do not retain tests of fixtures, general workflow topology, runner ceremony, diagnostic topology, or test
+selectors.
 
 ## Direct source checks
 
@@ -68,6 +70,21 @@ The pull-request workflow has five direct owners:
 
 There is no path classifier or aggregate workflow test. The inline `validate` job requires all five owners to pass.
 See [CI](ci.md) for the job names.
+
+## Failure-artifact allowlist
+
+After editor and display ownership and private-root identity are verified, a failure artifact may contain only:
+
+- Phase result and progress JSON.
+- Selected `main.log`, `sharedprocess.log`, `renderer.log`, `notebook.rendering.log`, `exthost.log`, and Open Wrangler
+  output-channel logs.
+- A paths, types, and sizes-only profile manifest.
+- Structured failure metadata.
+
+Jupyter output logs may be inspected only to derive a fixed failure category and are never copied. Raw profiles,
+settings, workspace storage, databases, arbitrary extension logs, credentials, private keys, and user data are never
+allowed. Collection and sealing use bounded no-follow, single-link, identity-pinned reads and repeat redaction. CI
+uploads only the exact sealed path emitted through `GITHUB_OUTPUT`; it never uploads a staging directory or glob.
 
 ## Exact-artifact installed smoke
 
