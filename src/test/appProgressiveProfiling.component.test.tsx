@@ -545,7 +545,8 @@ describe("App progressive profiling and view correlation", () => {
                 column: column.name,
                 type: "float",
                 rawType: "Float64",
-                topValues: []
+                topValues: [],
+                numeric: { min: 1, max: 500, mean: 250.5 }
               }
         ]
       });

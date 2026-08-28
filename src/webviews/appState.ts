@@ -2,16 +2,22 @@ import type {
   ColumnSummary,
   ColumnSchema,
   DataDiff,
-  OpenWranglerResponse,
   GridPage,
   LiveGridPage,
   OperationKind,
   SessionMetadata,
-  SessionMode,
   ValuesResponse
 } from "../shared/protocol";
 import type { FilterModel } from "../shared/filterModel";
+import { operationKinds } from "../shared/operationCatalog.generated";
+import {
+  decodeOpenWranglerPresentationFallback,
+  isColumnSchemaArray,
+  isDataDiff,
+  isOpenWranglerResponse
+} from "../shared/protocolValidation";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
+import { decodeGridViewState } from "../shared/viewState";
 import type { ConfirmedFilterState } from "./filters/filterHistory";
 import type { VisibleColumnRange } from "./grid/DataGrid";
 
@@ -27,25 +33,35 @@ export type NonSortEditorAction =
   | "discardDraft"
   | "undoStep";
 
-export type EditorActionMessage =
-  | {
-      kind: "editorAction";
-      action: "changeViewSort";
-      column: string;
-      sortAction: "moveUp" | "moveDown" | "remove";
-      expectedSessionId: string;
-      expectedSortModelSignature: string;
-      expectedSortIndex: number;
-    }
-  | {
-      kind: "editorAction";
-      action: NonSortEditorAction;
-      expectedSessionId?: string;
-      expectedRevision?: number;
-      operationKind?: OperationKind;
-      stepId?: string;
-      column?: string;
-    };
+type ViewSortEditorActionMessage = {
+  kind: "editorAction";
+  action: "changeViewSort";
+  column: string;
+  sortAction: "moveUp" | "moveDown" | "remove";
+  expectedSessionId: string;
+  expectedSortModelSignature: string;
+  expectedSortIndex: number;
+};
+
+type StepEditorActionMessage = {
+  kind: "editorAction";
+  action: "editStep" | "deleteStep";
+  stepId: string;
+  expectedSessionId: string;
+  expectedRevision: number;
+};
+
+type OtherEditorActionMessage = {
+  kind: "editorAction";
+  action: Exclude<NonSortEditorAction, StepEditorActionMessage["action"]>;
+  expectedSessionId?: string;
+  expectedRevision?: number;
+  operationKind?: OperationKind;
+  stepId?: string;
+  column?: string;
+};
+
+export type EditorActionMessage = ViewSortEditorActionMessage | StepEditorActionMessage | OtherEditorActionMessage;
 
 export interface ViewSortActionTarget {
   column: string;
@@ -69,11 +85,6 @@ export type QueuedOperationIntent = OperationIntent & {
   revision: number;
 };
 
-export interface RequestImportOptionsChangeMessage {
-  kind: "requestImportOptionsChange";
-  actionId: string;
-}
-
 export interface RendererSynchronizationMessage {
   kind: "rendererSynchronization";
   syncId: string;
@@ -82,33 +93,11 @@ export interface RendererSynchronizationMessage {
   layoutTransitionPending: boolean;
 }
 
-export interface ImportOptionsStateMessage {
-  kind: "importOptionsState";
-  busy: boolean;
-}
-
-export interface RuntimeDependencyInstallStateMessage {
-  kind: "runtimeDependencyInstallState";
-  busy: boolean;
-}
-
-export interface SessionModeChangeStateMessage {
-  kind: "sessionModeChangeState";
-  busy: boolean;
-  mode: SessionMode;
-}
-
-export interface SessionOpenProgressMessage {
-  kind: "sessionOpenProgress";
-  stage: unknown;
-}
-
-export interface SessionPresentationMessage {
+type SessionPresentationMessage = {
   kind: "sessionPresentation";
   presentation: {
     sessionId: string;
     revision: number;
-    code: string;
     draft?: {
       diff: DataDiff;
       remainingMissingCells?: number;
@@ -116,26 +105,144 @@ export interface SessionPresentationMessage {
       beforeSchema: ColumnSchema[];
     };
   };
+};
+
+export function decodeAppHostMessage(value: unknown) {
+  if (isOpenWranglerResponse(value)) return value;
+  const presentation = decodeOpenWranglerPresentationFallback(value);
+  if (presentation) return presentation;
+  if (!isRecord(value)) return undefined;
+
+  switch (value.kind) {
+    case "sessionOpenProgress":
+      return value.stage === null || isSessionOpenProgressStage(value.stage)
+        ? { kind: value.kind, stage: value.stage }
+        : undefined;
+    case "rendererSynchronization":
+      return typeof value.syncId === "string" &&
+        ((value.sessionId === null && value.revision === null) ||
+          (typeof value.sessionId === "string" && isNonNegativeInteger(value.revision))) &&
+        typeof value.layoutTransitionPending === "boolean"
+        ? {
+            kind: value.kind,
+            syncId: value.syncId,
+            sessionId: value.sessionId,
+            revision: value.revision,
+            layoutTransitionPending: value.layoutTransitionPending
+          }
+        : undefined;
+    case "requestImportOptionsChange":
+      return typeof value.actionId === "string" ? { kind: value.kind, actionId: value.actionId } : undefined;
+    case "importOptionsState":
+    case "runtimeDependencyInstallState":
+      return typeof value.busy === "boolean" ? { kind: value.kind, busy: value.busy } : undefined;
+    case "sessionModeChangeState":
+      return typeof value.busy === "boolean" && (value.mode === "viewing" || value.mode === "editing")
+        ? { kind: value.kind, busy: value.busy, mode: value.mode as "viewing" | "editing" }
+        : undefined;
+    case "sessionPresentation": {
+      const presentation = value.presentation;
+      if (
+        !isRecord(presentation) ||
+        typeof presentation.sessionId !== "string" ||
+        !isNonNegativeInteger(presentation.revision)
+      )
+        return undefined;
+      if (presentation.draft === undefined) return value as SessionPresentationMessage;
+      const draft = presentation.draft;
+      return isRecord(draft) &&
+        isDataDiff(draft.diff) &&
+        (draft.remainingMissingCells === undefined || isNonNegativeInteger(draft.remainingMissingCells)) &&
+        isStringArray(draft.warnings) &&
+        isColumnSchemaArray(draft.beforeSchema)
+        ? (value as SessionPresentationMessage)
+        : undefined;
+    }
+    case "viewState": {
+      const state = decodeGridViewState(value.state);
+      return state ? { kind: value.kind, state } : undefined;
+    }
+    case "stepInspectionResult": {
+      const response = value.response;
+      return typeof value.stepId === "string" &&
+        isNonNegativeInteger(value.offset) &&
+        isNonNegativeInteger(value.limit) &&
+        value.limit > 0 &&
+        isNonNegativeInteger(value.columnOffset) &&
+        isNonNegativeInteger(value.columnLimit) &&
+        value.columnLimit > 0 &&
+        isOpenWranglerResponse(response) &&
+        (response.kind === "error" || response.kind === "cancelled" || response.kind === "stepInspection")
+        ? {
+            kind: value.kind,
+            stepId: value.stepId,
+            offset: value.offset,
+            limit: value.limit,
+            columnOffset: value.columnOffset,
+            columnLimit: value.columnLimit,
+            response
+          }
+        : undefined;
+    }
+    case "stepInspectionCleared":
+      return typeof value.resumeProfiling === "boolean"
+        ? { kind: value.kind, resumeProfiling: value.resumeProfiling }
+        : undefined;
+    case "editorAction":
+      if (
+        typeof value.action !== "string" ||
+        (value.expectedSessionId !== undefined && typeof value.expectedSessionId !== "string") ||
+        (value.expectedRevision !== undefined && !isNonNegativeInteger(value.expectedRevision)) ||
+        (value.stepId !== undefined && typeof value.stepId !== "string") ||
+        (value.column !== undefined && typeof value.column !== "string")
+      )
+        return undefined;
+      switch (value.action) {
+        case "openOperation":
+          return value.operationKind === undefined || operationKinds.some((kind) => kind === value.operationKind)
+            ? (value as OtherEditorActionMessage)
+            : undefined;
+        case "editStep":
+        case "deleteStep":
+          return typeof value.stepId === "string" &&
+            typeof value.expectedSessionId === "string" &&
+            isNonNegativeInteger(value.expectedRevision)
+            ? (value as StepEditorActionMessage)
+            : undefined;
+        case "editLatest":
+        case "selectStep":
+        case "clearFilterColumn":
+        case "openFilters":
+        case "applyDraft":
+        case "discardDraft":
+        case "undoStep":
+          return value as OtherEditorActionMessage;
+        case "changeViewSort":
+          return (value.sortAction === "moveUp" || value.sortAction === "moveDown" || value.sortAction === "remove") &&
+            typeof value.expectedSessionId === "string" &&
+            typeof value.expectedSortModelSignature === "string" &&
+            isNonNegativeInteger(value.expectedSortIndex) &&
+            typeof value.column === "string"
+            ? (value as ViewSortEditorActionMessage)
+            : undefined;
+        default:
+          return undefined;
+      }
+    default:
+      return undefined;
+  }
 }
 
-export interface ViewStateMessage {
-  kind: "viewState";
-  state: unknown;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export interface StepInspectionResultMessage {
-  kind: "stepInspectionResult";
-  stepId: string;
-  offset: number;
-  limit: number;
-  columnOffset: number;
-  columnLimit: number;
-  response: OpenWranglerResponse;
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
 }
 
-export interface StepInspectionClearedMessage {
-  kind: "stepInspectionCleared";
-  resumeProfiling: boolean;
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 export interface ConfirmedView {
