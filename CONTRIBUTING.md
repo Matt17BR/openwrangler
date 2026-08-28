@@ -28,13 +28,8 @@ npm ci --ignore-scripts
 
 `node --version` should report `v24.19.0`, and `npm --version` should report `11.17.0`.
 
-Dependency lifecycle scripts are disabled by `.npmrc` and every automation owner repeats `--ignore-scripts`
-explicitly. `npm run check:install-policy` verifies the lock, all install owners, and the local script-free shims used
-by VSCE tooling. Do not use `npm install`, `npm rebuild`, `ignore-scripts=false`, another package manager, or
-an alias that bypasses this policy. The VSCE signing bridge resolves only the exact optional package already
-authenticated by the lockfile for the current platform; it never downloads or compiles a binary. Interactive VSCE
-credential storage is disabled, so automation must use its existing explicit token and contributors who intentionally
-use VSCE login must select `VSCE_STORE=file`.
+Dependency lifecycle scripts are disabled by `.npmrc`, and automation repeats `--ignore-scripts` explicitly. Use the
+reviewed lock and do not substitute another package manager.
 
 Create a checkout-local Python environment and install the runtime with its development dependencies. The `.venv`
 name matters because repository commands discover that environment without shell activation.
@@ -150,15 +145,16 @@ Do not commit the VSIX, `.venv`, `node_modules`, editor profiles, notebook cache
 
 Use the narrowest command that covers the change. Do not run memory-intensive suites concurrently.
 
-- `npm run check:fast-feedback` runs Prettier, ESLint, and both TypeScript checks in parallel.
+- `npm run format:check`, `npm run lint`, and `npm run typecheck` run the direct JavaScript/TypeScript static owners.
 - `npm run check` runs the complete static, generated-file, documentation, brand, dependency-lock, and license checks.
   It does not run the source test suites.
 - `npx vitest run src/test/configuration.unit.test.ts` runs one Vitest file. Add `-t "test name"` to select one test.
 - `node scripts/run-python.mjs -m pytest python/tests/test_engine_registry.py -q` runs one Pytest file through the
   repository's cross-platform Python resolver. Add `-k "test_name"` to select matching tests.
 - `npx vitest --watch src/test/configuration.unit.test.ts` watches one Vitest file.
-- `npm run watch` watches the extension and both webview bundles. Reload the Extension Development Host after a
-  completed rebuild.
+- `npm run watch:extension` watches the extension build. `npm run watch:webview:main` and
+  `npm run watch:webview:renderer` watch the two webview bundles separately. Reload the Extension Development Host
+  after a completed rebuild.
 - `npm run package:dev` creates the development VSIX without invoking release-candidate checks.
 
 See [Testing](docs/testing.md) for suite ownership, required editor scenarios, visual prerequisites, and CI gates. See

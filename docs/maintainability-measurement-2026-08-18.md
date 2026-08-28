@@ -37,7 +37,6 @@ measured range. It does not prove that existing hotspots are acceptably decompos
 | ---------------------------------------------- | -------: | ------: | ------: |
 | `src/test/extensionHost/index.ts`              |   36,649 |  20,012 | −16,637 |
 | `scripts/editor-acceptance.mjs`                |    4,931 |   4,931 |       0 |
-| `scripts/editor-acceptance.test.mjs`           |    6,680 |   5,898 |    −782 |
 | `src/webviews/App.tsx`                         |    3,490 |   3,410 |     −80 |
 | `src/webviews/operations/OperationBuilder.tsx` |    1,499 |   1,499 |       0 |
 | `src/extension/sessionCoordinator.ts`          |      977 |   1,005 |     +28 |
@@ -47,8 +46,8 @@ measured range. It does not prove that existing hotspots are acceptably decompos
 | `r/openwrangler_runtime/frame_contract.R`      |    8,934 |   9,160 |    +226 |
 | `src/extension/webviewPanel.ts`                |    1,862 |   1,875 |     +13 |
 
-The extension-host program has a real 45.4% reduction and the editor-acceptance test owner has an 11.7% reduction.
-Most other named production hotspots are flat or larger on protected main. Wrapper extraction, open work, and local
+The extension-host program has a real 45.4% reduction. Most other named production hotspots are flat or larger on
+protected main. Wrapper extraction, open work, and local
 commits receive no credit here. The existing-hotspot half of gate 5 therefore remains open.
 
 ## Approachability gate status

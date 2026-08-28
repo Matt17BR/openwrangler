@@ -26,7 +26,6 @@ dependencies = [
 dev = [
   "setuptools>=83.0.0",
   "pytest",
-  "pytest-cov",
   "nbclient",
   "nbformat",
   "ipykernel",

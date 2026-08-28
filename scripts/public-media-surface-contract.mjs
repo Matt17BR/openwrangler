@@ -484,7 +484,7 @@ function validatedRelativePath(relativePath) {
 
 function usageError() {
   return new Error(
-    "Usage: npm run verify:public-media-surfaces -- --source-sha <40-hex-commit> --version <semantic-version> " +
+    "Usage: node scripts/verify-public-media-surfaces.mjs --source-sha <40-hex-commit> --version <semantic-version> " +
       "[--source-root <relative-path>] [--prepublish | --wait-for-propagation]"
   );
 }
