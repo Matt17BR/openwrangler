@@ -106,7 +106,7 @@ export function dailyPreviewReleaseNotes({ sourceSha, version }) {
   return [
     `# Open Wrangler ${version}`,
     "",
-    `This daily preview packages protected \`main\` commit \`${sourceSha}\` from ${isoDate}.`,
+    `The ${isoDate} daily preview packages protected \`main\` commit \`${sourceSha}\`.`,
     "Its exact VSIX passed the short installed smoke in stable VS Code before publication.",
     ""
   ].join("\n");

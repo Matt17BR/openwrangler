@@ -1,7 +1,8 @@
 # Releasing
 
-Open Wrangler keeps daily preview, manual preview publication, release-candidate qualification, and stable publication
-separate. Do not rebuild, replace, or retag an artifact after it has entered qualification.
+Open Wrangler uses one preview workflow for its automatic daily public train and manual fallback, while
+release-candidate qualification and stable publication remain separate. Do not rebuild, replace, or retag an artifact
+after it has entered qualification.
 
 ## Release change
 
@@ -16,9 +17,10 @@ A release pull request contains only:
 Write the release notes using [the writing guide](writing-style.md). Product changes, test changes, generated media,
 and unrelated documentation land before the release pull request.
 
-Numeric `0.<odd-minor>.x` and `1.99.x` versions are preview bands and require `package.json.preview` to be `true`.
-Other numeric versions require it to be `false`. The package verifier rejects a VSIX whose embedded manifest disagrees
-with that channel.
+Numeric `0.<odd-minor>.x` versions are preview bands. Manual `1.99.N` previews end at `1.99.7`, while automatic daily
+public previews use `1.99.YYYYMMDD`; all require `package.json.preview` to be `true`. The next stable version is
+`2.0.0`. Other numeric versions require `preview` to be `false`. The package verifier rejects a VSIX whose embedded
+manifest disagrees with that channel.
 
 ## Source and package commands
 
@@ -49,22 +51,32 @@ verified VSIX path.
 
 ## Daily preview
 
-`.github/workflows/daily-preview.yml` builds a disposable package from protected `main` and runs its existing stable
-VS Code smoke. It creates no stable tag or registry publication and cannot be promoted as a release candidate.
+The schedule in `.github/workflows/preview-release.yml` reads the workflow run's immutable UTC `created_at` timestamp
+and binds that run to version `1.99.YYYYMMDD`. From the exact protected `main` commit, it creates a deterministic
+single-parent child that changes only `package.json`, `package-lock.json`, and
+`python/openwrangler_runtime/version.py`. The workflow packages one canonical VSIX/checksum/provenance bundle and
+qualifies those exact bytes in stable VS Code with the existing `daily-core` selector.
+
+After qualification, the protected publication job creates or verifies the direct-child lightweight tag and GitHub
+prerelease, then dispatches the same public assets to the Open VSX and Azure Marketplace promoters. If qualification
+fails, correct protected `main` and let a new scheduled run create a new candidate. If only publication fails, rerun
+only the failed **Publish preview** job in that workflow run; it reconstructs the same dated source and reuses the same
+qualified artifact.
 
 ## Manual preview publication
 
-Dispatch `.github/workflows/preview-release.yml` from protected `main` with `release_tag` set to `v1.99.7`. The default
-`publish: false` run validates preview metadata, packages one canonical VSIX/checksum/provenance triple, and installs
-that exact VSIX in stable VS Code with the existing `daily-core` selector. A failed qualification run creates no tag
-or release; fix the source and qualify it again.
+Dispatch `.github/workflows/preview-release.yml` from protected `main` with `release_tag` set to `v1.99.7`. This is the
+only manual `1.99.N` fallback. The default `publish: false` run validates preview metadata, packages one canonical
+VSIX/checksum/provenance triple, and installs that exact VSIX in stable VS Code with the existing `daily-core`
+selector. A failed qualification run creates no tag or release; fix the source and qualify it again.
 
 Set `publish: true` only when the same run should publish. The protected job revalidates the recorded triple, creates
 or verifies the exact lightweight tag and GitHub prerelease, then dispatches the existing protected-main Open VSX
 promoter. The tag starts the existing Azure Marketplace promoter. Both promoters download the public canonical assets
 and do not rebuild the extension. Registry promotion verifies the canonical VSIX, checksum, provenance, channel, and
-downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs. An exact
-existing tag, release, or artifact may resume verification-first recovery; conflicting public bytes fail closed.
+downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs. Recover a failed
+preview publication only by rerunning the failed **Publish preview** job against the same qualified artifact in the
+same workflow run; conflicting public bytes fail closed.
 
 ## Release candidate
 
