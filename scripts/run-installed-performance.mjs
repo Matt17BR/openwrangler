@@ -114,6 +114,7 @@ const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
   "media/icon.png",
   "media/icon.svg",
   "media/notebookRenderer.js",
+  "media/protocolLimits.generated.js",
   "media/webview.css",
   "media/webview.js"
 ]);
