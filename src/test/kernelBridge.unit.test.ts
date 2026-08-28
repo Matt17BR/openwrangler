@@ -779,6 +779,37 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
+  it("ends formatter preparation without an expression that can replace the current IPython output", async () => {
+    let formatterBootstrap = "";
+    const controller = controllableKernel((code) => {
+      formatterBootstrap = code;
+      return textKernelExecution("");
+    });
+    mockKernel(controller.kernel);
+
+    await createKernelBridge().prepareNotebookFormatter();
+
+    expect(formatterBootstrap).not.toBe("");
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import ast
+
+tree = ast.parse(${JSON.stringify(formatterBootstrap)})
+if not tree.body:
+    raise AssertionError("Formatter preparation was empty.")
+if isinstance(tree.body[-1], ast.Expr):
+    raise AssertionError("Formatter preparation can replace the current IPython output.")
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    if (result.error || result.signal !== null || result.status !== 0) {
+      throw new Error(`Formatter preparation syntax check failed: ${result.error ?? result.signal ?? result.stderr}`);
+    }
+  });
+
   it("allows a timed-out formatter retry only after the exact observed kernel generation changes", async () => {
     vi.useFakeTimers();
     const firstFormatterStarted = deferred<void>();

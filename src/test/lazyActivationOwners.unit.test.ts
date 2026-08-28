@@ -279,9 +279,12 @@ vi.mock("../extension/notebooks/notebookCellResult", () => ({
 }));
 
 vi.mock("../extension/notebooks/rendererMessaging", () => ({
-  registerNotebookRendererMessaging: vi.fn((_context: unknown, _coordinator: unknown, tracker: unknown) => {
-    expect(tracker).toBeDefined();
-  })
+  registerNotebookRendererMessaging: vi.fn(
+    (_context: unknown, _coordinator: unknown, tracker: unknown, notebookPreview: unknown) => {
+      expect(tracker).toBeDefined();
+      expect(notebookPreview).toBeDefined();
+    }
+  )
 }));
 
 vi.mock("../extension/nativeViews", () => ({

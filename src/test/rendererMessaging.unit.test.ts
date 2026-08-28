@@ -29,6 +29,8 @@ const rendererMocks = vi.hoisted(() => ({
     ((message: unknown, editor: NotebookEditor | undefined) => Promise<boolean>) | undefined,
   bridgeDisposals: 0,
   registerFormatters: true,
+  previewProvider: "openWrangler" as "ask" | "openWrangler" | "dataWrangler" | "disabled",
+  dataWranglerInstalled: false,
   configurationListeners: [] as Array<(event: { affectsConfiguration(section: string): boolean }) => void>,
   extensionListeners: [] as Array<() => void>,
   visibleEditorListeners: [] as Array<() => void>
@@ -92,6 +94,8 @@ vi.mock("vscode", () => ({
     }
   },
   extensions: {
+    getExtension: (id: string) =>
+      id === "ms-toolsai.datawrangler" && rendererMocks.dataWranglerInstalled ? { id } : undefined,
     onDidChange: (listener: () => void) => {
       rendererMocks.extensionListeners.push(listener);
       return { dispose: () => undefined };
@@ -100,7 +104,8 @@ vi.mock("vscode", () => ({
 }));
 
 vi.mock("../extension/configuration", () => ({
-  getSetting: <T>(_key: string, fallback: T): T => fallback
+  getSetting: <T>(key: string, fallback: T): T =>
+    (key === "notebookPreviewProvider" ? rendererMocks.previewProvider : fallback) as T
 }));
 
 vi.mock("../extension/webviewPanel", () => ({
@@ -154,6 +159,8 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlinePostResult = undefined;
     rendererMocks.bridgeDisposals = 0;
     rendererMocks.registerFormatters = true;
+    rendererMocks.previewProvider = "openWrangler";
+    rendererMocks.dataWranglerInstalled = false;
     rendererMocks.configurationListeners.length = 0;
     rendererMocks.extensionListeners.length = 0;
     rendererMocks.visibleEditorListeners.length = 0;
@@ -1226,6 +1233,144 @@ describe("notebook renderer messaging", () => {
     expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
+  it("classifies arbitrary HTML before deciding whether to prompt for a preview provider", async () => {
+    const document = notebook("file:///workspace/arbitrary-html.ipynb");
+    const exactEditor = editor(document);
+    const tracker = { bindInlineUpgrade: vi.fn(async () => undefined) };
+    const providerPrompt = { requestProviderPrompt: vi.fn(async () => true) };
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    register(tracker, providerPrompt);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("1") });
+    await settleMessages();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(providerPrompt.requestProviderPrompt).not.toHaveBeenCalled();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.kernelNotebookDocuments).toEqual([]);
+    expect(rendererMocks.inlinePosts).toEqual([
+      {
+        editor: exactEditor,
+        message: expect.objectContaining({ kind: "openWrangler.inlineRevoke", outputItemId: "output-1" })
+      }
+    ]);
+  });
+
+  it("retains the exact dataframe owner through selection and captures with its pinned kernel bridge", async () => {
+    const document = notebook("file:///workspace/first-run.ipynb");
+    const exactEditor = editor(document);
+    const binding = inlineBinding(document, exactEditor, "pandas");
+    const selection = deferred<boolean>();
+    const ownerChecks: Array<() => Promise<boolean>> = [];
+    const tracker = { bindInlineUpgrade: vi.fn(async () => binding) };
+    const providerPrompt = {
+      requestProviderPrompt: vi.fn(async (_notebook: NotebookDocument, ownerIsCurrent: () => Promise<boolean>) => {
+        ownerChecks.push(ownerIsCurrent);
+        return selection.promise;
+      })
+    };
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    register(tracker, providerPrompt);
+    installCanonicalRuntimeResponses(document, "2");
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("2") });
+    await settleMicrotasks();
+
+    expect(tracker.bindInlineUpgrade).toHaveBeenCalledOnce();
+    expect(providerPrompt.requestProviderPrompt).toHaveBeenCalledWith(document, expect.any(Function));
+    expect(tracker.bindInlineUpgrade.mock.invocationCallOrder[0]).toBeLessThan(
+      providerPrompt.requestProviderPrompt.mock.invocationCallOrder[0]!
+    );
+    expect(binding.hasCurrentKernel.mock.invocationCallOrder[0]).toBeLessThan(
+      providerPrompt.requestProviderPrompt.mock.invocationCallOrder[0]!
+    );
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRetain"
+    ]);
+    await expect(ownerChecks[0]?.()).resolves.toBe(true);
+
+    selection.resolve(true);
+    await settleMessages();
+
+    expect(rendererMocks.capture).toHaveBeenCalledOnce();
+    expect(rendererMocks.kernelNotebookDocuments).toEqual([document]);
+    expect(rendererMocks.kernelBindings).toEqual([binding.kernelBinding]);
+    expect(rendererMocks.bridgeDisposals).toBe(1);
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRetain",
+      "openWrangler.inlineUpgrade"
+    ]);
+    expect(rendererMocks.inlinePosts[1]).toMatchObject({
+      editor: exactEditor,
+      message: { token: "2".repeat(32), outputItemId: "output-2" }
+    });
+  });
+
+  it("releases a retained dataframe owner unchanged when provider selection is declined", async () => {
+    const document = notebook("file:///workspace/declined-first-run.ipynb");
+    const exactEditor = editor(document);
+    const binding = inlineBinding(document, exactEditor, "pandas");
+    const providerPrompt = { requestProviderPrompt: vi.fn(async () => false) };
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    register({ bindInlineUpgrade: vi.fn(async () => binding) }, providerPrompt);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("3") });
+    await settleMessages();
+
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.kernelNotebookDocuments).toEqual([]);
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRetain",
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("revokes a retained owner and keeps late provider settlement inert during cleanup", async () => {
+    const document = notebook("file:///workspace/disposed-first-run.ipynb");
+    const exactEditor = editor(document);
+    const binding = inlineBinding(document, exactEditor, "pandas");
+    const selection = deferred<boolean>();
+    const providerPrompt = { requestProviderPrompt: vi.fn(async () => selection.promise) };
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "ask";
+    rendererMocks.dataWranglerInstalled = true;
+    const { context } = register({ bindInlineUpgrade: vi.fn(async () => binding) }, providerPrompt);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("4") });
+    await settleMicrotasks();
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRetain"
+    ]);
+
+    for (const subscription of context.subscriptions) subscription.dispose();
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRetain",
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
+
+    selection.resolve(true);
+    await settleMessages();
+    expect(rendererMocks.capture).not.toHaveBeenCalled();
+    expect(rendererMocks.kernelNotebookDocuments).toEqual([]);
+  });
+
   it("cancels a queued pre-eligibility candidate when its exact sender disappears", async () => {
     const document = notebook("file:///workspace/queued-sender.ipynb");
     const exactEditor = editor(document);
@@ -1582,7 +1727,6 @@ describe("notebook renderer messaging", () => {
 
   it.each([
     ["more than 200 rows", 500, 1, 200],
-    ["a wide schema", 500, 1_000, 100],
     ["an empty schema", 500, 0, 200]
   ] as const)("uses the canonical formatter capture bound for %s", async (_label, rows, columns, expectedLimit) => {
     const document = notebook(`file:///workspace/capture-${columns}.ipynb`);
@@ -1599,6 +1743,30 @@ describe("notebook renderer messaging", () => {
       limit: expectedLimit,
       columnLimit: Math.max(1, columns)
     });
+  });
+
+  it("bounds the live-page request and leaves a wider schema as ordinary HTML", async () => {
+    const document = notebook("file:///workspace/capture-wide.ipynb");
+    const exactEditor = editor(document);
+    rendererMocks.notebookDocuments.push(document);
+    rendererMocks.visibleNotebookEditors.push(exactEditor);
+    const binding = inlineBinding(document, exactEditor);
+    register({ bindInlineUpgrade: vi.fn(() => binding) });
+    installCanonicalRuntimeResponses(document, "c", undefined, 500, 1_000);
+
+    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("c") });
+    await settleMessages();
+
+    expect(rendererMocks.request.mock.calls[0]?.[0]).toMatchObject({
+      kind: "openSession",
+      columnOffset: 0,
+      columnLimit: 256
+    });
+    expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+      "openWrangler.inlineRevoke"
+    ]);
+    expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
   it("closes a correlated session before rejecting mismatched runtime metadata", async () => {
@@ -1782,6 +1950,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.notebookDocuments.push(document);
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     rendererMocks.registerFormatters = false;
+    rendererMocks.previewProvider = "dataWrangler";
     const tracker = { bindInlineUpgrade: vi.fn() };
     register(tracker);
 
@@ -1789,11 +1958,19 @@ describe("notebook renderer messaging", () => {
 
     expect(tracker.bindInlineUpgrade).not.toHaveBeenCalled();
     expect(rendererMocks.request).not.toHaveBeenCalled();
-    expect(rendererMocks.inlinePosts).toEqual([]);
+    expect(rendererMocks.inlinePosts).toEqual([
+      {
+        editor: exactEditor,
+        message: expect.objectContaining({ kind: "openWrangler.inlineRevoke", outputItemId: "output-4" })
+      }
+    ]);
   });
 });
 
-function register(tracker?: unknown): {
+function register(
+  tracker?: unknown,
+  providerPrompt?: unknown
+): {
   context: ExtensionContext;
   coordinator: { createBridge: ReturnType<typeof vi.fn> };
   coordinatedBridge: OpenWranglerBridge;
@@ -1803,7 +1980,12 @@ function register(tracker?: unknown): {
   const coordinator = {
     createBridge: vi.fn(() => coordinatedBridge)
   };
-  registerNotebookRendererMessaging(context, coordinator as unknown as SessionCoordinator, tracker as never);
+  registerNotebookRendererMessaging(
+    context,
+    coordinator as unknown as SessionCoordinator,
+    tracker as never,
+    providerPrompt as never
+  );
   expect(rendererMocks.listener).toBeTypeOf("function");
   if (tracker) expect(rendererMocks.inlineListener).toBeTypeOf("function");
   return { context, coordinator, coordinatedBridge };
@@ -1858,7 +2040,11 @@ function indexedInlineCandidate(index: number): ReturnType<typeof inlineCandidat
   };
 }
 
-function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) {
+function inlineBinding(
+  document: NotebookDocument,
+  exactEditor: NotebookEditor,
+  backend: "pandas" | "polars" | "duckdb" | "pyspark" = "polars"
+) {
   let current = true;
   const invalidationListeners = new Set<() => void>();
   return {
@@ -1867,7 +2053,7 @@ function inlineBinding(document: NotebookDocument, exactEditor: NotebookEditor) 
     editor: exactEditor,
     executionOrder: 1,
     sourceFingerprint: "b".repeat(64),
-    kernelBinding: {},
+    kernelBinding: { backend },
     isCurrent: vi.fn(() => current),
     hasCurrentKernel: vi.fn(async () => current),
     onDidInvalidate(listener: () => void) {
@@ -1933,6 +2119,7 @@ function installCanonicalRuntimeResponses(
       }))
     };
     if (request.kind === "openSession") {
+      const projectedSchema = schema.slice(request.columnOffset, request.columnOffset + request.columnLimit);
       return {
         kind: "sessionOpened",
         metadata,
@@ -1940,8 +2127,11 @@ function installCanonicalRuntimeResponses(
           offset: 0,
           limit: mismatch === "open page" ? 2 : 1,
           totalRows,
-          columnIds: schema.map((column) => column.id),
-          rows: totalRows === 0 ? [] : [row]
+          columnIds: projectedSchema.map((column) => column.id),
+          rows:
+            totalRows === 0
+              ? []
+              : [{ ...row, values: row.values.slice(request.columnOffset, request.columnOffset + request.columnLimit) }]
         },
         summaries: []
       };

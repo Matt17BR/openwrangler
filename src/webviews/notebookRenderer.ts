@@ -22,11 +22,18 @@ interface RendererContext {
 }
 
 interface HtmlRendererContext extends RendererContext {
-  getRenderer(id: "vscode.builtin-renderer"): Promise<{
-    experimental_registerHtmlRenderingHook(hook: {
-      postRender(outputItem: HtmlRendererOutputItem, element: HTMLElement, signal: AbortSignal): Promise<void>;
-    }): unknown;
-  }>;
+  getRenderer(id: "vscode.builtin-renderer"): Promise<
+    | {
+        experimental_registerHtmlRenderingHook?(hook: {
+          postRender(
+            outputItem: HtmlRendererOutputItem,
+            element: HTMLElement,
+            signal: AbortSignal
+          ): Promise<HTMLElement | undefined>;
+        }): unknown;
+      }
+    | undefined
+  >;
   onDidReceiveMessage(listener: (message: unknown) => void): void;
 }
 
@@ -44,12 +51,20 @@ const INLINE_UPGRADE_MAX_HTML_BYTES = 32 * 1024;
 const INLINE_UPGRADE_MAX_CANDIDATES = 128;
 const INLINE_UPGRADE_OUTPUT_ID_CHARACTERS = 256;
 const INLINE_UPGRADE_TERMINAL_DEADLINE_MS = 10_000;
+const INLINE_UPGRADE_OWNER_TAG = "open-wrangler-inline-owner";
+const inlineUpgradeOwnerConnected = Symbol("openWranglerInlineOwnerConnected");
+const inlineUpgradeOwnerDisconnected = Symbol("openWranglerInlineOwnerDisconnected");
 let htmlUpgradeRegistration: Promise<void> | undefined;
+
+interface InlineUpgradeOwnerElement extends HTMLElement {
+  [inlineUpgradeOwnerConnected]?: () => void;
+  [inlineUpgradeOwnerDisconnected]?: () => void;
+}
 
 interface InlineUpgradeCandidate {
   readonly outputItemId: string;
   readonly token: string;
-  readonly element: HTMLElement;
+  readonly element: InlineUpgradeOwnerElement;
   readonly signal: AbortSignal;
   readonly ordinaryNodes: readonly ChildNode[];
   byteLength?: number;
@@ -57,6 +72,7 @@ interface InlineUpgradeCandidate {
   abortListener?: () => void;
   deadline?: ReturnType<typeof setTimeout>;
   enhancement?: HTMLElement;
+  published: boolean;
 }
 
 export function activate(context: RendererContext): RendererApi {
@@ -84,6 +100,8 @@ export function activate(context: RendererContext): RendererApi {
 
 async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> {
   const builtin = await context.getRenderer("vscode.builtin-renderer");
+  const registerHook = builtin?.experimental_registerHtmlRenderingHook;
+  if (typeof registerHook !== "function" || !ensureInlineUpgradeOwnerElement()) return;
   const candidates = new Map<string, InlineUpgradeCandidate>();
   const completed = new Set<string>();
 
@@ -104,29 +122,38 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       retireHtmlUpgradeCandidate(context, candidates, completed, candidate, false);
       return;
     }
+    if (accepted.kind === "openWrangler.inlineRetain") {
+      if (!hasCurrentHtmlUpgradeOwner(candidate)) {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        return;
+      }
+      releaseHtmlUpgradeCandidateDeadline(candidate);
+      return;
+    }
     if (completed.has(accepted.outputItemId)) return;
     const payload = normalizeNotebookOutputPayload(accepted.payload);
-    if (!payload) return;
+    if (!payload) {
+      if (!candidate.deadline) retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+      return;
+    }
     try {
-      const enhancement = document.createElement("section");
+      const enhancement = candidate.element.ownerDocument.createElement("section");
       enhancement.dataset.openWranglerInlineUpgrade = "true";
       enhancement.appendChild(renderPayload(payload, context));
-      if (!hasExactChildren(candidate.element, candidate.ordinaryNodes)) return;
+      if (!hasCurrentHtmlUpgradeOwner(candidate)) {
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        return;
+      }
       candidate.element.replaceChildren(enhancement);
       candidate.enhancement = enhancement;
       completed.add(candidate.outputItemId);
       releaseHtmlUpgradeCandidateDeadline(candidate);
-      candidate.abortListener = () => {
-        if (candidates.get(candidate.outputItemId) !== candidate) return;
-        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
-      };
-      candidate.signal.addEventListener("abort", candidate.abortListener, { once: true });
     } catch {
       retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
     }
   });
 
-  builtin.experimental_registerHtmlRenderingHook({
+  registerHook.call(builtin, {
     async postRender(outputItem, element, signal) {
       if (
         signal.aborted ||
@@ -139,29 +166,58 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
       if (candidates.size >= INLINE_UPGRADE_MAX_CANDIDATES) {
         const oldestSettled = [...candidates.values()].find((candidate) => candidate.sha256 !== undefined);
         if (!oldestSettled) return;
-        retireHtmlUpgradeCandidate(context, candidates, completed, oldestSettled, true);
+        retireHtmlUpgradeCandidate(context, candidates, completed, oldestSettled, oldestSettled.published);
       }
       const candidate: InlineUpgradeCandidate = {
         outputItemId: outputItem.id,
         token: randomToken(),
-        element,
+        element: createInlineUpgradeOwner(element),
         signal,
-        ordinaryNodes: [...element.childNodes]
+        ordinaryNodes: [element],
+        published: false
       };
       candidates.set(outputItem.id, candidate);
+      candidate.element[inlineUpgradeOwnerConnected] = () => {
+        if (candidates.get(candidate.outputItemId) !== candidate) {
+          unwrapInactiveHtmlUpgradeOwner(candidate.element);
+          return;
+        }
+        if (candidate.published || !hasExactChildren(candidate.element, candidate.ordinaryNodes)) return;
+        if (candidate.signal.aborted || !candidate.element.isConnected) {
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, false);
+          return;
+        }
+        candidate.published = true;
+        try {
+          context.postMessage?.({
+            kind: "openWrangler.inlineCandidate",
+            protocol: INLINE_UPGRADE_PROTOCOL,
+            token: candidate.token,
+            outputItemId: candidate.outputItemId,
+            byteLength: candidate.byteLength,
+            sha256: candidate.sha256
+          });
+        } catch {
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, false);
+        }
+      };
+      candidate.element[inlineUpgradeOwnerDisconnected] = () => {
+        if (candidates.get(candidate.outputItemId) !== candidate) return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published);
+      };
       candidate.deadline = setTimeout(
-        () => retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true),
+        () => retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published),
         INLINE_UPGRADE_TERMINAL_DEADLINE_MS
       );
       candidate.abortListener = () => {
         if (candidates.get(outputItem.id) !== candidate) return;
-        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published);
       };
       signal.addEventListener("abort", candidate.abortListener, { once: true });
       try {
         const bytes = outputItem.data();
         if (bytes.byteLength === 0 || bytes.byteLength > INLINE_UPGRADE_MAX_HTML_BYTES) {
-          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published);
           return;
         }
         candidate.byteLength = bytes.byteLength;
@@ -169,27 +225,53 @@ async function activateHtmlUpgrade(context: HtmlRendererContext): Promise<void> 
         if (
           signal.aborted ||
           candidates.get(outputItem.id) !== candidate ||
-          !hasExactChildren(element, candidate.ordinaryNodes)
+          !hasExactChildren(candidate.element, candidate.ordinaryNodes)
         ) {
-          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
-          return;
+          retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published);
+          return element;
         }
         candidate.sha256 = digest;
-        releaseHtmlUpgradeCandidateAbortOwnership(candidate);
       } catch {
-        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, true);
-        return;
+        retireHtmlUpgradeCandidate(context, candidates, completed, candidate, candidate.published);
+        return element;
       }
-      context.postMessage?.({
-        kind: "openWrangler.inlineCandidate",
-        protocol: INLINE_UPGRADE_PROTOCOL,
-        token: candidate.token,
-        outputItemId: candidate.outputItemId,
-        byteLength: candidate.byteLength,
-        sha256: candidate.sha256
-      });
+      return candidates.get(outputItem.id) === candidate ? candidate.element : element;
     }
   });
+}
+
+function ensureInlineUpgradeOwnerElement(): boolean {
+  if (typeof customElements === "undefined" || typeof HTMLElement === "undefined") return false;
+  if (customElements.get(INLINE_UPGRADE_OWNER_TAG)) return true;
+  try {
+    customElements.define(
+      INLINE_UPGRADE_OWNER_TAG,
+      class extends HTMLElement {
+        connectedCallback(): void {
+          (this as InlineUpgradeOwnerElement)[inlineUpgradeOwnerConnected]?.();
+        }
+
+        disconnectedCallback(): void {
+          (this as InlineUpgradeOwnerElement)[inlineUpgradeOwnerDisconnected]?.();
+        }
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createInlineUpgradeOwner(element: HTMLElement): InlineUpgradeOwnerElement {
+  const owner = element.ownerDocument.createElement(INLINE_UPGRADE_OWNER_TAG) as InlineUpgradeOwnerElement;
+  owner.style.display = "contents";
+  owner.appendChild(element);
+  return owner;
+}
+
+function unwrapInactiveHtmlUpgradeOwner(owner: InlineUpgradeOwnerElement): void {
+  if (!owner.isConnected) return;
+  owner.replaceWith(...[...owner.childNodes]);
 }
 
 function retireHtmlUpgradeCandidate(
@@ -217,6 +299,8 @@ function retireHtmlUpgradeCandidate(
 function releaseHtmlUpgradeCandidateAsyncOwnership(candidate: InlineUpgradeCandidate): void {
   releaseHtmlUpgradeCandidateDeadline(candidate);
   releaseHtmlUpgradeCandidateAbortOwnership(candidate);
+  candidate.element[inlineUpgradeOwnerConnected] = undefined;
+  candidate.element[inlineUpgradeOwnerDisconnected] = undefined;
 }
 
 function releaseHtmlUpgradeCandidateDeadline(candidate: InlineUpgradeCandidate): void {
@@ -231,7 +315,11 @@ function releaseHtmlUpgradeCandidateAbortOwnership(candidate: InlineUpgradeCandi
 
 function isHtmlRendererContext(context: RendererContext): context is HtmlRendererContext {
   const candidate = context as Partial<HtmlRendererContext>;
-  return typeof candidate.getRenderer === "function" && typeof candidate.onDidReceiveMessage === "function";
+  return (
+    typeof candidate.getRenderer === "function" &&
+    typeof candidate.onDidReceiveMessage === "function" &&
+    typeof candidate.postMessage === "function"
+  );
 }
 
 function parseInlineUpgradeResponse(message: unknown):
@@ -250,11 +338,20 @@ function parseInlineUpgradeResponse(message: unknown):
       readonly byteLength: number;
       readonly sha256: string;
     }
+  | {
+      readonly kind: "openWrangler.inlineRetain";
+      readonly token: string;
+      readonly outputItemId: string;
+      readonly byteLength: number;
+      readonly sha256: string;
+    }
   | undefined {
   if (typeof message !== "object" || message === null) return undefined;
   const candidate = message as Record<string, unknown>;
   if (
-    (candidate.kind !== "openWrangler.inlineUpgrade" && candidate.kind !== "openWrangler.inlineRevoke") ||
+    (candidate.kind !== "openWrangler.inlineUpgrade" &&
+      candidate.kind !== "openWrangler.inlineRevoke" &&
+      candidate.kind !== "openWrangler.inlineRetain") ||
     candidate.protocol !== INLINE_UPGRADE_PROTOCOL ||
     typeof candidate.token !== "string" ||
     candidate.token.length !== 32 ||
@@ -287,6 +384,13 @@ function parseInlineUpgradeResponse(message: unknown):
         outputItemId: string;
         byteLength: number;
         sha256: string;
+      }
+    | {
+        kind: "openWrangler.inlineRetain";
+        token: string;
+        outputItemId: string;
+        byteLength: number;
+        sha256: string;
       };
 }
 
@@ -297,11 +401,22 @@ function hasExactChildren(element: HTMLElement, expected: readonly ChildNode[]):
 
 function restoreOrdinaryHtml(candidate: InlineUpgradeCandidate): void {
   const enhancement = candidate.enhancement;
-  if (!enhancement) return;
-  if (hasExactChildren(candidate.element, [enhancement])) {
+  if (enhancement && hasExactChildren(candidate.element, [enhancement])) {
     candidate.element.replaceChildren(...candidate.ordinaryNodes);
   }
+  if (candidate.element.isConnected && hasExactChildren(candidate.element, candidate.ordinaryNodes)) {
+    candidate.element.replaceWith(...candidate.ordinaryNodes);
+  }
   delete candidate.enhancement;
+}
+
+function hasCurrentHtmlUpgradeOwner(candidate: InlineUpgradeCandidate): boolean {
+  return (
+    candidate.published &&
+    !candidate.signal.aborted &&
+    candidate.element.isConnected &&
+    hasExactChildren(candidate.element, candidate.ordinaryNodes)
+  );
 }
 
 function isBoundedOutputItemId(value: unknown): value is string {
