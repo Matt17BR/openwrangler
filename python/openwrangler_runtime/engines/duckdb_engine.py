@@ -1111,6 +1111,13 @@ class DuckDBEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
+        if plan and all(step["kind"] == "renameColumn" for step in plan):
+            query = "SELECT * FROM ow"
+            for step in plan:
+                params = step["params"]
+                column = bound_column_name(params["column"], "renameColumn")
+                query = f"SELECT * RENAME ({_quote_ident(column)} AS {_quote_ident(params['newName'])}) FROM ({query})"
+            return f"def clean_data(df):\n    return df.query('ow', {query!r})\n"
         generated_helpers = _GENERATED_HELPERS.rstrip()
         if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
             generated_helpers = f"from collections import Counter\n\n{generated_helpers}"

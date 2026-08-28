@@ -147,6 +147,36 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     return result
 
 
+def test_duckdb_rename_only_generated_code_matches_live_with_quoted_names() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql('SELECT 1 AS "source""one", 2 AS "source""two"')
+    plan = [
+        bound_step(
+            "renameColumn",
+            column=bound_ref("c:source:0", 'source"one', 0),
+            newName='renamed"one',
+        ),
+        bound_step(
+            "renameColumn",
+            column=bound_ref("c:source:1", 'source"two', 1),
+            newName='renamed"two',
+        ),
+    ]
+
+    try:
+        live = frame
+        for operation in plan:
+            live = engine.apply_transform(live, operation)
+
+        code = engine.compile_plan(plan)
+        generated = execute_generated(engine, frame, plan)
+
+        assert_same_relation(live, generated)
+        assert "_ow_pivot_wider" not in code
+    finally:
+        engine.close()
+
+
 def test_duckdb_generated_code_imports_counter_only_for_categorical_encoding() -> None:
     engine = DuckDBEngine()
     plain_plan = [
