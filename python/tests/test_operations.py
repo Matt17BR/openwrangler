@@ -835,6 +835,23 @@ def test_adapters_reject_public_references_before_execution(engine_and_frame, pu
         engine.compile_plan([public_step])
 
 
+def test_pandas_live_and_generated_code_reject_stale_reordered_binding() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"first": [1, 2], "second": [10, 20]})
+    operation = bound_step(
+        "clone-first",
+        "cloneColumn",
+        column=bound_ref("c:source:0", "first", 0),
+        newName="first_copy",
+    )
+    reordered = frame.iloc[:, [1, 0]]
+
+    with pytest.raises(EngineError, match="column binding no longer matches"):
+        engine.apply_transform(reordered, operation)
+    with pytest.raises(ValueError, match="column binding no longer matches"):
+        execute_generated(engine, reordered, [operation])
+
+
 def test_pandas_bound_structural_operations_target_duplicate_and_non_string_columns():
     engine = PandasEngine()
     frame = pd.DataFrame(
