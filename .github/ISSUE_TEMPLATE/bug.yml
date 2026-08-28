@@ -1,6 +1,8 @@
 name: Bug report
 description: Report a reproducible problem with Open Wrangler.
 title: "[Bug] "
+labels:
+  - bug
 body:
   - type: markdown
     attributes:
@@ -8,6 +10,8 @@ body:
         Do not use a public issue for a security vulnerability. [Report it privately through GitHub](https://github.com/Matt17BR/openwrangler/security/advisories/new).
 
         Use synthetic or redacted material. Do not attach proprietary data, personal data, credentials, notebook secrets, or full environment dumps.
+
+        A screenshot is welcome, but it cannot replace a small reproduction and the exact Open Wrangler version. If either is genuinely unavailable, explain what you tried instead of writing `na`.
 
   - type: textarea
     id: actual-behavior
@@ -31,10 +35,12 @@ body:
     id: reproduction
     attributes:
       label: Minimal synthetic reproduction
-      description: Provide numbered steps and the smallest synthetic data or code needed to reproduce the problem. If the problem is intermittent, describe the sequence and frequency without including real data.
+      description: Provide numbered steps and executable synthetic data or code that reproduces the problem. Include dataframe construction such as set_index(), read_csv() options, or R row names when they matter. If the problem is intermittent, describe the sequence and frequency without including real data.
       placeholder: |
-        1. Create a file or variable with this synthetic shape...
-        2. Open it in Open Wrangler...
+        1. Run this small synthetic example:
+           import pandas as pd
+           frame = pd.DataFrame({"sample_id": ["S-1"], "value": [1]}).set_index("sample_id")
+        2. Display or open `frame` in Open Wrangler...
         3. Run this action...
         4. Observe...
     validations:
@@ -44,30 +50,61 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: List exact versions when available. Write "not applicable" only for components that are not involved.
+      description: Copy the Open Wrangler version from the Extensions view and the editor version from Help > About. Do not write "na"; explain which value you could not find.
       placeholder: |
-        Open Wrangler:
-        Editor (VS Code or Cursor):
-        Operating system:
-        Python:
-        Dataframe engine (Pandas, Polars, DuckDB, PySpark, or R):
+        Open Wrangler: 1.99.6
+        Editor: VS Code 1.x.y
+        Operating system: Ubuntu 24.04
+        Python or R: Python 3.x.y
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where the problem appears
+      description: Select the Open Wrangler surface where you can see the failure.
+      options:
+        - Notebook inline preview below a cell
+        - Open Wrangler editor or data grid
+        - Notebook variable picker or Open in Open Wrangler action
+        - Python Interactive window
+        - R script, R document, or R terminal
+        - Exported data or generated script
+        - Extension installation, activation, or startup
+        - Other or unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dataframe-backend
+    attributes:
+      label: Dataframe backend
+      description: Select the dataframe implementation involved in the problem.
+      options:
+        - Pandas
+        - Polars
+        - DuckDB
+        - PySpark
+        - Native R
+        - Not sure
     validations:
       required: true
 
   - type: dropdown
     id: input-format
     attributes:
-      label: Input format
-      description: Select the format or source involved in the problem.
+      label: Data source or input format
+      description: Select how the dataframe entered the affected workflow.
       options:
-        - CSV
-        - TSV
+        - CSV or TSV
         - Excel
         - Parquet
         - JSON Lines
-        - Notebook variable
-        - R script
-        - Other
+        - Python notebook variable or result
+        - R notebook variable
+        - R script, R document, or R terminal
+        - Other or unsure
     validations:
       required: true
 
@@ -99,4 +136,6 @@ body:
         - label: I searched open and closed issues for the same problem.
           required: true
         - label: I included only synthetic or redacted material and removed proprietary data, personal data, credentials, secrets, and full environment dumps.
+          required: true
+        - label: I included a minimal reproduction and exact Open Wrangler version, or explained why either one is unavailable.
           required: true
