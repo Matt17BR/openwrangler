@@ -237,7 +237,7 @@ describe("NotebookPreviewCoordinator", () => {
     coordinator.dispose();
   });
 
-  it("prompts once and leaves the kernel untouched when the user keeps Data Wrangler", async () => {
+  it("defers the provider prompt until an eligible output owner requests it", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
@@ -247,13 +247,18 @@ describe("NotebookPreviewCoordinator", () => {
 
     await vi.runOnlyPendingTimersAsync();
 
+    expect(mocks.information).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+
+    await expect(coordinator.requestProviderPrompt(notebook, async () => true)).resolves.toBe(false);
+
     expect(mocks.information).toHaveBeenCalledOnce();
     expect(mocks.updateSetting).toHaveBeenCalledWith("notebookPreviewProvider", "dataWrangler", 1);
     expect(mocks.prepare).not.toHaveBeenCalled();
     coordinator.dispose();
   });
 
-  it("prepares Open Wrangler immediately when it wins the one-time renderer conflict", async () => {
+  it("prepares Open Wrangler after the exact output owner wins the one-time renderer conflict", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
@@ -262,10 +267,38 @@ describe("NotebookPreviewCoordinator", () => {
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
     await vi.runOnlyPendingTimersAsync();
+    expect(mocks.information).not.toHaveBeenCalled();
+
+    await expect(coordinator.requestProviderPrompt(notebook, async () => true)).resolves.toBe(true);
+    await vi.runOnlyPendingTimersAsync();
 
     expect(mocks.information).toHaveBeenCalledOnce();
     expect(mocks.updateSetting).toHaveBeenCalledWith("notebookPreviewProvider", "openWrangler", 1);
     expect(mocks.prepare).toHaveBeenCalledOnce();
+    coordinator.dispose();
+  });
+
+  it("does not persist a modal choice after its exact output owner disappears", async () => {
+    const notebook = fakeNotebook();
+    const selection = deferred<string | undefined>();
+    let ownerIsCurrent = true;
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.extensions.add("ms-toolsai.datawrangler");
+    mocks.information.mockReturnValue(selection.promise);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    await vi.runOnlyPendingTimersAsync();
+    const prompted = coordinator.requestProviderPrompt(notebook, async () => ownerIsCurrent);
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    expect(mocks.information).toHaveBeenCalledOnce();
+
+    ownerIsCurrent = false;
+    selection.resolve("Use Open Wrangler");
+
+    await expect(prompted).resolves.toBe(false);
+    expect(mocks.updateSetting).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
     coordinator.dispose();
   });
 

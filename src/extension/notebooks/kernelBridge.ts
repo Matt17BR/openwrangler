@@ -788,7 +788,11 @@ export class KernelBridge implements OpenWranglerBridge {
       kernel,
       `${this.bootstrapCode}
 import openwrangler_runtime.kernel_agent as __ow_kernel_agent
-${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_notebook\n__ow_notebook.register_formatters()" : ""}
+${
+  registerNotebookFormatters
+    ? "import openwrangler_runtime.notebook as __ow_notebook\n__ow_notebook_formatters_registered = __ow_notebook.register_formatters()\ndel __ow_notebook_formatters_registered"
+    : ""
+}
 `
     );
     this.assertNotebookProvenance();

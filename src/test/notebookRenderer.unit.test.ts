@@ -10,7 +10,7 @@ describe("notebook renderer", () => {
             item: { id: string; mime: string; data(): Uint8Array },
             element: HTMLElement,
             signal: AbortSignal
-          ): Promise<void>;
+          ): Promise<HTMLElement | undefined>;
         }
       | undefined;
     const registerHook = vi.fn((value) => {
@@ -40,6 +40,17 @@ describe("notebook renderer", () => {
     expect(secondApi.renderOutputItem).toBeTypeOf("function");
     expect(secondGetRenderer).not.toHaveBeenCalled();
     expect(registerHook.mock.calls[0]?.[0]).toMatchObject({ postRender: expect.any(Function) });
+    const connectRender = async (
+      item: { id: string; mime: string; data(): Uint8Array },
+      element: HTMLElement,
+      signal: AbortSignal
+    ): Promise<{ readonly host: HTMLElement; readonly rendered: HTMLElement }> => {
+      const rendered = (await hook!.postRender(item, element, signal)) ?? element;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      host.appendChild(rendered);
+      return { host, rendered };
+    };
 
     const controller = new AbortController();
     const element = document.createElement("div");
@@ -47,7 +58,11 @@ describe("notebook renderer", () => {
     ordinary.dataset.originalHtml = "true";
     element.appendChild(ordinary);
     const bytes = new TextEncoder().encode("<table><tr><td>1</td></tr></table>");
-    await hook?.postRender({ id: "output-1", mime: "text/html", data: () => bytes }, element, controller.signal);
+    const firstRender = await connectRender(
+      { id: "output-1", mime: "text/html", data: () => bytes },
+      element,
+      controller.signal
+    );
     const candidate = postMessage.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(candidate).toEqual({
       kind: "openWrangler.inlineCandidate",
@@ -59,12 +74,13 @@ describe("notebook renderer", () => {
     });
 
     receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: { mimeVersion: 2 } });
-    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
+    expect(firstRender.rendered.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
     receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
     receiver?.({ ...candidate, kind: "openWrangler.inlineUpgrade", payload: canonicalPayload(1, "frame") });
-    expect(element.querySelectorAll("[data-open-wrangler-inline-upgrade]")).toHaveLength(1);
-    expect(element.querySelector("[data-original-html]")).toBeNull();
-    expect(element.querySelectorAll("table")).toHaveLength(1);
+    expect(firstRender.rendered.querySelectorAll("[data-open-wrangler-inline-upgrade]")).toHaveLength(1);
+    expect(ordinary.isConnected).toBe(false);
+    expect(firstRender.rendered.querySelector("[data-original-html]")).toBeNull();
+    expect(firstRender.rendered.querySelectorAll("table")).toHaveLength(1);
 
     receiver?.({
       kind: "openWrangler.inlineRevoke",
@@ -74,22 +90,35 @@ describe("notebook renderer", () => {
       byteLength: candidate.byteLength,
       sha256: candidate.sha256
     });
-    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
-    expect(element.querySelector("[data-original-html]")).toBe(ordinary);
-    expect(element.querySelectorAll("table")).toHaveLength(1);
+    expect(firstRender.host.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
+    expect(firstRender.host.querySelector("[data-original-html]")).toBe(ordinary);
+    expect(ordinary.isConnected).toBe(true);
+    expect(firstRender.host.querySelectorAll("table")).toHaveLength(1);
 
-    await hook?.postRender({ id: "output-1", mime: "text/html", data: () => bytes }, element, controller.signal);
+    const replacementController = new AbortController();
+    const replacementElement = document.createElement("div");
+    const replacementOrdinary = document.createElement("table");
+    replacementOrdinary.dataset.originalHtml = "true";
+    replacementElement.appendChild(replacementOrdinary);
+    const replacementRender = await connectRender(
+      { id: "output-1", mime: "text/html", data: () => bytes },
+      replacementElement,
+      replacementController.signal
+    );
     const replacementCandidate = postMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    receiver?.({ ...replacementCandidate, kind: "openWrangler.inlineRetain" });
+    expect(replacementRender.rendered.isConnected).toBe(true);
+    expect(replacementRender.rendered.querySelector("[data-original-html]")).toBe(replacementOrdinary);
     receiver?.({
       ...replacementCandidate,
       kind: "openWrangler.inlineUpgrade",
       payload: canonicalPayload(1, "frame")
     });
-    expect(element.querySelector("[data-original-html]")).toBeNull();
+    expect(replacementRender.rendered.querySelector("[data-original-html]")).toBeNull();
 
-    controller.abort();
-    expect(element.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
-    expect(element.querySelector("[data-original-html]")).toBe(ordinary);
+    replacementController.abort();
+    expect(replacementRender.host.querySelector("[data-open-wrangler-inline-upgrade]")).toBeNull();
+    expect(replacementRender.host.querySelector("[data-original-html]")).toBe(replacementOrdinary);
     expect(postMessage).toHaveBeenLastCalledWith({
       kind: "openWrangler.inlineCancel",
       protocol: 1,
@@ -104,7 +133,7 @@ describe("notebook renderer", () => {
       retainedControllers.push(retainedController);
       const retainedElement = document.createElement("div");
       retainedElement.appendChild(document.createElement("table"));
-      await hook?.postRender(
+      await connectRender(
         { id: `retained-${index}`, mime: "text/html", data: () => bytes },
         retainedElement,
         retainedController.signal
@@ -113,7 +142,7 @@ describe("notebook renderer", () => {
     const freshController = new AbortController();
     const freshElement = document.createElement("div");
     freshElement.appendChild(document.createElement("table"));
-    await hook?.postRender(
+    await connectRender(
       { id: "fresh-after-128", mime: "text/html", data: () => bytes },
       freshElement,
       freshController.signal
@@ -131,12 +160,13 @@ describe("notebook renderer", () => {
       const deadlineElement = document.createElement("div");
       const deadlineOrdinary = document.createElement("table");
       deadlineElement.appendChild(deadlineOrdinary);
-      await hook?.postRender(
+      const deadlineRender = await connectRender(
         { id: "deadline-output", mime: "text/html", data: () => bytes },
         deadlineElement,
         new AbortController().signal
       );
       await vi.advanceTimersByTimeAsync(10_000);
+      expect(deadlineRender.host.firstChild).toBe(deadlineElement);
       expect(deadlineElement.firstChild).toBe(deadlineOrdinary);
       expect(postMessage).toHaveBeenLastCalledWith(
         expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "deadline-output" })
@@ -152,7 +182,7 @@ describe("notebook renderer", () => {
       .spyOn(crypto.subtle, "digest")
       .mockImplementation(() => digestSettlements[digestIndex++]!.promise);
     const digestControllers: AbortController[] = [];
-    const digestOperations: Promise<void>[] = [];
+    const digestOperations: Array<Promise<HTMLElement | undefined>> = [];
     try {
       for (let index = 0; index < 129; index += 1) {
         const digestController = new AbortController();
@@ -209,8 +239,11 @@ describe("notebook renderer", () => {
       firstDigest.resolve(new Uint8Array(32).buffer);
       await firstOperation;
       replacementDigest.resolve(new Uint8Array(32).fill(1).buffer);
-      await replacementOperation;
-      expect(replacementRemove).toHaveBeenCalledWith("abort", expect.any(Function));
+      const replacementRendered = await replacementOperation;
+      const replacementHost = document.createElement("div");
+      document.body.appendChild(replacementHost);
+      replacementHost.appendChild(replacementRendered ?? replacementElement);
+      expect(replacementRemove).not.toHaveBeenCalled();
 
       expect(
         postMessage.mock.calls.filter(
@@ -221,7 +254,11 @@ describe("notebook renderer", () => {
       ).toHaveLength(1);
       const postsBeforeCompletedAbort = postMessage.mock.calls.length;
       replacementController.abort();
-      expect(postMessage).toHaveBeenCalledTimes(postsBeforeCompletedAbort);
+      expect(replacementRemove).toHaveBeenCalledWith("abort", expect.any(Function));
+      expect(postMessage).toHaveBeenCalledTimes(postsBeforeCompletedAbort + 1);
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "openWrangler.inlineCancel", outputItemId: "late-digest-replacement" })
+      );
     } finally {
       replacementDigestSpy.mockRestore();
     }

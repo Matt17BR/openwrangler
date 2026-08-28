@@ -93,6 +93,9 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
 
   private schedule(notebook: vscode.NotebookDocument, delayMs = 0, expedite = false): void {
     if (this.disposed || !this.canPrepare(notebook)) return;
+    // A competing provider is resolved only after the renderer host has bound
+    // one supported dataframe output to its exact live owner.
+    if (this.hasUnresolvedProviderConflict()) return;
     const entry = this.entry(notebook);
     if (entry.prepared) return;
     if (entry.running) {
@@ -133,7 +136,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   }
 
   private async prepare(notebook: vscode.NotebookDocument, entry: NotebookPreviewEntry): Promise<void> {
-    if (!(await this.resolveOpenWranglerProvider())) return;
+    if (!shouldRegisterNotebookFormatters()) return;
     if (this.disposed || this.entries.get(notebook) !== entry) return;
     if (!this.canPrepare(notebook)) {
       this.remove(notebook);
@@ -259,28 +262,44 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     );
   }
 
-  private async resolveOpenWranglerProvider(): Promise<boolean> {
-    if (shouldRegisterNotebookFormatters()) return true;
-    const preference = vscode.workspace
-      .getConfiguration("openWrangler")
-      .get<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
-    if (preference !== "ask" || vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) === undefined) {
-      return false;
+  private hasUnresolvedProviderConflict(): boolean {
+    return (
+      !shouldRegisterNotebookFormatters() &&
+      vscode.workspace
+        .getConfiguration("openWrangler")
+        .get<NotebookPreviewProvider>("notebookPreviewProvider", "ask") === "ask" &&
+      vscode.extensions.getExtension(DATA_WRANGLER_EXTENSION_ID) !== undefined
+    );
+  }
+
+  requestProviderPrompt(notebook: vscode.NotebookDocument, ownerIsCurrent: () => Promise<boolean>): Promise<boolean> {
+    if (shouldRegisterNotebookFormatters()) return Promise.resolve(true);
+    if (
+      this.disposed ||
+      this.conflictPromptDismissed ||
+      !this.canPrepare(notebook) ||
+      !this.hasUnresolvedProviderConflict()
+    ) {
+      return Promise.resolve(false);
     }
-    if (this.conflictPromptDismissed) return false;
-    this.conflictPrompt ??= this.promptForConflictProvider().finally(() => {
+    this.conflictPrompt ??= this.promptForConflictProvider(notebook, ownerIsCurrent).finally(() => {
       this.conflictPrompt = undefined;
     });
     return this.conflictPrompt;
   }
 
-  private async promptForConflictProvider(): Promise<boolean> {
+  private async promptForConflictProvider(
+    notebook: vscode.NotebookDocument,
+    ownerIsCurrent: () => Promise<boolean>
+  ): Promise<boolean> {
+    if (!(await this.isPromptOwnerCurrent(notebook, ownerIsCurrent))) return false;
     const selection = await vscode.window.showInformationMessage(
       "Open Wrangler and Data Wrangler can both render dataframe outputs. Which notebook preview should take priority?",
       { modal: true, detail: "You can change this later with “Open Wrangler: Choose Notebook Preview Provider”." },
       "Use Open Wrangler",
       "Keep Data Wrangler"
     );
+    if (!(await this.isPromptOwnerCurrent(notebook, ownerIsCurrent))) return false;
     if (selection === "Use Open Wrangler") {
       await updateSetting("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Global);
       return true;
@@ -291,6 +310,19 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     }
     this.conflictPromptDismissed = true;
     return false;
+  }
+
+  private async isPromptOwnerCurrent(
+    notebook: vscode.NotebookDocument,
+    ownerIsCurrent: () => Promise<boolean>
+  ): Promise<boolean> {
+    if (this.disposed || !this.canPrepare(notebook) || !this.hasUnresolvedProviderConflict()) return false;
+    try {
+      if (!(await ownerIsCurrent())) return false;
+    } catch {
+      return false;
+    }
+    return !this.disposed && this.canPrepare(notebook) && this.hasUnresolvedProviderConflict();
   }
 
   private async chooseProvider(): Promise<void> {
