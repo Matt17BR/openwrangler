@@ -188,9 +188,14 @@ def test_version_fields_share_the_runtime_guard_boundary(tmp_path: Path) -> None
                 dependency_guard._normalize_dependency(descriptor, code="invalid_request")
 
 
-def test_python_310_uses_the_qualified_ipython_branch() -> None:
+def test_python_package_metadata_matches_the_supported_range() -> None:
     metadata = tomllib.loads(authority.PYPROJECT_PATH.read_text(encoding="utf-8"))
-    assert SpecifierSet(metadata["project"]["requires-python"]).contains(Version("3.10"))
+    assert SpecifierSet(metadata["project"]["requires-python"]) == SpecifierSet(
+        f">={authority.SUPPORTED_PYTHON_MINIMUM},<{authority.SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE}"
+    )
+
+
+def test_python_310_uses_the_qualified_ipython_branch() -> None:
     dependency = next(item for item in authority.load_authority() if item.identifier == "ipython")
     branch = dependency.python_compatibility
     assert branch is not None

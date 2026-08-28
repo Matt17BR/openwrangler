@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "openwrangler-runtime"
 dynamic = ["version"]
 description = "Runtime backend for the Open Wrangler VS Code extension."
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 dependencies = [
   # BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES
   "polars>=1.35.2,<2",
