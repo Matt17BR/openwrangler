@@ -1,4 +1,4 @@
-"""Crash-safe dependency mutation guard for a selected Python environment.
+"""Fail-closed uncertainty guard around dependency mutation in a selected Python environment.
 
 This module uses the Python standard library plus the selected interpreter's
 pip-vendored PEP 440 implementation and can be executed directly with
