@@ -2489,10 +2489,18 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   await waitForRuntimeRequest(page, "applyDraft");
 
   await resetDraftHarness(page);
-  const discard = page.getByRole("button", { name: "Discard" });
-  await discard.focus();
+  const columnSearch = page.getByRole("combobox", { name: "Column" });
+  await columnSearch.focus();
+  const columnSearchResults = page.getByRole("listbox", { name: "Matching columns" });
+  await columnSearchResults.waitFor();
+  const discardCount = await runtimeRequestCount(page, "discardDraft");
   await page.keyboard.press("Escape");
-  await waitForRuntimeRequest(page, "discardDraft");
+  await columnSearchResults.waitFor({ state: "hidden" });
+  if ((await runtimeRequestCount(page, "discardDraft")) !== discardCount) {
+    throw new Error("Closing column search with Escape also discarded the draft.");
+  }
+  await page.keyboard.press("Escape");
+  await waitForRuntimeRequestCount(page, "discardDraft", discardCount + 1);
 
   await resetDraftHarness(page);
   await showAppliedStep(page);

@@ -130,6 +130,7 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
     }
     if (event.key === "Escape" && open) {
       event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
     }
   };

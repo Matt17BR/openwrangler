@@ -171,8 +171,6 @@ The layout change is announced. If focus was inside a chart that disappears, foc
   status says that the total appears after the last page.
 - Some distributions are intentionally non-interactive when the backend or current state does not permit filtering.
   The **Other** category cannot be filtered directly; use **More values…** or the Filters value search when available.
-- `Escape` closes the open column-search list, but the event also reaches the workbench shortcut handler. If a draft
-  is open and no dialog, inspection, or drawer has priority, that same key discards the draft.
 - Automated coverage runs tagged WCAG 2.0, 2.1, and 2.2 axe rules in production-bundle Chromium fixtures and rejects
   non-minor violations. It also exercises specific keyboard and focus workflows. This coverage is not screen-reader
   certification and does not prove every editor, operating system, zoom level, or assistive-technology combination.
