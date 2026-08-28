@@ -7496,10 +7496,85 @@ async function exercisePackagedDailyCore(
   );
   assert.equal(testing.diagnostics().sessionCount, 0, "The daily preview journey must start without a session.");
   const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  const notebookDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-daily-index-"));
+  const notebookLabel = "daily Pandas index preview";
+  const notebookPath = path.join(notebookDirectory, "pandas-index.ipynb");
+  const notebookUri = vscode.Uri.file(notebookPath);
   const failures: unknown[] = [];
   let editorMayBeOpen = false;
 
   try {
+    const notebookPayload: NotebookOutputPayload = {
+      mimeVersion: 2,
+      metadata: {
+        protocolVersion: 2,
+        sessionId: "daily-pandas-index-snapshot",
+        revision: 0,
+        backend: "pandas",
+        mode: "viewing",
+        source: {
+          kind: "notebookOutput",
+          label: notebookLabel,
+          variableName: "daily_index_frame"
+        },
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        shape: { rows: 1, columns: 1 },
+        filteredShape: { rows: 1, columns: 1 },
+        schema: [{ id: "c:value", name: "value", position: 0, rawType: "int64", type: "integer", nullable: false }],
+        rowAxis: { kind: "index", levelNames: ["sample_id"] },
+        filterModel: { filters: [], sort: [] },
+        steps: []
+      },
+      page: {
+        offset: 0,
+        limit: 1,
+        totalRows: 1,
+        columnIds: ["c:value"],
+        rows: [
+          {
+            id: "r:0",
+            rowNumber: 0,
+            rowLabel: "SP0230700005-1",
+            values: [{ kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false }]
+          }
+        ]
+      },
+      summaries: []
+    };
+    writeFileSync(
+      notebookPath,
+      JSON.stringify({
+        cells: [
+          {
+            cell_type: "code",
+            execution_count: 1,
+            metadata: {},
+            outputs: [
+              {
+                output_type: "display_data",
+                metadata: {},
+                data: {
+                  "text/plain": ["Open Wrangler saved Pandas index output"],
+                  [OPEN_WRANGLER_MIME_V2]: notebookPayload
+                }
+              }
+            ],
+            source: ["daily_index_frame"]
+          }
+        ],
+        metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
+        nbformat: 4,
+        nbformat_minor: 5
+      })
+    );
+
     const page = await connectToEditorWorkbench();
     const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
     recordAcceptanceProgress("platform-smoke:daily-core:open-csv");
@@ -7571,6 +7646,38 @@ async function exercisePackagedDailyCore(
       sourceBytes,
       "The daily preview sort must leave the CSV unchanged."
     );
+
+    recordAcceptanceProgress("platform-smoke:daily-core:pandas-index");
+    const notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    notebookEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    const rendererButton = await waitForNotebookRendererButton(page, notebookLabel, "Open in Open Wrangler");
+    try {
+      const renderedIndex = await rendererButton.evaluate((elementValue) => {
+        type PreviewCell = { textContent: string | null };
+        type PreviewRoot = { querySelectorAll(selector: string): ArrayLike<PreviewCell> };
+        const preview = (elementValue as { closest(selector: string): PreviewRoot | null }).closest(
+          "section.openwrangler-notebook"
+        );
+        if (!preview) return undefined;
+        return {
+          headers: Array.from(preview.querySelectorAll("thead th"), (cell) => cell.textContent),
+          rowHeaders: Array.from(preview.querySelectorAll('tbody th[scope="row"]'), (cell) => cell.textContent),
+          cells: Array.from(preview.querySelectorAll("tbody td"), (cell) => cell.textContent)
+        };
+      });
+      assert.deepEqual(renderedIndex, {
+        headers: ["sample_id", "value"],
+        rowHeaders: ["SP0230700005-1"],
+        cells: ["1"]
+      });
+    } finally {
+      await rendererButton.dispose();
+    }
   } catch (error) {
     failures.push(error);
   } finally {
@@ -7582,6 +7689,16 @@ async function exercisePackagedDailyCore(
           10_000,
           "the daily preview editors to close"
         );
+        await waitFor(
+          () =>
+            !notebookTab(notebookUri) &&
+            !vscode.window.visibleNotebookEditors.some(
+              (editor) => editor.notebook.uri.toString() === notebookUri.toString()
+            ),
+          10_000,
+          "the daily preview notebook tab and editor to close"
+        );
+        editorMayBeOpen = false;
         await waitFor(
           () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
           10_000,
@@ -7600,6 +7717,13 @@ async function exercisePackagedDailyCore(
       );
     } catch (error) {
       failures.push(error);
+    }
+    if (!editorMayBeOpen) {
+      try {
+        cleanupAcceptanceTemporaryDirectory(notebookDirectory);
+      } catch (error) {
+        failures.push(error);
+      }
     }
   }
 
