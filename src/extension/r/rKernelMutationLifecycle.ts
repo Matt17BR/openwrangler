@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { operationKinds } from "../../shared/operationCatalog.generated";
 import {
   type ColumnSchema,
   type FilterModel,
@@ -82,44 +83,10 @@ export class RKernelMutationLifecycle {
         request.sessionId
       );
     }
-    const requestedStepKind: string = request.step.kind;
-    if (
-      request.step.kind !== "sortRows" &&
-      request.step.kind !== "filterRows" &&
-      request.step.kind !== "dropMissingRows" &&
-      request.step.kind !== "fillMissingValues" &&
-      request.step.kind !== "dropDuplicates" &&
-      request.step.kind !== "renameColumn" &&
-      request.step.kind !== "cloneColumn" &&
-      request.step.kind !== "castColumn" &&
-      request.step.kind !== "formula" &&
-      request.step.kind !== "textLength" &&
-      request.step.kind !== "oneHotEncode" &&
-      request.step.kind !== "multiLabelBinarize" &&
-      request.step.kind !== "findReplace" &&
-      request.step.kind !== "stripText" &&
-      request.step.kind !== "splitText" &&
-      request.step.kind !== "splitTextColumns" &&
-      request.step.kind !== "pivotLonger" &&
-      request.step.kind !== "pivotWider" &&
-      request.step.kind !== "extractRegexGroup" &&
-      request.step.kind !== "capitalizeText" &&
-      request.step.kind !== "lowerText" &&
-      request.step.kind !== "upperText" &&
-      request.step.kind !== "minMaxScale" &&
-      request.step.kind !== "roundNumber" &&
-      request.step.kind !== "floorNumber" &&
-      request.step.kind !== "ceilNumber" &&
-      request.step.kind !== "formatDatetime" &&
-      request.step.kind !== "groupBy" &&
-      request.step.kind !== "byExample" &&
-      request.step.kind !== "customCode" &&
-      request.step.kind !== "dropColumns" &&
-      request.step.kind !== "selectColumns"
-    ) {
+    if (!operationKinds.includes(request.step.kind)) {
       return errorResponse(
         "unsupported_operation",
-        `The native R runtime does not support ${requestedStepKind}.`,
+        `The native R runtime does not support ${request.step.kind}.`,
         true,
         request.sessionId
       );
