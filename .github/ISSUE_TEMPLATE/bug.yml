@@ -1,6 +1,8 @@
 name: Bug report
 description: Report a reproducible problem with Open Wrangler.
 title: "[Bug] "
+labels:
+  - bug
 body:
   - type: markdown
     attributes:
@@ -44,45 +46,57 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: List exact versions when available. Write "not applicable" only for components that are not involved.
+      description: Copy the Open Wrangler version from the Extensions view and the editor version from Help > About. List other exact versions when they matter; say when a value could not be found.
       placeholder: |
         Open Wrangler:
         Editor (VS Code or Cursor):
         Operating system:
-        Python:
-        Dataframe engine (Pandas, Polars, DuckDB, PySpark, or R):
+        Python or R (if relevant):
     validations:
       required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did the problem happen?
+      options:
+        - Notebook inline preview below a cell
+        - Open Wrangler editor or data grid
+        - Notebook variable picker or Open in Open Wrangler action
+        - Python Interactive window
+        - R script, document, notebook, or terminal
+        - Exported data or generated script
+        - Extension installation, activation, or startup
+        - Other or unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dataframe-backend
+    attributes:
+      label: Dataframe backend
+      description: Select the backend if it is relevant to the problem.
+      options:
+        - Pandas
+        - Polars
+        - DuckDB
+        - PySpark
+        - Native R
+        - Not sure or not applicable
 
   - type: dropdown
     id: input-format
     attributes:
-      label: Input format
-      description: Select the format or source involved in the problem.
+      label: Data source or input format
+      description: Select the source if it is relevant to the problem.
       options:
-        - CSV
-        - TSV
+        - CSV or TSV
         - Excel
         - Parquet
         - JSON Lines
-        - Notebook variable
-        - R script
-        - Other
-    validations:
-      required: true
-
-  - type: dropdown
-    id: workspace-type
-    attributes:
-      label: Workspace type
-      description: Select where the problem occurred and whether Workspace Trust was enabled.
-      options:
-        - Local workspace, trusted
-        - Local workspace, untrusted
-        - Remote workspace, trusted
-        - Remote workspace, untrusted
-    validations:
-      required: true
+        - Notebook variable or result
+        - R script, document, notebook, or terminal
+        - Not sure or not applicable
 
   - type: textarea
     id: diagnostics
