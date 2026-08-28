@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from openwrangler_runtime.session import (
     ResponsePayloadError,
     SessionManager,
 )
+from openwrangler_runtime.trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 
 
 class CountingPandasEngine(PandasEngine):
@@ -882,6 +884,32 @@ def test_lazy_file_rejects_grow_shrink_and_schema_replacement_before_cached_page
     assert session.page_cache_bytes == 0
 
     # Source invalidation must never prevent deterministic cleanup.
+    assert manager.close_session(session_id, 0)["kind"] == "sessionClosed"
+
+
+def test_lazy_file_rejects_same_size_in_place_rewrite_with_restored_mtime_before_cached_page(tmp_path) -> None:
+    path = write_values(tmp_path, 3)
+    manager = SessionManager()
+    opened = manager.open_session(source(path), backend="polars", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    original = path.stat()
+    original_fingerprint = _confirmed_source_path_fingerprint(path)
+
+    for _ in range(100):
+        path.write_text("name,value\nnew-0,9\nnew-1,8\nnew-2,7\n", encoding="utf-8")
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        if _confirmed_source_path_fingerprint(path).changed_time_ns > original_fingerprint.changed_time_ns:
+            break
+        time.sleep(0.001)
+    current_fingerprint = _confirmed_source_path_fingerprint(path)
+    assert current_fingerprint[:4] == original_fingerprint[:4]
+    assert current_fingerprint.changed_time_ns > original_fingerprint.changed_time_ns
+
+    with pytest.raises(EngineError, match=r"changed or is no longer available.*Reopen"):
+        manager.get_page(session_id, 0, 0, 2, {"filters": [], "sort": []})
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
     assert manager.close_session(session_id, 0)["kind"] == "sessionClosed"
 
 
