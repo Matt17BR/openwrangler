@@ -108,10 +108,10 @@ without running a command. Opening a listed frame or choosing Refresh creates th
 Open Wrangler's private callback mailbox. Changing the notebook, kernel, or R terminal invalidates its cached handles
 instead of retargeting another session.
 
-Preview 1.99.7 packages Transform by example and Custom code with the complete 28-operation catalog. Dedicated source
+Preview 1.99.7 packages Transform by example and Custom code with the complete 32-operation catalog. Dedicated source
 contracts own the exact ordered catalog and executable production-generated R; a separate host contract proves
 byte-exact clipboard/atomic script exports with distinct executable operation-labelled buffers. Candidate acceptance
-requires all 28 advertised capabilities and exercises Custom Code through representative installed R paths. It does
+requires all 32 advertised capabilities and exercises Custom Code through representative installed R paths. It does
 not execute Transform by example or exhaustively execute every other catalog entry in installed editors, and the
 reviewed performance record is still outstanding, so every affected Native R row remains **Partial**.
 
@@ -340,7 +340,7 @@ Windows hides the explicit
 official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
 cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
 and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
-extension can own the complete spawned process tree. Preview 1.99.7 packages all 28 native-R operations. Candidate
+extension can own the complete spawned process tree. Preview 1.99.7 packages all 32 native-R operations. Candidate
 acceptance requires the complete advertised capability set and exercises representative Custom Code, while exhaustive
 installed catalog execution and the reviewed performance record remain separate outstanding evidence.
 
@@ -412,8 +412,8 @@ or either new operation.
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                                           | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                                                  | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                             | Preview release |
-| R cleaning operations and generated code      | 28 operations                   | Partial | Exact-order live/generated source contract, including Strip literals and Clone names/S3 safety; exhaustive installed/performance evidence pending | Preview release |
-| Copy or save generated R                      | 28 operations                   | Partial | Exact operation-labelled buffer copy/save source contract; exhaustive installed catalog evidence remains outstanding                              | Preview release |
+| R cleaning operations and generated code      | 32 operations                   | Partial | Exact-order live/generated source contract, including Strip literals and Clone names/S3 safety; exhaustive installed/performance evidence pending | Preview release |
+| Copy or save generated R                      | 32 operations                   | Partial | Exact operation-labelled buffer copy/save source contract; exhaustive installed catalog evidence remains outstanding                              | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                                             | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                                          | Preview release |
 | Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and prior packaged VS Code run; candidate gate now also requires Cursor                                                      | Preview release |
