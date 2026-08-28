@@ -4,7 +4,6 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
 import { assertExactBytes } from "./acceptanceSourceFixture";
-import { openAcknowledgedInsightsPanel } from "./acknowledgedInsightsPanel";
 import { captureWorkbenchScreenshot } from "./evidenceSceneCapture";
 import type { TestApi } from "./extensionHostTestApi";
 import { withAcceptanceOperationDeadline } from "./playwrightLifecycle";
@@ -52,12 +51,6 @@ export interface PackagedFileLaunchSurfacesDependencies {
     requiredActionName: string | undefined,
     surface: string
   ) => Promise<WorkbenchContextMenu>;
-  readonly reacquireAcknowledgedSessionApp: (
-    workbench: Page,
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<Locator>;
   readonly recordAcceptanceProgress: (checkpoint: string) => void;
   readonly waitFor: (
     predicate: () => boolean,
@@ -107,7 +100,6 @@ export function createPackagedFileLaunchSurfaces(
     isOpenWranglerSessionTab,
     openEditorTabContextMenu,
     openWorkbenchContextMenu,
-    reacquireAcknowledgedSessionApp,
     recordAcceptanceProgress,
     waitFor,
     waitForAutomaticDelimitedImport,
@@ -405,22 +397,12 @@ export function createPackagedFileLaunchSurfaces(
       "the editor-title Open Wrangler session tab to remain active",
       () => JSON.stringify(activeEditorTabDiagnostic())
     );
-    await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
+    const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
     recordAcceptanceProgress("verify:file-launch:title-action:histogram-modes");
-    const acknowledgedApp = await reacquireAcknowledgedSessionApp(
-      page,
-      testing,
-      active.metadata.sessionId,
-      "The editor-title insights action requires the current acknowledged renderer."
-    );
-    const { panel: insights } = await openAcknowledgedInsightsPanel(acknowledgedApp, () =>
-      reacquireAcknowledgedSessionApp(
-        page,
-        testing,
-        active.metadata.sessionId,
-        "The opened editor-title insights panel requires the current acknowledged renderer."
-      )
-    );
+    const insightsToggle = gridTarget.frame.getByRole("button", { name: "Column profiles and filters" });
+    if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
+    const insights = gridTarget.frame.getByRole("complementary", { name: "Column profiles and filters" });
+    await insights.waitFor({ state: "visible", timeout: 10_000 });
     const histogramControl = insights.locator(".numericHistogramHitTarget");
     const histogramStatus = insights.locator(".summaryDistributionChart .miniChartCaption");
     await histogramControl.waitFor({ state: "visible", timeout: 30_000 });
@@ -456,11 +438,10 @@ export function createPackagedFileLaunchSurfaces(
     assert.equal(await counts.getAttribute("aria-pressed"), "true");
     await insights.getByRole("button", { name: "Close panel" }).click();
     await insights.waitFor({ state: "hidden", timeout: 10_000 });
-    const currentGridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
     await exercisePrimarySortJourney(
       testing,
       page,
-      currentGridTarget.frame,
+      gridTarget.frame,
       active.metadata.sessionId,
       "verify:file-launch:title-action:sort-journey"
     );

@@ -199,6 +199,16 @@ test("extension-host acceptance preflights exact Python before editor acquisitio
     "Python prerequisites must fail before the extension-host runner creates or downloads an editor environment."
   );
   assert.doesNotMatch(runner, /\?\s*"python"\s*:\s*"python3"/u);
+  assert.match(
+    runner,
+    /requestedProfile\.length === 1 && requestedProfile\[0\] === "platform-smoke"/u,
+    "The source extension-host runner must expose one explicit focused profile."
+  );
+  assert.match(
+    runner,
+    /phase: "platform-smoke",\s*testSelector: "daily-core",\s*requiresWorkbenchCdp: true/u,
+    "The focused profile must run the short activation, grid, and sort journey instead of full UI acceptance."
+  );
 
   const fakeJupyter = acceptance.indexOf("export function writeFakeJupyterExtension(");
   const fakeJupyterEnd = acceptance.indexOf("export function createAcceptanceProgressEnvelope(", fakeJupyter);

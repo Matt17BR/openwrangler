@@ -96,9 +96,16 @@ test("Cross keeps real macOS and Windows runtime checks", () => {
   assert.ok(rows.some((row) => row.os === "macos-latest" && row.python === "3.12"));
   assert.ok(rows.some((row) => row.os === "windows-latest" && row.python === "3.14"));
   assert.equal(stepUsing(runtime, "actions/setup-python@").with["python-version"], "${{ matrix.python }}");
-  assert.deepEqual(stepRunning(runtime, "npm run test:extension-host").env, {
+  stepRunning(runtime, "npm run build");
+  stepRunning(runtime, "npm run build:test-extension");
+  assert.deepEqual(stepRunning(runtime, "node scripts/run-extension-tests.mjs platform-smoke").env, {
     VSCODE_TEST_VERSION: "stable"
   });
+  assert.equal(
+    steps(runtime).some((step) => normalizedCommand(step?.run) === "npm run test:extension-host"),
+    false,
+    "Cross must not duplicate the complete product UI journey"
+  );
   assert.equal(stepRunning(runtime, "npm run test:scripts:native").if, "${{ runner.os == 'Windows' }}");
   stepContaining(runtime, "python -m pip list --format=freeze");
 });

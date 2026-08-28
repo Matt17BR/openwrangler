@@ -44,7 +44,9 @@ Scheduled workflows cover dependencies that can change without a repository comm
   it expires after 14 days and cannot be promoted. Failures retain only the usual sanitized editor diagnostics.
 - **Cross-platform runtime** runs Mondays at 04:17 UTC. It covers macOS with Python 3.12, Windows with Python 3.14,
   focused Windows dependency behavior, four whole Python environments spanning the supported dependency versions,
-  and lock-backed R 4.4 and current R runs.
+  and lock-backed R 4.4 and current R runs. Its real-editor check is intentionally short: activate Open Wrangler,
+  open one CSV through the public action, render the grid, sort it, and close cleanly. Broader UI journeys stay in
+  pull-request and release-candidate checks; Daily Preview owns the packaged copy of this first-use path.
 - **Performance gates** run Tuesdays at 05:41 UTC for the Polars runtime. The larger PySpark profile is manual.
 - **CodeQL** runs Tuesdays at 04:23 UTC in addition to pull requests and protected-main pushes.
 

@@ -1817,7 +1817,6 @@ const exercisePackagedFileLaunchSurfaces = createPackagedFileLaunchSurfaces({
   isOpenWranglerSessionTab,
   openEditorTabContextMenu,
   openWorkbenchContextMenu,
-  reacquireAcknowledgedSessionApp,
   recordAcceptanceProgress,
   waitFor,
   waitForAutomaticDelimitedImport,

@@ -45,7 +45,12 @@ jobs:
           python -m pip list --format=freeze
       - run: npm run test:python-environment-smoke
       - run: python -m pytest python/tests -q
-      - run: npm run test:extension-host
+      - name: Build the extension
+        run: npm run build
+      - name: Build the editor test harness
+        run: npm run build:test-extension
+      - name: Exercise activation and one core CSV path in VS Code
+        run: node scripts/run-extension-tests.mjs platform-smoke
         env:
           VSCODE_TEST_VERSION: stable
       - run: npm run test:scripts:native

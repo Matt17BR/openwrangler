@@ -26,6 +26,16 @@ import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const privateDiagnosticPaths = collectEditorAcceptancePrivateDiagnosticPaths();
+const requestedProfile = process.argv.slice(2);
+const runProfile =
+  requestedProfile.length === 0
+    ? "full"
+    : requestedProfile.length === 1 && requestedProfile[0] === "platform-smoke"
+      ? "platform-smoke"
+      : undefined;
+if (!runProfile) {
+  throw new Error('The extension-host runner accepts only the optional "platform-smoke" profile.');
+}
 let temporaryRoot;
 let temporaryRootReceipt;
 let profile;
@@ -95,32 +105,49 @@ try {
     sharedDataDir: true
   };
 
-  await runEditorAcceptancePhase({
-    editor,
-    workspace,
-    userData: singleUserData,
-    extensions: singleExtensions,
-    developmentPaths: [root, harness, fakeJupyter],
-    testModule,
-    python: process.env.OPEN_WRANGLER_TEST_PYTHON,
-    phase: "single",
-    resultPath: resolve(profile, "single-result.json")
-  });
-
-  for (const phase of ["seed", "verify"]) {
+  if (runProfile === "platform-smoke") {
     await runEditorAcceptancePhase({
       editor,
       workspace,
-      userData,
-      extensions,
+      userData: singleUserData,
+      extensions: singleExtensions,
       developmentPaths: [root, harness, fakeJupyter],
       testModule,
       python: process.env.OPEN_WRANGLER_TEST_PYTHON,
-      phase,
-      resultPath: resolve(profile, `${phase}-result.json`)
+      phase: "platform-smoke",
+      testSelector: "daily-core",
+      requiresWorkbenchCdp: true,
+      resultPath: resolve(profile, "platform-smoke-result.json")
     });
+    console.log("VS Code core platform smoke passed.");
+  } else {
+    await runEditorAcceptancePhase({
+      editor,
+      workspace,
+      userData: singleUserData,
+      extensions: singleExtensions,
+      developmentPaths: [root, harness, fakeJupyter],
+      testModule,
+      python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+      phase: "single",
+      resultPath: resolve(profile, "single-result.json")
+    });
+
+    for (const phase of ["seed", "verify"]) {
+      await runEditorAcceptancePhase({
+        editor,
+        workspace,
+        userData,
+        extensions,
+        developmentPaths: [root, harness, fakeJupyter],
+        testModule,
+        python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+        phase,
+        resultPath: resolve(profile, `${phase}-result.json`)
+      });
+    }
+    console.log("VS Code extension-host acceptance passed.");
   }
-  console.log("VS Code extension-host acceptance passed.");
 } catch (error) {
   runError = error;
 }
