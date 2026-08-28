@@ -941,6 +941,8 @@ describe("native state and presentation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      bufferId: expect.any(String),
+      bufferInvalid: false,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -950,11 +952,14 @@ describe("native state and presentation commands", () => {
       }
     });
     expect(codePreviewView.description).toBe("Python");
+    const readOnlyBufferId = (posted.at(-1) as { bufferId: string }).bufferId;
 
-    receive?.({ kind: "codeChanged", code: "raise RuntimeError('should be ignored')" });
+    receive?.({ kind: "codeChanged", bufferId: readOnlyBufferId, code: "raise RuntimeError('should be ignored')" });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      bufferId: readOnlyBufferId,
+      bufferInvalid: false,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
       runtimeIdentity: {
@@ -969,6 +974,8 @@ describe("native state and presentation commands", () => {
     expect(treeChildren("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      bufferId: expect.any(String),
+      bufferInvalid: false,
       code: editable.code,
       editable: true,
       runtimeIdentity: {
@@ -977,19 +984,42 @@ describe("native state and presentation commands", () => {
         codeDialect: "python.pandas"
       }
     });
+    const editableBufferId = (posted.at(-1) as { bufferId: string }).bufferId;
 
-    receive?.({ kind: "codeChanged", code: "raise RuntimeError('unknown field')", unexpected: true });
+    receive?.({
+      kind: "codeChanged",
+      bufferId: editableBufferId,
+      code: "raise RuntimeError('unknown field')",
+      unexpected: true
+    });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: editable.code });
 
-    receive?.({ kind: "codeChanged", code: "def clean_data(df):\n    return df.dropna()\n" });
+    receive?.({
+      kind: "codeChanged",
+      bufferId: editableBufferId,
+      code: "def clean_data(df):\n    return df.dropna()\n"
+    });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
 
+    const copy = command("openWrangler.copyCode")();
+    const pendingRequest = posted.at(-1) as { requestId: string; bufferId: string };
+    expect(pendingRequest).toMatchObject({ kind: "codeSnapshotRequest", bufferId: editableBufferId });
     const rEditable = rNotebookSnapshot();
     registered.setActiveSession(rEditable);
+    await expect(copy).resolves.toBe(false);
+    receive?.({
+      kind: "codeSnapshot",
+      requestId: pendingRequest.requestId,
+      bufferId: pendingRequest.bufferId,
+      code: "# late stale buffer"
+    });
+    receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      bufferId: expect.any(String),
+      bufferInvalid: false,
       code: rEditable.code,
       editable: true,
       runtimeIdentity: {
@@ -1006,6 +1036,8 @@ describe("native state and presentation commands", () => {
     registered.setActiveSession(viewingOnly);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      bufferId: expect.any(String),
+      bufferInvalid: false,
       code: viewingOnly.code,
       editable: false,
       runtimeIdentity: {
