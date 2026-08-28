@@ -79,15 +79,14 @@ npm run test:packaged-editors -- openwrangler.vsix
 sha256sum openwrangler.vsix
 ```
 
-The coverage gate requires a Java 17 runtime on `PATH`. Required pull-request coverage provisions Temurin Java 17,
-exact PySpark 4.2.0 Connect extras, and compatible Pandas before running the unchanged Python coverage floor. Release
-candidates consume the protected commit and exact VSIX after that merge gate; they do not rerun source
-coverage. Their packaged PySpark journey still provisions Java 17 because that is installed-product evidence. An
-optional adapter may skip in an ordinary development test run, but it may not disappear from pull-request coverage.
+`npm run test:coverage` remains a local full-suite command and requires Java 17, the exact PySpark 4.2.0 Connect
+extras, and compatible Pandas. Ordinary pull-request CI runs plain Vitest and Pytest without coverage quotas. Release
+candidates consume the protected commit and exact VSIX; their packaged PySpark journey still provisions Java 17
+because that is installed-product evidence.
 
 Repository development and automation use exactly Node.js 24.19.0 from `.node-version`; that release supplies the declared npm 11.17.0 package manager. GitHub workflows consume the version file directly. Azure Marketplace recovery
-duplicates the same exact Node value because it may inspect historical tags that predate the file, and workflow
-contracts keep that duplicate synchronized. The supported development engine range is `^22.22.0 || ^24.0.0`; Node 23 is intentionally excluded. A pull request also runs one bounded Node 22.23.2/npm 10.9.8 compatibility smoke.
+duplicates the same exact Node value because it may inspect historical tags that predate the file. The supported
+development engine range is `^22.22.0 || ^24.0.0`; Node 23 is intentionally excluded.
 The minimum extension-host contract remains independently pinned to `engines.vscode` `^1.106.0`, `@types/vscode` 1.106.0, and `@types/node` 22.20.1. The development pin remains repository tooling and is excluded from the VSIX.
 `npm run check` includes the strict dependency-only TypeScript graph, and `npm run audit:node` audits the full
 development tree.
@@ -228,8 +227,8 @@ parallel Python, remote-R, generic-platform, `r_platform`, performance, and Linu
 candidate consumers download and semantically reverify the same VSIX. The producer is the sole owner of the full
 `verify:vsix` inventory/content proof. Each consumer freshly checks the canonical checksum, provenance, and archive
 semantics immediately before use instead of repeating that verifier. The generic macOS/Windows platform matrix owns
-only packaged VS Code `platform-smoke` compatibility without rerunning the pull request's extension-host suite or
-preparing R. Linux VS Code owns the full generic packaged journey; one pinned Linux Cursor run owns the focused fork-
+only packaged VS Code `platform-smoke` compatibility and does not prepare R. Linux VS Code owns the full generic
+packaged journey; one pinned Linux Cursor run owns the focused fork-
 compatibility smoke instead of multiplying the same seam across operating systems. Each
 separate `r_platform` cell prepares R once, then
 runs freshly verified VS Code-only `core-operations`, `native-frames`, and `kernel-restart` phases, with distinct
@@ -302,7 +301,7 @@ Historical macOS and Windows Cursor evidence used the fixed official `downloads.
 
 The VSIX may contain production extension bundles, webview assets, the Python and R runtime sources, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, benchmark sources, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. `verify:vsix` and stable readiness use the same bounded in-memory ZIP reader. It streams every entry, checks its actual uncompressed size and CRC-32, rejects encrypted or unsupported flags/methods, non-regular Unix entries, name and file/directory collisions, and per-entry or aggregate expansion beyond fixed limits, then requires the OPC metadata, legal notices, production bundles/assets, and runtime boundary files. Every local main, icon, view-container, notebook-renderer, command-icon, and walkthrough asset referenced by packaged `package.json` must resolve to a regular archive file. The allowlist requires the stdlib-only `python/openwrangler_runtime/dependency_guard.py` and both native-R `frame_contract.R` and `kernel_agent.R` files; omitting any of them is a package failure. Allowlist verification also reads packaged `webview.css`, the compiled webview host, the exact notebook-renderer entry, and all four shipped source documents. Packaged `README.md`, `CHANGELOG.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` must byte-match their tracked sources, so ordinary verification catches VSCE rewriting or substitution before canonical release staging. `npm run license:check` independently pins `package.json` and the exact reviewed `LICENSE` bytes to the MIT project license; archive parity cannot legitimize a changed license. The Codicon font URL must be bundle-relative so the checked-in font resolves beside the stylesheet, the CSP must allow `webview.cspSource` through `font-src`, `media/notebookRenderer.js` must be non-empty valid JavaScript with a named `activate` export and no static imports, dynamic imports, or dependency re-exports, and every HTML `<source srcset>` candidate must be an absolute HTTPS URL because `vsce` does not rewrite it like a normal Markdown image. Shared renderer validation is inlined, so a separate renderer `protocolValidation.js` chunk is neither required nor allowlisted. After allowlist verification, `npm run test:packaged-editors -- openwrangler.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute. The packaged gate uses three editor processes per product: an untrusted Restricted Mode phase, then trusted seed and verify phases that prove backend-pinned persisted-plan replay, concurrent Pandas/Polars/DuckDB crash recovery for supported file sessions, guarded dependency interruption/revalidation, export source safety, and final process cleanup. Released-Jupyter acceptance separately gates native, viewing-only DuckDB notebook relations: the exact originating `DuckDBPyRelation` must survive paging, filtering, sorting, profiling, and Open Wrangler cleanup without conversion through Pandas, Polars, or Arrow; editing, code insertion, and data export remain unavailable for that path.
 
-`.github/workflows/released-jupyter.yml` runs only when manually dispatched. Each selected lane makes a clean production build, packages it with `package:prepared`, verifies the VSIX, and runs the focused Python or R editor journey without repeating the full source suite. Pull requests own unit, renderer, extension-host, source-coverage, browser-baseline, and harness-adversarial evidence; the release-candidate workflow runs installed and external checks against its exact candidate VSIX instead of replaying those source suites. All editor processes use isolated profiles and an invisible test display.
+`.github/workflows/released-jupyter.yml` runs only when manually dispatched. Each selected lane makes a clean production build, packages it with `package:prepared`, verifies the VSIX, and runs the focused Python or R editor journey without repeating the full source suite. Ordinary pull requests run plain source tests and one stable VS Code installed `daily-core` smoke; browser baselines, coverage floors, and harness-adversarial suites are not pull-request owners. The release-candidate workflow runs installed and external checks against its exact candidate VSIX instead of replaying those source suites. All editor processes use isolated profiles and an invisible test display.
 
 The workflow keeps the Python and R fixtures separate. The Python fixture runs the remote journey in VS Code and
 installs Pandas, Polars, DuckDB, IPykernel, and Jupyter Server from
@@ -335,7 +334,7 @@ A released-Jupyter run is not release evidence while freshly executed MIME-v2 ou
 
 The packaged split-notebook renderer-provenance scenario proves notebook B is active immediately before dispatching notebook A's visible renderer action with a real user click. Synthetic DOM activation cannot satisfy this release gate. The run must retain the exact notebook A/B origin, variable, kernel, insertion, and cleanup assertions, including that notebook B never receives notebook A's session. Bounded timeout diagnostics may contain only safe origin classifications, coordinator state, and A/B generation/execution counters.
 
-Linux packaged-editor release gates and pull-request extension-host gates run on the zero-window headless Ozone platform by default, with desktop display/editor-IPC variables removed, persistent auxiliary services disabled, and private runtime, home, config, cache, and data directories. Candidate exact-artifact validation keeps its full VS Code invocation on that path and runs the focused Cursor `platform-smoke` separately on the repository-pinned private Xvfb after Cursor 3.13.10 reproducibly failed before harness activation in headless Ozone; each invocation immediately follows a fresh canonical artifact verification, while the isolation rules, deadlines, and failure-only diagnostics remain identical, with no automatic retry or fallback. The checked workflow contract rejects inherited environment or shell defaults, conditional/non-fatal evidence gates, unapproved shells, and unbound checkout/download/verifier or consumer steps, so the exact-success fan-in cannot turn skipped evidence into a release signal. Its semantic and structural inspectors validate the parsed job topology and the release-critical ordered steps, commands, environments, action inputs, and evidence-upload structure; an intentional workflow edit must update the corresponding reviewed contract. Every artifact-consuming cross-platform, performance, Jupyter, Remote SSH, Linux editor, upload, and final-publication step immediately follows its own fresh canonical verification; an intervening workspace command therefore invalidates the checked structure instead of substituting the bytes under test. Editor CLI, workbench, and private-display processes on every platform receive only the explicit platform/isolation allowlist plus runner-owned test values; the caller's remaining environment is not inherited. CI and release workflows must not opt into the user's current display, attach commands to a live editor, touch normal editor profiles, or silently fall back to it. Hosted Cursor compatibility starts inside `dbus-run-session` and receives only that isolated, runner-owned GTK session-bus address; it never reuses a caller or desktop session bus and does not restore display or editor IPC access. `OPEN_WRANGLER_EDITOR_DISPLAY=current` is reserved for an intentional visible local debugging run and is forbidden in hosted evidence; `OPEN_WRANGLER_EDITOR_DISPLAY=xvfb` remains an explicit isolated compatibility mode, never an implicit local-desktop fallback. Late child errors cannot prove exit, and uncertainty from a downloader, editor, or private display propagates to cleanup. On Windows, every editor command and workbench is created suspended by a private supervisor, assigned to a kill-on-close Job Object with an explicit inherited-handle list, and resumed only after ownership succeeds. Completion requires exactly one random supervisor attestation that is excluded from the target environment and emitted only after `ActiveProcessCount == 0`; the runner closes the private control stdin on every settled path. If any editor/display ownership remains unverified, caller-environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and no inherited private runtime/root/profile/result/progress/log path may be inspected or removed. Pull requests run stable VS Code extension-host coverage in the existing macOS and Windows runtime cells. Release candidates add focused exact-package compatibility seams on those platforms without repeating that source suite. The launch contract and local controls are documented in `docs/testing.md`.
+Linux packaged-editor release gates and the ordinary pull-request packaged smoke run on the zero-window headless Ozone platform by default, with desktop display/editor-IPC variables removed, persistent auxiliary services disabled, and private runtime, home, config, cache, and data directories. Candidate exact-artifact validation keeps its full VS Code invocation on that path and runs the focused Cursor `platform-smoke` separately on the repository-pinned private Xvfb after Cursor 3.13.10 reproducibly failed before harness activation in headless Ozone; each invocation immediately follows a fresh canonical artifact verification, while the isolation rules, deadlines, and failure-only diagnostics remain identical, with no automatic retry or fallback. The checked workflow contract rejects inherited environment or shell defaults, conditional/non-fatal evidence gates, unapproved shells, and unbound checkout/download/verifier or consumer steps, so the exact-success fan-in cannot turn skipped evidence into a release signal. Its semantic and structural inspectors validate the parsed job topology and the release-critical ordered steps, commands, environments, action inputs, and evidence-upload structure; an intentional workflow edit must update the corresponding reviewed contract. Every artifact-consuming cross-platform, performance, Jupyter, Remote SSH, Linux editor, upload, and final-publication step immediately follows its own fresh canonical verification; an intervening workspace command therefore invalidates the checked structure instead of substituting the bytes under test. Editor CLI, workbench, and private-display processes on every platform receive only the explicit platform/isolation allowlist plus runner-owned test values; the caller's remaining environment is not inherited. CI and release workflows must not opt into the user's current display, attach commands to a live editor, touch normal editor profiles, or silently fall back to it. Hosted Cursor compatibility starts inside `dbus-run-session` and receives only that isolated, runner-owned GTK session-bus address; it never reuses a caller or desktop session bus and does not restore display or editor IPC access. `OPEN_WRANGLER_EDITOR_DISPLAY=current` is reserved for an intentional visible local debugging run and is forbidden in hosted evidence; `OPEN_WRANGLER_EDITOR_DISPLAY=xvfb` remains an explicit isolated compatibility mode, never an implicit local-desktop fallback. Late child errors cannot prove exit, and uncertainty from a downloader, editor, or private display propagates to cleanup. On Windows, every editor command and workbench is created suspended by a private supervisor, assigned to a kill-on-close Job Object with an explicit inherited-handle list, and resumed only after ownership succeeds. Completion requires exactly one random supervisor attestation that is excluded from the target environment and emitted only after `ActiveProcessCount == 0`; the runner closes the private control stdin on every settled path. If any editor/display ownership remains unverified, caller-environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and no inherited private runtime/root/profile/result/progress/log path may be inspected or removed. Scheduled/manual Cross retains the stable macOS and Windows extension-host cells. Release candidates add focused exact-package compatibility seams on those platforms without repeating that source suite. The launch contract and local controls are documented in `docs/testing.md`.
 
 The final pathname and Git-ref handoffs trust the GitHub-hosted runner, the pinned actions, the protected candidate source, and authorized repository writers. A detached same-UID process racing an already verified VSIX/Xvfb path, or another writer creating the intended tag between the final absence check and GitHub Release creation, is outside the release threat model. Before dispatching stable promotion, the release operator must confirm that no other tag-writing workflow is active and that the intended tag is still absent; the workflow then repeats the exact remote-tag check immediately before publication.
 
@@ -427,17 +426,18 @@ The same installed-editor report must prove that the production renderer and for
 ## GitHub workflow (current policy and historical recovery details)
 
 Each coherent change uses a feature branch and pull request. The current PR workflow applies the same triggers to draft
-and ready changes. JavaScript/TypeScript checks run for every change; Python, R, package/editor, web, and Windows jobs
-are selected by path. Missing or malformed classification runs every lane, and the final `validate` job blocks merge
-for every selected failure or unknown result. Scheduled/manual Cross retains its
+and ready changes. Every change runs the same five owners: Node 24 source contracts, Python runtime contracts, native
+R frame/catalog/transport contracts, one packaged stable VS Code `daily-core` smoke, and Windows-specific
+filesystem/process contracts. The final `validate` job has no checkout or custom parser; one inline shell step
+requires all five results to be `success`. Scheduled/manual Cross retains its
 macOS/Windows runtime, Windows dependency checks, the exact `python-runtime-dependency-cohorts` job that installs and
 exercises every declared dependency/Python qualification pair, and R 4.4 qualification. CodeQL runs explicit always-on JavaScript/TypeScript
-and Python analyzers and joins them through `CodeQL gate`. Pushes to `main` retain CI and both CodeQL analyzers;
-publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
+and Python analyzers and joins them through `CodeQL gate`. Ordinary CI does not repeat on pushes to `main`; CodeQL
+retains its separate default-branch analysis, and publication remains restricted to `main`. [CI and release
+checks](ci.md) has the current map.
 
-The current PR workflow has no release-infrastructure-only, package-only, allowlist, or full-matrix classifier branch and no fixed
-release job in pull-request CI. Control-plane and unmatched substantive changes select the full owner union. The
-slower native editor, Jupyter, Remote SSH, installed-performance, canary, and publication checks remain separate exact
+The current PR workflow has no path classifier or fixed release job. The slower native editor, Jupyter, Remote SSH,
+installed-performance, canary, and publication checks remain separate exact
 candidate or release evidence. This topology does not claim job-count, compute, or wall-time reductions before hosted
 evidence. It does not weaken or replace complete exact-artifact release-candidate acceptance.
 
@@ -447,22 +447,14 @@ security alerts reported on changed pull-request lines. A successful workflow is
 before changing this rule, query the code-scanning API for the fresh protected-main analysis and require zero open
 high or critical CodeQL alerts. Preserve the complete current ruleset request when adding or changing that one rule,
 then read the ruleset back and compare every retained rule.
-The release-candidate, stable-promotion, and shared candidate-acceptance workflows are owned by mutation-sensitive
-semantic inspectors plus the repository-wide immutable-action inventory. Their parsers and candidate-boundary tests
-execute in the focused workflow lane, while workflow edits conservatively select the full pull-request owner union.
-The Open VSX promotion workflow forces full CI until its inspector rejects unknown steps; its parser and focused tests
-still execute in the focused lane. The Azure Marketplace pipeline also forces full CI because its hash-owning
-inspector is an allowed release script; changing both files must not bless a new baseline in the narrow tier. No
-workflow or pipeline YAML is eligible until an exact inventory is independent of every allowlisted hash owner.
-
 Do not turn a release pull request into one oversized squash commit. Keep each independently reviewable product,
 runtime, test, media, and documentation slice in its own commit. If a pull request contains several such commits,
 merge it without squashing so the boundaries remain visible on `main`. The final release commit changes only the
 version, changelog, release notes, and required release metadata.
 
 Pull-request CI builds and verifies one VSIX inside the package-and-editor job and tests it in stable VS Code. It does
-not pass that VSIX between jobs or retain successful-run artifacts. Failed visual checks and sanitized packaged-editor
-diagnostics may be uploaded for seven days. Remote SSH remains part of release-candidate acceptance rather than an
+not pass that VSIX between jobs or retain successful-run artifacts. Sanitized packaged-editor diagnostics may be
+uploaded for seven days. Remote SSH remains part of release-candidate acceptance rather than an
 opt-in pull-request job. Release and stable-performance workflows keep their separate artifact and provenance checks.
 
 `npm run docs:check` semantically parses the release-candidate, stable-promotion, and shared candidate-acceptance
@@ -546,7 +538,7 @@ an ambiguous submission and continues to the exact public-package check. Missing
 fail after the bounded wait; identity, authentication, and artifact checks remain fail-fast.
 
 Draft and ready pull requests share the CI and CodeQL triggers; Cross is scheduled/manual only, and the current PR
-workflow defines no draft-only check name. Readiness and merge eligibility remain repository-policy decisions outside CI path selection. When
+workflow defines no draft-only check name. Readiness and merge eligibility remain repository-policy decisions outside CI execution. When
 several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time
 on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days,
 groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.

@@ -5,34 +5,39 @@ and installed-package checks before a release.
 
 ## Pull requests
 
-Every pull request runs change detection and JavaScript/TypeScript checks on the supported Node 24 and Node 22
-versions. Other jobs run only for files they own:
+Every pull request runs the same five jobs. Each job names one product boundary:
 
-- **Python** runs Python lint and the Python coverage suite, including the PySpark cases with Java 17.
-- **R** installs the R 4.5 dependencies once and runs all R source tests.
-- **Package and editor** builds and verifies the VSIX, runs VS Code extension-host tests, and runs TypeScript coverage
-  plus the portable script suite.
-- **Web UI and accessibility** runs the production webview, visual, and accessibility tests in the pinned Chromium.
-- **Windows** runs focused filesystem, dependency-install, process, and cleanup tests.
+- **Source contracts (Node 24)** checks formatting, JavaScript/TypeScript lint and types, generated protocol and
+  reference files, documentation, dependency locks, licenses, and the plain Vitest suite. Vitest owns component and
+  ARIA behavior.
+- **Python runtime contracts** runs Ruff, Pyright, and plain Pytest, including the PySpark 4.2 cases with Java 17.
+  Ordinary pull-request CI does not add a coverage threshold or dependency audit.
+- **Native R frame and transport contracts** installs the R 4.5 dependency lock and runs the native frame,
+  catalog, and interactive/process transport shards. The exhaustive kernel-agent operation journey is not a
+  pull-request gate.
+- **Packaged VS Code smoke** builds and verifies one VSIX, compiles the installed-editor harness, and runs the exact
+  `platform-smoke` / `daily-core` selector in stable VS Code. Its production build includes the webview bundles.
+- **Windows filesystem and process contracts** runs only the Windows-specific export, dependency, and process-cleanup
+  cases.
 
-A Dependabot-configuration-only change runs only the shared JavaScript/TypeScript checks. A Python-test-only change
-runs those shared checks and Python. Package and lockfile changes run every lane that consumes the changed build or
-dependency metadata. Dependency-changing pull requests run the matching audit. Main runs repeat all behavior lanes
-but do not repeat an audit that already passed on the pull request.
+There is no path classifier. Documentation, dependency, and product changes all run these five owners, so a required
+context never has to interpret an intentional skip. The workflow does not repeat on a push to `main`; an up-to-date
+pull-request head already tested that tree.
 
-Unknown paths and changes to CI's own selection code run every lane. A missing or failed change-detection result also
-prevents merge.
-
-`validate` is the single required CI result. It waits for every possible lane, accepts jobs that were intentionally
-skipped, and fails for selected jobs that failed, were cancelled, or returned a missing or unknown result. It also
-rejects a job that ran despite not being selected. The main-branch ruleset requires both `validate` and `CodeQL gate`,
+`validate` is the single required CI result. It has no checkout, runtime setup, or custom parser. One inline shell
+step requires all five job results to be `success`. The main-branch ruleset also requires the separate `CodeQL gate`,
 so failing code cannot merge.
 
 Pull requests, including drafts, run when they are opened, reopened, or receive new commits. A newer run for the same
 pull request cancels its older run.
 
-Visual diffs and packaged-editor diagnostics are uploaded only when their job fails. Ordinary successful pull-request
-runs do not retain build artifacts.
+The full browser, screenshot, and Axe command remains available locally through `npm run test:webview-acceptance`,
+but it is not an ordinary pull-request gate. The gallery-coupled Axe path has no separate hosted owner for now. A later
+release-candidate simplification can choose one representative installed accessibility check if it finds a failure
+that source Vitest and the packaged smoke do not cover.
+
+Packaged-editor diagnostics are uploaded only when that job fails. Ordinary successful pull-request runs do not
+retain build artifacts.
 
 ## Scheduled checks
 
@@ -76,11 +81,13 @@ Azure Marketplace pipeline. Each registry receives the accepted VSIX; none rebui
 
 Start with the failing job name:
 
-- **JavaScript / TypeScript**, **Python**, or **R** usually means a source or unit-test regression.
-- **Web UI and accessibility** means a browser, visual, or accessibility regression. Failed runs retain image diffs.
-- **Package and editor** means the build, VSIX contents, extension host, or installed editor failed.
-- **Windows** or **Cross-platform runtime** means a platform-specific behavior failed.
-- **Changes** or **validate** means CI could not determine or account for the jobs that were required.
+- **Source contracts**, **Python runtime contracts**, or **Native R frame and transport contracts** means the named
+  source/runtime boundary regressed.
+- **Packaged VS Code smoke** means the production build, VSIX contents, harness compilation, or installed
+  `daily-core` journey failed.
+- **Windows filesystem and process contracts** or **Cross-platform runtime** means a platform-specific behavior
+  failed.
+- **validate** means at least one of the five pull-request owners did not succeed.
 
 Do not retry a deterministic failure to make it green. Fix the product or test, isolate an external outage, or simplify
 a check that does not produce a useful failure. Release and editor failures may retain sanitized diagnostics; raw

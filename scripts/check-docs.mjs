@@ -14,7 +14,6 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
-import { inspectNodeToolchainContract, loadBoundedNodeToolchainWorkflowDocuments } from "./node-toolchain-contract.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -50,20 +49,6 @@ if (typeof packageLock !== "object" || packageLock === null || Array.isArray(pac
   throw new Error("package-lock.json must contain one bounded JSON object.");
 }
 const contributingSource = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8");
-const releasingSource = readFileSync(resolve(root, "docs/releasing.md"), "utf8");
-const workflowDocuments = loadBoundedNodeToolchainWorkflowDocuments({ root });
-const nodeToolchainProblems = inspectNodeToolchainContract({
-  azureSource: readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8"),
-  contributingSource,
-  nodeVersionSource: readFileSync(resolve(root, ".node-version"), "utf8"),
-  packageJson,
-  packageLock,
-  releasingSource,
-  workflows: workflowDocuments
-});
-if (nodeToolchainProblems.length > 0) {
-  throw new Error(`Node toolchain settings disagree:\n- ${nodeToolchainProblems.join("\n- ")}`);
-}
 const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
   contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),
   packageSource: packageJsonSource

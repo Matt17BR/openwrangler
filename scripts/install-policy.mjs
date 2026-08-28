@@ -32,7 +32,6 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/ci.yml", "python", [INSTALL]],
   [".github/workflows/ci.yml", "r", [INSTALL]],
   [".github/workflows/ci.yml", "package-editor", [INSTALL]],
-  [".github/workflows/ci.yml", "web", [INSTALL]],
   [".github/workflows/ci.yml", "windows", [INSTALL]],
   [".github/workflows/cross-platform.yml", "runtime", [INSTALL]],
   [".github/workflows/cross-platform.yml", "r-4-4-scheduled-qualification", [INSTALL]],

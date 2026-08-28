@@ -682,14 +682,7 @@ This makes runtime crash/reload/session replay **Done**. Cleaning-history, expor
 
 Release-guardrail slice, 2026-07-15:
 
-- Required CI coverage now enforces TypeScript/webview floors of 60% statements, 55% branches, 60% functions, and 65% lines plus a 78% Python-runtime floor. The initial accepted reports are 63.36/59.28/66.12/67.94% and 80.37%, respectively. CI prints the result and retains no coverage artifact.
 - A production dependency policy resolves the actual installed manifest for every non-development package, accepts only explicitly approved licenses, and requires a matching notice group. The current webview bundle contains 17 MIT packages and one CC-BY-4.0 Codicons package; the notice file now reflects Codicons' actual license.
-- Pull-request validation runs dependency audits when the corresponding dependency files change. Shared
-  JavaScript/TypeScript checks always run; paths select Python, R 4.5, package/editor, web, and Windows jobs.
-  Scheduled/manual Cross retains platform checks and the R 4.4 qualification. Protected-branch
-  pushes retain CI plus explicit JavaScript/TypeScript and Python CodeQL analysis. Exact release candidates still own
-  the broader native/editor/release matrix, and stable publication must promote the already accepted artifact without
-  rebuilding it. No job-count, compute, or wall-time reduction is claimed before hosted evidence.
 - Screenshot capture now resolves the hosted CI interpreter before a local `.venv`, fixing the first full validate run's only failure while keeping local deterministic-environment preference.
 
 These are release guardrails rather than user-visible parity rows. They remain mandatory for every subsequent slice and release tag.

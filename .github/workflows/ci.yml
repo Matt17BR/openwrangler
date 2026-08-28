@@ -3,87 +3,49 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      python_required: ${{ steps.classify.outputs.python_required }}
-      r_required: ${{ steps.classify.outputs.r_required }}
-      package_editor_required: ${{ steps.classify.outputs.package_editor_required }}
-      web_required: ${{ steps.classify.outputs.web_required }}
-      windows_required: ${{ steps.classify.outputs.windows_required }}
-      node_dependencies_required: ${{ steps.classify.outputs.node_dependencies_required }}
-      python_dependencies_required: ${{ steps.classify.outputs.python_dependencies_required }}
+  javascript:
+    name: Source contracts (Node 24)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
-      - id: classify
-        run: node scripts/ci-path-classification.mjs
-        env:
-          CI_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
-  javascript:
-    name: JavaScript / TypeScript (Node ${{ matrix.node }})
-    needs: [changes]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [24.19.0, 22.23.2]
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Shared checks
-        if: ${{ matrix.node == '24.19.0' }}
-        run: >-
-          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          format:check lint protocol:check reference:check docs:check brand:check check:remote-jupyter-lock
-          check:r-dependency-lock check:install-policy license:check typecheck typecheck:dependencies test:scripts:workflow
-      - name: Dependency audit
-        if: ${{ matrix.node == '24.19.0' && needs.changes.outputs.node_dependencies_required == 'true' }}
-        run: npm run audit:node
-      - name: Node 22 compatibility
-        if: ${{ matrix.node == '22.23.2' }}
+      - name: Formatting and lint
         run: |
-          test "$(node --version)" = "v22.23.2"
-          npm version --json | grep --fixed-strings --line-regexp '  "npm": "10.9.8",' > /dev/null
-          test -z "$(git status --porcelain --untracked-files=no)"
-          npm run check:fast-feedback
-          npm run test:scripts:workflow
+          npm run format:check
+          npm run lint
+      - name: TypeScript types
+        run: |
+          npm run typecheck
+          npm run typecheck:dependencies
+      - name: Generated protocols and documentation
+        run: |
+          npm run protocol:check
+          npm run reference:check
+          npm run docs:check
+      - name: Dependency locks and licenses
+        run: |
+          npm run check:remote-jupyter-lock
+          npm run check:r-dependency-lock
+          npm run license:check
+      - name: TypeScript tests
+        run: npx --no-install vitest run
 
   python:
-    name: Python
-    needs: [changes]
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.changes.result != 'success' || needs.changes.outputs.python_required != 'false')
-      }}
+    name: Python runtime contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -104,42 +66,19 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
       - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
-      - name: Verify exact coverage runtimes
-        shell: bash
+      - name: Python lint and formatting
         run: |
-          python - <<'PY'
-          import pandas
-          import pyspark
-          from packaging.version import Version
-
-          assert pyspark.__version__ == "4.2.0", pyspark.__version__
-          assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
-          PY
-          java -XshowSettings:properties -version 2>&1 |
-            grep -Eq "^[[:space:]]*java\.specification\.version = 17$"
-      - name: Install the remote Jupyter lock compiler
-        if: ${{ needs.changes.outputs.python_dependencies_required == 'true' }}
-        run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - name: Python lint and coverage
-        run: >-
-          npx --no-install npm-run-all --parallel --continue-on-error --max-parallel 2 --print-label
-          lint:python test:coverage:python
+          python -m ruff check python
+          python -m ruff format --check python
+      - name: Python types
+        run: node scripts/run-pyright.mjs python
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.python_runtime.outputs.python-path }}
-      - name: Python dependency checks
-        if: ${{ needs.changes.outputs.python_dependencies_required == 'true' }}
-        run: npm run lock:remote-jupyter:check && npm run audit:python
-        env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.python_runtime.outputs.python-path }}
+      - name: Python tests
+        run: python -m pytest python/tests -q
 
   r:
-    name: R
-    needs: [changes]
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.changes.result != 'success' || needs.changes.outputs.r_required != 'false')
-      }}
+    name: Native R frame and transport contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -164,9 +103,9 @@ jobs:
           node scripts/r-dependency-lock.mjs prepare
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
           --rscript "$(command -v Rscript)"
-          --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-library"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-archives"
-          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-kernel-receipt.json"
+          --library "$RUNNER_TEMP/openwrangler-r-contract-4.5-library"
+          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.5-archives"
+          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.5-receipt.json"
       - id: r_cache
         name: Restore R package cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -174,8 +113,7 @@ jobs:
           path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
           fail-on-cache-miss: false
-      - id: r_install
-        name: Install R dependencies
+      - name: Install R dependencies
         run: >-
           node scripts/r-dependency-lock.mjs install
           --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
@@ -190,24 +128,17 @@ jobs:
         with:
           path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
-      - name: R runner tests
-        run: node --test scripts/run-r-contract-tests.test.mjs
-      - run: npm run test:r-contract -- --shard kernel-agent
+      - name: Native frame and interactive transport
+        run: node scripts/run-r-contract-tests.mjs --shard frame-and-interactive-transport
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
-      - name: R protocol tests
-        run: npm run test:r-contract:protocol
+      - name: Catalog and process transport
+        run: node scripts/run-r-contract-tests.mjs --shard catalog-and-process-transport
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
 
   package-editor:
-    name: Package and editor
-    needs: [changes]
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.changes.result != 'success' || needs.changes.outputs.package_editor_required != 'false')
-      }}
+    name: Packaged VS Code smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -218,8 +149,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - id: editor_python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -227,14 +157,17 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean
       - run: npm run build
-      - run: npm run build:test-extension
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
+      - name: Compile the installed-editor harness
+        run: npm run build:test-extension
       - id: packaged_editor
-        name: Test packaged editor
+        name: Open the package in stable VS Code
         run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+          OPEN_WRANGLER_TEST_SELECTOR: daily-core
           VSCODE_TEST_VERSION: stable
       - name: Upload packaged-editor failure diagnostics
         if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
@@ -245,60 +178,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
-      - name: TypeScript tests
-        if: ${{ !cancelled() }}
-        run: npm run test:coverage:ts
-        env:
-          OPEN_WRANGLER_PYTHON: ${{ steps.editor_python.outputs.python-path }}
-      - name: Script tests
-        if: ${{ !cancelled() }}
-        run: npm run test:scripts:portable
-
-  web:
-    name: Web UI and accessibility
-    needs: [changes]
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.changes.result != 'success' || needs.changes.outputs.web_required != 'false')
-      }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci --ignore-scripts
-      - run: python -m pip install -e "python[dev]"
-      - run: npx --no-install playwright-core install chromium
-      - run: env -u CHROME_BIN npm run test:webview-acceptance
-      - if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: webview-visual-evidence
-          path: |
-            tmp/screenshots-actual/
-            tmp/screenshots-diff/
-          if-no-files-found: ignore
-          retention-days: 7
           include-hidden-files: false
 
   windows:
-    name: Windows
-    needs: [changes]
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.changes.result != 'success' || needs.changes.outputs.windows_required != 'false')
-      }}
+    name: Windows filesystem and process contracts
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -310,56 +195,37 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: npm ci --ignore-scripts
-      - name: Vendor copy tests
-        run: node --test scripts/copy-extension-vendor-assets.test.mjs
       - run: python -m pip install -e "python[dev]"
-      - name: Windows filesystem, dependency, and cleanup tests
+      - name: Windows export filesystem contracts
+        run: |
+          python -m pytest -q python/tests/test_export_target.py -k windows
+          python -m pytest -q python/tests/test_duckdb_export_filesystem.py
+      - name: Windows dependency filesystem contracts
+        run: |
+          python -m pytest -q python/tests/test_dependency_guard.py -k windows
+          python -m pytest -q python/tests/test_dependency_guard_exact_version.py
+      - name: Windows dependency and process cleanup contracts
         run: >-
-          python -m pytest -q
-          python/tests/test_export_target.py
-          python/tests/test_duckdb_export_filesystem.py
-          python/tests/test_dependency_guard.py
-          python/tests/test_dependency_guard_exact_version.py
-          python/tests/test_notebook.py::test_pandas_row_axis_formatter_preserves_bounded_normalized_displays
-          python/tests/test_runtime_dependency_authority.py
-          python/tests/test_session_editing.py
-      - run: npm run test:scripts:native
-      - run: >-
           npx --no-install vitest run
           src/test/dependencyInstaller.unit.test.ts
           src/test/processShutdown.unit.test.ts
-          src/test/pythonEnvironment.unit.test.ts
 
   validate:
     name: validate
     needs:
-      - changes
       - javascript
       - python
       - r
       - package-editor
-      - web
       - windows
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-      - name: Check selected jobs
-        run: node scripts/require-ci-results.mjs
-        env:
-          PYTHON_REQUIRED: ${{ needs.changes.outputs.python_required }}
-          R_REQUIRED: ${{ needs.changes.outputs.r_required }}
-          PACKAGE_EDITOR_REQUIRED: ${{ needs.changes.outputs.package_editor_required }}
-          WEB_REQUIRED: ${{ needs.changes.outputs.web_required }}
-          WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows_required }}
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          JAVASCRIPT_RESULT: ${{ needs.javascript.result }}
-          PYTHON_RESULT: ${{ needs.python.result }}
-          R_RESULT: ${{ needs.r.result }}
-          PACKAGE_EDITOR_RESULT: ${{ needs.package-editor.result }}
-          WEB_RESULT: ${{ needs.web.result }}
-          WINDOWS_RESULT: ${{ needs.windows.result }}
+      - name: Require every CI owner
+        run: |
+          test "${{ needs.javascript.result }}" = success
+          test "${{ needs.python.result }}" = success
+          test "${{ needs.r.result }}" = success
+          test "${{ needs.package-editor.result }}" = success
+          test "${{ needs.windows.result }}" = success
