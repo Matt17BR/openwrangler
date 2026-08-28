@@ -62,8 +62,9 @@ or release; fix the source and qualify it again.
 Set `publish: true` only when the same run should publish. The protected job revalidates the recorded triple, creates
 or verifies the exact lightweight tag and GitHub prerelease, then dispatches the existing protected-main Open VSX
 promoter. The tag starts the existing Azure Marketplace promoter. Both promoters download the public canonical assets
-and do not rebuild the extension. An exact existing tag, release, or artifact may resume verification-first recovery;
-conflicting public bytes fail closed.
+and do not rebuild the extension. Registry promotion verifies the canonical VSIX, checksum, provenance, channel, and
+downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs. An exact
+existing tag, release, or artifact may resume verification-first recovery; conflicting public bytes fail closed.
 
 ## Release candidate
 
@@ -86,7 +87,8 @@ and GitHub Release, then publishes the accepted bytes to Open VSX. The real tag 
 Marketplace pipeline, which consumes the same GitHub Release artifact.
 
 GitHub Releases remain the source-of-truth distribution channel. A registry conflict, moved tag, changed artifact,
-or mismatched metadata fails instead of overwriting public state.
+or mismatched metadata fails instead of overwriting public state. README and gallery media remain ordinary source
+assets and never gate registry publication.
 
 ## Recovery
 

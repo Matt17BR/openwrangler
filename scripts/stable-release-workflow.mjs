@@ -147,6 +147,7 @@ export function inspectReleaseCandidateWorkflow(source) {
       "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
     ).length !== 1 ||
     runSteps(packaging, "node scripts/verify-canonical-release-artifact.mjs canonical-release").length !== 1 ||
+    packagingRuns.some((run) => run.includes("verify-public-media-surfaces.mjs")) ||
     runSteps(packaging, "RUN_ATTEMPT").length !== 1 ||
     !packagingRuns.some((run) => run.includes('test "$RUN_ATTEMPT" = "1"'))
   ) {
@@ -332,9 +333,10 @@ export function inspectStableReleaseWorkflow(source) {
   const promoteRuns = steps(promote).map((step) => command(step?.run));
   if (
     promoteRuns.some((run) => /(?:^|\s)npm run (?:build|package)(?::|\s|$)/u.test(run)) ||
-    promoteRuns.some((run) => run.includes("create-canonical-release-artifact.mjs"))
+    promoteRuns.some((run) => run.includes("create-canonical-release-artifact.mjs")) ||
+    promoteRuns.some((run) => run.includes("verify-public-media-surfaces.mjs"))
   ) {
-    problems.push("Stable promotion must never build, package, or recreate candidate bytes.");
+    problems.push("Stable promotion must never build, package, recreate candidate bytes, or gate on README media.");
   }
   const requiredRuns = [
     "node scripts/release-candidate.mjs verify qualification/release-candidate.json",
@@ -344,8 +346,7 @@ export function inspectStableReleaseWorkflow(source) {
     "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
     "ovsx publish --skip-duplicate canonical-release/openwrangler.vsix",
     "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
-    "node scripts/prepare-stable-candidate-tag.mjs --require-remote",
-    "verify-public-media-surfaces.mjs"
+    "node scripts/prepare-stable-candidate-tag.mjs --require-remote"
   ];
   for (const required of requiredRuns) {
     if (promoteRuns.filter((run) => run.includes(required)).length !== 1) {
