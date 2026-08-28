@@ -738,6 +738,7 @@ describe("DataGrid clipboard interactions", () => {
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/^Copied column sales/u)).toBeNull();
+    expect(emptySales).toHaveFocus();
   });
 
   it("keeps a disposed grid's unresolved write ahead of its replacement grid", async () => {

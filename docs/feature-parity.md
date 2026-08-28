@@ -1312,11 +1312,11 @@ Grid clipboard selection, updated 2026-08-28:
   data column. The footer states the exact scope and enables **Copy column** only after sequential one-column pages are
   ready. The column-actions menu and Ctrl/Cmd+C use the same copy path. The visible page and retained view stay
   unchanged; the column header is included and row labels are not.
-- Copy uses full displayed cell values and spreadsheet-safe TSV quoting. String-typed cells and row labels whose
-  first active character after whitespace, control characters, or a BOM is `=`, `+`, `-`, or `@` receive a leading
-  apostrophe; typed numeric negatives remain unchanged. A row copy follows the current bounded column projection and
-  includes an exposed row label. It reports when only the loaded columns were copied rather than implying an
-  unbounded full-row fetch.
+- Copy uses full displayed cell values and spreadsheet-safe TSV quoting. Column headers, string-typed cells, and row
+  labels whose first active character after whitespace, control characters, or a BOM is `=`, `+`, `-`, or `@` receive
+  a leading apostrophe; typed numeric negatives remain unchanged. A row copy follows the current bounded column
+  projection and includes an exposed row label. It reports when only the loaded columns were copied rather than
+  implying an unbounded full-row fetch.
 - Selection is scoped to the opaque logical view. Stale views and unloaded range cells fail closed, and the copy
   contract caps one action at 100,000 cells and 4 MiB of UTF-8 text, budgeted field by field before a row or output is
   joined.

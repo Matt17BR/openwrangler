@@ -144,9 +144,9 @@ Drag across cells with a mouse or pen, or extend the focused selection with Shif
 rectangle. Ctrl/Cmd+click starts a new rectangle; non-contiguous selections are not supported. Select a column header,
 or press Ctrl/Cmd+Space while it is focused, to prepare the whole filtered and sorted data column. The grid footer
 copies one cell, the loaded columns in its row, the selected range, or the prepared column as tab-separated displayed
-values; Ctrl/Cmd+C copies the current cell range or prepared column. An off-block keyboard rectangle remains selected,
-but Copy range and Ctrl/Cmd+C report that every selected row and column must be loaded before copying. They do not copy
-a partial rectangle.
+values; Ctrl/Cmd+C copies the current cell range or prepared column. Prepared-column copies start with the column
+header. An off-block keyboard rectangle remains selected, but Copy range and Ctrl/Cmd+C report that every selected row
+and column must be loaded before copying. They do not copy a partial rectangle.
 
 <table>
   <tr>
