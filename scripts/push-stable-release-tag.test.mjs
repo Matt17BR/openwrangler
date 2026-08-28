@@ -381,6 +381,42 @@ test("accepts an exact existing lightweight tag idempotently without opening a c
   assert.deepEqual(fake.credentialPaths, []);
 });
 
+test("allows exact-tag recovery after main advances but rejects a fresh tag before push", (context) => {
+  const repository = createRepository(context);
+  const advancedMain = git(repository.root, [
+    "commit-tree",
+    `${repository.head}^{tree}`,
+    "-p",
+    repository.head,
+    "-m",
+    "advanced main"
+  ]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", advancedMain]);
+
+  const existing = createRunner({
+    expectedCommit: repository.head,
+    initialRemote: `${repository.head}\trefs/tags/${releaseTag}\n`
+  });
+  assert.deepEqual(publish(repository, existing.runner), {
+    created: false,
+    releaseTag,
+    sourceCommit: repository.head
+  });
+  assert.equal(
+    existing.calls.some((call) => call.args.includes("push")),
+    false
+  );
+  assert.deepEqual(existing.credentialPaths, []);
+
+  const absent = createRunner({ expectedCommit: repository.head });
+  assert.throws(() => publish(repository, absent.runner), /equal the configured source ref/u);
+  assert.equal(
+    absent.calls.some((call) => call.args.includes("push")),
+    false
+  );
+  assert.deepEqual(absent.credentialPaths, []);
+});
+
 test("rejects conflicting, annotated, ambiguous, and unverifiable remote tags without pushing", (context) => {
   const repository = createRepository(context);
   const cases = [

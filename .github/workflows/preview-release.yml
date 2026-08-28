@@ -1,0 +1,170 @@
+name: Preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Preview tag matching package.json, for example v1.99.7
+        required: true
+        type: string
+      publish:
+        description: Publish the accepted preview through the existing registry promotion paths
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and smoke-test preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.canonical_artifact.outputs.artifact-id }}
+    steps:
+      - name: Require protected main source
+        env:
+          EVENT_REF: ${{ github.ref }}
+        run: test "$EVENT_REF" = "refs/heads/main"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact protected main commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Validate preview release metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release-metadata.mjs --preview-only
+      - run: npm ci --ignore-scripts
+      - run: python -m pip install -e "python[dev]"
+      - name: Package the preview VSIX once
+        run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix
+      - run: npm run verify:vsix -- openwrangler.candidate.vsix
+      - name: Create the canonical preview artifact
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/create-canonical-release-artifact.mjs
+          openwrangler.candidate.vsix
+          --out-dir canonical-release
+          --preview-release
+      - name: Build the installed-editor tests
+        run: npm run build:test-extension
+      - id: vscode
+        name: Open the preview in VS Code
+        run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+          OPEN_WRANGLER_TEST_SELECTOR: daily-core
+          VSCODE_TEST_VERSION: stable
+      - name: Upload failure diagnostics
+        if: ${{ failure() && steps.vscode.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-release-vscode-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.vscode.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Reverify the accepted preview artifact
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-preview-release-artifact.mjs canonical-release
+      - id: canonical_artifact
+        name: Upload the accepted preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openwrangler-preview-release
+          path: |
+            canonical-release/openwrangler.vsix
+            canonical-release/openwrangler.vsix.sha256
+            canonical-release/openwrangler.vsix.provenance.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+          include-hidden-files: false
+
+  release:
+    name: Publish preview
+    needs: package
+    if: ${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: publishing
+    concurrency:
+      group: openwrangler-release-publication
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: canonical-release
+      - name: Verify the exact preview artifact for publication
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-preview-release-artifact.mjs canonical-release
+      - name: Publish or verify the exact lightweight release tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/push-release-tag.mjs
+      - name: Publish and verify the exact GitHub preview release
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/publish-github-preview-release.mjs canonical-release
+      - name: Dispatch the exact public preview to Open VSX promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          gh workflow run open-vsx-promotion.yml
+          --repo "$GITHUB_REPOSITORY"
+          --ref main
+          --raw-field "release_tag=$RELEASE_TAG"
