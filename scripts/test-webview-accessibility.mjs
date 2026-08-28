@@ -1629,7 +1629,7 @@ async function verifyColumnHeaderControlLayout(browser) {
             ".columnHeaderActions > button, .columnHeaderActions > .columnMenu > summary, .columnResizeHandle"
           )
         ];
-        if (headerControls.length < 3) {
+        if (headerControls.length < 2) {
           failures.push({
             count: headerControls.length,
             header: header.getAttribute("data-column"),

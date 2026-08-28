@@ -126,7 +126,7 @@
     "compose:readme-media": "node scripts/compose-readme-media.mjs",
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",
     "test:webview-acceptance": "npm run test:webview-acceptance:run",
-    "test:webview-acceptance:run": "node scripts/webview-browser.mjs && npm run test:accessibility",
+    "test:webview-acceptance:run": "npm run build:webview && npm run capture:screenshots -- --verify && npm run test:accessibility",
     "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
     "benchmark:r": "node scripts/run-r-performance.mjs",
     "benchmark:pyspark-profile": "node scripts/run-python.mjs python/benchmarks/pyspark_profile.py",
