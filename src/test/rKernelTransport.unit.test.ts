@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import {
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
 import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
+import { buildRDependencyCheckFunctionCode } from "../extension/r/rDependencyRequirements";
 import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
 import type { RNotebookKernelSelectionBinding } from "../extension/r/rNotebookVariableDiscovery";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
@@ -42,6 +44,7 @@ const exportChunkRequestId = "12345678-1234-4234-8234-1234567890ab";
 const exportCloseRequestId = "23456789-2345-4345-8345-234567890abc";
 const exportSecondChunkRequestId = "34567890-3456-4456-8456-34567890abcd";
 const exportId = "01234567-89ab-4cde-8fab-0123456789ab";
+const R_DEPENDENCY_CHECK_AVAILABLE = spawnSync("Rscript", ["--vanilla", "-e", "quit(status = 0L)"]).status === 0;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -57,11 +60,18 @@ describe("native R kernel runtime bundle", () => {
 
     expect(code).toContain(R_KERNEL_RUNTIME_BINDING);
     expect(code).toContain("jsonlite::base64_dec");
+    expect(code).toContain('package = "jsonlite"');
+    expect(code).toContain('minimum = "1.0"');
+    expect(code).toContain('exports = base::c("toJSON", "fromJSON", "base64_enc", "base64_dec")');
     expect(code).toContain("base::memDecompress");
     expect(code).toContain('type = "gzip"');
     expect(code).not.toContain(Buffer.from(files["frame_contract.R"]!, "utf8").toString("base64"));
     expect(code).not.toContain("openwrangler_r_frame_contract <- list()");
     expect(code).not.toContain("extensionPath");
+    const dependencyCheck = code.lastIndexOf(".__ow_check_native_r_dependency(");
+    expect(dependencyCheck).toBeGreaterThanOrEqual(0);
+    expect(code.indexOf(".__ow_binding <-")).toBeGreaterThan(dependencyCheck);
+    expect(code.indexOf("jsonlite::base64_dec")).toBeGreaterThan(dependencyCheck);
     expect(teardown).toContain(R_KERNEL_RUNTIME_BINDING);
     expect(teardown).toContain('exists("transport-owner-a", envir = .__ow_existing$transportOwners');
     expect(teardown).toContain("identical(.__ow_existing$bundleId");
@@ -85,6 +95,74 @@ describe("native R kernel runtime bundle", () => {
       "owner token is invalid"
     );
     expect(() => buildRKernelTeardownCode(testRuntimeFiles(), "")).toThrow("owner token is invalid");
+  });
+
+  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("reports a missing dependency with its environment and exact repair", () => {
+    const result = runRDependencyCheck({
+      packageName: "jsonlite",
+      minimumVersion: "1.0",
+      requiredExports: ["toJSON", "fromJSON", "base64_enc", "base64_dec"],
+      namespaceAvailable: false,
+      exports: []
+    });
+
+    expect(result.status, result.stderr).toBe(42);
+    expect(result.stdout).toContain("openwrangler_native_r_dependency_error");
+    expect(result.stdout).toContain("jsonlite is not installed");
+    expect(result.stdout).toContain("jsonlite >= 1.0");
+    expect(result.stdout).toContain("selected R kernel environment (R 4.5.0 at /selected/R)");
+    expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
+  });
+
+  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("rejects an old dependency with missing public capabilities", () => {
+    const result = runRDependencyCheck({
+      packageName: "jsonlite",
+      minimumVersion: "1.0",
+      requiredExports: ["toJSON", "fromJSON", "base64_enc", "base64_dec"],
+      namespaceAvailable: true,
+      observedVersion: "0.9.22",
+      exports: ["toJSON", "fromJSON"]
+    });
+
+    expect(result.status, result.stderr).toBe(42);
+    expect(result.stdout).toContain("installed but incompatible");
+    expect(result.stdout).toContain("Observed version: 0.9.22");
+    expect(result.stdout).toContain("jsonlite >= 1.0");
+    expect(result.stdout).toContain("Missing exported: base64_enc, base64_dec");
+    expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
+  });
+
+  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("accepts each dependency at its exact version floor", () => {
+    const jsonlite = runRDependencyCheck({
+      packageName: "jsonlite",
+      minimumVersion: "1.0",
+      requiredExports: ["toJSON", "fromJSON", "base64_enc", "base64_dec"],
+      namespaceAvailable: true,
+      observedVersion: "1.0",
+      exports: ["toJSON", "fromJSON", "base64_enc", "base64_dec"]
+    });
+    const rlang = runRDependencyCheck({
+      packageName: "rlang",
+      minimumVersion: "0.4.5",
+      requiredExports: ["env_binding_are_lazy"],
+      namespaceAvailable: true,
+      observedVersion: "0.4.5",
+      exports: ["env_binding_are_lazy"]
+    });
+
+    expect(jsonlite.status, jsonlite.stderr).toBe(0);
+    expect(jsonlite.stdout).toBe("accepted");
+    expect(rlang.status, rlang.stderr).toBe(0);
+    expect(rlang.stdout).toBe("accepted");
+  });
+
+  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("checks the loaded namespace version after an in-place upgrade", () => {
+    const result = runRLoadedNamespaceUpgradeCheck();
+
+    expect(result.status, result.stderr).toBe(42);
+    expect(result.stdout).toContain("installed but incompatible");
+    expect(result.stdout).toContain("Observed version: 0.4.4");
+    expect(result.stdout).toContain("owversionfixture >= 0.4.5");
   });
 });
 
@@ -4482,4 +4560,112 @@ function cancellationSource(): {
       for (const listener of listeners) listener();
     }
   };
+}
+
+interface RDependencyCheckInput {
+  readonly packageName: "jsonlite" | "rlang";
+  readonly minimumVersion: string;
+  readonly requiredExports: readonly string[];
+  readonly namespaceAvailable: boolean;
+  readonly observedVersion?: string;
+  readonly exports: readonly string[];
+}
+
+function runRDependencyCheck(input: RDependencyCheckInput) {
+  const requiredExports = rCharacterVector(input.requiredExports);
+  const exports = rCharacterVector(input.exports);
+  const observedVersion = input.observedVersion ? JSON.stringify(input.observedVersion) : "NULL";
+  const script = `
+${buildRDependencyCheckFunctionCode()}
+base::tryCatch({
+  .__ow_validate_native_r_dependency(
+    base::list(
+      package = ${JSON.stringify(input.packageName)},
+      minimum = ${JSON.stringify(input.minimumVersion)},
+      exports = ${requiredExports}
+    ),
+    "the selected R kernel environment (R 4.5.0 at /selected/R)",
+    ${input.namespaceAvailable ? "TRUE" : "FALSE"},
+    ${observedVersion},
+    ${exports}
+  )
+  base::cat("accepted", sep = "")
+}, error = function(.__ow_error) {
+  base::cat(base::class(.__ow_error)[[1L]], "\\n", base::conditionMessage(.__ow_error), sep = "")
+  base::quit(status = 42L)
+})
+`;
+  return spawnSync("Rscript", ["--vanilla", "-"], {
+    encoding: "utf8",
+    input: script,
+    maxBuffer: 64 * 1_024
+  });
+}
+
+function runRLoadedNamespaceUpgradeCheck() {
+  const script = `
+${buildRDependencyCheckFunctionCode()}
+.__ow_fixture_root <- base::tempfile("ow-r-dependency-")
+base::dir.create(.__ow_fixture_root, mode = "0700")
+.__ow_source <- base::file.path(.__ow_fixture_root, "owversionfixture")
+.__ow_library <- base::file.path(.__ow_fixture_root, "library")
+base::dir.create(base::file.path(.__ow_source, "R"), recursive = TRUE)
+base::dir.create(.__ow_library)
+.__ow_description <- function(.__ow_version) base::c(
+  "Package: owversionfixture",
+  base::sprintf("Version: %s", .__ow_version),
+  "Title: Open Wrangler Version Fixture",
+  "Description: Exercises loaded namespace version handling.",
+  "Authors@R: person('Open', 'Wrangler', email = 'open@example.invalid', role = c('aut', 'cre'))",
+  "License: MIT"
+)
+base::writeLines(.__ow_description("0.4.4"), base::file.path(.__ow_source, "DESCRIPTION"))
+base::writeLines("export(env_binding_are_lazy)", base::file.path(.__ow_source, "NAMESPACE"))
+base::writeLines(
+  "env_binding_are_lazy <- function(...) TRUE",
+  base::file.path(.__ow_source, "R", "fixture.R")
+)
+.__ow_install <- function() utils::install.packages(
+  .__ow_source,
+  lib = .__ow_library,
+  repos = NULL,
+  type = "source",
+  quiet = TRUE,
+  INSTALL_opts = base::c("--no-byte-compile", "--no-help", "--no-demo")
+)
+base::tryCatch({
+  .__ow_install()
+  base::.libPaths(base::c(.__ow_library, base::.libPaths()))
+  base::stopifnot(base::requireNamespace("owversionfixture", quietly = TRUE))
+  base::writeLines(.__ow_description("0.4.5"), base::file.path(.__ow_source, "DESCRIPTION"))
+  .__ow_install()
+  base::stopifnot(
+    base::identical(base::as.character(base::getNamespaceVersion("owversionfixture")), "0.4.4"),
+    base::identical(base::as.character(utils::packageVersion("owversionfixture")), "0.4.5")
+  )
+  .__ow_check_native_r_dependency(
+    base::list(
+      package = "owversionfixture",
+      minimum = "0.4.5",
+      exports = base::c("env_binding_are_lazy")
+    ),
+    "the selected R kernel environment"
+  )
+  base::cat("accepted", sep = "")
+}, error = function(.__ow_error) {
+  base::cat(base::class(.__ow_error)[[1L]], "\\n", base::conditionMessage(.__ow_error), sep = "")
+  base::quit(status = 42L)
+})
+`;
+  return spawnSync("Rscript", ["--vanilla", "-"], {
+    encoding: "utf8",
+    input: script,
+    maxBuffer: 64 * 1_024
+  });
+}
+
+function rCharacterVector(values: readonly string[]): string {
+  return values.length === 0
+    ? "base::character()"
+    : `base::c(${values.map((value) => JSON.stringify(value)).join(", ")})`;
 }

@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { withKernelTimeout } from "../notebooks/kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "../notebooks/notebookProvenance";
+import { buildRDependencyPreflightCode, R_DEPENDENCY_DIAGNOSTIC_PREFIX } from "./rDependencyRequirements";
 import type { RDataframeFlavor } from "./rFrameContract";
 
 const R_DISCOVERY_PROTOCOL_VERSION = 1;
@@ -172,6 +173,7 @@ export function buildRNotebookVariableDiscoveryCode(marker: string): string {
 
   return `
 local({
+${buildRDependencyPreflightCode("selected R kernel")}
   .ow_protocol_version <- ${R_DISCOVERY_PROTOCOL_VERSION}L
   .ow_max_variables <- ${MAX_DISCOVERY_VARIABLES}L
   .ow_max_scanned_bindings <- ${MAX_DISCOVERY_SCANNED_BINDINGS}L
@@ -188,22 +190,6 @@ local({
   }
   .ow_variables <- list()
   .ow_failed_binding <- new.env(parent = emptyenv())
-
-  .ow_has_jsonlite <- requireNamespace("jsonlite", quietly = TRUE)
-  .ow_has_rlang <- requireNamespace("rlang", quietly = TRUE)
-  if (!.ow_has_jsonlite || !.ow_has_rlang) {
-    .ow_missing <- if (!.ow_has_jsonlite && !.ow_has_rlang) {
-      "missing_jsonlite_rlang"
-    } else if (!.ow_has_jsonlite) {
-      "missing_jsonlite"
-    } else {
-      "missing_rlang"
-    }
-    cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat(sprintf('{"protocolVersion":1,"error":"%s"}\\n', .ow_missing), sep = "")
-    cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-    return(invisible(NULL))
-  }
 
   for (.ow_name in .ow_names) {
     if (bindingIsActive(.ow_name, .ow_source)) {
@@ -304,28 +290,13 @@ function buildRNotebookVariableSelectionProbeCode(marker: string, selected: RNot
 
   return `
 local({
+${buildRDependencyPreflightCode("selected R kernel")}
   .ow_protocol_version <- ${R_DISCOVERY_PROTOCOL_VERSION}L
   .ow_max_payload_bytes <- ${MAX_DISCOVERY_PAYLOAD_BYTES}L
   .ow_source <- .GlobalEnv
   .ow_name <- ${JSON.stringify(selected.name)}
   .ow_variables <- list()
   .ow_failed_binding <- new.env(parent = emptyenv())
-
-  .ow_has_jsonlite <- requireNamespace("jsonlite", quietly = TRUE)
-  .ow_has_rlang <- requireNamespace("rlang", quietly = TRUE)
-  if (!.ow_has_jsonlite || !.ow_has_rlang) {
-    .ow_missing <- if (!.ow_has_jsonlite && !.ow_has_rlang) {
-      "missing_jsonlite_rlang"
-    } else if (!.ow_has_jsonlite) {
-      "missing_jsonlite"
-    } else {
-      "missing_rlang"
-    }
-    cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat(sprintf('{"protocolVersion":1,"error":"%s"}\\n', .ow_missing), sep = "")
-    cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-    return(invisible(NULL))
-  }
 
   if (
     exists(.ow_name, envir = .ow_source, inherits = FALSE) &&
@@ -714,6 +685,9 @@ function notebookKernelError(data: Uint8Array): RNotebookVariableDiscoveryError 
       decoded = undefined;
     }
     if (isPlainRecord(decoded) && typeof decoded.message === "string") {
+      if (decoded.message.startsWith(R_DEPENDENCY_DIAGNOSTIC_PREFIX) && !hasControlCharacter(decoded.message)) {
+        return new RNotebookVariableDiscoveryError(decoded.message);
+      }
       const message = decoded.message.toLowerCase();
       if (message.includes("jsonlite") && isMissingPackageMessage(message)) {
         return missingRPackage("jsonlite");

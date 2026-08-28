@@ -17,6 +17,38 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("runs the dependency preflight before managed process-agent readiness", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-dependency-test-"));
+    const emptyLibrary = resolve(temporaryParent, "empty-library");
+    const documentMarker = resolve(temporaryParent, "document-ran.txt");
+    await mkdir(emptyLibrary, { mode: 0o700 });
+    const previousSiteLibrary = process.env.R_LIBS_SITE;
+    const previousUserLibrary = process.env.R_LIBS_USER;
+    process.env.R_LIBS_SITE = emptyLibrary;
+    process.env.R_LIBS_USER = emptyLibrary;
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `cat("ran", file = ${rString(documentMarker)}); frame <- data.frame(value = 1L)`
+    });
+    try {
+      await expect(transport.discoverVariables({ timeoutMs: 10_000 })).rejects.toThrow(
+        /Native R dependency check: jsonlite is not installed.*selected Rscript environment.*jsonlite >= 1\.0.*Install it with install\.packages\('jsonlite'\)/u
+      );
+      await expect(readFile(documentMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousSiteLibrary === undefined) delete process.env.R_LIBS_SITE;
+      else process.env.R_LIBS_SITE = previousSiteLibrary;
+      if (previousUserLibrary === undefined) delete process.env.R_LIBS_USER;
+      else process.env.R_LIBS_USER = previousUserLibrary;
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual(["empty-library"]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("does not retain an untrusted open candidate and can reuse its requested session identity", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-untrusted-open-test-"));
     const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");

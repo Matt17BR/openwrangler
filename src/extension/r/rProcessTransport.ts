@@ -10,6 +10,7 @@ import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/prot
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
+import { buildRDependencyPreflightCode, R_DEPENDENCY_FAILURE_CLASS } from "./rDependencyRequirements";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
   decodeRKernelResponseJson,
@@ -701,7 +702,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       this.assertActive();
       this.assertWorkspaceTrusted();
 
-      const child = spawn(this.options.rscriptPath, ["--vanilla", processAgent], {
+      const processBootstrap = buildRProcessBootstrapCode(processAgent, path.join(responseRoot, "ready.json"));
+      const child = spawn(this.options.rscriptPath, ["--vanilla", "-e", processBootstrap], {
         cwd: this.options.workingDirectory,
         detached: process.platform !== "win32",
         windowsHide: true,
@@ -863,6 +865,37 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       throw new Error("Trust this workspace before Open Wrangler accesses the R process.");
     }
   }
+}
+
+function buildRProcessBootstrapCode(processAgent: string, readyPath: string): string {
+  const payloadPrefix = `{"protocolVersion":${PROCESS_PROTOCOL_VERSION},"status":"error","message":`;
+  return `
+base::local({
+  base::tryCatch({
+${buildRDependencyPreflightCode("selected Rscript")}
+    base::sys.source(${rString(processAgent)}, envir = base::globalenv(), keep.source = FALSE)
+  }, error = function(.__ow_error) {
+    if (!base::inherits(.__ow_error, ${rString(R_DEPENDENCY_FAILURE_CLASS)})) base::stop(.__ow_error)
+    .__ow_ready_path <- ${rString(readyPath)}
+    .__ow_temporary <- base::paste0(.__ow_ready_path, ".dependency-", base::Sys.getpid(), ".tmp")
+    .__ow_payload <- base::paste0(
+      ${rString(payloadPrefix)},
+      base::encodeString(base::conditionMessage(.__ow_error), quote = '"'),
+      "}"
+    )
+    base::writeLines(.__ow_payload, .__ow_temporary, useBytes = TRUE)
+    if (!base::file.rename(.__ow_temporary, .__ow_ready_path)) {
+      base::stop("Open Wrangler could not publish its R dependency failure.", call. = FALSE)
+    }
+    base::quit(save = "no", status = 1L, runLast = FALSE)
+  })
+})
+`;
+}
+
+function rString(value: string): string {
+  if (value.includes("\0")) throw new TypeError("R code cannot contain a NUL path component.");
+  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
 function createOwnedProcess(
