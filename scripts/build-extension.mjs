@@ -17,7 +17,7 @@ const options = {
   entryPoints: ["src/extension/activate.ts"],
   external: ["vscode", "./vendor/js-yaml"],
   format: "cjs",
-  logLevel: "info",
+  logLevel: "warning",
   outfile: "dist/extension/activate.js",
   platform: "node",
   sourcemap: true,
