@@ -30,7 +30,6 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/canonical-release-assets.mjs",
   "scripts/copy-extension-test-runtime-assets.mjs",
   "scripts/cursor-acquisition.mjs",
-  "scripts/daily-preview-artifact.mjs",
   "scripts/download-canonical-github-release.mjs",
   "scripts/editor-acceptance-evidence.mjs",
   "scripts/editor-acceptance.mjs",

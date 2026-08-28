@@ -32,19 +32,22 @@ The exact-artifact installed smoke and its environment are documented once in [T
 
 ## Scheduled and release workflows
 
-Daily preview, manual preview publication, release-candidate qualification, and stable publication remain separate
-transactions:
+The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:
 
-- Daily preview builds a disposable package from protected `main` and runs its existing installed VS Code journey.
-- Manual preview publication packages one canonical `v1.99.7` artifact from protected `main` and installs those exact
-  bytes in stable VS Code with the existing `daily-core` selector before any public mutation. Publication is explicit.
+- Each scheduled run derives its `1.99.YYYYMMDD` version from that workflow run's immutable UTC creation timestamp,
+  creates one deterministic direct child of protected `main` that changes only the three version files, and qualifies
+  one canonical VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The
+  accepted bytes are then published automatically as a GitHub prerelease and dispatched to both registry promoters.
+- A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
+  publication remains explicit through its `publish` input.
 - Release candidate validates protected `main`, packages once, and passes the same canonical artifact to its existing
   installed and external consumers.
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. It does not rebuild the
   extension.
 
 The workflows themselves are authoritative for their current inputs and schedules. See [Releasing](releasing.md) for
-the operator sequence. These release paths are not additional pull-request source-test owners.
+the operator sequence and failed-publication recovery. These release paths are not additional pull-request
+source-test owners.
 
 ## Reading a red check
 

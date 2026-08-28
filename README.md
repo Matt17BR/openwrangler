@@ -71,9 +71,10 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 Native R entrypoints require `jsonlite` 1.0 or newer and `rlang` 0.4.5 or newer in the R environment described above.
 
-The unpublished 1.99.7 candidate contains all 28 native-R cleaning operations, adding **Transform by Example** and
-**Custom Code**. Disposable nonpublishing previews may exercise its packaging path; any future release
-candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.
+The public 1.99.7 preview contains all 28 native-R cleaning operations, adding **Transform by Example** and
+**Custom Code**. Daily `1.99.YYYYMMDD` previews qualify protected `main` in stable VS Code, then publish the same
+accepted VSIX as a GitHub prerelease and through the registry promoters. The next stable release is 2.0.0 and still
+requires explicit review, a same-byte soak, and a separate one-shot promotion.
 Dedicated source contracts exercise the exact ordered catalog and executable production-generated R. A separate host
 contract proves byte-exact clipboard and atomic script saves with one distinct executable operation-labelled buffer
 per catalog entry. Candidate acceptance requires all 28 advertised capabilities and exercises Custom Code through
