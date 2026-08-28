@@ -2,19 +2,24 @@
 
 ## Current release train
 
-Open Wrangler has three deliberately separate paths. None depends on a 1.99.7 release event.
+Open Wrangler has four deliberately separate paths.
 
 1. `.github/workflows/daily-preview.yml` produces a tagless, disposable build from protected `main` each day. It
    assigns a source-derived `0.<odd>.<patch>` identity that cannot equal the checked-in release version, builds and
    checks one VSIX, then installs those exact bytes in stable VS Code for a short CSV/grid/sort/cleanup journey. A
    passing VSIX is retained for 14 days. It does not create a tag, GitHub Release, checksum/provenance bundle, or
    registry publication and is not a release candidate.
-2. `.github/workflows/release-candidate.yml` is a manual, nonpublishing qualification run. A first-attempt dispatch
+2. `.github/workflows/preview-release.yml` is the manual 1.99.x preview path. It starts only from protected `main`,
+   defaults to qualification without publication, builds one canonical VSIX/checksum/provenance triple, and reuses
+   those exact bytes across candidate acceptance and Remote SSH. An explicit `publish: true` dispatch may publish the
+   accepted triple through the protected `publishing` environment to one immutable tag, GitHub prerelease, Open VSX,
+   and the Marketplace pipeline. Preview publication has no stable soak or stable-parity claim.
+3. `.github/workflows/release-candidate.yml` is a manual, nonpublishing stable qualification run. A first-attempt dispatch
    from protected `main` validates stable metadata, packages one canonical triple, and reuses its numeric artifact ID
    across VS Code, one pinned Cursor lifecycle/responsive-grid seam, Python/Jupyter, R 4.4 and 4.5 compatibility,
    installed performance, and Remote SSH. It retains the candidate and bounded qualification manifest for 21 days;
    failure diagnostics are failure-only and no job has write permission or a publishing environment.
-3. `.github/workflows/stable-release.yml` accepts only `candidate_run_id` and `release_tag`. Its read-only selector
+4. `.github/workflows/stable-release.yml` accepts only `candidate_run_id` and `release_tag`. Its read-only selector
    requires a successful first-attempt candidate completed 168–336 hours earlier, rejects a newer successful
    candidate for the same tag, and requires the candidate, manifest, and performance artifacts to remain unexpired.
    The protected `publishing` job checks out the historical candidate source, downloads those exact numeric artifact
@@ -22,12 +27,12 @@ Open Wrangler has three deliberately separate paths. None depends on a 1.99.7 re
    builds or packages. The existing fail-closed tag, GitHub Release, Open VSX, and public-media transactions then
    promote the same VSIX bytes.
 
-Do not rerun a failed candidate: create a new first-attempt candidate from the corrected protected `main`. A source
+Do not rerun a failed stable candidate: create a new first-attempt candidate from the corrected protected `main`. A source
 change, artifact expiry or replacement, manifest mismatch, failed owner, soak outside the window, public-byte
 conflict, or newer same-tag candidate invalidates promotion. Before public promotion, rollback means selecting no
 candidate at all; after a tag or registry write, recovery is verification-first and must never rebuild, retag, or
-overwrite conflicting public bytes. The retired 1.99.x preview inspectors remain only for historical recovery tests;
-they are not a current publication entry point.
+overwrite conflicting public bytes. Preview qualification follows the same fix-the-source rule, but it remains a
+separate one-run candidate-and-publication transaction because preview artifacts are not eligible for stable promotion.
 
 ## Release copy
 

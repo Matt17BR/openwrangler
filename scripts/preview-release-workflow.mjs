@@ -294,7 +294,9 @@ export function inspectPreviewReleaseWorkflow(source) {
   inspectCheckout(packaging, "package", problems);
   inspectPackageSourceBinding(packaging, problems);
   const packageSteps = steps(packaging);
-  const packageInstall = findRun(packaging, "npm ci");
+  const packageInstall = steps(packaging).find((step) =>
+    ["npm ci", "npm ci --ignore-scripts"].includes(command(step?.run))
+  );
   const publicMediaPreflight = findRun(packaging, PUBLIC_MEDIA_PREFLIGHT_RUN);
   const packageBuild = packageSteps.find((step) => step?.name === "Package the preview VSIX once");
   if (
@@ -472,7 +474,12 @@ export function inspectPreviewReleaseWorkflow(source) {
   const publicMediaStep = releaseSteps.find(
     (step) => typeof step?.run === "string" && step.run.includes("verify-public-media-surfaces.mjs")
   );
-  const publicMediaInstall = findRun(release, "npx playwright-core install --with-deps chromium");
+  const publicMediaInstall = steps(release).find((step) =>
+    [
+      "npx playwright-core install --with-deps chromium",
+      "npx --no-install playwright-core install --with-deps chromium"
+    ].includes(command(step?.run))
+  );
   const publicMediaContract = releaseSteps.find((step) => step?.id === "public_media_contract");
   const publicTagStep = findRun(release, "node scripts/prepare-stable-candidate-tag.mjs --require-remote");
   const secretSteps = releaseSteps.filter((step) => step?.env?.OVSX_PAT !== undefined);

@@ -38,6 +38,9 @@ export const WORKFLOW_INSTALL_OWNERS = Object.freeze([
   [".github/workflows/cross-platform.yml", "r-4-4-scheduled-qualification", [INSTALL]],
   [".github/workflows/daily-preview.yml", "preview", [INSTALL]],
   [".github/workflows/open-vsx-promotion.yml", "promote", [INSTALL, PREFIXED_INSTALL]],
+  [".github/workflows/preview-release.yml", "package", [INSTALL]],
+  [".github/workflows/preview-release.yml", "remote-ssh", [INSTALL]],
+  [".github/workflows/preview-release.yml", "release", [INSTALL]],
   [".github/workflows/release-candidate.yml", "package", [INSTALL]],
   [".github/workflows/release-candidate.yml", "remote-ssh", [INSTALL]],
   [".github/workflows/release-candidate.yml", "qualify", [INSTALL]],
@@ -59,6 +62,7 @@ export const WORKFLOW_PATHS = Object.freeze([
   ".github/workflows/daily-preview.yml",
   ".github/workflows/open-vsx-promotion.yml",
   ".github/workflows/performance.yml",
+  ".github/workflows/preview-release.yml",
   ".github/workflows/release-candidate.yml",
   ".github/workflows/released-jupyter.yml",
   ".github/workflows/stable-release.yml"

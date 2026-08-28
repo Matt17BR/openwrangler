@@ -52,6 +52,11 @@ R notebook path needs investigation.
 
 ## Release candidates
 
+The **Preview release** workflow is the current 1.99.x path. It defaults to a nonpublishing run from protected `main`,
+builds one canonical preview triple, and sends those exact bytes through candidate acceptance and Remote SSH. Setting
+its explicit publish input creates the immutable GitHub prerelease and sends the same accepted VSIX to Open VSX and
+the Marketplace pipeline. A preview run does not satisfy stable parity or create a stable candidate.
+
 The **Release candidate** workflow starts manually from protected `main`. It builds one VSIX and records its checksum
 and source revision. Every acceptance job downloads and verifies those same bytes; consumers do not rebuild the
 extension.
@@ -65,7 +70,7 @@ it is not eligible for release.
 
 ## Publication
 
-Stable publication is a separate manual action. It selects a successful, sufficiently aged release-candidate run,
+Stable publication is a separate manual action. It selects a successful, sufficiently aged stable release-candidate run,
 downloads its recorded VSIX, and verifies the source revision and checksums again. Only the publication job receives
 write permission.
 

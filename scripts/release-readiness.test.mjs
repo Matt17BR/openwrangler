@@ -2778,3 +2778,10 @@ test("retains the historical 1.99.x preview recovery workflow contract", () => {
     assert.notDeepEqual(mutate(change), [], `preview workflow mutation ${index + 1} must fail closed`);
   }
 });
+
+test("keeps the current preview release workflow on the guarded preview contract", () => {
+  const workflowSource = readFileSync(new URL("../.github/workflows/preview-release.yml", import.meta.url), "utf8");
+  assert.deepEqual(inspectReleaseWorkflow(workflowSource), []);
+  assert.doesNotMatch(workflowSource, /- run: npm ci\s*$/mu);
+  assert.match(workflowSource, /- run: npm ci --ignore-scripts/u);
+});
