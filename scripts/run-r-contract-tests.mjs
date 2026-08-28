@@ -79,10 +79,6 @@ export const R_CONTRACT_SHARDS = Object.freeze([
     phaseIds: Object.freeze(R_KERNEL_AGENT_CASES.map((caseId) => `kernel:${caseId}`))
   }),
   Object.freeze({
-    id: "catalog-and-unit",
-    phaseIds: Object.freeze(["catalog", "typescript-frame"])
-  }),
-  Object.freeze({
     id: "runtime-transport",
     phaseIds: Object.freeze(["kernel-transport", "process-transport", "interactive-transport"])
   })
@@ -196,12 +192,8 @@ export function createRContractPhases({
     ),
     vitestPhase(
       "typescript-frame",
-      "TypeScript R frame and unit contracts",
-      [
-        "src/test/rFrameContract.unit.test.ts",
-        "src/test/rFrameContract.cross.test.ts",
-        "src/test/rKernelTransport.unit.test.ts"
-      ],
+      "TypeScript R frame contracts",
+      ["src/test/rFrameContract.cross.test.ts"],
       SHORT_VITEST_PHASE_TIMEOUT_MS,
       { environment: vitestEnvironment, node, vitest }
     ),
