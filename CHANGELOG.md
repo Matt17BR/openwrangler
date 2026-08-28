@@ -32,6 +32,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Manual `v1.99.7` preview publication now qualifies one canonical protected-main artifact in stable VS Code before an
+  explicit run may hand the same public bytes to the existing Open VSX and Azure Marketplace promoters.
 - Pull-request CI now uses plainly named, path-scoped JavaScript/TypeScript, Python, R, web, Windows, and
   package/editor jobs. Python and TypeScript coverage remain required, and `validate` blocks merge when a selected job
   fails.

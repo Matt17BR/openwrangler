@@ -32,9 +32,12 @@ The exact-artifact installed smoke and its environment are documented once in [T
 
 ## Scheduled and release workflows
 
-Daily preview, release-candidate qualification, and stable publication remain separate transactions:
+Daily preview, manual preview publication, release-candidate qualification, and stable publication remain separate
+transactions:
 
 - Daily preview builds a disposable package from protected `main` and runs its existing installed VS Code journey.
+- Manual preview publication packages one canonical `v1.99.7` artifact from protected `main` and installs those exact
+  bytes in stable VS Code with the existing `daily-core` selector before any public mutation. Publication is explicit.
 - Release candidate validates protected `main`, packages once, and passes the same canonical artifact to its existing
   installed and external consumers.
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. It does not rebuild the

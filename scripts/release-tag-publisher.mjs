@@ -442,7 +442,7 @@ function validateSourceRef(sourceRef) {
   }
 }
 
-function assertRepositoryState({ expectedCommit, gitRunner, root, sourceRef }) {
+function assertRepositoryCheckout({ expectedCommit, gitRunner, root }) {
   const discoveredRoot = realpathSync.native(
     git(root, ["rev-parse", "--show-toplevel"], "find the repository root", gitRunner).trim()
   );
@@ -451,9 +451,6 @@ function assertRepositoryState({ expectedCommit, gitRunner, root, sourceRef }) {
   }
   if (resolveCommit(root, "HEAD", "HEAD", gitRunner) !== expectedCommit) {
     throw new Error("Release-tag publication must run at EXPECTED_SHA.");
-  }
-  if (resolveCommit(root, sourceRef, "configured release source", gitRunner) !== expectedCommit) {
-    throw new Error("Release-tag publication requires EXPECTED_SHA to equal the configured source ref.");
   }
   if (
     git(
@@ -464,6 +461,12 @@ function assertRepositoryState({ expectedCommit, gitRunner, root, sourceRef }) {
     ).trim() !== ""
   ) {
     throw new Error("Release-tag publication requires a clean tracked worktree.");
+  }
+}
+
+function assertFreshTagSource({ expectedCommit, gitRunner, root, sourceRef }) {
+  if (resolveCommit(root, sourceRef, "configured release source", gitRunner) !== expectedCommit) {
+    throw new Error("Release-tag publication requires EXPECTED_SHA to equal the configured source ref.");
   }
 }
 
@@ -489,19 +492,22 @@ export function pushExactReleaseTag({
   if (releaseTag !== `v${version}`) {
     throw new Error("RELEASE_TAG must exactly equal v<package.json version>.");
   }
-  assertRepositoryState({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
+  assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
 
   const before = inspectRemoteTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot });
   if (before.exists) {
-    assertRepositoryState({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
+    assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
     return Object.freeze({ created: false, releaseTag, sourceCommit: expectedCommit });
   }
 
+  assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
+  assertFreshTagSource({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
   pushTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot, token });
   const after = inspectRemoteTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot });
   if (!after.exists) {
     throw new Error("The exact release tag was not visible after its Git push completed.");
   }
-  assertRepositoryState({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
+  assertRepositoryCheckout({ expectedCommit, gitRunner, root: repositoryRoot });
+  assertFreshTagSource({ expectedCommit, gitRunner, root: repositoryRoot, sourceRef });
   return Object.freeze({ created: true, releaseTag, sourceCommit: expectedCommit });
 }

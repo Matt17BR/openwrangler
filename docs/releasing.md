@@ -1,7 +1,7 @@
 # Releasing
 
-Open Wrangler keeps daily preview, release-candidate qualification, and stable publication separate. Do not rebuild,
-replace, or retag an artifact after it has entered qualification.
+Open Wrangler keeps daily preview, manual preview publication, release-candidate qualification, and stable publication
+separate. Do not rebuild, replace, or retag an artifact after it has entered qualification.
 
 ## Release change
 
@@ -52,6 +52,19 @@ verified VSIX path.
 `.github/workflows/daily-preview.yml` builds a disposable package from protected `main` and runs its existing stable
 VS Code smoke. It creates no stable tag or registry publication and cannot be promoted as a release candidate.
 
+## Manual preview publication
+
+Dispatch `.github/workflows/preview-release.yml` from protected `main` with `release_tag` set to `v1.99.7`. The default
+`publish: false` run validates preview metadata, packages one canonical VSIX/checksum/provenance triple, and installs
+that exact VSIX in stable VS Code with the existing `daily-core` selector. A failed qualification run creates no tag
+or release; fix the source and qualify it again.
+
+Set `publish: true` only when the same run should publish. The protected job revalidates the recorded triple, creates
+or verifies the exact lightweight tag and GitHub prerelease, then dispatches the existing protected-main Open VSX
+promoter. The tag starts the existing Azure Marketplace promoter. Both promoters download the public canonical assets
+and do not rebuild the extension. An exact existing tag, release, or artifact may resume verification-first recovery;
+conflicting public bytes fail closed.
+
 ## Release candidate
 
 Dispatch `.github/workflows/release-candidate.yml` from the exact protected `main` commit with the reviewed stable tag.
@@ -68,7 +81,7 @@ Dispatch `.github/workflows/stable-release.yml` with the successful candidate ru
 workflow selects the recorded candidate, checks out its source, revalidates the canonical files, and publishes the
 same VSIX bytes. It does not build or package.
 
-Only the protected publication job receives repository write permission. It creates or verifies the lightweight tag
+Only a protected publication job receives repository write permission. It creates or verifies the lightweight tag
 and GitHub Release, then publishes the accepted bytes to Open VSX. The real tag starts the separately protected Azure
 Marketplace pipeline, which consumes the same GitHub Release artifact.
 
