@@ -25,6 +25,7 @@ export type GridClipboardResult = { ok: true; payload: GridClipboardPayload } | 
 
 export const maximumClipboardCells = 100_000;
 export const maximumClipboardBytes = 4 * 1024 * 1024;
+export const maximumClipboardColumnValues = maximumClipboardCells - 1;
 const spreadsheetFormulaPrefix = /^[\s\p{Cc}\uFEFF]*[=+\-@]/u;
 const clipboardQuotingCharacter = /["\t\r\n]/u;
 
@@ -41,25 +42,27 @@ export interface GridClipboardColumnAccumulator {
 }
 
 /**
- * Accumulates one logical column without ever constructing an output above
- * the shared clipboard byte or cell limit.
+ * Accumulates a header and one logical column without ever constructing an
+ * output above the shared clipboard byte or cell limit.
  */
-export function createGridClipboardColumnAccumulator(): GridClipboardColumnAccumulator {
-  const fields: string[] = [];
-  let outputBytes = 0;
-  let failure: GridClipboardResult | undefined;
+export function createGridClipboardColumnAccumulator(header: string): GridClipboardColumnAccumulator {
+  const headerPlan = planClipboardField(header, true, maximumClipboardBytes);
+  const fields = headerPlan ? [renderClipboardField(header, headerPlan)] : [];
+  let outputBytes = headerPlan?.byteLength ?? 0;
+  let rowCount = 0;
+  let failure: GridClipboardResult | undefined = headerPlan ? undefined : clipboardByteLimitError();
 
   return {
     get rowCount() {
-      return fields.length;
+      return rowCount;
     },
     append(cell) {
       if (failure) return failure;
-      if (fields.length >= maximumClipboardCells) {
+      if (rowCount >= maximumClipboardColumnValues) {
         failure = clipboardCellLimitError();
         return failure;
       }
-      const separatorBytes = fields.length === 0 ? 0 : 1;
+      const separatorBytes = 1;
       const plan = planClipboardField(
         cell.display,
         spreadsheetFormulaCanExecute(cell),
@@ -71,16 +74,17 @@ export function createGridClipboardColumnAccumulator(): GridClipboardColumnAccum
       }
       outputBytes += separatorBytes + plan.byteLength;
       fields.push(renderClipboardField(cell.display, plan));
+      rowCount += 1;
       return undefined;
     },
     finish() {
       if (failure) return failure;
-      if (fields.length === 0) return { ok: false, reason: "There are no rows in the current data view." };
+      if (rowCount === 0) return { ok: false, reason: "There are no rows in the current data view." };
       return {
         ok: true,
         payload: {
           text: fields.join("\n"),
-          rowCount: fields.length,
+          rowCount,
           columnCount: 1,
           includesRowLabel: false,
           completeRow: false

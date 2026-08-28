@@ -353,11 +353,7 @@ export function GridClipboardControls({ controller }: { controller: GridClipboar
         className="gridClipboardButton"
         aria-label="Copy column"
         disabled={!controller.wholeColumnResult.ok}
-        title={
-          controller.wholeColumnResult.ok
-            ? "Copy whole filtered and sorted column"
-            : controller.wholeColumnResult.reason
-        }
+        title={controller.wholeColumnResult.ok ? "Copy column" : controller.wholeColumnResult.reason}
         onClick={() => void controller.copyColumn()}
       >
         <span className="codicon codicon-copy" aria-hidden="true" />

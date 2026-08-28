@@ -8,7 +8,7 @@ import {
   clipboardCellLimitError,
   createGridClipboardColumnAccumulator,
   GridClipboardOwnershipChangedError,
-  maximumClipboardCells,
+  maximumClipboardColumnValues,
   tryAcquireGridClipboardWrite,
   type GridClipboardColumnAccumulator,
   type GridClipboardResult,
@@ -66,9 +66,7 @@ interface ColumnWriteRequest extends ColumnCopyOwner {
 
 export interface WholeColumnClipboardAction {
   ariaLabel: string;
-  busy: boolean;
   disabled: boolean;
-  icon: "check" | "copy" | "loading" | "warning";
   menuLabel: string;
   title: string;
 }
@@ -246,7 +244,7 @@ export function useWholeColumnClipboard({
           }
           publishState({ ...stateRef.current, copyRequested: false });
           setAnnouncement(
-            `Copied ${request.result.payload.rowCount.toLocaleString()} cells from column ${request.column.name} without its header.`
+            `Copied column ${request.column.name} with ${request.result.payload.rowCount.toLocaleString()} values and its header.`
           );
         } catch (error) {
           if (writeGenerationTerminalRef.current) return;
@@ -385,7 +383,7 @@ export function useWholeColumnClipboard({
       if (activeRef.current !== active) return;
       const remainingKnownRows =
         active.expectedRows === null
-          ? maximumClipboardCells - active.nextOffset
+          ? maximumClipboardColumnValues - active.nextOffset
           : active.expectedRows - active.nextOffset;
       if (remainingKnownRows <= 0) {
         const result = active.accumulator.finish();
@@ -459,7 +457,7 @@ export function useWholeColumnClipboard({
           fail(active, "The data view returned an incomplete column page. Select the column again.");
           return;
         }
-        if (active.accumulator.rowCount >= maximumClipboardCells) {
+        if (active.accumulator.rowCount >= maximumClipboardColumnValues) {
           const limit = clipboardCellLimitError();
           fail(active, limit.ok ? "" : limit.reason);
           return;
@@ -523,7 +521,7 @@ export function useWholeColumnClipboard({
         return undefined;
       }
       const active: ActiveColumnPreparation = {
-        accumulator: createGridClipboardColumnAccumulator(),
+        accumulator: createGridClipboardColumnAccumulator(column.name),
         column,
         contextId: viewContextId,
         copyFocusOwner: copyRequested ? captureClipboardFocusOwner() : undefined,
@@ -657,65 +655,49 @@ export function useWholeColumnClipboard({
     (column: ColumnSchema): WholeColumnClipboardAction => {
       if (availabilityReason) {
         return {
-          ariaLabel: `Copy column ${column.name}; header excluded`,
-          busy: false,
+          ariaLabel: `Copy column ${column.name}`,
           disabled: true,
-          icon: "warning",
-          menuLabel: "Copy column (header excluded)",
+          menuLabel: "Copy column",
           title: availabilityReason
         };
       }
       const selected = state.column?.id === column.id;
       if (!selected || state.phase === "idle") {
         return {
-          ariaLabel: `Copy column ${column.name}; header excluded`,
-          busy: false,
+          ariaLabel: `Copy column ${column.name}`,
           disabled: false,
-          icon: "copy",
-          menuLabel: "Copy column (header excluded)",
-          title: `Copy every filtered and sorted value from ${column.name}; the column header is not included.`
+          menuLabel: "Copy column",
+          title: "Copy column"
         };
       }
       if (state.phase === "preparing") {
         return {
-          ariaLabel: state.copyRequested
-            ? `Copying column ${column.name} when ready; header excluded`
-            : `Copy column ${column.name} when ready; header excluded`,
-          busy: true,
+          ariaLabel: state.copyRequested ? `Copying column ${column.name}` : `Copy column ${column.name} when ready`,
           disabled: state.copyRequested === true,
-          icon: "loading",
-          menuLabel: state.copyRequested ? "Copying when ready…" : "Copy column when ready (header excluded)",
-          title: state.copyRequested
-            ? `Preparing every filtered and sorted value from ${column.name}; copy will complete once.`
-            : `Preparing every filtered and sorted value from ${column.name}; activate to copy once ready.`
+          menuLabel: state.copyRequested ? "Copying when ready…" : "Copy column when ready",
+          title: state.copyRequested ? "Copying column" : "Copy column when ready"
         };
       }
       if (state.phase === "ready") {
         if (state.copyRequested) {
           return {
-            ariaLabel: `Copying column ${column.name}; header excluded`,
-            busy: true,
+            ariaLabel: `Copying column ${column.name}`,
             disabled: true,
-            icon: "loading",
             menuLabel: "Copying…",
-            title: `Writing every filtered and sorted value from ${column.name} to the clipboard once.`
+            title: "Copying column"
           };
         }
         return {
-          ariaLabel: `Copy column ${column.name}; ${state.rowCount?.toLocaleString()} values ready; header excluded`,
-          busy: false,
+          ariaLabel: `Copy column ${column.name}`,
           disabled: false,
-          icon: "check",
-          menuLabel: "Copy column (header excluded)",
-          title: `Copy ${state.rowCount?.toLocaleString()} filtered and sorted values from ${column.name}; the column header is not included.`
+          menuLabel: "Copy column",
+          title: "Copy column"
         };
       }
       return {
-        ariaLabel: `Retry copy column ${column.name}; header excluded`,
-        busy: false,
+        ariaLabel: `Retry copy column ${column.name}`,
         disabled: false,
-        icon: "warning",
-        menuLabel: "Retry copy column (header excluded)",
+        menuLabel: "Retry copy column",
         title: state.reason ?? "Select the column again to retry."
       };
     },
@@ -740,7 +722,7 @@ function wholeColumnAvailabilityReason(
   expectedRows: number | null
 ): string | undefined {
   if (unavailableReason) return unavailableReason;
-  if (expectedRows !== null && expectedRows > maximumClipboardCells) {
+  if (expectedRows !== null && expectedRows > maximumClipboardColumnValues) {
     const result = clipboardCellLimitError();
     return result.ok ? undefined : result.reason;
   }

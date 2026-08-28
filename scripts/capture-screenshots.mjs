@@ -1136,10 +1136,16 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const display = String(-(rowNumber + 1));
           value = { kind: "integer", raw: display, display, isNull: false, isNaN: false };
         } else {
+          const headerAdjustment = rowNumber === 0 ? -9 : 0;
           const extra = column === 2
-            ? (rowNumber === 63 ? 1 : 0)
+            ? 0
             : (rowNumber >= 62 ? 1 : 0);
-          value = { kind: "string", display: "x".repeat(65_535 + extra), isNull: false, isNaN: false };
+          value = {
+            kind: "string",
+            display: "x".repeat(65_535 + headerAdjustment + extra),
+            isNull: false,
+            isNaN: false
+          };
         }
         return { id: "r:clipboard-column:" + String(rowNumber), rowNumber, values: [value] };
       });
