@@ -417,6 +417,32 @@ test("allows exact-tag recovery after main advances but rejects a fresh tag befo
   assert.deepEqual(absent.credentialPaths, []);
 });
 
+test("publishes a generated direct child and recovers its exact existing tag", (context) => {
+  const repository = createRepository(context);
+  const parent = repository.head;
+  const child = git(repository.root, ["commit-tree", `${parent}^{tree}`, "-p", parent, "-m", "generated release"]);
+  git(repository.root, ["checkout", "--quiet", "--detach", child]);
+  const publishGenerated = (runner) =>
+    pushExactReleaseTag({
+      expectedCommit: child,
+      expectedParentCommit: parent,
+      gitRunner: runner,
+      releaseTag,
+      repository: repositoryName,
+      root: repository.root,
+      sourceRef: "refs/remotes/origin/main",
+      sourceRelation: "direct-child",
+      token
+    });
+  const fresh = createRunner({ expectedCommit: child });
+  assert.deepEqual(publishGenerated(fresh.runner), { created: true, releaseTag, sourceCommit: child });
+  const existing = createRunner({
+    expectedCommit: child,
+    initialRemote: `${child}\trefs/tags/${releaseTag}\n`
+  });
+  assert.equal(publishGenerated(existing.runner).created, false);
+});
+
 test("rejects conflicting, annotated, ambiguous, and unverifiable remote tags without pushing", (context) => {
   const repository = createRepository(context);
   const cases = [
