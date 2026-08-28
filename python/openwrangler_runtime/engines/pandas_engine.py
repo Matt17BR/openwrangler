@@ -1450,9 +1450,41 @@ class PandasEngine(DataFrameEngine):
                 lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
         lines.extend(["def clean_data(df):", "    df = df.copy()"])
         for index, step in enumerate(plan):
+            lines.extend(self._compile_step_binding_guards(step, index))
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
         return "\n".join(lines) + "\n"
+
+    def _compile_step_binding_guards(self, step: Mapping[str, Any], index: int) -> list[str]:
+        kind = str(step["kind"])
+        bindings: list[tuple[int, str]] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, Mapping):
+                if set(value) == {"id", "name", "position"}:
+                    binding = (bound_column_position(value, kind), bound_column_name(value, kind))
+                    if binding not in bindings:
+                        bindings.append(binding)
+                    return
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                for child in value:
+                    collect(child)
+
+        collect(step["params"])
+        if not bindings:
+            return []
+        position = f"_binding_position_{index}"
+        expected_name = f"_binding_name_{index}"
+        prefix = "    "
+        return [
+            f"{prefix}for {position}, {expected_name} in {bindings!r}:",
+            f"{prefix}    if {position} >= df.shape[1]:",
+            f"{prefix}        raise ValueError({f'{kind} references a column outside its input schema.'!r})",
+            f"{prefix}    if str(df.columns[{position}]) != {expected_name}:",
+            f"{prefix}        raise ValueError({f'{kind} column binding no longer matches its input schema.'!r})",
+        ]
 
     def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
         kind = str(step["kind"])
