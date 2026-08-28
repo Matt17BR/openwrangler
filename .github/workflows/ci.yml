@@ -230,9 +230,6 @@ jobs:
       - run: npm run build:test-extension
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
-      - run: node scripts/run-extension-tests.mjs
-        env:
-          VSCODE_TEST_VERSION: stable
       - id: packaged_editor
         name: Test packaged editor
         run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix

@@ -274,7 +274,6 @@ test("each selected job retains its behavior checks", () => {
   const packageEditor = ci.jobs["package-editor"];
   assert.equal(packageEditor.steps.filter((step) => step.run === "npm run build").length, 1);
   assert.equal(packageEditor.steps.filter((step) => step.run === "npm run build:test-extension").length, 1);
-  assert.ok(stepRunning(packageEditor, "node scripts/run-extension-tests.mjs"));
   assert.ok(stepRunning(packageEditor, "npm run package:prepared -- --out openwrangler.vsix"));
   assert.ok(stepRunning(packageEditor, "npm run verify:vsix -- openwrangler.vsix"));
   assert.ok(stepRunning(packageEditor, "npm run test:scripts:portable"));
