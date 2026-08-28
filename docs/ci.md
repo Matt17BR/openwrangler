@@ -37,7 +37,8 @@ The consolidated preview workflow owns both the automatic daily public train and
 - Each scheduled run derives its `1.99.YYYYMMDD` version from that workflow run's immutable UTC creation timestamp,
   creates one deterministic direct child of protected `main` that changes only the three version files, and qualifies
   one canonical VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The
-  accepted bytes are then published automatically as a GitHub prerelease and dispatched to both registry promoters.
+  accepted bytes are then published automatically as a GitHub prerelease. GitHub dispatches Open VSX, while the tag
+  triggers Azure Marketplace.
 - A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
   publication remains explicit through its `publish` input.
 - Release candidate validates protected `main`, packages once, and passes the same canonical artifact to its existing
