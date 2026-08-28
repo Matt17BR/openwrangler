@@ -180,9 +180,11 @@ Regex extraction is a distinct one-output operation that retains the source and 
 nine captures from the first leftmost match. Its public single-line pattern subset rejects nonportable dialect and
 resource-dangerous constructs before dispatch. Null source values, no match, and unmatched optional groups return
 null, while participating empty captures remain empty strings. Pandas, Polars, DuckDB, and Native R execute the same
-bounded live and generated contract without conversion; PySpark remains viewing-only. The installed shared-webview
-journey covers invalid-pattern rejection, preview, apply, undo, generated code, exact source bytes, stable identities,
-and final session cleanup for Pandas and Native R; Pandas additionally proves persisted close/reopen before undo.
+bounded live and generated contract without conversion; PySpark remains viewing-only. One installed Pandas
+shared-webview smoke covers picker and form wiring, invalid-pattern rejection, valid draft metadata, stable output
+identity, generated-code publication, draft review, and apply. Direct live and generated contracts own cross-engine
+values and edge semantics. Generic installed editor journeys own renderer freshness, undo, exact source bytes,
+persistence and reopen, and lifecycle cleanup.
 Convert type replaces one column under the same identity and supports string, integer, float, boolean, date, and datetime targets.
 Failed parses become `NA`. It rejects active data-table keys and conversions that would lose units or `integer64`
 precision. Formula appends a numeric column from one exact

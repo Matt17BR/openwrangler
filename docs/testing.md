@@ -496,10 +496,11 @@ are bounded to 4,096 scalar values and 16,384 UTF-8 bytes. Output names are sing
 1,024 UTF-8 bytes. Decoder and engine tests reject NUL, CR/LF, lone surrogates, unsupported dialect constructs,
 resource-dangerous quantifier combinations, invalid group selectors, type mismatches, private names, and output
 collisions before dispatch. Live and executable generated Pandas, Polars, DuckDB, and Native R share those vectors;
-DuckDB collision checks are case-insensitive and PySpark remains viewing-only. The installed editor journey uses the
-shared operation form for Pandas and Native R. Both backends cover invalid-pattern rejection, preview/apply/undo,
-source retention, null/no-match/empty-capture behavior, stable step/output identity, generated code, and clean
-session/source disposal; Pandas additionally closes and reopens the persisted step before undo.
+DuckDB collision checks are case-insensitive and PySpark remains viewing-only. One installed Pandas smoke uses the
+shared operation form to cover picker and form wiring, invalid-pattern rejection without a draft, valid draft
+metadata, stable output identity, generated-code publication, visible draft review, and explicit apply. Direct live
+and generated-code contracts own cross-engine values. Generic installed editor journeys own renderer page freshness,
+reopen, undo, persistence, lifecycle, and immutable-source coverage.
 
 Pivot longer has one separate `pivotLonger` contract. `src/test/pivotLonger.unit.test.ts`,
 `python/tests/test_pivot_longer.py`, `src/test/rKernelBridge.unit.test.ts`, and

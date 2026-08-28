@@ -123,7 +123,7 @@ import { persistedReplayExportRequest } from "./persistedReplayExport";
 import { exerciseMultiOutputSplitJourney } from "./multiOutputSplitJourney";
 import { exercisePivotLongerJourney } from "./pivotLongerJourney";
 import { exercisePivotWiderJourney } from "./pivotWiderJourney";
-import { exerciseActiveRegexExtractionJourney, exercisePandasRegexExtractionJourney } from "./regexExtractionJourney";
+import { exercisePandasRegexExtractionJourney } from "./regexExtractionJourney";
 import { requireFreshExactSessionPanelHydration as requireFreshExactSessionPanelHydrationOwner } from "./panelHydration";
 import {
   captureNotebookWorkbenchScreenshot,
@@ -2351,21 +2351,6 @@ async function exerciseReleasedREditingJourney(
       true,
       "Native R coordinator-only value operations must publish their exact revision before later installed UI actions."
     );
-    const regexApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R regex-extraction session");
-    await exerciseActiveRegexExtractionJourney({
-      app: regexApp,
-      testing,
-      sessionId,
-      sourceColumnName: "label",
-      pattern: "([a-z]+)-([0-9]{4})()",
-      group: 3,
-      outputName: "regex_capture",
-      expectedOutputDisplays: ["", "", ""],
-      generatedCodePattern: /regexec\(/u,
-      reacquireApp: (description) => releasedRSessionApp(workbench, testing, sessionId, description),
-      recordProgress: recordAcceptanceProgress,
-      checkpoint: "jupyter-r:editing:value-operations:regex-extraction"
-    });
     const pivotApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R Pivot longer session");
     await exercisePivotLongerJourney(
       pivotApp,
