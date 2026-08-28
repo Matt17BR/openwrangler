@@ -22,7 +22,7 @@ export const allowedVsixEntryPatterns = [
   /^extension\/dist\/extension\/vendor\/$/u,
   /^extension\/dist\/extension\/vendor\/js-yaml\.js$/u,
   /^extension\/media\/$/u,
-  /^extension\/media\/(action-icon-(?:dark|light)\.svg|activity-icon\.svg|codicon\.ttf|icon(?:-(?:128|256))?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|webview\.(css|js))$/u,
+  /^extension\/media\/(action-icon-(?:dark|light)\.svg|activity-icon\.svg|codicon\.ttf|icon(?:-(?:128|256))?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|protocolLimits\.generated\.js|webview\.(css|js))$/u,
   /^extension\/python\/$/u,
   /^extension\/python\/openwrangler_runtime\/$/u,
   /^extension\/python\/openwrangler_runtime\/[^/]+\.py$/u,
