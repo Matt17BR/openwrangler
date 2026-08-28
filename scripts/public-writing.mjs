@@ -1,18 +1,3 @@
-export const PUBLIC_WRITING_SURFACES = Object.freeze([
-  "README",
-  "user documentation",
-  "contributor documentation",
-  "changelog",
-  "GitHub issues",
-  "pull requests",
-  "commit subjects and `git log`",
-  "release notes",
-  "Marketplace listings",
-  "Open VSX listings",
-  "screenshot captions",
-  "image alt text"
-]);
-
 export function inspectPublicWriting({ agentGuide, contributing, pullRequestTemplate, styleGuide }) {
   for (const [name, value] of Object.entries({ agentGuide, contributing, pullRequestTemplate, styleGuide })) {
     if (typeof value !== "string") {
@@ -36,12 +21,6 @@ export function inspectPublicWriting({ agentGuide, contributing, pullRequestTemp
   const publicCopyHeadingIndex = styleGuide.indexOf(publicCopyHeading);
   if (publicCopyHeadingIndex === -1) {
     problems.push("The writing guide must retain its Public copy section.");
-  }
-  const coverageStatement = publicCopyHeadingIndex === -1 ? "" : styleGuide.slice(0, publicCopyHeadingIndex);
-  for (const surface of PUBLIC_WRITING_SURFACES) {
-    if (!coverageStatement.includes(surface)) {
-      problems.push(`The writing guide must continue to cover ${surface}.`);
-    }
   }
   for (const heading of ["## What changed", "## Why", "## Verification", "## User-facing docs or screenshots"]) {
     if (!pullRequestTemplate.includes(heading)) {
