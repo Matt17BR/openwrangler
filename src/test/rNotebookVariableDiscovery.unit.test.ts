@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { R_DEPENDENCY_DIAGNOSTIC_PREFIX } from "../extension/r/rDependencyRequirements";
 import {
   buildRNotebookVariableDiscoveryCode,
   claimVerifiedRNotebookVariableSelection,
@@ -89,18 +90,22 @@ describe("R notebook variable discovery", () => {
   it("sorts bindings before truncation and skips active or lazy bindings before reading values", () => {
     const code = buildRNotebookVariableDiscoveryCode(MARKER);
     const bindingSort = code.indexOf(".ow_names <- sort(");
+    const dependencyCheck = code.lastIndexOf(".__ow_check_native_r_dependency(");
     const bindingTruncation = code.indexOf(".ow_names <- .ow_names[seq_len(.ow_max_scanned_bindings)]");
     const activeBindingGuard = code.indexOf("bindingIsActive(.ow_name, .ow_source)");
     const lazyBindingGuard = code.indexOf("rlang::env_binding_are_lazy(.ow_source, .ow_name)");
     const bindingRead = code.indexOf("get(.ow_name, envir = .ow_source, inherits = FALSE)");
 
-    expect(bindingSort).toBeGreaterThanOrEqual(0);
+    expect(dependencyCheck).toBeGreaterThanOrEqual(0);
+    expect(bindingSort).toBeGreaterThan(dependencyCheck);
     expect(bindingTruncation).toBeGreaterThan(bindingSort);
     expect(activeBindingGuard).toBeGreaterThanOrEqual(0);
     expect(lazyBindingGuard).toBeGreaterThan(activeBindingGuard);
     expect(bindingRead).toBeGreaterThan(lazyBindingGuard);
-    expect(code).toContain('requireNamespace("jsonlite", quietly = TRUE)');
-    expect(code).toContain('requireNamespace("rlang", quietly = TRUE)');
+    expect(code).toContain('package = "jsonlite"');
+    expect(code).toContain('minimum = "1.0"');
+    expect(code).toContain('package = "rlang"');
+    expect(code).toContain('minimum = "0.4.5"');
     expect(code).toContain('identical(.ow_classes, c("data.table", "data.frame"))');
     expect(code).toContain('identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))');
     expect(code).toContain('identical(.ow_classes, "data.frame")');
@@ -253,8 +258,12 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     });
 
     expect(executeCode).toHaveBeenCalledTimes(2);
-    expect(executeCode.mock.calls[1]?.[0]).toContain('.ow_name <- "orders"');
-    expect(executeCode.mock.calls[1]?.[0]).toContain("rlang::env_binding_are_lazy");
+    const selectionCode = executeCode.mock.calls[1]?.[0] ?? "";
+    const selectionDependencyCheck = selectionCode.lastIndexOf(".__ow_check_native_r_dependency(");
+    expect(selectionCode).toContain('.ow_name <- "orders"');
+    expect(selectionCode).toContain("rlang::env_binding_are_lazy");
+    expect(selectionDependencyCheck).toBeGreaterThanOrEqual(0);
+    expect(selectionCode.indexOf('.ow_name <- "orders"')).toBeGreaterThan(selectionDependencyCheck);
     expect(getKernel).toHaveBeenCalledTimes(5);
   });
 
@@ -366,18 +375,19 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     );
   });
 
-  it("extracts a bounded actionable jsonlite error from the R kernel", async () => {
+  it("preserves a bounded incompatible-dependency error from the R kernel", async () => {
     const document = notebookDocument();
     setWorkspaceState(true, document);
+    const message = `${R_DEPENDENCY_DIAGNOSTIC_PREFIX}jsonlite is installed but incompatible in the selected R kernel environment (R 4.4.0 at /selected/R). Observed version: 0.9.22. Required: jsonlite >= 1.0 with exported toJSON, fromJSON, base64_enc, base64_dec. Missing exported: base64_enc, base64_dec. Install it with install.packages('jsonlite') in that environment, then try again.`;
     const selectedKernel = rKernel((() =>
       kernelErrorOutput({
-        name: "simpleError",
-        message: "there is no package called ‘jsonlite’",
+        name: "openwrangler_native_r_dependency_error",
+        message,
         stack: ""
       })) as Kernel["executeCode"]);
     installJupyterMock(vi.fn(async () => selectedKernel));
 
-    await expect(discoverRNotebookVariables(document)).rejects.toThrow('install.packages("jsonlite")');
+    await expect(discoverRNotebookVariables(document)).rejects.toThrow(message);
   });
 
   it("rejects a replacement NotebookDocument after an awaited kernel output", async () => {

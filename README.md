@@ -69,6 +69,8 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
+Native R entrypoints require `jsonlite` 1.0 or newer and `rlang` 0.4.5 or newer in the R environment described above.
+
 The unpublished 1.99.7 candidate contains all 28 native-R cleaning operations, adding **Transform by Example** and
 **Custom Code**. Disposable nonpublishing previews may exercise its packaging path; any future release
 candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.

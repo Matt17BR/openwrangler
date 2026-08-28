@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { R_KERNEL_TRANSPORT_VERSION } from "./rKernelProtocol";
+import { buildRDependencyPreflightCode, R_DEPENDENCY_FAILURE_CLASS } from "./rDependencyRequirements";
 import { readRRuntimeFiles } from "./rKernelRuntimeBundle";
 
 const R_INTERACTIVE_DISPATCHER_BINDING = ".openwrangler_r_interactive_dispatcher_872e5b61";
@@ -48,6 +49,7 @@ export function buildRInteractiveDispatchCode(context: RInteractiveDispatchConte
     .slice(0, 16)}`;
   const dispatcherSetup = context.bootstrapDispatcher
     ? [
+        `base::eval(base::parse(text = ${rString(buildRDependencyPreflightCode("active R session"))}, keep.source = FALSE), envir = base::environment());`,
         "if (base::is.null(.__ow_dispatcher)) {",
         ".__ow_dispatcher <- base::new.env(hash = TRUE, parent = base::baseenv());",
         `base::sys.source(${rString(agentPath)}, envir = .__ow_dispatcher, keep.source = FALSE);`,
@@ -139,6 +141,8 @@ function wrapWithCorrelatedFailure(operation: string, requestId: string, respons
     message: "The interactive R dispatcher is unavailable. Restart R and reopen the dataframe.",
     recoverable: false
   });
+  const dependencyPayloadPrefix = `{"transportVersion":${R_KERNEL_TRANSPORT_VERSION},"requestId":${JSON.stringify(requestId)},"kind":"error","code":"runtime_error","message":`;
+  const dependencyPayloadSuffix = ',"recoverable":false}';
   return [
     "base::local({",
     '.__ow_last_value <- base::get(".Last.value", envir = base::baseenv(), inherits = FALSE);',
@@ -147,7 +151,8 @@ function wrapWithCorrelatedFailure(operation: string, requestId: string, respons
     "},error=function(.__ow_error)base::local({",
     `.__ow_response_path <- ${rString(responsePath)};`,
     '.__ow_temporary <- base::paste0(.__ow_response_path, ".tmp");',
-    `base::writeLines(${rString(payload)}, .__ow_temporary, useBytes = TRUE);`,
+    `.__ow_payload <- if (base::inherits(.__ow_error, ${rString(R_DEPENDENCY_FAILURE_CLASS)})) base::paste0(${rString(dependencyPayloadPrefix)}, base::encodeString(base::conditionMessage(.__ow_error), quote = '"'), ${rString(dependencyPayloadSuffix)}) else ${rString(payload)};`,
+    "base::writeLines(.__ow_payload, .__ow_temporary, useBytes = TRUE);",
     'if (!base::file.rename(.__ow_temporary, .__ow_response_path)) base::stop("Open Wrangler could not publish its interactive R dispatcher failure.", call. = FALSE)',
     "}));",
     "base::invisible(.__ow_last_value)",

@@ -385,7 +385,8 @@ process tree with a Windows Job Object or an equivalent mechanism. IRkernel note
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
 a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
 `stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
-code. Native variable discovery requires `jsonlite` and `rlang` in the selected R runtime. It recognizes exact base
+code. Native variable discovery and runtime bootstrap require `jsonlite` 1.0 or newer and `rlang` 0.4.5 or newer in
+the selected R runtime. It recognizes exact base
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The packages must
 be installed in the environment that owns the session: the selected IRkernel, the selected official R terminal, or
 the `Rscript` used for an Open Wrangler-managed document. Notebook, active-terminal, and R-document commands enable

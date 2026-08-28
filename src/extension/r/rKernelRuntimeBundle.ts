@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
+import { buildRDependencyPreflightCode } from "./rDependencyRequirements";
 
 export const R_KERNEL_RUNTIME_BINDING = ".openwrangler_r_kernel_runtime_872e5b61";
 const runtimeOwnerToken = "openwrangler-native-r-runtime-v1";
@@ -40,9 +41,7 @@ export function buildRKernelBootstrapCode(
     .join("\n");
   return `
 local({
-  if (!requireNamespace("jsonlite", quietly = TRUE)) {
-    stop("Open Wrangler requires the jsonlite package in the selected R kernel.", call. = FALSE)
-  }
+${buildRDependencyPreflightCode("selected R kernel")}
   .__ow_binding <- "${R_KERNEL_RUNTIME_BINDING}"
   .__ow_existing <- if (exists(.__ow_binding, envir = .GlobalEnv, inherits = FALSE)) {
     get(.__ow_binding, envir = .GlobalEnv, inherits = FALSE)

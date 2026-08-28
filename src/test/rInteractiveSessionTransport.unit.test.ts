@@ -857,13 +857,20 @@ describe("interactive R session transport", () => {
       expect(commandSpy).not.toHaveBeenCalled();
       expect(firstSendText).toHaveBeenCalledTimes(1);
       expect(secondSendText).not.toHaveBeenCalled();
-      expect(submittedCode[0]).toContain("sys.source(");
+      const bootstrapCode = submittedCode[0] ?? "";
+      const dependencyCheck = bootstrapCode.lastIndexOf(".__ow_check_native_r_dependency(");
+      const dispatcherSource = bootstrapCode.indexOf("sys.source(");
+      expect(dependencyCheck).toBeGreaterThanOrEqual(0);
+      expect(dispatcherSource).toBeGreaterThan(dependencyCheck);
+      expect(bootstrapCode).toContain("the active R session environment");
+      expect(bootstrapCode).toContain("openwrangler_native_r_dependency_error");
 
       activeTerminal = secondTerminal;
       await transport.discoverVariables();
       expect(firstSendText).toHaveBeenCalledTimes(2);
       expect(secondSendText).not.toHaveBeenCalled();
       expect(submittedCode[1]).not.toContain("sys.source(");
+      expect(submittedCode[1]).not.toContain('minimum = "1.0"');
       expect(submittedCode[1]!.length).toBeLessThan(submittedCode[0]!.length);
 
       includeFirstTerminal = false;
