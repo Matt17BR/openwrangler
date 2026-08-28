@@ -1,9 +1,14 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
+import { EditorState, Transaction, type EditorSelection, type Extension, type Text } from "@codemirror/state";
+import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, type ViewUpdate } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import {
+  CODE_PREVIEW_EDIT_DEBOUNCE_MS,
+  CODE_PREVIEW_MAX_UTF8_BYTES,
+  isValidCodePreviewText
+} from "../shared/codePreviewLimits";
 import { isCodePreviewHostMessage } from "../shared/codePreviewMessages";
 import { codeDialectLanguageLabel, type CodeDialect, type RuntimeIdentity } from "../shared/runtimeIdentity";
 
@@ -19,8 +24,17 @@ if (!host) throw new Error("Code Preview root was not found.");
 publishRuntimeIdentity(host, null);
 
 let applyingHostUpdate = false;
-const editability = new Compartment();
-const generatedCodeLanguage = new Compartment();
+let editTimer: ReturnType<typeof setTimeout> | undefined;
+let pageDisposed = false;
+let bufferId: string | undefined;
+let bufferInvalid = false;
+let localEdit = false;
+let currentCodeDialect: CodeDialect | null = null;
+let currentEditable = false;
+let currentLanguageLabel: "Python" | "R" | undefined;
+let historyUtf8UpperBound = 0;
+let historyResetPending = false;
+const CODE_PREVIEW_HISTORY_UTF8_BUDGET = CODE_PREVIEW_MAX_UTF8_BYTES * 6;
 const pythonHighlightStyle = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: "var(--vscode-symbolIcon-keywordForeground, #c586c0)" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--vscode-symbolIcon-stringForeground, #ce9178)" },
@@ -31,10 +45,98 @@ const pythonHighlightStyle = HighlightStyle.define([
   { tag: [tags.propertyName, tags.variableName], color: "var(--vscode-editor-foreground, #d4d4d4)" },
   { tag: [tags.operator, tags.punctuation], color: "var(--vscode-editor-foreground, #d4d4d4)" }
 ]);
+const codePreviewTheme = EditorView.theme({
+  "&": {
+    height: "100vh",
+    color: "var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4))",
+    backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
+  },
+  ".cm-content": {
+    caretColor: "var(--vscode-editorCursor-foreground)",
+    fontFamily: "var(--vscode-editor-font-family, monospace)",
+    fontSize: "var(--vscode-editor-font-size, 12px)"
+  },
+  ".cm-gutters": {
+    color: "var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground, #858585))",
+    backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background))",
+    borderRight: "1px solid var(--vscode-panel-border)"
+  },
+  ".cm-activeLineGutter": {
+    color:
+      "var(--vscode-editorLineNumber-activeForeground, var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4)))"
+  },
+  ".cm-activeLine, .cm-activeLineGutter": {
+    backgroundColor: "var(--vscode-editor-lineHighlightBackground)"
+  },
+  ".cm-focused .cm-selectionBackground, ::selection": {
+    backgroundColor: "var(--vscode-editor-selectionBackground) !important"
+  },
+  ".cm-scroller": {
+    fontFamily: "var(--vscode-editor-font-family, monospace)",
+    lineHeight: "1.45"
+  }
+});
 const editor = new EditorView({
   parent: host,
-  state: EditorState.create({
-    doc: "# Open a dataframe to preview generated code.",
+  state: createEditorState("# Open a dataframe to preview generated code.", null, false, undefined)
+});
+
+const handleHostMessage = (event: MessageEvent<unknown>): void => {
+  if (pageDisposed || event.origin !== window.location.origin) return;
+  const message = event.data;
+  if (!isCodePreviewHostMessage(message)) return;
+  if (message.kind === "codeSnapshotRequest") {
+    publishCurrentCode(message);
+    return;
+  }
+
+  cancelPendingEdit();
+  const codeDialect = message.runtimeIdentity?.codeDialect ?? null;
+  const languageLabel = codeDialectLanguageLabel(codeDialect);
+  applyingHostUpdate = true;
+  try {
+    editor.setState(createEditorState(message.code, codeDialect, message.editable, languageLabel));
+    clearHistoryAccounting();
+    bufferId = message.bufferId;
+    bufferInvalid = message.bufferInvalid;
+    localEdit = false;
+    currentCodeDialect = codeDialect;
+    currentEditable = message.editable;
+    currentLanguageLabel = languageLabel;
+    publishRuntimeIdentity(host, message.runtimeIdentity);
+  } finally {
+    applyingHostUpdate = false;
+  }
+};
+
+window.addEventListener("message", handleHostMessage);
+vscode.postMessage({ kind: "ready" });
+window.addEventListener(
+  "pagehide",
+  () => {
+    try {
+      publishCurrentCode();
+    } finally {
+      pageDisposed = true;
+      cancelPendingEdit();
+      clearHistoryAccounting();
+      window.removeEventListener("message", handleHostMessage);
+      editor.destroy();
+    }
+  },
+  { once: true }
+);
+
+function createEditorState(
+  code: string | Text,
+  codeDialect: CodeDialect | null,
+  editable: boolean,
+  languageLabel: "Python" | "R" | undefined,
+  selection?: EditorSelection
+): EditorState {
+  return EditorState.create({
+    doc: code,
+    ...(selection ? { selection } : {}),
     extensions: [
       lineNumbers(),
       history(),
@@ -44,74 +146,107 @@ const editor = new EditorView({
       keymap.of([...defaultKeymap, ...historyKeymap]),
       EditorState.tabSize.of(4),
       EditorView.lineWrapping,
-      generatedCodeLanguage.of(codePreviewLanguage(null)),
-      editability.of(codePreviewEditability(false, undefined)),
+      codePreviewLanguage(codeDialect),
+      codePreviewEditability(editable, languageLabel),
+      EditorState.transactionExtender.of((transaction) =>
+        historyResetPending && transaction.docChanged ? { annotations: Transaction.addToHistory.of(false) } : null
+      ),
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingHostUpdate) {
-          vscode.postMessage({ kind: "codeChanged", code: update.state.doc.toString() });
+          localEdit = true;
+          chargeRetainedHistory(update);
+          scheduleCodeChanged();
         }
       }),
-      EditorView.theme({
-        "&": {
-          height: "100vh",
-          color: "var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4))",
-          backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
-        },
-        ".cm-content": {
-          caretColor: "var(--vscode-editorCursor-foreground)",
-          fontFamily: "var(--vscode-editor-font-family, monospace)",
-          fontSize: "var(--vscode-editor-font-size, 12px)"
-        },
-        ".cm-gutters": {
-          color: "var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground, #858585))",
-          backgroundColor: "var(--vscode-editorGutter-background, var(--vscode-editor-background))",
-          borderRight: "1px solid var(--vscode-panel-border)"
-        },
-        ".cm-activeLineGutter": {
-          color:
-            "var(--vscode-editorLineNumber-activeForeground, var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4)))"
-        },
-        ".cm-activeLine, .cm-activeLineGutter": {
-          backgroundColor: "var(--vscode-editor-lineHighlightBackground)"
-        },
-        ".cm-focused .cm-selectionBackground, ::selection": {
-          backgroundColor: "var(--vscode-editor-selectionBackground) !important"
-        },
-        ".cm-scroller": {
-          fontFamily: "var(--vscode-editor-font-family, monospace)",
-          lineHeight: "1.45"
-        }
-      })
+      codePreviewTheme
     ]
-  })
-});
+  });
+}
 
-window.addEventListener("message", (event: MessageEvent<unknown>) => {
-  if (event.origin !== window.location.origin) return;
-  const message = event.data;
-  if (!isCodePreviewHostMessage(message)) return;
-  const changes =
-    editor.state.doc.toString() === message.code
-      ? undefined
-      : { from: 0, to: editor.state.doc.length, insert: message.code };
-  applyingHostUpdate = true;
-  const codeDialect = message.runtimeIdentity?.codeDialect ?? null;
-  const languageLabel = codeDialectLanguageLabel(codeDialect);
-  try {
-    editor.dispatch({
-      ...(changes ? { changes } : {}),
-      effects: [
-        generatedCodeLanguage.reconfigure(codePreviewLanguage(codeDialect)),
-        editability.reconfigure(codePreviewEditability(message.editable, languageLabel))
-      ]
+function scheduleCodeChanged(): void {
+  cancelPendingEdit();
+  editTimer = setTimeout(() => {
+    editTimer = undefined;
+    publishCurrentCode();
+  }, CODE_PREVIEW_EDIT_DEBOUNCE_MS);
+}
+
+function cancelPendingEdit(): void {
+  if (editTimer !== undefined) clearTimeout(editTimer);
+  editTimer = undefined;
+}
+
+function publishCurrentCode(request?: { readonly requestId: string; readonly bufferId: string }): void {
+  cancelPendingEdit();
+  const currentBufferId = bufferId;
+  if (!currentBufferId) return;
+  if (request && request.bufferId !== currentBufferId) {
+    vscode.postMessage({ kind: "codeSnapshotInvalid", requestId: request.requestId, bufferId: currentBufferId });
+    return;
+  }
+  if ((!localEdit && bufferInvalid) || editor.state.doc.length > CODE_PREVIEW_MAX_UTF8_BYTES) {
+    publishInvalidCode(request, currentBufferId);
+    return;
+  }
+  const code = editor.state.doc.toString();
+  if (!isValidCodePreviewText(code)) {
+    publishInvalidCode(request, currentBufferId);
+    return;
+  }
+  bufferInvalid = false;
+  localEdit = false;
+  vscode.postMessage(
+    request
+      ? { kind: "codeSnapshot", requestId: request.requestId, bufferId: currentBufferId, code }
+      : { kind: "codeChanged", bufferId: currentBufferId, code }
+  );
+}
+
+function publishInvalidCode(
+  request: { readonly requestId: string; readonly bufferId: string } | undefined,
+  currentBufferId: string
+): void {
+  bufferInvalid = true;
+  localEdit = false;
+  vscode.postMessage(
+    request
+      ? { kind: "codeSnapshotInvalid", requestId: request.requestId, bufferId: currentBufferId }
+      : { kind: "codeChangedInvalid", bufferId: currentBufferId }
+  );
+}
+
+function chargeRetainedHistory(update: ViewUpdate): void {
+  if (historyResetPending) return;
+  for (const transaction of update.transactions) {
+    if (transaction.annotation(Transaction.addToHistory) === false) continue;
+    transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+      historyUtf8UpperBound += (toA - fromA + toB - fromB) * 3;
     });
-    publishRuntimeIdentity(host, message.runtimeIdentity);
+    if (historyUtf8UpperBound > CODE_PREVIEW_HISTORY_UTF8_BUDGET) {
+      historyResetPending = true;
+      queueMicrotask(resetEditorHistory);
+      return;
+    }
+  }
+}
+
+function resetEditorHistory(): void {
+  if (!historyResetPending || pageDisposed) return;
+  const doc = editor.state.doc;
+  const selection = editor.state.selection;
+  applyingHostUpdate = true;
+  try {
+    editor.setState(createEditorState(doc, currentCodeDialect, currentEditable, currentLanguageLabel, selection));
+    clearHistoryAccounting();
   } finally {
     applyingHostUpdate = false;
   }
-});
+}
 
-vscode.postMessage({ kind: "ready" });
+function clearHistoryAccounting(): void {
+  historyUtf8UpperBound = 0;
+  historyResetPending = false;
+}
 
 function codePreviewLanguage(codeDialect: CodeDialect | null): Extension {
   switch (codeDialect) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DataBackend } from "../shared/protocol";
+import { CODE_PREVIEW_MAX_UTF8_BYTES, isValidCodePreviewText } from "../shared/codePreviewLimits";
 import { isCodePreviewHostMessage, isCodePreviewWebviewMessage } from "../shared/codePreviewMessages";
 import {
   codeDialectLanguageLabel,
@@ -76,6 +77,8 @@ describe("host runtime identity", () => {
 });
 
 describe("private Code Preview messages", () => {
+  const requestId = "12345678-1234-4123-8123-123456789abc";
+  const bufferId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
   const polarsIdentity = runtimeIdentityForDataBackend("polars");
   const pysparkIdentity = runtimeIdentityForDataBackend("pyspark");
   const rIdentity = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor: "r.tibble" });
@@ -84,6 +87,8 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        bufferId,
+        bufferInvalid: false,
         code: "def clean_data(df):\n    return df\n",
         editable: true,
         runtimeIdentity: polarsIdentity
@@ -92,6 +97,8 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        bufferId,
+        bufferInvalid: false,
         code: "# Open a dataframe to preview generated code.",
         editable: false,
         runtimeIdentity: null
@@ -100,6 +107,8 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        bufferId,
+        bufferInvalid: false,
         code: "# PySpark viewing-only session.",
         editable: false,
         runtimeIdentity: pysparkIdentity
@@ -108,19 +117,61 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        bufferId,
+        bufferInvalid: false,
         code: "clean_data <- function(df) df\n",
         editable: true,
         runtimeIdentity: rIdentity
       })
     ).toBe(true);
+    expect(isCodePreviewHostMessage({ kind: "codeSnapshotRequest", requestId, bufferId })).toBe(true);
     expect(isCodePreviewWebviewMessage({ kind: "ready" })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", code: "# edited" })).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", bufferId, code: "# edited" })).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeChangedInvalid", bufferId })).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeSnapshot", requestId, bufferId, code: "# current" })).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeSnapshotInvalid", requestId, bufferId })).toBe(true);
   });
 
   it.each([
-    { kind: "codePreview", code: "# missing identity", editable: false },
+    ["ASCII at limit", "abcd", 4, true],
+    ["ASCII over limit", "abcde", 4, false],
+    ["two-byte text at limit", "éé", 4, true],
+    ["two-byte text over limit", "ééa", 4, false],
+    ["three-byte text at limit", "€", 3, true],
+    ["three-byte text over limit", "€a", 3, false],
+    ["astral text at limit", "🧪", 4, true],
+    ["astral text over limit", "🧪a", 4, false],
+    ["mixed text at limit", "aé€🧪", 10, true],
+    ["mixed text over limit", "aé€🧪a", 10, false],
+    ["terminal high surrogate", "\ud800", 4, false],
+    ["lone low surrogate", "\udc00", 4, false],
+    ["interrupted surrogate pair", "before\ud800after", 64, false]
+  ])("validates %s", (_label, code, maximumUtf8Bytes, expected) => {
+    expect(isValidCodePreviewText(code, maximumUtf8Bytes)).toBe(expected);
+  });
+
+  it("wires the generated-code ceiling into both message decoders", () => {
+    const oversized = "a".repeat(CODE_PREVIEW_MAX_UTF8_BYTES + 1);
+    expect(
+      isCodePreviewHostMessage({
+        kind: "codePreview",
+        bufferId,
+        bufferInvalid: false,
+        code: oversized,
+        editable: true,
+        runtimeIdentity: polarsIdentity
+      })
+    ).toBe(false);
+    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", bufferId, code: oversized })).toBe(false);
+  });
+
+  it.each([
+    { kind: "codePreview", bufferId, bufferInvalid: false, code: "# missing identity", editable: false },
+    { kind: "codeSnapshotRequest", requestId: "not-a-request-id", bufferId },
     {
       kind: "codePreview",
+      bufferId,
+      bufferInvalid: false,
       code: "# unknown field",
       editable: false,
       runtimeIdentity: polarsIdentity,
@@ -128,6 +179,8 @@ describe("private Code Preview messages", () => {
     },
     {
       kind: "codePreview",
+      bufferId,
+      bufferInvalid: false,
       code: "# no generated dialect",
       editable: true,
       runtimeIdentity: pysparkIdentity
@@ -139,7 +192,10 @@ describe("private Code Preview messages", () => {
   it.each([
     { kind: "ready", unknown: true },
     { kind: "codeChanged" },
-    { kind: "codeChanged", code: "# edited", unknown: true },
+    { kind: "codeChangedInvalid", bufferId, unknown: true },
+    { kind: "codeChanged", bufferId, code: "# edited", unknown: true },
+    { kind: "codeSnapshot", requestId: "not-a-request-id", bufferId, code: "# edited" },
+    { kind: "codeSnapshotInvalid", requestId, bufferId, unknown: true },
     { kind: "future" }
   ])("rejects a malformed private webview message: %j", (candidate) => {
     expect(isCodePreviewWebviewMessage(candidate)).toBe(false);
