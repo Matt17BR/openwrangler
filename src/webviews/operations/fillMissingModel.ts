@@ -6,6 +6,7 @@ import type {
   FillMissingReplacement,
   TransformSortRule
 } from "../../shared/protocol";
+import { numericColumnTypes, portableScalarColumnTypes } from "./operationFieldCompatibility";
 
 export type FillMode =
   | "median"
@@ -44,7 +45,6 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "datetime",
   "unknown"
 ]);
-const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
 const interpolationCoordinateColumnTypes: ReadonlySet<ColumnType> = new Set([
   "integer",
@@ -52,17 +52,6 @@ const interpolationCoordinateColumnTypes: ReadonlySet<ColumnType> = new Set([
   "decimal",
   "date",
   "datetime"
-]);
-const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
-  "string",
-  "integer",
-  "float",
-  "decimal",
-  "boolean",
-  "datetime",
-  "date",
-  "duration",
-  "binary"
 ]);
 const fillOrderColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
