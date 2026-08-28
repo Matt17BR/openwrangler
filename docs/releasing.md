@@ -58,10 +58,8 @@ single-parent child that changes only `package.json`, `package-lock.json`, and
 qualifies those exact bytes in stable VS Code with the existing `daily-core` selector.
 
 After qualification, the protected publication job creates or verifies the direct-child lightweight tag and GitHub
-prerelease, then dispatches the same public assets to the Open VSX and Azure Marketplace promoters. If qualification
-fails, correct protected `main` and let a new scheduled run create a new candidate. If only publication fails, rerun
-only the failed **Publish preview** job in that workflow run; it reconstructs the same dated source and reuses the same
-qualified artifact.
+prerelease, then dispatches the same public assets to the Open VSX promoter. The tag triggers the Azure Marketplace
+pipeline. If qualification fails, correct protected `main` and let a new scheduled run create a new candidate.
 
 ## Manual preview publication
 
@@ -74,9 +72,14 @@ Set `publish: true` only when the same run should publish. The protected job rev
 or verifies the exact lightweight tag and GitHub prerelease, then dispatches the existing protected-main Open VSX
 promoter. The tag starts the existing Azure Marketplace promoter. Both promoters download the public canonical assets
 and do not rebuild the extension. Registry promotion verifies the canonical VSIX, checksum, provenance, channel, and
-downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs. Recover a failed
-preview publication only by rerunning the failed **Publish preview** job against the same qualified artifact in the
-same workflow run; conflicting public bytes fail closed.
+downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs.
+
+For either preview path, if the GitHub **Publish preview** job fails while creating or verifying the tag or GitHub
+prerelease, or while dispatching Open VSX, rerun only that failed job in the same workflow run. It reconstructs the
+same source and reuses the same qualified artifact. Recover an Azure Marketplace failure separately by manually
+running the Azure pipeline from current protected `main` with `existingReleaseTag` set to the same tag. That path
+verifies the existing tag and canonical GitHub assets without rebuilding, moving the tag, or overwriting public bytes;
+conflicting public bytes fail closed.
 
 ## Release candidate
 
