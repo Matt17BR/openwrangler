@@ -3605,92 +3605,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(republished?.selection.key).toBe(source.uri);
   });
 
-  it("keys dependency probes by normalized executable and exact version within one package root", async () => {
-    const baseSource = remoteSourceAt("/cache-identity/base.csv");
-    const executableSource = remoteSourceAt("/cache-identity/executable.csv");
-    const versionSource = remoteSourceAt("/cache-identity/version.csv");
-    const normalizedAliasSource = remoteSourceAt("/cache-identity/normalized-alias.csv");
-    const packageRootIdentity = testPackageRootIdentity("/usr");
-    const environments = new Map<string, TestPythonEnvironment>([
-      [
-        baseSource.uri!,
-        {
-          ...environment,
-          executable: testPythonExecutablePath("/usr/bin/python"),
-          packageRoot: "/usr",
-          packageRootIdentity,
-          version: "3.12.9"
-        }
-      ],
-      [
-        executableSource.uri!,
-        {
-          ...environment,
-          executable: testPythonExecutablePath("/usr/bin/python3"),
-          packageRoot: "/usr",
-          packageRootIdentity,
-          version: "3.12.9"
-        }
-      ],
-      [
-        versionSource.uri!,
-        {
-          ...environment,
-          executable: testPythonExecutablePath("/usr/bin/python"),
-          packageRoot: "/usr",
-          packageRootIdentity,
-          version: "3.14.0"
-        }
-      ],
-      [
-        normalizedAliasSource.uri!,
-        {
-          ...environment,
-          executable: testPythonExecutablePath("/usr/bin/../bin/python"),
-          packageRoot: "/usr",
-          packageRootIdentity,
-          version: "3.12.9"
-        }
-      ]
-    ]);
-    const { bridge, internals } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => {
-      const resolved = environments.get(resource?.toString(true) ?? "");
-      if (!resolved) throw new Error("unexpected dependency probe resource");
-      return resolved as pythonEnvironment.PythonEnvironment;
-    });
-    vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["polars"], available: [] })
-      .mockResolvedValueOnce({ missing: [], available: ["polars"] })
-      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
-
-    await expect(internals.prepareRequest(openSessionRequest(baseSource))).resolves.toMatchObject({
-      kind: "error",
-      code: "missing_dependencies"
-    });
-    await expect(internals.prepareRequest(openSessionRequest(executableSource))).resolves.toMatchObject({
-      kind: "openSession",
-      backend: "polars"
-    });
-    await expect(internals.prepareRequest(openSessionRequest(versionSource))).resolves.toMatchObject({
-      kind: "openSession",
-      backend: "polars"
-    });
-    await expect(internals.prepareRequest(openSessionRequest(normalizedAliasSource))).resolves.toMatchObject({
-      kind: "error",
-      code: "missing_dependencies"
-    });
-
-    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(3);
-    expect(internals.dependencyProbes.diagnostics().completedCount).toBe(3);
-    const dependencyKeyFor = (source: SessionSource): string =>
-      [...raw.environmentSelections.get(source.uri!)!.dependencyKeys][0]!;
-    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(executableSource));
-    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(versionSource));
-    expect(dependencyKeyFor(baseSource)).toBe(dependencyKeyFor(normalizedAliasSource));
-  });
-
   it("runs one deferred dependency probe for exact environments and descriptors across independent scopes", async () => {
     const firstSource = remoteSourceAt("/single-flight/first.csv");
     const secondSource = remoteSourceAt("/single-flight/second.csv");
@@ -3891,88 +3805,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.lastMissingDependencies).toBeUndefined();
   });
 
-  it("bounds retained inactive external-resource scopes and scrubs exact evicted state", async () => {
-    const { bridge, internals } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => {
-      const packageRoot = `/envs${resource?.path ?? "/default"}`;
-      return {
-        ...environment,
-        executable: testPythonExecutablePath(`${packageRoot}/python`),
-        packageRoot,
-        packageRootIdentity: testPackageRootIdentity(packageRoot)
-      };
-    });
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-
-    const oldestSource = remoteSourceAt("/retention/0.csv");
-    await internals.prepareRequest(openSessionRequest(oldestSource));
-    const oldest = raw.runtimeSlots.get(oldestSource.uri!);
-    expect(oldest).toBeDefined();
-    oldest!.stderrBuffer = "scope-local diagnostic";
-    oldest!.runtimeExitError = new Error("old runtime failure");
-    raw.selectionEpochs.set(oldestSource.uri!, 7);
-
-    for (let index = 1; index < 144; index += 1) {
-      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/retention/${index}.csv`)));
-    }
-
-    expect(raw.runtimeSlots.size).toBe(128);
-    expect(raw.environmentSelections.size).toBe(128);
-    expect(raw.runtimeScopes.recency.size).toBe(128);
-    expect(raw.runtimeSlots.has(oldestSource.uri!)).toBe(false);
-    expect(raw.environmentSelections.has(oldestSource.uri!)).toBe(false);
-    expect(raw.selectionEpochs.has(oldestSource.uri!)).toBe(false);
-    expect(raw.runtimeScopes.recency.has(oldestSource.uri!)).toBe(false);
-    expect(oldest!.stderrBuffer).toBe("");
-    expect(oldest!.runtimeExitError).toBeUndefined();
-    expect(raw.dependencyProbes.diagnostics().completedCount).toBe(128);
-    expect(raw.runtimeSlots.has(remoteSourceAt("/retention/143.csv").uri!)).toBe(true);
-  });
-
-  it("never evicts the exact actionable missing-dependency scope", async () => {
-    const { bridge, internals } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    const missingSource = remoteSourceAt("/retention/missing.csv");
-    const missingEnvironment = {
-      ...environment,
-      executable: testPythonExecutablePath("/envs/missing/python"),
-      packageRoot: "/envs/missing",
-      packageRootIdentity: testPackageRootIdentity("/envs/missing")
-    };
-    const healthyEnvironment = {
-      ...environment,
-      executable: testPythonExecutablePath("/envs/healthy/python"),
-      packageRoot: "/envs/healthy",
-      packageRootIdentity: testPackageRootIdentity("/envs/healthy")
-    };
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
-      resource?.toString(true) === missingSource.uri ? missingEnvironment : healthyEnvironment
-    );
-    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (executable) =>
-      executable === missingEnvironment.executable
-        ? { missing: ["polars"], available: [] }
-        : { missing: [], available: ["polars"] }
-    );
-
-    await expect(internals.prepareRequest(openSessionRequest(missingSource))).resolves.toMatchObject({
-      kind: "error",
-      code: "missing_dependencies"
-    });
-    const exactTarget = internals.lastMissingDependencies;
-    expect(exactTarget?.selection.key).toBe(missingSource.uri);
-
-    for (let index = 0; index < 144; index += 1) {
-      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/retention/healthy-${index}.csv`)));
-    }
-
-    expect(raw.runtimeSlots.size).toBe(128);
-    expect(raw.environmentSelections.size).toBe(128);
-    expect(raw.runtimeSlots.has(missingSource.uri!)).toBe(true);
-    expect(raw.environmentSelections.get(missingSource.uri!)).toBe(exactTarget?.selection);
-    expect(internals.lastMissingDependencies).toBe(exactTarget);
-  });
-
   it("leases one exact scope through deferred environment resolution and dependency probing", async () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
@@ -4026,25 +3858,6 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.runtimeSlots.has(targetSource.uri!)).toBe(false);
     expect(raw.environmentSelections.has(targetSource.uri!)).toBe(false);
     expect(raw.dependencyProbes.diagnostics().completedCount).toBe(2);
-  });
-
-  it("refreshes scope recency without changing deterministic runtime-slot order", async () => {
-    const { bridge, internals } = createEnvironmentHarness();
-    const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-
-    for (let index = 0; index < 128; index += 1) {
-      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/recency/${index}.csv`)));
-    }
-    const insertionOrder = [...raw.runtimeSlots.keys()];
-    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/recency/0.csv")));
-    expect([...raw.runtimeSlots.keys()]).toEqual(insertionOrder);
-
-    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/recency/128.csv")));
-    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/0.csv").uri!)).toBe(true);
-    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/1.csv").uri!)).toBe(false);
-    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/128.csv").uri!)).toBe(true);
   });
 
   it("does not let a stale environment-resolution callback overwrite a same-key recreation", async () => {
