@@ -611,17 +611,23 @@ test("CI hands the exact emitted artifact path directly to the upload action", a
   for (const workflowName of ["ci.yml", "candidate-acceptance.yml"]) {
     const source = await readFile(join(repositoryRoot, ".github", "workflows", workflowName), "utf8");
     const steps = topLevelWorkflowSteps(source);
-    const producers = steps.filter((step) => /\bid:\s*packaged_editor\s*$/mu.test(step));
+    const producers = steps.filter((step) => /\brun:\s*.*run-packaged-editor-tests\.mjs\b/mu.test(step));
     assert.ok(producers.length > 0, `${workflowName} must run packaged editor acceptance`);
     for (const producer of producers) {
+      const producerId = /^\s*- id:\s*([A-Za-z_][A-Za-z0-9_-]*)\s*$/mu.exec(producer)?.[1];
+      assert.ok(producerId, `${workflowName} packaged editor acceptance must have a step ID`);
+      const escapedProducerId = producerId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
       const producerIndex = steps.indexOf(producer);
       const upload = steps[producerIndex + 1];
       assert.ok(upload, `${workflowName} must upload immediately after packaged editor acceptance`);
       const uploadReference = /^\s*uses:\s*(\S+)\s*(?:#.*)?$/mu.exec(upload)?.[1];
       assert.ok(uploadReference?.startsWith("actions/upload-artifact@"));
       assert.equal(isPinnedExternalActionReference(uploadReference), true);
-      assert.match(upload, /path:\s*\$\{\{\s*steps\.packaged_editor\.outputs\.evidence_path\s*\}\}\s*$/mu);
-      assert.match(upload, /steps\.packaged_editor\.outputs\.evidence_ready\s*==\s*'true'/u);
+      assert.match(
+        upload,
+        new RegExp(`path:\\s*\\$\\{\\{\\s*steps\\.${escapedProducerId}\\.outputs\\.evidence_path\\s*\\}\\}\\s*$`, "mu")
+      );
+      assert.match(upload, new RegExp(`steps\\.${escapedProducerId}\\.outputs\\.evidence_ready\\s*==\\s*'true'`, "u"));
       assert.match(upload, /retention-days:\s*7\s*$/mu);
       assert.doesNotMatch(upload, /\n\s*path:\s*\|/u);
     }

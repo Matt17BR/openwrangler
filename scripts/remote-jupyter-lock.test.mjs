@@ -122,11 +122,13 @@ test("source and release producers own the fixture lock without candidate duplic
   assert.equal((packageJson.scripts["audit:remote-jupyter"].match(/--strict/gu) ?? []).length, 2);
   assert.doesNotMatch(packageJson.scripts["audit:remote-jupyter"], /--ignore-vuln/u);
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
+  assert.match(packageJson.scripts["check:invariants"], /check:remote-jupyter-lock/u);
   const uvBootstrap =
     /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.11\.32-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"/u;
   assert.match(releasedJupyter, uvBootstrap);
   assert.match(releasedJupyter, /run: npm run lock:remote-jupyter:check/u);
-  assert.match(releaseCandidate, /run: npm run check:pr/u);
+  assert.match(releaseCandidate, /run: npm run check:invariants/u);
+  assert.doesNotMatch(releaseCandidate, /run: npm run check:pr/u);
   assert.doesNotMatch(candidateAcceptance, uvBootstrap);
   assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);
   assert.equal((candidateAcceptance.match(/run: npm run audit:python/gu) ?? []).length, 1);
