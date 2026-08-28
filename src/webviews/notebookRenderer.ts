@@ -427,6 +427,18 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
 
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
+  const rowAxisHeaderLabel = notebookRowAxisHeaderLabel(payload);
+  if (rowAxisHeaderLabel !== undefined) {
+    const cell = document.createElement("th");
+    const rowAxisHeader = boundedText(rowAxisHeaderLabel, INLINE_COLUMN_CHARACTERS);
+    cell.scope = "col";
+    cell.textContent = rowAxisHeader.text;
+    applyTruncationDescription(cell, rowAxisHeader, "Row index name");
+    cell.style.textAlign = "left";
+    cell.style.borderBottom = "1px solid var(--vscode-panel-border)";
+    cell.style.padding = "4px 8px";
+    headRow.appendChild(cell);
+  }
   payload.metadata.schema.forEach((column) => {
     const cell = document.createElement("th");
     const columnName = boundedText(column.name, INLINE_COLUMN_CHARACTERS);
@@ -457,6 +469,21 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
     body.replaceChildren();
     previewRows.forEach((row) => {
       const tableRow = document.createElement("tr");
+      if (rowAxisHeaderLabel !== undefined) {
+        const cell = document.createElement("th");
+        const rowLabel = boundedText(row.rowLabel ?? "", INLINE_CELL_CHARACTERS);
+        cell.scope = "row";
+        cell.textContent = rowLabel.text;
+        cell.title = rowLabel.truncated
+          ? `Row index preview (${rowLabel.length.toLocaleString()} characters): ${rowLabel.text}`
+          : rowLabel.text;
+        applyTruncationDescription(cell, rowLabel, "Row index");
+        cell.style.borderBottom = "1px solid var(--vscode-panel-border)";
+        cell.style.fontWeight = "normal";
+        cell.style.padding = "4px 8px";
+        cell.style.textAlign = "left";
+        tableRow.appendChild(cell);
+      }
       row.values.forEach((value) => {
         const cell = document.createElement("td");
         const display = boundedText(value.display, INLINE_CELL_CHARACTERS);
@@ -502,6 +529,14 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   renderPage();
 
   return root;
+}
+
+function notebookRowAxisHeaderLabel(payload: NotebookOutputPayload): string | undefined {
+  const rowAxis = payload.metadata.rowAxis;
+  if (!rowAxis || rowAxis.kind === "positional") return undefined;
+  const names = rowAxis.levelNames.filter((name): name is string => name !== null && name.length > 0);
+  if (rowAxis.kind === "index") return names[0] ?? "Index";
+  return names.length > 0 ? names.join(" · ") : "Index";
 }
 
 function actionButton(label: string, title: string, action: () => void): HTMLButtonElement {
