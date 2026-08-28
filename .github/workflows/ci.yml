@@ -41,6 +41,8 @@ jobs:
           npm run check:remote-jupyter-lock
           npm run check:r-dependency-lock
           npm run license:check
+      - name: Direct script contracts
+        run: npm run test:scripts
       - name: TypeScript tests
         run: npx --no-install vitest run
 

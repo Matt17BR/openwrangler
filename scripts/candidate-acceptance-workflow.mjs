@@ -32,8 +32,7 @@ const DUPLICATE_SOURCE_HARNESS_RUNS = [
   "npm run test:extension-host",
   "npm run check",
   "npm run test:scripts",
-  "npm run test:webview-acceptance",
-  "npm run test:coverage"
+  "npm run test:webview-acceptance"
 ];
 const LINUX_DUPLICATE_HARNESS_SETUP = [
   "npx --no-install playwright-core install --with-deps chromium",

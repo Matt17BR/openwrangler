@@ -197,12 +197,6 @@ export const R_STABLE_PARITY_SCOPE = Object.freeze([
     "Quarto and R Markdown lexical R-cell run",
     "Linux and macOS",
     "src/test/literateDocumentChunks.unit.test.ts"
-  ),
-  stableRScope("Native R performance record", "Release candidate", "scripts/r-performance-report.test.mjs"),
-  stableRScope(
-    "First-class editor candidate acceptance",
-    "VS Code and Cursor",
-    "scripts/candidate-acceptance-workflow.test.mjs"
   )
 ]);
 export const PERFORMANCE_EVIDENCE_PARTIAL_ROWS = Object.freeze([

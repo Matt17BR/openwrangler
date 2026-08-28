@@ -171,35 +171,18 @@ unknown or user-owned directory; leave it alone when ownership is uncertain.
 ## Required checks
 
 Run the narrowest relevant tests while iterating. Open or update a pull request only for a coherent, locally green
-slice, then use its exact-head hosted matrix as the authoritative broad gate. Do not repeat the complete local test,
-package, media, and editor stack merely because a pull request is about to open; that duplicates hosted evidence,
-slows the feedback loop, and can exhaust the developer machine without improving the accepted result.
+slice, then use its exact-head hosted matrix as the authoritative broad gate.
 
-Do not run memory-intensive local suites concurrently. Coordinate that in the active task instead of adding locks,
-leases, process managers, or other operator machinery to this repository. Run the complete serial list below for a
-release candidate or when a change genuinely spans every listed boundary;
-otherwise run `npm run check:pr`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted
-pull-request CI always runs its five direct product owners plus inline `validate`; it has no path classifier. Release-only consumers run later
-against the protected release candidate; they are not default pull-request jobs.
+Do not run memory-intensive local suites concurrently. Use the focused owner for the changed boundary, then run the
+direct source commands when the slice spans the repository:
 
 ```bash
-npm run check:pr
+npm run check
 npm test
-npm run test:extension-host
-npm run test:webview-acceptance
-npm run test:coverage
-npm run license:check
-npm run benchmark:runtime # required for performance/runtime changes and release candidates
-npx playwright-core install chromium # before local visual capture/verification
-npm run clean
-npm run build
-npm run capture:screenshots # for visible changes
-npm run package -- --out openwrangler.vsix
-npm run verify:vsix -- openwrangler.vsix
-npm run test:packaged-editors -- openwrangler.vsix
 ```
 
-Changes to `r/openwrangler_runtime/`, its decoder, or its packaging rules must also run `npm run test:r-contract`. The hosted full matrix repeats that contract on R 4.4 and 4.5.
+Changes to `r/openwrangler_runtime/`, its decoder, or its packaging rules must also run `npm run test:r-contract`.
+Changes that cross an installed-editor boundary use the one exact-artifact smoke in `docs/testing.md`.
 
 For editor-facing changes, also complete the relevant scenarios in `docs/testing.md` in both VS Code and Cursor using isolated profiles.
 
