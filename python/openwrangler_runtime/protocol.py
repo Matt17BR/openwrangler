@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import json
+import traceback
 from collections.abc import Mapping
 from typing import Any
 
+from .custom_code_output import redact_diagnostic
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operations import OperationError, validate_step
+from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
 PROTOCOL_VERSION = 2
 MAX_PAGE_LIMIT = 10_000
 MAX_COLUMN_LIMIT = 256
+MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
 MAX_TRANSPORT_ID_BYTES = 256
+MAX_DIAGNOSTIC_BYTES = 4 * 1024
+MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
 REQUEST_PRIORITIES = {"interactive", "background"}
 SOURCE_ALLOWED_FIELDS = {"kind", "label", "path", "uri", "variableName", "importOptions"}
+_UTF8_CHUNK_CHARACTERS = 16 * 1024
 _ECMASCRIPT_TRIM_CHARACTERS = (
     "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
     "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
@@ -116,6 +124,80 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
 
 class ProtocolError(ValueError):
     """Raised when a transport envelope or request violates protocol v2."""
+
+
+class RequestFrameError(ProtocolError):
+    """Raised when a request cannot be decoded inside the shared frame bounds."""
+
+
+def decode_request_payload(
+    value: Any,
+    *,
+    lf_terminated: bool,
+    maximum_bytes: int = MAX_REQUEST_FRAME_BYTES,
+) -> Any | None:
+    """Decode one bounded UTF-8 JSON payload before protocol validation."""
+    content_limit = maximum_bytes if lf_terminated else maximum_bytes - 1
+    if isinstance(value, str):
+        text = value
+        encoded_length = _bounded_utf8_length(text, content_limit)
+        if not lf_terminated:
+            encoded_length += 1
+    elif isinstance(value, (bytes, bytearray)):
+        encoded = bytes(value)
+        encoded_length = len(encoded)
+        if not lf_terminated:
+            encoded_length += 1
+        if encoded_length > maximum_bytes:
+            raise RequestFrameError(f"request frame exceeds the {maximum_bytes}-byte limit including LF")
+        try:
+            text = encoded.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RequestFrameError("request frame is not valid UTF-8") from error
+    else:
+        raise RequestFrameError("request frame must be UTF-8 text or bytes")
+    if encoded_length > maximum_bytes:
+        raise RequestFrameError(f"request frame exceeds the {maximum_bytes}-byte limit including LF")
+    if lf_terminated and not text.endswith("\n"):
+        raise RequestFrameError("request frame ended before its LF terminator")
+    if not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError) as error:
+        raise RequestFrameError("request frame is not valid JSON") from error
+
+
+def request_id_for_payload(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    return bounded_transport_id(value.get("requestId"))
+
+
+def view_request_id_for_payload(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    request = value.get("request")
+    if not isinstance(request, Mapping):
+        return None
+    return bounded_transport_id(request.get("viewRequestId"))
+
+
+def bounded_transport_id(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > MAX_TRANSPORT_ID_BYTES:
+        return None
+    try:
+        return value if len(value.encode("utf-8")) <= MAX_TRANSPORT_ID_BYTES else None
+    except UnicodeEncodeError:
+        return None
+
+
+def validate_transport_ids(request_id: str, request: Mapping[str, Any]) -> None:
+    if bounded_transport_id(request_id) is None:
+        raise ProtocolError(f"requestId must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
+    for field in ("sessionId", "requestedSessionId", "viewRequestId"):
+        if field in request and bounded_transport_id(request[field]) is None:
+            raise ProtocolError(f"{field} must not exceed {MAX_TRANSPORT_ID_BYTES} UTF-8 bytes.")
 
 
 def decode_request(value: Any) -> dict[str, Any]:
@@ -280,7 +362,9 @@ def decode_envelope(value: Any) -> tuple[str, str, dict[str, Any]]:
     priority = envelope.get("priority")
     if priority not in REQUEST_PRIORITIES:
         raise ProtocolError("priority must be interactive or background.")
-    return request_id, str(priority), decode_request(envelope.get("request"))
+    request = decode_request(envelope.get("request"))
+    validate_transport_ids(request_id, request)
+    return request_id, str(priority), request
 
 
 def response_envelope(request_id: str, response: Mapping[str, Any]) -> dict[str, Any]:
@@ -289,6 +373,14 @@ def response_envelope(request_id: str, response: Mapping[str, Any]) -> dict[str,
         "requestId": request_id,
         "response": dict(response),
     }
+
+
+def encode_response_envelope(
+    request_id: str,
+    response: Mapping[str, Any],
+    maximum_bytes: int = MAX_RESPONSE_FRAME_BYTES,
+) -> bytes:
+    return encode_response_frame(response_envelope(request_id, response), maximum_bytes)
 
 
 def error_response(
@@ -310,6 +402,81 @@ def error_response(
     if session_id:
         response["sessionId"] = session_id
     return response
+
+
+def response_for_error(
+    error: Exception,
+    *,
+    maximum_message_bytes: int = MAX_DIAGNOSTIC_BYTES,
+    maximum_detail_bytes: int = MAX_DIAGNOSTIC_DETAIL_BYTES,
+) -> dict[str, Any]:
+    # Imported lazily because session.py consumes protocol constants while it
+    # defines these operation-specific error types.
+    from .engines import AmbiguousViewColumnError, EngineError
+    from .session import (
+        LiveSourceInvalidatedError,
+        PySparkConnectStateLostError,
+        PySparkConnectUnavailableError,
+        ResponsePayloadError,
+        SessionCleanupError,
+        UnknownSessionError,
+    )
+
+    message = bounded_diagnostic(str(error), maximum_message_bytes)
+    if isinstance(error, ProtocolError):
+        return error_response(message, code="invalid_request", recoverable=False)
+    if isinstance(error, UnknownSessionError):
+        return error_response(message, code="unknown_session", session_id=error.session_id)
+    if isinstance(error, LiveSourceInvalidatedError):
+        return error_response(message, code="live_source_invalidated", session_id=error.session_id)
+    if isinstance(error, PySparkConnectUnavailableError):
+        return error_response(message, code="pyspark_connect_unavailable", session_id=error.session_id)
+    if isinstance(error, PySparkConnectStateLostError):
+        return error_response(message, code="pyspark_connect_state_lost", session_id=error.session_id)
+    if isinstance(error, SessionCleanupError):
+        return error_response(
+            message,
+            code="session_cleanup_failed",
+            recoverable=False,
+            session_id=error.session_id,
+        )
+    if isinstance(error, ResponsePayloadError):
+        return error_response(message, code=error.code)
+    if isinstance(error, AmbiguousViewColumnError):
+        return error_response(message, code="ambiguous_view_column")
+    if isinstance(error, EngineError):
+        return error_response(message, code="engine_error")
+    return error_response(
+        message,
+        detail=bounded_diagnostic(traceback.format_exc(), maximum_detail_bytes),
+    )
+
+
+def bounded_diagnostic(value: str, maximum_bytes: int) -> str:
+    suffix = b"...[truncated]"
+    value = redact_diagnostic(value)
+    candidate = value[:maximum_bytes]
+    encoded = candidate.encode("utf-8", errors="replace")
+    if len(value) <= maximum_bytes and len(encoded) <= maximum_bytes:
+        return encoded.decode("utf-8")
+    if maximum_bytes <= len(suffix):
+        return suffix[:maximum_bytes].decode("ascii")
+    prefix = encoded[: maximum_bytes - len(suffix)].decode("utf-8", errors="ignore")
+    return f"{prefix}{suffix.decode('ascii')}"
+
+
+def _bounded_utf8_length(value: str, maximum_bytes: int) -> int:
+    if len(value) > maximum_bytes:
+        return maximum_bytes + 1
+    total = 0
+    for offset in range(0, len(value), _UTF8_CHUNK_CHARACTERS):
+        try:
+            total += len(value[offset : offset + _UTF8_CHUNK_CHARACTERS].encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise RequestFrameError("request frame is not valid UTF-8") from error
+        if total > maximum_bytes:
+            return maximum_bytes + 1
+    return total
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
