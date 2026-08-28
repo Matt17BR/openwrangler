@@ -1151,8 +1151,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         payload = await this.readPrivateMailboxArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES);
         if (payload !== undefined) break;
       } catch {
-        // A notification is replaced with unlink/rename, so a bounded retry also
-        // covers the short interval in which the destination is absent.
+        // A notification can be replaced again while this identity-checked read is in
+        // flight, so a bounded retry converges on the latest complete artifact.
       }
       if (attempt === 2) return;
       await delay(RESPONSE_POLL_MS);
