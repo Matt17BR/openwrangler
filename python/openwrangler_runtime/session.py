@@ -36,6 +36,7 @@ from .protocol_limits_generated import (
     MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
 )
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
+from .trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 from .version import __version__
 
 PAGE_CACHE_LIMIT = 8
@@ -58,6 +59,7 @@ class _SourceFingerprint:
     inode: int
     size: int
     modified_ns: int
+    changed_ns: int
 
 
 class _SourceChangedError(EngineError):
@@ -2065,7 +2067,7 @@ class SessionManager:
             return
         try:
             current = self._fingerprint_path(expected.requested_path)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             session.clear_page_cache()
             raise self._source_changed_error(session) from error
         if current != expected:
@@ -2126,7 +2128,7 @@ class SessionManager:
             return None
         try:
             return cls._fingerprint_path(str(path))
-        except OSError as error:
+        except (OSError, ValueError) as error:
             label = source.get("label") or path
             raise EngineError(f"Could not read {label}: {error}") from error
 
@@ -2134,14 +2136,15 @@ class SessionManager:
     def _fingerprint_path(path: str) -> _SourceFingerprint:
         requested = Path(path).expanduser().absolute()
         resolved = requested.resolve(strict=True)
-        stat = resolved.stat()
+        fingerprint = _confirmed_source_path_fingerprint(resolved)
         return _SourceFingerprint(
             requested_path=str(requested),
             resolved_path=str(resolved),
-            device=int(stat.st_dev),
-            inode=int(stat.st_ino),
-            size=int(stat.st_size),
-            modified_ns=int(stat.st_mtime_ns),
+            device=fingerprint.device,
+            inode=fingerprint.inode,
+            size=fingerprint.size,
+            modified_ns=fingerprint.modified_time_ns,
+            changed_ns=fingerprint.changed_time_ns,
         )
 
     def _engine_for_source(self, source: Mapping[str, Any], backend: str | None) -> DataFrameEngine:
