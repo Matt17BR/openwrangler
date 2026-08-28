@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve } from "path";
+import { resolve } from "node:path";
 
-const jsYamlVendorTestModule = resolve(__dirname, "node_modules/js-yaml/dist/js-yaml.cjs.js");
+const jsYamlVendorTestModule = resolve(import.meta.dirname, "node_modules/js-yaml/dist/js-yaml.cjs.js");
 const realRContractTests = [
   "src/test/rFrameContract.cross.test.ts",
   "src/test/rInteractiveSessionTransport.cross.test.ts",
@@ -23,10 +23,10 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         preserveEntrySignatures: "strict",
         input: notebookRendererBuild
-          ? resolve(__dirname, "src/webviews/notebookRenderer.ts")
+          ? resolve(import.meta.dirname, "src/webviews/notebookRenderer.ts")
           : {
-              webview: resolve(__dirname, "src/webviews/main.tsx"),
-              codePreview: resolve(__dirname, "src/webviews/codePreviewMain.ts")
+              webview: resolve(import.meta.dirname, "src/webviews/main.tsx"),
+              codePreview: resolve(import.meta.dirname, "src/webviews/codePreviewMain.ts")
             },
         output: {
           entryFileNames: notebookRendererBuild ? "notebookRenderer.js" : "[name].js",
@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => {
     test: {
       alias: [
         { find: /^\.\/vendor\/js-yaml$/u, replacement: jsYamlVendorTestModule },
-        { find: "vscode", replacement: resolve(__dirname, "src/test/vscode.mock.ts") }
+        { find: "vscode", replacement: resolve(import.meta.dirname, "src/test/vscode.mock.ts") }
       ],
       environment: "jsdom",
       globals: true,

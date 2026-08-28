@@ -19,7 +19,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx,cjs}", "scripts/**/*.mjs", "vite.config.ts"],
+    files: ["src/**/*.{ts,tsx,cjs}", "scripts/**/*.mjs", "vite*.config.mts"],
     languageOptions: {
       globals: {
         ...globals.browser,

@@ -136,7 +136,6 @@ const REQUIRED_CAPTURE_LIMITS = new Map([
   ["extension/changelog.md", 2 * 1024 * 1024],
   ["extension/LICENSE.txt", 1024 * 1024],
   ["extension/THIRD_PARTY_NOTICES.md", 2 * 1024 * 1024],
-  ["extension/dist/extension/webviewPanel.js", 8 * 1024 * 1024],
   [VENDORED_JS_YAML_ENTRY, MAX_VENDORED_JS_YAML_BYTES],
   ["extension/media/webview.css", 8 * 1024 * 1024],
   ["extension/media/notebookRenderer.js", 8 * 1024 * 1024],
@@ -483,7 +482,7 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true, 
     packagedThirdPartyNotices: text("extension/THIRD_PARTY_NOTICES.md"),
     vsixManifest: text("extension.vsixmanifest"),
     webviewCss: text("extension/media/webview.css"),
-    webviewPanel: text("extension/dist/extension/webviewPanel.js"),
+    extensionHostBundle: text("extension/dist/extension/activate.js"),
     notebookRenderer: text("extension/media/notebookRenderer.js"),
     contentTypes: text("[Content_Types].xml")
   });

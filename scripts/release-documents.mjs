@@ -50,11 +50,13 @@ const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [V
 const README_SOURCE_BUILD = `To build and install the current \`main\` branch:
 
 \`\`\`bash
-git clone https://github.com/Matt17BR/openwrangler.git
+git clone --depth 1 --branch main https://github.com/Matt17BR/openwrangler.git
 cd openwrangler
 npm ci --ignore-scripts
 npm run package:dev
 \`\`\`
+
+The shallow clone retains \`.git\` for package source guards without downloading repository history or release tags.
 
 Then run \`code --install-extension openwrangler-dev.vsix --force\` or
 \`cursor --install-extension openwrangler-dev.vsix --force\`.`;

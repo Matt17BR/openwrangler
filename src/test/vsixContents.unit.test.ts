@@ -58,14 +58,14 @@ describe("notebook renderer bundle validation", () => {
 describe("VSIX production entry allowlist", () => {
   it("excludes every root Vite configuration from production packages", () => {
     const rootViteConfigs = readdirSync(process.cwd())
-      .filter((entry) => /^vite.*\.config\.ts$/u.test(entry))
+      .filter((entry) => /^vite.*\.config\.mts$/u.test(entry))
       .sort();
     const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
       .split(/\r?\n/u)
       .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
 
-    expect(rootViteConfigs).toContain("vite.python-environment-smoke.config.ts");
-    expect(vscodeIgnore).toContain("vite*.config.ts");
+    expect(rootViteConfigs).toContain("vite.python-environment-smoke.config.mts");
+    expect(vscodeIgnore).toContain("vite*.config.mts");
   });
 
   it("excludes registry pipeline definitions from production packages", () => {
@@ -201,16 +201,16 @@ describe("VSIX production entry allowlist", () => {
     expect(result.duplicates).toEqual([]);
   });
 
-  it("requires the compiled webview host, notebook renderer, and bundled Codicon font", () => {
+  it("requires the extension-host bundle, notebook renderer, and bundled Codicon font", () => {
     const entries = requiredVsixEntries.filter(
       (entry) =>
-        entry !== "extension/dist/extension/webviewPanel.js" &&
+        entry !== "extension/dist/extension/activate.js" &&
         entry !== "extension/media/notebookRenderer.js" &&
         entry !== "extension/media/codicon.ttf"
     );
 
     expect(inspectVsixEntries(entries).missing).toEqual([
-      "extension/dist/extension/webviewPanel.js",
+      "extension/dist/extension/activate.js",
       "extension/media/codicon.ttf",
       "extension/media/notebookRenderer.js"
     ]);

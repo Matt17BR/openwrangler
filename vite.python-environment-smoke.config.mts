@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   test: {
-    alias: { vscode: resolve(__dirname, "src/test/vscode.mock.ts") },
+    alias: { vscode: resolve(import.meta.dirname, "src/test/vscode.mock.ts") },
     environment: "node",
     fileParallelism: false,
     include: ["src/test/pythonEnvironment.smoke.ts"],
