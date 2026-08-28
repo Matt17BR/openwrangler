@@ -26,8 +26,7 @@ node --version
 npm ci --ignore-scripts
 ```
 
-`node --version` should report `v24.19.0`, and `npm --version` should report `11.17.0`. The bounded compatibility
-smoke uses Node `22.23.2` with its bundled npm `10.9.8`; it is not the canonical packaging pair.
+`node --version` should report `v24.19.0`, and `npm --version` should report `11.17.0`.
 
 Dependency lifecycle scripts are disabled by `.npmrc` and every automation owner repeats `--ignore-scripts`
 explicitly. `npm run check:install-policy` verifies the lock, all install owners, and the local script-free shims used
