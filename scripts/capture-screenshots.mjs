@@ -536,6 +536,24 @@ writeWebviewHarness(
   }
 );
 writeWebviewHarness(
+  "applied-plan.html",
+  payloads.applied,
+  {},
+  "acceptance/applied-plan-unused.png",
+  {},
+  {
+    capture: false
+  }
+);
+writeWebviewHarness(
+  "applied-plan-dark-zoom-200.html",
+  payloads.applied,
+  {},
+  "acceptance/applied-plan-dark-zoom-200-unused.png",
+  {},
+  { capture: false, zoom: 2 }
+);
+writeWebviewHarness(
   "by-example-dialog.html",
   payloads.exampleOpened,
   {},
