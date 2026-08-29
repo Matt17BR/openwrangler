@@ -1,9 +1,11 @@
+# pyright: strict
+
 from __future__ import annotations
 
 import os
 import stat
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +31,7 @@ class ExportWriterPath(os.PathLike[str]):
         return str(self.path)
 
     @contextmanager
-    def open_binary_writer(self) -> Iterator[BinaryIO]:
+    def open_binary_writer(self) -> Generator[BinaryIO, None, None]:
         descriptor = _open_regular_file(self.path)
         try:
             if _descriptor_identity(descriptor) != (self.device, self.inode):
@@ -85,7 +87,7 @@ class ExportTarget:
             raise ExportTargetError("Open Wrangler's host-owned temporary export file changed unexpectedly.")
 
     @contextmanager
-    def pinned_writer_path(self) -> Iterator[ExportWriterPath]:
+    def pinned_writer_path(self) -> Generator[ExportWriterPath, None, None]:
         writer_path = ExportWriterPath(self.path, self.device, self.inode)
         if sys.platform == "win32":
             with self._pinned_windows_writer_path():
@@ -113,7 +115,7 @@ class ExportTarget:
             os.close(descriptor)
 
     @contextmanager
-    def _pinned_windows_writer_path(self) -> Iterator[None]:
+    def _pinned_windows_writer_path(self) -> Generator[None, None, None]:
         from .windows_file_handle import WindowsFileHandleValidationError, WindowsPinnedExportTarget
 
         try:
@@ -202,9 +204,10 @@ def _add_cleanup_note(error: BaseException, cleanup_error: BaseException, label:
 
 
 def _bounded_cleanup_detail(error: BaseException) -> str:
-    nested = getattr(error, "errors", ())
-    if isinstance(nested, tuple) and nested:
-        children = "; ".join(f"{type(item).__name__}: {item}" for item in nested)
+    from .windows_file_handle import WindowsFileHandleCleanupError
+
+    if isinstance(error, WindowsFileHandleCleanupError) and error.errors:
+        children = "; ".join(f"{type(item).__name__}: {item}" for item in error.errors)
         detail = f"{type(error).__name__} ({children})"
     else:
         detail = f"{type(error).__name__}: {error}"
