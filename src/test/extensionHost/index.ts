@@ -258,7 +258,6 @@ import {
 import { classifyRendererUrl, prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEditorTabs";
 import {
-  CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   dispatchExtensionHostPhase,
   dispatchPlatformSmokeJourney,
   parseExtensionHostPhaseSelection,
@@ -575,7 +574,7 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const phaseSelection = parseExtensionHostPhaseSelection(process.env, process.platform);
   const { phase, testPython } = phaseSelection;
-  if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
+  if (testPython && phase !== "python-environment") {
     await vscode.workspace
       .getConfiguration("openWrangler")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
@@ -1063,13 +1062,6 @@ export async function run(): Promise<void> {
       await exercisePackagedGridColumnCopyJourney(testing, gridColumnCopyFixture);
       recordAcceptanceProgress("grid-column-copy:phase-complete");
       console.log("Open Wrangler packaged whole-column copy acceptance passed.");
-    },
-    remoteWorkspace: async () => {
-      assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");
-      recordAcceptanceProgress("remote-workspace:start");
-      await exerciseRemoteWorkspace(testing, extension, workspace, testPython);
-      recordAcceptanceProgress("remote-workspace:complete");
-      console.log("Open Wrangler real Remote SSH workspace acceptance passed.");
     },
     seed: async () => {
       recordAcceptanceProgress("seed:start");
@@ -2832,9 +2824,6 @@ async function exerciseReleasedJupyterExtension(
     !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
     "File-backed Open Wrangler use must not acquire a hard Jupyter extension dependency."
   );
-  const candidateCompatibilitySeam =
-    process.env.OPEN_WRANGLER_TEST_SELECTOR === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR;
-
   const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
   assert.equal(jupyterExtension.packageJSON.publisher, "ms-toolsai");
@@ -2934,15 +2923,13 @@ async function exerciseReleasedJupyterExtension(
       );
       assert.equal(initialKernelBeforeFormatter.setup, setupMarker);
       assert.equal(initialKernelBeforeFormatter.duckdbConversionGuards, true);
-      if (!candidateCompatibilitySeam) {
-        await exerciseFormatterDisabledFirstNotebookResult(
-          workbench,
-          testing,
-          notebook,
-          variableNotebookEditor,
-          jupyterApi
-        );
-      }
+      await exerciseFormatterDisabledFirstNotebookResult(
+        workbench,
+        testing,
+        notebook,
+        variableNotebookEditor,
+        jupyterApi
+      );
     }
 
     assert.equal(
@@ -2992,7 +2979,7 @@ async function exerciseReleasedJupyterExtension(
       return;
     }
 
-    if (phase !== "jupyter-allow" || candidateCompatibilitySeam) {
+    if (phase !== "jupyter-allow") {
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
       recordAcceptanceProgress(`${phase}:consent`);
@@ -3097,19 +3084,6 @@ async function exerciseReleasedJupyterExtension(
       0,
       "Producing an automatic notebook preview must not implicitly open a dataframe session."
     );
-    if (candidateCompatibilitySeam) {
-      await exerciseReleasedJupyterAllowCompatibilitySeam(
-        testing,
-        workbench,
-        notebook,
-        variableNotebookEditor,
-        rendererLoadObserver,
-        renderedCell,
-        capturedShowcaseFirstValue
-      );
-      return;
-    }
-
     recordAcceptanceProgress(`${phase}:temporary-result-mime-v2`);
     const temporaryResultKernel = await jupyterApi.kernels.getKernel(notebook.uri);
     assert.ok(temporaryResultKernel, "The temporary-result check requires the exact active notebook kernel.");
@@ -3907,94 +3881,6 @@ async function exerciseReleasedJupyterExtension(
       if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
     }
   }
-}
-
-async function exerciseReleasedJupyterAllowCompatibilitySeam(
-  testing: TestApi,
-  workbench: Page,
-  notebook: vscode.NotebookDocument,
-  notebookEditor: vscode.NotebookEditor,
-  rendererLoadObserver: NotebookRendererLoadObserver,
-  renderedCell: vscode.NotebookRange,
-  firstValue: string
-): Promise<void> {
-  recordAcceptanceProgress("jupyter-allow:candidate-seam:variables");
-  await showExactReleasedNotebook(notebook);
-  assertExactVisibleReleasedNotebookEditor(
-    notebook,
-    notebookEditor,
-    "before opening the candidate Cursor Jupyter Variables seam"
-  );
-  await vscode.commands.executeCommand("jupyter.openVariableView");
-  assertExactOpenNotebookDocument(notebook, "after opening the candidate Cursor Jupyter Variables seam");
-  await dispatchReleasedJupyterVariableAction(
-    workbench,
-    notebook,
-    RELEASED_JUPYTER_VARIABLES_PANDAS.name,
-    "jupyter-allow:candidate-seam:variables"
-  );
-  const variablesSession = await waitForReleasedVariableSession(
-    workbench,
-    testing,
-    notebook,
-    RELEASED_JUPYTER_VARIABLES_PANDAS,
-    "the canonical orders_df opened through the candidate Cursor Jupyter Variables seam"
-  );
-  try {
-    await assertReleasedSessionPage(
-      testing,
-      variablesSession,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.firstValue,
-      "jupyter-allow-candidate-variables-page"
-    );
-  } finally {
-    await disposePackagedSessionPanel(
-      testing,
-      variablesSession.sessionId,
-      "the candidate Cursor Jupyter Variables session"
-    );
-  }
-
-  recordAcceptanceProgress("jupyter-allow:candidate-seam:renderer");
-  const rendererEditor = await showExactReleasedNotebook(notebook);
-  rendererEditor.selection = renderedCell;
-  rendererEditor.selections = [renderedCell];
-  rendererEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
-  let rendererButton: NotebookRendererButton;
-  try {
-    rendererButton = await waitForNotebookRendererButton(workbench, "orders_preview_df", "Open in Open Wrangler");
-  } catch (error) {
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
-        releasedNotebookRendererHostDiagnostics(notebook, 1)
-      )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
-    );
-  }
-  let rendererSession: NonNullable<ReturnType<TestApi["activeSession"]>>;
-  try {
-    rendererSession = await openReleasedRendererVariableSession(
-      rendererButton,
-      workbench,
-      testing,
-      notebook,
-      { name: "orders_preview_df", type: "DataFrame", backend: "pandas", firstValue },
-      "the live orders_preview_df opened through the candidate Cursor renderer seam",
-      "jupyter-allow:candidate-seam:renderer"
-    );
-  } finally {
-    await rendererButton.dispose();
-  }
-  try {
-    assert.deepEqual(rendererSession.metadata.shape, { rows: 100_000, columns: 12 });
-    await assertReleasedSessionPage(testing, rendererSession, firstValue, "jupyter-allow-candidate-renderer-page");
-  } finally {
-    await disposePackagedSessionPanel(
-      testing,
-      rendererSession.sessionId,
-      "the candidate Cursor Jupyter renderer session"
-    );
-  }
-  assert.equal(testing.diagnostics().sessionCount, 0);
 }
 
 const exerciseReleasedPythonFileEntrypoint = createReleasedPythonFileEntrypointJourney({
@@ -8304,130 +8190,6 @@ async function exercisePackagedPlatformSmoke(
     `the ${editorName} journey session and Python runtime to terminate`
   );
   assert.deepEqual(testing.diagnostics().sessions, []);
-}
-
-async function exerciseRemoteWorkspace(
-  testing: TestApi,
-  extension: vscode.Extension<ExtensionApi>,
-  workspace: vscode.Uri,
-  testPython: string
-): Promise<void> {
-  assert.equal(
-    process.env.OPEN_WRANGLER_TEST_EDITOR,
-    "vscode-remote-ssh",
-    "Remote-workspace acceptance is reserved for the pinned official VS Code and Remote SSH chain."
-  );
-  assert.equal(vscode.env.remoteName, "ssh-remote", "The acceptance extension host must execute over Remote SSH.");
-  assert.equal(
-    workspace.scheme,
-    "file",
-    "A workspace-extension process must receive its Remote SSH filesystem as a host-local file URI."
-  );
-  assert.equal(workspace.authority, "");
-  assert.equal(extension.isActive, true);
-  for (const loaderVariable of ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_BIND_NOW", "LD_AUDIT"]) {
-    assert.equal(
-      process.env[loaderVariable],
-      undefined,
-      `The remote extension host must not inherit ${loaderVariable}.`
-    );
-  }
-
-  const configuredPython = vscode.workspace.getConfiguration("openWrangler", workspace).inspect<string>("pythonPath");
-  assert.equal(
-    configuredPython?.workspaceFolderValue,
-    testPython,
-    "The remote workspace must pin its private Python through resource-scoped configuration."
-  );
-  assert.equal(vscode.workspace.getConfiguration("openWrangler", workspace).get<string>("pythonPath"), testPython);
-
-  const fixture = vscode.Uri.joinPath(workspace, "remote.csv");
-  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
-  recordAcceptanceProgress("remote-workspace:open");
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
-  await waitFor(
-    () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the Remote SSH CSV source to open in the real Open Wrangler grid",
-    () =>
-      JSON.stringify({
-        coordinator: testing.diagnostics(),
-        runtimeRunning: testing.runtimeRunning(),
-        runtimeEnvironment: testing.runtimeEnvironment(),
-        panelOpenResponse: testing.panelOpenResponse()
-      })
-  );
-  const active = testing.activeSession();
-  assert.ok(active, "The Remote SSH workspace must publish one active dataframe grid.");
-  assert.equal(active.metadata.backend, "polars");
-  assert.deepEqual(active.metadata.shape, { rows: 3, columns: 2 });
-  await waitFor(
-    () => testing.panelHydrated(active.metadata.sessionId),
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the exact Remote SSH panel to finish opening and acknowledge its current renderer snapshot"
-  );
-  assert.equal(
-    await testing.synchronizePanel(active.metadata.sessionId),
-    true,
-    "The remote dataframe session must own a synchronized Open Wrangler grid panel."
-  );
-
-  const runtimeEnvironment = testing.runtimeEnvironment();
-  assert.ok(runtimeEnvironment, "The remote grid must start its Python runtime.");
-  assert.equal(runtimeEnvironment.executable, testPython);
-  assert.equal(runtimeEnvironment.source, "configuration");
-  assert.match(runtimeEnvironment.version, /^3\.(?:1[0-4])\./u);
-
-  const filterModel: FilterModel = {
-    logic: "and",
-    filters: [
-      {
-        column: "city",
-        type: "string",
-        logic: "and",
-        predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
-      }
-    ],
-    sort: []
-  };
-  recordAcceptanceProgress("remote-workspace:filter");
-  const filtered = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    viewRequestId: "remote-workspace-filter",
-    sessionId: active.metadata.sessionId,
-    revision: active.metadata.revision,
-    offset: 0,
-    limit: 20,
-    filterModel
-  });
-  assert.equal(filtered.kind, "page");
-  if (filtered.kind !== "page") return;
-  assert.equal(filtered.page.totalRows, 1);
-  assert.equal(filtered.page.rows.length, 1);
-  assert.equal(filtered.page.rows[0]?.values[0]?.display, "Milan");
-  assert.equal(filtered.page.rows[0]?.values[1]?.display, "42");
-  assert.deepEqual(testing.activeSession()?.viewState.filterModel, filterModel);
-  assertExactBytes(
-    await vscode.workspace.fs.readFile(fixture),
-    sourceBytes,
-    "A remote viewing filter must leave the source CSV bytes unchanged."
-  );
-
-  recordAcceptanceProgress("remote-workspace:cleanup");
-  await testing.disposePanelForSession(active.metadata.sessionId);
-  await waitFor(
-    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-    15_000,
-    "the Remote SSH session and private Python runtime to terminate"
-  );
-  assert.deepEqual(testing.diagnostics().sessions, []);
-  assert.equal(testing.runtimeEnvironment(), undefined);
-  assertExactBytes(
-    await vscode.workspace.fs.readFile(fixture),
-    sourceBytes,
-    "Remote-workspace cleanup must preserve the source CSV bytes."
-  );
 }
 
 async function waitForOpenWranglerGridTarget(

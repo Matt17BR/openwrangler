@@ -1,11 +1,8 @@
 export const PACKAGED_PYTHON_JUPYTER_PROFILE_ENV = "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE";
-export const CANDIDATE_PYTHON_JUPYTER_PROFILE = "candidate-one-owner";
-export const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
 export const PYSPARK_PRERELEASE_DENIAL_PROFILE = "pyspark-prerelease-denial";
 export const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
 
 const COMPLETE_PHASES = Object.freeze(["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]);
-const CURSOR_CANDIDATE_PHASES = Object.freeze(["jupyter-allow"]);
 const PYSPARK_PRERELEASE_DENIAL_PHASES = Object.freeze(["jupyter-pyspark"]);
 
 export function resolvePackagedPythonJupyterProfile({
@@ -17,43 +14,25 @@ export function resolvePackagedPythonJupyterProfile({
   requestedEditors
 }) {
   if (value === undefined) return undefined;
-  if (value !== CANDIDATE_PYTHON_JUPYTER_PROFILE && value !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
+  if (value !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
     throw new Error(
-      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV} must be unset, ${JSON.stringify(
-        CANDIDATE_PYTHON_JUPYTER_PROFILE
-      )}, or ${JSON.stringify(PYSPARK_PRERELEASE_DENIAL_PROFILE)}.`
+      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV} must be unset or ${JSON.stringify(PYSPARK_PRERELEASE_DENIAL_PROFILE)}.`
     );
-  }
-  if (value === PYSPARK_PRERELEASE_DENIAL_PROFILE) {
-    if (
-      acceptanceMode !== "full" ||
-      !jupyterExtensionEnabled ||
-      dataWranglerCoexistenceEnabled ||
-      remoteJupyterEnabled ||
-      !sameEditors(requestedEditors, ["vscode"])
-    ) {
-      throw new Error(
-        `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV}=${JSON.stringify(
-          PYSPARK_PRERELEASE_DENIAL_PROFILE
-        )} is valid only for the isolated released-PySpark prerelease-denial journey in VS Code without coexistence or remote Jupyter.`
-      );
-    }
-    return PYSPARK_PRERELEASE_DENIAL_PROFILE;
   }
   if (
     acceptanceMode !== "full" ||
     !jupyterExtensionEnabled ||
     dataWranglerCoexistenceEnabled ||
-    !remoteJupyterEnabled ||
-    !sameEditors(requestedEditors, ["vscode", "cursor"])
+    remoteJupyterEnabled ||
+    !sameEditors(requestedEditors, ["vscode"])
   ) {
     throw new Error(
       `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV}=${JSON.stringify(
-        CANDIDATE_PYTHON_JUPYTER_PROFILE
-      )} is valid only for ordinary released-Python Jupyter acceptance with real remote Jupyter and exactly VS Code plus Cursor.`
+        PYSPARK_PRERELEASE_DENIAL_PROFILE
+      )} is valid only for the isolated released-PySpark prerelease-denial journey in VS Code without coexistence or remote Jupyter.`
     );
   }
-  return CANDIDATE_PYTHON_JUPYTER_PROFILE;
+  return PYSPARK_PRERELEASE_DENIAL_PROFILE;
 }
 
 export function packagedPythonJupyterEditorPlan(profile, editorKey, remoteJupyterEnabled) {
@@ -84,29 +63,11 @@ export function packagedPythonJupyterEditorPlan(profile, editorKey, remoteJupyte
       integrationOnly: true
     });
   }
-  if (profile !== CANDIDATE_PYTHON_JUPYTER_PROFILE) {
-    throw new Error("Released-Python Jupyter acceptance received an unresolved candidate profile.");
-  }
-  if (editorKey === "vscode") {
-    return Object.freeze({
-      phases: COMPLETE_PHASES,
-      remote: true,
-      allowSelector: undefined,
-      pysparkSelector: undefined,
-      integrationOnly: true
-    });
-  }
-  return Object.freeze({
-    phases: CURSOR_CANDIDATE_PHASES,
-    remote: false,
-    allowSelector: CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
-    pysparkSelector: undefined,
-    integrationOnly: true
-  });
+  throw new Error("Released-Python Jupyter acceptance received an unresolved profile.");
 }
 
 export function packagedPythonJupyterPySparkDistribution(profile, prereleaseDistribution) {
-  if (profile === undefined || profile === CANDIDATE_PYTHON_JUPYTER_PROFILE) return undefined;
+  if (profile === undefined) return undefined;
   if (profile !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
     throw new Error("Released-Python Jupyter acceptance received an unresolved PySpark distribution profile.");
   }
