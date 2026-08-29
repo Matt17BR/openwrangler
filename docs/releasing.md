@@ -18,11 +18,12 @@ Write the release notes using [the writing guide](writing-style.md). Product cha
 and unrelated documentation land before the release pull request.
 
 Numeric `0.<odd-minor>.x` versions are preview bands. Manual `1.99.N` previews end at `1.99.7`. Automatic daily public
-previews use the exact protected-main source commit's coherent release metadata: pre-v2 previews remain fixed at
-`1.99.YYYYMMDD`, never the legacy `1.2.YYYYMMDD` series, while a stable v2-or-later source uses its `major.minor` plus
-the UTC date (`2.0.z` → `2.0.YYYYMMDD`; `2.1.z` → `2.1.YYYYMMDD`). All previews require `package.json.preview` to be
-`true`. Stable versions require `preview` to be `false`. The package verifier rejects a VSIX whose embedded manifest
-disagrees with that channel.
+previews use the latest canonical stable release tag reachable from the exact protected-main source commit in the full
+checkout. A pre-v2 stable tag retains the `1.99.YYYYMMDD` compatibility series. For v2 and later, the tag's
+`major.minor` selects the series: source metadata may advance to 2.1 while `v2.0.z` still produces `2.0.YYYYMMDD`, and
+the series switches to `2.1.YYYYMMDD` only after a stable `v2.1.z` tag exists. All previews require
+`package.json.preview` to be `true`. Stable versions require `preview` to be `false`. The package verifier rejects a
+VSIX whose embedded manifest disagrees with that channel.
 
 ## Source and package commands
 
@@ -53,10 +54,11 @@ verified VSIX path.
 
 ## Daily preview
 
-The schedule in `.github/workflows/preview-release.yml` reads the workflow run's immutable UTC `created_at` timestamp
-and derives the version from the exact protected `main` commit under the source-series policy above. From that same
-source commit, it creates a deterministic single-parent child that changes only `package.json`, `package-lock.json`,
-and `python/openwrangler_runtime/version.py`. The workflow packages one canonical VSIX/checksum/provenance bundle and
+The schedule in `.github/workflows/preview-release.yml` reads the workflow run's immutable UTC `created_at` timestamp,
+selects the latest stable tag authority reachable from the exact protected `main` commit under the policy above, and
+fails if the full checkout cannot prove that authority. From that same source commit, it creates a deterministic
+single-parent child bound to the stable tag and tag commit that changes only `package.json`, `package-lock.json`, and
+`python/openwrangler_runtime/version.py`. The workflow packages one canonical VSIX/checksum/provenance bundle and
 qualifies those exact bytes in stable VS Code with the existing `daily-core` selector.
 
 After qualification, the protected publication job creates or verifies the direct-child lightweight tag and GitHub
@@ -77,11 +79,14 @@ and do not rebuild the extension. Registry promotion verifies the canonical VSIX
 downloaded public VSIX identity; README image hosting and CDN propagation are not publication inputs.
 
 For either preview path, if the GitHub **Publish preview** job fails while creating or verifying the tag or GitHub
-prerelease, or while dispatching Open VSX, rerun only that failed job in the same workflow run. It reconstructs the
-same source and reuses the same qualified artifact. Recover an Azure Marketplace failure separately by manually
-running the Azure pipeline from current protected `main` with `existingReleaseTag` set to the same tag. That path
-verifies the existing tag and canonical GitHub assets without rebuilding, moving the tag, or overwriting public bytes;
-conflicting public bytes fail closed.
+prerelease, or while dispatching Open VSX, rerun only that failed job in the same workflow run while its stable tag
+authority remains unchanged. It reconstructs the same source and reuses the same qualified artifact. Recover an Azure
+Marketplace failure separately by manually running the Azure pipeline from current protected `main` with
+`existingReleaseTag` set to the same tag. That path verifies the existing tag and canonical GitHub assets without
+rebuilding, moving the tag, or overwriting public bytes; conflicting public bytes fail closed. If a newer stable tag
+became reachable after a daily candidate was qualified, reconstruction fails instead of silently changing its bound
+authority; discard that candidate and let a new scheduled run qualify against the current stable tag. The preview
+series changes only when that tag's `major.minor` changes.
 
 ## Release candidate
 
