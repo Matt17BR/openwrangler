@@ -48,7 +48,7 @@ test("sealed failure evidence is re-redacted and identity-pinned through handoff
   }
 });
 
-test("packaged-editor CI uploads only the exact revalidated emitted artifact path", async () => {
+test("packaged-editor workflows upload only exact revalidated emitted artifact paths", async () => {
   const runner = await readFile(join(repositoryRoot, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
   assert.match(
     runner,
@@ -66,6 +66,29 @@ test("packaged-editor CI uploads only the exact revalidated emitted artifact pat
   assert.match(upload, /if-no-files-found:\s*error\s*$/mu);
   assert.match(upload, /retention-days:\s*7\s*$/mu);
   assert.doesNotMatch(upload, /\n\s*path:\s*\|/u);
+
+  const releaseCandidateWorkflow = await readFile(
+    join(repositoryRoot, ".github", "workflows", "release-candidate.yml"),
+    "utf8"
+  );
+  const releaseCandidateSteps = topLevelWorkflowSteps(releaseCandidateWorkflow);
+  const cursorProducerIndex = releaseCandidateSteps.findIndex((step) =>
+    /\bid:\s*cursor_platform_smoke\s*$/mu.test(step)
+  );
+  assert.notEqual(cursorProducerIndex, -1);
+  const cursorProducer = releaseCandidateSteps[cursorProducerIndex];
+  assert.match(cursorProducer, /OPEN_WRANGLER_PACKAGED_EDITORS:\s*cursor\s*$/mu);
+  assert.match(cursorProducer, /OPEN_WRANGLER_PACKAGED_MODE:\s*platform-smoke\s*$/mu);
+
+  const cursorUpload = releaseCandidateSteps[cursorProducerIndex + 1];
+  assert.match(cursorUpload, /uses:\s*actions\/upload-artifact@[0-9a-f]{40}/u);
+  assert.match(cursorUpload, /!cancelled\(\)/u);
+  assert.match(cursorUpload, /steps\.cursor_platform_smoke\.outcome\s*==\s*'failure'/u);
+  assert.match(cursorUpload, /steps\.cursor_platform_smoke\.outputs\.evidence_ready\s*==\s*'true'/u);
+  assert.match(cursorUpload, /path:\s*\$\{\{\s*steps\.cursor_platform_smoke\.outputs\.evidence_path\s*\}\}\s*$/mu);
+  assert.match(cursorUpload, /if-no-files-found:\s*error\s*$/mu);
+  assert.match(cursorUpload, /retention-days:\s*7\s*$/mu);
+  assert.doesNotMatch(cursorUpload, /\n\s*path:\s*\|/u);
 });
 
 function topLevelWorkflowSteps(source) {
