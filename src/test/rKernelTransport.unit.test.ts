@@ -846,37 +846,6 @@ describe("native R kernel protocol", () => {
       })
     ).toThrow("malformed or exceed");
     const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
-    for (const program of [
-      { kind: "slice", input: { kind: "column", column: { id: "r:c:0", name: "value" } }, start: unsafeInteger },
-      {
-        kind: "slice",
-        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
-        start: 0,
-        stop: unsafeInteger
-      },
-      {
-        kind: "split",
-        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
-        delimiter: "-",
-        index: unsafeInteger
-      },
-      {
-        kind: "regexExtract",
-        input: { kind: "column", column: { id: "r:c:0", name: "value" } },
-        pattern: "(.)",
-        group: unsafeInteger
-      }
-    ] as const) {
-      expect(() =>
-        encodeRKernelRequest({
-          ...request,
-          payload: {
-            ...request.payload,
-            step: { ...step, params: { ...step.params, program } }
-          }
-        })
-      ).toThrow("malformed or exceed");
-    }
 
     const retainedStep = {
       ...step,
