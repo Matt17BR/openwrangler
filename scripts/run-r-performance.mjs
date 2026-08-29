@@ -61,12 +61,14 @@ import {
 const repositoryRoot = realpathSync.native(resolve(import.meta.dirname, ".."));
 const HARNESS_RELATIVE_PATH = "scripts/r-performance-harness.R";
 const FRAME_ARCHIVE_ENTRY = "extension/r/openwrangler_runtime/frame_contract.R";
+const EXPORTS_ARCHIVE_ENTRY = "extension/r/openwrangler_runtime/kernel_exports.R";
 const KERNEL_ARCHIVE_ENTRY = "extension/r/openwrangler_runtime/kernel_agent.R";
 const PRIVATE_FILES = Object.freeze({
   candidate: "candidate.vsix",
   fixture: "fixture.json",
   frame: "frame_contract.R",
   harness: "r-performance-harness.R",
+  exports: "kernel_exports.R",
   kernel: "kernel_agent.R"
 });
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
@@ -282,7 +284,7 @@ export async function acceptRPerformanceCandidate({
   const extracted = await extractPackagedRAssets(privateSnapshot.bytes);
   const archiveDigests = new Map(archive.entryDigests);
   const archiveSizes = new Map(archive.entrySizes);
-  for (const asset of [extracted.frameContract, extracted.kernelAgent]) {
+  for (const asset of [extracted.frameContract, extracted.kernelExports, extracted.kernelAgent]) {
     if (archiveDigests.get(asset.entry) !== asset.sha256 || archiveSizes.get(asset.entry) !== asset.bytes.length) {
       throw new Error(`Extracted packaged R asset ${asset.name} does not match the sealed archive receipt.`);
     }
@@ -322,6 +324,7 @@ export function revalidateRPerformanceCandidate(intake) {
 export async function extractPackagedRAssets(vsixBytes) {
   const wanted = new Map([
     [FRAME_ARCHIVE_ENTRY, { key: "frameContract", name: "frame_contract.R" }],
+    [EXPORTS_ARCHIVE_ENTRY, { key: "kernelExports", name: "kernel_exports.R" }],
     [KERNEL_ARCHIVE_ENTRY, { key: "kernelAgent", name: "kernel_agent.R" }]
   ]);
   const archive = await new Promise((resolveArchive, reject) => {
@@ -402,6 +405,7 @@ export async function extractPackagedRAssets(vsixBytes) {
   if (found.size !== wanted.size) throw new Error("Canonical candidate omitted a packaged native R runtime asset.");
   return Object.freeze({
     frameContract: found.get(FRAME_ARCHIVE_ENTRY),
+    kernelExports: found.get(EXPORTS_ARCHIVE_ENTRY),
     kernelAgent: found.get(KERNEL_ARCHIVE_ENTRY)
   });
 }
@@ -2237,6 +2241,7 @@ function processArguments(privateFiles, mode) {
     privateFiles.harness.path,
     mode,
     privateFiles.frame.path,
+    privateFiles.exports.path,
     privateFiles.kernel.path,
     privateFiles.fixture.path
   ];
@@ -2763,6 +2768,11 @@ export async function runRPerformance(options, dependencies = {}) {
       fixture: writeRPerformancePrivateFile(privateRoot.root, PRIVATE_FILES.fixture, R_PERFORMANCE_FIXTURE_BYTES),
       harness: writeRPerformancePrivateFile(privateRoot.root, PRIVATE_FILES.harness, sourceBinding.harness.bytes),
       frame: writeRPerformancePrivateFile(privateRoot.root, PRIVATE_FILES.frame, intake.extracted.frameContract.bytes),
+      exports: writeRPerformancePrivateFile(
+        privateRoot.root,
+        PRIVATE_FILES.exports,
+        intake.extracted.kernelExports.bytes
+      ),
       kernel: writeRPerformancePrivateFile(privateRoot.root, PRIVATE_FILES.kernel, intake.extracted.kernelAgent.bytes)
     });
     const rscriptReceipt =
@@ -2951,6 +2961,11 @@ export async function runRPerformance(options, dependencies = {}) {
           name: intake.extracted.frameContract.name,
           bytes: intake.extracted.frameContract.bytes.length,
           sha256: intake.extracted.frameContract.sha256
+        },
+        kernelExports: {
+          name: intake.extracted.kernelExports.name,
+          bytes: intake.extracted.kernelExports.bytes.length,
+          sha256: intake.extracted.kernelExports.sha256
         },
         kernelAgent: {
           name: intake.extracted.kernelAgent.name,

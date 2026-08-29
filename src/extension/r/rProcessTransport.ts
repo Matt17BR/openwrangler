@@ -67,7 +67,7 @@ export interface RProcessVariableDiscovery {
 }
 
 export interface RProcessSessionTransportOptions {
-  /** Directory containing frame_contract.R, kernel_agent.R, and process_agent.R. */
+  /** Directory containing frame_contract.R, kernel_exports.R, kernel_agent.R, and process_agent.R. */
   readonly runtimeRoot: string;
   /** Exact plain-R source, or separately parsed literate-document R cells. */
   readonly documentText: string | readonly string[];
@@ -679,6 +679,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     const processAgent = path.join(runtimeRoot, "process_agent.R");
     await Promise.all([
       access(path.join(runtimeRoot, "frame_contract.R"), fsConstants.R_OK),
+      access(path.join(runtimeRoot, "kernel_exports.R"), fsConstants.R_OK),
       access(path.join(runtimeRoot, "kernel_agent.R"), fsConstants.R_OK),
       access(processAgent, fsConstants.R_OK)
     ]);

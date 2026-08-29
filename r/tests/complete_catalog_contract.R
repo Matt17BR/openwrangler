@@ -1,4 +1,5 @@
 source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
+source("r/openwrangler_runtime/kernel_exports.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_agent.R", local = FALSE)
 
 for (package in c("bit64", "collapse", "data.table", "jsonlite", "tibble")) {

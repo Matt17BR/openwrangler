@@ -26,6 +26,7 @@ export function rInteractiveRuntimeBundleId(runtimeRoot: string): string {
   const files = readRRuntimeFiles(runtimeRoot);
   const serialized = JSON.stringify({
     "frame_contract.R": files["frame_contract.R"],
+    "kernel_exports.R": files["kernel_exports.R"],
     "kernel_agent.R": files["kernel_agent.R"],
     "interactive_agent.R": readFileSync(path.join(runtimeRoot, "openwrangler_runtime", "interactive_agent.R"), "utf8")
   });

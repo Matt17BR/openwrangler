@@ -7373,8 +7373,9 @@ assert_generated_formula_datetime_flavor(
   collapse::qDT(formula_datetime_flavor_source)
 )
 
-formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agent_path) {
+formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_exports_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_exports_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
   if (!requireNamespace("data.table", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
     stop("the Formula/Datetime S3-isolation child requires data.table and jsonlite", call. = FALSE)
@@ -8115,7 +8116,8 @@ writeLines(
     paste0(
       "formula_datetime_s3_isolation_child(",
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
-      "commandArgs(trailingOnly = TRUE)[[2L]])"
+      "commandArgs(trailingOnly = TRUE)[[2L]], ",
+      "commandArgs(trailingOnly = TRUE)[[3L]])"
     )
   ),
   formula_datetime_s3_isolation_script,
@@ -8127,6 +8129,7 @@ formula_datetime_s3_isolation_output <- system2(
     "--vanilla",
     formula_datetime_s3_isolation_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,
@@ -8151,8 +8154,9 @@ if (!is.null(formula_datetime_s3_isolation_status) && formula_datetime_s3_isolat
 }
 unlink(formula_datetime_s3_isolation_script)
 
-categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel_agent_path) {
+categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel_exports_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_exports_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
   if (!requireNamespace("data.table", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
     stop("the categorical attributed-metadata child requires data.table and jsonlite", call. = FALSE)
@@ -8494,7 +8498,8 @@ writeLines(
     paste0(
       "categorical_attributed_metadata_s3_child(",
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
-      "commandArgs(trailingOnly = TRUE)[[2L]])"
+      "commandArgs(trailingOnly = TRUE)[[2L]], ",
+      "commandArgs(trailingOnly = TRUE)[[3L]])"
     )
   ),
   categorical_attributed_metadata_s3_script,
@@ -8506,6 +8511,7 @@ categorical_attributed_metadata_s3_output <- system2(
     "--vanilla",
     categorical_attributed_metadata_s3_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,
@@ -8530,8 +8536,9 @@ if (!is.null(categorical_attributed_metadata_s3_status) && categorical_attribute
 }
 unlink(categorical_attributed_metadata_s3_script)
 
-categorical_ascii_locale_child <- function(frame_contract_path, kernel_agent_path) {
+categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_exports_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("the categorical ASCII transport child requires jsonlite", call. = FALSE)
@@ -8705,7 +8712,8 @@ writeLines(
     paste0(
       "categorical_ascii_locale_child(",
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
-      "commandArgs(trailingOnly = TRUE)[[2L]])"
+      "commandArgs(trailingOnly = TRUE)[[2L]], ",
+      "commandArgs(trailingOnly = TRUE)[[3L]])"
     )
   ),
   categorical_ascii_locale_script,
@@ -8717,6 +8725,7 @@ categorical_ascii_locale_output <- system2(
     "--vanilla",
     categorical_ascii_locale_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,
@@ -11053,8 +11062,9 @@ assert_identical(
   "failed generated output-name validation mutated its source"
 )
 
-by_example_utf8_locale_child <- function(frame_contract_path, kernel_agent_path) {
+by_example_utf8_locale_child <- function(frame_contract_path, kernel_exports_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_exports_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("the by-example UTF-8 locale child requires jsonlite", call. = FALSE)
@@ -11295,7 +11305,8 @@ writeLines(
     paste0(
       "by_example_utf8_locale_child(",
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
-      "commandArgs(trailingOnly = TRUE)[[2L]])"
+      "commandArgs(trailingOnly = TRUE)[[2L]], ",
+      "commandArgs(trailingOnly = TRUE)[[3L]])"
     )
   ),
   by_example_utf8_locale_script,
@@ -11307,6 +11318,7 @@ by_example_utf8_locale_output <- system2(
     "--vanilla",
     by_example_utf8_locale_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,
@@ -11324,8 +11336,9 @@ unlink(by_example_utf8_locale_script)
 
 # Cross every generated-evaluator chunk boundary while caller S3 methods are
 # poisoned, then compare standalone attributes and source bytes with live work.
-by_example_s3_isolation_child <- function(frame_contract_path, kernel_agent_path) {
+by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_path, kernel_agent_path) {
   sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_exports_path, envir = .GlobalEnv, keep.source = FALSE)
   sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
   if (!requireNamespace("bit64", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
     stop("the by-example S3-isolation child requires bit64 and jsonlite", call. = FALSE)
@@ -11764,7 +11777,8 @@ writeLines(
     paste0(
       "by_example_s3_isolation_child(",
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
-      "commandArgs(trailingOnly = TRUE)[[2L]])"
+      "commandArgs(trailingOnly = TRUE)[[2L]], ",
+      "commandArgs(trailingOnly = TRUE)[[3L]])"
     )
   ),
   by_example_s3_script,
@@ -11776,6 +11790,7 @@ by_example_s3_output <- system2(
     "--vanilla",
     by_example_s3_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,
@@ -12549,6 +12564,7 @@ agent$dispose()
 
 if (identical(selected_kernel_agent_case, "group-pivot-and-export")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+source("r/tests/kernel_exports.R", local = FALSE)
 source("r/tests/kernel_agent_group_by.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_longer.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_wider.R", local = FALSE)

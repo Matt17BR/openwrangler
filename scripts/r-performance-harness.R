@@ -51,14 +51,14 @@ assert_library_resolution <- function() {
 assert_library_resolution()
 
 if (
-  length(arguments) != 4L ||
+  length(arguments) != 5L ||
     !arguments[[1L]] %in% c("direct", "kernel-fresh", "kernel-workload")
 ) {
   stop(
     paste(
       "usage: r-performance-harness.R",
       "direct|kernel-fresh|kernel-workload",
-      "<frame_contract.R> <kernel_agent.R> <fixture.json>"
+      "<frame_contract.R> <kernel_exports.R> <kernel_agent.R> <fixture.json>"
     ),
     call. = FALSE
   )
@@ -72,14 +72,17 @@ for (package in c("jsonlite", "data.table", "rlang", "bit64")) {
 
 mode <- arguments[[1L]]
 frame_contract_file <- arguments[[2L]]
-kernel_agent_file <- arguments[[3L]]
-fixture_file <- arguments[[4L]]
+kernel_exports_file <- arguments[[3L]]
+kernel_agent_file <- arguments[[4L]]
+fixture_file <- arguments[[5L]]
 
 runtime_environment <- new.env(parent = baseenv())
 sys.source(frame_contract_file, envir = runtime_environment, keep.source = FALSE)
+sys.source(kernel_exports_file, envir = runtime_environment, keep.source = FALSE)
 sys.source(kernel_agent_file, envir = runtime_environment, keep.source = FALSE)
 if (
   !is.list(runtime_environment$openwrangler_r_frame_contract) ||
+    !is.list(runtime_environment$openwrangler_r_kernel_exports) ||
     !is.list(runtime_environment$openwrangler_r_kernel_agent)
 ) {
   stop("The packaged native R runtime assets did not define their public contracts", call. = FALSE)

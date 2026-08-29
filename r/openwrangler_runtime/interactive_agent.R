@@ -297,6 +297,7 @@ openwrangler_r_interactive_agent <- local({
     if (is.null(existing)) {
       runtime <- new.env(hash = TRUE, parent = baseenv())
       sys.source(file.path(runtime_root, "frame_contract.R"), envir = runtime, keep.source = FALSE)
+      sys.source(file.path(runtime_root, "kernel_exports.R"), envir = runtime, keep.source = FALSE)
       sys.source(file.path(runtime_root, "kernel_agent.R"), envir = runtime, keep.source = FALSE)
       runtime$agent <- runtime$openwrangler_r_kernel_agent$new_agent(
         runtime$openwrangler_r_frame_contract,
