@@ -609,11 +609,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
 
   private async refreshActive(showEmptyMessage: boolean): Promise<void> {
     if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
-      this.variablesByHandle.clear();
-      if (this.currentSnapshot !== undefined) {
-        this.currentSnapshot = undefined;
-        this.changeEmitter.fire();
-      }
+      if (this.activeTarget) this.publishAutomaticInspectionPaused(this.activeTarget);
       return;
     }
     if (this.refreshRunning) {
@@ -626,9 +622,17 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         this.refreshAgain = false;
         const notebook = this.activeTarget;
         if (!notebook || !isSoleOpenNotebookDocument(notebook)) return;
+        if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+          this.publishAutomaticInspectionPaused(notebook);
+          continue;
+        }
         try {
           const discovery = await discoverVariablesForSelectedKernel(notebook);
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
+          if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+            this.publishAutomaticInspectionPaused(notebook);
+            continue;
+          }
           this.publishDiscovery(notebook, discovery);
           if (showEmptyMessage && discovery.variables.length === 0) {
             void vscode.window.showInformationMessage(
@@ -637,6 +641,10 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
           }
         } catch (error) {
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
+          if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+            this.publishAutomaticInspectionPaused(notebook);
+            continue;
+          }
           this.variablesByHandle.clear();
           this.currentSnapshot = {
             state: "error",
@@ -653,6 +661,17 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     } finally {
       this.refreshRunning = false;
     }
+  }
+
+  private publishAutomaticInspectionPaused(notebook: vscode.NotebookDocument): void {
+    this.variablesByHandle.clear();
+    this.currentSnapshot = {
+      state: "empty",
+      notebookLabel: notebookLabel(notebook),
+      message: "Automatic notebook inspection is paused for the selected preview provider. Refresh to inspect it.",
+      variables: []
+    };
+    this.changeEmitter.fire();
   }
 
   private publishDiscovery(

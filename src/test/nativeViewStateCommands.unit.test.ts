@@ -280,6 +280,51 @@ describe("native state and presentation commands", () => {
     expect(refreshTerminal).not.toHaveBeenCalled();
   });
 
+  it("routes the public refresh to an active notebook whose automatic inspection is paused", async () => {
+    const refreshNotebook = vi.fn(async () => undefined);
+    const refreshTerminal = vi.fn(async () => true);
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "empty",
+        notebookLabel: "foreign-provider.ipynb",
+        message: "Automatic notebook inspection is paused for the selected preview provider. Refresh to inspect it.",
+        variables: []
+      }),
+      refreshFromCommand: refreshNotebook,
+      dispose: () => undefined
+    };
+    const terminalProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
+      snapshot: () => ({
+        state: "ready",
+        terminalLabel: "R",
+        message: "1 loaded",
+        variables: [
+          {
+            handle: "r-terminal-handle",
+            label: "orders_dt",
+            description: "R · data.table",
+            detail: "R"
+          }
+        ]
+      }),
+      refreshFromCommand: refreshTerminal,
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
+
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain(
+      "Automatic notebook inspection is paused for the selected preview provider. Refresh to inspect it."
+    );
+    await command("openWrangler.refreshLiveDataframes")();
+
+    expect(refreshNotebook).toHaveBeenCalledOnce();
+    expect(refreshTerminal).not.toHaveBeenCalled();
+  });
+
   it("routes the Operations refresh action to the active R terminal when no notebook is active", async () => {
     const refreshTerminal = vi.fn(async () => true);
     const terminalProvider: RLiveVariableProvider = {
