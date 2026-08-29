@@ -9,6 +9,7 @@ import pytest
 from python.tests.pyspark_connect_test_support import spark_session as _shared_spark_session
 
 from openwrangler_runtime.engines import PySparkEngine
+from openwrangler_runtime.session_access import SessionRequestAdmission
 
 spark_session = _shared_spark_session
 
@@ -153,11 +154,7 @@ class _ClosablePySparkSession:
         self.session_id = session_id
         self.engine = engine
         self.disposed = False
-        self.lock = threading.RLock()
-        self.admission_condition = threading.Condition(threading.Lock())
-        self.profile_condition = threading.Condition(self.lock)
-        self.active_profiles = 0
-        self.waiting_writers = 0
+        self.access = SessionRequestAdmission()
 
     def dispose(self) -> None:
         self.disposed = True
