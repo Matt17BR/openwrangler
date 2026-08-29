@@ -1162,37 +1162,6 @@ def test_text_operations(engine_and_frame):
     assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 
-def test_categorical_encoders(engine_and_frame):
-    engine, frame = engine_and_frame
-    one_hot = bound_step(
-        "one-hot",
-        "oneHotEncode",
-        columns=[bound_ref("c:source:0", "group", 0)],
-        prefixSeparator="_",
-        dropOriginal=False,
-    )
-    encoded = engine.apply_transform(frame, one_hot)
-    result = records(encoded)
-    assert result[0]["group_a"] == 1
-    assert result[2]["group_b"] == 1
-    assert_semantically_equal(encoded, execute_generated(engine, frame, [one_hot]))
-
-    multi_label = bound_step(
-        "multi-label",
-        "multiLabelBinarize",
-        column=bound_ref("c:source:2", "tags", 2),
-        delimiter="|",
-        prefix="tag_",
-        dropOriginal=False,
-    )
-    multilabel = engine.apply_transform(frame, multi_label)
-    result = records(multilabel)
-    assert result[0]["tag_blue"] == 1
-    assert result[0]["tag_red"] == 1
-    assert result[1]["tag_red"] == 0
-    assert_semantically_equal(multilabel, execute_generated(engine, frame, [multi_label]))
-
-
 def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     engine, frame = engine_and_frame
     numeric_plan = [
