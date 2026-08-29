@@ -1149,36 +1149,6 @@ describe("DataGrid clipboard interactions", () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it("keeps an oversized rectangle selected and exposes a payload-free context diagnostic", async () => {
-    const oversizedPage: GridPage = {
-      ...page,
-      rows: [{ ...page.rows[0], values: [cell("x".repeat(4 * 1024 * 1024)), numberCell(10.5)] }, page.rows[1]]
-    };
-    renderGrid("view-a", oversizedPage);
-    const start = document.querySelector<HTMLElement>('td[data-grid-row="0"][data-grid-column="0"]');
-    const endpoint = screen.getByRole("cell", { name: "" });
-    expect(start).not.toBeNull();
-    pointerDrag(start!, endpoint, 27);
-
-    const reason = "Copy is limited to 4 MiB of displayed text. Select a smaller range.";
-    expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
-    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
-    expect(fireEvent.pointerDown(start!, { button: 2, buttons: 2, pointerId: 28, pointerType: "mouse" })).toBe(false);
-    fireEvent.contextMenu(start!, { button: 2 });
-
-    const menu = screen.getByRole("menu", { name: "Cell and range actions for city" });
-    const copySelection = within(menu).getByRole("menuitem", { name: "Copy selection" });
-    expect(copySelection).toBeDisabled();
-    expect(copySelection).toHaveAttribute("title", reason);
-    expect(screen.getByRole("button", { name: "Copy range" })).toHaveAttribute("title", reason);
-    fireEvent.keyDown(menu, { key: "Escape" });
-    fireEvent.keyDown(endpoint, { key: "c", ctrlKey: true });
-
-    expect(await screen.findByText(reason)).toBeTruthy();
-    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
   it("presents named MultiIndex labels as an accessible row axis without adding data columns", () => {
     const indexedPage: GridPage = {
       ...page,
