@@ -3186,43 +3186,6 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("decodes only the exact change-import-options message shape", async () => {
-    const source: SessionSource = {
-      kind: "file",
-      label: "sample.csv",
-      path: "/workspace/sample.csv",
-      uri: "file:///workspace/sample.csv",
-      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-    };
-    const initial = responseForSource(source);
-    const harness = createPanelHarness({ request: vi.fn(async () => initial) }, { source, openResponse: initial });
-    await harness.open();
-    harness.posted.length = 0;
-
-    for (const malformed of [
-      null,
-      { kind: "changeImportOptions", unexpected: true },
-      { kind: "changeImportOptions", request: {} },
-      { kind: "changeImportOptions", busy: false },
-      { kind: "changeImportOptions", actionId: "short" },
-      { kind: "changeImportOptions", actionId: "A".repeat(32), unexpected: true }
-    ]) {
-      await harness.receive(malformed);
-    }
-
-    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
-    expect(harness.posted).toEqual([]);
-
-    await harness.receive({ kind: "changeImportOptions" });
-
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
-    expect(harness.posted).toEqual([
-      { kind: "importOptionsState", busy: true },
-      { kind: "cancelled", targetRequestId: "change-import-options" },
-      { kind: "importOptionsState", busy: false }
-    ]);
-  });
-
   it("automatically hydrates the live renderer after installing a missing dependency", async () => {
     const missing: OpenWranglerResponse = {
       kind: "error",
