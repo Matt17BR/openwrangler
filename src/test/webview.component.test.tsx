@@ -3006,6 +3006,7 @@ describe("App file import options", () => {
         ...metadata,
         backend: "pyspark",
         mode: "viewing",
+        source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
         capabilities: { ...metadata.capabilities, editable: false }
       },
       page,
@@ -3257,6 +3258,7 @@ describe("App file import options", () => {
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         mode: "editing",
+        source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
         capabilities: {
           ...metadata.capabilities,
           editable: false,
@@ -3320,6 +3322,7 @@ describe("App file import options", () => {
         ...metadata,
         backend: "pyspark",
         mode: "viewing",
+        source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
         capabilities: { ...metadata.capabilities, editable: false },
         filterModel: {
           ...metadata.filterModel,
@@ -3481,7 +3484,13 @@ describe("App file import options", () => {
       kind: "planUpdated",
       action: "apply",
       revision: 2,
-      metadata: { ...metadata, revision: 2, filterModel, steps: [step] },
+      metadata: {
+        ...metadata,
+        revision: 2,
+        filterModel,
+        steps: [step],
+        latestStepInputSchema: metadata.schema
+      },
       page,
       code: "frame"
     });
@@ -4447,6 +4456,7 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "importOptionsState", busy: true });
     dispatchAppMessage({
       kind: "planUpdated",
+      action: "apply",
       revision: 1,
       metadata: { ...metadata, revision: 1 },
       page,
@@ -4471,7 +4481,12 @@ describe("App file import options", () => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
-      metadata: { ...metadata, steps: [step], revision: 1 },
+      metadata: {
+        ...metadata,
+        steps: [step],
+        latestStepInputSchema: metadata.schema,
+        revision: 1
+      },
       page,
       summaries: []
     });
@@ -4529,6 +4544,7 @@ describe("App file import options", () => {
       ...metadata,
       backend: "r",
       rDataframeFlavor: "r.data.frame",
+      source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
       capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
     };
     const customCode = 'result <- df[df$city == "Milan", , drop = FALSE]';
@@ -4595,8 +4611,7 @@ describe("App file import options", () => {
       revision: 0,
       viewRequestId: pageRequest.viewRequestId,
       metadata: { ...limitedMetadata, filterModel: pageRequest.filterModel },
-      page,
-      summaries: []
+      page
     });
     const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
     const preview = within(dialog).getByRole("button", { name: "Preview changes" });
@@ -4650,8 +4665,7 @@ describe("App file import options", () => {
       revision: metadata.revision,
       viewRequestId: pageRequest.viewRequestId,
       metadata: { ...metadata, filterModel: pageRequest.filterModel },
-      page,
-      summaries: []
+      page
     });
 
     expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
@@ -4664,7 +4678,12 @@ describe("App file import options", () => {
       kind: "textLength",
       params: { column: { id: "c:0", name: "city" }, newColumn: "city_length" }
     };
-    const appliedMetadata: SessionMetadata = { ...metadata, revision: 4, steps: [appliedStep] };
+    const appliedMetadata: SessionMetadata = {
+      ...metadata,
+      revision: 4,
+      steps: [appliedStep],
+      latestStepInputSchema: metadata.schema
+    };
     const restoredMetadata: SessionMetadata = { ...metadata, revision: 5, steps: [] };
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
@@ -4739,8 +4758,7 @@ describe("App file import options", () => {
       revision: 0,
       viewRequestId: pageRequest.viewRequestId,
       metadata: limitedMetadata,
-      page,
-      summaries: []
+      page
     });
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());

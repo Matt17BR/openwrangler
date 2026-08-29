@@ -42,6 +42,12 @@ const metadata: SessionMetadata = {
     { id: "c:step", name: "score", position: 2, rawType: "Float64", type: "float", nullable: false }
   ]
 };
+const { draftStep: _draftStep, ...metadataWithoutDraft } = metadata;
+const appliedMetadata: SessionMetadata = {
+  ...metadataWithoutDraft,
+  steps: [step],
+  latestStepInputSchema: metadata.schema.slice(0, 2)
+};
 
 const page: GridPage = {
   offset: 0,
@@ -80,8 +86,14 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     expect(apply).toBeDisabled();
     expect(discard).toBeDisabled();
 
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
-    dispatch({ kind: "planUpdated", revision: 2, metadata: appliedMetadata, page, code: "def clean_data(df):\n" });
+    dispatch({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: { ...appliedMetadata, revision: 2 },
+      page,
+      code: "def clean_data(df):\n"
+    });
     const undo = await screen.findByRole("button", { name: "Undo" });
     const edit = screen.getByRole("button", { name: "Edit latest" });
     expect(undo).toHaveAttribute("aria-keyshortcuts", "Control+Alt+Z Meta+Alt+Z");
@@ -116,7 +128,6 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
   it("does not restore operation focus when the host owns focus as the close frame is scheduled", async () => {
     render(<App />);
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
     const edit = await screen.findByRole("button", { name: "Edit latest" });
     edit.focus();
@@ -149,7 +160,6 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
   it("restores focused Undo to Add step only after the last applied step is removed", async () => {
     render(<App />);
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
     const undo = await screen.findByRole("button", { name: "Undo" });
     undo.focus();
@@ -160,6 +170,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       expect(runtimeRequestKinds()).toContain("undoStep");
       dispatch({
         kind: "planUpdated",
+        action: "undo",
         revision: 2,
         metadata: { ...appliedMetadata, revision: 2, steps: [] },
         page,
@@ -176,7 +187,6 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
   it("restores focused shortcut Undo to Add step only after the last applied step is removed", async () => {
     render(<App />);
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
     const undo = await screen.findByRole("button", { name: "Undo" });
     undo.focus();
@@ -187,6 +197,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       expect(runtimeRequestKinds()).toContain("undoStep");
       dispatch({
         kind: "planUpdated",
+        action: "undo",
         revision: 2,
         metadata: { ...appliedMetadata, revision: 2, steps: [] },
         page,
@@ -201,7 +212,6 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
   it("does not reclaim focus after the last-step undo when the webview no longer owns it", async () => {
     render(<App />);
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
     const undo = await screen.findByRole("button", { name: "Undo" });
     undo.focus();
@@ -214,6 +224,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       requestFrame.mockClear();
       dispatch({
         kind: "planUpdated",
+        action: "undo",
         revision: 2,
         metadata: { ...appliedMetadata, revision: 2, steps: [] },
         page,
@@ -231,7 +242,6 @@ describe("App cleaning-plan keyboard shortcuts", () => {
 
   it("does not reclaim focus after the user leaves Undo for another webview control", async () => {
     render(<App />);
-    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
     const undo = await screen.findByRole("button", { name: "Undo" });
     const app = screen.getByRole("main");
@@ -245,6 +255,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       requestFrame.mockClear();
       dispatch({
         kind: "planUpdated",
+        action: "undo",
         revision: 2,
         metadata: { ...appliedMetadata, revision: 2, steps: [] },
         page,

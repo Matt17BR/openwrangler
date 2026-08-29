@@ -10,12 +10,7 @@ import type {
 } from "../shared/protocol";
 import type { FilterModel } from "../shared/filterModel";
 import { operationKinds } from "../shared/operationCatalog.generated";
-import {
-  decodeOpenWranglerPresentationFallback,
-  isColumnSchemaArray,
-  isDataDiff,
-  isOpenWranglerResponse
-} from "../shared/protocolValidation";
+import { isColumnSchemaArray, isDataDiff, isOpenWranglerResponse } from "../shared/protocolValidation";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { decodeGridViewState } from "../shared/viewState";
 import type { ConfirmedFilterState } from "./filters/filterHistory";
@@ -109,8 +104,6 @@ type SessionPresentationMessage = {
 
 export function decodeAppHostMessage(value: unknown) {
   if (isOpenWranglerResponse(value)) return value;
-  const presentation = decodeOpenWranglerPresentationFallback(value);
-  if (presentation) return presentation;
   if (!isRecord(value)) return undefined;
 
   switch (value.kind) {

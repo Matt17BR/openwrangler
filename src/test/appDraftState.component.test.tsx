@@ -41,6 +41,7 @@ const metadata: SessionMetadata = {
   sessionId: "session",
   revision: 2,
   backend: "pandas",
+  rowAxis: { kind: "positional", levelNames: [] },
   mode: "editing",
   source: { kind: "file", label: "sample.csv", path: "sample.csv" },
   capabilities: {
@@ -58,6 +59,8 @@ const metadata: SessionMetadata = {
   latestStepInputSchema: originalSchema,
   schema: committedSchema
 };
+const { latestStepInputSchema: _latestStepInputSchema, ...metadataWithoutLatestStepInputSchema } = metadata;
+const { rowAxis: _rowAxis, ...polarsMetadata } = metadata;
 const page: GridPage = {
   offset: 0,
   limit: 200,
@@ -147,6 +150,7 @@ describe("App draft state boundaries", () => {
 
     dispatch({
       kind: "planUpdated",
+      action: "discard",
       revision: 4,
       metadata: { ...metadata, revision: 4 },
       page,
@@ -160,7 +164,7 @@ describe("App draft state boundaries", () => {
     render(<App />);
     dispatch({
       kind: "sessionOpened",
-      metadata: { ...metadata, revision: 0, steps: [], latestStepInputSchema: undefined },
+      metadata: { ...metadataWithoutLatestStepInputSchema, revision: 0, steps: [] },
       page,
       summaries: []
     });
@@ -224,14 +228,14 @@ describe("App draft state boundaries", () => {
     render(<App />);
     dispatch({
       kind: "sessionOpened",
-      metadata: { ...metadata, backend: "polars", revision: 3, draftStep: draft },
+      metadata: { ...polarsMetadata, backend: "polars", revision: 3, draftStep: draft },
       page,
       summaries: []
     });
     dispatch({
       kind: "stepPreview",
       revision: 3,
-      metadata: { ...metadata, backend: "polars", revision: 3, draftStep: draft },
+      metadata: { ...polarsMetadata, backend: "polars", revision: 3, draftStep: draft },
       page,
       diff: emptyDiff(),
       code: "# stale polars code",
@@ -359,6 +363,7 @@ describe("App draft state boundaries", () => {
 
     dispatch({
       kind: "planUpdated",
+      action: "discard",
       revision: 4,
       metadata: { ...metadata, revision: 4 },
       page,

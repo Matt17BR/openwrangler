@@ -54,12 +54,21 @@ const cloneColumn = {
 const rCloneDraftMetadata: SessionMetadata = {
   ...metadata,
   backend: "r",
+  rDataframeFlavor: "r.data.frame",
+  source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
   revision: 1,
   capabilities: { ...metadata.capabilities, lazy: false, cancel: false },
   shape: { rows: 500, columns: 3 },
   filteredShape: { rows: 500, columns: 3 },
   draftStep: cloneStep,
   schema: [...metadata.schema, cloneColumn]
+};
+const { draftStep: _rCloneDraftStep, ...rCloneMetadataWithoutDraft } = rCloneDraftMetadata;
+const rCloneAppliedMetadata: SessionMetadata = {
+  ...rCloneMetadataWithoutDraft,
+  revision: 2,
+  steps: [cloneStep],
+  latestStepInputSchema: metadata.schema
 };
 const clonePage: GridPage = {
   ...page,
@@ -122,11 +131,11 @@ describe("App progressive profiling and view correlation", () => {
       shape: { rows: totalRows, columns: 2 },
       filteredShape: { rows: totalRows, columns: 2 }
     };
+    const { distinctCount: _distinctCount, ...sampledCitySummary } = citySummary;
     const sampledSummaries: ColumnSummary[] = [
       {
-        ...citySummary,
+        ...sampledCitySummary,
         totalCount: totalRows,
-        distinctCount: undefined,
         topValues: [
           { value: "Berlin", count: 60_000 },
           { value: "Milan", count: 40_000 }
@@ -671,7 +680,12 @@ describe("App progressive profiling and view correlation", () => {
       params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
     } as const;
     render(<App />);
-    dispatch({ kind: "sessionOpened", metadata: { ...metadata, steps: [step] }, page, summaries: [] });
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step], latestStepInputSchema: metadata.schema },
+      page,
+      summaries: []
+    });
     postMessage.mockClear();
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
     expect(screen.getByLabelText("Selected applied-step inspection")).toBeInTheDocument();
@@ -901,17 +915,11 @@ describe("App progressive profiling and view correlation", () => {
     vi.useFakeTimers();
     try {
       postMessage.mockClear();
-      const appliedMetadata: SessionMetadata = {
-        ...rCloneDraftMetadata,
-        revision: 2,
-        steps: [cloneStep],
-        draftStep: undefined
-      };
       dispatch({
         kind: "planUpdated",
         action: "apply",
         revision: 2,
-        metadata: appliedMetadata,
+        metadata: rCloneAppliedMetadata,
         page: clonePage,
         code: "sales_copy <- sales"
       });
@@ -941,7 +949,7 @@ describe("App progressive profiling and view correlation", () => {
         kind: "planUpdated",
         action: "apply",
         revision: 2,
-        metadata: { ...rCloneDraftMetadata, revision: 2, steps: [cloneStep], draftStep: undefined },
+        metadata: rCloneAppliedMetadata,
         page: clonePage,
         code: "sales_copy <- sales"
       });
@@ -964,7 +972,7 @@ describe("App progressive profiling and view correlation", () => {
       kind: "planUpdated",
       action: "apply",
       revision: 2,
-      metadata: { ...rCloneDraftMetadata, revision: 2, steps: [cloneStep], draftStep: undefined },
+      metadata: rCloneAppliedMetadata,
       page: clonePage,
       code: "sales_copy <- sales"
     });

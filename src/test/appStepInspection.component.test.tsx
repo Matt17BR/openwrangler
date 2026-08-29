@@ -23,6 +23,11 @@ const step: TransformStep = {
   params: { column: { id: "c:sales", name: "sales" }, decimals: 0 }
 };
 
+const schema: SessionMetadata["schema"] = [
+  { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+  { id: "c:sales", name: "sales", position: 1, rawType: "Float64", type: "float", nullable: false }
+];
+
 const metadata: SessionMetadata = {
   protocolVersion: 2,
   sessionId: "session",
@@ -45,10 +50,8 @@ const metadata: SessionMetadata = {
     sort: [{ column: "city", direction: "asc", nulls: "last" }]
   },
   steps: [step],
-  schema: [
-    { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
-    { id: "c:sales", name: "sales", position: 1, rawType: "Float64", type: "float", nullable: false }
-  ]
+  latestStepInputSchema: schema,
+  schema
 };
 
 const stringCell = (value: string): CellValue => ({

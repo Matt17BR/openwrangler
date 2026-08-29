@@ -5,6 +5,7 @@ import {
   backgroundDiagnosticKey,
   cloneBackgroundDiagnostics,
   columnWindowFromPage,
+  decodeAppHostMessage,
   filterModelForColumnValues,
   isSessionOpenProgressStage,
   isSwitchableFileBackend,
@@ -45,6 +46,17 @@ const filtered: FilterModel = {
 };
 
 describe("App view-state model", () => {
+  it("rejects forged PySpark metadata with an editing file source", () => {
+    expect(
+      decodeAppHostMessage({
+        kind: "sessionOpened",
+        metadata: { ...metadata, backend: "pyspark" },
+        page,
+        summaries: []
+      })
+    ).toBeUndefined();
+  });
+
   it("clones background diagnostics without sharing mutable summary owners", () => {
     const summary: BackgroundDiagnostic = {
       message: "summary failed",
