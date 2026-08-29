@@ -353,6 +353,7 @@ export function measureRendererGridScroll(
     let settled = false;
     let animationFramesObserved = 0;
     let consecutiveMatchingFrames = 0;
+    let firstMatchingFrameDuration: number | undefined;
     let lastDiagnostic: ReturnType<typeof observeCommittedTarget>["diagnostic"] | undefined;
 
     const cleanup = (): void => {
@@ -378,7 +379,7 @@ export function measureRendererGridScroll(
         fail(error instanceof Error ? error : new Error(String(error)));
       }
     };
-    const poll = (): void => {
+    const poll = (timestamp: number): void => {
       animationFrame = undefined;
       if (settled) return;
 
@@ -390,22 +391,23 @@ export function measureRendererGridScroll(
         fail(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      consecutiveMatchingFrames = observation.matches ? consecutiveMatchingFrames + 1 : 0;
+      if (observation.matches) {
+        consecutiveMatchingFrames += 1;
+        if (consecutiveMatchingFrames === 1) {
+          firstMatchingFrameDuration = timestamp - started;
+        }
+      } else {
+        consecutiveMatchingFrames = 0;
+        firstMatchingFrameDuration = undefined;
+      }
       lastDiagnostic = {
         ...observation.diagnostic,
         consecutiveMatchingFrames
       };
       if (consecutiveMatchingFrames >= 2) {
-        let duration: number;
-        try {
-          duration = runtime.performance.now() - started;
-        } catch (error) {
-          fail(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
         settled = true;
         cleanup();
-        resolve(duration);
+        resolve(firstMatchingFrameDuration!);
         return;
       }
       schedule(poll);
