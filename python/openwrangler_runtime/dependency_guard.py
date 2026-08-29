@@ -24,7 +24,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NamedTuple, NoReturn, cast
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 JOURNAL_NAME = ".openwrangler-dependency-journal-v1"
@@ -186,15 +186,15 @@ def _emit_error(code: str) -> None:
     _emit({"code": code, "kind": "error", "protocol": PROTOCOL})
 
 
-def _canonical_uuid(value: Any) -> str:
+def _canonical_uuid(value: Any, *, code: str = "invalid_request") -> str:
     if not isinstance(value, str) or len(value) != 36:
-        _fail("invalid_request")
+        _fail(code)
     try:
         parsed = uuid.UUID(value)
     except (ValueError, AttributeError):
-        _fail("invalid_request")
+        _fail(code)
     if str(parsed) != value:
-        _fail("invalid_request")
+        _fail(code)
     return value
 
 
@@ -1544,6 +1544,12 @@ def _prepare_status_lock(journal: Path) -> None:
     _lstat_private_file(lock, code="malformed_state")
 
 
+class _MarkerReceipt(NamedTuple):
+    token: str
+    payload: bytes
+    file_identity: tuple[int, int]
+
+
 class _JournalLock:
     def __init__(
         self,
@@ -1562,6 +1568,7 @@ class _JournalLock:
         self._windows_overlapped: Any | None = None
         self._windows_unlock: Any | None = None
         self._windows_handle: Any | None = None
+        self._acquired = False
 
     def __enter__(self) -> _JournalLock:
         if os.name == "nt":
@@ -1604,6 +1611,7 @@ class _JournalLock:
             self._acquire()
             _assert_leaf_identity_matches(path, opened, code="malformed_state")
             _validate_private_directory(self._journal, self._journal_identity)
+            self._acquired = True
             return self
         except GuardError:
             self._close(suppress_errors=True)
@@ -1684,6 +1692,7 @@ class _JournalLock:
                 or (journal_after.st_dev, journal_after.st_ino) != self._journal_identity
             ):
                 _fail("malformed_state")
+            self._acquired = True
             return self
         except GuardError:
             self._close(suppress_errors=True)
@@ -1698,6 +1707,7 @@ class _JournalLock:
             raise
 
     def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        self._acquired = False
         if _type is not None:
             with contextlib.suppress(BaseException):
                 self._release()
@@ -1803,6 +1813,7 @@ class _JournalLock:
         self._windows_handle = handle
 
     def _close(self, *, suppress_errors: bool = False) -> None:
+        self._acquired = False
         first_error: OSError | None = None
         if self._descriptor >= 0:
             try:
@@ -1821,6 +1832,176 @@ class _JournalLock:
                 self._windows_journal_descriptor = -1
         if first_error is not None and not suppress_errors:
             raise first_error
+
+    def _require_acquired(self) -> None:
+        if not self._acquired or self._descriptor < 0 or (os.name == "nt" and self._windows_journal_descriptor < 0):
+            _fail("malformed_state")
+
+    def _marker_path(self, token: str, *, code: str) -> Path:
+        return self._journal / f"mutation-{_canonical_uuid(token, code=code)}.json"
+
+    def publish(
+        self,
+        token: str,
+        environment: dict[str, Any],
+        dependencies: list[dict[str, Any]],
+        *,
+        _after_writer_close_for_test: Callable[[Path], None] | None = None,
+    ) -> _MarkerReceipt:
+        self._require_acquired()
+        _validate_private_directory(self._journal, self._journal_identity)
+        if self.scan(clean_temps=True):
+            _fail("malformed_state")
+        marker = {
+            "dependencies": dependencies,
+            "environment": environment,
+            "protocol": PROTOCOL,
+            "token": token,
+        }
+        payload = _marker_bytes(marker)
+        temporary = self._journal / f".pending-{token}.tmp"
+        destination = self._marker_path(token, code="malformed_state")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = -1
+        try:
+            _assert_leaf_absent(temporary, code="malformed_state")
+            if os.name == "nt":
+                descriptor = _windows_create_secure_leaf_descriptor(
+                    temporary,
+                    desired_access=(_WINDOWS_GENERIC_WRITE | _WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES),
+                    share_mode=0,
+                    descriptor_flags=os.O_WRONLY,
+                    code="malformed_state",
+                )
+            else:
+                descriptor = os.open(temporary, flags, 0o600)
+                os.fchmod(descriptor, 0o600)
+            os.set_inheritable(descriptor, False)
+            _write_all(descriptor, payload)
+            os.fsync(descriptor)
+            descriptor_snapshot = os.fstat(descriptor)
+            _validate_private_file(descriptor_snapshot, code="malformed_state")
+            closing = descriptor
+            descriptor = -1
+            os.close(closing)
+            if _after_writer_close_for_test is not None:
+                _after_writer_close_for_test(temporary)
+            writer_identity = (descriptor_snapshot.st_dev, descriptor_snapshot.st_ino)
+            with _private_reader(temporary, allow_delete=True, code="malformed_state") as (
+                verification_descriptor,
+                written,
+            ):
+                _read_open_private_file(
+                    temporary,
+                    verification_descriptor,
+                    written,
+                    code="malformed_state",
+                    expected_payload=payload,
+                    expected_identity=writer_identity,
+                )
+                _assert_leaf_absent(destination, code="malformed_state")
+                _durable_replace(temporary, destination)
+                _fsync_directory(self._journal)
+                _validate_private_directory(self._journal, self._journal_identity)
+                with _private_reader(destination, code="malformed_state") as (
+                    destination_descriptor,
+                    result,
+                ):
+                    _read_open_private_file(
+                        destination,
+                        destination_descriptor,
+                        result,
+                        code="malformed_state",
+                        expected_payload=payload,
+                        expected_identity=writer_identity,
+                    )
+                    _validate_private_directory(self._journal, self._journal_identity)
+            return _MarkerReceipt(token, payload, (result.st_dev, result.st_ino))
+        except GuardError:
+            if descriptor >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            self._remove_temporary(temporary)
+            raise
+        except OSError:
+            if descriptor >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            self._remove_temporary(temporary)
+            _fail("malformed_state")
+
+    def scan(self, *, clean_temps: bool) -> list[tuple[dict[str, Any], _MarkerReceipt]]:
+        self._require_acquired()
+        _validate_private_directory(self._journal, self._journal_identity)
+        marker_paths: list[Path] = []
+        temporary_paths: list[Path] = []
+        try:
+            entries = list(os.scandir(self._journal))
+        except OSError:
+            _fail("malformed_state")
+        if len(entries) > MAX_DEPENDENCIES + 4:
+            _fail("malformed_state")
+        for entry in entries:
+            name = entry.name
+            if name == LOCK_NAME:
+                _lstat_private_file(self._journal / name, code="malformed_state")
+                continue
+            marker_match = _MARKER_PATTERN.fullmatch(name)
+            if marker_match is not None and str(uuid.UUID(marker_match.group(1))) == marker_match.group(1):
+                marker_paths.append(self._journal / name)
+                continue
+            temp_match = _TEMP_PATTERN.fullmatch(name)
+            if temp_match is not None and str(uuid.UUID(temp_match.group(1))) == temp_match.group(1):
+                temporary_paths.append(self._journal / name)
+                continue
+            _fail("malformed_state")
+        if temporary_paths and not clean_temps:
+            _fail("malformed_state")
+        for temporary in temporary_paths:
+            try:
+                result = _lstat_private_file(temporary, code="malformed_state")
+                if result.st_size > MAX_MARKER_BYTES:
+                    _fail("malformed_state")
+                temporary.unlink()
+            except GuardError:
+                raise
+            except OSError:
+                _fail("malformed_state")
+        if temporary_paths:
+            _fsync_directory(self._journal)
+        if len(marker_paths) > 1:
+            _fail("malformed_state")
+        markers: list[tuple[dict[str, Any], _MarkerReceipt]] = []
+        for path in marker_paths:
+            marker, payload, file_identity = _read_marker(path, code="malformed_state")
+            markers.append((marker, _MarkerReceipt(marker["token"], payload, file_identity)))
+        return markers
+
+    def assert_exact(self, receipt: _MarkerReceipt, *, code: str) -> None:
+        self._require_acquired()
+        _validate_private_directory(self._journal, self._journal_identity)
+        marker, payload, file_identity = _read_marker(self._marker_path(receipt.token, code=code), code=code)
+        if marker["token"] != receipt.token or payload != receipt.payload or file_identity != receipt.file_identity:
+            _fail(code)
+        _validate_private_directory(self._journal, self._journal_identity)
+
+    def remove_exact(self, receipt: _MarkerReceipt, *, code: str) -> None:
+        self.assert_exact(receipt, code=code)
+        try:
+            self._marker_path(receipt.token, code=code).unlink()
+            _fsync_directory(self._journal)
+        except OSError:
+            _fail(code)
+
+    def _remove_temporary(self, path: Path) -> None:
+        self._require_acquired()
+        try:
+            _validate_private_directory(self._journal, self._journal_identity)
+            _lstat_private_file(path, code="malformed_state")
+        except GuardError:
+            return
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def _marker_bytes(marker: dict[str, Any]) -> bytes:
@@ -2005,107 +2186,6 @@ def _windows_advapi32() -> Any:
         _fail("malformed_state")
 
 
-def _publish_marker(
-    journal: Path,
-    journal_identity: tuple[int, int],
-    token: str,
-    environment: dict[str, Any],
-    dependencies: list[dict[str, Any]],
-    *,
-    _after_writer_close_for_test: Callable[[Path], None] | None = None,
-) -> tuple[Path, bytes, tuple[int, int]]:
-    _validate_private_directory(journal, journal_identity)
-    markers = _scan_markers(journal, journal_identity, clean_temps=True)
-    if markers:
-        _fail("malformed_state")
-    marker = {
-        "dependencies": dependencies,
-        "environment": environment,
-        "protocol": PROTOCOL,
-        "token": token,
-    }
-    payload = _marker_bytes(marker)
-    temporary = journal / f".pending-{token}.tmp"
-    destination = journal / f"mutation-{token}.json"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = -1
-    try:
-        _assert_leaf_absent(temporary, code="malformed_state")
-        if os.name == "nt":
-            descriptor = _windows_create_secure_leaf_descriptor(
-                temporary,
-                desired_access=(_WINDOWS_GENERIC_WRITE | _WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES),
-                share_mode=0,
-                descriptor_flags=os.O_WRONLY,
-                code="malformed_state",
-            )
-        else:
-            descriptor = os.open(temporary, flags, 0o600)
-            os.fchmod(descriptor, 0o600)
-        os.set_inheritable(descriptor, False)
-        _write_all(descriptor, payload)
-        os.fsync(descriptor)
-        descriptor_snapshot = os.fstat(descriptor)
-        _validate_private_file(descriptor_snapshot, code="malformed_state")
-        closing = descriptor
-        descriptor = -1
-        os.close(closing)
-        if _after_writer_close_for_test is not None:
-            _after_writer_close_for_test(temporary)
-        writer_identity = (descriptor_snapshot.st_dev, descriptor_snapshot.st_ino)
-        with _private_reader(temporary, allow_delete=True, code="malformed_state") as (
-            verification_descriptor,
-            written,
-        ):
-            _read_open_private_file(
-                temporary,
-                verification_descriptor,
-                written,
-                code="malformed_state",
-                expected_payload=payload,
-                expected_identity=writer_identity,
-            )
-            _assert_leaf_absent(destination, code="malformed_state")
-            _durable_replace(temporary, destination)
-            _fsync_directory(journal)
-            _validate_private_directory(journal, journal_identity)
-            with _private_reader(destination, code="malformed_state") as (
-                destination_descriptor,
-                result,
-            ):
-                _read_open_private_file(
-                    destination,
-                    destination_descriptor,
-                    result,
-                    code="malformed_state",
-                    expected_payload=payload,
-                    expected_identity=writer_identity,
-                )
-                _validate_private_directory(journal, journal_identity)
-        return destination, payload, (result.st_dev, result.st_ino)
-    except GuardError:
-        if descriptor >= 0:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-        _safe_remove_temporary(temporary)
-        raise
-    except OSError:
-        if descriptor >= 0:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-        _safe_remove_temporary(temporary)
-        _fail("malformed_state")
-
-
-def _safe_remove_temporary(path: Path) -> None:
-    try:
-        _lstat_private_file(path, code="malformed_state")
-    except GuardError:
-        return
-    with contextlib.suppress(OSError):
-        path.unlink()
-
-
 def _read_marker(
     path: Path,
     *,
@@ -2156,89 +2236,6 @@ def _reject_marker_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
             _fail("malformed_state")
         result[key] = value
     return result
-
-
-def _scan_markers(
-    journal: Path, journal_identity: tuple[int, int], *, clean_temps: bool
-) -> list[tuple[Path, dict[str, Any], bytes, tuple[int, int]]]:
-    _validate_private_directory(journal, journal_identity)
-    marker_paths: list[Path] = []
-    temporary_paths: list[Path] = []
-    try:
-        entries = list(os.scandir(journal))
-    except OSError:
-        _fail("malformed_state")
-    if len(entries) > MAX_DEPENDENCIES + 4:
-        _fail("malformed_state")
-    for entry in entries:
-        name = entry.name
-        if name == LOCK_NAME:
-            _lstat_private_file(journal / name, code="malformed_state")
-            continue
-        marker_match = _MARKER_PATTERN.fullmatch(name)
-        if marker_match is not None and str(uuid.UUID(marker_match.group(1))) == marker_match.group(1):
-            marker_paths.append(journal / name)
-            continue
-        temp_match = _TEMP_PATTERN.fullmatch(name)
-        if temp_match is not None and str(uuid.UUID(temp_match.group(1))) == temp_match.group(1):
-            temporary_paths.append(journal / name)
-            continue
-        _fail("malformed_state")
-    if temporary_paths and not clean_temps:
-        _fail("malformed_state")
-    for temporary in temporary_paths:
-        try:
-            result = _lstat_private_file(temporary, code="malformed_state")
-            if result.st_size > MAX_MARKER_BYTES:
-                _fail("malformed_state")
-            temporary.unlink()
-        except GuardError:
-            raise
-        except OSError:
-            _fail("malformed_state")
-    if temporary_paths:
-        _fsync_directory(journal)
-    if len(marker_paths) > 1:
-        _fail("malformed_state")
-    return [(path, *_read_marker(path, code="malformed_state")) for path in marker_paths]
-
-
-def _remove_exact_marker(
-    journal: Path,
-    journal_identity: tuple[int, int],
-    path: Path,
-    token: str,
-    payload: bytes,
-    file_identity: tuple[int, int],
-    *,
-    code: str,
-) -> None:
-    _validate_private_directory(journal, journal_identity)
-    marker, current_payload, current_identity = _read_marker(path, code=code)
-    if marker["token"] != token or current_payload != payload or current_identity != file_identity:
-        _fail(code)
-    try:
-        path.unlink()
-        _fsync_directory(journal)
-    except OSError:
-        _fail(code)
-
-
-def _assert_exact_marker(
-    journal: Path,
-    journal_identity: tuple[int, int],
-    path: Path,
-    token: str,
-    payload: bytes,
-    file_identity: tuple[int, int],
-    *,
-    code: str,
-) -> None:
-    _validate_private_directory(journal, journal_identity)
-    marker, current_payload, current_identity = _read_marker(path, code=code)
-    if marker["token"] != token or current_payload != payload or current_identity != file_identity:
-        _fail(code)
-    _validate_private_directory(journal, journal_identity)
 
 
 @contextlib.contextmanager
@@ -2748,11 +2745,9 @@ def _run_install(request: dict[str, Any]) -> int:
     environment = request["environment"]
     token = request["token"]
     journal, journal_identity = _create_journal(environment)
-    with _JournalLock(journal, journal_identity, create=True):
+    with _JournalLock(journal, journal_identity, create=True) as lock:
         _revalidate_actual_environment(environment)
-        marker_path, marker_payload, marker_identity = _publish_marker(
-            journal, journal_identity, token, environment, request["dependencies"]
-        )
+        receipt = lock.publish(token, environment, request["dependencies"])
         ready_sent = False
         package_write_may_have_started = False
         try:
@@ -2766,15 +2761,7 @@ def _run_install(request: dict[str, Any]) -> int:
             if go["protocol"] != PROTOCOL or go["kind"] != "go" or go["token"] != token:
                 _fail("invalid_request")
             _revalidate_actual_environment(environment)
-            _assert_exact_marker(
-                journal,
-                journal_identity,
-                marker_path,
-                token,
-                marker_payload,
-                marker_identity,
-                code="malformed_state",
-            )
+            lock.assert_exact(receipt, code="malformed_state")
             _revalidate_actual_environment(environment)
             _check_environment_integrity(inconsistent_code="environment_inconsistent")
             _revalidate_actual_environment(environment)
@@ -2789,30 +2776,14 @@ def _run_install(request: dict[str, Any]) -> int:
         except GuardError as error:
             if not package_write_may_have_started:
                 with contextlib.suppress(GuardError):
-                    _remove_exact_marker(
-                        journal,
-                        journal_identity,
-                        marker_path,
-                        token,
-                        marker_payload,
-                        marker_identity,
-                        code="malformed_state",
-                    )
+                    lock.remove_exact(receipt, code="malformed_state")
             if ready_sent:
                 return _EXIT_BY_CODE.get(error.code, EXIT_INTERNAL_ERROR)
             raise
         except (BrokenPipeError, OSError):
             if not package_write_may_have_started:
                 try:
-                    _remove_exact_marker(
-                        journal,
-                        journal_identity,
-                        marker_path,
-                        token,
-                        marker_payload,
-                        marker_identity,
-                        code="malformed_state",
-                    )
+                    lock.remove_exact(receipt, code="malformed_state")
                 except GuardError:
                     return EXIT_INTERNAL_ERROR
             if ready_sent:
@@ -2827,16 +2798,16 @@ def _run_status(request: dict[str, Any]) -> int:
         _emit({"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None})
         return EXIT_SUCCESS
     _prepare_status_lock(journal)
-    with _JournalLock(journal, journal_identity, create=True, allow_read_only_existing=True):
+    with _JournalLock(journal, journal_identity, create=True, allow_read_only_existing=True) as lock:
         _revalidate_actual_environment(environment)
-        markers = _scan_markers(journal, journal_identity, clean_temps=True)
+        markers = lock.scan(clean_temps=True)
         if not markers:
             _emit({"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None})
             return EXIT_SUCCESS
-        _path, marker, _payload, _identity = markers[0]
+        marker, receipt = markers[0]
         if marker["environment"] != environment:
             _fail("environment_changed")
-        _emit({"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": marker["token"]})
+        _emit({"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": receipt.token})
         return EXIT_SUCCESS
 
 
@@ -2845,31 +2816,23 @@ def _run_validate(request: dict[str, Any]) -> int:
     journal, journal_identity = _existing_journal(environment)
     if journal is None or journal_identity is None:
         _fail("stale_or_missing_marker")
-    with _JournalLock(journal, journal_identity, create=False):
+    with _JournalLock(journal, journal_identity, create=False) as lock:
         _revalidate_actual_environment(environment)
-        markers = _scan_markers(journal, journal_identity, clean_temps=True)
+        markers = lock.scan(clean_temps=True)
         if not markers:
             _fail("stale_or_missing_marker")
-        marker_path, marker, marker_payload, marker_identity = markers[0]
+        marker, receipt = markers[0]
         if marker["environment"] != environment:
             _fail("environment_changed")
         expected_token = request["expectedToken"]
-        if expected_token != marker["token"]:
+        if expected_token != receipt.token:
             _fail("stale_or_missing_marker")
         _validate_dependencies(marker["dependencies"])
         _revalidate_actual_environment(environment)
         _check_environment_integrity(inconsistent_code="post_install_inconsistent")
         _revalidate_actual_environment(environment)
-        _remove_exact_marker(
-            journal,
-            journal_identity,
-            marker_path,
-            marker["token"],
-            marker_payload,
-            marker_identity,
-            code="malformed_state",
-        )
-        _emit({"kind": "validated", "protocol": PROTOCOL, "token": marker["token"]})
+        lock.remove_exact(receipt, code="malformed_state")
+        _emit({"kind": "validated", "protocol": PROTOCOL, "token": receipt.token})
         return EXIT_SUCCESS
 
 

@@ -392,6 +392,13 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
     guard._lstat_private_file(path, code="malformed_state")
 
 
+def _write_locked_journal_leaf(fixture: GuardFixture, path: Path, payload: bytes) -> None:
+    guard = _load_dependency_guard()
+    identity = guard._validate_private_directory(fixture.journal)
+    with guard._JournalLock(fixture.journal, identity, create=False):
+        _write_manual_journal_leaf(path, payload)
+
+
 def _write_legacy_marker(
     fixture: GuardFixture,
     token: str,
@@ -410,7 +417,7 @@ def _write_legacy_marker(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
-    _write_manual_journal_leaf(marker, payload)
+    _write_locked_journal_leaf(fixture, marker, payload)
     return marker
 
 
@@ -570,6 +577,55 @@ def _arm(
     return process
 
 
+def test_journal_marker_capability_is_current_acquisition_only(guard_fixture: GuardFixture) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    identity = guard._validate_private_directory(guard_fixture.journal)
+    token = str(uuid.uuid4())
+    pending = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
+    _write_locked_journal_leaf(guard_fixture, pending, b"partial")
+    lock = guard._JournalLock(guard_fixture.journal, identity, create=False)
+
+    def assert_revoked(receipt: Any) -> None:
+        operations = (
+            lambda: lock.publish(token, guard_fixture.environment, [guard_fixture.dependency]),
+            lambda: lock.scan(clean_temps=True),
+            lambda: lock.assert_exact(receipt, code="malformed_state"),
+            lambda: lock.remove_exact(receipt, code="malformed_state"),
+        )
+        for operation in operations:
+            with pytest.raises(guard.GuardError, match="malformed_state"):
+                operation()
+
+    assert_revoked(guard._MarkerReceipt(token, b"unowned", (0, 0)))
+    assert pending.read_bytes() == b"partial"
+
+    with lock as locked:
+        assert locked.scan(clean_temps=True) == []
+        receipt = locked.publish(token, guard_fixture.environment, [guard_fixture.dependency])
+        marker, scanned_receipt = locked.scan(clean_temps=False)[0]
+        assert marker["environment"] == guard_fixture.environment
+        assert scanned_receipt == receipt
+        locked.assert_exact(receipt, code="malformed_state")
+
+    marker_path = guard_fixture.journal / f"mutation-{token}.json"
+    before = marker_path.read_bytes(), (marker_path.stat().st_dev, marker_path.stat().st_ino)
+    assert_revoked(receipt)
+    assert (marker_path.read_bytes(), (marker_path.stat().st_dev, marker_path.stat().st_ino)) == before
+
+    replacement = guard_fixture.root / "replacement-marker"
+    _write_manual_journal_leaf(replacement, receipt.payload)
+    os.replace(replacement, marker_path)
+    replaced = marker_path.read_bytes(), (marker_path.stat().st_dev, marker_path.stat().st_ino)
+    assert replaced[1] != before[1]
+    with (
+        guard._JournalLock(guard_fixture.journal, identity, create=False) as locked,
+        pytest.raises(guard.GuardError, match="malformed_state"),
+    ):
+        locked.remove_exact(receipt, code="malformed_state")
+    assert (marker_path.read_bytes(), (marker_path.stat().st_dev, marker_path.stat().st_ino)) == replaced
+
+
 def test_journal_lock_exit_preserves_a_primary_body_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -588,6 +644,7 @@ def test_journal_lock_exit_preserves_a_primary_body_exception(
     primary = RuntimeError("primary body failure")
     lock.__exit__(RuntimeError, primary, primary.__traceback__)
     assert close_modes == [True]
+    assert lock._acquired is False
 
 
 def test_journal_lock_exit_preserves_body_over_release_and_close_faults(
@@ -610,6 +667,7 @@ def test_journal_lock_exit_preserves_body_over_release_and_close_faults(
     monkeypatch.setattr(lock, "_close", close)
     lock.__exit__(RuntimeError, primary, primary.__traceback__)
     assert cleanup_calls == ["release", "close:True"]
+    assert lock._acquired is False
 
 
 def test_journal_lock_exit_preserves_a_primary_release_exception(
@@ -633,6 +691,7 @@ def test_journal_lock_exit_preserves_a_primary_release_exception(
         lock.__exit__(None, None, None)
     assert raised.value is primary
     assert close_modes == [True]
+    assert lock._acquired is False
 
 
 @pytest.mark.skipif(
@@ -717,13 +776,9 @@ def test_read_only_status_reports_a_valid_retained_marker_as_dirty_without_chang
     lock = guard_fixture.journal / "mutation.lock"
     identity = guard._validate_private_directory(guard_fixture.journal)
     token = str(uuid.uuid4())
-    marker, _payload, _marker_identity = guard._publish_marker(
-        guard_fixture.journal,
-        identity,
-        token,
-        guard_fixture.environment,
-        [guard_fixture.dependency],
-    )
+    with guard._JournalLock(guard_fixture.journal, identity, create=False) as locked:
+        locked.publish(token, guard_fixture.environment, [guard_fixture.dependency])
+    marker = guard_fixture.journal / f"mutation-{token}.json"
     before = marker.read_bytes()
     before_stat = marker.stat()
     original_open = guard.os.open
@@ -795,7 +850,7 @@ def test_read_only_status_never_hides_an_unrecoverable_pending_marker(
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     pending = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
-    _write_manual_journal_leaf(pending, b"partial")
+    _write_locked_journal_leaf(guard_fixture, pending, b"partial")
     original_open = guard.os.open
     original_unlink = guard.Path.unlink
     frames: list[dict[str, Any]] = []
@@ -1075,7 +1130,7 @@ def test_windows_malformed_orphan_temp_acl_is_retained(
     guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     temporary = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
-    _write_manual_journal_leaf(temporary, b"partial")
+    _write_locked_journal_leaf(guard_fixture, temporary, b"partial")
     _run_icacls(temporary, "/grant", "*S-1-1-0:R")
 
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
@@ -1280,10 +1335,11 @@ def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: G
         os.utime(temporary, ns=(before.st_atime_ns, before.st_mtime_ns))
         assert temporary.stat().st_size == before.st_size
 
-    with pytest.raises(guard.GuardError) as raised:
-        guard._publish_marker(
-            guard_fixture.journal,
-            journal_identity,
+    with (
+        guard._JournalLock(guard_fixture.journal, journal_identity, create=False) as locked,
+        pytest.raises(guard.GuardError) as raised,
+    ):
+        locked.publish(
             token,
             guard_fixture.environment,
             [guard_fixture.dependency],
@@ -1308,14 +1364,14 @@ def test_windows_marker_publication_protects_temp_and_final_leaf_acls(
         guard._lstat_private_file(temporary, code="malformed_state")
         observed_temp.append(temporary)
 
-    destination, _payload, _identity = guard._publish_marker(
-        guard_fixture.journal,
-        journal_identity,
-        token,
-        guard_fixture.environment,
-        [guard_fixture.dependency],
-        _after_writer_close_for_test=validate_temp,
-    )
+    with guard._JournalLock(guard_fixture.journal, journal_identity, create=False) as locked:
+        locked.publish(
+            token,
+            guard_fixture.environment,
+            [guard_fixture.dependency],
+            _after_writer_close_for_test=validate_temp,
+        )
+    destination = guard_fixture.journal / f"mutation-{token}.json"
     assert observed_temp == [guard_fixture.journal / f".pending-{token}.tmp"]
     assert not observed_temp[0].exists()
     assert destination == guard_fixture.journal / f"mutation-{token}.json"
@@ -1343,14 +1399,11 @@ def test_windows_marker_publication_never_replaces_racing_destination(
         durable_replace(source, target)
 
     monkeypatch.setattr(guard, "_durable_replace", race_before_replace)
-    with pytest.raises(guard.GuardError) as raised:
-        guard._publish_marker(
-            guard_fixture.journal,
-            journal_identity,
-            token,
-            guard_fixture.environment,
-            [guard_fixture.dependency],
-        )
+    with (
+        guard._JournalLock(guard_fixture.journal, journal_identity, create=False) as locked,
+        pytest.raises(guard.GuardError) as raised,
+    ):
+        locked.publish(token, guard_fixture.environment, [guard_fixture.dependency])
     assert raised.value.code == "malformed_state"
     assert destination.read_bytes() == retained
     guard._lstat_private_file(destination, code="malformed_state")
@@ -1371,7 +1424,9 @@ def test_windows_marker_reader_denies_same_size_concurrent_writer(guard_fixture:
     payload = guard._marker_bytes(expected_marker)
     replacement = bytes([payload[0] ^ 1]) + payload[1:]
     marker_path = guard_fixture.journal / f"mutation-{token}.json"
-    _write_manual_journal_leaf(marker_path, payload)
+    journal_identity = guard._validate_private_directory(guard_fixture.journal)
+    with guard._JournalLock(guard_fixture.journal, journal_identity, create=False) as locked:
+        locked.publish(token, guard_fixture.environment, [guard_fixture.dependency])
 
     attacker = "\n".join(
         [
@@ -1826,7 +1881,7 @@ def test_malformed_marker_fails_closed_and_is_retained(guard_fixture: GuardFixtu
 def test_orphaned_prepublish_temp_is_cleaned_only_under_lock(guard_fixture: GuardFixture) -> None:
     _create_manual_journal(guard_fixture)
     temporary = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
-    _write_manual_journal_leaf(temporary, b"partial")
+    _write_locked_journal_leaf(guard_fixture, temporary, b"partial")
 
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     assert code == 0
