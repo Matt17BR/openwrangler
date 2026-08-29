@@ -80,7 +80,7 @@ jobs:
         run: python -m pytest python/tests -q
 
   r:
-    name: Native R frame and transport contracts
+    name: Native R frame, kernel, and transport contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -132,6 +132,10 @@ jobs:
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - name: Native frame and interactive transport
         run: node scripts/run-r-contract-tests.mjs --shard frame-and-interactive-transport
+        env:
+          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+      - name: Native kernel-agent contracts
+        run: node scripts/run-r-contract-tests.mjs --shard kernel-agent
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
       - name: Catalog and process transport
