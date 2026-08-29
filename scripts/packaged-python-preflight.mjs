@@ -14,7 +14,7 @@ const PROFILES = Object.freeze({
   "repository-command": Object.freeze([]),
   editor: Object.freeze(["pandas", "polars", "duckdb", "fsspec", "openpyxl", "pyarrow"]),
   "editor-jupyter": Object.freeze(["pandas", "polars", "duckdb", "fsspec", "openpyxl", "pyarrow", "ipykernel"]),
-  "jupyter-bootstrap": Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "fsspec"]),
+  "jupyter-bootstrap": Object.freeze(["venv", "ensurepip"]),
   "jupyter-host": Object.freeze(["jupyter_client"]),
   "jupyter-host-literate": Object.freeze(["jupyter_client", "ipykernel", "pandas", "polars", "duckdb", "fsspec"]),
   visual: Object.freeze([
