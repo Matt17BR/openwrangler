@@ -25,7 +25,7 @@ export const pivotLongerColumnTypes: ReadonlySet<ColumnType> = new Set([
   "duration"
 ]);
 
-const orderedAggregationColumnTypes: ReadonlySet<ColumnType> = new Set([
+export const orderedColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
   "float",
@@ -129,7 +129,7 @@ export function aggregationColumnTypes(operation: AggregationOperation): Readonl
       return numericColumnTypes;
     case "min":
     case "max":
-      return orderedAggregationColumnTypes;
+      return orderedColumnTypes;
     case "count":
     case "nUnique":
     case "first":
