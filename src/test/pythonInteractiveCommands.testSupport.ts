@@ -41,6 +41,7 @@ const pythonMocks = vi.hoisted(() => ({
   openNotebookListeners: new Set<Listener<NotebookDocument>>(),
   closeNotebookListeners: new Set<Listener<NotebookDocument>>(),
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
+  inspectNotebookAutomatically: true,
   discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery | RNotebookVariableDiscovery>>(),
   openVariable: vi.fn(async () => undefined),
   openRVariable: vi.fn(async () => undefined),
@@ -153,6 +154,10 @@ vi.mock("../extension/notebooks/notebookVariableDiscovery", async () => {
   };
 });
 
+vi.mock("../extension/notebooks/kernelBridge", () => ({
+  shouldInspectNotebookAutomatically: () => pythonMocks.inspectNotebookAutomatically
+}));
+
 vi.mock("../extension/notebooks/jupyterBridge", () => ({
   discoverVariablesForSelectedKernel: pythonMocks.discover,
   isRNotebookVariableDiscovery: (discovery: NotebookVariableDiscovery | RNotebookVariableDiscovery) =>
@@ -212,6 +217,7 @@ export function setupPythonInteractiveTest(
   pythonMocks.activeNotebookEditor = undefined;
   pythonMocks.visibleNotebookEditors.length = 0;
   pythonMocks.isTrusted = true;
+  pythonMocks.inspectNotebookAutomatically = true;
   pythonMocks.executeCommand.mockReset();
   pythonMocks.executeCommand.mockResolvedValue(undefined);
   pythonMocks.showInformationMessage.mockClear();

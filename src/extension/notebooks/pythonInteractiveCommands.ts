@@ -21,6 +21,7 @@ import {
   type RNotebookVariableDiscovery
 } from "../r/rNotebookVariableDiscovery";
 import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
+import { shouldInspectNotebookAutomatically } from "./kernelBridge";
 import { isCurrentLiterateDocumentOrigin, type LiterateDocumentOrigin } from "../literateDocumentOrigin";
 import {
   allExactSourceCells,
@@ -607,6 +608,14 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   }
 
   private async refreshActive(showEmptyMessage: boolean): Promise<void> {
+    if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+      this.variablesByHandle.clear();
+      if (this.currentSnapshot !== undefined) {
+        this.currentSnapshot = undefined;
+        this.changeEmitter.fire();
+      }
+      return;
+    }
     if (this.refreshRunning) {
       this.refreshAgain = true;
       return;

@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   })),
   observe: vi.fn(),
   inspect: vi.fn(),
+  inspectNotebookAutomatically: true,
   kernelCurrent: vi.fn(async () => true),
   bindings: [] as Array<ReturnType<typeof testBinding>>,
   disposed: 0,
@@ -131,6 +132,7 @@ vi.mock("vscode", () => {
 });
 
 vi.mock("../extension/notebooks/kernelBridge", () => ({
+  shouldInspectNotebookAutomatically: () => mocks.inspectNotebookAutomatically,
   shouldRegisterNotebookFormatters: () => true,
   fingerprintNotebookCellSource: (source: string) => (source === "frame" ? "a" : "b").repeat(64),
   observeExecutedNotebookCellResultKernel: mocks.observe,
@@ -199,6 +201,7 @@ export function resetNotebookCellResultTest(): void {
   });
   mocks.inspect.mockReset();
   mocks.inspect.mockImplementation(async (_document, _executionOrder, _fingerprint, binding) => binding);
+  mocks.inspectNotebookAutomatically = true;
   mocks.kernelCurrent.mockReset();
   mocks.kernelCurrent.mockResolvedValue(true);
   mocks.bindings.length = 0;

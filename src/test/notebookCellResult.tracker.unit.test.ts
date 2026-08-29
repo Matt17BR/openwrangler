@@ -889,6 +889,24 @@ describe("executed notebook cell result tracker", () => {
     tracker.dispose();
   });
 
+  it("does not inspect cell results when another notebook preview provider owns the kernel", async () => {
+    const document = notebook("file:///foreign-preview-provider.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    mocks.inspectNotebookAutomatically = false;
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    await settleInspection();
+
+    expect(mocks.observe).not.toHaveBeenCalled();
+    expect(mocks.inspect).not.toHaveBeenCalled();
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeUndefined();
+    tracker.dispose();
+  });
+
   it("rechecks the selected kernel when it was not available at execution start", async () => {
     const previous = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
     delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;

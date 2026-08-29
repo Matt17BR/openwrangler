@@ -10,6 +10,7 @@ import {
   KernelBridge,
   NotebookFormatterPreparationPendingError,
   isIdempotentKernelReadRequest,
+  shouldInspectNotebookAutomatically,
   withKernelSessionIdentity
 } from "../extension/notebooks/kernelBridge";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
@@ -59,6 +60,21 @@ const REJECTED_PYSPARK_VERSIONS = [
   ...PYSPARK_VERSION_CONTRACT.acceptancePrereleaseDenial,
   ...Object.values(PYSPARK_VERSION_CONTRACT.rejected).flat()
 ];
+
+describe("notebook cell-result provider authority", () => {
+  it.each([
+    ["ask", true],
+    ["openWrangler", true],
+    ["dataWrangler", false],
+    ["disabled", false]
+  ] as const)("maps the %s preview provider to inspection=%s", (provider, expected) => {
+    vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(key: string, fallback: T): T => (key === "notebookPreviewProvider" ? provider : fallback) as T
+    } as never);
+
+    expect(shouldInspectNotebookAutomatically()).toBe(expected);
+  });
+});
 
 function controlledExecutedPySparkPreflightKernel(
   pythonSetup: string,
