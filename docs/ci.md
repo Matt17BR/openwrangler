@@ -6,7 +6,7 @@ Every pull request runs the same five owners:
 
 - **Source contracts (Node 24)** runs formatting, lint, TypeScript types, generated protocol/reference checks,
   documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest. It then builds the same
-  checkout with Node 22.22.0 against the already-installed locked dependencies.
+  checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
   plus the native kernel-agent shard.
