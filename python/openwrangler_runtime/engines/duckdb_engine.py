@@ -78,6 +78,17 @@ _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 
 
+def _duckdb_cast_target(dtype: str) -> str:
+    return {
+        "string": "VARCHAR",
+        "integer": "BIGINT",
+        "float": "DOUBLE",
+        "boolean": "BOOLEAN",
+        "date": "DATE",
+        "datetime": "TIMESTAMP",
+    }[dtype]
+
+
 @dataclass(frozen=True, slots=True)
 class DuckDBSqlPlan:
     """Connection-free metadata for a replayable native DuckDB relation."""
@@ -814,14 +825,7 @@ class DuckDBEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return self._assign(frame, params["newName"], _quote_ident(column))
         if kind == "castColumn":
-            target_type = {
-                "string": "VARCHAR",
-                "integer": "BIGINT",
-                "float": "DOUBLE",
-                "boolean": "BOOLEAN",
-                "date": "DATE",
-                "datetime": "TIMESTAMP",
-            }[params["dtype"]]
+            target_type = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
             return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
         if kind == "formula":
@@ -1250,14 +1254,7 @@ class DuckDBEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return [f"{prefix}df = _ow_assign(df, {params['newName']!r}, _ow_ident({column!r}))"]
         if kind == "castColumn":
-            target = {
-                "string": "VARCHAR",
-                "integer": "BIGINT",
-                "float": "DOUBLE",
-                "boolean": "BOOLEAN",
-                "date": "DATE",
-                "datetime": "TIMESTAMP",
-            }[params["dtype"]]
+            target = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
             return [f"{prefix}df = _ow_assign(df, {column!r}, 'try_cast(' + _ow_ident({column!r}) + ' AS {target})')"]
         if kind == "formula":
