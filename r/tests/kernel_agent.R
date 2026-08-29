@@ -4641,369 +4641,6 @@ if (requireNamespace("bit64", quietly = TRUE)) {
   invisible(dispatch("closeSession", list(sessionId = numeric_integer64_session_id)))
 }
 
-source_environment$scale_frame <- data.frame(
-  value = c(-2, 0, 2, NA_real_, NaN, Inf, -Inf),
-  constant = c(5, NA_real_, 5, NaN, Inf, -Inf, 5),
-  no_finite = c(NA_real_, NaN, Inf, -Inf, NA_real_, NaN, Inf),
-  integer_value = c(-10L, 0L, 10L, NA_integer_, 5L, -5L, 2L),
-  wide = bit64::as.integer64(c("0", "5", "10", NA, "2", "8", "1")),
-  text = rep("not numeric", 7L),
-  marker = letters[seq_len(7L)],
-  row.names = paste0("scale-", seq_len(7L)),
-  check.names = FALSE
-)
-scale_before <- unserialize(serialize(source_environment$scale_frame, NULL, version = 3L))
-scale_open <- dispatch(
-  "openSession",
-  list(sessionId = scale_session_id, variableName = "scale_frame", page = page_window())
-)
-assert_identical(scale_open$kind, "page", "the R Min-max scale session did not open")
-
-scale_extra_parameter <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_session_id,
-    revision = 0L,
-    step = list(
-      id = "scale-extra-parameter",
-      kind = "minMaxScale",
-      params = list(column = list(id = "r:c:0", name = "value"), decimals = 2L)
-    ),
-    page = page_window()
-  )
-)
-assert_identical(scale_extra_parameter$kind, "error", "R Min-max scale accepted an unknown parameter")
-assert_identical(scale_extra_parameter$code, "invalid_request", "the R Min-max parameter diagnostic changed")
-scale_legacy_column <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_session_id,
-    revision = 0L,
-    step = list(
-      id = "scale-legacy-column",
-      kind = "minMaxScale",
-      params = list(column = "value")
-    ),
-    page = page_window()
-  )
-)
-assert_identical(scale_legacy_column$kind, "error", "R Min-max scale accepted a legacy string column")
-assert_identical(scale_legacy_column$code, "invalid_request", "the R Min-max column diagnostic changed")
-scale_stale_column <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_session_id,
-    revision = 0L,
-    step = list(
-      id = "scale-stale-column",
-      kind = "minMaxScale",
-      params = list(column = list(id = "r:c:1", name = "value"))
-    ),
-    page = page_window()
-  )
-)
-assert_identical(scale_stale_column$kind, "error", "R Min-max scale accepted an ID/name mismatch")
-assert_identical(scale_stale_column$code, "stale_column", "the R Min-max stale-column diagnostic changed")
-scale_text_column <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_session_id,
-    revision = 0L,
-    step = numeric_step("scale-text", "minMaxScale", 6L, "text"),
-    page = page_window()
-  )
-)
-assert_identical(scale_text_column$kind, "error", "R Min-max scale accepted a text column")
-assert_identical(scale_text_column$code, "invalid_request", "the R Min-max type diagnostic changed")
-
-scale_revision <- 0L
-preview_and_apply_scale <- function(step, page = page_window()) {
-  preview <- dispatch(
-    "previewStep",
-    list(sessionId = scale_session_id, revision = scale_revision, step = step, page = page)
-  )
-  assert_identical(preview$kind, "stepPreview", sprintf("%s did not preview", step$id))
-  scale_revision <<- preview$revision
-  applied <- dispatch(
-    "applyDraft",
-    list(sessionId = scale_session_id, revision = scale_revision, page = page_window())
-  )
-  assert_identical(applied$action, "apply", sprintf("%s did not apply", step$id))
-  scale_revision <<- applied$revision
-  list(preview = preview, applied = applied)
-}
-
-scale_value_result <- preview_and_apply_scale(
-  numeric_step("scale-values", "minMaxScale", 1L, "value"),
-  page_window(column_offset = 0L, column_limit = 1L)
-)
-assert_identical(scale_value_result$preview$diff$changedCells, 6L, "R Min-max scale returned an inexact diff")
-assert_identical(
-  scale_value_result$preview$page$schema[[1L]]$rawType,
-  "double",
-  "in-place R Min-max scale published the wrong type"
-)
-assert_identical(
-  scale_value_result$preview$page$schema[[1L]]$nullable,
-  TRUE,
-  "R Min-max scale did not publish its nullable output contract"
-)
-scale_constant_result <- preview_and_apply_scale(
-  numeric_step("scale-constant", "minMaxScale", 2L, "constant", new_column = "constant scaled")
-)
-scale_no_finite_result <- preview_and_apply_scale(
-  numeric_step("scale-no-finite", "minMaxScale", 3L, "no_finite", new_column = "no finite scaled")
-)
-scale_integer_result <- preview_and_apply_scale(
-  numeric_step("scale-integer", "minMaxScale", 4L, "integer_value", new_column = "integer scaled")
-)
-scale_wide_result <- preview_and_apply_scale(
-  numeric_step("scale-wide", "minMaxScale", 5L, "wide", new_column = "wide scaled")
-)
-assert_identical(
-  scale_integer_result$applied$page$schema[[10L]]$rawType,
-  "double",
-  "R Min-max scale did not widen integer input"
-)
-assert_identical(
-  scale_wide_result$applied$page$schema[[11L]]$rawType,
-  "double",
-  "R Min-max scale did not widen integer64 input"
-)
-scale_page <- dispatch("getPage", list(sessionId = scale_session_id, page = page_window()))
-assert_identical(scale_page$kind, "page", "the applied R Min-max plan could not be paged")
-scale_names <- vapply(scale_page$page$schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
-scale_column_values <- function(name) {
-  position <- match(name, scale_names)
-  vapply(scale_page$page$page$rows, function(row) {
-    cell <- row$values[[position]]
-    if (identical(cell$kind, "null")) NA_real_ else as.double(cell$raw)
-  }, double(1L), USE.NAMES = FALSE)
-}
-assert_identical(
-  scale_column_values("value"),
-  c(0, 0.5, 1, NA_real_, NA_real_, NA_real_, NA_real_),
-  "live R Min-max scale changed ordinary values"
-)
-assert_identical(
-  scale_column_values("constant scaled"),
-  c(0, NA_real_, 0, NA_real_, NA_real_, NA_real_, 0),
-  "live R Min-max scale changed a constant range"
-)
-assert_identical(
-  scale_column_values("no finite scaled"),
-  rep.int(NA_real_, 7L),
-  "live R Min-max scale invented values for an all-non-finite column"
-)
-assert_identical(
-  scale_column_values("wide scaled"),
-  c(0, 0.5, 1, NA_real_, 0.2, 0.8, 0.1),
-  "live R Min-max scale changed integer64 values"
-)
-
-scale_inspection <- inspect_step(
-  scale_session_id,
-  scale_revision,
-  "scale-values",
-  page_window(column_offset = 0L, column_limit = 1L)
-)
-assert_identical(scale_inspection$kind, "stepInspection", "R Min-max scale did not retain history")
-assert_identical(scale_inspection$diff$changedCells, 6L, "R Min-max history returned the wrong diff")
-assert_schema_less_inspection(scale_inspection, "R Min-max inspection")
-
-scale_edited_preview <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_session_id,
-    revision = scale_revision,
-    step = numeric_step(
-      "scale-wide",
-      "minMaxScale",
-      5L,
-      "wide",
-      new_column = "wide scaled edited"
-    ),
-    replaceStepId = "scale-wide",
-    page = page_window()
-  )
-)
-assert_identical(scale_edited_preview$kind, "stepPreview", "the latest R Min-max step could not be edited")
-assert_identical(scale_edited_preview$diff$addedColumns, list("wide scaled edited"), "edited R Min-max diff changed")
-scale_revision <- scale_edited_preview$revision
-scale_edited_apply <- dispatch(
-  "applyDraft",
-  list(sessionId = scale_session_id, revision = scale_revision, page = page_window())
-)
-assert_identical(scale_edited_apply$action, "apply", "the edited R Min-max step did not apply")
-scale_revision <- scale_edited_apply$revision
-if (
-  !grepl(".ow_min_max_scale", scale_edited_apply$code, fixed = TRUE) ||
-    !grepl("bit64::as.integer64", scale_edited_apply$code, fixed = TRUE) ||
-    grepl("as.double(.ow_numeric_source)", scale_edited_apply$code, fixed = TRUE)
-) {
-  stop("generated R Min-max code lost its precision-safe finite-range calculation", call. = FALSE)
-}
-assign("scale_frame", source_environment$scale_frame, envir = .GlobalEnv)
-withCallingHandlers(
-  eval(parse(text = scale_edited_apply$code), envir = .GlobalEnv),
-  warning = function(warning) stop("generated R Min-max scale emitted a warning", call. = FALSE)
-)
-scale_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
-assert_identical(
-  scale_generated$value,
-  c(0, 0.5, 1, NA_real_, NA_real_, NA_real_, NA_real_),
-  "generated R Min-max scale changed ordinary values"
-)
-assert_identical(
-  scale_generated$`constant scaled`,
-  c(0, NA_real_, 0, NA_real_, NA_real_, NA_real_, 0),
-  "generated R Min-max scale changed constant values"
-)
-assert_identical(
-  scale_generated$`no finite scaled`,
-  rep.int(NA_real_, 7L),
-  "generated R Min-max scale changed an all-non-finite column"
-)
-assert_identical(typeof(scale_generated$`integer scaled`), "double", "generated R Min-max did not widen integer")
-assert_identical(
-  scale_generated$`wide scaled edited`,
-  c(0, 0.5, 1, NA_real_, 0.2, 0.8, 0.1),
-  "generated R Min-max scale changed integer64 values"
-)
-assert_identical(row.names(scale_generated), row.names(scale_before), "generated R Min-max scale changed row names")
-assert_identical(get("scale_frame", envir = .GlobalEnv), scale_before, "generated R Min-max code mutated its source")
-assert_identical(source_environment$scale_frame, scale_before, "the live R Min-max lifecycle mutated its source")
-
-generated_integer64_cases <- list(
-  list(
-    label = "adjacent positive integer64 values",
-    values = c(
-      "9223372036854775805", "9223372036854775806", "9223372036854775807", NA,
-      "9223372036854775805", "9223372036854775806", "9223372036854775807"
-    ),
-    expected = c(0, 0.5, 1, NA_real_, 0, 0.5, 1)
-  ),
-  list(
-    label = "adjacent negative integer64 values",
-    values = c(
-      "-9223372036854775807", "-9223372036854775806", "-9223372036854775805", NA,
-      "-9223372036854775807", "-9223372036854775806", "-9223372036854775805"
-    ),
-    expected = c(0, 0.5, 1, NA_real_, 0, 0.5, 1)
-  ),
-  list(
-    label = "the full supported signed integer64 range",
-    values = c(
-      "-9223372036854775807", "0", "9223372036854775807", NA,
-      "-9223372036854775807", "0", "9223372036854775807"
-    ),
-    expected = c(0, 0.5, 1, NA_real_, 0, 0.5, 1)
-  )
-)
-for (generated_case in generated_integer64_cases) {
-  generated_source <- scale_before
-  generated_source$wide <- bit64::as.integer64(generated_case$values)
-  generated_source_before <- unserialize(serialize(generated_source, NULL, version = 3L))
-  assign("scale_frame", generated_source, envir = .GlobalEnv)
-  eval(parse(text = scale_edited_apply$code), envir = .GlobalEnv)
-  generated_result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
-  if (!isTRUE(all.equal(
-    generated_result$`wide scaled edited`,
-    generated_case$expected,
-    tolerance = .Machine$double.eps,
-    check.attributes = FALSE
-  ))) {
-    stop(sprintf("generated R Min-max changed %s", generated_case$label), call. = FALSE)
-  }
-  assert_identical(
-    get("scale_frame", envir = .GlobalEnv),
-    generated_source_before,
-    sprintf("generated R Min-max mutated %s", generated_case$label)
-  )
-}
-monotonic_generated_source <- scale_before
-monotonic_generated_source$wide <- bit64::as.integer64(c(
-  "0",
-  "8999999000001999999",
-  "8999999000002000000",
-  "9223372036854775807",
-  NA,
-  "0",
-  "9223372036854775807"
-))
-monotonic_generated_before <- unserialize(serialize(monotonic_generated_source, NULL, version = 3L))
-assign("scale_frame", monotonic_generated_source, envir = .GlobalEnv)
-eval(parse(text = scale_edited_apply$code), envir = .GlobalEnv)
-monotonic_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)$`wide scaled edited`
-if (!all(diff(monotonic_generated[seq_len(4L)]) >= 0)) {
-  stop("generated R Min-max reversed adjacent integer64 values across an internal limb boundary", call. = FALSE)
-}
-assert_identical(
-  get("scale_frame", envir = .GlobalEnv),
-  monotonic_generated_before,
-  "generated R Min-max mutated its monotonicity source"
-)
-assert_identical(source_environment$scale_frame, scale_before, "generated R Min-max cases mutated the live source")
-rm("scale_frame", "open_wrangler_result", envir = .GlobalEnv)
-
-scale_undo <- dispatch(
-  "undoStep",
-  list(sessionId = scale_session_id, revision = scale_revision, page = page_window())
-)
-assert_identical(scale_undo$action, "undo", "the latest R Min-max step did not undo")
-assert_identical(
-  any(vapply(scale_undo$page$schema, function(column) identical(column$name, "wide scaled edited"), logical(1L))),
-  FALSE,
-  "undo retained the edited R Min-max output"
-)
-invisible(dispatch("closeSession", list(sessionId = scale_session_id)))
-
-source_environment$scale_table <- data.table::data.table(
-  primary_key = c(2, 1),
-  marker = c("second", "first")
-)
-data.table::setkey(source_environment$scale_table, primary_key)
-scale_table_before <- data.table::copy(source_environment$scale_table)
-scale_table_open <- dispatch(
-  "openSession",
-  list(sessionId = scale_table_session_id, variableName = "scale_table", page = page_window())
-)
-assert_identical(scale_table_open$kind, "page", "the keyed R Min-max session did not open")
-scale_key_error <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_table_session_id,
-    revision = 0L,
-    step = numeric_step("scale-key", "minMaxScale", 1L, "primary_key"),
-    page = page_window()
-  )
-)
-assert_identical(scale_key_error$kind, "error", "R Min-max scale silently replaced a data.table key")
-assert_identical(scale_key_error$code, "invalid_request", "the R Min-max key diagnostic changed")
-scale_key_copy <- dispatch(
-  "previewStep",
-  list(
-    sessionId = scale_table_session_id,
-    revision = 0L,
-    step = numeric_step("scale-key-copy", "minMaxScale", 1L, "primary_key", new_column = "scaled key"),
-    page = page_window()
-  )
-)
-assert_identical(scale_key_copy$kind, "stepPreview", "derived R Min-max could not read a data.table key")
-scale_key_apply <- dispatch(
-  "applyDraft",
-  list(sessionId = scale_table_session_id, revision = 1L, page = page_window())
-)
-assign("scale_table", source_environment$scale_table, envir = .GlobalEnv)
-eval(parse(text = scale_key_apply$code), envir = .GlobalEnv)
-scale_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
-assert_identical(data.table::key(scale_table_generated), "primary_key", "generated R Min-max lost the data.table key")
-assert_identical(scale_table_generated$`scaled key`, c(0, 1), "generated R Min-max changed keyed values")
-assert_identical(scale_table_generated$marker, scale_table_before$marker, "generated R Min-max changed keyed row order")
-assert_identical(get("scale_table", envir = .GlobalEnv), scale_table_before, "generated R Min-max mutated keyed source")
-rm("scale_table", "open_wrangler_result", envir = .GlobalEnv)
-invisible(dispatch("closeSession", list(sessionId = scale_table_session_id)))
-
 assert_generated_scale_flavor <- function(session_id, variable_name, source) {
   source_before <- if (inherits(source, "data.table")) {
     data.table::copy(source)
@@ -5040,9 +4677,18 @@ assert_generated_scale_flavor <- function(session_id, variable_name, source) {
   assert_identical(get(variable_name, envir = source_environment), source_before, sprintf("live %s Min-max mutated source", variable_name))
   rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
   invisible(dispatch("closeSession", list(sessionId = session_id)))
+  invisible(applied$code)
 }
 
 scale_flavor_source <- data.frame(value = c(10, 20, 30), marker = c("a", "b", "c"), check.names = FALSE)
+scale_generated_integer64_code <- assert_generated_scale_flavor(
+  scale_session_id,
+  "scale_generated_integer64",
+  tibble::tibble(
+    value = bit64::as.integer64(c("0", "5", "10")),
+    marker = c("a", "b", "c")
+  )
+)
 assert_generated_scale_flavor(
   scale_tibble_session_id,
   "scale_tibble",
@@ -5063,6 +4709,66 @@ assert_generated_scale_flavor(
   "scale_collapse_table",
   collapse::qDT(scale_flavor_source)
 )
+
+generated_integer64_cases <- list(
+  list(
+    label = "adjacent negative integer64 values",
+    values = c("-9223372036854775807", "-9223372036854775806", "-9223372036854775805"),
+    expected = c(0, 0.5, 1)
+  ),
+  list(
+    label = "the full supported signed integer64 range",
+    values = c("-9223372036854775807", "0", "9223372036854775807"),
+    expected = c(0, 0.5, 1)
+  )
+)
+for (generated_case in generated_integer64_cases) {
+  generated_source <- tibble::tibble(
+    value = bit64::as.integer64(generated_case$values),
+    marker = seq_along(generated_case$values)
+  )
+  generated_source_before <- serialize(generated_source, NULL, version = 3L)
+  assign("scale_generated_integer64", generated_source, envir = .GlobalEnv)
+  eval(parse(text = scale_generated_integer64_code), envir = .GlobalEnv)
+  generated_result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  if (!isTRUE(all.equal(
+    generated_result$scaled,
+    generated_case$expected,
+    tolerance = .Machine$double.eps,
+    check.attributes = FALSE
+  ))) {
+    stop(sprintf("generated R Min-max changed %s", generated_case$label), call. = FALSE)
+  }
+  assert_identical(
+    serialize(get("scale_generated_integer64", envir = .GlobalEnv), NULL, version = 3L),
+    generated_source_before,
+    sprintf("generated R Min-max mutated %s", generated_case$label)
+  )
+  rm("scale_generated_integer64", "open_wrangler_result", envir = .GlobalEnv)
+}
+
+monotonic_generated_source <- tibble::tibble(
+  value = bit64::as.integer64(c(
+    "0",
+    "8999999000001999999",
+    "8999999000002000000",
+    "9223372036854775807"
+  )),
+  marker = seq_len(4L)
+)
+monotonic_generated_before <- serialize(monotonic_generated_source, NULL, version = 3L)
+assign("scale_generated_integer64", monotonic_generated_source, envir = .GlobalEnv)
+eval(parse(text = scale_generated_integer64_code), envir = .GlobalEnv)
+monotonic_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)$scaled
+if (!all(diff(monotonic_generated) >= 0)) {
+  stop("generated R Min-max reversed adjacent integer64 values across an internal limb boundary", call. = FALSE)
+}
+assert_identical(
+  serialize(get("scale_generated_integer64", envir = .GlobalEnv), NULL, version = 3L),
+  monotonic_generated_before,
+  "generated R Min-max mutated its monotonicity source"
+)
+rm("scale_generated_integer64", "open_wrangler_result", envir = .GlobalEnv)
 
 formula_step <- function(
   id,
