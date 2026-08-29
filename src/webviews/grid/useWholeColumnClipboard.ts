@@ -478,7 +478,18 @@ export function useWholeColumnClipboard({
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>): void => {
       try {
-        if (event.origin !== window.location.origin || !isOpenWranglerResponse(event.data)) return;
+        if (event.origin !== window.location.origin) return;
+        const activeRequestId = activeRef.current?.requestId;
+        if (!activeRequestId) return;
+        if (typeof event.data !== "object" || event.data === null || !Object.hasOwn(event.data, "viewRequestId")) {
+          return;
+        }
+        if (
+          (event.data as { viewRequestId?: unknown }).viewRequestId !== activeRequestId ||
+          !isOpenWranglerResponse(event.data)
+        ) {
+          return;
+        }
         handleResponse(event.data);
       } catch {
         reportWebviewFailure("message");
