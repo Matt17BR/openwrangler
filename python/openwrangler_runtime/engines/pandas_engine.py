@@ -102,6 +102,12 @@ _JSON_CHARACTER_ESCAPES = {
 }
 
 
+def _pandas_cast_strategy(dtype: str) -> tuple[str, str]:
+    if dtype in {"date", "datetime"}:
+        return "to_datetime", dtype
+    return "astype", {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
+
+
 @lru_cache(maxsize=1)
 def _pandas_row_axis_trusted_scalar_types() -> tuple[tuple[type[Any], ...], type[Any], type[Any]]:
     import numpy as np
@@ -684,15 +690,10 @@ class PandasEngine(DataFrameEngine):
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
             series = df.iloc[:, position]
-            dtype = params["dtype"]
-            if dtype == "date":
-                result = pd.to_datetime(series, errors="coerce").dt.date
-            elif dtype == "datetime":
-                result = pd.to_datetime(series, errors="coerce")
-            else:
-                result = series.astype(
-                    {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
-                )
+            conversion, target = _pandas_cast_strategy(params["dtype"])
+            result = pd.to_datetime(series, errors="coerce") if conversion == "to_datetime" else series.astype(target)
+            if target == "date":
+                result = result.dt.date
             df.isetitem(position, result)
             return df
         if kind == "formula":
@@ -1626,15 +1627,13 @@ class PandasEngine(DataFrameEngine):
             return [f"{prefix}df = pd.concat([df, df.iloc[:, {position}].rename({params['newName']!r})], axis=1)"]
         if kind == "castColumn":
             position = bound_column_position(params["column"], kind)
-            dtype = params["dtype"]
-            if dtype == "date":
-                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce').dt.date"
-                return [f"{prefix}df.isetitem({position}, {expression})"]
-            if dtype == "datetime":
-                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce')"
-                return [f"{prefix}df.isetitem({position}, {expression})"]
-            target = {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
-            return [f"{prefix}df.isetitem({position}, df.iloc[:, {position}].astype({target!r}))"]
+            conversion, target = _pandas_cast_strategy(params["dtype"])
+            if conversion == "to_datetime":
+                accessor = ".dt.date" if target == "date" else ""
+                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce'){accessor}"
+            else:
+                expression = f"df.iloc[:, {position}].astype({target!r})"
+            return [f"{prefix}df.isetitem({position}, {expression})"]
         if kind == "formula":
             left_position = bound_column_position(params["leftColumn"], kind)
             right = (

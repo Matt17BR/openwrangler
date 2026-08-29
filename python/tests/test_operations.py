@@ -801,6 +801,50 @@ def test_column_and_type_operations_match_generated_code(engine_and_frame):
 @pytest.mark.parametrize(
     ("target", "values", "expected_dtype", "expected_values"),
     [
+        ("string", [1, None], "string", ["1", pd.NA]),
+        ("integer", ["7", None], "Int64", [7, pd.NA]),
+        ("float", ["1.5", None], "Float64", [1.5, pd.NA]),
+        ("boolean", [1, 0, None], "boolean", [True, False, pd.NA]),
+        (
+            "date",
+            [0, 2**63, None],
+            "object",
+            [date(1970, 1, 1), pd.NaT, pd.NaT],
+        ),
+        (
+            "datetime",
+            [0, 1_000_000, 2**63, None],
+            "datetime64[ns]",
+            [datetime(1970, 1, 1), datetime(1970, 1, 1, 0, 0, 0, 1_000), pd.NaT, pd.NaT],
+        ),
+    ],
+)
+def test_pandas_cast_targets_match_generated_dtype_and_coercion(
+    target: str,
+    values: list[Any],
+    expected_dtype: str,
+    expected_values: list[Any],
+) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=object)})
+    operation = bound_step(
+        f"cast-{target}",
+        "castColumn",
+        column=bound_ref("c:source:0", "value", 0),
+        dtype=target,
+    )
+
+    live = engine.apply_transform(frame, operation)
+    generated = execute_generated(engine, frame, [operation])
+    expected = pd.Series(expected_values, dtype=expected_dtype, name="value")
+
+    pd.testing.assert_series_equal(live["value"], expected)
+    pd.testing.assert_series_equal(generated["value"], expected)
+
+
+@pytest.mark.parametrize(
+    ("target", "values", "expected_dtype", "expected_values"),
+    [
         ("string", [1, None], pl.String, ["1", None]),
         ("integer", ["7", "bad", None], pl.Int64, [7, None, None]),
         ("float", ["1.5", "bad", None], pl.Float64, [1.5, None, None]),
