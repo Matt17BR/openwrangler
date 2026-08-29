@@ -95,7 +95,7 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - name: Audit published dependencies
         run: |
-          npm audit --omit=dev --audit-level=high
+          npm run audit:node
           npm run audit:python
           optional_runtime_requirements="$(
             mktemp "${RUNNER_TEMP}/openwrangler-optional-runtime-audit.XXXXXX"
