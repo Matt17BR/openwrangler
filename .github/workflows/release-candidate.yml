@@ -93,6 +93,19 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e "python[dev]"
+      - name: Audit published dependencies
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm run audit:python
+          optional_runtime_requirements="$(
+            mktemp "${RUNNER_TEMP}/openwrangler-optional-runtime-audit.XXXXXX"
+          )"
+          python -c 'from scripts.python_runtime_dependency_authority import load_authority; print(*(spec for dependency in load_authority() if dependency.pyproject_group == "dev" for spec in dependency.pyproject_install_specs), sep=chr(10))' \
+            > "$optional_runtime_requirements"
+          python -m pip_audit \
+            --requirement "$optional_runtime_requirements" \
+            --strict \
+            --progress-spinner off
       - name: Test the exact candidate artifact in pinned VS Code
         env:
           EXPECTED_SHA: ${{ github.sha }}
