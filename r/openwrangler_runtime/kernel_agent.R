@@ -9644,58 +9644,8 @@ openwrangler_r_kernel_agent <- local({
   }
 
   new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL) {
-    required_functions <- c(
-      "capture_frame",
-      "capture_categorical_result",
-      "capture_custom_code_result",
-      "capture_group_result",
-      "capture_live_frame",
-      "isolate_capture",
-      "isolate_custom_code_input",
-      "rename_column",
-      "rename_column_at",
-      "clone_column_at",
-      "by_example_column_at",
-      "formula_column_at",
-      "text_length_column_at",
-      "one_hot_encode_columns_at",
-      "multi_label_binarize_column_at",
-      "lower_text_column_at",
-      "upper_text_column_at",
-      "capitalize_text_column_at",
-      "strip_text_column_at",
-      "split_text_column_at",
-      "split_text_columns_at",
-      "find_replace_column_at",
-      "min_max_scale_column_at",
-      "round_number_column_at",
-      "floor_number_column_at",
-      "ceil_number_column_at",
-      "format_datetime_column_at",
-      "fill_missing_column_at",
-      "fill_missing_from_fallback_columns_at",
-      "fill_missing_directional_at",
-      "fill_missing_linear_interpolation_at",
-      "fill_missing_grouped_statistic_at",
-      "cast_column_at",
-      "drop_columns_at",
-      "select_columns_at",
-      "drop_missing_rows_at",
-      "drop_duplicate_rows_at",
-      "group_by_at",
-      "transform_rows",
-      "materialize_view_page",
-      "materialize_summaries",
-      "materialize_dataset_stats",
-      "materialize_column_values",
-      "export_formats",
-      "normalize_export_options",
-      "write_csv",
-      "write_parquet"
-    )
     if (
       !is.list(frame_contract) ||
-        !all(vapply(required_functions, function(name) is.function(frame_contract[[name]]), logical(1L))) ||
         !is.list(frame_contract$limits)
     ) {
       stop("Open Wrangler received an invalid R frame contract.", call. = FALSE)
