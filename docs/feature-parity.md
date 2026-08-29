@@ -46,7 +46,11 @@ contract; candidate qualification tests the exact packaged artifact without repe
 | Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done   | Positional binding, stable IDs, index fidelity, and replay; test:python/tests/test_pandas_engine.py; test:python/tests/test_pandas_index_fidelity.py                                           |
 | Restricted Mode and trust-gated execution           |    N/A |    N/A | Done   | Untrusted execution denial and trusted installed journey; test:src/test/packageManifest.unit.test.ts; record:docs/testing.md                                                                   |
 | Installed-editor first-usable-grid performance      |    Yes |    Yes | Done   | Pinned VS Code installed-performance consumes the canonical candidate; test:python/tests/test_performance_harness.py; workflow:.github/workflows/release-candidate.yml; record:docs/testing.md |
-| VS Code/Cursor package acceptance (Linux reference) |    N/A |    N/A | Done   | Linux reference runner: canonical candidate in pinned VS Code installed-performance and pinned Cursor platform-smoke; workflow:.github/workflows/release-candidate.yml; record:docs/testing.md |
+| VS Code package acceptance and compatibility seam   |    N/A |    N/A | Done   | Canonical candidate in pinned VS Code installed-performance and bounded Linux Cursor platform smoke; workflow:.github/workflows/release-candidate.yml; record:docs/testing.md                  |
+
+Open Wrangler targets desktop VS Code and editors based on it. Release-candidate performance is qualified in pinned
+VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
+cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
 
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
@@ -203,8 +207,8 @@ These dispositions do not block stable 2.0 unless a release starts advertising t
 | Natural-language and Copilot operations                                                   | Deferred until deterministic operations and portable recipe validation exist                          |
 | DuckDB Excel and database browsing                                                        | Planned experimental expansion; not part of current support                                           |
 | Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                              |
-| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; current release hosts are desktop VS Code and Cursor                           |
-| Other VS Code desktop forks                                                               | Experimental; evidence for one fork does not establish a general compatibility claim                  |
+| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                          |
+| VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental     |
 | Localization and telemetry                                                                | Deferred product breadth                                                                              |
 | Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred and explicitly nonblocking in the product roadmap                                            |
 

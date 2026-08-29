@@ -715,8 +715,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   files, unsupported compression or encryption, CRC mismatches, and source/package inventory drift.
 - Open VSX and Visual Studio Marketplace publication remained disabled until their publisher accounts and agreements
   were ready.
-- VS Code and Cursor are first-class desktop targets. Other VS Code-based desktop IDEs are experimental; Open VSX
-  discovery does not establish compatibility, and browser-hosted `vscode.dev` is outside the local-runtime scope.
+- VS Code and Cursor were first-class, release-blocking desktop targets for this release, with full automated and
+  release test matrices. Other VS Code-based desktop IDEs were experimental; Open VSX discovery did not establish
+  compatibility, and browser-hosted `vscode.dev` was outside the local-runtime scope.
 - Manual notebook launches stay with the visible notebook through prompts and focus changes. Code insertion checks
   that document again before editing and reports an unprovable result as indeterminate without retrying it.
 - The notebook renderer is self-contained in the VSIX. Pandas and Polars formatter registration preserves

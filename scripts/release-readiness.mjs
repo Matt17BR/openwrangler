@@ -79,7 +79,7 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Duplicate/non-string Pandas column operations", "Yes", "N/A"],
   ["Restricted Mode and trust-gated execution", "N/A", "N/A"],
   ["Installed-editor first-usable-grid performance", "Yes", "Yes"],
-  ["VS Code/Cursor package acceptance (Linux reference)", "N/A", "N/A"]
+  ["VS Code package acceptance and compatibility seam", "N/A", "N/A"]
 ]);
 function previewRScope(...values) {
   if (values.length !== 3 || values.some((value) => typeof value !== "string" || value.length === 0)) {
