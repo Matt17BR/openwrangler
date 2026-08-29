@@ -604,7 +604,6 @@ def test_read_only_profile_payload_rejection_is_bounded_and_releases_the_profile
     manager = SessionManager(EngineRegistry((("pandas", lambda: engine),)))
     opened = manager.open_session(source(write_values(tmp_path, 2)), backend="pandas", page_size=1)
     session_id = opened["metadata"]["sessionId"]
-    session = manager.sessions[session_id]
     monkeypatch.setattr(session_runtime, "MAX_STRICT_RESPONSE_PAYLOAD_BYTES", 512)
 
     with pytest.raises(ResponsePayloadError) as caught:
@@ -612,7 +611,7 @@ def test_read_only_profile_payload_rejection_is_bounded_and_releases_the_profile
 
     assert caught.value.code == "response_too_large"
     assert marker not in str(caught.value)
-    assert session.active_profiles == 0
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
 
 
 @pytest.mark.parametrize("invalidation", ["replaced", "missing", "stopped"])

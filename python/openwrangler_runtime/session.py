@@ -36,6 +36,7 @@ from .protocol_limits_generated import (
     MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
 )
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
+from .session_access import SessionRequestAdmission
 from .trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 from .version import __version__
 
@@ -161,11 +162,7 @@ class Session:
     last_applied_view_restore: _AppliedViewRestore | None
     revision: int
     mode: str
-    lock: Any
-    admission_condition: Any
-    profile_condition: Any
-    active_profiles: int
-    waiting_writers: int
+    access: SessionRequestAdmission
     disposed: bool = False
 
     @property
@@ -464,7 +461,6 @@ class SessionManager:
             source_shape = engine.shape(frame)
             source_schema = engine.schema(frame)
             initial_lineage = source_lineage(source_schema)
-            session_lock = threading.RLock()
             session = Session(
                 session_id=session_id,
                 source=dict(source),
@@ -510,11 +506,7 @@ class SessionManager:
                     )
                     else mode or ("editing" if source.get("kind") == "file" else "viewing")
                 ),
-                lock=session_lock,
-                admission_condition=threading.Condition(threading.Lock()),
-                profile_condition=threading.Condition(session_lock),
-                active_profiles=0,
-                waiting_writers=0,
+                access=SessionRequestAdmission(),
             )
             request_context = engine.request_scope(request_id) if request_id is not None else nullcontext()
             with request_context:
@@ -561,7 +553,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
         session = self._session(session_id)
-        with self._shared_session_read(session), self._validated_source_read(session):
+        with session.access.shared(), self._validated_source_read(session):
             self._assert_revision(session, revision)
             self._filtered(session, filter_model)
             return {
@@ -605,7 +597,7 @@ class SessionManager:
         limit: int = 100,
     ) -> dict[str, Any]:
         session = self._session(session_id)
-        with self._shared_session_read(session), self._validated_source_read(session):
+        with session.access.shared(), self._validated_source_read(session):
             self._assert_revision(session, revision)
             filtered = self._view_query_frame(session, filter_model)
             values, has_more = session.engine.column_values(filtered, column, search, limit)
@@ -826,7 +818,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         """Reconstruct one applied step's boundary without publishing session state."""
         session = self._session(session_id)
-        with self._shared_session_read(session), self._validated_source_read(session):
+        with session.access.shared(), self._validated_source_read(session):
             self._assert_revision(session, revision)
             matches = [index for index, step in enumerate(session.plan) if step["id"] == step_id]
             if not matches:
@@ -1156,7 +1148,7 @@ class SessionManager:
 
     def close_session(self, session_id: str, revision: int) -> dict[str, Any]:
         session = self._session(session_id)
-        with self._exclusive_session_access(session):
+        with session.access.exclusive():
             # Closing is cleanup, not a state mutation that consumes a confirmed
             # revision. The caller may deliberately be using its last confirmed
             # revision after a timed-out or malformed mutation response, while the
@@ -1206,7 +1198,7 @@ class SessionManager:
         cleanup_errors: list[str] = []
         try:
             for session in sessions:
-                with self._exclusive_session_access(session):
+                with session.access.exclusive():
                     try:
                         session.dispose()
                     except EngineError as error:
@@ -1955,55 +1947,24 @@ class SessionManager:
         filter_model: Mapping[str, Any],
     ) -> Iterator[Any]:
         """Lease an immutable view while allowing foreground reads to proceed."""
-        # Admission is decided before competing for the dataframe lock. Once a
-        # writer has announced intent, later readers cannot barge ahead of it.
-        with session.admission_condition:
-            while session.waiting_writers:
-                session.admission_condition.wait()
-            with session.lock:
-                self._assert_source_unchanged(session)
-                self._assert_revision(session, revision)
-                filtered = self._view_query_frame(session, filter_model)
-                session.active_profiles += 1
-        try:
+
+        def capture_view() -> Any:
+            self._assert_source_unchanged(session)
+            self._assert_revision(session, revision)
+            return self._view_query_frame(session, filter_model)
+
+        def revalidate_view() -> None:
+            # Lazy readers may only discover a replacement while the profile
+            # executes, so post-validation remains part of the same lease.
+            self._assert_source_unchanged(session)
+
+        with session.access.profile(capture_view, revalidate_view) as filtered:
             yield filtered
-        except BaseException as error:
-            self._finish_profile(session, error)
-            raise
-        else:
-            self._finish_profile(session)
-
-    def _finish_profile(self, session: Session, cause: BaseException | None = None) -> None:
-        with session.lock:
-            try:
-                # Lazy readers may only discover a replacement while the
-                # profile is executing, so post-validation remains part of
-                # the lease even when the engine call raises.
-                self._assert_source_unchanged(session)
-            except EngineError as source_error:
-                if cause is not None:
-                    raise source_error from cause
-                raise
-            finally:
-                session.active_profiles -= 1
-                session.profile_condition.notify_all()
-
-    @contextmanager
-    def _shared_session_read(self, session: Session) -> Iterator[None]:
-        """Admit a short read unless an exclusive operation is already waiting."""
-        with session.admission_condition:
-            while session.waiting_writers:
-                session.admission_condition.wait()
-            session.lock.acquire()
-        try:
-            yield
-        finally:
-            session.lock.release()
 
     @contextmanager
     def _atomic_session_access(self, session: Session) -> Iterator[None]:
         """Run an edit exclusively and publish its state only after it fully succeeds."""
-        with self._exclusive_session_access(session):
+        with session.access.exclusive():
             snapshot = _SessionMutationSnapshot.capture(session)
             try:
                 yield
@@ -2022,25 +1983,9 @@ class SessionManager:
             yield
 
     @contextmanager
-    def _exclusive_session_access(self, session: Session) -> Iterator[None]:
-        """Register writer intent before locking and wait for leased profiles."""
-        with session.admission_condition:
-            session.waiting_writers += 1
-            session.admission_condition.notify_all()
-        try:
-            with session.lock:
-                while session.active_profiles:
-                    session.profile_condition.wait()
-                yield
-        finally:
-            with session.admission_condition:
-                session.waiting_writers -= 1
-                session.admission_condition.notify_all()
-
-    @contextmanager
     def _exclusive_session_read(self, session: Session) -> Iterator[None]:
         """Wait for profiles, then validate the source around an exclusive read."""
-        with self._exclusive_session_access(session), self._validated_source_read(session):
+        with session.access.exclusive(), self._validated_source_read(session):
             yield
 
     @contextmanager
