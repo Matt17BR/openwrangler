@@ -1169,6 +1169,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
             data: {
               kind: "codePreview",
               bufferId: "00000000-0000-4000-8000-000000000001",
+              bufferVersion: 0,
               bufferInvalid: false,
               code: ${stringifyForInlineScript(code)},
               editable: true,

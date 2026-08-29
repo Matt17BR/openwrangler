@@ -135,6 +135,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code: "# untrusted replacement",
           editable: true,
@@ -159,6 +160,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code: "# malformed private identity",
           editable: true,
@@ -182,6 +184,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code: "# unexpected private field",
           editable: true,
@@ -207,6 +210,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code,
           editable: false,
@@ -241,6 +245,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code,
           editable: false,
@@ -282,6 +287,7 @@ async function verifyCodePreviewOrigin(browser) {
         data: {
           kind: "codePreview",
           bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferVersion: 0,
           bufferInvalid: false,
           code,
           editable: true,
