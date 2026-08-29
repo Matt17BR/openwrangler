@@ -13,6 +13,7 @@ import {
   inspectExecutedNotebookCellResult,
   isExecutedNotebookCellResultKernelCurrent,
   observeExecutedNotebookCellResultKernel,
+  shouldInspectNotebookAutomatically,
   shouldRegisterNotebookFormatters
 } from "./kernelBridge";
 import { withKernelTimeout } from "./kernelLifecycle";
@@ -315,6 +316,10 @@ export class NotebookCellResultTracker implements vscode.Disposable {
 
   recordDocumentChange(event: vscode.NotebookDocumentChangeEvent): void {
     if (!isSupportedNotebook(event.notebook)) return;
+    if (!shouldInspectNotebookAutomatically()) {
+      this.forgetNotebook(event.notebook);
+      return;
+    }
     const state = this.stateFor(event.notebook);
     let changed = false;
     const inlineProvenanceChanged = event.contentChanges.length > 0 || event.cellChanges.length > 0;

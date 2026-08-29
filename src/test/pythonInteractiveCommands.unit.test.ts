@@ -447,6 +447,36 @@ describe("Python Interactive Window coordinator and discovery", () => {
     expect(pythonMocks.discover.mock.calls.length).toBeGreaterThan(initialCalls);
   });
 
+  it("leaves a foreign provider's kernel untouched until an explicit refresh", async () => {
+    const active = notebook("file:///workspace/foreign-provider.ipynb", "jupyter-notebook", [], "python");
+    pythonMocks.notebookDocuments.push(active.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+    pythonMocks.inspectNotebookAutomatically = false;
+    pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("frame")], truncated: false });
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: active.document,
+      cellChanges: [{ executionSummary: { success: true, timing: { startTime: 1, endTime: 2 } } }],
+      contentChanges: []
+    } as unknown as NotebookDocumentChangeEvent);
+    await settle();
+
+    expect(pythonMocks.discover).not.toHaveBeenCalled();
+    expect(provider.snapshot()).toBeUndefined();
+
+    await command("openWrangler.refreshNotebookVariables")();
+
+    expect(pythonMocks.discover).toHaveBeenCalledOnce();
+    expect(pythonMocks.discover).toHaveBeenCalledWith(active.document);
+    expect(provider.snapshot()).toMatchObject({
+      state: "ready",
+      variables: [expect.objectContaining({ label: "frame" })]
+    });
+  });
+
   it("associates a Python source with its first externally executed Interactive cell", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);

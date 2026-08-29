@@ -1201,6 +1201,11 @@ export function shouldRegisterNotebookFormatters(): boolean {
   return vscode.extensions.getExtension("ms-toolsai.datawrangler") === undefined;
 }
 
+export function shouldInspectNotebookAutomatically(): boolean {
+  const preference = getSetting<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
+  return preference === "ask" || preference === "openWrangler";
+}
+
 function invalidatesKernelLifecycle(status: KernelStatus): boolean {
   return status === "restarting" || status === "autorestarting" || status === "terminating" || status === "dead";
 }
