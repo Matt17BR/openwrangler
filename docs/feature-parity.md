@@ -1,18 +1,16 @@
 # Feature parity matrix
 
 This is the normative capability ledger for the current source. The generated [interface reference](reference.md) is
-authoritative for command, setting, protocol, MIME, and operation names. [Testing](testing.md) defines the direct and
-installed evidence owners. The optional [Data Wrangler comparison](performance-comparison.md) is retained as
-historical product evidence, not as a stable-release gate.
+authoritative for command, setting, protocol, MIME, and operation names. The optional
+[Data Wrangler comparison](performance-comparison.md) is retained as historical product evidence, not as a
+stable-release gate.
 
 **Done** is the standing capability status: the surface is implemented and backed by its current source or installed
 owner. **Partial** means the capability is usable but remains deliberately limited or lacks evidence for part of its
 claim. **Planned** means it is unavailable. **Out of scope** means it is deliberately unavailable for the stated
 surface.
 
-The Pandas and Polars rows below are required for stable releases. Their evidence cells name representative current
-test, workflow, or documentation owners rather than run receipts. Protected-main checks establish the source
-contract; candidate qualification tests the exact packaged artifact without repeating that source suite.
+The Pandas and Polars rows below are required for stable releases.
 
 | Surface                                             | Pandas | Polars | Status | Required evidence                                                                                                                                                                              |
 | --------------------------------------------------- | -----: | -----: | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -70,10 +68,8 @@ rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
 
-Visual baselines and axe scans are local/manual evidence, not ordinary pull-request or candidate jobs, exhaustive
-assistive-technology certification, or proof that every virtualized cell is simultaneously present in the DOM. The
-candidate's installed-performance run is the retained release measurement. The Data Wrangler comparison remains an
-optional historical study.
+Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
+cell is simultaneously present in the DOM.
 
 The catalog contains 32 operations: five row/order, seven column/type, ten categorical/text, five numeric/datetime,
 two reshape, Group and aggregate, Transform by example, and Custom code. The exact names and parameters are in the
@@ -83,20 +79,14 @@ entries.
 ## Release rule
 
 A stable release requires every required Pandas and Polars row above to be **Done**, no known release-blocking defect,
-and one exact candidate to pass the direct [qualification flow](releasing.md#release-candidate). Preview,
+and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Preview,
 experimental, Partial, Planned, and Out-of-scope rows do not block stable publication when their public labels and
 limits remain accurate.
-
-Three previously open notebook fidelity items are resolved: the first supported result upgrades automatically after
-formatter setup ([#659](https://github.com/Matt17BR/openwrangler/issues/659)); Pandas index fidelity is implemented
-([#844](https://github.com/Matt17BR/openwrangler/issues/844)); and verified Native R sessions recover after an R-kernel
-restart ([#776](https://github.com/Matt17BR/openwrangler/issues/776)). Native R remains a channel-neutral Preview and
-is not a stable-release gate. The Data Wrangler comparison is optional historical evidence.
 
 ## Native R preview
 
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
-direct owner; none is a stable-release gate.
+limits; none is a stable-release gate.
 
 | Surface                                       | Availability                    | Status  | Current owner                                                       |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- |
@@ -139,8 +129,7 @@ in the [Native R ADR](decisions/0001-native-r-runtime.md).
 ## DuckDB experimental file support
 
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
-extension auto-install, autoload, and external-file caching stay disabled. The direct engine owner is
-[test_duckdb_engine.py](../python/tests/test_duckdb_engine.py). These rows are not stable-2.0 blockers.
+extension auto-install, autoload, and external-file caching stay disabled.
 
 | Surface                                      | Availability       | Status  | Current evidence                               | Limit or missing proof                              |
 | -------------------------------------------- | ------------------ | ------- | ---------------------------------------------- | --------------------------------------------------- |
@@ -167,11 +156,8 @@ only; closing releases Open Wrangler's reference and never closes the user's con
 ## PySpark live-notebook viewing
 
 Only stable/final PySpark 4.2.x local Classic and local Connect batch DataFrames are supported. PySpark is
-notebook-only, viewing-only, and nonblocking for stable 2.0. It uses the notebook's existing Spark session and never
-converts through a local dataframe engine. Direct owners include
-[test_pyspark_engine.py](../python/tests/test_pyspark_engine.py),
-[test_pyspark_paging.py](../python/tests/test_pyspark_paging.py), and
-[test_pyspark_profiles.py](../python/tests/test_pyspark_profiles.py).
+notebook-only and viewing-only. It uses the notebook's existing Spark session and never converts through a local
+dataframe engine.
 
 | Surface                                        | Availability       | Status       | Current evidence                             | Boundary                                    |
 | ---------------------------------------------- | ------------------ | ------------ | -------------------------------------------- | ------------------------------------------- |
@@ -195,7 +181,7 @@ the contract.
 
 ## Deferred and unsupported scope
 
-These dispositions do not block stable 2.0 unless a release starts advertising the capability.
+These dispositions do not block stable publication unless a release starts advertising the capability.
 
 | Surface                                                                                   | Current disposition                                                                                   |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -212,6 +198,4 @@ These dispositions do not block stable 2.0 unless a release starts advertising t
 | Localization and telemetry                                                                | Deferred product breadth                                                                              |
 | Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred and explicitly nonblocking in the product roadmap                                            |
 
-The current priorities and deferral dependencies live in the [product roadmap](product-roadmap.md). Release-specific
-evidence belongs in the candidate qualification run; optional comparison evidence belongs in its versioned report,
-not in this file.
+The current priorities and deferral dependencies live in the [product roadmap](product-roadmap.md).
