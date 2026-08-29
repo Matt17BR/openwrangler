@@ -126,11 +126,7 @@ export const R_PREVIEW_PARITY_SCOPE = Object.freeze([
   previewRScope("Quarto and R Markdown lexical R-cell run", "1.99 preview", "Partial")
 ]);
 
-const R_STABLE_COMMON_EVIDENCE = Object.freeze([
-  "test:src/test/extensionHost/index.ts",
-  "workflow:.github/workflows/candidate-acceptance.yml",
-  "record:docs/testing.md"
-]);
+const R_STABLE_COMMON_EVIDENCE = Object.freeze(["test:src/test/extensionHost/index.ts", "record:docs/testing.md"]);
 
 function stableRScope(...values) {
   if (values.length !== 3 || values.some((value) => typeof value !== "string" || value.length === 0)) {

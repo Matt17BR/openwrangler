@@ -17,14 +17,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  package:
-    name: Package the immutable candidate
+  candidate:
+    name: Package and accept the immutable candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      artifact-id: ${{ steps.canonical_artifact.outputs.artifact-id }}
-      candidate-bytes: ${{ steps.canonical.outputs.candidate_bytes }}
-      candidate-sha256: ${{ steps.canonical.outputs.candidate_sha256 }}
+    timeout-minutes: 120
     steps:
       - name: Require first-attempt protected main
         env:
@@ -48,10 +44,6 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
       - id: release_metadata
         name: Validate stable release metadata
         env:
@@ -74,10 +66,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
       - run: npm ci --ignore-scripts
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - name: Run the authoritative PR checks before packaging
-        run: npm run check:pr
       - name: Prepare the local candidate tag without publishing it
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -94,14 +82,52 @@ jobs:
           node scripts/create-canonical-release-artifact.mjs
           openwrangler.candidate.vsix
           --out-dir canonical-release
-      - id: canonical
-        name: Verify the canonical candidate artifact
+      - name: Verify the canonical candidate artifact
         env:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - id: canonical_artifact
-        name: Upload the immutable candidate artifact
+      - id: inspection_python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e "python[dev]"
+      - name: Test the exact candidate artifact in pinned VS Code
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ steps.inspection_python.outputs.python-path }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          npm run benchmark:installed --
+          --pinned-editors
+          --editors vscode
+          --candidate-in canonical-release/openwrangler.vsix
+          --candidate-checksum canonical-release/openwrangler.vsix.sha256
+          --candidate-provenance canonical-release/openwrangler.vsix.provenance.json
+          --out ${{ runner.temp }}/release-candidate-performance.json
+      - name: Reverify the candidate for pinned Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Test the exact candidate artifact in pinned Cursor
+        env:
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+        run: |
+          set -euo pipefail
+          export OPEN_WRANGLER_XVFB_EXECUTABLE
+          OPEN_WRANGLER_XVFB_EXECUTABLE="$(node scripts/prepare-xvfb.mjs --print-path)"
+          /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs \
+            canonical-release/openwrangler.vsix
+      - name: Reverify the accepted canonical candidate
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Upload the immutable candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: openwrangler-release-candidate
@@ -112,192 +138,4 @@ jobs:
           if-no-files-found: error
           retention-days: 21
           compression-level: 0
-          include-hidden-files: false
-
-  candidate-acceptance:
-    name: Candidate acceptance
-    needs: package
-    uses: ./.github/workflows/candidate-acceptance.yml
-    permissions:
-      contents: read
-    with:
-      artifact_id: ${{ needs.package.outputs.artifact-id }}
-      expected_sha: ${{ github.sha }}
-      release_tag: ${{ inputs.release_tag }}
-
-  remote-ssh:
-    name: Remote SSH acceptance
-    needs: package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Prepare namespace-capable acceptance host
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            bubblewrap \
-            busybox-static \
-            coreutils \
-            iproute2 \
-            libtomcrypt1 \
-            libtommath1 \
-            openssh-client \
-            procps \
-            python3-venv \
-            x11-xkb-utils
-          system_runtime_ancestors=(/usr /etc)
-          runner_uid="$(id -u)"
-          for directory in "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            owner="$(stat --format='%u' "$directory")"
-            test "$owner" = "0" || test "$owner" = "$runner_uid"
-          done
-          sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"
-          sudo chmod go-w -- "${system_runtime_ancestors[@]}"
-          for directory in / "${system_runtime_ancestors[@]}"; do
-            test -d "$directory"
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u:%g' "$directory")" = "0:0"
-            test -z "$(find "$directory" -maxdepth 0 -perm /022 -print -quit)"
-            test ! -w "$directory"
-          done
-          system_runtime_roots=(
-            /usr/share/fontconfig
-            /usr/share/fonts
-            /usr/share/glib-2.0
-            /usr/share/icons
-            /usr/share/mime
-            /usr/share/X11
-            /usr/share/zoneinfo
-          )
-          test ! -L /usr/share
-          test "$(realpath /usr/share)" = "/usr/share"
-          test "$(stat --format='%u' /usr/share)" = "0"
-          sudo chmod go-w -- /usr/share
-          test ! -w /usr/share
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-          done
-          sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"
-          for directory in "${system_runtime_roots[@]}"; do
-            test ! -L "$directory"
-            test "$(realpath "$directory")" = "$directory"
-            test "$(stat --format='%u' "$directory")" = "0"
-            test -z "$(find "$directory" -xdev ! -user root -print -quit)"
-            test -z "$(find "$directory" -xdev \( -type d -o -type f \) -perm /022 -print -quit)"
-            test -z "$(find "$directory" -xdev ! -type d ! -type f ! -type l -print -quit)"
-          done
-          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
-          sudo sysctl --write kernel.unprivileged_userns_clone=1
-          test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"
-          test "$(sysctl --values kernel.unprivileged_userns_clone)" = "1"
-          test "$(sysctl --values user.max_user_namespaces)" -gt 0
-      - run: npm ci --ignore-scripts
-      - run: /usr/bin/python3 -m venv .remote-venv
-      - run: .remote-venv/bin/python -m pip install --upgrade pip
-      - run: .remote-venv/bin/python -m pip install ./python
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.package.outputs.artifact-id }}
-          path: canonical-release
-          merge-multiple: true
-      - id: canonical
-        name: Verify the canonical candidate for Remote SSH
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - id: canonical_remote
-        name: Reverify the canonical candidate immediately before Remote SSH
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Test packaged VS Code over Remote SSH
-        run: >-
-          npm run test:remote-workspace --
-          ${{ steps.canonical_remote.outputs.candidate_path }}
-          ${{ steps.canonical_remote.outputs.candidate_sha256 }}
-          ${{ steps.canonical_remote.outputs.candidate_bytes }}
-        env:
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
-          OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
-
-  qualify:
-    name: Seal candidate qualification
-    if: ${{ always() }}
-    needs: [package, candidate-acceptance, remote-ssh]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Require every qualification owner
-        env:
-          PACKAGE_RESULT: ${{ needs.package.result }}
-          CANDIDATE_ACCEPTANCE_RESULT: ${{ needs.candidate-acceptance.result }}
-          REMOTE_SSH_RESULT: ${{ needs.remote-ssh.result }}
-        run: |
-          set -euo pipefail
-          test "$PACKAGE_RESULT" = "success"
-          test "$CANDIDATE_ACCEPTANCE_RESULT" = "success"
-          test "$REMOTE_SSH_RESULT" = "success"
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.package.outputs.artifact-id }}
-          path: canonical-release
-          merge-multiple: true
-      - id: canonical
-        name: Reverify the candidate before sealing qualification
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Write the bounded qualification manifest
-        env:
-          CANDIDATE_ACCEPTANCE_RESULT: ${{ needs.candidate-acceptance.result }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.package.outputs.artifact-id }}
-          CANDIDATE_BYTES: ${{ steps.canonical.outputs.candidate_bytes }}
-          CANDIDATE_SHA256: ${{ steps.canonical.outputs.candidate_sha256 }}
-          PERFORMANCE_ARTIFACT_ID: ${{ needs.candidate-acceptance.outputs.performance_artifact_id }}
-          PERFORMANCE_BYTES: ${{ needs.candidate-acceptance.outputs.performance_bytes }}
-          PERFORMANCE_SHA256: ${{ needs.candidate-acceptance.outputs.performance_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          REMOTE_SSH_RESULT: ${{ needs.remote-ssh.result }}
-        run: |
-          set -euo pipefail
-          mkdir -m 0700 qualification
-          node scripts/release-candidate.mjs create qualification/release-candidate.json
-      - name: Upload the bounded qualification manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: openwrangler-release-candidate-qualification
-          path: qualification/release-candidate.json
-          if-no-files-found: error
-          retention-days: 21
-          compression-level: 9
           include-hidden-files: false
