@@ -534,11 +534,19 @@ try {
               "setup:create-jupyter-kernel-environment"
             );
             try {
-              jupyterKernelPython = await createJupyterAcceptanceKernelPython(
-                resolve(temporaryRoot, "jv"),
-                testPython,
-                { containedBy: temporaryRoot, pysparkDistribution }
-              );
+              if (acceptanceMode === "data-wrangler-coexistence") {
+                jupyterKernelPython = await createJupyterAcceptanceCoreKernelPython(
+                  resolve(temporaryRoot, "jv"),
+                  testPython,
+                  { containedBy: temporaryRoot }
+                );
+              } else {
+                jupyterKernelPython = await createJupyterAcceptanceKernelPython(
+                  resolve(temporaryRoot, "jv"),
+                  testPython,
+                  { containedBy: temporaryRoot, pysparkDistribution }
+                );
+              }
             } catch (error) {
               latchPrivateRootIdentityLoss(error, {
                 scope: "jupyter-kernel",

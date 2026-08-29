@@ -27,7 +27,7 @@ import {
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
 
-const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas", "polars", "duckdb", "fsspec"]);
+const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
 const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "fsspec", "pyspark"]);
 const BINARY_DEPENDENCIES = Object.freeze([
   "ipykernel",
@@ -854,11 +854,10 @@ export async function createJupyterAcceptanceCoreKernelPython(
     runCommand,
     includePySpark: false,
     labels: Object.freeze({
-      baseProbe: "Quarto Python base dependency version probe",
-      create: "Quarto Python private kernel environment creation",
-      install: "Quarto Python private kernel dependency installation",
-      finalProbe: "Quarto Python private kernel dependency probe",
-      compatibility: "Quarto Python private kernel"
+      create: "Core Jupyter private kernel environment creation",
+      install: "Core Jupyter private kernel dependency installation",
+      finalProbe: "Core Jupyter private kernel dependency probe",
+      compatibility: "Core Jupyter private kernel"
     })
   });
 }
@@ -905,14 +904,16 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     acquirePySparkArtifact
   }
 ) {
-  await probeJupyterAcceptancePython(basePython, {
-    environment,
-    requirePySpark: false,
-    requireJupyterClient: false,
-    label: labels.baseProbe,
-    requireRuntimeAbsent: false,
-    runCommand
-  });
+  if (includePySpark) {
+    await probeJupyterAcceptancePython(basePython, {
+      environment,
+      requirePySpark: false,
+      requireJupyterClient: false,
+      label: labels.baseProbe,
+      requireRuntimeAbsent: false,
+      runCommand
+    });
+  }
   mkdirSync(directory, { recursive: false, mode: 0o700 });
   const directoryReceipt = createEditorAcceptancePrivateRootReceipt(directory, { containedBy });
   const venvDirectory = resolve(directory, "v");
@@ -1013,6 +1014,7 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
   const installedVersions = await probeJupyterAcceptancePython(kernelPython, {
     environment,
     label: labels.finalProbe,
+    requireOptionalEngines: includePySpark,
     requirePySpark: includePySpark,
     requireJupyterClient: !includePySpark,
     requireRuntimeAbsent: true,
@@ -2847,6 +2849,7 @@ export async function probeJupyterAcceptancePython(
   {
     environment = createEditorAcceptanceEnvironment(),
     label = "Released-Jupyter Python dependency probe",
+    requireOptionalEngines = true,
     requirePySpark = true,
     requireJupyterClient = false,
     requireRuntimeAbsent = true,
@@ -2854,37 +2857,31 @@ export async function probeJupyterAcceptancePython(
   } = {}
 ) {
   if (
+    typeof requireOptionalEngines !== "boolean" ||
     typeof requirePySpark !== "boolean" ||
     typeof requireJupyterClient !== "boolean" ||
     typeof requireRuntimeAbsent !== "boolean"
   ) {
     throw new Error(
-      "Released-Jupyter Python dependency probing requires explicit PySpark, Jupyter-client, and runtime-absence policies."
+      "Released-Jupyter Python dependency probing requires explicit optional-engine, PySpark, Jupyter-client, and runtime-absence policies."
     );
   }
   const dependencies = [
-    ...(requirePySpark ? DEPENDENCIES : DEPENDENCIES.filter((dependency) => dependency !== "pyspark")),
-    ...(requireJupyterClient ? ["jupyter-client"] : [])
+    ...CORE_DEPENDENCIES.filter((dependency) => dependency !== "jupyter-client" || requireJupyterClient),
+    ...(requireOptionalEngines
+      ? DEPENDENCIES.filter((dependency) => !CORE_DEPENDENCIES.includes(dependency) && dependency !== "pyspark")
+      : []),
+    ...(requirePySpark ? ["pyspark"] : [])
   ];
   const probe = [
     "import importlib.metadata",
     "import importlib.util",
     "import json",
-    "import ipykernel",
-    ...(requireJupyterClient ? ["import jupyter_client"] : []),
-    "import pandas",
-    "import polars",
-    "import duckdb",
-    "import fsspec",
-    ...(requirePySpark ? ["import pyspark"] : []),
+    ...dependencies.map((dependency) => `import ${dependency.replace("-", "_")}`),
     "print(json.dumps({",
-    '  "ipykernel": importlib.metadata.version("ipykernel"),',
-    ...(requireJupyterClient ? ['  "jupyter-client": importlib.metadata.version("jupyter-client"),'] : []),
-    '  "pandas": importlib.metadata.version("pandas"),',
-    '  "polars": importlib.metadata.version("polars"),',
-    '  "duckdb": importlib.metadata.version("duckdb"),',
-    '  "fsspec": importlib.metadata.version("fsspec"),',
-    ...(requirePySpark ? ['  "pyspark": importlib.metadata.version("pyspark"),'] : []),
+    ...dependencies.map(
+      (dependency) => `  ${JSON.stringify(dependency)}: importlib.metadata.version(${JSON.stringify(dependency)}),`
+    ),
     '  "openwranglerRuntimePresent": importlib.util.find_spec("openwrangler_runtime") is not None,',
     "}, sort_keys=True))"
   ].join("\n");
