@@ -1245,6 +1245,8 @@ function writeCodePreviewHarness(fileName, code, outputName) {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
             data: {
               kind: "codePreview",
+              bufferId: "00000000-0000-4000-8000-000000000001",
+              bufferInvalid: false,
               code: ${stringifyForInlineScript(code)},
               editable: true,
               runtimeIdentity: {
@@ -1262,7 +1264,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
 </head>
 <body>
   <div id="root"></div>
-  <script src="../../media/codePreview.js"></script>
+  <script type="module" src="../../media/codePreview.js"></script>
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
