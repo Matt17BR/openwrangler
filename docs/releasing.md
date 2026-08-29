@@ -84,9 +84,15 @@ conflicting public bytes fail closed.
 ## Release candidate
 
 Dispatch `.github/workflows/release-candidate.yml` from the exact protected `main` commit with the reviewed stable tag.
-The workflow validates source metadata, runs the source contract, packages exactly once, and records the canonical
-VSIX, checksum, and provenance. Existing consumers receive that recorded artifact identity; they do not package a
-replacement.
+The required pull-request checks already bind that protected-main source, so candidate qualification does not repeat
+`npm run check:pr` or another source-test graph. The workflow validates stable metadata and source identity, packages
+exactly once, verifies the canonical VSIX/checksum/provenance triple, and audits the published Node and Python
+dependencies.
+
+The same job then gives that exact triple to pinned VS Code installed-performance, reverifies it, runs pinned Cursor
+platform-smoke against the same VSIX, reverifies it again, and uploads only the canonical triple. This direct flow is
+the complete retained candidate qualification. Stable publication selects that successful run and never substitutes
+a rebuilt package or a separate evidence artifact.
 
 A failed or cancelled candidate is not promoted. Correct the source on `main` and create a new candidate rather than
 rerunning or repairing the old artifact.

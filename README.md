@@ -69,25 +69,13 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
-Native R entrypoints require `jsonlite` 1.0 or newer and `rlang` 0.4.5 or newer in the R environment described above.
+Native R is a channel-neutral **Preview** feature. It can ship in a stable Open Wrangler release without becoming
+stable support, and it does not block stable publication. The current source supports the complete generated
+operation catalog; the [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
+is authoritative for operation names and parameters. R Custom Code runs trusted arbitrary R in the selected
+environment; it is not a sandbox and is unavailable in Restricted Mode.
 
-The public 1.99.7 preview contains 32 operation kinds, all supported by Native R. Included operations are
-**Pivot longer**, **Pivot wider**, **Extract regex group**, and **Split text into columns**, alongside **Transform by
-Example** and **Custom Code**. Daily `1.99.YYYYMMDD` previews qualify protected `main` in stable VS Code, then publish
-the same accepted VSIX as a GitHub prerelease and through the registry promoters. The next stable release is 2.0.0 and
-still requires explicit review, a same-byte soak, and a separate one-shot promotion.
-Dedicated source contracts exercise the exact ordered catalog and executable production-generated R. A separate host
-contract proves byte-exact clipboard and atomic script saves with one distinct executable operation-labelled buffer
-per catalog entry. Candidate acceptance requires all 32 advertised capabilities and exercises Custom Code through
-representative installed R paths; exhaustive installed execution of every operation and a reviewed performance record
-remain outstanding, so Native R stays **Partial**. R Custom Code runs trusted arbitrary R in the selected environment;
-it is not a sandbox and is unavailable in Restricted Mode.
-
-The same catalog evidence fixes generated **Strip Text** for default or explicit mixed control/Unicode character sets,
-and makes **Clone Column** preserve element names without invoking user-defined methods attached to dataframe-name
-metadata.
-
-The 1.99 preview has these R and literate-document entry points:
+The R Preview has these notebook, terminal, and document entry points:
 
 | Workflow                               | How it opens dataframes                                                                 | Available in                                                      |
 | -------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
@@ -212,8 +200,8 @@ _This preview shows the changed values and generated Polars code. The two sorts 
 In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs
 and lists the live dataframes in Operations and the notebook action. **Open in Open Wrangler** loads the current live
 dataframe from that same kernel. Unassigned results such as `orders.tail(20)` also get the button while the result is
-still available in the kernel. If the first result appears before Open Wrangler's formatter is ready, use **Open in
-Open Wrangler** below that cell. It opens the executed result without running the cell again.
+still available in the kernel. The first supported result upgrades to the Open Wrangler preview automatically when
+formatter setup completes; no rerun or fallback action is needed.
 
 Supported live dataframes open in Viewing mode by default. Viewing filters and sorts only the grid; it does not build
 a cleaning plan or change the source. Use **Switch to Editing** to build a plan. You can return with **Switch to
@@ -344,7 +332,7 @@ installing the package so Open Wrangler can refresh its export choices.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
 data-table paths without adding `collapse` as a dependency. Their atomic and classed columns may retain ordinary
-element names when they open. Grouped `GRP_df` and indexed `indexed_frame` objects are not supported. The [R gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#r-notebooks-and-documents-199-preview)
+element names when they open. Grouped `GRP_df` and indexed `indexed_frame` objects are not supported. The [R gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#r-notebooks-and-documents-preview)
 also shows the variable picker, profiles, and generated code inserted into a notebook.
 
 ## Export
@@ -368,7 +356,7 @@ also shows the variable picker, profiles, and generated code inserted into a not
 | Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                  |
 | DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only                |
 | PySpark 4.2.x, stable/final | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles  |
-| R (1.99 preview)            | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel, selected VS Code R terminal, or document Rscript |
+| R (Preview)                 | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel, selected VS Code R terminal, or document Rscript |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -395,19 +383,16 @@ Polars sessions use lazy scans, and live notebook LazyFrames keep their existing
 column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in
 Pandas, and DuckDB relations stay in DuckDB.
 
-See the [benchmark protocol](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md) and
-[latest dated review](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-for the method and historical evidence. This README will not state a current comparative result until a complete 2.0
-report is available.
+The optional [Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md)
+and [latest dated review](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+remain historical evidence. They are not a stable-release gate or a substitute for testing the exact packaged
+candidate.
 
 ## Roadmap
 
-The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) records verified
-support boundaries, acceptance criteria, and the P1-P5 order. The project is in a maintainability-first scope freeze:
-bounded fidelity and daily-use work continues, while new backend, platform, and editor breadth waits for the documented
-approachability gates. Native R preview status remains in
-[#87](https://github.com/Matt17BR/openwrangler/issues/87). Stable 2.0 also requires correcting silent Pandas index loss
-on export.
+The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) records current
+support boundaries and the next product priorities. Pandas named-index and MultiIndex fidelity is implemented,
+including explicit preserve-or-omit export choices. Native R remains Preview and does not block stable releases.
 
 ## Contributing and support
 

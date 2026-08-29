@@ -84,9 +84,12 @@ its generated R can be copied or saved but not inserted.
 The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
 out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
 bounded direct close attempt for the known candidate on the same kernel; it does not look the kernel up again or retry
-against a replacement. A kernel restart ends that kernel's sessions and invalidates the mapping. An operation that
-never settles may detach from the UI, but its ownership record remains until the kernel ends or the continuation can
-perform that close.
+against a replacement. For an already confirmed session, an exact correlated kernel-change response starts one
+shared recovery: the coordinator verifies a fresh delegate on the replacement kernel, replays the confirmed state,
+and swaps delegates without changing the public session ID. The operation that observed the loss still returns its
+own failure and is never retried. Cancellation, stale ownership, or a superseded view suppresses recovery, and
+concurrent losses share the same replacement. An operation that never settles may detach from the UI, but its
+ownership record remains until the original kernel ends or the continuation can perform its close.
 
 The current notebook viewer does not copy the complete dataframe when a session opens. It records the source binding
 and structural descriptor, then reads current values for pages, filters, sorts, value searches, and profiles without
@@ -106,11 +109,10 @@ size. A non-empty value search scans the column exactly in bounded chunks, with 
 limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching key text and asks for a narrower
 term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
 
-Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
-Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize,
-Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor,
-Ceiling, Format Datetime, and Group and aggregate. The first draft takes
-an isolated original: base data frames and tibbles use R serialization, while data tables use `data.table::copy()`.
+Editing supports the Native R operations published in the
+[generated transformation reference](../reference.md#transformation-operations), which is authoritative for the
+current catalog and parameters. The first draft takes an isolated original: base data frames and tibbles use R
+serialization, while data tables use `data.table::copy()`.
 The runtime keeps committed and draft results separate, resolves every target by stable ID and captured name, and
 advances the session revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection
 replays only the selected plan prefix. The kernel returns its code, input page, and output page separately, so two
@@ -200,34 +202,29 @@ command works only with an exact official R terminal captured before it yields. 
 Quarto or R Markdown render process and does not inspect private Quarto or vscode-R sockets, temporary state,
 extension storage, or process-discovery details.
 
-Public R builds use the `1.99.x` preview channel. A preview may ship only after `data.frame`, tibble, and
-`data.table` viewing plus the advertised editing workflow pass real IRkernel tests and packaged VS Code and Cursor
-acceptance. A stable 2.0 release must have native R transformation and generated-code coverage for every R surface it
-advertises. The `.R` path may be advertised after its owned-process journey passes in packaged VS Code and Cursor.
-Quarto and R Markdown may be advertised only after their owned-document journey passes the same release gates.
+Native R is a channel-neutral Preview feature. It may be included in preview or stable Open Wrangler packages without
+becoming stable support, and its Preview status does not block stable publication. A user-facing R capability still
+needs direct native runtime and generated-code coverage plus bounded installed evidence for the host path it claims.
+The current support claims and limitations live in [feature parity](../feature-parity.md), not in a release-channel
+rule in this ADR.
 
 ## Consequences
 
 - The grid and transformation model are shared. Runtime processes, object ownership, type handling, and generated
   code stay native to the selected language and dataframe flavor.
-- R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
-  Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
-  Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling,
-  Format Datetime, and Group and aggregate with generated R code. Generated plans run in a fresh
-  `baseenv()`-parented implementation environment and revalidate the
+- R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing uses
+  the current [generated operation catalog](../reference.md#transformation-operations) and emits generated R code.
+  Generated plans run in a fresh `baseenv()`-parented implementation environment and revalidate the
   supported source-frame shape before copying it. Formula, Format Datetime, and the categorical encoders additionally
   avoid caller-defined operator or S3-method lookup while validating and executing their emitted helpers.
   Result publication rejects active bindings before and after source evaluation and immediately before assignment; a
   source already named `open_wrangler_result` is preserved and its cleaned result uses `open_wrangler_result_2`.
-  Generated R can be
-  inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and local R document
-  sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is
-  installed, Parquet. Active-terminal export is not a release claim until its packaged-editor journey passes. The
-  Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
-  document process exposes only its private artifact to the host;
-  IRkernel returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in the
-  extension-host atomic save path. Other cleaning operations are not supported in R yet.
+  Generated R can be inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and
+  local R document sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet`
+  0.5.1 or newer is installed, Parquet. The Parquet writer runs in the same R process and does not convert through
+  Python, Arrow, or another dataframe. A document process exposes only its private artifact to the host; IRkernel
+  returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in
+  the extension-host atomic save path.
 - Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
   integer type, so the runtime rejects an out-of-range sum before publishing a result instead of stringifying it or
   routing it through another engine. Integer64 mean and median perform exact decimal addition before their final
@@ -235,8 +232,8 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - Dataframes from the active official R terminal use the same native R contract and workbench. Refresh and open stay
-  pinned to that terminal, while **Run R Document** continues to own a separate process. The active-terminal path is
-  not release-validated until its packaged VS Code and Cursor journey passes.
+  pinned to that terminal, while **Run R Document** continues to own a separate process. Its current Preview support
+  boundary is recorded in [feature parity](../feature-parity.md).
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

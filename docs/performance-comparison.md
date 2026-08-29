@@ -1,7 +1,9 @@
 # Open Wrangler and Data Wrangler benchmark
 
-This benchmark compares Open Wrangler with Microsoft Data Wrangler 1.24.2 through the controls a notebook user
-actually clicks. Data Wrangler is installed from the Marketplace; the test does not inspect its package.
+This optional historical benchmark compares Open Wrangler with Microsoft Data Wrangler 1.24.2 through the controls a
+notebook user actually clicks. Data Wrangler is installed from the Marketplace; the test does not inspect its
+package. The comparison is not a pull-request, candidate, or stable-release gate. Current release candidates use the
+direct installed-performance flow in [Testing](testing.md#release-candidate-checks).
 
 ## Workloads
 
@@ -47,13 +49,15 @@ The UI checks the full dataframe shape, expected columns, scrollability, complet
 actions. A loading shell or a partial profile does not count as ready. PSS is sampled every 200 ms; a gap longer than
 one second invalidates the session instead of understating memory use.
 
-## Results and release decision
+## Results and interpretation
 
 For each product and workload, the report keeps all ten outcomes, including failures. Successful timings are summarized
-with the minimum, maximum, median, and type-7 p95. The p95 remains descriptive; only the median is a release gate.
+with the minimum, maximum, median, and type-7 p95. Both the timings and the thresholds below are descriptive historical
+evidence.
 
-A numeric regression blocks the release only when Open Wrangler's median exceeds both parts of a limit below. Small
-timing differences are treated as noise.
+A comparison flags a material numeric regression only when Open Wrangler's median exceeds both parts of a limit below.
+Small timing differences are treated as noise. A flag informs follow-up work; it does not decide whether a release may
+ship.
 
 | Measure           | Relative allowance | Absolute allowance |
 | ----------------- | -----------------: | -----------------: |
@@ -63,9 +67,9 @@ timing differences are treated as noise.
 | All profiles      |                20% |           2,000 ms |
 | Observed peak PSS |                10% |            256 MiB |
 
-The release contract requires all 10 Open Wrangler successes and at least 6 Data Wrangler successes per workload.
+The comparison contract requires all 10 Open Wrangler successes and at least 6 Data Wrangler successes per workload.
 Six is the smallest strict majority of the ten baseline outcomes, preserving the protocol's predeclared majority rule.
-Every generated report has one machine-readable release disposition:
+Every generated report has one machine-readable study disposition:
 
 - **Pass:** all eight sessions and 80 outcomes are present, all ten Open Wrangler samples succeeded in every workload,
   at least six Data Wrangler samples succeeded in every workload, and no material median regression was found.
@@ -122,8 +126,8 @@ Generate the checked report after all eight sessions finish:
 ```bash
 npm run comparison:report -- \
   --study /absolute/path/benchmark-output \
-  --out /path/to/repo/docs/performance/data-wrangler-2.0.0/report.json \
-  --review /path/to/repo/docs/performance/data-wrangler-2.0.0/review.md
+  --out /path/to/repo/docs/performance/data-wrangler-study/report.json \
+  --review /path/to/repo/docs/performance/data-wrangler-study/review.md
 ```
 
 Create `review.md` first and put the manual method and review notes around this empty block:
@@ -139,9 +143,9 @@ block.
 If the review write is interrupted after `report.json` is saved, rerun the same command. It reuses the report only
 when the raw evidence is identical. The 1.2.1 review predates this format and remains unchanged.
 
-Use `npm run comparison:smoke` with the same arguments before a full collection. The
-smoke runs two sessions—one per product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions;
-its timings are not release results. If the machine sleeps or the command stops, run it again with the same output
+Use `npm run comparison:smoke` with the same arguments before a full collection. The smoke runs two sessions—one per
+product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions; its
+timings are not full comparison results. If the machine sleeps or the command stops, run it again with the same output
 directory; only an interrupted session is repeated.
 
 ### Optional local mixed-data check
@@ -164,20 +168,20 @@ memory and 1.75 GiB of free space are available for the fixture and the private 
 
 The run has four sessions: Open Wrangler and Data Wrangler with Pandas, then both products with Polars. Each session
 records three passes through inline preview, viewer launch, complete column profiling, and process-tree PSS. It uses
-the same editor driver as the release study, runs only on the current machine, and does not create cloud resources.
+the same editor driver as the full study, runs only on the current machine, and does not create cloud resources.
 At least two passes must finish in each session. A failed pass stays in the raw results, so an occasional editor
 timeout is visible without making the optional check unusable.
 The temporary Parquet file is removed when the command finishes or reports an error. This profile is not part of CI
-and does not replace the reviewed release study. If the process is interrupted, the next run removes the identified
+and does not replace the reviewed full study. If the process is interrupted, the next run removes the identified
 fixture left by the dead process before it starts.
 
 ## Review
 
-Before publication, a second reviewer checks the eight session IDs, ten samples per session, versions and hashes,
-the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
+Before publishing a comparison report, a second reviewer checks the eight session IDs, ten samples per session,
+recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
 The latest completed review is the
-[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned directory when a release
-reruns the comparison with the VSIX that will be published. Commit its `review.md` and `report.json` together. The
-README keeps a short summary and a link to the dated review instead of copying the results table.
+[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned directory when the project
+chooses to run another study, and commit its `review.md` and `report.json` together. The README links the dated review
+without turning it into a current release requirement.

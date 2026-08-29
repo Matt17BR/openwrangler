@@ -39,7 +39,6 @@ import {
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
   PRIMARY_PARITY_SCOPE,
   R_PREVIEW_PARITY_SCOPE,
-  inspectPreviewRParitySource,
   STABLE_README_RELEASE_SECTION
 } from "./release-readiness.mjs";
 import {
@@ -166,10 +165,6 @@ function nativeRPreviewMatrix() {
 ${rows}
 `;
 }
-
-test("uses one channel-neutral Native R preview table contract", () => {
-  assert.deepEqual(inspectPreviewRParitySource({ featureParity: nativeRPreviewMatrix() }), []);
-});
 
 function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   return new Map([

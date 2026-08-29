@@ -314,17 +314,12 @@ installed-performance, editor, and publication consumer revalidates those same b
 or substitute a candidate. Stable publication promotes the accepted bytes, and conflicting tags, registry bytes, or
 metadata fail closed.
 
-Current native-R candidate acceptance has three distinct parts rather than the older monolithic journey:
-
-- cross-platform VS Code jobs on Linux, macOS, and Windows each run fresh `core-operations`, `native-frames`, and
-  `kernel-restart` phases;
-- two Linux VS Code shards split lifecycle work (`core-operations`, `kernel-restart`, `interactive-terminal`, and
-  `literate-documents`) from editing work (`native-frames`, `value-operations`, and `categorical-operations`); and
-- remote R Jupyter runs as its own phase in the Jupyter matrix.
-
-Each phase consumes and reverifies the canonical candidate. Source checks, installed-editor isolation, failure-artifact
-privacy, exact R versions, current workflow matrices, and release gates are maintained in [testing](testing.md),
-[releasing](releasing.md), and the workflows themselves.
+Ordinary pull requests run the native-R frame, kernel, and transport contracts against the locked R library. Release
+candidates do not repeat that source-level matrix. They qualify the canonical VSIX through pinned VS Code
+installed-performance and pinned Cursor platform smoke, reverifying the same artifact between consumers. The separate
+released-Jupyter workflow remains an optional product seam rather than a candidate gate. Current source checks,
+installed-editor isolation, failure-artifact privacy, exact R versions, and release gates are maintained in
+[testing](testing.md), [releasing](releasing.md), and the workflows themselves.
 
 ## Related authorities
 
