@@ -138,7 +138,7 @@ describe("WebviewErrorBoundary", () => {
     expect(screen.queryByText(/private message payload/u)).not.toBeInTheDocument();
   });
 
-  it("contains a failure from the whole-column response listener", async () => {
+  it("decodes only the active whole-column response and contains its failure", async () => {
     render(
       <WebviewErrorBoundary reload={() => undefined}>
         <WholeColumnClipboardListener />
@@ -156,8 +156,30 @@ describe("WebviewErrorBoundary", () => {
       window.dispatchEvent(new MessageEvent("message", { data: hostileMessage, origin: window.location.origin }));
     });
 
-    expect(await screen.findByRole("button", { name: "Reload Open Wrangler" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Reload Open Wrangler" })).not.toBeInTheDocument();
+    expect(postMessage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select column" }));
+    const request = postMessage.mock.calls.at(-1)?.[0] as {
+      request?: { viewRequestId?: string };
+    };
+    expect(request.request?.viewRequestId).toEqual(expect.any(String));
+    Object.defineProperty(hostileMessage, "viewRequestId", { configurable: true, value: "another-request" });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data: hostileMessage, origin: window.location.origin }));
+    });
+    expect(screen.queryByRole("button", { name: "Reload Open Wrangler" })).not.toBeInTheDocument();
     expect(postMessage).toHaveBeenCalledOnce();
+
+    Object.defineProperty(hostileMessage, "viewRequestId", {
+      configurable: true,
+      value: request.request?.viewRequestId
+    });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data: hostileMessage, origin: window.location.origin }));
+    });
+
+    expect(await screen.findByRole("button", { name: "Reload Open Wrangler" })).toHaveFocus();
     expect(postMessage).toHaveBeenCalledWith({ kind: "webviewFailure", phase: "message" });
     expect(screen.queryByText(/private whole-column payload/u)).not.toBeInTheDocument();
   });
@@ -168,8 +190,13 @@ function RenderFailure(): never {
 }
 
 function WholeColumnClipboardListener() {
-  useWholeColumnClipboard({ metadata: clipboardMetadata, pageSize: 2, viewContextId: "view-a" });
-  return <span>Whole-column listener ready</span>;
+  const clipboard = useWholeColumnClipboard({ metadata: clipboardMetadata, pageSize: 2, viewContextId: "view-a" });
+  return (
+    <>
+      <span>Whole-column listener ready</span>
+      <button onClick={() => clipboard.selectColumn(clipboardMetadata.schema[0])}>Select column</button>
+    </>
+  );
 }
 
 const clipboardMetadata: SessionMetadata = {
