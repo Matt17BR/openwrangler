@@ -465,7 +465,12 @@ describe("Python Interactive Window coordinator and discovery", () => {
     await settle();
 
     expect(pythonMocks.discover).not.toHaveBeenCalled();
-    expect(provider.snapshot()).toBeUndefined();
+    expect(provider.snapshot()).toMatchObject({
+      state: "empty",
+      notebookLabel: "foreign-provider.ipynb",
+      message: expect.stringContaining("Automatic notebook inspection is paused"),
+      variables: []
+    });
 
     await command("openWrangler.refreshNotebookVariables")();
 
@@ -474,6 +479,57 @@ describe("Python Interactive Window coordinator and discovery", () => {
     expect(provider.snapshot()).toMatchObject({
       state: "ready",
       variables: [expect.objectContaining({ label: "frame" })]
+    });
+  });
+
+  it("does not let an in-flight automatic discovery overwrite foreign-provider pause state", async () => {
+    const active = notebook("file:///workspace/provider-switch.ipynb", "jupyter-notebook", [], "python");
+    pythonMocks.notebookDocuments.push(active.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+    pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("initial")], truncated: false });
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+
+    const staleHandle = provider.snapshot()?.variables[0]?.handle;
+    expect(staleHandle).toBeDefined();
+
+    let releaseLateDiscovery!: () => void;
+    const lateDiscovery = new Promise<{ variables: ReturnType<typeof pandasFrame>[]; truncated: false }>((resolve) => {
+      releaseLateDiscovery = () => resolve({ variables: [pandasFrame("late")], truncated: false });
+    });
+    pythonMocks.discover.mockReturnValueOnce(lateDiscovery);
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: active.document,
+      cellChanges: [{ executionSummary: { success: true } }],
+      contentChanges: []
+    } as unknown as NotebookDocumentChangeEvent);
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+
+    pythonMocks.inspectNotebookAutomatically = false;
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: active.document,
+      cellChanges: [{ executionSummary: { success: true } }],
+      contentChanges: []
+    } as unknown as NotebookDocumentChangeEvent);
+    await settle();
+
+    expect(provider.snapshot()).toMatchObject({
+      state: "empty",
+      message: expect.stringContaining("Automatic notebook inspection is paused"),
+      variables: []
+    });
+    await command("openWrangler.openCachedNotebookVariable")(staleHandle);
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+
+    releaseLateDiscovery();
+    await settle();
+
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+    expect(provider.snapshot()).toMatchObject({
+      state: "empty",
+      message: expect.stringContaining("Automatic notebook inspection is paused"),
+      variables: []
     });
   });
 
