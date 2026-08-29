@@ -6,7 +6,7 @@ import type {
   FillMissingReplacement,
   TransformSortRule
 } from "../../shared/protocol";
-import { numericColumnTypes, portableScalarColumnTypes } from "./operationFieldCompatibility";
+import { numericColumnTypes, orderedColumnTypes, portableScalarColumnTypes } from "./operationFieldCompatibility";
 
 export type FillMode =
   | "median"
@@ -53,17 +53,6 @@ const interpolationCoordinateColumnTypes: ReadonlySet<ColumnType> = new Set([
   "date",
   "datetime"
 ]);
-const fillOrderColumnTypes: ReadonlySet<ColumnType> = new Set([
-  "string",
-  "integer",
-  "float",
-  "decimal",
-  "boolean",
-  "datetime",
-  "date",
-  "duration"
-]);
-
 export function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
   const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
   const grouped = groupedKeyColumnsForTarget(column, columns).length > 0;
@@ -128,7 +117,7 @@ export function fallbackColumnsForTarget(
 }
 
 export function isDirectionalOrderColumn(column: ColumnSchema): boolean {
-  return fillOrderColumnTypes.has(column.type);
+  return orderedColumnTypes.has(column.type);
 }
 
 export function directionalOrderColumnsForTarget(
@@ -140,7 +129,7 @@ export function directionalOrderColumnsForTarget(
 }
 
 export function isGroupedKeyColumn(column: ColumnSchema): boolean {
-  return fillOrderColumnTypes.has(column.type);
+  return orderedColumnTypes.has(column.type);
 }
 
 export function groupedKeyColumnsForTarget(
