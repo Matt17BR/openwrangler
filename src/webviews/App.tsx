@@ -2,15 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { flushSync } from "react-dom";
 import type {
   ColumnSchema,
-  ColumnSummary,
   DataDiff,
   LiveGridPage,
   OperationKind,
   SessionMetadata,
   SessionMode,
   StepInspectionResponse,
-  TransformStep,
-  ValuesResponse
+  TransformStep
 } from "../shared/protocol";
 import {
   dataBackendLabel,
@@ -53,11 +51,8 @@ import { vscode } from "./vscodeApi";
 import { reportWebviewFailure } from "./WebviewErrorBoundary";
 import {
   alignedColumnWindow,
-  backgroundDiagnosticKey,
-  cloneBackgroundDiagnostics,
   columnWindowFromPage,
   decodeAppHostMessage,
-  filterModelForColumnValues,
   isSwitchableFileBackend,
   pageCoversColumnWindow,
   sameFilterModel,
@@ -66,7 +61,6 @@ import {
   sessionOpenProgressHeading,
   withoutDatasetStats,
   type ApplyFilterOptions,
-  type BackgroundDiagnostic,
   type ColumnRevealRequest,
   type ColumnRevealSynchronization,
   type ColumnWindow,
@@ -75,19 +69,17 @@ import {
   type DiffBeforeState,
   type OperationIntent,
   type PageRequestOptions,
-  type PendingBackgroundRequest,
   type PendingPageRequest,
   type PendingStepInspection,
   type QueuedOperationIntent,
   type QueuedStepSelection,
-  type SummaryRequestOwner,
   type ViewSortActionTarget
 } from "./appState";
+import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
-const nonCancellableMutationProfileRestartDelayMs = 2_000;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
 
@@ -111,18 +103,13 @@ function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HT
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<LiveGridPage | undefined>();
-  const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [profileValueMode, setProfileValueMode] = useState<ProfileValueMode>("count");
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [confirmedFilterHistory, setConfirmedFilterHistory] =
     useState<ConfirmedFilterHistory>(emptyConfirmedFilterHistory);
   const [filterBarRequestLifecycle, setFilterBarRequestLifecycle] = useState<FilterBarRequestLifecycle>({});
-  const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
   const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
-  const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
-    () => new Map()
-  );
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
@@ -172,9 +159,6 @@ export function App() {
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
   const stepInspectionTargetRef = useRef<PendingStepInspection | undefined>(undefined);
-  const summariesRef = useRef<ColumnSummary[]>([]);
-  const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
-  const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const confirmedFilterHistoryRef = useRef<ConfirmedFilterHistory>(emptyConfirmedFilterHistory());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
@@ -185,13 +169,6 @@ export function App() {
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
-  const pendingBackgroundRequests = useRef(new Map<string, PendingBackgroundRequest>());
-  const pendingSummaryByColumnId = useRef(new Map<string, string>());
-  const summaryOwnersByColumnId = useRef(new Map<string, Set<SummaryRequestOwner>>());
-  const pendingStatsRequest = useRef<string | undefined>(undefined);
-  const latestValuesByColumn = useRef(new Map<string, string>());
-  const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
-  const mutationProfileRestartTimer = useRef<number | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
   const importOptionsPendingRef = useRef(false);
@@ -321,16 +298,6 @@ export function App() {
     storeConfirmedFilterHistory(emptyConfirmedFilterHistory());
   }, [storeConfirmedFilterHistory]);
 
-  const storeSummaries = useCallback((next: ColumnSummary[]) => {
-    summariesRef.current = next;
-    setSummaries(next);
-  }, []);
-
-  const storeColumnValues = useCallback((next: ReadonlyMap<string, ValuesResponse>) => {
-    columnValuesRef.current = next;
-    setColumnValues(next);
-  }, []);
-
   const storeFailedPageRequest = useCallback((next: PendingPageRequest | undefined) => {
     failedPageRequestRef.current = next;
     setFailedPageRequest(next);
@@ -424,122 +391,6 @@ export function App() {
     });
   }, []);
 
-  const storeBackgroundDiagnostics = useCallback(
-    (
-      update:
-        | ReadonlyMap<string, BackgroundDiagnostic>
-        | ((current: ReadonlyMap<string, BackgroundDiagnostic>) => ReadonlyMap<string, BackgroundDiagnostic>)
-    ) => {
-      const next = typeof update === "function" ? update(backgroundDiagnosticsRef.current) : update;
-      backgroundDiagnosticsRef.current = next;
-      setBackgroundDiagnostics(next);
-    },
-    []
-  );
-
-  const clearBackgroundDiagnostic = useCallback(
-    (pending: PendingBackgroundRequest) => {
-      const key = backgroundDiagnosticKey(pending);
-      storeBackgroundDiagnostics((current) => {
-        if (!current.has(key)) return current;
-        const next = new Map(current);
-        next.delete(key);
-        return next;
-      });
-    },
-    [storeBackgroundDiagnostics]
-  );
-
-  const releaseBackgroundRequest = useCallback((viewRequestId: string, pending: PendingBackgroundRequest): void => {
-    if (pending.kind === "summary" && pendingSummaryByColumnId.current.get(pending.columnId) === viewRequestId) {
-      pendingSummaryByColumnId.current.delete(pending.columnId);
-    }
-    if (pending.kind === "stats" && pendingStatsRequest.current === viewRequestId) {
-      pendingStatsRequest.current = undefined;
-    }
-    if (pending.kind === "values" && latestValuesByColumn.current.get(pending.column) === viewRequestId) {
-      latestValuesByColumn.current.delete(pending.column);
-    }
-  }, []);
-
-  const dropSummaryOwner = useCallback((columnId: string, owner: SummaryRequestOwner): void => {
-    const desiredOwners = summaryOwnersByColumnId.current.get(columnId);
-    desiredOwners?.delete(owner);
-    if (desiredOwners?.size === 0) summaryOwnersByColumnId.current.delete(columnId);
-    for (const pending of pendingBackgroundRequests.current.values()) {
-      if (pending.kind === "summary" && pending.columnId === columnId) pending.owners.delete(owner);
-    }
-    for (const pending of retryTimers.current.values()) {
-      if (pending.kind === "summary" && pending.columnId === columnId) pending.owners.delete(owner);
-    }
-  }, []);
-
-  const clearDrawerSummaryScheduling = useCallback((): void => {
-    for (const columnId of [...summaryOwnersByColumnId.current.keys()]) dropSummaryOwner(columnId, "drawer");
-  }, [dropSummaryOwner]);
-
-  const cancelBackgroundRequests = useCallback(
-    (shouldCancel: (pending: PendingBackgroundRequest) => boolean = () => true) => {
-      const cancelledIds: string[] = [];
-      const diagnosticKeys = new Set<string>();
-      for (const [viewRequestId, pending] of pendingBackgroundRequests.current) {
-        if (!shouldCancel(pending)) continue;
-        pendingBackgroundRequests.current.delete(viewRequestId);
-        releaseBackgroundRequest(viewRequestId, pending);
-        cancelledIds.push(viewRequestId);
-        diagnosticKeys.add(backgroundDiagnosticKey(pending));
-      }
-      for (const [timer, pending] of retryTimers.current) {
-        if (!shouldCancel(pending)) continue;
-        window.clearTimeout(timer);
-        retryTimers.current.delete(timer);
-        diagnosticKeys.add(backgroundDiagnosticKey(pending));
-      }
-      if (cancelledIds.length) {
-        vscode.postMessage({ kind: "cancelViewRequests", viewRequestIds: cancelledIds });
-      }
-      storeBackgroundDiagnostics((current) => {
-        const next = new Map<string, BackgroundDiagnostic>();
-        for (const [key, diagnostic] of current) {
-          if (!diagnosticKeys.has(key) && !shouldCancel(diagnostic.pending)) next.set(key, diagnostic);
-        }
-        return next;
-      });
-    },
-    [releaseBackgroundRequest, storeBackgroundDiagnostics]
-  );
-
-  const clearProgressiveData = useCallback(
-    (preserveColumnValues = false) => {
-      storeSummaries([]);
-      if (!preserveColumnValues) storeColumnValues(new Map());
-    },
-    [storeColumnValues, storeSummaries]
-  );
-
-  const cancelMutationProfileRestart = useCallback(() => {
-    if (mutationProfileRestartTimer.current === undefined) return;
-    window.clearTimeout(mutationProfileRestartTimer.current);
-    mutationProfileRestartTimer.current = undefined;
-  }, []);
-
-  const resetViewProfiling = useCallback(
-    (preserveColumnValues = false) => {
-      cancelMutationProfileRestart();
-      cancelBackgroundRequests();
-      clearDrawerSummaryScheduling();
-      clearProgressiveData(preserveColumnValues);
-      storeBackgroundDiagnostics(new Map());
-    },
-    [
-      cancelBackgroundRequests,
-      cancelMutationProfileRestart,
-      clearDrawerSummaryScheduling,
-      clearProgressiveData,
-      storeBackgroundDiagnostics
-    ]
-  );
-
   const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
     const confirmed = {
       viewContextId,
@@ -565,157 +416,46 @@ export function App() {
     );
   }, []);
 
-  const sendSummaryColumn = useCallback(
-    (columnId: string, attempt = 1, owner?: SummaryRequestOwner) => {
-      const existingRequestId = pendingSummaryByColumnId.current.get(columnId);
-      const existingRequest = existingRequestId ? pendingBackgroundRequests.current.get(existingRequestId) : undefined;
-      const promoteForDrawer =
-        owner === "drawer" && existingRequest?.kind === "summary" && !existingRequest.owners.has("drawer");
-      if (owner) {
-        const owners = summaryOwnersByColumnId.current.get(columnId) ?? new Set<SummaryRequestOwner>();
-        owners.add(owner);
-        summaryOwnersByColumnId.current.set(columnId, owners);
-      }
-      const owners = summaryOwnersByColumnId.current.get(columnId);
-      if (!owners?.size) return;
-      const currentMetadata = metadataRef.current;
-      const confirmed = confirmedView.current;
-      if (
-        !currentMetadata ||
-        !supportsViewingCapability(currentMetadata.capabilities, "profile") ||
-        !confirmed ||
-        !canProfileConfirmedView(confirmed.viewContextId) ||
-        !currentMetadata.schema.some((candidate) => candidate.id === columnId) ||
-        summariesRef.current.some((summary) => summary.columnId === columnId)
-      ) {
-        return;
-      }
-      if (existingRequestId) {
-        if (existingRequest?.kind === "summary" && promoteForDrawer) {
-          vscode.postMessage({ kind: "prioritizeViewRequest", viewRequestId: existingRequestId });
-        }
-        if (existingRequest?.kind === "summary") existingRequest.owners = new Set(owners);
-        return;
-      }
-      const viewRequestId = nextViewRequestId();
-      pendingSummaryByColumnId.current.set(columnId, viewRequestId);
-      pendingBackgroundRequests.current.set(viewRequestId, {
-        kind: "summary",
-        viewContextId: confirmed.viewContextId,
-        columnId,
-        attempt,
-        owners: new Set(owners)
-      });
-      vscode.postMessage({
-        kind: "runtimeRequest",
-        priority: owners.has("drawer") ? "interactive" : "background",
-        viewContextId: confirmed.viewContextId,
-        request: {
-          kind: "getSummary",
-          viewRequestId,
-          filterModel: currentMetadata.filterModel,
-          columnIds: [columnId]
-        }
-      });
-    },
-    [canProfileConfirmedView, nextViewRequestId]
-  );
+  const readConfirmedProfileView = useCallback(() => {
+    const currentMetadata = metadataRef.current;
+    const currentView = confirmedView.current;
+    return currentMetadata && currentView ? { metadata: currentMetadata, view: currentView } : undefined;
+  }, []);
 
-  const releaseSummaryOwner = useCallback(
-    (columnId: string, owner: SummaryRequestOwner) => {
-      dropSummaryOwner(columnId, owner);
-      cancelBackgroundRequests(
-        (pending) =>
-          pending.kind === "summary" &&
-          pending.columnId === columnId &&
-          !(summaryOwnersByColumnId.current.get(columnId)?.size ?? 0)
-      );
-    },
-    [cancelBackgroundRequests, dropSummaryOwner]
-  );
+  const schemaById = useMemo(() => new Map(metadata?.schema.map((column) => [column.id, column]) ?? []), [metadata]);
+  const selectedSummaryColumnId = useMemo(() => {
+    const selectedColumnId = gridViewState.selectedColumnId;
+    if (selectedColumnId && schemaById.has(selectedColumnId)) return selectedColumnId;
+    return metadata?.schema[0]?.id;
+  }, [gridViewState.selectedColumnId, metadata?.schema, schemaById]);
 
-  const updateVisibleSummaryColumns = useCallback(
-    (columnIds: string[]) => {
-      const currentMetadata = metadataRef.current;
-      if (!currentMetadata || !supportsViewingCapability(currentMetadata.capabilities, "profile")) return;
-      const next = new Set(columnIds);
-      for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
-        if (owners.has("grid") && !next.has(columnId)) releaseSummaryOwner(columnId, "grid");
-      }
-      for (const columnId of next) {
-        if (mutationProfileRestartTimer.current !== undefined) {
-          const owners = summaryOwnersByColumnId.current.get(columnId) ?? new Set<SummaryRequestOwner>();
-          owners.add("grid");
-          summaryOwnersByColumnId.current.set(columnId, owners);
-          continue;
-        }
-        sendSummaryColumn(columnId, 1, "grid");
-      }
-    },
-    [releaseSummaryOwner, sendSummaryColumn]
-  );
-
-  const restartOwnedSummaryProfiling = useCallback(() => {
-    for (const [columnId, owners] of summaryOwnersByColumnId.current) {
-      if (owners.size) sendSummaryColumn(columnId);
+  const {
+    backgroundDiagnostics,
+    cancelPendingProfiling,
+    captureProfileState,
+    columnValues,
+    releaseDrawerProfiling,
+    requestValues,
+    resetViewProfiling,
+    restartProfilingAfterMutation,
+    restartProfilingForConfirmedView,
+    restoreProfileState,
+    settleProfileMessage,
+    summaries,
+    suspendProfiling,
+    updateVisibleSummaryColumns
+  } = useProgressiveProfilingLifecycle({
+    nextViewRequestId,
+    readConfirmedView: readConfirmedProfileView,
+    canProfileConfirmedView,
+    drawerDemand: {
+      open: sidePanelOpen,
+      view: summaryPanelView,
+      selectedColumnId: selectedSummaryColumnId,
+      suspended: importOptionsPending,
+      viewContextId: activeViewContextId
     }
-  }, [sendSummaryColumn]);
-
-  const requestStatsForConfirmedView = useCallback(
-    (attempt = 1) => {
-      const currentMetadata = metadataRef.current;
-      const confirmed = confirmedView.current;
-      if (
-        !sidePanelOpenRef.current ||
-        summaryPanelViewRef.current !== "dataset" ||
-        !currentMetadata ||
-        !supportsViewingCapability(currentMetadata.capabilities, "profile") ||
-        currentMetadata.stats ||
-        !confirmed ||
-        pendingStatsRequest.current ||
-        !canProfileConfirmedView(confirmed.viewContextId)
-      ) {
-        return;
-      }
-      const viewRequestId = nextViewRequestId();
-      pendingStatsRequest.current = viewRequestId;
-      pendingBackgroundRequests.current.set(viewRequestId, {
-        kind: "stats",
-        viewContextId: confirmed.viewContextId,
-        attempt
-      });
-      vscode.postMessage({
-        kind: "runtimeRequest",
-        viewContextId: confirmed.viewContextId,
-        request: {
-          kind: "getDatasetStats",
-          viewRequestId,
-          filterModel: currentMetadata.filterModel
-        }
-      });
-    },
-    [canProfileConfirmedView, nextViewRequestId]
-  );
-
-  const restartProfilingForConfirmedView = useCallback(() => {
-    restartOwnedSummaryProfiling();
-    requestStatsForConfirmedView();
-  }, [requestStatsForConfirmedView, restartOwnedSummaryProfiling]);
-
-  const restartProfilingAfterMutation = useCallback(() => {
-    cancelMutationProfileRestart();
-    if (metadataRef.current?.capabilities.cancel !== false) {
-      restartProfilingForConfirmedView();
-      return;
-    }
-    // A non-cancellable runtime may serialize profiles and cleaning actions on
-    // one worker or notebook kernel. Leave a quiet period for the next action;
-    // explicit drawer requests still call sendSummaryColumn immediately.
-    mutationProfileRestartTimer.current = window.setTimeout(() => {
-      mutationProfileRestartTimer.current = undefined;
-      restartProfilingForConfirmedView();
-    }, nonCancellableMutationProfileRestartDelayMs);
-  }, [cancelMutationProfileRestart, restartProfilingForConfirmedView]);
+  });
 
   useEffect(() => {
     importOptionsUiBusyRef.current = loading || mutationPending || projectionLoading;
@@ -724,8 +464,7 @@ export function App() {
   const requestImportOptionsChange = useCallback(
     (actionId?: string, trigger?: HTMLButtonElement) => {
       flushGridViewState();
-      cancelBackgroundRequests();
-      clearDrawerSummaryScheduling();
+      suspendProfiling();
       if (
         importOptionsUiBusyRef.current ||
         foregroundRequest.current ||
@@ -764,27 +503,19 @@ export function App() {
         vscode.postMessage(message);
       }
     },
-    [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]
+    [flushGridViewState, storeImportOptionsPending, suspendProfiling]
   );
 
   const updateImportOptionsPending = useCallback(
     (pending: boolean) => {
       const wasPending = importOptionsPendingRef.current;
-      if (pending) {
-        cancelBackgroundRequests();
-        clearDrawerSummaryScheduling();
-      }
+      if (pending) suspendProfiling();
       storeImportOptionsPending(pending);
       if (!pending && wasPending && metadataRef.current) {
         restartProfilingForConfirmedView();
       }
     },
-    [
-      cancelBackgroundRequests,
-      clearDrawerSummaryScheduling,
-      restartProfilingForConfirmedView,
-      storeImportOptionsPending
-    ]
+    [restartProfilingForConfirmedView, storeImportOptionsPending, suspendProfiling]
   );
 
   const captureConfirmedViewState = useCallback((): ConfirmedViewState | undefined => {
@@ -797,33 +528,21 @@ export function App() {
       metadata: currentMetadata,
       page: currentPage,
       columnWindow: { ...confirmedColumnWindow.current },
-      summaries: [...summariesRef.current],
-      columnValues: new Map(columnValuesRef.current),
-      backgroundDiagnostics: cloneBackgroundDiagnostics(backgroundDiagnosticsRef.current)
+      ...captureProfileState()
     };
-  }, []);
+  }, [captureProfileState]);
 
   const restoreConfirmedViewState = useCallback(
     (previous: ConfirmedViewState) => {
       storeMetadata(previous.metadata);
       storeFilterModel(previous.metadata.filterModel);
-      storeSummaries(previous.summaries);
-      storeColumnValues(previous.columnValues);
-      storeBackgroundDiagnostics(previous.backgroundDiagnostics);
+      restoreProfileState(previous);
       confirmedColumnWindow.current = { ...previous.columnWindow };
       desiredColumnWindow.current = { ...previous.columnWindow };
       confirmView(previous.metadata, previous.view.viewContextId);
       restartProfilingForConfirmedView();
     },
-    [
-      confirmView,
-      restartProfilingForConfirmedView,
-      storeBackgroundDiagnostics,
-      storeColumnValues,
-      storeFilterModel,
-      storeMetadata,
-      storeSummaries
-    ]
+    [confirmView, restartProfilingForConfirmedView, restoreProfileState, storeFilterModel, storeMetadata]
   );
 
   const clearStepInspection = useCallback(
@@ -936,8 +655,7 @@ export function App() {
       setProjectionLoading(reason === "projection");
       if (stepInspectionRef.current?.stepId !== stepId) storeStepInspection(undefined);
       setStepInspectionError(undefined);
-      cancelBackgroundRequests();
-      clearDrawerSummaryScheduling();
+      suspendProfiling();
       sidePanelOpenRef.current = false;
       setSidePanelOpen(false);
       vscode.postMessage({
@@ -952,13 +670,7 @@ export function App() {
         }
       });
     },
-    [
-      cancelBackgroundRequests,
-      clearDrawerSummaryScheduling,
-      storePendingStepInspection,
-      storeStepInspection,
-      storeStepInspectionTarget
-    ]
+    [storePendingStepInspection, storeStepInspection, storeStepInspectionTarget, suspendProfiling]
   );
 
   const beginMutation = useCallback((): boolean => {
@@ -1020,17 +732,6 @@ export function App() {
     [beginMutation]
   );
 
-  const pruneSummaryOwners = useCallback(
-    (nextMetadata: SessionMetadata) => {
-      const validColumnIds = new Set(nextMetadata.schema.map((column) => column.id));
-      for (const columnId of summaryOwnersByColumnId.current.keys()) {
-        if (!validColumnIds.has(columnId)) summaryOwnersByColumnId.current.delete(columnId);
-      }
-      cancelBackgroundRequests((pending) => pending.kind === "summary" && !validColumnIds.has(pending.columnId));
-    },
-    [cancelBackgroundRequests]
-  );
-
   const restoreViewAfterPageFailure = useCallback(
     (pendingPage: PendingPageRequest, restoreConfirmedViewport = false) => {
       const previous = pendingPage.previousConfirmedState;
@@ -1074,7 +775,6 @@ export function App() {
   );
 
   useEffect(() => {
-    const timers = retryTimers.current;
     const handleMessage = (event: MessageEvent<unknown>) => {
       if (event.origin !== window.location.origin) return;
       const response = decodeAppHostMessage(event.data);
@@ -1350,22 +1050,8 @@ export function App() {
             return;
           }
 
-          const pending = pendingBackgroundRequests.current.get(response.viewRequestId);
-          if (!pending) return;
-          pendingBackgroundRequests.current.delete(response.viewRequestId);
-          releaseBackgroundRequest(response.viewRequestId, pending);
-          if (response.code === "pyspark_connect_state_lost") {
-            setForegroundError(response.message);
-            return;
-          }
-          if (canProfileConfirmedView(pending.viewContextId)) {
-            storeBackgroundDiagnostics((current) => {
-              const next = new Map(current);
-              next.set(backgroundDiagnosticKey(pending), { message: response.message, pending });
-              return next;
-            });
-            scheduleBackgroundRetry(pending);
-          }
+          const settlement = settleProfileMessage(response);
+          if (settlement.foregroundError) setForegroundError(settlement.foregroundError);
           return;
         }
         const shouldRestoreMutation = foregroundRequest.current === "mutation";
@@ -1441,12 +1127,7 @@ export function App() {
           setForegroundError("Page request was cancelled.");
           return;
         }
-        const pending = pendingBackgroundRequests.current.get(response.viewRequestId);
-        if (pending) {
-          pendingBackgroundRequests.current.delete(response.viewRequestId);
-          releaseBackgroundRequest(response.viewRequestId, pending);
-          scheduleBackgroundRetry(pending);
-        }
+        settleProfileMessage(response);
         return;
       }
 
@@ -1490,8 +1171,12 @@ export function App() {
         setRemainingMissingCells(undefined);
         setDraftWarnings([]);
         resetConfirmedFilterHistory();
-        resetViewProfiling();
-        summaryOwnersByColumnId.current.clear();
+        resetViewProfiling({
+          initialSummaries: supportsViewingCapability(response.metadata.capabilities, "profile")
+            ? response.summaries
+            : [],
+          clearOwners: true
+        });
         const openedProfileSupported = supportsViewingCapability(response.metadata.capabilities, "profile");
         const openedFilterPanelSupported =
           supportsViewingCapability(response.metadata.capabilities, "filter") ||
@@ -1514,7 +1199,6 @@ export function App() {
         confirmedColumnWindow.current = openedWindow;
         desiredColumnWindow.current = openedWindow;
         inspectionColumnWindow.current = openedWindow;
-        storeSummaries(supportsViewingCapability(response.metadata.capabilities, "profile") ? response.summaries : []);
         return;
       }
 
@@ -1542,7 +1226,7 @@ export function App() {
           previousView.sessionId === response.metadata.sessionId
         );
         if (!sameView) {
-          resetViewProfiling(true);
+          resetViewProfiling({ preserveColumnValues: true });
         }
         const previousStats = sameView ? metadataRef.current?.stats : undefined;
         const nextMetadata = previousStats
@@ -1613,7 +1297,6 @@ export function App() {
           nextMetadata.draftStep === undefined &&
           document.hasFocus() &&
           undoFocusOriginIsActive;
-        pruneSummaryOwners(nextMetadata);
         confirmView(nextMetadata, nextViewRequestId());
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
@@ -1656,7 +1339,7 @@ export function App() {
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
         else clearStepInspection(false, false);
-        restartProfilingAfterMutation();
+        restartProfilingAfterMutation(nextMetadata);
         if (shouldRestoreUndoFocus) {
           scheduleWebviewFocusRestoration(() => {
             document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
@@ -1665,68 +1348,11 @@ export function App() {
         return;
       }
 
-      if (response.kind === "summary") {
-        const pending = pendingBackgroundRequests.current.get(response.viewRequestId);
-        if (!pending || pending.kind !== "summary") return;
-        pendingBackgroundRequests.current.delete(response.viewRequestId);
-        releaseBackgroundRequest(response.viewRequestId, pending);
-        if (
-          !metadataRef.current ||
-          !supportsViewingCapability(metadataRef.current.capabilities, "profile") ||
-          !canProfileConfirmedView(pending.viewContextId) ||
-          response.revision !== confirmedView.current?.revision
-        )
-          return;
-        const merged = new Map(summariesRef.current.map((summary) => [summary.columnId, summary]));
-        for (const summary of response.summaries) merged.set(summary.columnId, summary);
-        const schemaOrder = new Map(metadataRef.current?.schema.map((column, index) => [column.id, index]) ?? []);
-        storeSummaries(
-          [...merged.values()].sort(
-            (left, right) =>
-              (schemaOrder.get(left.columnId) ?? Number.MAX_SAFE_INTEGER) -
-              (schemaOrder.get(right.columnId) ?? Number.MAX_SAFE_INTEGER)
-          )
-        );
-        clearBackgroundDiagnostic(pending);
-        return;
-      }
-
-      if (response.kind === "columnValues") {
-        const pending = pendingBackgroundRequests.current.get(response.viewRequestId);
-        if (!pending || pending.kind !== "values") return;
-        const isLatest = latestValuesByColumn.current.get(response.column) === response.viewRequestId;
-        pendingBackgroundRequests.current.delete(response.viewRequestId);
-        releaseBackgroundRequest(response.viewRequestId, pending);
-        if (
-          !metadataRef.current ||
-          !supportsViewingCapability(metadataRef.current.capabilities, "columnValues") ||
-          !canProfileConfirmedView(pending.viewContextId) ||
-          response.revision !== confirmedView.current?.revision ||
-          !isLatest
-        ) {
-          return;
-        }
-        latestValuesByColumn.current.delete(response.column);
-        storeColumnValues(new Map(columnValuesRef.current).set(response.column, response));
-        clearBackgroundDiagnostic(pending);
-        return;
-      }
-
-      if (response.kind === "datasetStats") {
-        const pending = pendingBackgroundRequests.current.get(response.viewRequestId);
-        if (!pending || pending.kind !== "stats") return;
-        pendingBackgroundRequests.current.delete(response.viewRequestId);
-        releaseBackgroundRequest(response.viewRequestId, pending);
-        if (
-          !metadataRef.current ||
-          !supportsViewingCapability(metadataRef.current.capabilities, "profile") ||
-          !canProfileConfirmedView(pending.viewContextId) ||
-          response.revision !== confirmedView.current?.revision
-        )
-          return;
+      if (response.kind === "summary" || response.kind === "columnValues" || response.kind === "datasetStats") {
+        const settlement = settleProfileMessage(response);
         const current = metadataRef.current;
-        if (current) storeMetadata({ ...current, stats: response.stats });
-        clearBackgroundDiagnostic(pending);
+        if (settlement.stats && current) storeMetadata({ ...current, stats: settlement.stats });
+        return;
       }
     };
     const listener: typeof handleMessage = (event) => {
@@ -1740,40 +1366,19 @@ export function App() {
     vscode.postMessage({ kind: "ready" });
     return () => {
       window.removeEventListener("message", listener);
-      cancelMutationProfileRestart();
-      for (const timer of timers.keys()) window.clearTimeout(timer);
-      timers.clear();
     };
-
-    function scheduleBackgroundRetry(pending: PendingBackgroundRequest): boolean {
-      if (pending.kind === "values" || pending.attempt >= 2 || !canProfileConfirmedView(pending.viewContextId))
-        return false;
-      const timer = window.setTimeout(() => {
-        retryTimers.current.delete(timer);
-        if (pending.kind === "summary") sendSummaryColumn(pending.columnId, pending.attempt + 1);
-        else requestStatsForConfirmedView(pending.attempt + 1);
-      }, 0);
-      retryTimers.current.set(timer, pending);
-      return true;
-    }
   }, [
     acceptSynchronization,
     beginMutation,
-    cancelMutationProfileRestart,
-    canProfileConfirmedView,
-    clearBackgroundDiagnostic,
     clearSynchronization,
     clearStepInspection,
     confirmView,
     deleteStep,
     nextViewRequestId,
-    pruneSummaryOwners,
-    releaseBackgroundRequest,
     rememberOperationReturnFocus,
     requestOperationIntent,
     requestImportOptionsChange,
     requestColumnReveal,
-    requestStatsForConfirmedView,
     requestStepInspection,
     resetConfirmedFilterHistory,
     resetGridViewState,
@@ -1784,9 +1389,7 @@ export function App() {
     restoreConfirmedViewState,
     restoreViewAfterPageFailure,
     resetViewProfiling,
-    sendSummaryColumn,
-    storeBackgroundDiagnostics,
-    storeColumnValues,
+    settleProfileMessage,
     storeConfirmedFilterHistory,
     storeFailedPageRequest,
     storeFilterModel,
@@ -1797,7 +1400,6 @@ export function App() {
     storePendingStepInspection,
     storeStepInspection,
     storeStepInspectionTarget,
-    storeSummaries,
     updateImportOptionsPending
   ]);
 
@@ -1871,12 +1473,6 @@ export function App() {
     requestStepInspection
   ]);
 
-  const schemaById = useMemo(() => new Map(metadata?.schema.map((column) => [column.id, column]) ?? []), [metadata]);
-  const selectedSummaryColumnId = useMemo(() => {
-    const selectedColumnId = gridViewState.selectedColumnId;
-    if (selectedColumnId && schemaById.has(selectedColumnId)) return selectedColumnId;
-    return metadata?.schema[0]?.id;
-  }, [gridViewState.selectedColumnId, metadata?.schema, schemaById]);
   const inspectionMode = Boolean(stepInspectionTarget);
   const displayMetadata = useMemo<SessionMetadata | undefined>(() => {
     if (!metadata || !stepInspection) return metadata;
@@ -1966,7 +1562,7 @@ export function App() {
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
     if (changesView) {
-      resetViewProfiling(true);
+      resetViewProfiling({ preserveColumnValues: true });
       if (currentMetadata) storeMetadata(withoutDatasetStats(currentMetadata));
     }
     storeFilterModel(model);
@@ -1989,47 +1585,6 @@ export function App() {
       }
     });
     return viewRequestId;
-  };
-
-  const requestValues = (column: string, search?: string) => {
-    if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
-    const currentMetadata = metadataRef.current;
-    const confirmed = confirmedView.current;
-    if (
-      !currentMetadata ||
-      !supportsViewingCapability(currentMetadata.capabilities, "filter") ||
-      !supportsViewingCapability(currentMetadata.capabilities, "columnValues")
-    )
-      return;
-    if (currentMetadata?.schema.filter((candidate) => candidate.name === column).length !== 1) return;
-    const viewRequestId = nextViewRequestId();
-    const valuesFilterModel = filterModelForColumnValues(currentMetadata.filterModel, column);
-    if (!confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
-
-    const previousRequestId = latestValuesByColumn.current.get(column);
-    if (previousRequestId) {
-      const previous = pendingBackgroundRequests.current.get(previousRequestId);
-      if (previous) cancelBackgroundRequests((pending) => pending === previous);
-    }
-
-    latestValuesByColumn.current.set(column, viewRequestId);
-    pendingBackgroundRequests.current.set(viewRequestId, {
-      kind: "values",
-      viewContextId: confirmed.viewContextId,
-      column
-    });
-    vscode.postMessage({
-      kind: "runtimeRequest",
-      viewContextId: confirmed.viewContextId,
-      request: {
-        kind: "getColumnValues",
-        viewRequestId,
-        column,
-        search,
-        limit: 100,
-        filterModel: valuesFilterModel
-      }
-    });
   };
 
   const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
@@ -2199,31 +1754,6 @@ export function App() {
     };
   });
 
-  useEffect(() => {
-    if (!sidePanelOpen || !metadata || importOptionsPending) return;
-
-    const desiredColumnId = summaryPanelView === "column" ? selectedSummaryColumnId : undefined;
-    for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
-      if (owners.has("drawer") && columnId !== desiredColumnId) releaseSummaryOwner(columnId, "drawer");
-    }
-
-    if (desiredColumnId) sendSummaryColumn(desiredColumnId, 1, "drawer");
-    if (summaryPanelView === "dataset") requestStatsForConfirmedView();
-    else cancelBackgroundRequests((pending) => pending.kind === "stats");
-    if (summaryPanelView !== "filters") cancelBackgroundRequests((pending) => pending.kind === "values");
-  }, [
-    activeViewContextId,
-    cancelBackgroundRequests,
-    importOptionsPending,
-    metadata,
-    releaseSummaryOwner,
-    requestStatsForConfirmedView,
-    selectedSummaryColumnId,
-    sendSummaryColumn,
-    sidePanelOpen,
-    summaryPanelView
-  ]);
-
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
     if (!supportsOperation(metadataRef.current?.capabilities, step.kind)) {
       setForegroundError("That cleaning operation is not available for the current dataframe.");
@@ -2311,13 +1841,7 @@ export function App() {
   const closeSidePanel = () => {
     sidePanelOpenRef.current = false;
     setSidePanelOpen(false);
-    clearDrawerSummaryScheduling();
-    cancelBackgroundRequests(
-      (pending) =>
-        pending.kind === "stats" ||
-        pending.kind === "values" ||
-        (pending.kind === "summary" && !(summaryOwnersByColumnId.current.get(pending.columnId)?.size ?? 0))
-    );
+    releaseDrawerProfiling();
     const returnTarget = sidePanelReturnFocus.current;
     sidePanelReturnFocus.current = null;
     scheduleWebviewFocusRestoration(() => {
@@ -2397,7 +1921,7 @@ export function App() {
 
   const reconnectLiveSession = () => {
     if (liveSessionReconnectPending) return;
-    cancelBackgroundRequests();
+    cancelPendingProfiling();
     setLiveSessionReconnectPending(true);
     vscode.postMessage({ kind: "reconnectLiveSource" });
   };
