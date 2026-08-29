@@ -30,7 +30,7 @@ const fileMocks = vi.hoisted(() => ({
   customEditorProviderOptions: undefined as unknown,
   activeTabInput: undefined as unknown,
   activeTextUri: undefined as unknown,
-  enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"],
+  enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as unknown,
   defaultBackend: "auto",
   workspaceValues: new Map<string, unknown>()
 }));
@@ -336,6 +336,46 @@ describe("file launch command", () => {
     expect(fileMocks.detectImportOptions).toHaveBeenCalledWith(selected);
     expect(fileMocks.createPanel).toHaveBeenCalledOnce();
     expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses the manifest defaults when the file-type setting is not an array", async () => {
+    fileMocks.enabledFileTypes = "csv";
+    register();
+
+    await command("openWrangler.openPath")();
+
+    expect(fileMocks.showOpenDialog).toHaveBeenCalledWith({
+      canSelectMany: false,
+      filters: {
+        "Data files": ["csv", "tsv", "parquet", "jsonl", "ndjson", "xlsx", "xls"]
+      }
+    });
+  });
+
+  it("keeps only manifest file types from a manually edited array", async () => {
+    fileMocks.enabledFileTypes = ["parquet", "ndjson", 7, "jsonl", null, "csv", {}, "xlsx"];
+    register();
+
+    await command("openWrangler.openPath")();
+
+    expect(fileMocks.showOpenDialog).toHaveBeenCalledWith({
+      canSelectMany: false,
+      filters: {
+        "Data files": ["parquet", "jsonl", "ndjson", "csv", "xlsx"]
+      }
+    });
+  });
+
+  it("preserves an empty file-type array as an intentional disable-all setting", async () => {
+    fileMocks.enabledFileTypes = [];
+    register();
+
+    await command("openWrangler.openPath")();
+
+    expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Enable at least one Open Wrangler file type in Settings."
+    );
+    expect(fileMocks.showOpenDialog).not.toHaveBeenCalled();
   });
 
   it.each(["pkl", "pickle"])("never offers or accepts Python pickle files (%s)", async (extension) => {

@@ -135,12 +135,18 @@ const backendPin = (configured: FileDataBackend | "auto"): FileDataBackend | und
   configured === "auto" ? undefined : configured;
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as const;
+const configurableFileTypes = new Set<string>(allFileTypes);
 const supportedFileTypes = new Set<string>([...allFileTypes, "ndjson"]);
 const supportedSchemes = new Set(["file", "vscode-remote"]);
 
 const getEnabledFileTypes = (): string[] => {
-  const configured = getSetting<string[]>("enabledFileTypes", [...allFileTypes]);
-  return configured.flatMap((extension) => (extension === "jsonl" ? ["jsonl", "ndjson"] : [extension]));
+  const configured = getSetting<unknown>("enabledFileTypes", [...allFileTypes]);
+  const enabledFileTypes: readonly string[] = Array.isArray(configured)
+    ? configured.filter(
+        (extension): extension is string => typeof extension === "string" && configurableFileTypes.has(extension)
+      )
+    : allFileTypes;
+  return enabledFileTypes.flatMap((extension) => (extension === "jsonl" ? ["jsonl", "ndjson"] : [extension]));
 };
 
 const fileType = (uri: vscode.Uri): string => path.extname(uri.fsPath).slice(1).toLowerCase();
