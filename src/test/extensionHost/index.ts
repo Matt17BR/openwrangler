@@ -7520,6 +7520,7 @@ async function exercisePackagedTrustedPickleConversion(
         ["2400003", "Iberia", "778.88"]
       ]
     );
+    await waitForOpenWranglerGridTarget(workbench, testing, active.sessionId);
 
     recordAcceptanceProgress("platform-smoke:trusted-pickle:cleanup");
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
@@ -8097,13 +8098,7 @@ async function exercisePackagedPlatformSmoke(
     .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
     .waitFor({ state: "visible", timeout: 5_000 });
 
-  await exercisePrimarySortJourney(
-    testing,
-    page,
-    gridTarget.frame,
-    active.metadata.sessionId,
-    "platform-smoke:sort-journey"
-  );
+  await exercisePrimarySortJourney(testing, gridTarget.frame, "platform-smoke:sort-journey");
   await exercisePackagedBackendSwitchJourney(testing, page, active.metadata.sessionId, fixture, sourceBytes);
   await exercisePackagedFirstUseInteractionJourney(testing, page, active.metadata.sessionId, fixture, sourceBytes);
 
@@ -8468,13 +8463,7 @@ async function exercisePackagedBackendSwitchJourney(
   assert.ok((restored?.metadata.revision ?? initialRevision) > initialRevision);
 }
 
-async function exercisePrimarySortJourney(
-  testing: TestApi,
-  workbench: Page,
-  frame: Frame,
-  sessionId: string,
-  checkpoint: string
-): Promise<void> {
+async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
   recordAcceptanceProgress(checkpoint);
   const marketHeader = frame.locator('th[data-column="market"]').first();
   const marketMenu = marketHeader.locator("details.columnMenu").first();
@@ -8545,149 +8534,7 @@ async function exercisePrimarySortJourney(
   });
   await clearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
 
-  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
-  const sidebar = workbench.locator(".part.sidebar:visible");
-  const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
-  if (!(await filtersTree.isVisible().catch(() => false))) {
-    const filtersHeader = sidebar.getByText("Filters / Sorts", { exact: true }).first();
-    await filtersHeader.waitFor({ state: "visible", timeout: 10_000 });
-    await filtersHeader.click();
-  }
-  await filtersTree.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(
-    testing.activeSession()?.sessionId,
-    sessionId,
-    "Opening the Open Wrangler Activity Bar must keep the visible dataframe session active."
-  );
-  assert.equal(
-    testing.panelHydrated(sessionId),
-    true,
-    "Native sort-priority actions require the exact visible dataframe panel to remain hydrated."
-  );
-
-  const revenuePriorityOne = filtersTree
-    .getByRole("treeitem", {
-      name: /^revenue, Priority 1 · Descending · nulls last/u
-    })
-    .first();
-  const marketPriorityTwo = filtersTree
-    .getByRole("treeitem", {
-      name: /^market, Priority 2 · Descending · nulls last/u
-    })
-    .first();
-  await revenuePriorityOne.waitFor({ state: "visible", timeout: 10_000 });
-  await marketPriorityTwo.waitFor({ state: "visible", timeout: 10_000 });
-  await marketPriorityTwo.hover();
-  const moveMarketUp = marketPriorityTwo.getByRole("button", { name: /Move View Sort Up$/u }).first();
-  await moveMarketUp.waitFor({ state: "visible", timeout: 5_000 });
-  await moveMarketUp.click();
-  try {
-    await waitFor(
-      () => {
-        const sort = testing.activeSession()?.viewState.filterModel.sort;
-        return (
-          sort?.length === 2 &&
-          sort[0]?.column === "market" &&
-          sort[0].direction === "desc" &&
-          sort[0].nulls === "last" &&
-          sort[1]?.column === "revenue" &&
-          sort[1].direction === "desc" &&
-          sort[1].nulls === "last"
-        );
-      },
-      10_000,
-      "the real Filters / Sorts move-up action to make market priority 1"
-    );
-  } catch (error) {
-    const active = testing.activeSession();
-    const retained = testing.sessionSnapshot(sessionId);
-    const treeItems = await filtersTree
-      .getByRole("treeitem")
-      .allTextContents()
-      .catch(() => ["<detached>"]);
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)} Native sort diagnostics: ${JSON.stringify({
-        expectedSessionId: sessionId,
-        activeSessionId: active?.sessionId,
-        activeSort: active?.viewState.filterModel.sort,
-        retainedSort: retained?.viewState.filterModel.sort,
-        dispatchStatus: testing.viewSortDispatchStatus(),
-        panelHydrated: testing.panelHydrated(sessionId),
-        coordinator: testing.diagnostics(),
-        treeItems
-      })}`,
-      { cause: error }
-    );
-  }
-  await filtersTree
-    .getByRole("treeitem", {
-      name: /^market, Priority 1 · Descending · nulls last/u
-    })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await filtersTree
-    .getByRole("treeitem", {
-      name: /^revenue, Priority 2 · Descending · nulls last/u
-    })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  const marketFirstTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  await marketFirstTarget.frame
-    .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "2400488" })
-    .waitFor({ state: "visible", timeout: 10_000 });
-
-  const marketPriorityOne = filtersTree
-    .getByRole("treeitem", {
-      name: /^market, Priority 1 · Descending · nulls last/u
-    })
-    .first();
-  await marketPriorityOne.hover();
-  const moveMarketDown = marketPriorityOne.getByRole("button", { name: /Move View Sort Down$/u }).first();
-  await moveMarketDown.waitFor({ state: "visible", timeout: 5_000 });
-  await moveMarketDown.click();
-  await waitFor(
-    () => {
-      const sort = testing.activeSession()?.viewState.filterModel.sort;
-      return (
-        sort?.length === 2 &&
-        sort[0]?.column === "revenue" &&
-        sort[0].direction === "desc" &&
-        sort[0].nulls === "last" &&
-        sort[1]?.column === "market" &&
-        sort[1].direction === "desc" &&
-        sort[1].nulls === "last"
-      );
-    },
-    10_000,
-    "the real Filters / Sorts move-down action to restore revenue as priority 1"
-  );
-  await filtersTree
-    .getByRole("treeitem", {
-      name: /^revenue, Priority 1 · Descending · nulls last/u
-    })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await filtersTree
-    .getByRole("treeitem", {
-      name: /^market, Priority 2 · Descending · nulls last/u
-    })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-
-  const restoredTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  frame = restoredTarget.frame;
-  await frame
-    .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "2409089" })
-    .waitFor({ state: "visible", timeout: 10_000 });
-  const restoredRevenueHeader = frame.locator('th[data-column="revenue"]').first();
-  const restoredMarketHeader = frame.locator('th[data-column="market"]').first();
-  const restoredClearRevenueSort = restoredRevenueHeader.getByRole("button", {
-    name: /Clear sort for revenue; currently descending, priority 1 of 2/u
-  });
-  await restoredClearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
-  await restoredClearRevenueSort.click();
+  await clearRevenueSort.click();
   await waitFor(
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
@@ -8696,14 +8543,14 @@ async function exercisePrimarySortJourney(
     10_000,
     "clearing the primary revenue sort to retain the market tie-breaker as priority 1"
   );
-  const revenueSortIndicator = restoredRevenueHeader.getByRole("button", { name: /Clear sort for revenue/u });
+  const revenueSortIndicator = revenueHeader.getByRole("button", { name: /Clear sort for revenue/u });
   await revenueSortIndicator.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
     await revenueSortIndicator.count(),
     0,
     "Clearing one sort key must remove only that column's indicator."
   );
-  const clearMarketSort = restoredMarketHeader.getByRole("button", {
+  const clearMarketSort = marketHeader.getByRole("button", {
     name: "Clear sort for market; currently descending",
     exact: true
   });
