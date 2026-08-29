@@ -20,16 +20,7 @@
   <a href="https://github.com/Matt17BR/openwrangler/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
 </p>
 
-> Preview release. Features and behavior may still change.
-
 ## Install
-
-| Editor                      | Support        |
-| --------------------------- | -------------- |
-| VS Code                     | Release-tested |
-| Cursor                      | Release-tested |
-| Other VS Code desktop forks | Experimental   |
-| Browser-hosted `vscode.dev` | Unsupported    |
 
 - **Latest stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler), choose the newest
   stable version from [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler)'s version list, or download the [latest stable GitHub Release](https://github.com/Matt17BR/openwrangler/releases/latest).
@@ -52,6 +43,13 @@ The shallow clone retains `.git` for package source guards without downloading r
 
 Then run `code --install-extension openwrangler-dev.vsix --force` or
 `cursor --install-extension openwrangler-dev.vsix --force`.
+
+| Editor                      | Support        |
+| --------------------------- | -------------- |
+| VS Code                     | Release-tested |
+| Cursor                      | Release-tested |
+| Other VS Code desktop forks | Experimental   |
+| Browser-hosted `vscode.dev` | Unsupported    |
 
 Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package

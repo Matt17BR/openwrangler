@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-29
+
 ### Security
 
 - Dependency lifecycle scripts are disabled for contributor, CI, candidate, packaging, promotion, and release installs.

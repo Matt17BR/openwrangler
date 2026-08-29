@@ -2,11 +2,11 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Open source dataframe workbench for VS Code and Cursor: Pandas and Polars editing, experimental DuckDB file editing and relation viewing, stable PySpark 4.2.x notebook viewing, and preview native R.",
-  "version": "1.99.7",
+  "version": "2.0.0",
   "publisher": "Matt17BR",
   "license": "MIT",
   "packageManager": "npm@11.17.0",
-  "preview": true,
+  "preview": false,
   "repository": {
     "type": "git",
     "url": "https://github.com/Matt17BR/openwrangler.git"
