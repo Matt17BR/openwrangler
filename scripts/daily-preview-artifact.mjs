@@ -2,7 +2,12 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dailyPreviewDateFromVersion, dailyPreviewVersionFromDate } from "./release-metadata.mjs";
+import {
+  classifyNumericReleaseVersion,
+  dailyPreviewDateFromVersion,
+  dailyPreviewVersionFromDate,
+  isDailyPreviewVersion
+} from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
@@ -43,6 +48,7 @@ function inspectVersionSources({ packageJson, packageLock, runtimeVersion }, lab
   const lock = parseStrictJson(packageLock, { maxBytes: 16 * 1024 * 1024 });
   const runtimeMatches = [...runtimeVersion.matchAll(/^__version__ = "([^"]+)"$/gmu)];
   const version = manifest?.version;
+  const classification = classifyNumericReleaseVersion(version);
   if (
     manifest === null ||
     typeof manifest !== "object" ||
@@ -65,14 +71,21 @@ function inspectVersionSources({ packageJson, packageLock, runtimeVersion }, lab
   ) {
     throw new Error(`${label} extension, lockfile, and runtime versions must match.`);
   }
+  if (classification === undefined || manifest.preview !== (classification.channel === "preview")) {
+    throw new Error(`${label} version and preview flag must describe a permitted release channel.`);
+  }
   return { lock, manifest, version };
 }
 
 function renderVersionSources(sources, date) {
-  const version = dailyPreviewVersionFromDate(date);
-  if (version === undefined) throw new Error("A daily preview requires one valid UTC date in YYYYMMDD form.");
   const source = inspectVersionSources(sources, "Source", false);
-  if (source.version === version) throw new Error("A daily preview must not reuse the protected-main version.");
+  if (isDailyPreviewVersion(source.version)) {
+    throw new Error("Protected-main source metadata must not already be a daily preview.");
+  }
+  const version = dailyPreviewVersionFromDate(date, source.version);
+  if (version === undefined) {
+    throw new Error("A daily preview requires one valid UTC date in YYYYMMDD form after its protected-main version.");
+  }
   return {
     packageJson: `${JSON.stringify({ ...source.manifest, preview: true, version }, null, 2)}\n`,
     packageLock: `${JSON.stringify(
@@ -89,8 +102,8 @@ function renderVersionSources(sources, date) {
   };
 }
 
-export function dailyPreviewIdentity(environment = process.env) {
-  const version = dailyPreviewVersionFromDate(environment.PREVIEW_DATE);
+export function dailyPreviewIdentity(environment = process.env, sourceVersion) {
+  const version = dailyPreviewVersionFromDate(environment.PREVIEW_DATE, sourceVersion);
   if (environment.GITHUB_REF !== "refs/heads/main") throw new Error("A daily preview must come from refs/heads/main.");
   if (!FULL_SHA.test(environment.SOURCE_SHA ?? "")) throw new Error("SOURCE_SHA must be one lowercase commit SHA.");
   if (version === undefined) throw new Error("PREVIEW_DATE must be one valid UTC date in YYYYMMDD form.");
@@ -137,6 +150,9 @@ export function inspectDailyPreviewSourceCommit({ commit, expectedParent, releas
     throw new Error("The daily preview commit may change only its three version files.");
   }
   const expected = renderVersionSources(versionSources(sourceRoot, parentCommit), date);
+  if (parsed.version !== expected.version) {
+    throw new Error("The daily preview series does not match its protected-main source.");
+  }
   if (VERSION_FILES.some(([key]) => current[key] !== expected[key])) {
     throw new Error("The daily preview version files differ from their protected-main source.");
   }
@@ -145,14 +161,17 @@ export function inspectDailyPreviewSourceCommit({ commit, expectedParent, releas
 
 export function prepareDailyPreviewCommit({ environment = process.env, root }) {
   const sourceRoot = repositoryRoot(root);
-  const identity = dailyPreviewIdentity(environment);
-  if (git(sourceRoot, ["rev-parse", "--verify", "HEAD^{commit}"]).trim() !== identity.sourceSha) {
+  const sourceSha = git(sourceRoot, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
+  const sourceFiles = versionSources(sourceRoot, sourceSha);
+  const source = inspectVersionSources(sourceFiles, "Source", false);
+  const identity = dailyPreviewIdentity(environment, source.version);
+  if (sourceSha !== identity.sourceSha) {
     throw new Error("Daily preview preparation must start at SOURCE_SHA.");
   }
   if (git(sourceRoot, ["status", "--porcelain=v1", "--untracked-files=all"]).trim() !== "") {
     throw new Error("Daily preview preparation requires one clean source checkout.");
   }
-  const rendered = renderVersionSources(versionSources(sourceRoot, identity.sourceSha), identity.date);
+  const rendered = renderVersionSources(sourceFiles, identity.date);
   for (const [key, path] of VERSION_FILES) writeFileSync(resolve(sourceRoot, path), rendered[key]);
   git(sourceRoot, ["add", "--", ...VERSION_PATHS]);
   const commitDate = `${identity.date.slice(0, 4)}-${identity.date.slice(4, 6)}-${identity.date.slice(6, 8)}T00:00:00Z`;

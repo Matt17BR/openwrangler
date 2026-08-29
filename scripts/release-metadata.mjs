@@ -7,7 +7,9 @@ export const NUMERIC_RELEASE_VERSION = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\
 export const MAIN_RELEASE_BRANCH = "main";
 const LAST_HISTORICAL_TAG_RECOVERY = Object.freeze([1n, 2n, 2n]);
 const LAST_MANUAL_V2_PREVIEW = 7n;
-const DAILY_PREVIEW_VERSION = /^1\.99\.(?<year>[2-9]\d{3})(?<month>0[1-9]|1[0-2])(?<day>0[1-9]|[12]\d|3[01])$/u;
+const PRE_V2_DAILY_PREVIEW_SERIES = "1.99";
+const DAILY_PREVIEW_VERSION =
+  /^(?:1\.99|(?:[2-9]|[1-9]\d+)\.(?:0|[1-9]\d*))\.(?<year>[2-9]\d{3})(?<month>0[1-9]|1[0-2])(?<day>0[1-9]|[12]\d|3[01])$/u;
 
 export function dailyPreviewDateFromVersion(version) {
   const match = typeof version === "string" ? DAILY_PREVIEW_VERSION.exec(version) : null;
@@ -22,16 +24,6 @@ export function dailyPreviewDateFromVersion(version) {
   return `${match.groups.year}${match.groups.month}${match.groups.day}`;
 }
 
-export function dailyPreviewVersionFromDate(date) {
-  if (typeof date !== "string" || !/^\d{8}$/u.test(date)) return undefined;
-  const version = `1.99.${date}`;
-  return dailyPreviewDateFromVersion(version) === date ? version : undefined;
-}
-
-export function isDailyPreviewVersion(version) {
-  return dailyPreviewDateFromVersion(version) !== undefined;
-}
-
 function numericVersionParts(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
   if (match === null) {
@@ -42,6 +34,39 @@ function numericVersionParts(version) {
     BigInt(match.groups?.minor ?? ""),
     BigInt(match.groups?.patch ?? "")
   ]);
+}
+
+function compareNumericVersionParts(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] < right[index]) return -1;
+    if (left[index] > right[index]) return 1;
+  }
+  return 0;
+}
+
+function dailyPreviewSeriesFromSourceVersion(sourceVersion) {
+  const parts = numericVersionParts(sourceVersion);
+  if (parts === undefined) return undefined;
+  return parts[0] < 2n ? PRE_V2_DAILY_PREVIEW_SERIES : `${parts[0]}.${parts[1]}`;
+}
+
+export function dailyPreviewVersionFromDate(date, sourceVersion) {
+  if (typeof date !== "string" || !/^\d{8}$/u.test(date)) return undefined;
+  const series = dailyPreviewSeriesFromSourceVersion(sourceVersion);
+  if (series === undefined) return undefined;
+  const version = `${series}.${date}`;
+  const sourceParts = numericVersionParts(sourceVersion);
+  const previewParts = numericVersionParts(version);
+  return dailyPreviewDateFromVersion(version) === date &&
+    sourceParts !== undefined &&
+    previewParts !== undefined &&
+    compareNumericVersionParts(previewParts, sourceParts) > 0
+    ? version
+    : undefined;
+}
+
+export function isDailyPreviewVersion(version) {
+  return dailyPreviewDateFromVersion(version) !== undefined;
 }
 
 export function isHistoricalTagRecoveryVersion(version) {
@@ -73,9 +98,10 @@ export function classifyNumericReleaseVersion(version) {
   const isLegacyPreview = major === 0n && minor % 2n === 1n;
   const patch = BigInt(match.groups?.patch ?? "");
   const isV2PreviewLine = major === 1n && minor === 99n;
-  if (isV2PreviewLine && patch > LAST_MANUAL_V2_PREVIEW && !isDailyPreviewVersion(version)) return undefined;
+  const isDailyPreview = isDailyPreviewVersion(version);
+  if (isV2PreviewLine && patch > LAST_MANUAL_V2_PREVIEW && !isDailyPreview) return undefined;
   return Object.freeze({
-    channel: isLegacyPreview || isV2PreviewLine ? "preview" : "stable",
+    channel: isLegacyPreview || isV2PreviewLine || isDailyPreview ? "preview" : "stable",
     version
   });
 }
