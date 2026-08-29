@@ -85,6 +85,16 @@ export function createReleasedRRuntimeBinding({
         true,
         "Opening, querying, and closing the native R session must not change its source data.frame."
       );
+      assert.equal(
+        result.tibbleSourceUnchanged,
+        true,
+        "Opening, querying, and closing the native R session must not change its source tibble."
+      );
+      assert.equal(
+        result.tableSourceUnchanged,
+        true,
+        "Opening, querying, and closing the native R session must not change its source data.table."
+      );
       if (result.runtimeBindingPresent === false) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
