@@ -18,9 +18,8 @@ Write the release notes using [the writing guide](writing-style.md). Product cha
 and unrelated documentation land before the release pull request.
 
 Numeric `0.<odd-minor>.x` versions are preview bands. Manual `1.99.N` previews end at `1.99.7`, while automatic daily
-public previews use `1.99.YYYYMMDD`; all require `package.json.preview` to be `true`. The next stable version is
-`2.0.0`. Other numeric versions require `preview` to be `false`. The package verifier rejects a VSIX whose embedded
-manifest disagrees with that channel.
+public previews use `1.99.YYYYMMDD`; all require `package.json.preview` to be `true`. Stable versions require
+`preview` to be `false`. The package verifier rejects a VSIX whose embedded manifest disagrees with that channel.
 
 ## Source and package commands
 
