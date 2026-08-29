@@ -6,63 +6,51 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Security
 
-- Dependency lifecycle scripts are now disabled for contributor, CI, candidate, packaging, promotion, and release
-  installs. The lock contains no lifecycle-script packages, native keytar, or prebuild-install fallback; VSCE
-  credentials fail closed to the existing file/PAT path, and signing resolves only authenticated optional platform
-  packages without dynamic download or native compilation.
-- The Data Wrangler comparison harness now reads requests through one bounded descriptor and rejects same-size path,
-  symlink, and hard-link substitutions before decoding. Result publication uses an exclusive no-overwrite commit and
-  identity-aware cleanup. CodeQL also analyzes every push to protected `main`, keeping default-branch security alerts
-  current for merge protection.
+- Dependency lifecycle scripts are disabled for contributor, CI, candidate, packaging, promotion, and release installs.
+  The lock contains no lifecycle-script packages, native keytar, or `prebuild-install` fallback. VSCE credentials fail
+  closed to the existing file/PAT path, and signing resolves only authenticated optional platform packages without
+  dynamic download or native compilation.
+- The Data Wrangler comparison harness reads requests through one bounded descriptor and rejects same-size path,
+  symlink, and hard-link substitutions before decoding. Results use exclusive no-overwrite publication and
+  identity-aware cleanup. CodeQL also analyzes every push to protected `main`.
 
 ### Changed
 
-- Closed the current notebook fidelity work: the first supported result upgrades automatically after formatter setup
-  ([#659](https://github.com/Matt17BR/openwrangler/issues/659)), Pandas index presentation and export fidelity are
-  complete ([#844](https://github.com/Matt17BR/openwrangler/issues/844)), and verified Native R sessions recover after
-  an R-kernel restart ([#776](https://github.com/Matt17BR/openwrangler/issues/776)).
-- Stable candidate qualification now uses the already-checked protected-main source to package once, run pinned VS
-  Code installed-performance and Cursor platform-smoke against the same bytes, and make only that canonical artifact
-  eligible for promotion. Native R remains a channel-neutral, nonblocking Preview; the Data Wrangler comparison
-  remains optional historical evidence.
-- Native-R notebook sessions now prepare one freshly verified private delegate after an exact correlated kernel-change
-  response, replay confirmed state, and swap runtimes without changing the public session. The failed read or mutation
-  is returned without retry, cancellation and stale ownership fail closed, concurrent failures coalesce, and ordinary
-  R-document and interactive-R recovery keep their existing delegate path. Focused source checks and the installed
-  scalar restart journey cover the recovered path.
-- Registry promotion now verifies only the canonical VSIX, checksum, provenance, channel, and downloaded public VSIX
-  identity. README and gallery image hosting no longer blocks Open VSX or Marketplace publication.
-- Manual `v1.99.7` preview publication now qualifies one canonical protected-main artifact in stable VS Code before an
-  explicit run may hand the same public bytes to the existing Open VSX and Azure Marketplace promoters.
-- Pull-request CI now uses plainly named, path-scoped JavaScript/TypeScript, Python, R, web, Windows, and
-  package/editor jobs. `validate` blocks merge when a selected job fails.
+- Supported first-result output upgrades automatically after formatter setup
+  ([#659](https://github.com/Matt17BR/openwrangler/issues/659)). Named Pandas `Index` and `MultiIndex` row labels
+  display in the grid, with explicit preserve-or-omit export choices
+  ([#844](https://github.com/Matt17BR/openwrangler/issues/844)). Verified Native R sessions recover after an R-kernel
+  restart without retrying the triggering read or mutation
+  ([#776](https://github.com/Matt17BR/openwrangler/issues/776)).
+- Stable candidate qualification packages protected-main source once and runs pinned VS Code installed-performance
+  and Cursor platform-smoke against those same bytes. Only that canonical artifact is eligible for promotion. Native
+  R remains a channel-neutral, nonblocking Preview, and the Data Wrangler comparison remains optional historical
+  evidence.
+- Native-R notebook sessions can recover after a correlated kernel change by preparing a fresh private delegate,
+  replaying confirmed state, and keeping the public session. The failed read or mutation is not retried, and stale or
+  cancelled recovery cannot replace current state.
+- Registry promotion now verifies the canonical VSIX, checksum, provenance, channel, and downloaded package identity.
+  README and gallery image hosting no longer blocks publication.
+- Manual `v1.99.7` preview publication qualifies one canonical protected-main artifact in stable VS Code before an
+  explicit run may publish the same bytes to Open VSX and the Visual Studio Marketplace.
 - Pandas row labels now accept dateutil's bundled timezone implementation on Windows as well as its normal system
   timezone implementation.
-- Updated js-yaml to 5.3.0. Packaging no longer hard-codes one js-yaml release's file size and checksum in several
-  places; it verifies the installed CommonJS file, copies it exactly, includes it in the normal package checks, and
-  verifies its MIT notice.
+- Updated js-yaml to 5.3.0. Packaging verifies and copies the installed CommonJS file and includes its MIT notice
+  without hard-coding one release's file size and checksum in several places.
 - Unexpected workbench render, effect, and message-handler failures now show a keyboard-focused **Reload Open
-  Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow,
-  and the extension host records only a fixed failure category.
+  Wrangler** action instead of leaving a blank editor. Reloading rejoins the existing session synchronization flow.
 - Selecting a grid column header now prepares its complete filtered and sorted data column for **Copy column**.
-  Copied columns start with the column header. Preparation reads one projected page at a time, leaves the visible
-  page unchanged, and retains the existing 100,000-cell and 4 MiB clipboard limits. The redundant inline copy icon
-  has been removed; the footer, column-actions menu, and platform shortcut remain available.
-- The data grid now selects rectangular ranges by mouse or pen drag without native text selection. Shift-modified
-  pointer and keyboard selection still extend the current anchor; Ctrl/Cmd+click explicitly starts a new rectangle
-  because non-contiguous selections are not supported.
-- Development, CI, and packaging now use exactly Node.js 24.19.0 with npm 11.17.0. The maintained-LTS engine policy is
-  `^22.22.0 || ^24.0.0`, deliberately excluding Node 23; one pull-request smoke proves Node 22.23.2 with npm 10.9.8
-  without making it a packaging owner. The minimum extension-host contract remains independently pinned to
-  `engines.vscode` `^1.106.0`, `@types/vscode` 1.106.0, and `@types/node` 22.20.1. The standard check includes a strict
-  dependency-only TypeScript graph, the full development dependency tree is audited, and the lockfile retains Nano ID
-  3.3.18. The repository-only `.node-version` pin is excluded from shipped VSIX packages.
-- Pull-request checks now build and verify the VSIX once in the package-and-editor job. Successful runs retain no
-  coverage, visual, or VSIX artifacts; failed visual checks and sanitized packaged-editor diagnostics remain available.
-  Canonical release artifacts and provenance are unchanged.
-- Supported live dataframes can return from Editing to Viewing while the cleaning plan is empty and no draft is open. The
-  mode control now explains what Viewing preserves, why PySpark, live DuckDB relations, and saved notebook snapshots
-  do not offer cleaning, and how to enable cleaning when an Editing transition is available.
+  Copied columns include the header and retain the existing 100,000-cell and 4 MiB limits. The redundant inline copy
+  icon was removed; the footer, column-actions menu, and platform shortcut remain.
+- The grid now selects rectangular ranges by mouse or pen drag without native text selection. Shift-modified pointer
+  and keyboard selection extend the anchor; Ctrl/Cmd+click starts a new rectangle because non-contiguous selections
+  are not supported.
+- Development, CI, and packaging use Node.js 24.19.0 with npm 11.17.0. Supported Node versions are
+  `^22.22.0 || ^24.0.0`, excluding Node 23. The extension-host floor remains VS Code `^1.106.0` with
+  `@types/vscode` 1.106.0 and `@types/node` 22.20.1; the lock retains Nano ID 3.3.18.
+- Supported live dataframes can return from Editing to Viewing while the cleaning plan is empty and no draft is open.
+  The mode control explains what Viewing preserves and why PySpark, live DuckDB relations, and saved notebook
+  snapshots do not offer cleaning.
 
 ## [1.99.7] - 2026-08-28
 
@@ -77,299 +65,84 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - **Extract regex group** retains its source column and creates one stable output from the selected capture group in
   the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
   engine-native live and generated execution; PySpark remains viewing-only.
-- **Split text into columns** retains its source column and atomically creates 2–64 ordered output columns from one
-  non-empty literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts
-  are ignored across engine-native Pandas, Polars, DuckDB, and Native R execution; PySpark remains viewing-only.
+- **Split text into columns** retains its source column and creates 2–64 ordered output columns from one non-empty
+  literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts are
+  ignored across Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
 
 ### Changed
 
-- Active R-terminal discovery now performs a bounded, serialized reconciliation of vscode-R's read-only workspace
-  metadata every two seconds. This closes the missed-event gap without polling the R process, sending terminal code,
-  overlapping metadata reads, or changing the explicit Refresh fallback.
-- Pull-request CI now runs formatting, ESLint, and TypeScript concurrently and starts the latency-critical R 4.4/4.5
-  matrix after static preflight so it overlaps portable contracts while the protected fan-in still requires both.
-  Native-R contract execution is split into named, independently timed frame, kernel-agent, catalog, and real-R
-  transport phases. This removes the aggregate 120-second Vitest cliff that sat within eight seconds of ordinary
-  hosted runs, keeps serial test ownership and zero retries, and reports the exact failing or timed-out subsystem.
-  Release candidates now prove macOS/Windows packaged portability once in VS Code and keep one pinned Linux Cursor
-  compatibility smoke, removing two identical cross-product fork runs without dropping the Cursor seam that caught
-  the release-run #78 renderer lifecycle defect. Windows/Python 3.14 dependency-guard coverage is likewise owned by
-  the existing complete runtime cell instead of a second cell that executed the same test; focused guard cells remain
-  on Python 3.10 and 3.12.
-  Azure existing-release recovery now performs one anonymous complete Marketplace byte/metadata/icon probe before
-  authentication. An already-exact public version skips workload identity and duplicate publication entirely;
-  pending publication follows the existing WIF and bounded verifier, while conflicting public bytes still fail closed.
-- Product packaging now turns VSCE's private raw output into a deterministic files-only VSIX: bytewise UTF-8 entry
-  order, STORE compression, fixed 1980 ZIP timestamps, exact `100644` ZIP modes, and no comments or extra fields.
-  Package sources are identity/digest-pinned around raw creation and canonicalization, archive parity is required, and
-  a portable source manifest is validated in memory without packaging or publishing it. The approximately 5 MB output
-  remains compatible with ordinary VSIX readers and trades compression for exact cross-build bytes. Publication is an
-  atomic no-clobber hard-link transition from a private sibling (POSIX mode `0700`, with Windows' coarser
-  identity-pinned writable host contract), followed by link-count-one canonical, inventory, source, and manifest
-  revalidation. Failure removes the exact produced public inode only while it remains attributable; a substituted or
-  unknown path is retained and reported as cleanup uncertainty. Disposable nonpublishing previews may exercise this
-  path; any future release candidate requires explicit review, a same-byte soak, and a separate one-shot promotion.
-  Candidate workflow topology, readiness, provenance, and registry publication contracts are unchanged.
+- Active R-terminal discovery reconciles vscode-R's read-only workspace metadata every two seconds without polling the
+  R process or sending terminal code. **Refresh** remains available.
+- Existing-release recovery checks complete public Marketplace bytes, metadata, and icons before authentication.
+  An exact public version skips duplicate publication; conflicting bytes still fail.
+- Product packaging now creates deterministic files-only VSIX archives with fixed entry order, storage mode,
+  timestamps, permissions, and metadata. The approximately 5 MiB archive trades compression for reproducible bytes.
 - Native R now exposes all 32 cleaning operations by adding **Custom Code** after **Transform by Example**. Custom Code
-  accepts at most 64 KiB of exact UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures before
-  evaluation, and requires a local non-active `result` with the same canonical dataframe flavor and at least one
-  column. It supports dynamic rows, columns, row names, and `data.table` keys; duplicate output names reuse input
-  lineage in FIFO order, while genuinely new columns and every output row receive fresh identities. Preview
-  reconciles the active view against the result schema and treats the operation as a full row replacement. Live and
-  executable generated R agree for deterministic code, input, and environment across base, tibble, `data.table`, and
-  ordinary `collapse` frames. Source/result publication is atomic, but the feature executes trusted arbitrary R, not
-  sandboxed code: deliberate filesystem, network, global-environment, or aliased-object side effects are outside the
-  transaction. The public protocol remains v2 while the private R transport advances to v14. Dedicated local-source
-  contracts now enumerate the exact ordered 32-operation catalog, execute production-generated R for every operation,
-  and separately prove byte-exact clipboard and atomic `.R` saves with distinct executable operation-labelled buffers
-  across that catalog. Candidate acceptance requires all 32 advertised capabilities and exercises Custom Code through
-  representative installed R paths, but exhaustive installed execution of every operation and a reviewed performance
-  record remain outstanding, so Native R stays **Partial**. No candidate selector, job, phase,
-  300-second/180-second deadline, or retry changes.
-- The complete native-R catalog owner exposed and fixes two generated/live correctness gaps. **Strip Text** now emits
-  parse-safe generated R for both the default whitespace set and explicit sets that mix control and Unicode
-  characters. **Clone Column** now preserves element names across supported frame flavors and treats classed
-  schema/dataframe-name metadata as plain data, preventing caller-defined S3 name methods from running during binding
-  or generated replay.
-- Native R **Transform by Example** uses ordered stable column references and example rows to produce one
-  deterministic canonical program reused for live evaluation, retained replay, and executable generated R. Strict
-  scalar, UTF-8, program-size, integer-envelope, and signed-zero checks fail before publication; direct contracts
-  cover preview, apply, latest-step edit, replay, inspection, and undo across base, tibble, `data.table`, and ordinary
-  `collapse` frames. To retain margin inside the existing native-R contract and kernel-startup bounds after the larger
-  runtime, the host gzip-compresses the trusted R sources before base64 embedding; base R decompresses them without
-  changing raw-source bundle identity or evaluation semantics.
-- Preview release [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from exact protected
-  `main` commit `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed the candidate and Remote SSH owners, published
-  `v1.99.6` to GitHub and both registries, and completed successfully. Canonical artifact `9240263388` contained the
-  109-entry VSIX with SHA-256 `5a9c6eb7531ccd521c20a08ab2fd3a7d99776ea10d5e48a5eb5756d03b553404`;
-  installed-performance artifact `9240376365` also passed. Its public-media step reached success only after 24
-  retry observations: five were genuine Marketplace stale-version propagation, while 19 were GitHub exact-source
-  Playwright DOM detachments misclassified as propagation. The corrected contract checks GitHub exact source once.
-  One bounded same-page evaluation may absorb an A-to-B image replacement, but B must then remain identical for two
-  consecutive post-scroll frames. The source observation, a navigation with no HTTP response, and escaped browser,
-  DOM, evaluation, scroll, or animation-frame errors are terminal. Exhaustion after a candidate disappears, keeps
-  changing, remains CSS-hidden, has invalid geometry, or produces a complete positive proof that fails to stabilize
-  is also terminal. Only explicitly classified Marketplace or Open VSX observations may use up to 40 fresh registry
-  contexts: a stale version, README content, or immutable image source; an initially missing or incomplete exact-alt
-  image; or an actual non-OK HTTP response. The source check and registry attempts share the unchanged 30-minute
-  deadline. No timeout, retry count, workflow job, phase, or topology is added. Stable v2 remains blocked on this
-  verifier gate until the correction lands on protected `main` and a fresh preview proves that policy.
+  accepts at most 64 KiB of UTF-8 R source, rejects NUL, blank/comment-only input, and parse failures, and requires a
+  local non-active `result` with the same dataframe flavor and at least one column. It supports dynamic rows, columns,
+  row names, and `data.table` keys. The operation runs trusted arbitrary R, not sandboxed code: deliberate filesystem,
+  network, global-environment, or aliased-object side effects are outside the transaction. Exhaustive installed
+  execution and a reviewed performance record remained outstanding, so Native R stayed **Partial**.
+- Native R **Strip Text** now generates parse-safe R for default whitespace and explicit control/Unicode sets.
+  **Clone Column** preserves element names and treats classed schema/dataframe-name metadata as plain data.
+- Native R **Transform by Example** uses ordered stable column references and one canonical program for live
+  evaluation, retained replay, and generated R. Scalar, UTF-8, program-size, integer-envelope, and signed-zero checks
+  run before publication across base, tibble, `data.table`, and ordinary `collapse` frames.
+- Preview [run #79](https://github.com/Matt17BR/openwrangler/actions/runs/31859989213) from protected `main` commit
+  `4ed4d8d4422040dd5f1bcaae274a41fd3fd9cef8` passed candidate and Remote SSH qualification and published `v1.99.6`
+  to GitHub and both registries. The public-media verifier was corrected to distinguish registry propagation from
+  source-rendering failures; stable v2 remained blocked until that correction landed and a fresh preview proved it.
 
 ## [1.99.6] - 2026-08-14
 
 ### Changed
 
-- Preview release [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected
-  `main` commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` published nothing. Canonical artifact `9238748514`
-  retained the exact 1,132,638-byte VSIX with SHA-256
-  `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`; its checksum and preview provenance
-  revalidated, and installed-performance artifact `9238855519` was green. Three raw reds still blocked the fan-in.
-  Linux Cursor `platform-smoke` artifact `9238818316` proved a product renderer-liveness defect: an attached Open
-  Wrangler webview contained no root, app, or grid while the host retained the exact hydrated receipt for the new CSV
-  session. The evidence does not prove which physical retirement event produced that mismatch. Linux native-R core
-  artifact `9238867261` stopped while applying an edited native-R Clone Column step, but its accumulated catalog state
-  and missing dispatch/scheduler/final-state receipts made that result indeterminate acceptance-harness evidence,
-  not proof of a product regression. Linux VS Code literate artifact `9238988590` was a deterministic harness failure:
-  it searched for external `quarto.previewView` while VS Code exposes a WebviewPanel tab through `TabInputWebview` as
-  `mainThreadWebview-quarto.previewView`; the later `ERR_CONNECTION_REFUSED` followed the missed preview ownership and
-  cleanup rather than proving an Open Wrangler failure. The fan-in failed, publication was skipped, and no `v1.99.6`
-  tag, GitHub prerelease, Azure Marketplace package, or Open VSX package was created. These hosted failures remain failed evidence;
-  the corrections below are locally frozen and unhosted.
-- A synchronized renderer now publishes one receipt-bound `rendererRetiring` message after flushing presentation
-  state on a non-persisted `pagehide`. The host accepts only the exact current hydrated session/revision receipt,
-  clears renderer readiness and synchronization, and arms the existing bounded HTML reload without reopening or
-  closing the runtime session. Persisted page transitions and stale, malformed, unhydrated, disposed, or
-  host-replacement receipts are ignored. This covers graceful document retirement; abrupt renderer-process death
-  that emits no lifecycle event remains outside the fix because there is no heartbeat or liveness watchdog.
-- Ordinary candidate `.qmd` acceptance now owns only Open Wrangler's product invariants: the exact title action,
-  session and source identity, generated code/insertion, and cleanup. It no longer dispatches, discovers, waits for,
-  or cleans up Quarto's third-party preview tab, render server, terminal, or HTML. Linux media capture alone keeps one
-  bounded `quarto.preview` command and cleanup lifecycle, identifies the exact prefixed `TabInputWebview`, and proves
-  stable rendered HTML plus the visible preview before capture. No selector, job, phase, deadline, or retry was added.
-- Explicit candidate `core-operations` keeps its existing phase and job positions but replaces the accumulated core
-  catalog journey with one complete installed Clone Column lifecycle: preview, apply, applied-step inspection,
-  editing the same step while retaining its step/output identities, reapply, and undo. Direct native-R, runtime,
-  generated-code, and catalog suites own exhaustive semantics for all 26 operations. Value, categorical,
-  native-frame, restart, default/manual full-catalog, and remote representative behavior are unchanged; there is no
-  new selector, job, phase, deadline, or retry.
-- Preview release [run #77](https://github.com/Matt17BR/openwrangler/actions/runs/31852540354) from protected `main`
-  commit `fdebcc96` published nothing. Installed performance, Cursor literate acceptance, and every other raw lane
-  passed. Linux VS Code literate acceptance retained the exact semantic Quarto preview tab in its owning group, but
-  the final harness assertion required that preserve-focus tab to be active. Run #77 remains failed evidence. Run #78
-  exercised the immediate correction and exposed the separate prefixed-tab identity error recorded above; the
-  post-#78 media-only ownership correction has local coverage but no hosted candidate proof. The existing 300-second
-  hard deadline, 180-second inactivity deadline, and no-retry policy are unchanged.
-- Installed-editor performance no longer samples or gates on whole `/proc` editor-process-tree and Open Wrangler
-  runtime RSS. That observation was coupled to hosted Electron helper timing and could turn successful product,
-  responsiveness, cache, cancellation, and cleanup evidence red for a harness-only reason. The v10 release, v5
-  evidence-only, and v6 smoke envelopes remove the RSS field while retaining exact platform/storage provenance,
-  every numeric threshold, aligned `mincore` cache proof, outstanding filter/sort/profile responsiveness,
-  authoritative cancellation, terminal runtime/session cleanup, and editor ownership uncertainty. The direct-runtime
-  RSS benchmark and the comparison study's Linux process-tree PSS sampler are unchanged. No workflow topology,
-  300-second hard deadline, 180-second inactivity deadline, or retry policy changed.
-- Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) from protected `main`
-  commit `ab6c5815` also published nothing. It finished in 19m19s and used 95m20s of positive-duration runner time; its
-  first raw red arrived at 9m57s. The package job and canonical triple were sound: artifact `9236475759` retained the
-  exact 1,131,460-byte VSIX with SHA-256
-  `b3e321e28439957f3cd404f998316e1f06668c8735c1ec4c4474df6daf04648d`, checksum, and provenance. Every raw lane
-  passed except installed performance, which stopped on auxiliary Linux process enumeration rather than a numeric
-  product gate, and Linux Cursor literate acceptance, whose exact generated-R document was present while its connected
-  CodeMirror scroller and renderer viewport transiently reported 0×0 geometry. The fan-in failed, publication was
-  skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created.
-- Native R ordinary literate acceptance invokes the Open Wrangler Quarto title action directly and owns no
-  third-party preview, render-server, tab, terminal, or HTML lifecycle. Linux screenshot capture alone dispatches the
-  Quarto preview command exactly once, settles that promise within its existing bound, identifies the exact
-  `mainThreadWebview-quarto.previewView` `TabInputWebview`, freezes its tab group and terminal, proves stable visible
-  HTML, and performs bounded cleanup. Generated-R Rename acceptance waits for exact post-draft session/revision hydration,
-  rechecks the bounded host code receipt, and then requires one connected same-generation CodeMirror layout with full
-  positive geometry stable across two animation-frame observations. It neither focuses, resizes, reloads, retries, nor
-  dispatches another editor action. These fixes are locally frozen and covered, but no hosted candidate has proved
-  them; a fresh exact candidate is required under the unchanged 300-second hard deadline, 180-second inactivity
-  deadline, and no-retry policy.
-- Preview release run #72 published nothing after the ordinary local-R phase reached its 300-second hard deadline at
-  numeric Round, Cursor lost the bounded Multi-label Undo acceptance wait, and macOS failed the Drop Columns Code Preview
-  generation/diagnostic bound. Preview and stable release callers now invoke the shared candidate workflow once without
-  a caller matrix. That workflow consumes only release-artifact or live external evidence; the protected pull-request
-  matrix remains the sole owner of the direct R contract. Candidate acceptance balances Linux local R across two
-  matrix shards: lifecycle runs `core-operations`, `kernel-restart`,
-  `interactive-terminal`, then `literate-documents`; editing runs `native-frames`, `value-operations`, then
-  `categorical-operations`, with the full value and categorical catalogs owned by VS Code instead of repeated in
-  Cursor. A separate macOS/Windows `r_platform` matrix runs freshly verified VS Code-only
-  `core-operations`, `native-frames`, then `kernel-restart` phases alongside the generic platform matrix, which no
-  longer performs R setup or a native-R tail. Setup is shared only within a shard or platform cell. Every phase still
-  freshly verifies the exact candidate, starts a fresh requested-editor invocation with private roots, and immediately
-  uploads its own sealed failure evidence before the cell's deferred raw-outcome failure. One output-free fan-in
-  requires literal success from every acceptance job, including `r_platform`, and publication separately requires
-  package, candidate, and Remote SSH success. The manual Released Jupyter workflow remains its existing
-  non-authoritative serial diagnostic path. All editor phases retain their 300-second hard and 180-second inactivity
-  deadlines and are never retried.
-- Native R local acceptance keeps the existing core, value, and categorical phase topology. Explicit candidate core
-  now owns one complete installed Clone Column preview/apply/inspection/edit-same-step/reapply/undo lifecycle instead
-  of accumulating the exhaustive operation catalog. The focused value slice still owns exactly Find
-  and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip
-  text, and Split text, while the focused categorical slice still owns exactly One-hot
-  encode and Multi-label binarize. Explicit candidate `core-operations`, `value-operations`, and
-  `categorical-operations` omit the native-frame scaffold; the fresh `native-frames` selector makes Linux VS Code the
-  sole comprehensive collapse/viewing/Rename/Drop owner while macOS, Windows, and Cursor keep representative native
-  seams. Explicit candidate core also omits embedded restart on
-  Linux, macOS, and Windows because a fresh `kernel-restart` phase owns restart/reopen on each platform. Linux runs both
-  dedicated phases in VS Code and Cursor; macOS and Windows run them in VS Code. Default/unset manual core retains its
-  full catalog, and the remote R journey retains representative embedded behavior. This
-  changes no selector or scheduling edge and preserves a native-frame and restart compatibility seam on every
-  platform. Default/unset manual core retains the full catalog, direct R/runtime/generated-code suites own exhaustive
-  26-operation semantics, and the remote R journey continues its representative behavior including `lowerText`
-  (Lowercase).
-- Release acceptance now follows a one-owner failure-signal rule. Linux VS Code is the sole comprehensive native-R
-  native-frame owner; the installed candidate core phase owns the Clone lifecycle while Cursor, macOS, and Windows
-  keep representative editor/platform seams and focused native/restart phases retain their distinct compatibility
-  coverage. Direct R/runtime/catalog tests own exhaustive operation semantics. Candidate jobs no longer rerun source, coverage,
-  browser-baseline, workflow-contract, or extension-host harness suites that already blocked the protected-main merge.
-  Linux VS Code also owns the sole full generic packaged journey; Linux Cursor and both generic macOS/Windows editors
-  run the focused `platform-smoke` compatibility seam. The package producer owns the single full VSIX
-  inventory/content verification, while consumers retain immediate checksum, provenance, and archive-semantic
-  revalidation.
-  Prepared Python dependencies and private-browser launch are deterministic prerequisites that fail before product or
-  visual assertions, with no PATH interpreter fallback, retry, or deadline increase.
-- Preview release run [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) from protected `main`
-  commit `c7e1635` also published nothing. macOS artifact `9223912246` proved that the Drop Columns reveal's bare
-  `label` substring selected a generic 384-character `.ow_label` helper whose wrapped 210.0157-pixel line exceeded the
-  exact 183-pixel scroller, with no code-receipt or renderer-generation drift. Linux core artifact `9223997830`
-  reached correlated `{ok:true}` and `jupyter-r:complete` at about 299.5 seconds, but its outer process did not settle
-  before the unchanged 300-second deadline, so Cursor core never ran. The fresh value phase passed both editors in
-  6m34s total. The follow-up reveal now selects the one complete `.ow_drop_names` assignment by exact logical-line
-  equality with receipt-only failures, and Formula moves from core into the clean-state-checked value slice. The
-  redesigned topology retained the then-current operation slices while removing unrelated local-R phases from one
-  serial critical path. The later candidate core correction above supersedes that accumulated catalog route without
-  reinterpreting or retrying either failed result.
-- Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) from protected `main`
-  commit `b521f52` measured the redesign at 21m57s versus run #73's 33m15s, a 34% wall-time reduction. Its slower
-  local-R shard finished in 15m19s versus the former 31m15s serial lane, a 51% reduction, while total runner use rose
-  from 119.75 to 130.78 minutes, or 9.2%. macOS became the measured bottleneck at 19m54s. Every raw candidate lane
-  except lifecycle core passed; core reached `restart:start` but its outer process crossed the unchanged 300-second
-  hard deadline. The publication job was skipped, so no `v1.99.6` tag, release, or registry package was created. The
-  follow-up extracts Linux restart/reopen into the dedicated lifecycle phase described above while leaving the
-  existing macOS and Windows core restart journey in place, preserving the 180-second inactivity deadline and
-  no-retry rule while giving Linux restart a fresh 300-second phase budget. Preview run #75 exercised that remediation
-  as described below; run #74 itself remains failed evidence.
-- Preview release [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) from protected `main`
-  commit `917341a` also published nothing. It finished in 21m18s, 39 seconds faster than #74 and 11m57s faster than #73,
-  while consuming 134.07 positive-duration runner-minutes, 3.29 more than #74 and 14.32 more than #73. Its sole raw
-  candidate failure was Linux lifecycle core: VS Code 1.133.0 crossed the 300-second outer deadline at about
-  300.012 seconds after `jupyter-r:orders_table:editing-renderer-ready`, with no product/runtime exception. The fresh
-  Linux `kernel-restart` phase passed in both VS Code and Cursor, the value/categorical editing shard passed, and the
-  macOS and Windows native-R platform journeys, including their embedded restart coverage, passed. macOS nevertheless
-  consumed about 289.66 of its 300-second native-editor budget. The candidate fan-in therefore failed and publication
-  was skipped; no `v1.99.6` tag, GitHub prerelease, or registry package was created. The candidate-only
-  core/native/restart split above removes that remaining combined budget on all three hosted platforms and separates
-  cross-platform native R from the generic platform lane. At that point it was projected to move release wall time
-  toward 20 minutes; run #76 exercised the graph at 19m19s but remained failed evidence because of the two harness
-  blockers recorded above.
-- Cursor's categorical Undo check now uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation
-  completion bound, with no post-dispatch retry. Drop Columns Code Preview acceptance reacquires only a provably replaced
-  renderer generation, reads one exact bounded code receipt, selects one unique complete logical line, scrolls only
-  the exact CodeMirror scroller, and requires two stable same-generation visibility measurements with bounded
-  diagnostics.
-- Open Wrangler now recovers a visible editor whose renderer disappears after **Change Import Options** even when
-  Cursor reports the final host message as delivered. The confirmed session is replayed into a fresh renderer without
-  reopening the source or repeating the import transaction.
-- Native R editing now supports Formula and Format Datetime for supported R frames, including executable generated
-  code. Formula accepts exact numeric columns or a finite scalar. Format Datetime accepts `Date` and `POSIXct`
-  columns, formatting POSIXct values in their declared time zone or UTC when none is declared. Generated scripts also
-  preserve a source already named `open_wrangler_result` by publishing the cleaned frame as `open_wrangler_result_2`.
-- Native R editing now also supports One-hot encode and Multi-label binarize. Missing, `NaN`, blank, and unused-factor
-  categories do not create indicators; generated integer columns use deterministic names and executable R while the
-  selected source columns can be retained or dropped.
-- Native R candidate acceptance now runs the focused R Markdown and Quarto journey in both packaged VS Code and
-  Cursor. The active R-terminal journey also exports CSV and Parquet results through the public picker and Save
-  dialog in packaged Linux VS Code and Cursor, backed by the production terminal transport and a direct atomic-export
-  contract.
-- A fresh Jupyter-owned Quarto Python run now sends one empty selection to create the source-routed Interactive Window,
-  waits for that exact window's marked Jupyter system cell or its user-cell-free canonical auto-selected Python state,
-  and reveals that captured notebook through the stable editor API when Cursor has exposed only Jupyter's proposed REPL
-  view. Because the public kernel picker returns no selection value, Open Wrangler accepts an auto-selected kernel only
-  when canonical nested metadata already names Python; otherwise the
-  picker must produce that explicit metadata. It then restores and revalidates the source and dispatches the real chunk
-  exactly once. Publication and completion remain pinned to that
-  notebook through the shared operation deadline without retry; packaged diagnostics stop as soon as this product path
-  reports terminal failure instead of consuming the later outer inactivity deadline.
-- Canonical stable 2.x artifact authoring now passes the immutable commit's linked performance report and the
-  already-owned candidate VSIX digest into readiness. A report for the release must bind those exact bytes before
-  any canonical output directory can be published.
-- Stable releases at major version 2 or newer now require an exact all-green Native R release matrix with reviewed
-  row-specific evidence. The gate explicitly covers ordinary base, tibble, `data.table`, and collapse frame types,
-  the complete 28-operation catalog, editor/document/export journeys, an R performance record, and first-class
-  VS Code/Cursor candidate acceptance. Preview documentation remains truthful and may retain Partial rows.
+- Preview runs #72 through [#78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) exposed separate
+  native-R, Quarto, renderer-lifecycle, and acceptance-harness failures. Each run published nothing: no `v1.99.6` tag,
+  GitHub prerelease, Visual Studio Marketplace package, or Open VSX package was created. These runs remain failed
+  evidence; run #79 later published `v1.99.6`; its verifier observations prompted the later correction recorded under
+  1.99.7.
+- A synchronized renderer now flushes presentation state before reporting graceful retirement. The host reloads the
+  current renderer without reopening or closing its runtime session. Abrupt renderer-process death that emits no
+  lifecycle event remains outside this fix.
+- A visible editor whose renderer disappears after **Change Import Options** now recovers its confirmed session even
+  when Cursor reported the final host message as delivered. Recovery does not reopen the source or repeat the import
+  transaction.
+- Native R editing added Formula and Format Datetime for supported frames, including generated R. Formula accepts
+  exact numeric columns or a finite scalar. Format Datetime accepts `Date` and `POSIXct` columns and respects the
+  declared time zone, falling back to UTC. Generated scripts preserve a source already named
+  `open_wrangler_result` by publishing the cleaned frame as `open_wrangler_result_2`.
+- Native R editing also added One-hot encode and Multi-label binarize. Missing, `NaN`, blank, and unused-factor
+  categories do not create indicators; generated integer columns have deterministic names, and source columns can be
+  retained or dropped.
+- Native R supported 26 of the then-current 28 cleaning operations. **Transform by Example** and **Custom Code** were
+  unavailable.
+- On Linux, active R-terminal sessions can export the committed result as CSV and, with `nanoparquet` 0.5.1 or newer,
+  Parquet through the public picker and Save dialog. Packaged VS Code and Cursor R Markdown and Quarto sessions on
+  Linux use the same native-R document path, while Jupyter-owned Quarto Python chunks use the exact originating
+  Interactive Window.
+- Jupyter-owned Quarto Python execution now creates or reuses the source-routed Interactive Window, requires an
+  explicit or canonically identified Python kernel, restores the source, and dispatches the real chunk once.
+  Ambiguous kernel selection or provenance stops without retry.
+- Stable 2.x artifact authoring binds the immutable source commit, linked performance report, and candidate VSIX
+  digest before publishing canonical output.
+- At this release, stable major-version-2 readiness required an all-green Native R matrix covering base, tibble,
+  `data.table`, and ordinary `collapse` frames, the then-current 28-operation catalog, editor/document/export
+  journeys, a reviewed R performance record, and VS Code/Cursor candidate acceptance. Preview documentation could
+  still report **Partial** support.
 
 ## [1.99.5] - 2026-08-13
 
 ### Changed
 
-- Preview and stable candidate acceptance now runs Python, local R, and remote R Jupyter in three parallel cells.
-  The remote cell uses only packaged VS Code and the owned Docker R fixture; hosted R, local R packages, the local
-  kernel, native R/Quarto tooling, and the local Cursor journey stay in the local cell. Candidate matrices no longer
-  cancel sibling cells after a failure, so each editor and Docker owner can finish cleanup and publish its available
-  diagnostics. This removes the remote R journey from the local R cell's serial path without removing any acceptance
-  phase.
-- Ready pull requests limited to registered release scripts, their focused tests, and reviewed adjunct documentation
-  now run a fail-closed release-infrastructure tier: fast feedback, canonical VSIX
-  verification, fixed release/media contracts, and real JavaScript/TypeScript CodeQL. Unlisted, mixed, classifier,
-  shared candidate-workflow, product/runtime, and shared-dependency changes retain the full matrix, while carrier
-  cells preserve every required check name.
-- Preview and stable Remote SSH jobs now start from the packaged artifact in parallel with the candidate
-  matrix, saving about three minutes of successful release wall time. Publication still requires the package, every
-  matrix lane, and Remote SSH, so no evidence was removed. On a candidate failure, Remote SSH may finish to preserve
-  its deterministic editor and namespace cleanup.
-- Release-candidate R acceptance now uses the same commit-pinned dependency action, explicit package set, and
-  resolved-lock/binary-package policy as the pull-request R matrix. Later candidate dispatches may reuse a compatible
-  cache created on `main`; the first matching `main` dispatch installs the full set before the existing contract and
-  packaged-editor checks.
+- Release-candidate R environments now use the same commit-pinned dependency action, explicit package set, and
+  resolved-lock/binary-package policy as pull-request checks.
 
 ### Fixed
 
-- Microsoft Marketplace recovery now reuses its existing bounded public-release poll when an anonymous GitHub
-  metadata or asset request rejects before returning an HTTP response. The fixed diagnostic retains no request URL or
-  transport cause. Existing explicitly pending HTTP/release observations keep their prior poll behavior; response-body
-  reads, release validation, filesystem work, authentication, and publication remain single-attempt boundaries.
+- Visual Studio Marketplace recovery now reuses its bounded public-release poll when an anonymous GitHub metadata or
+  asset request fails before returning an HTTP response. Response-body, release-validation, filesystem,
+  authentication, and publication failures remain single-attempt boundaries.
 
 ## [1.99.4] - 2026-08-13
 
@@ -388,207 +161,115 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- R dataframes can now scale integer, double, and `integer64` columns to the 0–1 range, either in place or into a new
-  column. Preview, apply, and generated R produce the same result. The step can also be inspected or undone.
-- True and False counts can now filter a Boolean column from either its grid-header profile or the Column profiles
-  panel. They use the same removable filter chips, undo history, and clear action as other view filters.
-- Active viewing filters now stay visible above the grid as typed, individually removable chips. **Clear filters**
-  keeps the current sort order, while **Undo latest filter** restores only the most recent confirmed filter state and
-  remains separate from cleaning-plan **Undo**. Failed, cancelled, superseded, recovered, and schema-mutating work
-  cannot add stale entries to the bounded filter history.
+- R dataframes can scale integer, double, and `integer64` columns to the 0–1 range, in place or into a new column.
+  Preview, apply, inspection, undo, and generated R produce the same result.
+- True and False counts can filter a Boolean column from either its grid-header profile or the Column profiles panel.
+- Active viewing filters stay visible above the grid as typed, individually removable chips. **Clear filters** keeps
+  the current sort, while **Undo latest filter** restores only the most recent confirmed filter state and remains
+  separate from cleaning-plan **Undo**.
 
 ### Changed
 
-- Quarto and R Markdown front matter now uses the same js-yaml 5.2.3 parser through one exact vendored CommonJS
-  runtime asset. Production and test builds verify its 122,488-byte SHA-256 receipt, package verification admits only
-  that vendor filename, and Remote SSH acceptance proves the compiled CommonJS closure resolves it without ambient
-  workspace dependencies. Historical registry verification derives this capability independently from R support, so
-  1.99.0–1.99.2 artifacts may predate it while 1.99.3 and future 2.x sources fail closed if their tracked marker or
-  exact packaged asset is missing. Parsing behavior is unchanged.
-- The README now separates the stable release, published previews, and current `main` source. `npm run package:dev`
-  builds `openwrangler-dev.vsix` from the current checkout without running the release test matrix.
-- Ready pull requests now run source and contract preflight before starting the heavier UI, engine, package, and
-  editor jobs. A preflight failure stops work that can no longer make the pull request pass; green pull requests run
-  the same checks as before.
-- Preview and stable candidates now run Python and R Jupyter acceptance in separate fail-fast jobs. Both jobs verify
-  the same candidate VSIX, and a failure identifies the affected runtime without waiting for the other editor command.
-- Operations now reads the dataframe list maintained by vscode-R without sending an automatic terminal command.
-  Existing sessions use vscode-R's current workspace tree, while terminal startup checks both that tree and its attach
-  files. An overwritten or foreign attach record no longer leaves the sidebar waiting for a minute. Opening a listed
-  dataframe or choosing Refresh makes the explicit native connection.
-- Column profiles now use one Counts/% setting in both the grid headers and the profile panel. The grid footer exposes
-  the switch before a profile is opened, and **More values…** opens the longer value list when a compact profile omits
-  categories.
-- Preview and stable candidates now run macOS, Windows, Linux, performance, and Jupyter checks in one fail-fast
-  matrix. Once a check fails, GitHub cancels the remaining cells. Remote SSH runs afterward so cancellation cannot
-  interrupt its cleanup.
-- Editor, performance, and webview failures now upload available diagnostics before failing their job. The failure
-  is raised immediately after the upload, so later acceptance work in that job does not start.
-- Dispatching a newer manual Released Jupyter check now cancels an older run of the same target instead of waiting
-  for a known-obsolete editor journey to finish.
-- Installed-editor performance now measures 200 cached transitions and fails when at least 16 take 100ms or longer.
-  Every sample is retained, with no trimming or retry.
+- Quarto and R Markdown front matter now uses js-yaml 5.2.3 through one vendored CommonJS runtime asset. Historical
+  registry checks allow 1.99.0–1.99.2 packages to predate that asset; 1.99.3 and later packages require it. Parsing
+  behavior is unchanged.
+- The README now distinguishes the stable release, published previews, and current `main` source.
+  `npm run package:dev` builds `openwrangler-dev.vsix` from the checkout without running the release matrix.
+- Operations reads vscode-R's dataframe list without sending an automatic terminal command. Opening a listed
+  dataframe or choosing **Refresh** makes the explicit native connection.
+- Column profiles uses one Counts/% setting in grid headers and the profile panel. **More values…** opens the longer
+  value list when a compact profile omits categories.
 
 ### Fixed
 
-- R/Quarto release-tooling downloads now make at most three attempts only when the initial transport promise rejects,
-  with cancellable 2-second and 4-second waits inside the same 10-minute per-artifact budget. Non-success HTTP
-  responses, body, integrity, filesystem, extraction, version, and editor failures remain single-attempt. Download
-  failures use fixed redacted artifact diagnostics; native editor deadlines and the no-retry phase policy are unchanged.
-- Focused Python Quarto release acceptance now creates a private core Jupyter environment pinned to Jupyter Client
-  8.9.1 and the reviewed runtime versions, registers its exact interpreter with the prepared R environment, and proves
-  one direct kernel start, Pandas execution, and shutdown before VS Code starts. The probe remains in the runner-owned
-  process tree or Windows Job with bounded cleanup. Hosted IPykernel 7.x drift can no longer change this gate, and no
-  retry or timeout was added.
-- Remote R release acceptance now builds its snapshot-pinned base image, R runtime image, and server
-  launch/readiness stage under independent 300-second hard and 180-second inactivity budgets. Exact Docker engine,
-  image, and owner receipts stay in process between stages; cleanup runs in reverse and still withholds all failure
-  evidence when ownership cannot be proven.
-- When hiding the taller header distributions is enough to expose a complete data row in a short editor, Open
-  Wrangler now does so automatically. Exact Missing, Distinct, and numeric Min/Max values stay visible, distributions
-  return as the layout changes, and the Header profiles toggle keeps the user's choice throughout.
-- Preview and stable candidate lanes now validate the requested runner label instead of GitHub's reserved host OS
-  variable, so all five acceptance lanes start with the intended configuration.
-- R chunks launched from Quarto or R Markdown now resolve relative paths from the document folder and restore the
-  active R terminal's previous working directory afterward, including when the chunk fails.
-- Quarto and R Markdown cells now reuse the R session Open Wrangler is already tracking. If there is no R session,
-  Open Wrangler starts one through the R extension instead of asking the user to do it first. Automatic dataframe
-  discovery waits until the cell has finished, so it cannot interrupt the picker.
-- A dataframe produced by the first Python notebook execution now gets an **Open in Open Wrangler** cell action when
-  the automatic formatter was not ready yet. The action opens that exact executed result from the same notebook and
-  kernel; it does not run the cell again. The action appears only after a type check that leaves notebook history
-  unchanged, disappears on kernel restart, and cannot retarget to a replacement kernel or new split.
-- Grid cells now expose **Keep only this value** and **Exclude this value** from a small hover action, right-click,
-  or the keyboard context-menu shortcut. The filter uses the cell's typed value, so large integers, booleans, nulls,
-  and NaN are not confused with similarly formatted text.
-- Notebook expressions such as `frame.head()` and `frame.tail()` now keep a live link behind their inline
-  **Open in Open Wrangler** button. Clicking it opens that exact result from the same kernel instead of showing a
-  rerun instruction. Old saved outputs without a live link stay readable inline but do not show a button that cannot
-  work.
-- **Open in Open Wrangler** now routes `.qmd` and `.Rmd` editors by both the exact cursor-owned fence and the document
-  executor. R Markdown and knitr/reticulate Quarto Python chunks stay in a pinned exact R terminal; only Jupyter-owned
-  Quarto Python chunks use an Interactive Window. Required integrations are checked before a terminal or kernel is
-  requested. R-backed chunks evaluate and discover dataframes in one request bound to the captured terminal, so a
-  detached multiline send cannot race discovery. Executor metadata now uses bounded YAML parsing and ignores faux
-  fences in display math, raw TeX, and raw HTML. The action fails closed for ambiguous metadata or terminal
-  replacement and asks explicitly when both existing R and Python sessions are available. The public **Run R
-  Document** command remains whole-document; the title action owns cursor-only execution.
-- Large R dataframes no longer lose column or dataset profiles at the former row and cell limits. Cheap statistics
-  stay exact through bounded chunk scans; sampled distributions, unavailable distinct counts, percentage denominators,
-  and duplicate-row sample sizes are labeled explicitly.
-- The Filters view now opens on multi-million-row R dataframes with a labeled 100,000-row initial sample. Searching
-  scans the R column in chunks and returns exact matching counts instead of stopping at the old one-million-row limit.
-  Broad searches that exceed the bounded distinct-match state ask for a narrower term instead of exhausting R memory.
-- R dataframes now open when an atomic or classed column carries an ordinary aligned `names` attribute. Malformed
-  names metadata and unrelated column attributes are still rejected.
-- Python Interactive windows now expose **Open in Open Wrangler** in their native toolbar in VS Code and as a pinned
-  editor-title action in Cursor. The action lists dataframes from that exact live kernel, and Operations refreshes
-  from the same window instead of asking the user to return to the source `.py` cell.
-- Public README checks now retry when a registry page replaces an image while Playwright is inspecting it. Other
-  rendering failures still stop immediately.
+- R/Quarto tooling retries only initial transport failures, with bounded waits inside the existing per-artifact
+  budget. HTTP, integrity, filesystem, extraction, version, and editor failures remain single-attempt.
+- Short editor layouts hide header distributions when needed to expose a complete data row. Missing, Distinct, and
+  numeric Min/Max values remain visible, and distributions return when space permits.
+- R chunks launched from Quarto or R Markdown resolve relative paths from the document folder and restore the active
+  R terminal's previous working directory, including after failure.
+- Quarto and R Markdown cells reuse the R session Open Wrangler already tracks. If none exists, Open Wrangler starts
+  one through the R extension and waits until execution finishes before discovering dataframes.
+- A dataframe produced by the first Python notebook execution gains **Open in Open Wrangler** when automatic formatter
+  setup was not ready. The action opens that exact result from the same notebook and kernel without rerunning the cell.
+- Grid cells expose **Keep only this value** and **Exclude this value** through hover, context menu, and keyboard.
+  Filters use typed values, distinguishing large integers, booleans, nulls, NaN, and similarly formatted text.
+- Notebook expressions such as `frame.head()` and `frame.tail()` retain a live link to their exact result. Saved
+  outputs without a live link remain readable but do not offer an unusable open action.
+- **Open in Open Wrangler** routes `.qmd` and `.Rmd` cells by the exact cursor-owned fence and document executor.
+  R-backed chunks stay in a pinned R terminal; Jupyter-owned Python chunks use an Interactive Window. Ambiguous
+  metadata or replaced terminals fail, and the user chooses when both R and Python sessions are available.
+- Large R dataframes retain column and dataset profiles beyond the former row/cell limits. Cheap statistics remain
+  exact; sampled distributions and unavailable counts are labeled.
+- Filters now opens on multi-million-row R dataframes with a labeled 100,000-row initial sample. Search scans in
+  chunks for exact match counts and asks for a narrower term when distinct-match state would exceed its bound.
+- R dataframes open when an atomic or classed column has an ordinary aligned `names` attribute. Malformed names
+  metadata and unrelated attributes are still rejected.
+- Python Interactive windows expose **Open in Open Wrangler** in the VS Code toolbar and Cursor editor title. The
+  action lists dataframes from that exact live kernel, and Operations refreshes from the same window.
 
 ## [1.99.2] - 2026-08-10
 
 ### Added
 
-- Operations now lists dataframes from the active IRkernel notebook, including base data frames, tibbles, data
-  tables, and ordinary frames created by `collapse::qDF()`, `qTBL()`, and `qDT()`. Its refresh action follows the
-  active notebook or selected VS Code R terminal instead of being Python-only.
-- R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
-  first, or last. Results stay a base data frame, tibble, or data.table to match the input and use the usual preview,
-  code, history, edit, and undo flow.
-- Live notebook variables that open in Viewing mode now have a **Switch to Editing** button in the dataframe toolbar.
-  The session keeps its filters, sorts, column widths, selection, and scroll position when the editing runtime opens.
-- Open Wrangler can now list and open dataframes from the selected terminal created by the official VS Code R
-  extension. **Show R dataframes** and **Refresh R dataframes** stay at the top of Operations. If that terminal closes,
-  **Start R and show dataframes…** opens a replacement session in one step.
-- Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
-  before publication. Preview candidates already used this gate.
-- Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
-  Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks. The explicit local Windows document actions
-  are hidden, while the stable title action can open from an active R terminal. Remote and Command Palette entry
-  points remain available. Remote R-document execution is still experimental and is
-  not part of the release matrix. These jobs keep the native Python environment smoke but leave the full Python suite
-  to Linux.
-- Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`
-  0.5.1 or newer. The R process writes the file directly, and the extension streams it through the same atomic Save
-  path used by CSV.
-- Fill Missing Values previews now report the exact number of values that are still missing in the target column.
-  The count covers the complete cleaned dataframe, not just the visible grid block.
-- Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An
-  optional maximum gap leaves longer missing runs untouched. The calculation order is part of the cleaning step and
-  does not reuse viewing sorts.
-- Missing numeric, text, categorical, and boolean values can now use a statistic calculated separately within one or
-  more grouping columns. All-missing groups and tied most-common values stay missing.
-- Floating-point columns can now interpolate missing runs along a numeric, date, or date-time coordinate. Leading and
-  trailing gaps stay missing, and an optional run limit leaves longer gaps unchanged.
+- Operations lists dataframes from the active IRkernel notebook, including base data frames, tibbles, data tables, and
+  ordinary frames created by `collapse::qDF()`, `qTBL()`, and `qDT()`.
+- R can group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count, first,
+  or last. Results retain the input's base data frame, tibble, or `data.table` flavor.
+- Live notebook variables opened in Viewing mode have a **Switch to Editing** button that preserves filters, sorts,
+  column widths, selection, and scroll position.
+- Operations can list and open dataframes from a selected official VS Code R terminal. **Show R dataframes**,
+  **Refresh R dataframes**, and **Start R and show dataframes…** manage that session explicitly.
+- VS Code R notebooks now cover macOS and Windows. macOS VS Code also supports the `.R`, `.Rmd`, and `.qmd` document
+  paths. Explicit local Windows document actions remain hidden; the stable title action can open from an active R
+  terminal. Cursor remained Linux-only, and remote R-document execution remained experimental.
+- Local R notebook and R document sessions can export committed results as Parquet with `nanoparquet` 0.5.1 or newer.
+  R writes the file directly, and the extension streams it through the same atomic Save path used by CSV.
+- Fill Missing Values previews report the exact remaining missing count for the complete cleaned dataframe.
+- Fill Missing Values can use previous or next values after explicit sorting, with an optional maximum gap. The
+  explicit sort is stored in the cleaning step and does not reuse viewing sorts.
+- Missing numeric, text, categorical, and Boolean values can use a statistic calculated within grouping columns.
+  All-missing groups and tied most-common values remain missing.
+- Floating-point columns can interpolate missing runs along a numeric, date, or datetime coordinate. Leading,
+  trailing, and over-limit gaps remain missing.
 
 ### Changed
 
-- Extension and repository tags now call out support for desktop VS Code forks instead of repeating the product name.
-- Clickable grid headers, column-search results, and filter values now use consistent pointer, hover, and keyboard
-  focus feedback.
-- Numeric histograms now use one full-chart control instead of a separate tab stop for every bin. Moving the pointer
-  still selects the exact bin, while arrow keys choose a bin and Enter or Space applies its filter. Category values
-  also keep a usable click target at reduced zoom.
-- The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
-  columns, and manual replacement. The fallback choice is labeled **Fallback columns (same row)**, and the menu names
-  the selected column type so it is clear why options appear or disappear.
-- Generated R now lays out Group and aggregate calls across several lines so the selected keys and output names are
-  readable in Code Preview.
-- Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
-- The GitHub About description, Marketplace link, and topics now follow checked-in repository metadata with a live
-  release check.
-- The README performance section now summarizes the comparison in plain language and keeps version-specific details
-  in the linked report.
+- Extension and repository tags now describe support for desktop VS Code forks instead of repeating the product name.
+- Clickable grid headers, column-search results, and filter values use consistent pointer, hover, and keyboard focus.
+- Numeric histograms use one full-chart control. Pointer movement selects a bin; arrow keys navigate and Enter or
+  Space applies the filter. Category targets remain usable at reduced zoom.
+- Fill Missing Values groups its methods into column statistics, grouped statistics, ordered data, fallback columns,
+  and manual replacement, and labels the selected column type.
+- Generated R lays out Group and aggregate calls across multiple lines.
 
 ### Fixed
 
-- Sort-priority actions are now available from each Filters / Sorts row's context menu. The inline controls remain,
-  but a narrow VS Code or Cursor sidebar can no longer make reordering inaccessible.
-- Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column
-  panel no longer jumps back to the previously selected column.
-- Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
-  **Clear** action visible immediately, including while the filtered profile reloads.
-- **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action
-  now depends only on the active file, so it is available before R or Quarto activates.
-- Opening a dataframe from that R tab action now reuses the dataframe list already shown in Operations, avoiding a
-  second connection to the same R session.
-- R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
-  external chunk content, and explain when a document contains no R cells.
-- **Show R dataframes…** in Operations now reads the selected R terminal on the first click. Previously it opened an
-  empty picker until the separate refresh command had run.
-- The **Open in Open Wrangler** action on `.R`, `.Rmd`, and `.qmd` tabs now opens a dataframe from the selected official
-  R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
-  the tab menu.
-- The `.py` editor action now asks for a kernel when Jupyter opens an unconfigured Interactive Window, restores the
-  source and cursor, and waits for the exact new cell before looking for dataframes. This also works when Jupyter adds
-  its empty Markdown placeholder before kernel selection. If Jupyter does not confirm what happened, Open Wrangler
-  stops instead of running the cell again.
-- Discarding the only Python cleaning draft, or undoing the only applied step, now clears Code Preview instead of
-  leaving an identity function behind.
-- Notebook, Python Interactive, R-file, and active-R dataframe pickers now let Quick Input return focus before opening
-  the dataframe tab. This prevents Cursor from leaving the new tab without a running renderer.
-- Consecutive cleaning actions on non-cancellable runtimes no longer wait behind automatic profiling that restarted
-  immediately after the previous step. Opening Column profiles still starts the selected profile right away.
-- Opening **Column profiles** now lets the selected column run beside an active header profile. Its statistics no longer
-  wait for that passive scan or the unrelated profiles still queued behind it.
-- Dataframes opened from the active R terminal now show **Switch to Editing** in Viewing mode, matching the
-  transition already available from live R notebook variables.
-- **Open in Open Wrangler** now appears immediately in trusted Python `.py` editors, including before Jupyter has
-  detected the file's cells. It runs an ordinary file in Python Interactive, or only the cell under the cursor when
-  the file uses `# %%` markers.
-- The operation search icon now stays inside the search field.
-- The getting-started walkthrough now distinguishes editable DuckDB file sessions from view-only notebook
-  relations.
-- Editing the latest R Group and aggregate step now keeps filters and sorts on its aggregation results. Applying the
-  replacement and then undoing it also clears view rules that no longer exist in the restored source schema.
-- Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
-  was pushed to GitHub but remained absent from the runner, which stopped Open VSX publication after the GitHub
-  release had already succeeded.
-- Marketplace promotion now lets the public package check decide whether a nonzero `vsce publish` result actually
-  failed. Microsoft can accept an upload before the CLI returns; authentication and artifact checks still stop
-  immediately.
+- Sort-priority actions remain accessible from each Filters / Sorts row's context menu in narrow sidebars.
+- Applying a profile filter preserves the selected column, and the profile shows the active filter and **Clear**
+  action while results reload.
+- **Open in Open Wrangler** is visible immediately for supported `.R`, `.Rmd`, and `.qmd` tabs and can reuse the
+  dataframe list already shown in Operations.
+- R Markdown and Quarto keep commas inside nested chunk options, skip valid `eval=FALSE` external-content cells, and
+  explain when no R cells are present.
+- **Show R dataframes…** reads the selected terminal on its first invocation.
+- The `.py` editor action handles an unconfigured Interactive Window, preserves source/cursor state, and waits for the
+  exact new cell. Indeterminate dispatch stops instead of rerunning.
+- Discarding the only Python draft or undoing the only applied step clears Code Preview.
+- Notebook, Python Interactive, R-file, and active-R pickers let Quick Input return focus before opening the dataframe.
+- Consecutive non-cancellable cleaning actions no longer wait behind profiling restarted after the prior step.
+  The selected Column profile can also run beside an active header profile.
+- Active-R dataframes opened in Viewing mode now offer **Switch to Editing**.
+- **Open in Open Wrangler** appears immediately in trusted `.py` editors and runs either the ordinary file or the
+  current `# %%` cell.
+- The operation search icon stays inside its field, and Getting Started distinguishes editable DuckDB files from
+  viewing-only notebook relations.
+- Editing the latest R Group and aggregate step preserves compatible filters and sorts; undo removes rules that no
+  longer exist in the restored schema.
+- Release publication creates the exact local tag before registry checks, preventing Open VSX promotion from missing
+  a tag already pushed to GitHub.
+- Visual Studio Marketplace verification now determines whether a nonzero `vsce publish` result actually failed when
+  Microsoft accepted the upload before the CLI returned.
 
 ## [1.99.1] - 2026-08-07
 
@@ -668,178 +349,92 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- Added **Convert Trusted Pickle to Parquet…** to the file menu for local `.pkl` and `.pickle` files. The command
-  names the selected Python interpreter, requires confirmation before loading the pickle, accepts Pandas DataFrames,
-  and saves the result as a separate Parquet file instead of overwriting the pickle.
+- Added **Convert Trusted Pickle to Parquet…** for local `.pkl` and `.pickle` files. The command names the selected
+  interpreter, requires confirmation before loading executable pickle content, accepts Pandas DataFrames, and saves a
+  separate Parquet file without overwriting the source.
 
 ### Changed
 
-- Open VSX recovery now verifies public screenshots with the media rules from the exact release tag, rather than a
-  different inventory from `main`.
-- Registry recovery now checks historical v1 packages against the files shipped by their exact release tag. Packages
-  from before the R runtime may omit its frame-contract file; current packages and Open Wrangler 2 releases may not.
-- After a pull request is merged, pushes to `main` and `release/1.x` now run just `Fast feedback` instead of repeating
-  the full matrix. Ready pull requests still run every required check, and release candidates run the complete matrix
-  again against the package that may be published.
-- Replaced a 1.5-second timer in the Windows dependency-lock test with a signal from the parent test process. Slow
-  process startup can no longer make the validation subprocess miss the lock.
-- Benchmark result validation now checks the bytes it actually read instead of checking the path first, closing a
+- Open VSX and historical-registry recovery now verify public packages and screenshots against their exact release
+  tags. Packages from before the R runtime may omit its frame-contract file; current packages and Open Wrangler 2 may
+  not.
+- Benchmark result validation now checks the bytes it read rather than checking the path first, closing a
   file-replacement race.
 
 ## [1.2.1] - 2026-08-04
 
 ### Changed
 
-- Pandas profiles no longer scan ordinary numeric, boolean, date, and duration columns in Python just to count
-  missing values. In the 1 million × 20 Parquet test, profiling all 20 columns dropped from about 21 seconds to 6.5
-  seconds.
+- Pandas profiles no longer scan ordinary numeric, Boolean, date, and duration columns in Python only to count missing
+  values. Profiling the 1 million × 20 Parquet fixture dropped from about 21 seconds to 6.5 seconds.
 - Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and full-profile
   measurements across Pandas, Polars, CSV, and Parquet. The
   [full report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-  includes p95, memory, outcome counts, and exact versions.
-- PySpark notebook sessions now show the first page without indexing, counting, and caching the entire DataFrame. The
+  records p95, memory, outcomes, method, and exact versions.
+- PySpark notebook sessions show the first page without indexing, counting, and caching the entire DataFrame. The
   total appears after the final page, and a changed page boundary asks the user to reopen the variable.
 - Generated columns stay in view when Cursor opens Code Preview and resizes the grid.
-- README and gallery screenshots now use lossless 2× captures. Post-release checks catch missing or downscaled images
-  on GitHub, the Visual Studio Marketplace, and Open VSX.
-- Pull requests now cancel superseded work, use shorter paths for documentation and package-only changes, and avoid
-  repeating the same full test suites. Product changes still run packaged VS Code and Cursor, notebook,
-  visual/accessibility, performance, and platform checks against one checksummed VSIX.
-- Editor failure reports now have fixed memory and time limits, preventing malformed or oversized diagnostics from
+- Editor failure reports have fixed memory and time limits, preventing malformed or oversized diagnostics from
   exhausting a developer machine.
-- Stable and preview publishing now sends one checksummed VSIX to GitHub, Open VSX, and the Visual Studio Marketplace.
-  GitHub release notes come from the tagged commit, and public releases are verified before either registry receives
-  them.
-- Stable v1 fixes ship from `release/1.x`. Future Open Wrangler 2 previews use the reserved `1.99.x` versions on
-  `main` before the project moves to 2.x.
-- The Data Wrangler comparison now works with current ipykernel connection arguments, and its Python 3.12 fixture
-  includes Polars.
+- Stable and preview publication sends one checksummed VSIX to GitHub, Open VSX, and the Visual Studio Marketplace.
+  GitHub release notes come from the tagged commit, and the public release is verified before registry publication.
+- Stable v1 fixes ship from `release/1.x`. Open Wrangler 2 previews use reserved `1.99.x` versions on `main` before
+  the project moves to 2.x.
+- The Data Wrangler comparison works with current ipykernel connection arguments, and its Python 3.12 fixture includes
+  Polars.
 
 ## [1.2.0] - 2026-08-01
 
 ### Changed
 
-- Terminal missing-dependency panels no longer inherit stale grid-loading state, so the confirmed dependency-install
-  action remains usable after a failed open in Cursor while still excluding an in-progress import change or install.
-  Packaged-editor failures now retain bounded button and persisted-replay state instead of an ambiguous timeout.
-- Bounded local and CI JavaScript-test memory: portable Node contracts, ordinary/V8-coverage Vitest suites, and V8
-  coverage remapping now run with at most four test files or workers, while the PNG-heavy README media verifier runs
-  alone under a 1 GiB V8 heap ceiling. Pixel drift and large editor-fixture preservation failures report only the
-  first differing coordinate or byte instead of constructing multi-million-byte assertion diffs, preventing a stale
-  capture or changed fixture from exhausting the desktop process during packaging.
-- Native Filters / Sorts priority actions now use opaque provider-owned handles instead of JavaScript class identity.
-  Structurally cloned tree items therefore work in Cursor as well as VS Code, unrelated profiling and selection
-  updates no longer churn the native sort tree, and stale, ambiguous, or unavailable actions explain why they were
-  not applied instead of failing silently.
-- Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
-  preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
-  webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.
-- Updated the optional Data Wrangler comparison for its real first-use UI. It selects the exact notebook kernel,
-  waits for temporary duplicate controls to settle, and stops on persistent ambiguity or connection failures. These
-  early results were diagnostic only and were not used for performance claims.
-- Local PySpark Classic and Connect variables now invalidate cached blocks when their dataframe is replaced or
-  their Spark session stops. Recreating the same variable with the same schema lets the next current read reopen
-  it on the exact originating notebook and kernel while preserving confirmed filters, ordered sorts, selection,
-  widths, and viewport. A changed schema fails closed with reopen guidance; terminal cleanup faults retire only
-  their exact kernel mapping and remain visible as diagnostics.
-
-- Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant
-  positions, while duplicate and unnamed columns retain 1-based positions and stable identities so selections
-  remain unambiguous and accessible.
-- Pinned and auto-detected PySpark notebook launches now verify strict PySpark 4.2.x inside the bridge's exact
-  selected kernel generation immediately before runtime open dispatch. Kernel switches and restarts invalidate and
-  reprobe before session publication. Picker and opening-stage copy explicitly label the session viewing-only and
-  warn that opening scans, indexes, and caches the complete DataFrame. Focused Classic and Connect tests prove real
-  owned-cache eviction without stopping the user's session, and packaged-kernel fixtures now trap Pandas/Arrow
-  conversions. External or authenticated Connect remains experimental and is not claimed by this evidence.
-- Split pull-request quality/contracts, visual/accessibility, production audits, packaged VS Code, native script,
-  native extension-host, and Cursor smoke into independently attributable jobs. The existing protected `validate`
-  context is now a fail-closed aggregate, so failed, cancelled, absent, or unexpectedly skipped evidence cannot
-  satisfy the merge gate.
-- Packaged editor acceptance now validates its prepared Python environment before starting VS Code or Cursor, so
-  unsupported Python versions and missing Pandas, Polars, DuckDB, or OpenPyXL fail during setup instead of after a
-  long workbench launch.
-- Notebook-kernel requests now use fresh never-cancel Jupyter tokens. Host deadlines and panel disposal detach and
-  stale-ignore instead of sending a kernel-wide interrupt, because PySpark's default SIGINT handler can cancel
-  unrelated Spark jobs even when Open Wrangler is opening or paging another dataframe engine. A detached live open
-  queues one bounded close on its exact originating kernel; a correlated late response still retires that mapping.
-  Kernel and standalone runtimes now produce `unknown_session` from a typed exception carrying the exact session ID
-  rather than attempting to infer absence from an error message.
-- Added honest, accessible progress while every live notebook variable connects to its kernel, prepares the
-  bundled runtime, and opens the variable, including automatic backend detection. Pinned and auto-detected
-  PySpark opens use dedicated final-stage copy explaining that their stable view scans, indexes, and caches the
-  complete frame to establish row positions and an exact total.
-- Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
-  filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
-  sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
-  demonstrated capability without presenting fixture sizes as dataframe limits.
-- Added concise installed-editor performance evidence, user-facing roadmap language, and an exact media-inventory
-  gate. Public scenes now declare their truthful provenance: editor-integration views come from the verified VSIX,
-  while focused by-example and rich-type views come from the same source commit's production webview bundle.
-- Expanded the public product tour with readable Activity Bar views, complete 417-column navigation, exact
-  histogram interaction, compound-sort controls, real script and cleaned-data exports, and the live notebook
-  variable picker. Every published asset preserves accepted source pixels without scaling or reconstruction.
-- Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
-  operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
-  full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather
-  than reconstructed UI.
-- Reframed the native Polars and DuckDB notebook evidence as full-content-width, pixel-exact details linked to the
-  complete packaged-editor scenes, so engine badges, draft code, native filters, and ordered sorts remain legible.
-  The rich DuckDB gallery detail now removes unused canvas without altering typed decimal, time-zone, list, or
-  struct evidence.
-- Replaced the generic uppercase by-example placeholder and gallery fixture with a structured account-code
-  extraction, so the first example demonstrates deterministic split synthesis instead of duplicating a basic
-  casing operation. The README now places example setup and unseen-row draft review side by side.
-- Replaced the verbose workbench shape subtitle with the compact, standard `rows × columns` form while preserving
-  its full accessible description and hover text. Column profiles now scroll vertically without exposing a
-  misleading empty horizontal scrollbar.
-- Raised the minimum supported VS Code version from 1.105 to 1.106, the first stable release whose custom-editor
-  implementation renders an extension-supplied tab icon. This keeps the advertised branded Open Wrangler tab
-  contract testable instead of silently accepting the generic file icon shown by 1.105.
-- Made every numeric histogram bin use an equal-width, full-chart-height pointer and keyboard target while keeping
-  its visible bar proportional to the count. Hovering or focusing even a two-pixel bar now highlights it
-  immediately and shows the bin range and row count in a theme-aware tooltip.
-- Consolidated applied-plan status, **Edit latest**, and **Undo** into one named cleaning-plan group in the primary
-  toolbar, removing the permanent second cleaning bar. The group wraps as one responsive command row at narrow
-  widths, 200% zoom, and forced colors while preserving visible labels, shortcuts, disabled explanations, and tab
-  order.
-- Restored keyboard focus to **Add step** only when an activated **Undo** button removes the final applied step,
-  the webview still owns focus, and that exact button remains the focus origin; host actions, shortcuts, deliberate
-  focus moves, background tabs, and failed or cancelled mutations do not reclaim focus. The advertised Undo
-  shortcut follows the same rule when invoked from that exact button, but never when invoked elsewhere.
-- Clarified the notebook guidance that a DuckDB relation remains native, while DuckDB's explicit `.df()` result is
-  a real Pandas DataFrame and therefore opens with the Pandas backend.
-- Updated the public roadmap to batch the remaining interaction polish, reproducible performance comparison,
-  bounded VS Code-fork validation, and supported PySpark gates into one coherent v1.2 release instead of
-  promising a continuous stream of patch packages.
+- Missing-dependency panels no longer inherit stale grid-loading state, so the confirmed dependency-install action
+  remains usable after a failed Cursor open while an import change or install still stays exclusive.
+- Filters / Sorts priority actions use provider-owned handles, so cloned tree items work in Cursor and stale or
+  ambiguous actions explain why they were not applied.
+- Import-option Quick Picks and inputs reclaim workbench keyboard focus after opening, fixing Cursor 3.13.21 while
+  preserving the keyboard-only flow in VS Code.
+- Local PySpark Classic and Connect variables invalidate cached blocks when their dataframe is replaced or their Spark
+  session stops. Recreating the variable with the same schema reopens it on the originating notebook/kernel and
+  preserves view state; a changed schema asks the user to reopen.
+- Unique column labels no longer show redundant positions. Duplicate and unnamed columns retain 1-based positions and
+  stable identities.
+- PySpark notebook launches require PySpark 4.2.x in the selected kernel. The picker and opening progress label these
+  sessions **Viewing only** and explain that opening scans, indexes, and caches the complete DataFrame. External or
+  authenticated Connect remains experimental.
+- Notebook-kernel requests no longer send kernel-wide interrupts on host timeout or panel disposal, because PySpark's
+  SIGINT handler can cancel unrelated Spark jobs. Detached opens receive bounded cleanup on their originating kernel.
+- Live notebook opens show progress while connecting to the kernel, preparing the runtime, and opening the variable.
+  PySpark's final stage states that it scans, indexes, and caches the complete frame to establish row positions and an
+  exact total.
+- The workbench uses compact `rows × columns` shape text, and Column profiles scrolls vertically without an empty
+  horizontal scrollbar.
+- The minimum supported VS Code version is 1.106, the first stable release whose custom-editor API displays an
+  extension-supplied tab icon.
+- Numeric histogram bins have equal-width, full-chart-height pointer and keyboard targets while their visible bars
+  remain proportional. Hover and focus show the range and row count.
+- Applied-plan status, **Edit latest**, and **Undo** share one named cleaning-plan toolbar group that remains usable at
+  narrow widths, 200% zoom, and forced colors.
+- Activating **Undo** from its exact button restores focus to **Add step** only when it removes the final step and the
+  webview still owns focus.
+- Documentation now distinguishes a native DuckDB relation from an explicit `.df()` result, which is a Pandas
+  DataFrame.
 
 ### Fixed
 
-- Kept the notebook-toolbar action and Cursor's pinned editor-title fallback mutually exclusive, so Cursor 3.13.21
-  exposes one canonical **Open in Open Wrangler** action instead of rendering the same command on both surfaces.
-- Installed the native dataframe runtime dependencies in the split visual/accessibility CI lane, so production-scene
-  generation cannot fail before rendering DuckDB, Polars, Pandas, and notebook evidence or silently substitute
-  reconstructed fixture data.
-- Kept the native Activity Bar views bound to the exact visible dataframe when clicking a sidebar action moves
-  keyboard focus out of the editor. Filter, sort, operation, and cleaning-step actions now reach that visible
-  session, while hidden panels and stale sort identities still fail closed.
-- Kept an authoritative restored grid row and horizontal offset when a custom-editor snapshot and saved view hydrate
-  in the same render, and through a delayed workbench layout scroll collapse, while explicit wheel, pointer, touch,
-  and keyboard navigation remain user-authoritative.
-- Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
-  import for one-hot encoding and multi-label binarization collision checks.
-- Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through
-  cleaning-step preview, apply, latest-step edit, discard, reload, and undo. Structural or semantic-type-changing
-  steps prune only rules that no longer resolve safely. An explicit in-draft edit remains authoritative through
-  Discard or Apply; otherwise Discard restores the persisted pre-draft view. Latest-step replacement retains the
-  original Undo receipt so immediate Undo returns to the pre-first-apply view when no later view edit intervened.
-- Branded Open Wrangler workbench and custom-editor tabs with the theme-specific Open Wrangler action icon instead
-  of inheriting a generic text or source-file glyph.
-- Restored Pandas 3 `DataFrame` and `Series` discovery in the notebook toolbar picker while retaining the Pandas 2
-  type aliases and rejecting classes that only spoof a Pandas module and type name.
-- Reissued a generated-column reveal with a fresh identity after the renderer synchronization barrier, so a
-  first attempt left dormant during Code Preview layout changes no longer strands the grid on the previous
-  columns.
+- Cursor 3.13.21 shows one canonical **Open in Open Wrangler** action instead of duplicating it in notebook toolbar
+  and editor-title surfaces.
+- Native Activity Bar actions remain bound to the exact visible dataframe when sidebar focus leaves the editor.
+- Restored grid rows and horizontal offsets survive simultaneous custom-editor/view hydration and delayed workbench
+  layout changes; explicit user scrolling remains authoritative.
+- Ordinary generated Pandas, Polars, and DuckDB plans omit unused `Counter` imports while categorical encoders retain
+  them for collision checks.
+- Compatible filters, selections, predicates, searches, and ordered sorts survive preview, apply, latest-step edit,
+  discard, reload, and undo. Schema-changing steps remove only rules that no longer resolve safely.
+- Workbench and custom-editor tabs use the theme-specific Open Wrangler icon.
+- Pandas 3 `DataFrame` and `Series` discovery is restored while retaining Pandas 2 aliases and rejecting spoofed
+  module/type names.
+- Generated-column reveal retries with a fresh identity after renderer synchronization so Code Preview layout changes
+  do not leave the grid on the previous columns.
 
 ## [1.1.9] - 2026-07-31
 
@@ -862,24 +457,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- Recovered the confirmed dataframe session when a current renderer-owned **Header profiles** request is the
-  first read after a standalone runtime exit. Summary and dataset-statistics reads now share one replacement
-  runtime with a concurrent foreground recovery, while a cancelled or superseded profiling request is never
-  reissued and mutations retain their no-retry guarantee.
-- Preserved the last confirmed vertical grid position when macOS emits a synthetic scroll event during
-  programmatic restoration or editor teardown. A real wheel, pointer, or touch scroll still replaces the saved
-  viewport normally.
-- Fetched the restored row block when an older editor initially hydrates the grid with a different page, so a
-  persisted viewport can no longer remain stranded on stale rows.
-- Adopted a confirmed file session before awaiting its configuration write, so invoking **Change Import Options**
-  immediately after the grid opens can no longer cancel and reopen that same file under a second session.
-
-### Changed
-
-- Extended zero-window native acceptance to physical Explorer context-menu launch plus fresh-process rendered
-  persistence and recovery. The release gate now verifies one exact **Open in Open Wrangler** action, prompt-free
-  inferred CSV import, unchanged source bytes, committed cleaning state, sort priority, column presentation,
-  nonzero viewport restoration, visible-row status, and renderer-triggered profile recovery.
+- A current renderer-owned **Header profiles** request can recover the confirmed session after a standalone runtime
+  exit. Concurrent summary, statistics, and foreground reads share one replacement runtime; cancelled or superseded
+  profiling is not reissued, and mutations remain non-retryable.
+- macOS synthetic scroll events during viewport restoration or editor teardown no longer overwrite the last confirmed
+  grid position. Real wheel, pointer, and touch scrolling remains authoritative.
+- Restored viewports fetch their current row block instead of remaining on rows from an older editor page.
+- **Change Import Options** adopts a confirmed file session before its configuration write finishes, preventing an
+  immediate invocation from cancelling and reopening that source under a second session.
 
 ## [1.1.7] - 2026-07-31
 
@@ -910,454 +495,411 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [1.1.5] - 2026-07-31
 
-### Changed
-
-- Made native DuckDB notebook restart/recovery part of the real packaged-Jupyter release gate. After the
-  notebook recreates a filtered, ordered multi-sort relation in the replacement kernel, Open Wrangler rebinds
-  it to the same public session, schema, and viewing state over a new private runtime; conversion traps remain
-  armed, terminal cleanup leaves no runtime session behind, and the user's replacement relation and connection
-  remain usable.
-
 ### Fixed
 
-- Restored host-owned column widths and selection before applying a saved grid viewport. A browser that emits a
-  synchronous scroll event during restoration can no longer combine the new viewport with stale presentation
-  state and overwrite the confirmed layout.
-- Recovered an active VS Code or Cursor dataframe tab when its webview never completes the initial ready
-  handshake. The extension keeps the confirmed runtime session, reloads only the renderer once after a bounded
-  grace period, and republishes the authoritative snapshot instead of leaving a blank grid.
-- Replayed notebook sessions with the runtime-confirmed effective mode. A DuckDB relation opened while the
-  notebook default requests Editing is correctly normalized to Viewing once, then recovers in Viewing after a
-  kernel restart instead of rejecting its valid replacement session.
-- Made same-source reload acceptance wait for VS Code to retire the prior session tab before opening the custom
-  editor. Runtime cleanup can no longer race the public editor-input lifecycle on slower macOS hosts.
+- Column widths and selection restore before a saved viewport, preventing synchronous browser scroll events from
+  combining the new viewport with stale presentation state.
+- A VS Code or Cursor tab whose webview never completes its initial handshake reloads only the renderer and republishes
+  the confirmed runtime snapshot instead of leaving a blank grid.
+- Notebook recovery uses the runtime-confirmed mode. A viewing-only DuckDB relation therefore recovers in Viewing
+  after a kernel restart even when notebook defaults request Editing.
+- Same-source reload waits for VS Code to retire the prior session tab before opening the custom editor, avoiding
+  cleanup races on slower macOS hosts.
 
 ## [1.1.4] - 2026-07-30
 
 ### Added
 
-- Added native DuckDB notebook previews and viewing-only live sessions. Open Wrangler retains the exact
-  originating `DuckDBPyRelation` for paging, filtering, sorting, and profiling, releases only its own reference
-  on close, and never converts through Pandas, Polars, or Arrow. Notebook relation cleaning, code insertion, and
-  data export remain disabled.
-- Added path-independent Microsoft Marketplace recovery on protected `main`. Exact single-parent changes to the
-  reviewed Marketplace pipeline, verifier, archive, metadata, and locked-package closure retry the current
-  package version only when its immutable numeric release tag already exists; ordinary changes, merge commits,
-  and an absent tag finish as intake-only no-ops before authentication. Existing `v*` tag promotion and explicit
-  manual backfill remain unchanged.
+- Added native DuckDB notebook previews and viewing-only live sessions. Open Wrangler retains the originating
+  `DuckDBPyRelation` for paging, filtering, sorting, and profiling, releases only its reference on close, and never
+  converts through Pandas, Polars, or Arrow. Cleaning, code insertion, and export remain disabled.
+- Added Visual Studio Marketplace recovery for an existing numeric release tag on protected `main`. Ordinary changes,
+  merge commits, and missing tags finish before authentication; existing `v*` promotion and manual backfill remain.
 
 ### Changed
 
-- Restored the inline notebook **Open in Open Wrangler** action to the complete current live dataframe. The action
-  stays bound to the exact visible originating notebook and kernel, reruns backend detection, and never opens or
-  falls back to the bounded saved preview. Outputs without a canonical live-variable link remain readable inline
-  and ask the user to run the cell again instead of showing a misleading open button.
+- Inline notebook **Open in Open Wrangler** now opens the complete current live dataframe from the exact visible
+  notebook and kernel. Outputs without a canonical live link remain readable and ask the user to rerun the cell.
 
 ### Fixed
 
-- Made missing live variables and unavailable kernels explain the direct recovery: select or start the Python
-  kernel, run the cell that defines the dataframe, and try **Open in Open Wrangler** again.
-- Kept Microsoft Marketplace promotion resumable when GitHub's anonymous release-metadata API returns HTTP 403 on a shared Azure runner by treating that response as pending within the existing bounded poll. There is no alternate asset path: a successful metadata response must still pass every release-channel, inventory, URL, and size check before any asset download, and repeated 403 responses fail when the poll is exhausted.
-- Made the column picker search and navigate the complete schema instead of stopping after the first 100
-  matches. The list virtualizes wide schemas, keeps every result keyboard-reachable, and exposes its exact
-  position and result count to assistive technology without rendering thousands of options at once.
-- Preserved the exact grid row and horizontal position while native menus or Quick Input temporarily own
-  workbench focus. Incidental layout scrolls on macOS can no longer overwrite the confirmed viewport.
-- Registered a new workbench panel's activation listener before dispatching its session open. Fast Windows
-  activation can no longer leave a successfully opened dataframe disconnected from the active-session UI.
-- Made installed Cursor performance validation wait for the current webview to become synchronizable and adopt
-  its automatic authoritative snapshot before using the one allowed fallback. A slow renderer can no longer
-  consume that fallback before it is ready or have a newer generation invalidated by late test cleanup.
+- Missing variables and unavailable kernels now give direct recovery steps: select or start Python, rerun the defining
+  cell, and try **Open in Open Wrangler** again.
+- Visual Studio Marketplace promotion treats a transient anonymous GitHub HTTP 403 as pending within its bounded poll.
+- Column search covers the complete schema with a virtualized, keyboard-accessible result list.
+- Native menus and Quick Input no longer overwrite the confirmed grid row and horizontal position on macOS.
+- New workbench panels register activation before opening their session, preventing fast Windows activation from
+  disconnecting a successfully opened dataframe.
 
 ## [1.1.3] - 2026-07-30
 
 ### Added
 
-- Added exact text-column Insights for empty strings and minimum, maximum, and mean character length across Pandas, Polars, DuckDB, PySpark, and saved notebook snapshots. Nulls stay separate, empty strings are measured without trimming, and Unicode length counts code points consistently across engines.
+- Added exact empty-string and minimum, maximum, and mean text-length statistics across Pandas, Polars, DuckDB,
+  PySpark, and saved notebook snapshots. Nulls remain separate and Unicode length counts code points.
 
 ### Changed
 
-- Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
-- Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
-- Removed the ambiguous secondary **Open saved snapshot** button from inline notebook outputs. The single
-  inline **Open in Open Wrangler** action now always opens the captured result; the notebook toolbar remains
+- Text profiling remains engine-native. Lazy Polars, DuckDB, and PySpark return fixed-size aggregates; Pandas
+  mixed-object and non-string categorical columns measure the normalized grid text.
+- Pandas semantic text profiles retain nonzero NaN counts and reject contradictory empty/length summaries.
+- Inline notebook output now has one **Open in Open Wrangler** action for the captured result; the notebook toolbar is
   the explicit route to a current live variable.
 
 ### Fixed
 
-- Replaced the ultrawide Pandas notebook README capture with a standard-width packaged-editor view that keeps the
-  real notebook toolbar, dataframe preview, horizontal scrolling, and labels legible at documentation width.
-- Gave editor and notebook toolbar actions explicit light- and dark-theme SVG variants. The branded Activity Bar
-  glyph remains `currentColor`, while externally loaded command icons can no longer resolve to black on dark
-  editor surfaces.
-- Reworded notebook portability around the user workflow: files and live variables page directly in the
-  workbench, while only outputs saved into a notebook retain a bounded, truncation-labeled preview.
-- Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema, including when renderer synchronization refreshes that schema mid-retry. Each reveal request now enters layout only once, preventing a far-right generated column from triggering React’s nested-update guard and blanking the editor. Newly generated columns remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
-- Kept a confirmed draft visible when an older page or renderer snapshot finishes late, and drained a renderer synchronization requested at the end of an existing synchronization instead of abandoning its authoritative replay.
-- Committed each authoritative renderer replay before acknowledging it, retired webviews whose synchronization marker could not be delivered, and delayed automatic Code Preview reveal until the exact draft was physically rendered. The default **on first draft** behavior now reveals Code Preview only once per session; later drafts update the existing provider in place and respect a user closing the panel instead of repeatedly focusing it. Automatic reveal uses the native preserve-focus option, so Code Preview opens without taking keyboard focus, remounting the dataframe webview, or starting a redundant synchronization cycle. Recovery polling can no longer race a draft publication or leave packaged editor assertions attached to a hidden prior renderer.
-- Made column-header sorts accumulate instead of erasing earlier keys: the newest choice becomes priority 1 while every other key remains as a lower-priority tie-breaker. Filters / Sorts now exposes concise move-up/down, direction, null-placement, remove, clear, apply, and discard controls for the complete ordered sort; the native Activity Bar mirrors priorities and offers immediate validated reorder/removal actions.
-- Rejected stale native sort actions when a newer quick sort is still pending, reset uncommitted sort edits through **Clear column** and **Clear all**, and reject duplicate sort columns at every persisted/protocol boundary. Only priority 1 now owns the grid's `aria-sort`; lower-priority keys remain explicitly labeled. During applied-step inspection, Activity Bar filter/sort controls pause behind a clear return-to-current-view action.
-- Gave column names their own full-width header row and moved compact type, sort, and menu controls onto the metadata row. The resize target now sits on the column edge instead of consuming title width, so realistic names remain readable at narrow widths and high zoom without losing keyboard access or visible sort priority.
+- Editor and notebook commands use explicit light/dark SVG variants so icons remain visible on dark surfaces.
+- Generated-column reveal waits for the expanded draft schema without repeatedly entering layout, preventing
+  far-right columns from blanking the editor or remaining unreachable in Windows Cursor.
+- Late pages or renderer snapshots no longer hide a confirmed draft, and queued renderer synchronization completes.
+- Code Preview reveals once for the first draft, updates in place afterward, preserves focus, and respects manual
+  closure instead of repeatedly remounting the dataframe webview.
+- Column-header sorts now accumulate as an ordered multi-sort. Filters / Sorts exposes reorder, direction,
+  null-placement, remove, clear, apply, and discard actions; stale native sort actions are rejected.
+- Column names use a full-width header row, with compact type, sort, menu, and resize controls below so names remain
+  readable at narrow widths and high zoom.
 
 ## [1.1.2] - 2026-07-30
 
 ### Added
 
-- Added a visible **Export** action to the dataframe workbench. The webview sends only a narrow no-argument intent; the extension host continues to own the destination picker, source protections, and atomic CSV or Parquet write.
+- Added a visible **Export** action to the dataframe workbench. The extension host owns the destination picker, source
+  protections, and atomic CSV or Parquet write.
 
 ### Changed
 
-- Replaced the toy packaged platform smoke with a realistic 10,000-row × 15-column UTF-8-BOM, semicolon-delimited first-use journey. It now covers automatic import, typed column search, exact Insights, sorting, filtering and clear, preview/discard/apply, workbench export, reopen/replay/undo, and source-byte immutability in isolated VS Code and Cursor profiles.
-- Reflowed toolbar and grid controls at narrower effective widths and added a packaged high-contrast, approximately 200%-zoom containment check so controls cannot silently clip.
-- Refreshed the editor and README workbench captures from the exact packaged candidate over a 100,000-row × 15-column synthetic source. Zoomed evidence now records the complete physical workbench instead of cropping to the browser's zoomed CSS-pixel viewport.
+- Toolbar and grid controls reflow at narrow widths and approximately 200% zoom without clipping.
 
 ### Fixed
 
-- Kept **Change Import Options** keyboard-ready in Cursor when launched from the editor title, tab menu, or Command Palette by letting the native activation settle before opening the first picker.
-- Replaced internal operation-kind labels such as `upperText` with the operation's human title in draft and preview UI.
-- Automatically reveals the first column added by a draft preview, waits for its projected block to arrive, and reapplies the reveal after host view restoration instead of leaving the result off-screen in a wide dataframe.
-- Consumes column-search navigation after it is handled, so a later in-place preview or restored view cannot unexpectedly jump back to an old horizontal target.
-- Pins cleaned-data export to the exact originating dataframe and revision across the format and Save dialogs; switching tabs can no longer redirect an export to another open session.
-- Made draft diffs distinguish changes to existing cells from values introduced by added columns, avoiding a misleading `0 changed cells` message for add-column operations.
-- Removed the empty cleaning-plan bar after the only draft is discarded or the only applied step is undone, without racing the renderer update.
+- **Change Import Options** remains keyboard-ready in Cursor when launched from editor title, tab menu, or Command
+  Palette.
+- Draft and preview UI uses operation titles instead of internal kind names.
+- A draft that adds columns reveals its first result and preserves that navigation through renderer synchronization.
+- Column-search navigation is consumed after use so later previews and restored views cannot repeat an old jump.
+- Export remains pinned to the originating dataframe and revision across format and Save dialogs.
+- Draft diffs distinguish changed existing cells from values introduced in added columns.
+- The empty cleaning-plan bar disappears after the only draft is discarded or the only step is undone.
 
 ## [1.1.1] - 2026-07-30
 
 ### Added
 
-- Added proactive Pandas and Polars notebook previews for trusted, visible notebooks with user-started kernels. When Microsoft Data Wrangler is installed, Open Wrangler asks which extension should own automatic dataframe rendering and exposes a command to change that choice for new or restarted kernels.
-- Added bounded, typed notebook-variable discovery for Pandas, Polars, PySpark, and recognized DuckDB relations. Supported values open from a branded notebook action without typing a variable name; DuckDB relations remain visibly unavailable instead of being converted through another engine.
-- Added 10, 20, 50, and 100-row paging across every captured column in the inline MIME-v2 renderer. A uniquely linked live variable now opens as the primary action, while the complete portable capture remains available through **Open saved snapshot**.
-- Added exact finite-value histograms for Pandas, Polars, DuckDB, and PySpark. Native/lazy engines return only aggregate bin counts, and every bin exposes its interval and count by pointer hover, keyboard focus, and accessible name.
-- Added `.ndjson` as an exact JSONL alias across file entry points and all supported file engines.
+- Added proactive Pandas and Polars previews for trusted, visible notebooks with user-started kernels. When Microsoft
+  Data Wrangler is installed, the user chooses which extension owns automatic dataframe rendering.
+- Added bounded notebook-variable discovery for Pandas, Polars, PySpark, and recognized DuckDB relations. Supported
+  values open through a notebook action without a typed name; DuckDB relations remain visibly unavailable.
+- Added 10, 20, 50, and 100-row paging across every captured notebook column. A uniquely linked live variable can open
+  directly while the portable saved capture remains available.
+- Added exact finite-value histograms for Pandas, Polars, DuckDB, and PySpark with pointer, keyboard, and accessible
+  interval/count labels.
+- Added `.ndjson` as an exact JSONL alias across file entry points and supported file engines.
 
 ### Changed
 
-- Limited automatic formatter preparation to exact visible notebook documents and made stable Jupyter lookup observation-only. Background API-opened notebooks cause no kernel lookup, while a visible notebook change bypasses pending retry backoff as soon as a user-started kernel becomes available.
-- Expanded the responsive Insights drawer to use the available workbench width without clipping selected-column statistics or distributions.
-- Labeled PySpark sessions explicitly as **Experimental** and **Viewing only** in the workbench instead of relying on documentation or engine context.
-- Kept Python pickle files deliberately outside the file surface because deserialization can execute arbitrary code; unsupported `.pkl` and `.pickle` paths are rejected before any runtime reader is invoked.
-- Updated the notebook, engine, safety, performance, and post-1.1 roadmap documentation to distinguish live paged sources from bounded saved snapshots and native file support from planned notebook support.
+- Automatic formatter preparation is limited to exact visible notebooks. Background API-opened notebooks do not
+  trigger kernel lookup.
+- The responsive Insights drawer uses available workbench width without clipping statistics or distributions.
+- PySpark sessions are labeled **Experimental** and **Viewing only** in the workbench.
+- Python pickle files remain outside the normal file surface because deserialization can execute arbitrary code;
+  unsupported `.pkl` and `.pickle` paths are rejected before runtime reading.
 
 ### Fixed
 
-- Unified the notebook command's primary and compact labels as **Open in Open Wrangler**, so Cursor's pinned editor-title action and VS Code's global notebook toolbar expose the same accessible name. Released-Jupyter acceptance now resolves command ownership before validating that label and reports editor-title evidence separately.
-- Corrected the packaged Jupyter acceptance double to match the stable API contract: `getKernel()` returns only a kernel already started by the user and never synthesizes one during discovery. Split-notebook acceptance now proves an action from notebook A cannot advance notebook B beyond B's independent proactive-preview baseline.
-- Removed sampled-distribution labels from live numeric summaries and retained exact tails, inclusive maxima, deterministic constant/empty behavior, and complete population counts.
+- Notebook and Cursor editor-title surfaces use the same **Open in Open Wrangler** command label.
+- Live numeric summaries omit sampled-distribution labels while retaining exact tails, inclusive maxima, deterministic
+  constant/empty behavior, and complete population counts.
 
 ## [1.1.0] - 2026-07-29
 
 ### Added
 
-- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and releases only its owned logical-plan references without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
+- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames.
+  Projection, filtering, sorting, counts, profiles, and bounded page/value collection stay native to Spark; Open
+  Wrangler never converts through a local dataframe engine or stops the user's Spark session. Editing, exports,
+  saved-output formatting, external/authenticated Connect, cancellation, and generated-code insertion are not
+  supported.
 
 ### Changed
 
-- Rebuilt the README media around three product views: a realistic file-backed dataframe, an automatic Pandas
-  notebook preview, and a live Polars draft with summaries, a diff, and generated code. The copy distinguishes saved
-  previews from live variables, describes DuckDB's file support, and makes clear that benchmark fixture sizes are not
-  hard row limits.
-- Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
-- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for 100,000-row by 15-column Pandas and Polars dataframes. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
-- Composed the packaged workbench and notebook evidence into fixed-size sRGB images for GitHub, the Visual Studio Marketplace, and Open VSX. The workbench requires exact revenue minimum, maximum, mean, and median values, while README copy distinguishes bounded saved snapshots from live paged sources and benchmark evidence from dataframe limits.
-- Enlarged the existing vehicle mark inside its gallery and Activity Bar canvases, reducing transparent margins while preserving the same shapes, colors, and open-top dataframe motif. Brand generation now rejects regressions that make either icon render undersized.
-- Added a real packaged VS Code and released-Jupyter PySpark Classic gallery capture over a deterministic 100,000-row by 15-column DataFrame. The media and README label PySpark experimental and viewing-only, without implying file, cleaning, export, code-insertion, or saved-output support.
-- Added a separate native DuckDB file gallery generated from a real rich Parquet source with decimal, time-zone, list, and struct columns, while keeping notebook relations explicitly unsupported.
-- Replaced the all-column Insights drawer with focused Column, Dataset, and Filters views. Column shows one stable selected identity with exact numeric min, max, mean, median, and standard deviation plus explicit datetime, boolean, categorical, null, NaN, and top-value details. Dataset statistics and filter values now run only while their matching view is active, so opening Insights no longer starts a whole-schema profiling queue.
-- Updated the release guide to reflect the activated personal `Matt17BR` Marketplace workload identity, the automatic pipeline's proven `v1.0.3` handoff, and the still-pending non-blocking Open VSX namespace claim.
-- Added a bounded, source-only pull-request `Fast feedback` lane that runs deterministic static checks alongside canonical packaging and labels each failure class separately. The existing full `validate` gate remains unchanged and authoritative, so this scheduling improvement does not lower, remove, or bypass any merge or release requirement.
-- Made DuckDB rich Parquet pages deterministic across host time zones by pinning every owned and terminal connection to UTC. Dependency selection now requires the bounded-green `duckdb>=1.5.4,<1.6` range together with `pytz`; malformed JSONL remains an input diagnostic instead of being mislabeled as unavailable JSON support. Installed-editor acceptance now covers native DECIMAL, TIMESTAMPTZ, LIST, and STRUCT values plus source replacement and terminal cleanup. DuckDB remains a preview rather than a parity or first-class-engine claim.
-- Kept PySpark insights explicit even when insights-on-open is enabled, rejected unsupported nested Spark profile types before indexing, and changed base-frame paging to a bounded dense-row-identity range. Opening still indexes and counts the complete frame, while filtered or sorted pages retain their correct Spark ordering path.
-- Made PySpark map, nested-map, array, and struct statistics use native canonical orderable keys, so logical map equality no longer depends on insertion order or an unsupported raw-map sort. Variable-width pages now receive a Spark-side UTF-8 preflight before value collection plus independent cell-count, serialized-byte, complex-node, and nesting-depth limits. Oversized values fail without crossing into the notebook process or stopping the user's Spark session.
-- Applied the same Spark-side and strict protocol bounds to summary and distinct-value results, removed private grouping keys from terminal collections, made equal complex-value displays deterministic, normalized nested signed zero for native grouping, and preserved nested Decimal values without float conversion. Nested struct field collisions now fail before indexing instead of losing one value during JSON decoding. Required PR and release coverage now installs and verifies PySpark 4.2.0, compatible Pandas, and Java 17 before enforcing the unchanged 78% Python floor.
+- Replaced the all-column Insights drawer with focused Column, Dataset, and Filters views. Column shows one selected
+  identity with numeric and typed statistics; dataset statistics and filter values run only while their view is open.
+- DuckDB file sessions use UTC for deterministic rich Parquet values and require `duckdb>=1.5.4,<1.6` with `pytz`.
+  JSONL parser errors remain input diagnostics. DuckDB remains a preview rather than a parity or first-class claim.
+- PySpark profiles reject unsupported nested types before indexing. Base-frame opening still indexes and counts the
+  complete frame, while filtered and sorted pages retain native Spark ordering.
+- PySpark map, array, and struct statistics use canonical native keys. Pages, summaries, and distinct values enforce
+  Spark-side transport preflight plus cell, byte, node, and depth limits before any bounded result crosses into the
+  notebook process. Decimal values retain exact representation and nested schema collisions fail before indexing.
 
 ### Fixed
 
-- Made the released-Jupyter Variables acceptance action resolve its exact semantic row at one trusted keyboard activation instead of retaining a replaceable DOM handle or depending on cross-webview pointer hit testing. If Playwright loses only the activation acknowledgement, the test may accept the resulting zero-to-one Open Wrangler session as an authoritative receipt, but it never activates or reacquires after dispatch begins.
-- Removed the unintended horizontal bar from the gallery windshield and its Activity Bar counterpart, keeping every generated icon surface aligned to the same refined open-top vehicle mark.
-- Added post-publication checks that require Open VSX and the Visual Studio Marketplace to expose the canonical packaged gallery icon, including a valid Marketplace 72 pixel thumbnail that visually matches it.
-- Updated the native editor harness for VS Code 1.131's removal of the legacy macOS `Electron` compatibility path. Packaged and extension-host acceptance now resolve the bundle's declared executable instead of relying on that removed alias.
-- Made pinned private-Xvfb preparation resilient to transient Canonical download outages by rotating through ordered, manifest-pinned archive, security, and timestamped snapshot origins for two bounded rounds. The one authoritative size/SHA-256 and all no-redirect, exclusive-file, ownership, extraction, and no-editor-fallback checks remain unchanged.
-- Replaced retained DuckDB relations with immutable, connection-free SQL and schema plans. Open, paging, transforms, custom code, and exports now release each request-local `DuckDBPyRelation` before closing its owner, so DuckDB 1.5 cannot retain a Windows Parquet handle through the relation's connection reference. The runtime stays native and never calls `DuckDBPyRelation.close()` or converts through another engine.
+- DuckDB file plans no longer retain request-local relations after their owning connection closes, preventing DuckDB
+  1.5 from holding Windows Parquet handles. The backend remains native and never converts through another engine or
+  calls `DuckDBPyRelation.close()` for cleanup.
 
 ## [1.0.3] - 2026-07-28
 
 ### Fixed
 
-- Recognized Git credential-store's exact atomic approval and rejection rewrites after a stable-tag push, then scrubbed and removed the replacement without weakening the private-directory, identity, content, link-count, or mode checks.
-- Waited for Cursor's exact released-Jupyter Polars panel to hydrate and acknowledge its retained snapshot before acceptance sends a live preview, removing an editor-speed race without weakening live-panel coverage.
+- Stable-tag publication recognizes Git credential-store's atomic approval/rejection rewrites, then scrubs the
+  identified replacement while retaining directory, identity, content, link-count, and mode checks.
 
 ## [1.0.2] - 2026-07-28
 
 ### Added
 
-- Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. It promotes the exact public GitHub assets without rebuilding and verifies the public publisher, checksum, channel metadata, and downloadable VSIX bytes.
-- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. It uses the personal `Matt17BR` workload identity, promotes the exact GitHub VSIX as stable or pre-release metadata, and verifies the public upload and package contents.
-- Introduced an original tiled open-top off-road mark for the extension gallery and Activity Bar. Its rectangular body cells connect the Open Wrangler name to dataframe work without reusing another project's branding.
-- Added an accessible column-search combobox with distinct datatype icons, name and type matching, duplicate-label disambiguation, and stable-identity navigation to the exact selected column.
-- Replaced the README capture fixture with a deterministic, license-clean 10,000-row × 15-column regional-order dataset spanning identifiers, dates, categories, numeric ranges, booleans, nulls, and long text. The packaged-editor harness pins a 1920 × 1080 workbench viewport and rejects clipped featured columns, controls, draft actions, code, or numeric summary statistics before accepting media.
+- Added protected, idempotent Open VSX and Visual Studio Marketplace promotion from exact public GitHub release bytes.
+  Both paths verify publisher, channel, checksum, metadata, and downloadable package contents without rebuilding.
+- Introduced an original tiled open-top off-road mark for the extension gallery and Activity Bar.
+- Added an accessible column-search combobox with type icons, name/type matching, duplicate-label disambiguation, and
+  stable-identity navigation.
 
 ### Changed
 
-- Extended the bounded Open VSX post-publication check from five to fifteen minutes, with matching final-job timeout room, after real registry propagation proved that accepted releases can remain temporarily unavailable.
-- Made Microsoft Marketplace activation self-diagnosing and safe on first setup: the default manual `main` run with no release tag now completes as an explicit no-op, while a real promotion prints only the federated identity's validated Azure DevOps profile UUID immediately before VSCE verifies publisher access. The bounded probe never logs its token or profile response, and every other non-tag or unsafe intake still fails closed.
-- Closed the stable-release trigger gap by atomically pushing exactly one lightweight `v<package version>` ref at the accepted `main` commit immediately before GitHub Release creation. The push uses a private, scrubbed credential file rather than an argument or logged URL, rejects annotated/conflicting/ambiguous refs, verifies the public ref afterward, and is idempotent only for the same lightweight tag. This real Git event starts the separate Azure Marketplace promotion, whose public verification now uses its maximum reviewed forty-attempt window.
-- Configured the production `openwrangler-marketplace-publishing` Azure Pipelines environment with an Exclusive Lock while retaining the checked-in `lockBehavior: sequential`; there is no approval gate, so an accepted GitHub release can promote without another manual step.
-- Rewrote the README around installation, first use, core capabilities, supported engines and formats, editor compatibility, roadmap, measured performance evidence, and three explained theme-aware product scenes. Removed internal release-process commentary, repeated screenshots, and redundant compatibility prose.
-- Tightened the Operations and Filters / Sorts native views so categories retain useful descriptions, selection and current-view labels stay concise, and draft code consistently reads **Generated Polars code**.
+- Open VSX public verification allows up to fifteen minutes for registry propagation.
+- Visual Studio Marketplace activation reports only the validated publishing-profile identifier; non-tag manual runs
+  finish as explicit no-ops, and real promotions retain protected workload identity.
+- Stable publication pushes one verified lightweight `v<package version>` tag before GitHub Release creation. It
+  rejects annotated, conflicting, and ambiguous refs and is idempotent only for the same commit.
+- Operations and Filters / Sorts use shorter descriptions, and draft code labels the selected engine consistently.
 
 ### Fixed
 
-- Prevented VSCE's issue-reference autolinker from rewriting the packaged README, and moved exact README byte parity into ordinary VSIX verification so canonical release staging is no longer the first place that drift is detected.
+- VSCE can no longer rewrite issue references in the packaged README; ordinary package verification requires source
+  and packaged README bytes to match.
 
 ## [1.0.1] - 2026-07-28
 
 ### Changed
 
-- Replaced manual Excel sheet-name/index entry with a searchable picker populated from the open workbook through its confirmed Pandas or Polars runtime. The initial open still selects the first sheet automatically; explicit **Change Import Options** remains read-only, cancellable, trust-gated, and safe for numeric-looking sheet names.
-- Made ordinary file opens absorb one transient Python-environment selection event before any runtime request is dispatched; repeated selection churn still fails, and dispatched or mutating requests are never retried. When no Excel backend is ready, the error now names only the preferred backend and its exact requirements instead of merging Polars and Pandas alternatives. The initial error offers **Install required dependency**, retains the existing Workspace Trust and exact modal-confirmation gates, and reopens the file only after a confirmed successful install.
-- Made primary CSV and TSV launches immediate: the local or remote extension host uses one bounded 64 KiB sample to detect comma, tab, semicolon, or pipe delimiters, UTF-8/BOM versus Windows-1252, standard versus structural single quotes, and likely headers, then fails soft to safe suffix defaults if the host cannot read the sample. **Change Import Options** remains available for explicit correction.
-- Made column-header sorting an unambiguous one-click primary sort: choosing ascending or descending closes the menu and replaces prior quick sorts, while a visible accessible indicator clears the active rule. Deliberate multi-column sorting now stays in Filters / Sorts as an ordered, individually removable draft with direction toggles, clear-all, and explicit apply/discard actions; viewing filters and cleaning steps remain unchanged.
-- Kept column summaries stable while progressive profiling results arrive and promoted the selected column to an expanded, visually marked first position, so exact numeric min/max/mean/median statistics remain visible instead of unexpectedly collapsing.
-- Made cleaning-operation forms easier to author: multi-column choices use explicit accessible checklists instead of Ctrl/Cmd multi-selects; sort and aggregation rows can be moved or removed individually; and text, numeric, datetime, group-key, by-example, and aggregation selectors hide schema types that the chosen operation cannot safely consume.
-- Collapsed the draft's inline generated-code fallback by default when the dedicated Code Preview panel already presents the editable code, reducing duplication while keeping the inline copy one click away.
-- Made README screenshots reproducible product evidence: the isolated packaged-editor harness now opens a fresh 12-row, six-column synthetic file with no retained view or plan, captures a clean dark/light grid with the empty Code Preview panel closed, then creates a real numeric-round draft and captures its diff plus generated code in both themes.
-- Tightened the README around the actual install, exploration, transformation, engine, and compatibility story; removed the blanket parity-complete claim so newly discovered real-world regressions are described and treated honestly.
+- Excel import uses a searchable sheet picker populated by the confirmed Pandas or Polars runtime. Initial open still
+  selects the first sheet, and numeric-looking names remain distinguishable from zero-based indexes.
+- File opens absorb one transient Python-environment selection before dispatch. Missing Excel dependencies name the
+  preferred backend and offer the trust- and confirmation-gated **Install required dependency** action.
+- CSV and TSV opens sample up to 64 KiB locally or remotely to detect common delimiters, UTF-8/BOM or Windows-1252,
+  quote style, and likely headers, falling back to safe suffix defaults.
+- Column headers apply one primary sort. Deliberate multi-column sorting stays in Filters / Sorts as an ordered draft
+  with direction, clear, apply, and discard actions.
+- Column summaries remain stable as profiling arrives and keep the selected column expanded first.
+- Cleaning-operation forms use accessible checklists and individually movable/removable sort and aggregation rows;
+  selectors hide schema types the operation cannot consume safely.
+- Draft generated code collapses by default when Code Preview already shows the editable source.
 
 ### Fixed
 
-- Restored keyboard focus to a visible control when closing Filters / Sorts after entering through a column menu; a closed menu item or the document body can no longer be mistaken for a valid return target. Required multi-column checklists now use explicit group guidance instead of an invalid `aria-required` fieldset attribute.
-- Opened zero-byte, BOM-only, and whitespace-only CSV/TSV sources as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB instead of surfacing raw parser failures. Non-empty malformed input still fails in its native reader, and opening never changes source bytes.
-- Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.
-- Treated Polars CSV, TSV, Parquet, and JSONL source paths as exact local filenames, so brackets, asterisks, question marks, and braces can no longer be expanded as glob patterns or silently select a different file.
-- Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
-- Made viewing filters disappear structurally when their final value or predicate is removed, so stale searches and empty selections cannot remain as hidden no-op filters or enable an empty **Filter rows** cleaning step. The Filters / Sorts drawer now keeps every active column filter visible with type-safe summaries and independent value/predicate removal, while the native Filters tree can clear a whole column filter; all removal paths preserve sibling conditions and viewing sorts.
+- Closing Filters / Sorts restores focus to a visible control, and required checklists use valid group guidance.
+- Empty CSV/TSV files open as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB; malformed non-empty
+  input still fails in its native reader.
+- The installed dataframe surface uses declared VS Code foreground/background tokens.
+- Polars treats CSV, TSV, Parquet, and JSONL paths literally rather than expanding glob characters.
+- Multi-million-row grids map their logical range onto a bounded browser scroll canvas while preserving restored
+  positions, keyboard navigation, and Previous/Next targets.
+- Removing the last value or predicate removes its filter structurally. Filters / Sorts keeps remaining conditions and
+  sorts visible and independently removable.
 
 ## [1.0.0] - 2026-07-28
 
 ### Added
 
-- Added exact numeric minimum and maximum values to column-header Insights and the Summary drawer, plus compact numeric, categorical, boolean, and datetime visuals whose meaning remains visible and accessible without relying on color.
-- Added a stable-only release-readiness guard before canonical checksum creation or artifact upload. It first proves packaging left the exact tagged tracked source unchanged, then pins one owned regular staging-candidate identity, rejects symlinks and hard links, reads it once under before/after identity checks, and performs archive/content inspection plus SHA-256 derivation from that immutable snapshot. Only a fully ready candidate becomes an exclusive read-only `openwrangler.vsix` and matching checksum; the staging path is never uploaded. The content gate accepts exactly one active top-level primary Pandas/Polars table whose ordered rows are all Done with substantive completed evidence, pins `Matt17BR.openwrangler`, rejects duplicate-key JSON, requires complete source/package manifest equality with no empirically observed `vsce` transformation, verifies tag/Python-runtime/VSIX identity and channel agreement, requires a real unfenced dated changelog entry, and replaces README phrase matching with one exact positive stable release/install section in both source and packaged bytes. Fenced, commented, duplicated, reordered, invented, placeholder, renamed, or ambiguous candidates fail closed. The shared classifier binds `0.<odd-minor>.x` exclusively to the preview channel and prevents `1.0.0` from masquerading as a preview.
-- Added the ordinary stable-release workflow. A manual validation-only run packages once from the exact protected `main` commit, uploads one canonical VSIX/checksum/provenance triple, and passes only its immutable artifact ID to native macOS/Windows, full Linux VS Code/Cursor, ordinary installed-performance, released/remote Jupyter, and Remote SSH consumers. Every consumer jointly revalidates source, package, tag, identity, version, digest, and size; an `always()` fan-in requires every result to be `success`. Optional GitHub publication remains default-off, reviewer-protected, write-scoped to one final job, and uses the accepted bytes without rebuilding. Preview tags now have an explicit odd-minor `v0` trigger, so a stable tag cannot start the preview-only workflow.
-- Added a Linux-only real remote-Jupyter packaged phase backed by a digest-pinned, hash-locked, unprivileged Docker fixture. It uses the released Jupyter server collection and kernel picker, transfers the bundled runtime without a host mount, exercises Pandas/Polars/MIME/insertion/restart/replay, and fails closed when container, image, Docker-engine, command-completion, or cleanup ownership is uncertain. The weekly/manual workflow also runs for pull requests that change this harness; it is not a general required check or release evidence until the first green exact-artifact run.
-- Added **Change Import Options** to configurable file grids, initial-load errors, the editor toolbar and tab menu, and the Command Palette. A successful change keeps the public session, cleaning plan, draft, and view; cancellation or failure leaves the confirmed session untouched.
-- Added **Open in Open Wrangler** to supported-file editor toolbars and editor-tab context menus alongside the existing Explorer and Command Palette entry points, with actual workbench click acceptance in isolated VS Code and Cursor profiles. A declarative Cursor configuration default pins the canonical action because Cursor hides third-party title actions by default; explicit user settings still take precedence.
-- Added selectable Cleaning Steps history: each applied step opens a paged input→output inspection with identity-aware cell/column highlighting and generated code through that step, while Original Data restores the exact confirmed view.
-- Added a native, lazy DuckDB file backend for UTF-8 CSV/TSV, Parquet, and JSONL viewing, profiling, all 27 deterministic operations, executable code generation, draft/history workflows, and atomic CSV/Parquet export without conversion through Pandas, Polars, or Arrow.
-- Added opt-in Pandas and DuckDB runtime benchmark modes with deterministic synthetic fixtures, native/lazy frame evidence, machine and package provenance, process-memory samples, and an explicit boundary separating runtime timings from editor first paint. Polars remains the strict release-performance gate.
-- Added pull-request CodeQL analysis for JavaScript/TypeScript and Python, cross-platform pull-request runtime coverage, canonical single-artifact release validation, and repository rules protecting `main` and `v*` release tags.
-- Added focused native-Windows dependency-guard coverage on Python 3.10, 3.12, and 3.14 while retaining the complete Windows 3.14 runtime suite and native installed-editor acceptance against the checksum-pinned canonical PR VSIX.
-- Added an opt-in zero-window packaged-editor phase against the pinned released Python extension. It switches two instrumented environments A → B → A through the stable API and requires exact runtime rotation, Polars plan/data replay, immutable source bytes, and terminal cleanup.
-- Added an opt-in packaged acceptance pair against `ms-toolsai.jupyter@2025.9.1`, with isolated consent-deny/allow profiles, real Variables and notebook entry points, Pandas/Polars DataFrame and Series coverage, host-visible MIME v2 emission and packaged renderer expansion, exact-origin insertion, restart/replay, and terminal cleanup. A weekly/manual VS Code workflow runs the same isolated, unfocused packaged path without becoming required pull-request CI; the complete local paths are recorded green in VS Code 1.130.0 and Cursor 3.13.10.
-- Added an opt-in installed-editor performance harness whose preview path proves a clean exact HEAD, performs its own clean production/test build, derives prerelease packaging through the shared release-channel policy, and pins that channel, source commit, and exact VSIX checksum through every measurement. Its manifests, Python-helper output, generic editor results, and phase fragments use the same bounded duplicate-key-rejecting JSON parser. The mutable preview package output is sealed before complete archive verification; each editor installation revalidates that exact receipt at spawn and after exit; each phase fragment is byte-count/SHA-256-bound to the editor-host result; and the public candidate plus final report remain identity- and digest-bound through successful completion. Apart from its private Python path, it asserts and retains the shipped `auto`/Editing/insights/block-size defaults, native Polars selection, and visible insights control. Its zero-window VS Code and private-display Cursor phases retain ten first-grid timings with aligned synchronized Linux `mincore` page-residency proofs, cached/uncached scroll and renderer-heartbeat samples; drive production filter/sort controls; and launch bounded renderer-heartbeat plus foreground-page probes while filter, sort, and accepted profiling work remain outstanding. The phase also proves authoritative queued-profile cancellation, records path-free platform/storage/display provenance and bounded editor-tree/runtime RSS peaks, and requires terminal runtime/session cleanup. A surviving sampled process group is ownership uncertainty and prevents private-root access or removal. The page-cache-evicted case uses one non-retried `POSIX_FADV_DONTNEED` advisory and does not claim physical cold storage. Smoke fixtures remain explicitly non-gating.
-- Added a hosted installed-performance evidence bridge that breaks the final two-row measurement dependency without weakening stable release readiness. Its evidence-only authoring mode requires exactly **Virtual grid, column sizing, navigation** and **Installed-editor first-usable-grid performance** to remain `Partial`, retains every other stable check, and requires a generated README that explicitly identifies a non-installable validation candidate instead of claiming stable parity. Stable and evidence narratives reject each other. A manual run accepts only a dedicated `release/1.0-evidence-*` branch, pins its event SHA, and proves it is a clean descendant of `main`; ordinary CI and released-Jupyter now derive VSCE's prerelease flag from validated package metadata so both preview and stable-intent branches package coherently. The bridge emits distinct non-promotable artifact and report protocols with an evidence gate that the ordinary stable gate rejects. The `ubuntu-24.04` benchmark acquires official VS Code 1.130.0 and Cursor 3.13.10 Linux x64 by pinned byte size and SHA-256 into one per-run private root, runs Cursor under an isolated `dbus-run-session`, and keeps the existing performance thresholds, zero-window/private-display isolation, and no-local-desktop-fallback rules unchanged. Downloaded editor packages are temporary test inputs and are never bundled, cached as release artifacts, uploaded, published, or redistributed. After a green report, both rows must be marked `Done` and a fresh ordinary all-rows-green stable candidate must be created; the evidence-only bytes can never be renamed or promoted.
-- Unified the Python installed-performance fixture generator, extension host, and release report behind one complete typed manifest decoder, with a cross-language regression that feeds actual generator stdout through the host contract.
-- Added reproducible repository-local Xvfb preparation for supported Ubuntu x64 acceptance hosts. It verifies pinned official package and executable identities, host dependencies, ELF architecture, private-cache publication, and concurrent reuse; the released-Jupyter workflow passes the resulting executable to the existing invisible private-display runner without installing a system package or touching the runner desktop.
-- Added a short native macOS/Windows Cursor release gate. It acquires one official version by exact size and SHA-256, validates product and platform-signing identity, installs the caller's exact VSIX, checks the gallery/Activity Bar icons, native views, file action, grid, theme tokens, keyboard navigation, source immutability, and terminal cleanup, then removes the private installation.
-- Added a label-gated hosted Remote SSH acceptance job for intentional release candidates. It reuses the checksum-pinned canonical PR VSIX, prepares the namespace primitive on an ephemeral Ubuntu VM, and runs the existing isolated official VS Code/Remote SSH gate without adding its large download and runtime cost to ordinary pull requests. The hosted setup removes group/other write access from the seven fixed runtime subtrees that GitHub's runner image makes writable and recursively verifies their root ownership and entry types. The harness copies its invoking Node executable into a private receipt-bound file and mounts it through the immutable launch descriptor, supporting setup-node toolcache layouts without a distro-level Node installation or unleased host path. Required remote-server extraction roots are created empty and mode `0700` before their identities are pinned; the phase opens, pages, and filters a remote CSV while preserving its bytes.
-- Added **Revalidate Runtime Dependencies**, a trust-gated recovery command for an environment left uncertain by an interrupted guarded dependency change. It validates the exact retained marker under the package-root OS lock and never installs, removes, overwrites, ignores, or expires packages or recovery state. A POSIX status check can inspect an existing clean journal on a read-only package mount by falling back to `O_RDONLY` only after `EROFS`, while retaining its exclusive inode lock and leaving install/recovery paths write-required. Windows protects the journal and its leaves with an exact current-user/LocalSystem/Administrators DACL and pins the journal against replacement for the complete critical section.
+- Added exact numeric minimum and maximum values to column-header Insights and the Summary drawer, with accessible
+  numeric, categorical, Boolean, and datetime visuals.
+- Added stable release readiness before artifact upload. It verifies the tagged tracked source, package inventory,
+  extension/runtime versions, release channel, dated changelog entry, stable documentation, and one canonical
+  `openwrangler.vsix` plus checksum. Symlinks, hard links, duplicate JSON keys, ambiguous documentation, source drift,
+  and archive/content mismatches fail before publication.
+- Added an ordinary stable-release workflow that packages once from protected `main` and passes the same canonical
+  VSIX, checksum, and provenance to macOS, Windows, Linux VS Code/Cursor, installed-performance, Jupyter, and Remote SSH
+  qualification. GitHub publication is explicit, protected, and uses the accepted bytes without rebuilding.
+- Added Linux remote-Jupyter qualification against an unprivileged, dependency-locked fixture. This remained a
+  release-validation path rather than a general remote-Jupyter support claim until a green exact-artifact run.
+- Added **Change Import Options** to file grids, initial-load errors, editor actions, and the Command Palette. Success
+  preserves the public session, cleaning plan, draft, and view; cancellation or failure leaves confirmed state intact.
+- Added **Open in Open Wrangler** to supported-file editor toolbars and tab menus alongside Explorer and Command
+  Palette entry points. Cursor receives a default pinned action that explicit user settings can override.
+- Added selectable Cleaning Steps history with paged input/output inspection, stable cell and column highlighting,
+  generated code through the chosen step, and **Original Data** restoration.
+- Added a native lazy DuckDB backend for CSV/TSV, Parquet, and JSONL files, including viewing, profiling, all 27
+  deterministic operations, generated code, draft/history, and CSV/Parquet export without converting through Pandas,
+  Polars, or Arrow.
+- Added opt-in Pandas and DuckDB runtime benchmarks. Polars remained the strict release-performance gate, and runtime
+  timing stayed separate from editor first paint.
+- Added JavaScript/TypeScript and Python CodeQL analysis, cross-platform runtime checks, canonical single-artifact
+  release validation, and repository rules protecting `main` and `v*` tags.
+- Added **Revalidate Runtime Dependencies** for an environment left uncertain by an interrupted guarded dependency
+  change. It validates the retained recovery marker under the package-root lock and never installs, removes,
+  overwrites, ignores, or expires packages or recovery state.
 
 ### Changed
 
-- Added direct Visual Studio Marketplace and Open VSX install links to the generated stable README while retaining checksummed GitHub Releases for manual and offline installation.
-- Made installed-editor interaction p95 representative without relaxing any release limit: first-grid cases still retain ten samples, while release-sized cached/uncached grid and renderer-heartbeat series now retain exactly 40 interactions with no trimming or retry. Every grid sample must prove a real row transition, cached warmup returns to the opposite warmed row before the first measurement, and continuous scrolling trailing-debounces view-state persistence until interaction quiescence. The non-gating 5,000-row smoke retains ten interactions so its deterministic unseen-row targets remain inside the fixture.
-- Corrected packaged split-notebook renderer provenance acceptance to use a real user click on notebook A only after notebook B is proven active. The gate retains exact A/B origin, kernel, insertion, and cleanup assertions, including that B never receives A's session. Timeout diagnostics expose only bounded safe classifications and counters.
-- Split Linux stable exact-artifact acceptance into a zero-window VS Code invocation and a separate repository-pinned private-Xvfb Cursor invocation, with a fresh canonical artifact verification immediately before each. Cursor 3.13.10 reproducibly failed before harness activation on headless Ozone while the same VSIX passed the complete suite under Xvfb; the correction preserves the artifact, phases, assertions, deadlines, isolation, sealed diagnostics, and no-retry policy, and adds the same fixed Xvfb guidance to a matching post-launch, pre-harness inactivity timeout. The stable-workflow guard now also rejects inherited environment/shell defaults, conditional or non-fatal evidence gates, custom shells, unbound downloads/verifiers, and drift in every cross-platform, performance, Jupyter, Remote SSH, and fan-in contract. The complete parsed workflow is additionally bound by a bounded, cycle-safe canonical digest, so runner, command, action-input, ordered-step, evidence-upload, or human-facing dispatch drift cannot pass by falling between semantic checks. Each artifact-consuming evidence or publication step must immediately follow its own fresh canonical verification, preventing an intervening workspace rewrite from substituting the bytes under test.
-- Excluded and cleaned local Python wheel-build residue so `python/build/` can never duplicate the bundled runtime inside a VSIX.
-- Completed the Pandas/Polars 1.0 parity gate with one non-retried hosted installed-editor report from exact source `cfc30e4`. Official VS Code 1.130.0 and Cursor 3.13.10 passed the release-sized CSV/Parquet first-grid, cached/uncached virtual-scroll, outstanding filter/sort/profile responsiveness, authoritative cancellation, and terminal cleanup limits; the evidence-only VSIX remains non-promotable and the stable candidate is built afresh from the all-green source.
-- Fixed Linux headless-editor geometry at a deterministic `1920×1080` Ozone virtual screen. The workbench remains zero-window and unfocused, while production-grid performance checks can no longer mistake Chromium's tiny default surface and clipped insight headers for a renderer timeout; Xvfb and explicit current-desktop runs remain unchanged.
-- Corrected installed-editor cached/uncached grid timing so each sample starts immediately before the renderer assigns `scrollTop` and stays inside one renderer task. A sample now completes only after two consecutive animation frames expose the exact non-busy shape, target text, and a nonzero target cell intersecting both its scroller and viewport; timeout cleanup cancels the outstanding animation frame instead of retaining cross-CDP polling overhead.
-- Stabilized virtual-grid scrolling across profiling and loading rerenders. The grid now retains one scroll listener, reconciles scrolls made while a page is busy through the latest callback, and skips identical viewport publications instead of reinstalling handlers and repeating React work.
-- Made name-addressed Pandas viewing fail closed for duplicate raw labels and display collisions such as integer `7` versus string `"7"`. Filters, sorts, and distinct-value lookup now return one correlated `ambiguous_view_column` diagnostic instead of silently targeting the first match; the grid explains the ambiguity and disables only unsafe view controls while stable-ID cleaning and ordinary paging remain available.
-- Import-options actions now blur their focused webview trigger and commit the disabled busy state before opening the native QuickPick, preventing a late React commit from reclaiming focus on the custom-editor iframe. Completion restores focus only while the webview still owns it and the action remains usable.
-- Made the tag release workflow preview-only. A separate metadata job accepts only a matching preview tag and manifest before the build job can start; stable metadata fails there, all stable packaging/readiness branches are absent, and GitHub Release creation is fixed to prerelease. The complete build and validation job structures are exact allowlists with commit-pinned external actions, so extra jobs, secret-bearing publisher steps, write-capable validation mutations, and moving action substitutions fail documentation checks. Stable publication must promote the exact provenance-bound artifact set that passed stable acceptance instead of rebuilding production bytes.
-- The isolated Remote SSH host now gives the pinned VS Code CLI a namespace-only `/usr/lib64/libstdc++.so.6` compatibility alias into Ubuntu's already validated read-only multiarch runtime and verifies the exact resolution in both bootstrap and the real phase. Result-wait failures report only a fixed last-observed startup or acceptance-action stage after verified process/display cleanup, namespace revalidation, and zero-capability capture. The classifier reads no log contents and never publishes paths, raw checkpoint text, user data, or caught errors; unsafe or ambiguous observations remain the generic failure.
-- Removed the Remote SSH controller's writable dynamic-loader-cache step: the pinned Dropbear binary is now probed and launched directly through its pinned loader and explicit read-only library path. Its immutable runtime is mounted under private `/ow/ssh-runtime`, outside every host-backed mutable home, so an ancestor rename cannot shadow the executable or libraries. A shared loader-argument contract supplies a fixed, verified-absent `--argv0` named `dropbear` beneath the namespace's kernel-owned procfs for bootstrap, real-phase, and daemon launches, after explicitly validating the procfs filesystem identity. Dropbear 2025.89 consequently uses its supported plain-fork fallback instead of reopening and re-executing itself without the loader's one-shot search path; the acceptance-only daemon intentionally trades per-connection ASLR rerandomization for deterministic private-library resolution inside its ephemeral loopback and network namespace. Exact pinned TomCrypt and TomMath files remain independently leased over their read-only multiarch SONAME paths after the host runtime-directory mount. Bounded default-loader listings in bootstrap and the real phase require both SONAMEs to resolve through only the namespace's fixed `/lib -> /usr/lib` aliases to those exact mounts, rejecting glibc hardware-capability and other shadows before direct ELF probes or daemon launch. The namespace supplies a full Coreutils-compatible `printenv` and Procps `ps` instead of BusyBox's incompatible `ps`, and its already-pinned Bash owns `/bin/sh` so BusyBox's compiled applet lookup cannot shadow the exact `ps` mount; its SSH probe requires exact helper paths and working `getconf LONG_BIT`, `printenv HOME`, and `ps -p` behavior before editor launch. Before the cleanup embargo, the exact sealed Bubblewrap argument and descriptor-FD set runs a no-editor bootstrap that loads the controller imports and validates mounted descriptor leaves, critical executable modes, loopback and both Dropbear loader probes, namespace identities, host privacy, empty process/display state, and zero capabilities; the real spawn then seals the same inputs again. Bubblewrap must create the private namespace root with mode `0700`, and the copied virtual environment exposes a receipt-bound regular Python launcher instead of trusting its conventional symlink. Descriptor, namespace, and ownership uncertainty remain unrecoverable; later phase failures can expose only a fixed correlated stage after a second empty-child/display, five-namespace-isolation, host-privacy, and zero-capability boundary. Pre-result failures use randomized-temporary, flush, close, atomic no-overwrite publication, identified cleanup, and lease validation. Post-result cleanup or validation failures carry only the receipt from the first-observed lease after its final identity check and successful close; any earlier identity fault remains latched even if the named path is restored. Host validation binds the surviving named result to that receipt before surfacing a synthetic fixed controller failure. The underlying result is neither overwritten nor exposed as success. Raw process output remains suppressed and any uncertainty still withholds cleanup.
-- Hardened installed-performance publication from source to final evidence. Guarded packaging now requires every VSCE source to be tracked or an exact generated output, derives compiled paths only from tracked production TypeScript, uses a fixed nine-file media registry, and pins every tracked and generated input's identity, size, and SHA-256 around `createVSIX`. The README uses absolute links so VSCE leaves its tracked bytes unchanged, and the sealed archive must match both the complete source inventory and every pinned digest. Ignored extras, restored source rewrites, altered bundles, and transient runtime files therefore fail even if a later scan looks clean; excluded user files remain untouched and outside the candidate. Final candidate/report validation now rechecks both receipts in one pinned joint window, and failed extension-host fragment publication removes only the still-identified temporary rather than a substituted path.
-- Corrected installed-performance phase-fragment publication for filesystem ctime semantics and destination collisions. The publisher now commits with an atomic no-clobber hard link, allows ctime to advance only while that link is created and its temporary name is retired, pins the destination's resulting ctime through a no-follow descriptor read, verifies the exact destination bytes before minting the receipt, and removes only a still-identified link when validation fails. Cross-platform guard fixtures now canonicalize only their owned OS temporary roots, preserving strict alias rejection in production.
-- Made the installed-performance test build guard its complete generated tree before compilation, stage declaration-shadowed CommonJS modules through no-follow descriptor-bound writes, and preflight plus revalidate the exact local module closure before editor acquisition and every phase, so an incomplete or substituted hosted harness fails locally instead of consuming release evidence.
-- Retained hosted installed-performance reports for actionable numeric regressions without weakening the gate. Only a complete report whose validated verdict contains numeric threshold failures and no structural failure may emit a revalidated exact path/SHA-256/size receipt; absolute, home/drive/environment-relative, percent-encoded, and ambiguous path-shaped values all fail closed, and candidate revalidation occurs inside the report's final pinned descriptor snapshot before output. The workflow uploads that report alone under a distinct seven-day failure artifact. Passing evidence remains a separate 90-day artifact, while incomplete runs, mixed or structural verdicts, cleanup/ownership faults, candidate or report drift, unsafe paths, and output faults publish no failure artifact.
-- Bound every progressive column summary to its stable column identity across the protocol, Pandas/Polars/DuckDB runtimes, saved snapshots, coordinator, native views, and webview. Duplicate and non-string Pandas labels are profiled positionally; missing, duplicate, unknown, or reordered summary results fail closed. The nonmodal Insights drawer now has deterministic focus entry, Escape close, exact opener restoration, and human positional disambiguation for duplicate labels.
-- Upgraded the isolated remote-Jupyter fixture from Jupyter Server 2.17.0 to 2.20.0, regenerated its binary-wheel hash lock with a frozen resolver target and release horizon, and added canonical lock checks plus unsuppressed advisory audits to ordinary CI, releases, and the released-Jupyter workflow. The fixture remains outside the VSIX.
-- Replaced release-document substring and line parsing with structural GitHub-flavored Markdown validation. Stable parity evidence now requires human completion text plus a tracked typed reference, the dated changelog entry requires a categorized substantive bullet, and source/packaged README channel and installation prose is owned by one exact generated region. Fenced, commented, raw-HTML, placeholder, future-action, untracked, duplicated, and contradictory decoys fail closed, while engine-specific preview descriptions remain available.
-- Unified release-number channel classification across workflow metadata and direct stable readiness, so an odd-minor `0.x` preview number cannot enter the stable path even when its manifest incorrectly sets `preview: false`.
-- Unified ordinary VSIX verification and stable readiness on one strict in-memory archive reader. Every entry is streamed through actual-size and CRC validation under fixed expansion budgets; encrypted, unsupported, non-regular, colliding, or missing inventory fails, and the gate now requires legal/OPC/runtime/bundle files plus every local asset referenced by the packaged manifest.
-- Bound stable package metadata and release documentation to immutable blobs from the exact event commit instead of mutable worktree reads. Final VSIX/checksum publication now pins both parent and file identities, reopens and hashes both outputs before success, and cleans only still-owned outputs when publication fails.
-- Replaced release-workflow substring-order assertions with parsed-YAML contracts for the exact build and release jobs, including channel conditions, command shells, failure behavior, event-commit environment, immutable build tail, pinned artifact download and write-capable release action, exact job permissions/runners, final checksum, and publication. Final artifact verification now also rechecks both timestamped receipts jointly after both content reads.
-- Made manual notebook-toolbar launches retain exact public provenance when toolbar focus temporarily clears `activeNotebookEditor`. The command now reconciles any direct URI with the active `NotebookEditor` and `TabInputNotebook`, requires one matching open Jupyter document and notebook type, ignores Jupyter-private toolbar context, and preserves that exact object across the variable prompt. Packaged acceptance first proves the rendered labels belong uniquely to the installed canonical command, then pins one action before its single click, releases every inspected browser handle, never retries an indeterminate dispatch, and observes the resulting QuickInput plus natural overflow dismissal without post-click keyboard cleanup.
-- Clarified editor support tiers: VS Code and Cursor remain first-class release targets, other VS Code-based desktop IDEs are experimental, Antigravity's documented VS Code base and Open VSX route are recorded without treating registry discovery as compatibility, and browser-hosted `vscode.dev` remains outside the local-runtime scope. The compact matrix and caution now stay identical across preview and stable generated README sections, while release docs distinguish Open VSX discovery from Microsoft's VS Code-only Marketplace route.
-- Made the remote-Jupyter Docker availability probe read only the server version from `docker version`, avoiding unavailable or inconsistent optional server-platform fields on hosted engines. The bounded visible-ASCII server version is now an opaque identity that accepts vendor suffixes rather than a guessed semantic-version grammar; the immediate `docker info` probe still requires Linux and a supported x86-64 architecture, exact-matches that version, captures the context and engine ID before mutation, and revalidates all four identities later. Docker's optional human-readable platform label remains outside the engine-security properties, and both canonical `amd64` and hosted-runner `x86_64` reports are accepted.
-- Accepted Docker's canonical `no-new-privileges=true` inspection value alongside the equivalent bare and deprecated colon forms, while continuing to reject false, malformed, absent, or additional security options. Remote-Jupyter container-isolation failures now retain only fixed failed-property labels rather than inspected Docker values, preserving fail-closed attestations while making future hosted-engine differences diagnosable from sanitized evidence.
-- Made the remote-Jupyter fixture create writable configuration, data, runtime, work, and IPython roots before importing the server. It selects the four Jupyter/IPython paths through their supported environment variables and work through `ServerApp.root_dir`, preventing Jupyter Server 2.17 from falling back to the read-only container home while keeping the per-run token out of process metadata and environment state.
-- Consolidated pull-request CI around one verified prerelease VSIX and an exact SHA-256 receipt. A small, full-rerun-safe preparation job lets Linux validation and native macOS/Windows consumers test those bytes in parallel; every required consumer fails explicitly if preparation did not succeed. Native jobs retain their script, extension-host, installed-editor, ownership, and failure-evidence gates; the cross-platform runtime matrix owns only its distinct Python OS/version coverage. Redundant package lifecycle and standalone license runs were removed. CI, cross-platform, and CodeQL now preserve running work while replacing only superseded pending runs for the same event and ref.
-- Staggered routine npm, Python, and GitHub Actions Dependabot checks across separate UTC days, grouped compatible minor/patch version updates by ecosystem and dependency type, and bounded ordinary version-update pull requests without grouping or limiting security updates. After an exact-head overlap proved the required Linux/Python 3.10 job retained the real environment smoke and complete runtime suite, the duplicate cross-platform Ubuntu/Python 3.10 cell was retired; affected-path released-Jupyter acceptance now follows the Python dependency manifest it installs. Required and release-evidence pull-request jobs remain unconditional because GitHub treats a skipped job as a successful check; long-running work can push independently tested branches before opening its PR, and exact-head matrices are serialized before squash merges.
-- Made the retained-evidence path-swap regression deterministic by replacing the source at the descriptor read boundary, then requiring exact race rejection and proving replacement content never survives.
-- Stabilized the native dependency-install acceptance around VS Code's transient confirmation control. The harness now verifies one visible, enabled **Install** action, moves the pointer to a neutral workbench edge until unrelated Monaco hovers are gone, dispatches it once with Playwright's cancellable native timeout and no post-click navigation wait, then requires the modal, fake-pip start, sanitized launch, and natural-shutdown checkpoints in order.
-- Made released-Jupyter restart acceptance order-independent without weakening runtime-transfer proof. The replacement process must have a new PID and empty user setup; runtime visibility may race ahead of the notebook probe only when that same process already exposes Open Wrangler's bootstrap root on its own `sys.path`.
-- Aligned released-Jupyter Variables acceptance with its public active-notebook lifecycle: the exact captured notebook is shown and reasserted, a non-data warmup starts the selected kernel, the real Variables view opens before the defining cell runs, and that fresh completion drives its refresh. Direct viewer-argument launches likewise restore the exact notebook first, and failures now retain bounded panel/workbench state instead of a bare session timeout. The private Jupyter profiles suppress VS Code's unrelated extension-recommendation notifications so a first-run Python recommendation cannot intercept the real notebook-toolbar action. The view keeps a load-tolerant 120-second readiness bound inside the unchanged 180-second inactivity and 300-second phase deadlines, so a cold hosted kernel can finish listing variables without turning an indefinitely loading view into a pass.
-- Kept the Xvfb bootstrap suite portable by running its Linux filesystem, ELF, mode, and publication fixtures only on Linux while retaining an always-run regression that production rejects non-Linux hosts before dependency, network, cache, or extraction work.
-- Accepted both forms of notebook origin delivered by the released Jupyter Variables surface: an actual `fileName: vscode.Uri` and its canonical serialized VS Code URI envelope after the Variables webview round trip. The serialized form is revived only for `fileName` after exact key, descriptor, component, cache, Unicode, and UTF-8-bound validation; legacy fields remain real-URI-only. Malformed, conflicting, duplicate, closed, and replaced origins fail closed without an active-editor fallback, and Jupyter remains optional.
-- Routed **Open Notebook Variable** through stable notebook-type and workspace-trust contexts: VS Code uses the notebook toolbar, or the editor title when its global notebook toolbar is disabled, while Cursor receives the same canonical command as a declaratively pinned editor-title action. Runtime validation still requires the released Jupyter API, exact notebook, kernel, and dataframe value; no Jupyter-private context key or compatibility command alias controls the surface.
-- Hardened opt-in released-Jupyter acceptance with a run-owned dependency-only kernel environment, the contemporaneous `ipykernel 6.30.1` / Pandas 2.3.3 / Polars 1.35.2 compatibility baseline for Jupyter 2025.9.1, explicit private-kernelspec selection through the real workbench picker, bounded execution dispatch, pre-bootstrap/runtime-restart absence checks, fresh notebook-execution attestation, stable-API restart status observation, deterministic persisted-denial completion, and the real trusted Python-Jupyter toolbar predicates. Current dependency versions remain covered by the independent runtime and extension-host matrices rather than being substituted into an older third-party Variables implementation. The harness now resolves VS Code's same-origin nested renderer guest, requires positive preview/action geometry, uses the notebook action's rendered short title, and waits through the native overflow-menu activation guard before dispatching exactly once. Kernel timeout and cancellation invalidation is now scoped to the exact observed generation or still-current pre-observation epoch so a stale request cannot detach a concurrently recovered kernel.
-- Made a caller-supplied released-Jupyter VSIX fail before editor discovery when its bounded manifest or native payload targets the wrong operating system, architecture, or Linux C library. Installation uses a private immutable snapshot whose filesystem receipt is revalidated before every editor CLI invocation.
-- Built the notebook renderer as a dedicated self-contained module and made VSIX verification parse its packaged bytes, rejecting imports, dependency re-exports, invalid JavaScript, and a missing named `activate` export. Pandas and Polars formatter registration retains `text/plain`, suppresses only default dataframe HTML, and preserves explicit user per-type HTML formatters.
-- Made generated notebook insertion a bounded exact-document observation with unique-marker proof. Rejected edits remain rejected, unprovable accepted edits become indeterminate without retry or rollback, and actionless result notifications no longer keep commands or extension-host shutdown alive.
-- Bounded each standalone Python interpreter-resolution attempt to one 30-second aggregate budget, with a 10-second per-command ceiling reduced to the remaining time and at most 16 deterministically ranked Windows system candidates. Cancellation, supersession, Workspace Trust loss, and broker/bridge disposal now stop unresolved selection immediately, while exact-object publication guards prevent late activation or subprocess results from replacing a newer selection. A separate serial Linux/macOS/Windows smoke exercises real system discovery without retaining interpreter paths or subprocess diagnostics.
-- Prevented actionless dependency notifications and hung status/validation helpers from retaining mutation barriers or keeping the extension host referenced during shutdown; helper processes are now exact-close tracked and idempotently unreferenced without signalling or killing them.
-- Prevented delayed grid virtualization, page retry, operation-dialog, and insights-drawer focus restoration from reclaiming the custom-editor iframe after VS Code or Cursor transfers focus to a QuickInput or another workbench surface. Focus ownership is now checked when restoration is scheduled and again immediately before the DOM focus call.
-- Made packaged notebook-renderer discovery observation-only and locally bounded. Cursor layout churn can no longer stall acceptance on Playwright pointer-actionability checks; the harness still requires the exact action to be visible, enabled, and functional while preserving the active-notebook provenance race, and retained diagnostics contain only capped structural state rather than rendered dataframe text.
-- Moved dependency installation behind the bundled stdlib-only mutation guard. The selected interpreter now acquires a package-root OS lock, durably writes a UUID marker before READY, requires a correlated GO before invoking isolated pip, retains the lock throughout package writes, and clears only its exact marker after a separate lock-owning import/version validation. A host or machine interruption therefore leaves a durable block that a fresh VS Code or Cursor process observes before probes or runtime startup; live writers, malformed state, changed identities, failed validation, and stale tokens fail closed.
-- Let native import prompts use the complete bounded workbench budget for natural focus transfer, and queue each transition-causing QuickInput's genuine key-down/key-up pair before awaiting either acknowledgement. This prevents an old prompt's focus restoration from overtaking key-up and stealing focus from its successor, without assigning focus, extending timeouts, or weakening keyboard-only acceptance.
-- Hardened VSIX verification to reject exact, case-folded, Unicode-normalization, file/directory, and non-portable archive paths before extraction. Prerelease metadata is now read with strict structural XML parsing that rejects malformed documents, duplicate attributes, document types, ambiguous container arrays, wrong-parent or wrong-namespace lookalikes, and namespaced attribute substitutes; every preview CI package command now passes `--pre-release` explicitly.
-- Made import options exact and format-specific: Excel now asks explicitly for either a nonblank sheet name or a zero-based sheet index, while delimited options reject unknown or mixed fields. Sequential import prompts remain open through incidental workbench or webview focus changes; Escape, explicit cancellation, and superseding actions still abort the wizard. Automatic backend selection skips engines that cannot represent a multibyte UTF-8 delimiter or quote character, and an incompatible pinned backend fails before environment probing or runtime startup. A successful engine change now republishes regenerated code plus the restored draft diff and warnings; terminal cleanup cannot start a missing runtime. One custom editor per URI now restores the last confirmed file configuration and resolved backend, including Parquet/JSONL without invented options. This recovers the same source-and-backend cleaning/view state even if later engine defaults change.
-- Split runtime deadlines by lifecycle stage: dataframe-session opens now have a configurable 60-second cold engine/kernel budget in both standalone and notebook transports, while initialized-session requests retain the 30-second recovery deadline and explicit cleanup bounds still win. The standalone server prepares each selected backend's top-level native module on its process-owned stdin reader thread through a separately owned transient adapter before dispatching the real open, addressing the worker-thread initialization path implicated by the Windows mixed-engine deadlock. For Polars Excel sources, it also initializes discoverable optional PyArrow there before the worker enters Calamine because supported `fastexcel` releases either import that bridge directly or use it for eager output; missing PyArrow, `fastexcel` itself, and the source read remain worker-dispatched. Added fresh-process Polars-then-Pandas and Polars-Excel protocol regressions; packaged file-open acceptance uses the same cold-open budget plus a bounded coordinator-settle allowance and reports redacted runtime/session state on timeout.
-- Made the extension-host missing-dependency fixture a directly executable no-pip virtual environment with an isolated `.pth` invocation recorder on every platform. Acceptance no longer relies on a shell wrapper that production correctly resolves through to its reported interpreter.
-- Hardened native acceptance against filesystem and workbench timing discovered by the required macOS and Windows jobs. POSIX progress readers now discard and retry bounded transitional snapshots from an atomic checkpoint rename without accepting unstable bytes or weakening result-file checks; validated non-symlink Windows fixture directories remain direct children of the isolated editor temp root until Job Object emptiness makes outer cleanup safe; the live timeout regression drives a real child with a logical clock instead of a subsecond pre-spawn wall-clock assumption; and delimited-import prompts send focused keyboard input without coupling acceptance to the editor transition triggered by the final prompt.
-- Separated native import-prompt visibility from keyboard-focus readiness. Packaged acceptance now waits boundedly for VS Code or Cursor to transfer focus naturally before QuickPick navigation or InputBox entry, never assigns focus itself, and retains only bounded structural diagnostics when that transfer does not happen.
-- Shortened disposable macOS editor profile components and added a fail-closed pre-spawn check for VS Code's versioned main IPC socket. Stable VS Code 1.130's Node 24 runtime now rejects overlong Unix sockets instead of silently truncating them; Restricted Mode, seed/verify, and extension-host profiles all remain below the 103-byte platform boundary without leaving the checkout-owned isolated root.
-- Packaged and installed the acceptance-only helper into each disposable editor profile instead of loading it as checkout code. Genuine Restricted Mode now runs without a development extension while still proving that the installed Open Wrangler VSIX cannot activate or start Python, including on native macOS.
-- Made native webview discovery tolerate bounded slow Cursor attachment with the same 30-second liveness-aware polling used by notebook renderer acceptance, while retaining structural frame diagnostics rather than dataframe text on failure. Editor startup output is now fully credential-redacted before a final 8 KiB diagnostic tail is selected; private-key containers still fail closed without retaining source text.
-- Made restored or delayed editor webviews use bounded visibility-aware pulls for retained authoritative state until a matching final synchronization marker commits, then acknowledge it from a post-commit effect. Pending grid presentation now flushes before that acknowledgement, while the host rejects and corrects replay-era writes until the exact marker arrives without blocking ordinary page-revision updates. Native import-option commands use a separately correlated renderer preparation action with one bounded host fallback; manual/native and concurrent-native intents coalesce, and even a busy renderer flushes pending view state before leaving preparation to the host, so dropped or stale messages cannot lose a failure, replay a runtime open, overwrite a newer confirmed view, or duplicate the transaction. Coalesced native commands now remain pending through the prepared prompt transaction, preventing VS Code or Cursor from restoring the custom-editor iframe over an open QuickInput.
-- Made standalone Python runtime shutdown exit-confirmed: normal closes send EOF, forced recovery uses `SIGKILL`, replacement startup stays blocked until the exact prior child exits, and a late correlated exit can safely clear ownership uncertainty. Extension deactivation now awaits that bounded proof after draining sessions and preserves or aggregates shutdown failures in order.
-- Routed saved notebook-output expansion through the normal coordinator and panel lifecycle. The primary action always opens captured full-width rows as an ephemeral, host-identified, read-only session with native views and correlated filtering, sorting, projection, and profiling without trusting saved state, starting Jupyter, persisting the session, or exposing mutation/export actions. A variable link adds a separate exact-origin live action; truncated captures are labeled before expansion and disposal closes the snapshot exactly once.
-- Separated transient session panels from the file custom-editor view type, keyed panel cleanup to exact coordinator sessions, and made terminal close revision-advisory at the host boundary. File and live notebook-variable panels start their single host-owned open immediately, so a delayed Cursor webview-ready event cannot strand the launch; saved notebook-output panels remain lazy. A late renderer-ready event republishes the retained success or error and never retries a denied open. The notebook renderer now uses optional messaging plus an explicit renderer activation event, retaining a readable static preview when host messaging is unavailable.
-- Removed the ineffective renderer-messaging toggle that could leave visible notebook actions disconnected. Desktop actions now always have a registered host channel, while saved output remains a static preview when no extension host is available.
-- Bounded saved notebook outputs identically in Python and TypeScript by rows, columns, cells, UTF-8 bytes, field lengths, graph depth, and graph nodes. UTF-8 size validation now aborts incrementally instead of allocating an oversized serialized payload. Formatter capture performs no eager profiling, keeps Polars lazy until one bounded terminal page, rejects malformed typed cells and recursive payloads, and recomputes profiles from captured truth. Snapshot, live, and generated queries now share one strict typed-literal grammar, exact wide integer/decimal/time-zone/duration selections, engine-specific NaN sorting, missing-value rules, kind-aware mixed-object identity, and deterministic ASCII-folded literal search/contains.
-- Isolated browser accessibility checks in private HOME/XDG roots and a disposable workspace-local profile/temp root, used Playwright's lockfile-pinned headless shell by default, and added per-harness progress plus bounded launch/navigation/axe deadlines so a renderer crash or exhausted shared system temp area fails promptly instead of hanging the validation job. POSIX runs expose that private temp directory through a short, disposable `/tmp` alias so Chrome cannot exceed the Unix singleton-socket path limit in deep CI checkouts.
-- Bound every notebook launch and renderer action to the exact originating `NotebookDocument` supplied by VS Code. Split-editor focus changes, simultaneous same-URI document objects, and same-path close/reopen races can no longer redirect URI-addressed kernel access, session provenance, or integration checks. A saved output's explicit live action reruns backend detection against the current variable instead of pinning its historical backend. Generated-code insertion repeats exact-object/version/uniqueness checks immediately before its URI-addressed stable VS Code edit and reports success only after the original document contains its uniquely marked cell; an accepted but unprovable edit is reported as indeterminate and is never retried or rolled back. Timed-out, cancelled, malformed, stale, and mis-correlated opens retain the exact dispatched kernel only long enough for bounded candidate cleanup; terminal close never reacquires by URI against a replacement notebook.
-- Moved Linux VS Code/Cursor acceptance to a private zero-window Chromium/Electron platform by default, preserving real workbench, CDP, dialog, and screenshot coverage without opening or focusing windows on the user's desktop. Headless and Xvfb runs receive one mode-0700 `tmp/ow/x-*` root for private home, runtime, config, cache, data, profiles, and inherited editor temporaries, avoiding shared-system-temp quota failures while keeping VS Code's Unix socket below Linux's path limit; the whole per-run root is removed in a nested `finally` only after editor/display ownership is verified. The private display disables unused GLX loading so host GPU drivers cannot crash Xvfb startup. Each POSIX editor launch owns a process group so timeout cleanup includes its extension-host and test-kernel descendants; visible runs require an explicit debug override, and Xvfb remains an explicit compatibility fallback.
-- Classified native-editor failures by spawn, early exit, timeout, result protocol, explicit test, runner, and interruption state, with exact editor/version, phase, elapsed time, exit status, result, and progress context. Standalone, seed, and verify phases combine a 300-second hard deadline with a 180-second changed-checkpoint inactivity deadline and never retry automatically; supervisor preparation, receipt validation, spawn work, and the cancellable private debugging-port reservation all consume that same wall-clock budget. Exclusive atomic progress and result files are limited to 1 KiB and 1 MiB; run-specific progress paths and every payload must match the current phase's strict `protocol`/`runId`/`phase` envelope, so stale checkpoints cannot extend inactivity, while the first-observed result identity remains pinned through the final read. Windows writers additionally publish an empty run/phase-derived heartbeat, allowing live inactivity checks without opening mutable content; wrong-correlation writers update a different path. Progress readers discard and retry only verified atomic checkpoint replacement races, while in-place mutation and every result-file identity change still fail closed. Major extension-host checkpoints use bounded, exclusive, randomized, no-follow sibling temporaries, and publication errors fail acceptance. Phase stdout/stderr is captured under fixed bounds, discarded on success, and redacted before failure reporting; an exact early Cursor/headless-Ozone `SIGABRT` adds a fixed, metadata-only private-Xvfb remedy without admitting control-sequence output. Editor CLI, workbench, and private-display processes inherit only an explicit platform/isolation allowlist plus runner-owned test values. Late child errors cannot impersonate exit, while downloader, editor, and display ownership uncertainty remains sticky. POSIX launches own process groups. Windows compiles the checked-in C# supervisor once per private run root inside the same command or phase deadline, pins its executable and parent identity plus SHA-256, permanently rejects a root involved in an unverified bootstrap, and uses that exact executable to create every target suspended, assign it to a private kill-on-close Job Object with strict handle inheritance, and resume only after ownership succeeds; normal completion requires exactly one random supervisor attestation, absent from the target environment and emitted only after `ActiveProcessCount == 0`, and every settled path closes control stdin. Any ambiguous attestation permanently latches ownership uncertainty, the correlated control marker is removed before stderr limits or diagnostics are computed, and a Windows-owned launch without piped stderr fails before spawn. Native Windows CI exercises the compiled supervisor's compile-once contract, natural descendant containment, forced termination, and malformed framing. If any editor/display verification is lost, environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and inherited private runtime, root, profile, result, progress, log, and staging paths remain untouched. Verified private and staging roots are atomically moved to unadvertised random siblings and revalidated against captured root and parent identities immediately before deletion, so a rebound pathname is retained rather than recursively removed. Once the Windows Job Object is proven empty, only a short-lived `EACCES`, `EBUSY`, or `EPERM` on that atomic quarantine move receives a fixed, receipt-revalidated retry schedule; source drift, a planted target, any other error, exhaustion, and recursive-delete faults remain terminal. Package discovery, display, installation, and phase failures otherwise retain only a redacted, bounded allowlist before verified profile deletion; cleanup-only and combined failures receive distinct `cleanup` evidence with the originating phase recorded. A prelaunch-pinned staging root and in-memory inventories bind every retained file through sealing; strict UTF-8 text is re-redacted into one exclusive random JSON artifact outside that staging root. Failed CI/release runs upload only the exact emitted artifact path for seven days; success and ownership uncertainty create none, and raw disposable profiles or secrets are never uploaded. Pull requests and releases now run real stable VS Code extension-host and packaged-artifact acceptance natively on macOS and Windows as well as Linux.
-- Moved standalone extension-host acceptance from the repository workspace into a fresh copied fixture workspace under the per-run private root. Interrupted or terminated runs can no longer leave a stale temporary Python override in the source tree.
-- Kept supervisor stdout/stderr draining through ownership verification and added split-marker/final-suffix backpressure regressions so transform flush cannot lose target diagnostics. The pull-request native-editor matrix now runs the complete script suite on macOS and Windows, making the real Windows-supervisor compile and lifecycle smoke a required guard.
-- Kept Open VSX and Visual Studio Marketplace publication as the final release priority after parity and exact-artifact acceptance. Registry workflows remain disabled until the owner reserves `Matt17BR`, signs the required agreements, provisions protected Open VSX and Microsoft Entra publishing identities, and separately approves the verified live publication.
-- Replaced full-width page transport with required two-dimensional grid windows across open, paging, draft, history, apply, discard, and undo flows. Returned values are aligned to stable column IDs; cache keys include the projection; Pandas projects positionally, lazy Polars projects before collection, and DuckDB uses explicit terminal columns while preserving private row identity. Horizontal paging stays in the confirmed logical view, reconciles diagonal scroll and mutation races, exposes an accessible cleaning-action busy state, preserves full-schema keyboard/ARIA coordinates, and identifies duplicate/reordered diff columns by stable ID. The host rejects same-revision schema changes before publishing projected values. Previously saved full-width MIME-v2 notebook outputs are migrated only when their row width exactly matches the saved schema; incomplete self-contained snapshots fail closed, and explicit notebook snapshots are capped at the protocol's 10,000-row page limit.
-- Hardened file launches to prefer the menu-supplied URI, recover text/custom/diff editor resources, preserve exact VS Code remote URIs during Python environment resolution, accept supported extensions case-insensitively, and reject untitled, virtual, unsupported, disabled, missing, inaccessible, directory, or special-filesystem targets before runtime startup. Corrected custom-editor menu/keybinding predicates to use VS Code's `activeCustomEditorId` context key.
-- Removed the public dependency-install confirmation bypass. The production command now ignores every caller argument and always displays the exact unresolved requirements and target interpreter in a modal before invoking Python. The environment-gated test API can only decline; no modal-free affirmative path exists. Installation is single-flight and revalidates the exact target through the moment immediately before pip. After successful pip, it invalidates the captured dependency-selection epoch so older probes cannot republish stale state, while preserving a genuinely newer interpreter selection.
-- Made optional Python-extension environment selection resource-aware and reactive without adding a hard dependency. The stable API is activated and subscribed single-flight; workspace-folder, file, sibling-file, and unscoped events invalidate only affected selections, dependency state, install targets, and processes, while explicit `openWrangler.pythonPath` settings remain authoritative. Disposal is terminal, and stale resolutions or probes cannot fall through to another interpreter after shutdown. Bare command names now resolve only through fully qualified PATH entries and cannot be workspace-shadowed; a wrapper is pinned to the absolute `sys.executable` it reports without realpathing away a virtual environment. Windows fallback uses only the non-mutating `py -0p` installed-runtime listing with automatic installation disabled, then probes a direct supported executable. Dependency probes, pip, and runtime startup reject non-fully-qualified paths. Isolated probes ignore inherited Python homes, paths, user sites, launchers, Python-manager controls, and environment-manager markers while strictly capturing canonical `realpath(sys.prefix)` plus a usable string-safe filesystem identity, including Windows' 128-bit inode range. A confirmed pip mutation invalidates every current scope sharing that exact package root, including executable, symlink, junction, and `/proc` aliases, even if the initiating target became stale; dependency results are additionally partitioned by normalized executable and exact version within shared prefixes.
-- Partitioned standalone Python processes by selection scope so different workspace roots remain isolated and concurrent while files in one root share a process. Confirmed sessions, provisional opens, pending requests, and cancellations retain exact slot ownership; duplicate, late, timed-out, cancelled, write-failed, or cross-slot candidate responses fail closed and restart only their owning slot. Multi-slot shutdown awaits every child and reports failures deterministically.
-- Bounded inactive standalone Python scope bundles to 128 with a monotonic least-recently-used index that preserves deterministic runtime-slot order. Exact leases and request/session/cancellation/process ownership permit temporary live overflow and trim on release; exact synchronous eviction removes matching selection metadata and stale diagnostics without affecting a same-key replacement. A rejected stop remains retained until that exact child later exits.
-- Made dependency probing single-flight across scopes only when package-root identity, normalized executable, Python version, and every ordered dependency descriptor match exactly. Scope invalidation, package mutation, and shutdown detach joined consumers and exact completed owners so late success or failure cannot publish over a same-key replacement. Successful results use an independent 128-entry least-recently-used cache with hit refresh; probe errors remain uncached and shutdown never cancels or awaits the probe subprocess.
-- Made dependency installation an exactly owned lifecycle instead of a timed `execFile`: pip now runs directly without a shell or retained output, after every active or already-stopping runtime for that probed package environment has exited. Stopping-child ownership is registered before external cancellation-listener cleanup, so a cleanup fault cannot leak a live runtime past quiescence. The user approval carries its own target-scoped event epoch; after quiescence, a fresh interpreter resolution must match the approved normalized executable, exact version, and canonical package-root filesystem identity while Workspace Trust, requirements, lifecycle, and barrier ownership remain unchanged. Probes and starts stay blocked through mutation. Deactivation waits briefly for authoritative child close, then unreferences without ever signalling or killing pip; the same uncertainty is retained until late close, and disposed continuations cannot publish cache or UI state. Successful close releases the mutation barrier before posting its informational notification.
-- Prevented inherited pip/Python environment settings from redirecting or faking a confirmed dependency install. The owned command is `python -I -m pip install --no-input --no-user`; all inherited `PIP_*` behavior is denied except an explicit index/proxy/certificate/cache/network allowlist, pip configuration is disabled, and owned no-input/no-user values are forced. Every interpreter runs from a private mode-0700 directory through exact close, preventing adjacent `pip.py` shadowing; cleanup removes only the empty owned directory and never recurses through a replaced path. Live runtimes likewise discard inherited Python homes, paths, user sites, launchers, and active-environment markers before loading only the bundled Open Wrangler runtime.
-- Serialized the complete open-and-restore path per runtime delegate so new and recovering dataframes cannot race native engine initialization while rebuilding one replacement process; sessions backed by independent runtimes remain concurrent.
-- Excluded downloaded `.vscode-test` editor distributions from repository status and static analysis while retaining VSIX allowlist enforcement, preventing local minimum/current editor checks from exhausting lint memory or contaminating packages.
-- Made Python-script export source-safe and atomic. The public command no longer accepts an injected destination, opens VS Code's Save dialog after its prerequisites pass, pins the immutable open-request source and current local/remote host, and rejects normalized, platform-equivalent, symlink, hard-link, directory, virtual, and cross-remote targets. The writer anchors usable source, destination, and parent identities; detects concurrent source/destination changes; and publishes the edited buffer only through an exclusive flushed sibling temp whose type and identity are revalidated before one rename. Failure cleanup refuses to remove an unidentifiable or substituted temp and reports cleanup faults without masking the primary error.
-- Revalidated the anchored destination after a failed atomic replace, so Windows rename contention is reported as a stable destination-change conflict while genuine permission failures and validation faults retain their original causes.
-- Established the Open Wrangler identity across the VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts.
-- Consolidated commands, settings, custom-editor state, and notebook rendering on the canonical `openWrangler.*` namespace and MIME v2 identifier.
-- Removed the unused pre-release identity and compatibility paths instead of carrying aliases or migrations into the experimental package.
-- Refreshed real installed-VSIX evidence from fixture-only VS Code and Cursor profiles without development-workspace diagnostics or test-host title chrome.
-- Replaced shared engine singletons with ordered factories and session-owned adapters, including diagnostic cleanup on failed opens, explicit close, runtime shutdown, and transient notebook rendering. Extension deactivation now awaits terminal session cleanup across standalone and Jupyter runtimes, while normal Python-process stops use bounded stdin/EOF shutdown before force-kill fallback.
-- Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
-- Deferred all live-session profiling until after the exact first grid, added correlated progressive view queries with interactive-over-background scheduling, and bounded each session's page cache by entries and payload weight.
-- Made opaque logical-view contexts authoritative across the webview, retained panel snapshot, and native Activity Bar state; superseded pages and pre-recovery runtime responses can no longer overwrite current metadata. Foreground failures, profiling diagnostics, queued-view cancellation, retryable pages, and per-profile retries are isolated from one another.
-- Allowed foreground paging to execute beside an immutable profiling lease while keeping transformations, exports, and close exclusive with writer preference. Recovery now retires the replaced runtime session transactionally, and a shutdown that reaches its grace bound still closes a live-kernel session after active work settles.
-- Removed the lazy-Polars all-column null scan from initial schema discovery, kept exact summary counts in native Polars aggregations, sampled deterministic valid numeric values for charts, and normalized Pandas/Polars null-versus-NaN counts.
-- Made notebook-kernel requests use the same canonical protocol-v2 success, error, cancellation, and correlation envelopes as the standalone runtime so logical dataframe errors remain recoverable responses.
-- Made lazy file sessions detect source replacement, resize, schema changes, and deletion before cached metadata can diverge from newly read rows; affected sessions now request an explicit reopen while remaining safely closable.
-- Hardened performance evidence with atomic fixture-contract validation, honest first-sample versus warm-source metrics, native lazy-profile measurements, and cache/session cleanup assertions.
-- Added canonical stdio protocol round-trip and instrumented active-profile overlap gates with a release-blocking 500ms cache-miss ceiling, and limited cancellation acknowledgements to work that was genuinely still queued so running results remain authoritative.
-- Made the bundled Python runtime version a package-wide source of truth and added a documentation gate that rejects extension/runtime prerelease drift.
-- Made every runtime mutation and matching webview transition transactional, including rollback of revisions, plans, drafts, cached blocks, confirmed view state, values, profiling ownership, and focus after late failures or cancellations.
-- Hardened webview host-message intake with explicit same-origin rejection and kept column-derived diagnostic keys in `Map` storage instead of dynamic object properties.
-- Made terminal runtime cleanup accept the caller's last confirmed revision after an ambiguous mutation, recursively isolated Pandas object cells before live/generated custom code, and aligned live/generated null-versus-NaN filters with saved notebook snapshots.
-- Made orderly runtime shutdown drain every session after cleanup faults and return their deterministic aggregate to initiating, joining, and later callers.
-- Added a release-blocking warm-dependency/cold-source stdio first-grid gate with per-file Linux cache-eviction evidence, and required the runtime version module in packaged-VSIX verification.
-- Added strict nested protocol-v2 request/response validation and semantic correlation at webview, persistence, notebook-output, transport, and coordinator boundaries; transformation parameters are discriminated by operation kind, and malformed kinds, actions, runtime IDs, revisions, columns, export paths, and view IDs cannot publish state.
-- Made select, drop, rename, clone, cast, formula, and text-length steps address columns with stable `{id, name}` references. The runtime binds them to private input positions before execution, rejects stale/mismatched identities, duplicate list selections, output collisions, and case-folded private-row references without a string fallback, keeps bound plans transactional, and makes Pandas runtime/generated code positional for duplicate labels. Edited dynamic/cross-kind steps retain their applied ID and derive globally unique output lineage deterministically from current output order, so replay publishes the same identities; Pandas MultiIndex structural outputs append without overwriting tuple-labelled columns, sentinels stay private, and DuckDB rejects case-fold ambiguity instead of targeting the wrong column.
-- Extended the same stable-reference contract to cleaning sorts, copied cleaning filters, missing-row keys, and duplicate-row keys. The public transform IR is deliberately separate from name-addressed viewing state; ambiguous viewing names fail before preview, saved filters reopen without being replaced by unrelated viewing state, and replacement from the current view is explicit. Binding also rejects a transform filter whose declared semantic type is stale for its referenced input column, preventing Pandas/Polars/DuckDB predicate drift; NaN inclusion on a non-float column compiles to the same explicit-false condition on every engine. Pandas runtime and executable generated code now build masks and stable sort/dedup keys from exact positions, including duplicate and integer labels, while Polars and DuckDB receive bound native names. Omitted/all-column modes exclude the private row identity, and restart/replay retains the exact targets without leaking bound positions into saved steps.
-- Extended stable `{id, name}` input references to one-hot and multi-label encoding; find/replace, strip, split, and casing; min-max, round, floor, and ceiling; and datetime formatting. Legacy name strings, stale/mismatched references, repeated one-hot targets, and private-row identities fail before adapter dispatch. Pandas runtime and executable generated code select duplicate and non-string labels positionally, replace an omitted/same-name output with `isetitem`, append explicit outputs without ambiguous assignment, and derive categorical prefixes from the referenced public name while retaining collision and private-namespace guards. One-hot encoding now accepts numeric, boolean, date, and text values, excludes blank/null/NaN categories consistently, and orders generated names globally across engines; multi-label encoding handles categorical nulls; and default stripping uses one explicit Unicode/control-whitespace contract. The operation editor preserves explicit empty multi-label prefixes separately from the default prefix and accepts protocol-valid empty find patterns without changing them during an edit; empty literal finds insert replacements at text boundaries identically in all three engines and their generated code. Packaged live-kernel acceptance applies representative one-hot, uppercase, round, and datetime-format steps to exact duplicate/integer-labelled columns, then replays the full plan after kernel replacement while proving the source variable remains unchanged and public steps never expose bound positions.
-- Completed the stable-reference contract for all 26 column-addressed operations. Group keys and aggregation inputs now use exact references while allowing one source to feed multiple aggregations; by-example sources and every saved-program column leaf use exact references, and example inputs are ordered scalar arrays aligned to source selection order. Public/persisted plans never expose private positions or accept legacy name maps. Pandas grouping and by-example execution/generated code address duplicate and non-string labels positionally, while Polars and DuckDB retain verified native expressions. Grouped null and NaN keys/values now share one typed-null contract without erasing computed NaN; decimal means/medians normalize to a portable nullable float; and integer group sums/by-example arithmetic widen past 64 bits through a checked 38-digit envelope instead of wrapping. Exact final-result semantics cover order-independent cancellation, native Polars UInt128 and DuckDB UHUGEINT, a bounded five-limb Polars group aggregate, NumPy/Python integer boxing, and Pandas Decimal sums that preserve precision and scale independently of caller context. Nullable Pandas integers wider than 64 bits retain exact keys, extrema, generated code, typed pages, and Parquet output; NumPy/Pandas temporal scalars retain nanosecond typed-cell precision. Regex replacements remain literal and by-example casing is deterministic ASCII-only. Synthesis is bounded by source/example/AST limits, 64 warnings, 8 KiB per string, and 64 KiB total UTF-8 text; cheap structural guards run before recursive accounting, which is enforced again on the retained canonical step.
-- Required every retained by-example step to carry its canonical synthesized program, preventing metadata or persistence replay from silently choosing a new candidate. The operation editor now rejects unsafe integer JSON tokens before native parsing can round them, while exact engine-native execution retains the 38-digit arithmetic envelope.
-- Normalized semantic-string group minima and maxima through Pandas nullable strings in both live and generated paths, preserving typed-null behavior across supported Pandas 2.x and 3.x environments instead of relying on their differing object-string reducers.
-- Expanded the real-kernel structural-operation acceptance to use Select Columns to reorder duplicate and non-string Pandas columns before cloning, casting, calculating formulas and text lengths, dropping, and renaming them. Every preview checks positional executable code and typed output; the applied plan must preserve public stable identities without private positions, replay after a real kernel replacement, leave the originating dataframe unchanged, and dispose without a retained session.
-- Made distinct-value queries deterministic across Pandas, Polars, and DuckDB by sorting equal-frequency values by display text. This removes visual/profile flicker and stabilizes checked-in browser captures.
-- Made Vite emit bundle-relative webview assets and explicitly allowed their origin through the main webview CSP, so the packaged Codicon font loads in VS Code, Cursor, and the browser harness instead of resolving against a broken `/codicon.ttf` root URL or being blocked; refreshed the visual baselines and added a duplicate/non-string/empty-label operation-dialog case.
-- Kept draft diffs anchored to the immediately preceding committed schema after structural reorders, while replacement previews still use the latest step's recorded input. Add-operation and edit-latest entry points now remain disabled until the active draft is applied or discarded, the runtime rejects a second preview before adapter dispatch, and the no-argument Add Cleaning Step command opens the generic operation picker.
-- Made the operation builder fully modal: its background becomes inert and hidden from assistive technology, keyboard focus wraps within the dialog, and close restores the exact opener or a stable workbench fallback.
-- Rejected every transformed dataframe with no visible columns, including dynamic categorical and custom-code outputs, so runtime, generated-code, and export row counts cannot diverge on engines that cannot represent a positive-height zero-column frame. Immutable zero-column sources remain viewable where an engine supports them.
-- Rejected runtime/kernel response schemas with empty or duplicate stable column IDs or noncontiguous positions before they can enter coordinator or webview state, including active, latest-step-input, and applied-step inspection schemas.
-- Made standalone cancellation wait for the original request's authoritative result, prevented detached-cleanup timeouts from restarting a live shared runtime, and replaced non-authoritative close acknowledgements with one fresh bounded cleanup attempt plus diagnostics.
-- Made Jupyter acquisition and bootstrap single-flight and generation-safe under concurrency, applied one deadline across acquisition through response parsing, and prohibited automatic mutation/export/session retries after ambiguous dispatch. A later request reconstructs the last confirmed session before continuing after an uncertain mutation.
-- Assigned every live-kernel open a host-known candidate session identity and added bounded failure cleanup, preventing lost or malformed Jupyter output from leaving an unaddressable runtime session.
-- Added explicit grid/drawer ownership for progressive summaries, complete confirmed-state rollback after foreground failures, stable-ID filter selection through renames, empty-schema guards, and scroll paging that preserves keyboard focus.
-- Pinned persisted plans and recovery requests to the confirmed engine so automatic dependency fallback cannot replay a cleaning plan with different backend semantics.
-- Replaced module-only dependency checks with version-aware engine/format probes; DuckDB is accepted only in the tested `>=1.4.5,<1.6` range and dependency installation remains an explicit user-confirmed action.
-- Split engine shutdown interruption from request-level cancellation capabilities so DuckDB cleanup can interrupt terminal work without promising cancellation semantics the protocol cannot guarantee.
-- Corrected legacy `.xls` support end to end: Pandas now probes and uses `xlrd>=2.0.1` instead of `openpyxl`, Polars explicitly uses its Calamine/`fastexcel>=0.9` reader, and real BIFF workbook acceptance covers both runtime engines plus extension dependency diagnostics.
-- Defined `utf8-lossy` as a Pandas replacement-decoding policy: automatic file opens bypass Polars and DuckDB, invalid bytes become the Unicode replacement character, and the sentinel is never passed to Python as a codec name.
-- Split workspace persistence into explicit cleaning and non-destructive viewing sections; filters/sorts, stable-ID widths and column selection, and vertical/horizontal position now restore by source and confirmed backend across reload and runtime recovery, with the active selection mirrored in native views.
-- Moved preview releases to Marketplace-compatible numeric versions with `preview: true`; the release workflow now validates and publishes one checksummed VSIX byte-for-byte across its platform matrix.
+- Stable documentation links directly to Visual Studio Marketplace and Open VSX while retaining checksummed GitHub
+  Releases for manual and offline installation.
+- The 1.0 release recorded the then-current Pandas/Polars gate as complete after installed-editor performance
+  qualification. Evidence-only candidate bytes were not promotable; stable bytes were built again from all-green
+  source.
+- Virtual-grid scrolling now retains its listener across profiling/loading rerenders and reconciles scrolls made while
+  a page is busy.
+- Name-addressed Pandas filtering, sorting, and distinct-value lookup reject duplicate labels and display collisions
+  such as integer `7` versus string `"7"`. Stable-ID cleaning and ordinary paging remain available.
+- Import-option actions commit their disabled state before native prompts and restore focus only when the originating
+  webview still owns it.
+- Preview tags are handled only by the preview workflow. Stable publication promotes a provenance-bound artifact that
+  passed stable acceptance instead of rebuilding production bytes.
+- Package verification rejects path collisions, non-portable archive names, malformed prerelease metadata, unexpected
+  files, unsupported compression/encryption, CRC mismatches, and source/package inventory drift.
+- At this release, Open VSX and Visual Studio Marketplace publication remained disabled until the publisher namespaces,
+  agreements, and protected identities were provisioned and separately approved.
+- VS Code and Cursor are first-class desktop targets. Other VS Code-based desktop IDEs are experimental; Open VSX
+  discovery does not establish compatibility, and browser-hosted `vscode.dev` is outside the local-runtime scope.
+- Manual notebook-toolbar launches remain bound to the exact visible notebook through prompts and focus changes.
+  Generated-code insertion rechecks that same document immediately before editing and reports an accepted but
+  unprovable edit as indeterminate without retry or rollback.
+- The notebook renderer is self-contained in the VSIX. Pandas and Polars formatter registration preserves
+  `text/plain` and explicit user HTML formatters while suppressing only the default dataframe HTML.
+- Interpreter discovery is bounded and stops on cancellation, supersession, trust loss, or disposal. Executables must
+  resolve to fully qualified paths; bare names cannot be shadowed by the workspace.
+- Dependency installation always presents a modal naming the exact requirements and interpreter. The public command
+  accepts no confirmation argument, and the test API can decline only.
+- Dependency changes use a package-root OS lock and durable recovery marker. An interrupted write blocks future probes
+  and runtime starts until explicit revalidation, while stale targets and changed package identities fail.
+- Pip runs directly as `python -I -m pip install --no-input --no-user` after runtimes using that package environment
+  stop. Inherited Python and pip settings cannot redirect the install except for the explicit network/index
+  allowlist, and deactivation does not kill an uncertain pip process.
+- Python selection is resource-aware without making the Python extension mandatory. Different workspace roots own
+  separate standalone processes; files in one root may share a process. Late, cross-scope, or ambiguous responses
+  cannot replace another scope's session.
+- Dependency probes share work only for the same package-root identity, executable, Python version, and ordered
+  requirements. Successful results use a bounded cache; failures are not cached.
+- Import options are exact and format-specific. Excel uses one nonblank sheet name or safe zero-based index;
+  delimited options reject Excel fields, and unsupported multibyte delimiter/quote combinations fail before runtime
+  startup. A successful engine change restores the confirmed plan, draft, view, generated code, and warnings.
+- Cold dataframe opens use a longer initialization budget than initialized-session requests. Standalone startup
+  prepares the selected backend before worker dispatch, including optional PyArrow preparation for Polars Excel where
+  supported `fastexcel` versions require it.
+- Normal standalone shutdown sends EOF and waits for exit; forced recovery may kill only its owned child. Replacement
+  startup waits until the prior process has exited.
+- Saved notebook output originally expanded as an ephemeral read-only session over the captured rows, with a separate
+  action for an exact linked live variable. Static output remained usable when extension-host messaging was absent.
+- Saved outputs are bounded identically in Python and TypeScript by rows, columns, cells, UTF-8 bytes, field lengths,
+  graph depth, and graph nodes. Capture performs no eager profiling, keeps lazy Polars lazy until one terminal page,
+  and shares typed-literal filtering/sorting rules with live and generated paths.
+- Notebook launches, renderer actions, runtime cleanup, and code insertion remain bound to the exact originating
+  `NotebookDocument` and dispatched kernel. Split focus or same-URI replacement cannot redirect them.
+- Grid transport uses two-dimensional row/column windows for open, paging, preview, history, apply, discard, and undo.
+  Responses align values to stable column IDs, caches include projection, and horizontal paging preserves full-schema
+  filtering, sorting, ARIA coordinates, and generated code.
+- File actions preserve exact local or VS Code remote URIs, accept supported suffixes case-insensitively, and reject
+  untitled, virtual, missing, inaccessible, directory, special, disabled, or unsupported targets before runtime start.
+- Generated-script export always uses VS Code's Save dialog, remains pinned to the immutable source and current
+  local/remote host, rejects equivalent paths, symlinks, hard links, directories, and cross-remote destinations, and
+  publishes through an exclusive flushed sibling temporary plus atomic rename.
+- The package, runtime, protocol, commands, settings, editor state, and notebook renderer use the canonical
+  `openWrangler.*` namespace and MIME v2 identity; unused prerelease aliases were removed.
+- Engine registries now contain factories rather than shared adapters. Each live or transient session owns its engine
+  and cleanup, and extension deactivation waits for terminal session cleanup.
+- Initial live-session profiling starts after the first grid. Interactive view work can overtake background profiles,
+  pages may run beside immutable profiling leases, and mutations, exports, and close remain exclusive.
+- Logical-view context plus request identity controls freshness across webview, retained panel, and Activity Bar state.
+  Superseded pages, failed profiles, and pre-recovery responses cannot overwrite the current view.
+- Lazy file sessions detect source replacement, resize, schema change, and deletion before and after reads. Stale
+  sessions invalidate cached blocks, request reopen, and remain safely closable.
+- The bundled Python runtime version is the package-wide version source and must stay equivalent to the extension
+  version.
+- Runtime and webview mutations publish atomically or restore revisions, plans, drafts, caches, view state, profiling
+  ownership, values, and focus to the last confirmed snapshot.
+- Webview messages reject wrong-origin and malformed protocol data before state publication. User-derived column keys
+  use `Map` storage rather than dynamic object properties.
+- Runtime, persistence, notebook-output, transport, and coordinator messages use strict protocol-v2 validation,
+  correlation, and discriminated operation parameters. Malformed requests, IDs, revisions, columns, paths, or view
+  identities cannot publish state.
+- Structural operations, cleaning sorts/filters, missing/duplicate keys, text/categorical/numeric/datetime operations,
+  group keys, aggregations, and by-example programs now use stable `{id, name}` column references. Pandas addresses
+  duplicate and non-string labels positionally; Polars and DuckDB receive verified native names.
+- Categorical encoders avoid generated-name collisions and ignore the specified null/blank categories. Empty literal
+  text finds, Unicode stripping, numeric operations, datetime formatting, and generated code agree across supported
+  engines.
+- Group and by-example execution normalizes null/NaN behavior, decimal results, semantic strings, wide nullable Pandas
+  values, and checked 38-digit integer arithmetic. By-example programs are canonical and bounded before retention.
+- Draft diffs use the immediately preceding committed schema, while edited latest steps use their recorded input.
+  Only one draft may be open; add/edit entry points remain disabled until Apply or Discard.
+- The operation builder is modal, traps focus, hides its background from assistive technology, and restores the exact
+  opener or a stable workbench fallback.
+- Operations reject transformed dataframes with no visible columns, while immutable zero-column sources remain
+  viewable where supported. Runtime/kernel schemas with empty or duplicate column IDs or noncontiguous positions are
+  rejected before entering host or webview state.
+- Cancellation waits for the original request's correlated result; cleanup acknowledgements cannot fabricate
+  completion for running work. Uncertain live-kernel opens receive a host-known candidate session ID and one bounded
+  cleanup attempt.
+- Jupyter acquisition and bootstrap share concurrent work for one kernel generation. Ambiguous mutations, exports,
+  and session opens are not retried automatically.
+- Persisted cleaning and viewing state is separated and pinned to the confirmed backend so fallback cannot replay a
+  plan through different engine semantics.
+- Dependency probes enforce supported engine/format versions, including DuckDB `>=1.4.5,<1.6`. Dependency installation
+  remains an explicit, trusted user action.
+- Legacy `.xls` files use `xlrd>=2.0.1` in Pandas and Calamine/`fastexcel>=0.9` in Polars. The `utf8-lossy` option is
+  a Pandas replacement-decoding policy; invalid bytes become U+FFFD and bypass engines that cannot represent it.
+- Distinct values with equal frequency sort by display text across Pandas, Polars, and DuckDB.
+- Webview bundles use relative asset URLs and a CSP that allows their exact origin, so the packaged Codicon font loads
+  in VS Code and Cursor.
+- Preview releases use Marketplace-compatible numeric versions with `preview: true` and publish one checksummed VSIX
+  byte-for-byte across their platform qualification.
 
 ## [0.2.0-alpha.1] - 2026-07-15
 
 ### Added
 
-- Initial 1.0 parity milestone, contributor guardrails, CI, release automation, and documentation ownership.
-- Original extension and Activity Bar icon sources.
-- Strict TypeScript, Python, formatting, documentation, and VSIX-content checks.
-- Protocol v2 JSON Schema, generated TypeScript contract, explicit Python validation, typed cell encodings, request cancellation, timeouts, and structured diagnostics.
-- Stable extension-host session IDs with per-session serialization, concurrent dataframe sessions, cleanup, stale-revision rejection, and runtime replay.
-- Python 3.10-3.14 environment resolution, engine/format dependency probes, and confirm-before-install runtime commands.
-- Two-axis grid virtualization, resizable columns, roving keyboard navigation, column search, responsive insights drawer, and progressive profiling.
-- Activity Bar Operations, Summary, Filters/Sorts, and Cleaning Steps views plus a bottom-panel Code Preview surface.
-- CSV/TSV delimiter, encoding, quote, and header prompts; Excel sheet selection; configurable viewing behavior and file types.
-- Advanced AND/OR viewing predicates with null/NaN operators and cross-engine tests.
-- Light, dark, high-contrast, responsive-width, zoom, and wide-data browser acceptance baselines.
-- Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
-- A validated 27-operation transformation registry with native Pandas and Polars execution and standalone code generation.
-- Revision-safe draft preview, typed page diffs, apply/discard/latest-step edit/undo, and runtime plan replay.
-- A searchable VS Code-native operation builder, synchronized Cleaning Steps view, draft diff surface, and editable CodeMirror code panel.
-- Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
-- Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
-- Deterministic by-example synthesis with ranked expression programs, ambiguity warnings, native engine execution, and generated code.
-- Complete notebook MIME v2 snapshots, permission-aware kernel formatters, and originating-notebook code insertion.
-- Generated command, setting, operation, protocol, and MIME references with byte-for-byte CI drift detection.
-- Source reopening and Getting Started walkthrough commands.
-- Private row lineage and deterministic column identities for accurate structural diffs across sorting, renaming, reordering, grouping, latest-step edits, and duplicate Pandas labels.
-- Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
-- Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
-- Playwright/axe WCAG scanning and pixel-diff visual acceptance across 22 production-bundle harnesses, including high-contrast light, Unicode, empty, loading, error, and recovery states.
-- Strict release-size Polars benchmarks with JSON evidence, session-cleanup assertions, rendered cached/uncached scroll gates, and scheduled CI regression checks.
-- Cross-engine file acceptance for quoted/headerless CSV, TSV, JSONL, Parquet, and named/indexed Excel sheets plus missing/malformed diagnostics.
-- Native nested-Polars and Pandas/NumPy nullable typed-cell fixtures covering large integers, decimals, time zones, containers, binary, durations, NaN/infinity, zero-column frames, and long Unicode values.
-- Cross-engine operation-edge acceptance for stable per-column null sorts, missing/duplicate modes, categorical collisions, Unicode casing, non-finite numerics, nullable ordered groups, and custom-code diagnostics.
-- Two-process installed-VSIX acceptance in VS Code and Cursor for persisted Polars plans/view state, concurrent Pandas/Polars runtime recovery, source-safe export, and final process cleanup.
-- Required TypeScript/Python coverage floors, bundled-production license policy checks, and Linux/macOS/Windows tag validation.
-- State-scoped, accessible keyboard shortcuts for draft apply/discard and latest-step edit/undo, with production-bundle Playwright acceptance.
-- Installed VS Code/Cursor input acceptance for CSV, TSV, JSONL, Parquet, and Excel plus native Pandas/Polars CSV and Parquet export verification.
-- Installed VS Code/Cursor acceptance for representative steps from every operation group on Pandas and Polars, including preview/diff/code/apply, deterministic by-example confirmation, custom-code crash replay, immutable sources, and leak-free disposal.
-- Installed VS Code/Cursor acceptance for native Pandas/Polars paging, advanced OR filters, multi-column sorts, progressive summaries, exact stats, searched values, view/plan separation, immutable sources, and leak-free disposal.
-- Installed VS Code/Cursor acceptance for edited Code Preview clipboard/script output and explicit runtime change, dependency diagnostics, declined installation, and fallback clearing.
-- Remote-compatible kernel runtime transfer plus installed VS Code/Cursor notebook acceptance for saved MIME v2 output, live Pandas/Polars variables, permission denial, kernel replacement/replay, and edited originating-notebook insertion.
-- Real installed-VSIX workbench captures in VS Code and Cursor across dark, light, and high-contrast themes at 200% zoom, including the original Activity Bar/gallery identity and native views.
+- Added the initial 1.0 milestone, contributor guardrails, CI/release automation, documentation ownership, and original
+  extension/Activity Bar icons.
+- Added protocol-v2 schemas, generated TypeScript contracts, Python validation, typed cells, correlated cancellation,
+  timeouts, and structured diagnostics.
+- Added concurrent session IDs, per-session serialization, stale-revision rejection, cleanup, and runtime replay.
+- Added Python 3.10–3.14 environment resolution, engine/format probes, and confirmation before dependency install.
+- Added two-axis grid virtualization, resizable columns, keyboard navigation, column search, responsive Insights, and
+  progressive profiles.
+- Added native Operations, Summary, Filters / Sorts, and Cleaning Steps views plus Code Preview.
+- Added CSV/TSV delimiter, encoding, quote, and header options; Excel sheet selection; configurable file types and
+  viewing behavior; and advanced AND/OR filters with null/NaN operators.
+- Added a 27-operation Pandas/Polars registry with native execution and generated code.
+- Added revision-safe preview, typed diffs, apply/discard, latest-step edit, undo, plan replay, and a searchable native
+  operation builder.
+- Added workspace-scoped cleaning/draft/view persistence, editable code copy/script export, and atomic Pandas/Polars
+  CSV/Parquet export.
+- Added deterministic Transform by Example synthesis with ambiguity warnings and matching live/generated execution.
+- Added complete MIME-v2 notebook snapshots, permission-aware formatters, live variables, runtime transfer, kernel
+  restart/replay, and exact-origin code insertion.
+- Added generated command, setting, operation, protocol, and MIME reference documentation.
+- Added source reopening and Getting Started commands.
+- Added private row lineage and stable column identities for structural diffs, duplicate Pandas labels, grouping,
+  reorder, rename, and latest-step edits.
+- Added accessibility and visual coverage for light, dark, high-contrast, zoomed, responsive, Unicode, empty, loading,
+  error, and recovery states.
+- Added release-size Polars performance checks and cross-engine file/operation edge coverage.
 
 ### Changed
 
 - Package publisher changed from `local` to `Matt17BR`.
-- File-only use no longer declares Jupyter as a hard extension dependency.
+- File-only use no longer declares Jupyter as a hard dependency.
 - Supported Python versions are 3.10 through 3.14.
-- File-backed Polars CSV/TSV, Parquet, and JSONL inputs now stay lazy through viewing filters, sorts, projections, and page slices.
-- GitHub workflows use the current Node 24-based official action majors.
-- Custom-editor panels now enable their webview scripts and resources consistently, allowing file sessions to initialize through the contributed editor path.
-- Column actions and resizing now provide zoom-safe touch targets plus keyboard resizing; loading, recovery, and generated-code regions expose explicit accessible status/focus semantics.
-- Polars nested dtypes are classified by their outer container, Excel sheet indexes follow the public zero-based contract, and failed lazy-file opens no longer retain partial sessions.
-- Transformation IR validation now rejects malformed option types, filter predicates, sorts, and group aliases before execution; runtime and generated Pandas/Polars code share deterministic null, category, group, numeric, and Unicode behavior.
-- Standalone Python startup is single-flight, restart-safe, and automatically stops after the final session closes.
-- Screenshot generation resolves hosted CI Python environments as well as local virtual environments.
-- Successful code-copy and script-export notifications no longer hold command completion open while awaiting toast dismissal.
-- Notebook kernels receive the packaged pure-Python runtime through the stable execution API and no longer require access to the local extension filesystem.
-- Saved notebook snapshots no longer treat null numeric cells as zero, and their multi-column sorts honor explicit null placement independently of direction.
-- Visual and accessibility acceptance use the lockfile-pinned Chromium revision, metric-compatible harness font tokens, and always-uploaded CI diffs instead of a moving system-browser/font fallback.
-- Real-kernel acceptance uses a single bounded execution deadline with short message polls, tolerating cold shared-runner imports without hiding a hung kernel.
-- Webview scrollbars and multi-select states now use VS Code theme tokens for consistent native contrast and deterministic rendering across editor and CI hosts.
-- Editor compatibility jobs retry transient VS Code distribution downloads with a bounded backoff.
-- Cross-platform checks use a Pandas Index for mixed column labels, platform-native path fixtures, and repository-enforced LF text checkouts, keeping Python 3.10 type analysis and Windows packaging deterministic.
+- File-backed Polars CSV/TSV, Parquet, and JSONL inputs remain lazy through filters, sorts, projections, and pages.
+- Custom-editor panels now initialize consistently through the contributed editor path.
+- Column actions and resizing provide zoom-safe touch targets and keyboard resizing; loading, recovery, and generated
+  code expose accessible status and focus.
+- Polars nested dtypes use their outer container, Excel sheet indexes are zero-based, and failed lazy opens retain no
+  partial session.
+- Transformation validation rejects malformed options, filters, sorts, and aliases before execution. Pandas/Polars
+  runtime and generated code agree on null, category, group, numeric, and Unicode behavior.
+- Standalone Python startup is single-flight, restart-safe, and stops after its final session closes.
+- Code-copy and script-export notifications no longer keep commands open while waiting for a toast to close.
+- Notebook kernels receive the packaged pure-Python runtime through the stable API without reading the extension
+  filesystem.
+- Saved notebook snapshots no longer treat null numeric cells as zero, and multi-column sorts honor explicit null
+  placement.
+- Webview scrollbars and multi-select states use VS Code theme tokens.
 
 ### Release status
 
-- That checkpoint recorded the then-known parity evidence, but it remained a preview and created no `1.0.0` tag. The current matrix is authoritative when later audits reopen incomplete behavior or acceptance gates.
+- That checkpoint recorded the then-known parity evidence, but it remained a preview and created no `1.0.0` tag. The
+  current matrix is authoritative when later audits reopen incomplete behavior or acceptance gates.
 
 ## [0.1.0] - 2026-06-01
 
