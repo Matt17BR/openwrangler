@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from math import isnan
 from typing import Any
 
@@ -1180,6 +1181,39 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     assert_semantically_equal(
         custom, execute_generated(engine, frame, [step("custom-generated", "customCode", code=code)])
     )
+
+
+def test_pandas_group_semantic_classes_match_generated_code() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        {
+            "group": ["a", "a", "b", "b"],
+            "integer": pd.Series([2**63 - 1, 1, pd.NA, pd.NA], dtype="Int64"),
+            "decimal": pd.Series([Decimal("1.10"), Decimal("2.20"), None, None], dtype=object),
+            "value": [float("nan"), 1.5, float("nan"), None],
+        }
+    )
+    operation = bound_step(
+        "group-semantics",
+        "groupBy",
+        keys=[bound_ref("c:source:0", "group", 0)],
+        aggregations=[
+            {"column": bound_ref("c:source:1", "integer", 1), "operation": "sum", "alias": "total"},
+            {"column": bound_ref("c:source:1", "integer", 1), "operation": "first", "alias": "first"},
+            {"column": bound_ref("c:source:2", "decimal", 2), "operation": "mean", "alias": "average"},
+            {"column": bound_ref("c:source:3", "value", 3), "operation": "nUnique", "alias": "unique"},
+        ],
+    )
+
+    result = assert_pandas_live_matches_generated(engine, frame, operation)
+
+    assert result["group"].tolist() == ["a", "b"]
+    assert result["total"].tolist() == [2**63, 0]
+    assert result["first"].iloc[0] == 2**63 - 1
+    assert result["first"].iloc[1] is pd.NA
+    assert result["average"].iloc[0] == pytest.approx(1.65)
+    assert pd.isna(result["average"].iloc[1])
+    assert result["unique"].tolist() == [1, 0]
 
 
 @pytest.mark.parametrize("lazy", [False, True])

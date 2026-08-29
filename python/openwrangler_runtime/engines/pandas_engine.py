@@ -1923,13 +1923,16 @@ class PandasEngine(DataFrameEngine):
                 )
                 for aggregation in params["aggregations"]
             ]
+            aggregation_semantics = [
+                _pandas_group_aggregation_semantics(operation) for _position, operation, _alias in aggregations
+            ]
             source = f"_group_source_{index}"
             key_names = list(range(len(key_positions)))
             value_names = list(range(len(key_positions), len(key_positions) + len(aggregations)))
             temporary_names = [*key_names, *value_names]
             named = {
-                alias: (value_names[ordinal], "nunique" if operation == "nUnique" else operation)
-                for ordinal, (_position, operation, alias) in enumerate(aggregations)
+                alias: (value_names[ordinal], aggregation_semantics[ordinal][0])
+                for ordinal, (_position, _operation, alias) in enumerate(aggregations)
             }
             output_labels = f"_group_labels_{index}"
             grouped = f"_grouped_{index}"
@@ -1961,14 +1964,17 @@ class PandasEngine(DataFrameEngine):
             decimal_sum_flags: dict[int, str] = {}
             decimal_sum_zeros: dict[int, str] = {}
             decimal_average_flags: dict[int, str] = {}
-            for aggregation_index, (_position, operation, _alias) in enumerate(aggregations):
+            for aggregation_index, (_position, _operation, _alias) in enumerate(aggregations):
+                _, ordered_input, checked_sum, nullable_integer, decimal_average = aggregation_semantics[
+                    aggregation_index
+                ]
                 value_name = value_names[aggregation_index]
-                if operation in {"min", "max"}:
+                if ordered_input:
                     lines.append(
                         f"{prefix}{source}.isetitem({value_name!r}, "
                         f"_open_wrangler_ordered_aggregate_input({source}[{value_name!r}]))"
                     )
-                if operation == "sum":
+                if checked_sum:
                     flag = f"_group_integer_sum_{index}_{aggregation_index}"
                     integer_sum_flags[aggregation_index] = flag
                     decimal_flag = f"_group_decimal_sum_{index}_{aggregation_index}"
@@ -1995,7 +2001,7 @@ class PandasEngine(DataFrameEngine):
                             ),
                         ]
                     )
-                elif operation in {"min", "max", "first", "last"}:
+                elif nullable_integer:
                     flag = f"_group_integer_nullable_{index}_{aggregation_index}"
                     integer_nullable_flags[aggregation_index] = flag
                     lines.extend(
@@ -2008,7 +2014,7 @@ class PandasEngine(DataFrameEngine):
                             ),
                         ]
                     )
-                if operation in {"mean", "median"}:
+                if decimal_average:
                     flag = f"_group_decimal_average_{index}_{aggregation_index}"
                     decimal_average_flags[aggregation_index] = flag
                     lines.append(f"{prefix}{flag} = _open_wrangler_is_decimal_series({source}[{value_name!r}])")
@@ -2050,8 +2056,11 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}df.isetitem({output_position}, _open_wrangler_restore_group_key("
                     f"df.iloc[:, {output_position}], {sentinel}, {integer_key}))"
                 )
-            for aggregation_index, (_position, operation, _alias) in enumerate(aggregations):
-                if operation not in {"mean", "median", "min", "max", "first", "last"}:
+            for aggregation_index, _aggregation in enumerate(aggregations):
+                _, _ordered_input, _checked_sum, nullable_integer, decimal_average = aggregation_semantics[
+                    aggregation_index
+                ]
+                if not nullable_integer and not decimal_average:
                     continue
                 output_position = len(key_positions) + aggregation_index
                 null_mask = f"_group_nulls_{index}_{aggregation_index}"
@@ -2371,6 +2380,16 @@ def _pandas_require_pivot_output_names(df: Any, outputs: Sequence[str]) -> None:
         raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(collisions))
 
 
+def _pandas_group_aggregation_semantics(operation: str) -> tuple[str, bool, bool, bool, bool]:
+    return (
+        "nunique" if operation == "nUnique" else operation,
+        operation in {"min", "max"},
+        operation == "sum",
+        operation in {"min", "max", "first", "last"},
+        operation in {"mean", "median"},
+    )
+
+
 def _pandas_group_by_positions(
     df: Any,
     key_positions: Sequence[int],
@@ -2380,6 +2399,9 @@ def _pandas_group_by_positions(
 
     key_names = list(range(len(key_positions)))
     value_names = list(range(len(key_positions), len(key_positions) + len(aggregations)))
+    aggregation_semantics = [
+        _pandas_group_aggregation_semantics(operation) for _position, operation, _alias in aggregations
+    ]
     selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
     source = pd.concat([df.iloc[:, position] for position in selected_positions], axis=1)
     source.columns = [*key_names, *value_names]
@@ -2393,25 +2415,26 @@ def _pandas_group_by_positions(
     decimal_sum_indexes: list[int] = []
     decimal_sum_zeros: dict[int, Decimal] = {}
     decimal_average_indexes: list[int] = []
-    for aggregation_index, (_source_position, operation, _alias) in enumerate(aggregations):
+    for aggregation_index, (_source_position, _operation, _alias) in enumerate(aggregations):
+        _, ordered_input, checked_sum, nullable_integer, decimal_average = aggregation_semantics[aggregation_index]
         value_name = value_names[aggregation_index]
-        if operation in {"min", "max"}:
+        if ordered_input:
             source.isetitem(value_name, _pandas_ordered_aggregate_input(source[value_name]))
         semantic_type = _pandas_semantic_type(source[value_name])
-        if operation == "sum" and semantic_type == "integer":
+        if checked_sum and semantic_type == "integer":
             integer_sum_indexes.append(aggregation_index)
             source.isetitem(value_name, _pandas_widen_integer(source[value_name]))
-        elif operation == "sum" and semantic_type == "decimal":
+        elif checked_sum and semantic_type == "decimal":
             decimal_sum_indexes.append(aggregation_index)
             decimal_sum_zeros[aggregation_index] = _pandas_decimal_zero(source[value_name])
-        elif operation in {"min", "max", "first", "last"} and semantic_type == "integer":
+        elif nullable_integer and semantic_type == "integer":
             integer_nullable_indexes.append(aggregation_index)
             source.isetitem(value_name, _pandas_integer_aggregate_input(source[value_name]))
-        if operation in {"mean", "median"} and semantic_type == "decimal":
+        if decimal_average and semantic_type == "decimal":
             decimal_average_indexes.append(aggregation_index)
     named: dict[str, tuple[int, str | Callable[[Any], Any]]] = {
-        alias: (value_names[index], "nunique" if operation == "nUnique" else operation)
-        for index, (_position, operation, alias) in enumerate(aggregations)
+        alias: (value_names[index], aggregation_semantics[index][0])
+        for index, (_position, _operation, alias) in enumerate(aggregations)
     }
     for aggregation_index in decimal_sum_indexes:
         _position, _operation, alias = aggregations[aggregation_index]
@@ -2435,8 +2458,9 @@ def _pandas_group_by_positions(
             output_position,
             _pandas_restore_group_key(result.iloc[:, output_position], sentinel, integer_key),
         )
-    for aggregation_index, (_source_position, operation, _alias) in enumerate(aggregations):
-        if operation not in {"mean", "median", "min", "max", "first", "last"}:
+    for aggregation_index, _aggregation in enumerate(aggregations):
+        _, _ordered_input, _checked_sum, nullable_integer, decimal_average = aggregation_semantics[aggregation_index]
+        if not nullable_integer and not decimal_average:
             continue
         null_mask = grouped[value_names[aggregation_index]].count().reset_index(drop=True).eq(0)
         output_position = len(key_positions) + aggregation_index
