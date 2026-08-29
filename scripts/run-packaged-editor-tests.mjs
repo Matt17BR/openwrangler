@@ -595,7 +595,9 @@ try {
             const jupyterRUserData = resolve(profile, "jz");
             const jupyterRemoteRUserData = resolve(profile, "jq");
             const coexistOpenUserData = resolve(profile, "co");
+            const coexistOpenRestartUserData = resolve(profile, "cor");
             const coexistDataUserData = resolve(profile, "cd");
+            const coexistDataRestartUserData = resolve(profile, "cdr");
             const restrictedUserData = resolve(profile, "r");
             const extensions = resolve(profile, "extensions");
             const jupyterExtensions = resolve(profile, "jx");
@@ -747,9 +749,9 @@ try {
               ["jupyter-remote", jupyterRemoteUserData],
               ["jupyter-remote-cleanup", jupyterRemoteUserData],
               ["jupyter-coexist-open-select", coexistOpenUserData],
-              ["jupyter-coexist-open-restart", coexistOpenUserData],
+              ["jupyter-coexist-open-restart", coexistOpenRestartUserData],
               ["jupyter-coexist-data-select", coexistDataUserData],
-              ["jupyter-coexist-data-restart", coexistDataUserData],
+              ["jupyter-coexist-data-restart", coexistDataRestartUserData],
               ["seed", userData],
               ["verify", userData]
             ]);
@@ -879,7 +881,14 @@ try {
                       ...(pythonJupyterPhaseSet.has("jupyter-deny") ? [jupyterDenyUserData] : []),
                       ...(pythonJupyterPhaseSet.has("jupyter-pyspark") ? [jupyterPySparkUserData] : []),
                       ...(pythonJupyterPlan.remote ? [jupyterRemoteUserData] : []),
-                      ...(dataWranglerCoexistenceEnabled ? [coexistOpenUserData, coexistDataUserData] : [])
+                      ...(dataWranglerCoexistenceEnabled
+                        ? [
+                            coexistOpenUserData,
+                            coexistOpenRestartUserData,
+                            coexistDataUserData,
+                            coexistDataRestartUserData
+                          ]
+                        : [])
                     ];
                   }
                   for (const jupyterUserDataDirectory of jupyterUserData) {
@@ -890,6 +899,11 @@ try {
                       "extensions.ignoreRecommendations": true,
                       "notebook.globalToolbar": true,
                       "jupyter.askForKernelRestart": false,
+                      ...(jupyterUserDataDirectory === coexistOpenRestartUserData
+                        ? { "openWrangler.notebookPreviewProvider": "openWrangler" }
+                        : jupyterUserDataDirectory === coexistDataRestartUserData
+                          ? { "openWrangler.notebookPreviewProvider": "dataWrangler" }
+                          : {}),
                       ...(jupyterUserDataDirectory === jupyterRUserData && rJupyterSelection.nativeEditorTooling
                         ? {
                             "files.associations": {
@@ -1646,7 +1660,7 @@ try {
                     await runEditorAcceptancePhase({
                       editor: identifiedEditor,
                       workspace: openWranglerChoice ? coexistOpenWorkspace : coexistDataWorkspace,
-                      userData: openWranglerChoice ? coexistOpenUserData : coexistDataUserData,
+                      userData: userDataForPhase(phase),
                       extensions: coexistenceExtensions,
                       developmentPaths: [],
                       testModule,
