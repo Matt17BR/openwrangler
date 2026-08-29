@@ -22,7 +22,7 @@ import type {
 } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
-import { operationKinds } from "./operationCatalog.generated";
+import { operationCatalog, type OperationCatalogItem } from "./operationCatalog.generated";
 import { MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES } from "./protocolLimits.generated";
 import {
   MAX_PIVOT_LONGER_COLUMNS,
@@ -78,7 +78,9 @@ const CELL_KINDS = new Set([
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark", "r"] as const;
 const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as const;
 const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\-./0-9:;=?@A-Z[\]_a-z~])+$/u;
-const OPERATION_KINDS = new Set(operationKinds);
+const OPERATION_DEFINITIONS: ReadonlyMap<string, OperationCatalogItem> = new Map(
+  operationCatalog.map((definition) => [definition.kind, definition])
+);
 const PREDICATE_OPERATORS = new Set([
   "equals",
   "notEquals",
@@ -107,14 +109,6 @@ const MAX_BY_EXAMPLE_WARNINGS = 64;
 const MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024;
 const MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024;
 const MAX_ROW_LABEL_CODE_POINTS = 1_024;
-const SIMPLE_COLUMN_OPERATIONS = new Set([
-  "capitalizeText",
-  "lowerText",
-  "upperText",
-  "minMaxScale",
-  "floorNumber",
-  "ceilNumber"
-]);
 
 /** Validates the canonical protocol-v2 request envelope at an untrusted transport boundary. */
 export function isRuntimeRequestEnvelope(value: unknown): value is RuntimeRequestEnvelope {
@@ -781,7 +775,7 @@ function hasCompatibleInsertionCapabilities(source: unknown, capabilities: unkno
 
 function isUniqueOperationKindArray(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
-  if (!value.every((kind) => isEnumMember(kind, OPERATION_KINDS))) return false;
+  if (!value.every((kind) => isString(kind) && OPERATION_DEFINITIONS.has(kind))) return false;
   return new Set(value).size === value.length;
 }
 
@@ -1080,191 +1074,150 @@ function isValidFillDatetime(value: string): boolean {
 
 export function isTransformStep(value: unknown): value is TransformStep {
   const candidate = exactRecord(value, ["id", "kind", "params"]);
-  if (
-    candidate === undefined ||
-    !isNonEmptyString(candidate.id) ||
-    !isEnumMember(candidate.kind, OPERATION_KINDS) ||
-    !isRecord(candidate.params)
-  ) {
-    return false;
-  }
+  if (candidate === undefined || !isNonEmptyString(candidate.id) || !isString(candidate.kind)) return false;
+  const definition = OPERATION_DEFINITIONS.get(candidate.kind);
+  if (definition === undefined) return false;
+  const params = exactRecord(candidate.params, definition.required, definition.optional);
+  if (params === undefined) return false;
 
-  const params = candidate.params;
   switch (candidate.kind) {
-    case "sortRows": {
-      const decoded = exactRecord(params, ["rules"]);
-      return decoded !== undefined && isUniqueTransformSortRuleArray(decoded.rules, false);
-    }
-    case "filterRows": {
-      const decoded = exactRecord(params, ["filterModel"]);
-      return decoded !== undefined && isTransformFilterModel(decoded.filterModel);
-    }
+    case "sortRows":
+      return isUniqueTransformSortRuleArray(params.rules, false);
+    case "filterRows":
+      return isTransformFilterModel(params.filterModel);
     case "dropMissingRows": {
-      const decoded = exactRecord(params, [], ["columns", "how"]);
       return (
-        decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isUniqueColumnReferenceArray(columns, true)) &&
-        optional(decoded, "how", (how) => isOneOf(how, ["any", "all"]))
+        optional(params, "columns", (columns) => isUniqueColumnReferenceArray(columns, true)) &&
+        optional(params, "how", (how) => isOneOf(how, ["any", "all"]))
       );
     }
     case "fillMissingValues": {
-      const decoded = exactRecord(params, ["column", "replacement"]);
-      if (
-        decoded === undefined ||
-        !isColumnReference(decoded.column) ||
-        !isFillMissingReplacement(decoded.replacement)
-      ) {
+      if (!isColumnReference(params.column) || !isFillMissingReplacement(params.replacement)) {
         return false;
       }
-      const targetColumnId = decoded.column.id;
-      if (!isRecord(decoded.replacement)) return true;
+      const targetColumnId = params.column.id;
+      if (!isRecord(params.replacement)) return true;
       if (
-        decoded.replacement.kind === "fallbackColumns" &&
-        Array.isArray(decoded.replacement.columns) &&
-        decoded.replacement.columns.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+        params.replacement.kind === "fallbackColumns" &&
+        Array.isArray(params.replacement.columns) &&
+        params.replacement.columns.some((reference) => isRecord(reference) && reference.id === targetColumnId)
       ) {
         return false;
       }
       if (
-        decoded.replacement.kind === "groupedStatistic" &&
-        Array.isArray(decoded.replacement.keys) &&
-        decoded.replacement.keys.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+        params.replacement.kind === "groupedStatistic" &&
+        Array.isArray(params.replacement.keys) &&
+        params.replacement.keys.some((reference) => isRecord(reference) && reference.id === targetColumnId)
       ) {
         return false;
       }
       if (
-        decoded.replacement.kind === "linearInterpolation" &&
-        isRecord(decoded.replacement.coordinate) &&
-        decoded.replacement.coordinate.id === targetColumnId
+        params.replacement.kind === "linearInterpolation" &&
+        isRecord(params.replacement.coordinate) &&
+        params.replacement.coordinate.id === targetColumnId
       ) {
         return false;
       }
       return !(
-        decoded.replacement.kind === "directional" &&
-        Array.isArray(decoded.replacement.orderBy) &&
-        decoded.replacement.orderBy.some(
+        params.replacement.kind === "directional" &&
+        Array.isArray(params.replacement.orderBy) &&
+        params.replacement.orderBy.some(
           (rule) => isRecord(rule) && isRecord(rule.column) && rule.column.id === targetColumnId
         )
       );
     }
     case "dropDuplicates": {
-      const decoded = exactRecord(params, [], ["columns", "keep"]);
       return (
-        decoded !== undefined &&
-        optional(decoded, "columns", (columns) => isUniqueColumnReferenceArray(columns, false)) &&
-        optional(decoded, "keep", (keep) => isOneOf(keep, ["first", "last", "none"]))
+        optional(params, "columns", (columns) => isUniqueColumnReferenceArray(columns, false)) &&
+        optional(params, "keep", (keep) => isOneOf(keep, ["first", "last", "none"]))
       );
     }
     case "selectColumns":
-    case "dropColumns": {
-      const decoded = exactRecord(params, ["columns"]);
-      return decoded !== undefined && isUniqueColumnReferenceArray(decoded.columns, false);
-    }
+    case "dropColumns":
+      return isUniqueColumnReferenceArray(params.columns, false);
     case "renameColumn":
-    case "cloneColumn": {
-      const decoded = exactRecord(params, ["column", "newName"]);
-      return decoded !== undefined && isColumnReference(decoded.column) && isNonEmptyString(decoded.newName);
-    }
-    case "castColumn": {
-      const decoded = exactRecord(params, ["column", "dtype"]);
-      return decoded !== undefined && isColumnReference(decoded.column) && isEnumMember(decoded.dtype, CAST_DTYPES);
-    }
+    case "cloneColumn":
+      return isColumnReference(params.column) && isNonEmptyString(params.newName);
+    case "castColumn":
+      return isColumnReference(params.column) && isEnumMember(params.dtype, CAST_DTYPES);
     case "formula": {
-      const decoded = exactRecord(params, ["leftColumn", "operator", "newColumn"], ["rightColumn", "value"]);
       if (
-        decoded === undefined ||
-        !isColumnReference(decoded.leftColumn) ||
-        !isEnumMember(decoded.operator, FORMULA_OPERATORS) ||
-        !isNonEmptyString(decoded.newColumn)
+        !isColumnReference(params.leftColumn) ||
+        !isEnumMember(params.operator, FORMULA_OPERATORS) ||
+        !isNonEmptyString(params.newColumn)
       ) {
         return false;
       }
-      const hasColumn = Object.prototype.hasOwnProperty.call(decoded, "rightColumn");
-      const hasValue = Object.prototype.hasOwnProperty.call(decoded, "value");
+      const hasColumn = Object.prototype.hasOwnProperty.call(params, "rightColumn");
+      const hasValue = Object.prototype.hasOwnProperty.call(params, "value");
       return (
         hasColumn !== hasValue &&
-        (!hasColumn || isColumnReference(decoded.rightColumn)) &&
-        (!hasValue || isFiniteNumber(decoded.value))
+        (!hasColumn || isColumnReference(params.rightColumn)) &&
+        (!hasValue || isFiniteNumber(params.value))
       );
     }
-    case "textLength": {
-      const decoded = exactRecord(params, ["column", "newColumn"]);
-      return decoded !== undefined && isColumnReference(decoded.column) && isNonEmptyString(decoded.newColumn);
-    }
+    case "textLength":
+      return isColumnReference(params.column) && isNonEmptyString(params.newColumn);
     case "oneHotEncode": {
-      const decoded = exactRecord(params, ["columns"], ["prefixSeparator", "dropOriginal"]);
       return (
-        decoded !== undefined &&
-        isUniqueColumnReferenceArray(decoded.columns, false) &&
-        optional(decoded, "prefixSeparator", isString) &&
-        optional(decoded, "dropOriginal", isBoolean)
+        isUniqueColumnReferenceArray(params.columns, false) &&
+        optional(params, "prefixSeparator", isString) &&
+        optional(params, "dropOriginal", isBoolean)
       );
     }
     case "multiLabelBinarize": {
-      const decoded = exactRecord(params, ["column", "delimiter"], ["prefix", "dropOriginal"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        isNonEmptyString(decoded.delimiter) &&
-        optional(decoded, "prefix", isString) &&
-        optional(decoded, "dropOriginal", isBoolean)
+        isColumnReference(params.column) &&
+        isNonEmptyString(params.delimiter) &&
+        optional(params, "prefix", isString) &&
+        optional(params, "dropOriginal", isBoolean)
       );
     }
     case "findReplace": {
-      const decoded = exactRecord(params, ["column", "find", "replacement"], ["regex", "newColumn"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        isString(decoded.find) &&
-        isString(decoded.replacement) &&
-        optional(decoded, "regex", isBoolean) &&
-        optional(decoded, "newColumn", isNonEmptyString)
+        isColumnReference(params.column) &&
+        isString(params.find) &&
+        isString(params.replacement) &&
+        optional(params, "regex", isBoolean) &&
+        optional(params, "newColumn", isNonEmptyString)
       );
     }
     case "stripText": {
-      const decoded = exactRecord(params, ["column"], ["characters", "newColumn"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        optional(decoded, "characters", (characters) => characters === null || isNonEmptyString(characters)) &&
-        optional(decoded, "newColumn", isNonEmptyString)
+        isColumnReference(params.column) &&
+        optional(params, "characters", (characters) => characters === null || isNonEmptyString(characters)) &&
+        optional(params, "newColumn", isNonEmptyString)
       );
     }
     case "splitText": {
-      const decoded = exactRecord(params, ["column", "delimiter", "index", "newColumn"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        isNonEmptyString(decoded.delimiter) &&
-        isNonNegativeInteger(decoded.index) &&
-        isNonEmptyString(decoded.newColumn)
+        isColumnReference(params.column) &&
+        isNonEmptyString(params.delimiter) &&
+        isNonNegativeInteger(params.index) &&
+        isNonEmptyString(params.newColumn)
       );
     }
     case "splitTextColumns": {
-      const decoded = exactRecord(params, ["column", "delimiter", "newColumns"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        isNonEmptyString(decoded.delimiter) &&
-        isUniqueNonEmptyStringArray(decoded.newColumns) &&
-        decoded.newColumns.length >= 2 &&
-        decoded.newColumns.length <= 64
+        isColumnReference(params.column) &&
+        isNonEmptyString(params.delimiter) &&
+        isUniqueNonEmptyStringArray(params.newColumns) &&
+        params.newColumns.length >= 2 &&
+        params.newColumns.length <= 64
       );
     }
     case "extractRegexGroup": {
-      const decoded = exactRecord(params, ["column", "pattern", "group", "newColumn"]);
       if (
-        decoded === undefined ||
-        !isColumnReference(decoded.column) ||
-        !isNonEmptyString(decoded.pattern) ||
-        !isInteger(decoded.group) ||
-        !isNonEmptyString(decoded.newColumn)
+        !isColumnReference(params.column) ||
+        !isNonEmptyString(params.pattern) ||
+        !isInteger(params.group) ||
+        !isNonEmptyString(params.newColumn)
       ) {
         return false;
       }
       try {
-        portableRegexContract(decoded.pattern, decoded.group);
-        validatePortableRegexOutputName(decoded.newColumn);
+        portableRegexContract(params.pattern, params.group);
+        validatePortableRegexOutputName(params.newColumn);
         return true;
       } catch {
         return false;
@@ -1276,68 +1229,56 @@ export function isTransformStep(value: unknown): value is TransformStep {
     case "minMaxScale":
     case "floorNumber":
     case "ceilNumber": {
-      if (!SIMPLE_COLUMN_OPERATIONS.has(candidate.kind)) return false;
-      const decoded = exactRecord(params, ["column"], ["newColumn"]);
-      return (
-        decoded !== undefined && isColumnReference(decoded.column) && optional(decoded, "newColumn", isNonEmptyString)
-      );
+      return isColumnReference(params.column) && optional(params, "newColumn", isNonEmptyString);
     }
     case "roundNumber": {
-      const decoded = exactRecord(params, ["column"], ["decimals", "newColumn"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        optional(decoded, "decimals", isInteger) &&
-        optional(decoded, "newColumn", isNonEmptyString)
+        isColumnReference(params.column) &&
+        optional(params, "decimals", isInteger) &&
+        optional(params, "newColumn", isNonEmptyString)
       );
     }
     case "formatDatetime": {
-      const decoded = exactRecord(params, ["column", "format"], ["newColumn"]);
       return (
-        decoded !== undefined &&
-        isColumnReference(decoded.column) &&
-        isNonEmptyString(decoded.format) &&
-        optional(decoded, "newColumn", isNonEmptyString)
+        isColumnReference(params.column) &&
+        isNonEmptyString(params.format) &&
+        optional(params, "newColumn", isNonEmptyString)
       );
     }
     case "pivotLonger": {
-      const decoded = exactRecord(params, ["columns", "labelColumn", "valueColumn"]);
       if (
-        decoded === undefined ||
-        !isUniqueColumnReferenceArray(decoded.columns, false) ||
-        decoded.columns.length < MIN_PIVOT_LONGER_COLUMNS ||
-        decoded.columns.length > MAX_PIVOT_LONGER_COLUMNS ||
-        !isNonEmptyString(decoded.labelColumn) ||
-        !isNonEmptyString(decoded.valueColumn) ||
-        portablePivotLongerNameKey(decoded.labelColumn) === portablePivotLongerNameKey(decoded.valueColumn)
+        !isUniqueColumnReferenceArray(params.columns, false) ||
+        params.columns.length < MIN_PIVOT_LONGER_COLUMNS ||
+        params.columns.length > MAX_PIVOT_LONGER_COLUMNS ||
+        !isNonEmptyString(params.labelColumn) ||
+        !isNonEmptyString(params.valueColumn) ||
+        portablePivotLongerNameKey(params.labelColumn) === portablePivotLongerNameKey(params.valueColumn)
       ) {
         return false;
       }
       try {
-        validatePivotLongerOutputName(decoded.labelColumn, "Pivot longer label output name");
-        validatePivotLongerOutputName(decoded.valueColumn, "Pivot longer value output name");
+        validatePivotLongerOutputName(params.labelColumn, "Pivot longer label output name");
+        validatePivotLongerOutputName(params.valueColumn, "Pivot longer value output name");
         return true;
       } catch {
         return false;
       }
     }
     case "pivotWider": {
-      const decoded = exactRecord(params, ["namesFrom", "valuesFrom", "outputs"]);
       if (
-        decoded === undefined ||
-        !isColumnReference(decoded.namesFrom) ||
-        !isColumnReference(decoded.valuesFrom) ||
-        decoded.namesFrom.id === decoded.valuesFrom.id ||
-        !Array.isArray(decoded.outputs) ||
-        decoded.outputs.length < MIN_PIVOT_WIDER_OUTPUTS ||
-        decoded.outputs.length > MAX_PIVOT_WIDER_OUTPUTS
+        !isColumnReference(params.namesFrom) ||
+        !isColumnReference(params.valuesFrom) ||
+        params.namesFrom.id === params.valuesFrom.id ||
+        !Array.isArray(params.outputs) ||
+        params.outputs.length < MIN_PIVOT_WIDER_OUTPUTS ||
+        params.outputs.length > MAX_PIVOT_WIDER_OUTPUTS
       ) {
         return false;
       }
       const keyValues: string[] = [];
       const outputKeys: string[] = [];
       try {
-        for (const [index, output] of decoded.outputs.entries()) {
+        for (const [index, output] of params.outputs.entries()) {
           const item = exactRecord(output, ["key", "name"]);
           if (item === undefined || !isTypedSelectionToken(item.key) || !isNonEmptyString(item.name)) return false;
           keyValues.push(pivotWiderKeyValue(item.key as TypedSelectionToken));
@@ -1350,17 +1291,12 @@ export function isTransformStep(value: unknown): value is TransformStep {
       return new Set(keyValues).size === keyValues.length && new Set(outputKeys).size === outputKeys.length;
     }
     case "groupBy": {
-      const decoded = exactRecord(params, ["keys", "aggregations"]);
-      if (
-        decoded === undefined ||
-        !isUniqueColumnReferenceArray(decoded.keys, false) ||
-        !Array.isArray(decoded.aggregations)
-      ) {
+      if (!isUniqueColumnReferenceArray(params.keys, false) || !Array.isArray(params.aggregations)) {
         return false;
       }
-      const keyNames = new Set(decoded.keys.map((reference) => reference.name));
+      const keyNames = new Set(params.keys.map((reference) => reference.name));
       const aliases: string[] = [];
-      for (const aggregation of decoded.aggregations) {
+      for (const aggregation of params.aggregations) {
         if (!isAggregation(aggregation)) return false;
         aliases.push(aggregation.alias);
       }
@@ -1369,14 +1305,10 @@ export function isTransformStep(value: unknown): value is TransformStep {
     }
     case "byExample":
       return isByExampleParams(params);
-    case "customCode": {
-      const decoded = exactRecord(params, ["code"]);
+    case "customCode":
       return (
-        decoded !== undefined &&
-        isNonEmptyTrimmedString(decoded.code) &&
-        hasAtMostStrictUtf8Bytes(decoded.code, MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES)
+        isNonEmptyTrimmedString(params.code) && hasAtMostStrictUtf8Bytes(params.code, MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES)
       );
-    }
     default:
       return false;
   }
@@ -1425,13 +1357,7 @@ function isAggregation(value: unknown): value is { column: ColumnReference; oper
   );
 }
 
-function isByExampleParams(value: unknown): boolean {
-  const candidate = exactRecord(
-    value,
-    ["sourceColumns", "newColumn", "examples"],
-    ["program", "warnings", "candidateCount"]
-  );
-  if (candidate === undefined) return false;
+function isByExampleParams(candidate: UnknownRecord): boolean {
   const sourceColumns = candidate.sourceColumns;
   const examples = candidate.examples;
   const hasProgram = Object.prototype.hasOwnProperty.call(candidate, "program");
