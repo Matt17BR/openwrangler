@@ -65,6 +65,9 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "discardDraft",
   "undoStep"
 ]);
+const MAX_WEBVIEW_VIEW_ID_CODE_UNITS = 256;
+const MAX_CANCEL_VIEW_REQUEST_IDS = 1_024;
+const MAX_CANCEL_VIEW_REQUEST_ID_CODE_UNITS = 64 * 1_024;
 
 export function decodeWebviewMessage(
   message: unknown,
@@ -113,19 +116,17 @@ export function decodeWebviewMessage(
       : undefined;
   }
   if (message.kind === "setViewContext") {
-    return hasExactKeys(message, ["kind", "viewContextId"]) && isNonEmptyString(message.viewContextId)
+    return hasExactKeys(message, ["kind", "viewContextId"]) && isBoundedViewId(message.viewContextId)
       ? { kind: "setViewContext", viewContextId: message.viewContextId }
       : undefined;
   }
   if (message.kind === "cancelViewRequests") {
-    return hasExactKeys(message, ["kind", "viewRequestIds"]) &&
-      Array.isArray(message.viewRequestIds) &&
-      message.viewRequestIds.every(isNonEmptyString)
-      ? { kind: "cancelViewRequests", viewRequestIds: [...message.viewRequestIds] }
-      : undefined;
+    if (!hasExactKeys(message, ["kind", "viewRequestIds"])) return undefined;
+    const viewRequestIds = decodeCancelledViewRequestIds(message.viewRequestIds);
+    return viewRequestIds ? { kind: "cancelViewRequests", viewRequestIds } : undefined;
   }
   if (message.kind === "prioritizeViewRequest") {
-    return hasExactKeys(message, ["kind", "viewRequestId"]) && isNonEmptyString(message.viewRequestId)
+    return hasExactKeys(message, ["kind", "viewRequestId"]) && isBoundedViewId(message.viewRequestId)
       ? { kind: "prioritizeViewRequest", viewRequestId: message.viewRequestId }
       : undefined;
   }
@@ -188,7 +189,9 @@ export function decodeWebviewMessage(
     !isRecord(message.request) ||
     Object.prototype.hasOwnProperty.call(message.request, "sessionId") ||
     Object.prototype.hasOwnProperty.call(message.request, "revision") ||
-    (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId)) ||
+    (Object.prototype.hasOwnProperty.call(message.request, "viewRequestId") &&
+      !isBoundedViewId(message.request.viewRequestId)) ||
+    (message.viewContextId !== undefined && !isBoundedViewId(message.viewContextId)) ||
     (message.priority !== undefined && message.priority !== "interactive" && message.priority !== "background") ||
     (message.purpose !== undefined && message.purpose !== "clipboardColumn")
   ) {
@@ -230,6 +233,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRendererControlId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9]{32}$/u.test(value);
+}
+
+function isBoundedViewId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_WEBVIEW_VIEW_ID_CODE_UNITS;
+}
+
+function decodeCancelledViewRequestIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_CANCEL_VIEW_REQUEST_IDS) return undefined;
+  let totalCodeUnits = 0;
+  const uniqueIds = new Set<string>();
+  for (const viewRequestId of value) {
+    if (!isBoundedViewId(viewRequestId) || uniqueIds.has(viewRequestId)) return undefined;
+    totalCodeUnits += viewRequestId.length;
+    if (totalCodeUnits > MAX_CANCEL_VIEW_REQUEST_ID_CODE_UNITS) return undefined;
+    uniqueIds.add(viewRequestId);
+  }
+  return [...value];
 }
 
 function isNonEmptyString(value: unknown): value is string {
