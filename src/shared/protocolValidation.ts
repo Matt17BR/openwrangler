@@ -596,7 +596,7 @@ function isErrorResponse(value: unknown): boolean {
   );
 }
 
-function isSessionMetadata(value: unknown, canonicalRelationships = true): value is SessionMetadata {
+function isSessionMetadata(value: unknown): value is SessionMetadata {
   const candidate = exactRecord(
     value,
     [
@@ -613,39 +613,14 @@ function isSessionMetadata(value: unknown, canonicalRelationships = true): value
       "filterModel",
       "steps"
     ],
-    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis"],
-    !canonicalRelationships
+    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis"]
   );
-  if (
-    candidate === undefined ||
-    candidate.protocolVersion !== PROTOCOL_VERSION ||
-    !isString(candidate.sessionId) ||
-    !isNonNegativeInteger(candidate.revision) ||
-    !isOneOf(candidate.backend, DATA_BACKENDS) ||
-    !isOneOf(candidate.mode, ["viewing", "editing"]) ||
-    !isSessionSource(candidate.source) ||
-    !isSourceCapabilities(candidate.capabilities) ||
-    !isSessionDataShape(candidate.shape) ||
-    !isSessionDataShape(candidate.filteredShape) ||
-    !isColumnSchemaArray(candidate.schema) ||
-    !isFilterModel(candidate.filterModel) ||
-    !Array.isArray(candidate.steps) ||
-    !candidate.steps.every(isRetainedTransformStep) ||
-    !optional(candidate, "latestStepInputSchema", isColumnSchemaArray, !canonicalRelationships) ||
-    !optional(candidate, "draftStep", isRetainedTransformStep, !canonicalRelationships) ||
-    !optional(candidate, "draftReplacesStepId", isString, !canonicalRelationships) ||
-    !optional(candidate, "stats", isDatasetStats, !canonicalRelationships) ||
-    !optional(
-      candidate,
-      "rDataframeFlavor",
-      (flavor) => isOneOf(flavor, R_DATAFRAME_FLAVORS),
-      !canonicalRelationships
-    ) ||
-    !optional(candidate, "rowAxis", isRowAxis, !canonicalRelationships)
-  )
-    return false;
-  if (!canonicalRelationships) return true;
   return (
+    candidate !== undefined &&
+    candidate.protocolVersion === PROTOCOL_VERSION &&
+    isString(candidate.sessionId) &&
+    isNonNegativeInteger(candidate.revision) &&
+    isOneOf(candidate.backend, DATA_BACKENDS) &&
     (candidate.backend !== "pyspark" ||
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
     (candidate.backend !== "r" ||
@@ -657,12 +632,25 @@ function isSessionMetadata(value: unknown, canonicalRelationships = true): value
     (candidate.backend === "r"
       ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
+    isOneOf(candidate.mode, ["viewing", "editing"]) &&
+    isSessionSource(candidate.source) &&
+    isSourceCapabilities(candidate.capabilities) &&
     hasCompatibleInsertionCapabilities(candidate.source, candidate.capabilities) &&
+    isSessionDataShape(candidate.shape) &&
+    isSessionDataShape(candidate.filteredShape) &&
     (candidate.backend === "pyspark" || (candidate.shape.rows !== null && candidate.filteredShape.rows !== null)) &&
+    isColumnSchemaArray(candidate.schema) &&
     (candidate.backend === "pandas"
       ? isRowAxis(candidate.rowAxis)
       : !Object.prototype.hasOwnProperty.call(candidate, "rowAxis")) &&
-    (candidate.steps.length === 0 || Object.prototype.hasOwnProperty.call(candidate, "latestStepInputSchema"))
+    isFilterModel(candidate.filterModel) &&
+    Array.isArray(candidate.steps) &&
+    candidate.steps.every(isRetainedTransformStep) &&
+    (candidate.steps.length === 0 || Object.prototype.hasOwnProperty.call(candidate, "latestStepInputSchema")) &&
+    optional(candidate, "latestStepInputSchema", isColumnSchemaArray) &&
+    optional(candidate, "draftStep", isRetainedTransformStep) &&
+    optional(candidate, "draftReplacesStepId", isString) &&
+    optional(candidate, "stats", isDatasetStats)
   );
 }
 
@@ -1815,7 +1803,7 @@ function isCellValue(value: unknown): boolean {
   );
 }
 
-function isColumnSummary(value: unknown, canonical = true): boolean {
+function isColumnSummary(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     ["columnId", "column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
@@ -1830,19 +1818,15 @@ function isColumnSummary(value: unknown, canonical = true): boolean {
     isNonNegativeInteger(candidate.totalCount) &&
     isNonNegativeInteger(candidate.nullCount) &&
     isNonNegativeInteger(candidate.nanCount) &&
-    optional(candidate, "distinctCount", isNonNegativeInteger, !canonical) &&
-    optional(
-      candidate,
-      "numeric",
-      (numeric) =>
-        isNumericSummary(
-          numeric,
-          candidate.type,
-          (candidate.totalCount as number) - (candidate.nullCount as number) - (candidate.nanCount as number)
-        ),
-      !canonical
+    optional(candidate, "distinctCount", isNonNegativeInteger) &&
+    optional(candidate, "numeric", (numeric) =>
+      isNumericSummary(
+        numeric,
+        candidate.type,
+        (candidate.totalCount as number) - (candidate.nullCount as number) - (candidate.nanCount as number)
+      )
     ) &&
-    optional(candidate, "visualization", isColumnVisualization, !canonical) &&
+    optional(candidate, "visualization", isColumnVisualization) &&
     isArrayOf(candidate.topValues, isValueCount)
   )) {
     return false;
@@ -1850,11 +1834,12 @@ function isColumnSummary(value: unknown, canonical = true): boolean {
   if ((candidate.nullCount as number) + (candidate.nanCount as number) > (candidate.totalCount as number)) {
     return false;
   }
-  const hasNumeric = candidate.numeric !== undefined;
+  const hasNumeric = Object.prototype.hasOwnProperty.call(candidate, "numeric");
   const requiresNumeric = candidate.type === "integer" || candidate.type === "float" || candidate.type === "decimal";
-  if (canonical && requiresNumeric && !hasNumeric) return false;
-  if (hasNumeric && !requiresNumeric && candidate.type !== "duration") return false;
-  if (!Object.prototype.hasOwnProperty.call(candidate, "text") || (!canonical && candidate.text === undefined)) {
+  if ((requiresNumeric && !hasNumeric) || (hasNumeric && !requiresNumeric && candidate.type !== "duration")) {
+    return false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(candidate, "text")) {
     return true;
   }
   return (
@@ -1863,12 +1848,8 @@ function isColumnSummary(value: unknown, canonical = true): boolean {
   );
 }
 
-function isColumnSummaryArray(
-  value: unknown,
-  schema?: readonly ColumnSchema[],
-  canonical = true
-): value is ColumnSummary[] {
-  if (!Array.isArray(value) || !value.every((summary) => isColumnSummary(summary, canonical))) return false;
+function isColumnSummaryArray(value: unknown, schema?: readonly ColumnSchema[]): value is ColumnSummary[] {
+  if (!Array.isArray(value) || !value.every(isColumnSummary)) return false;
   const summaries = value as ColumnSummary[];
   const columnIds = summaries.map((summary) => summary.columnId);
   if (new Set(columnIds).size !== columnIds.length) return false;
@@ -2175,12 +2156,11 @@ function isCellDiff(value: unknown, outputSchema?: readonly ColumnSchema[]): boo
 function exactRecord(
   value: unknown,
   required: readonly string[],
-  optionalKeys: readonly string[] = [],
-  allowUnknown = false
+  optionalKeys: readonly string[] = []
 ): UnknownRecord | undefined {
   if (!isRecord(value)) return undefined;
   const allowed = new Set([...required, ...optionalKeys]);
-  if (!allowUnknown && Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
   if (required.some((key) => !Object.prototype.hasOwnProperty.call(value, key))) return undefined;
   return value;
 }
@@ -2194,12 +2174,8 @@ function isSessionRequest(candidate: UnknownRecord | undefined, kind: string): c
   );
 }
 
-function optional(record: UnknownRecord, key: string, guard: ValueGuard, allowUndefined = false): boolean {
-  return (
-    !Object.prototype.hasOwnProperty.call(record, key) ||
-    (allowUndefined && record[key] === undefined) ||
-    guard(record[key])
-  );
+function optional(record: UnknownRecord, key: string, guard: ValueGuard): boolean {
+  return !Object.prototype.hasOwnProperty.call(record, key) || guard(record[key]);
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
