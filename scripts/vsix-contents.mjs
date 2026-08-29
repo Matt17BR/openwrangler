@@ -30,12 +30,13 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
   /^extension\/r\/$/u,
   /^extension\/r\/openwrangler_runtime\/$/u,
-  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|interactive_agent|kernel_agent|process_agent)\.R$/u
+  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|interactive_agent|kernel_agent|kernel_exports|process_agent)\.R$/u
 ];
 
 const rFrameContractEntry = "extension/r/openwrangler_runtime/frame_contract.R";
 const rInteractiveAgentEntry = "extension/r/openwrangler_runtime/interactive_agent.R";
 const rKernelAgentEntry = "extension/r/openwrangler_runtime/kernel_agent.R";
+const rKernelExportsEntry = "extension/r/openwrangler_runtime/kernel_exports.R";
 const rProcessAgentEntry = "extension/r/openwrangler_runtime/process_agent.R";
 
 const requiredVsixEntriesBeforeR = Object.freeze([
@@ -70,6 +71,7 @@ export const requiredVsixEntries = Object.freeze([
   rFrameContractEntry,
   rInteractiveAgentEntry,
   rKernelAgentEntry,
+  rKernelExportsEntry,
   rProcessAgentEntry
 ]);
 
@@ -82,7 +84,7 @@ export function requiredVsixEntriesForRelease({ requireRFrameContract = true, re
     ...requiredVsixEntriesBeforeR,
     ...(requireVendoredJsYaml ? [VENDORED_JS_YAML_ENTRY] : []),
     ...(requireRFrameContract
-      ? [rFrameContractEntry, rInteractiveAgentEntry, rKernelAgentEntry, rProcessAgentEntry]
+      ? [rFrameContractEntry, rInteractiveAgentEntry, rKernelAgentEntry, rKernelExportsEntry, rProcessAgentEntry]
       : [])
   ]);
 }

@@ -161,6 +161,7 @@ initialize <- function() {
 
   runtime_environment <- new.env(hash = TRUE, parent = baseenv())
   sys.source(file.path(runtime_root, "frame_contract.R"), envir = runtime_environment, keep.source = FALSE)
+  sys.source(file.path(runtime_root, "kernel_exports.R"), envir = runtime_environment, keep.source = FALSE)
   sys.source(file.path(runtime_root, "kernel_agent.R"), envir = runtime_environment, keep.source = FALSE)
 
   frame_contract <- get("openwrangler_r_frame_contract", envir = runtime_environment, inherits = FALSE)

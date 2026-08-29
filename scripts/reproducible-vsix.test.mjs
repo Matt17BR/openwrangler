@@ -16,7 +16,7 @@ const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
 const ZIP_END_SIGNATURE = 0x06054b50;
 const ZIP_UTF8_FLAG = 0x0800;
 const CANONICAL_FILE_MODE = 0o100644;
-const FIXED_FIXTURE_CANONICAL_SHA256 = "f260ccdb7a34be526a71e6e5d2de0e79675eb7f1917ecac0e213ed8d05037bb4";
+const FIXED_FIXTURE_CANONICAL_SHA256 = "ec748bc9499297bd2b3ad66d3786e1c83db3bbf271a4de2a3046bd50cfb48a06";
 const vendoredJsYaml = Buffer.from("module.exports = Object.freeze({ load() {} });\n");
 
 function digest(bytes) {

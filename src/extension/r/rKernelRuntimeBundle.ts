@@ -7,7 +7,7 @@ import { buildRDependencyPreflightCode } from "./rDependencyRequirements";
 export const R_KERNEL_RUNTIME_BINDING = ".openwrangler_r_kernel_runtime_872e5b61";
 const runtimeOwnerToken = "openwrangler-native-r-runtime-v1";
 const defaultTransportOwnerToken = "openwrangler-default-r-transport-v1";
-const requiredRuntimeFiles = Object.freeze(["frame_contract.R", "kernel_agent.R"] as const);
+const requiredRuntimeFiles = Object.freeze(["frame_contract.R", "kernel_exports.R", "kernel_agent.R"] as const);
 
 export function readRRuntimeFiles(runtimeRoot: string): Readonly<Record<string, string>> {
   return Object.freeze(

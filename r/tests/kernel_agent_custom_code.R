@@ -1096,6 +1096,7 @@ writeLines(c(
   "arguments <- commandArgs(trailingOnly = TRUE)",
   "source(arguments[[1L]], local = FALSE)",
   "source(arguments[[2L]], local = FALSE)",
+  "source(arguments[[3L]], local = FALSE)",
   "dispatch_count <- 0L",
   "poison <- function(...) { dispatch_count <<- dispatch_count + 1L; stop('caller S3 poison dispatched', call. = FALSE) }",
   "registerS3method('[[', 'AsIs', poison, envir = .GlobalEnv)",
@@ -1127,6 +1128,7 @@ custom_s3_output <- system2(
     "--vanilla",
     custom_s3_script,
     normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_exports.R"),
     normalizePath("r/openwrangler_runtime/kernel_agent.R")
   ),
   stdout = TRUE,

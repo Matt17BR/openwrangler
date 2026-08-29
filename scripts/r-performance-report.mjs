@@ -16,7 +16,7 @@ import { dirname, resolve } from "node:path";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
-export const R_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-native-r-performance-report-v1";
+export const R_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-native-r-performance-report-v2";
 export const R_PERFORMANCE_HARNESS_PROTOCOL = "openwrangler-native-r-performance-harness-v1";
 export const R_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-native-r-performance-fixture-v1";
 export const R_PERFORMANCE_FRESH_OPEN_SAMPLE_COUNT = 5;
@@ -733,8 +733,9 @@ function validateCandidate(candidate) {
 }
 
 function validatePackagedRuntime(value) {
-  exactKeys(value, ["frameContract", "kernelAgent"], "packaged native R runtime");
+  exactKeys(value, ["frameContract", "kernelExports", "kernelAgent"], "packaged native R runtime");
   validateAsset(value.frameContract, "frame_contract.R", "packaged frame contract");
+  validateAsset(value.kernelExports, "kernel_exports.R", "packaged kernel export lifecycle");
   validateAsset(value.kernelAgent, "kernel_agent.R", "packaged kernel agent");
 }
 

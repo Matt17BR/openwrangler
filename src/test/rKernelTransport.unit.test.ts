@@ -84,6 +84,13 @@ describe("native R kernel runtime bundle", () => {
     expect(() =>
       buildRKernelBootstrapCode({
         "frame_contract.R": "",
+        "kernel_agent.R": ""
+      })
+    ).toThrow("incomplete");
+    expect(() =>
+      buildRKernelBootstrapCode({
+        "frame_contract.R": "",
+        "kernel_exports.R": "",
         "kernel_agent.R": "",
         "../escape.R": ""
       })
@@ -4056,6 +4063,7 @@ describe("exact IRkernel session transport", () => {
 function testRuntimeFiles(): Readonly<Record<string, string>> {
   return {
     "frame_contract.R": "openwrangler_r_frame_contract <- list()\n",
+    "kernel_exports.R": "openwrangler_r_kernel_exports <- list()\n",
     "kernel_agent.R": "openwrangler_r_kernel_agent <- list()\n"
   };
 }
