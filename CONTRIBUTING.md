@@ -190,8 +190,7 @@ editorial read; do not rely on an AI detector or a word list.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME
   types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
-- Push independently green branch commits before opening a pull request when early review is not needed. A draft pull
-  request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the
-  same commit.
+- Push independently green branch commits before opening a pull request when early review is not needed. Draft pull
+  requests run checks when opened and after each pushed commit. Marking an unchanged draft ready does not rerun them.
 
 All required checks must pass before merge. Feature work is tested in both VS Code and Cursor before a prerelease.

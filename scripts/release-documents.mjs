@@ -20,7 +20,7 @@ const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.ym
 const LICENSE_URL = "https://github.com/Matt17BR/openwrangler/blob/main/LICENSE";
 const README_BADGES = `<p align="center">
   <a href="${RELEASES_URL}"><img src="https://img.shields.io/github/v/release/Matt17BR/openwrangler?display_name=tag&amp;sort=semver" alt="Latest GitHub release"></a>
-  <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="Pull request CI status"></a>
   <a href="${MARKETPLACE_URL}"><img src="https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg" alt="Visual Studio Marketplace version"></a>
   <a href="${OPEN_VSX_URL}"><img src="https://img.shields.io/open-vsx/v/Matt17BR/openwrangler?label=Open%20VSX" alt="Open VSX version"></a>
   <a href="${LICENSE_URL}"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
