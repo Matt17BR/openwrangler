@@ -591,6 +591,47 @@ describe("Python Interactive Window coordinator and discovery", () => {
     });
   });
 
+  it("does not carry explicit mode into an automatic refresh queued during explicit discovery", async () => {
+    const active = notebook("file:///workspace/queued-automatic-refresh.ipynb", "jupyter-notebook", [], "python");
+    pythonMocks.notebookDocuments.push(active.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+
+    let releaseExplicitDiscovery!: () => void;
+    const explicitDiscovery = new Promise<{
+      variables: ReturnType<typeof pandasFrame>[];
+      truncated: false;
+    }>((resolve) => {
+      releaseExplicitDiscovery = () => resolve({ variables: [pandasFrame("explicit")], truncated: false });
+    });
+    pythonMocks.discover
+      .mockResolvedValueOnce({ variables: [pandasFrame("initial")], truncated: false })
+      .mockReturnValueOnce(explicitDiscovery);
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+    expect(pythonMocks.discover).toHaveBeenCalledOnce();
+
+    const refresh = Promise.resolve(command("openWrangler.refreshNotebookVariables")());
+    await settle();
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: active.document,
+      cellChanges: [{ executionSummary: { success: true } }],
+      contentChanges: []
+    } as unknown as NotebookDocumentChangeEvent);
+    pythonMocks.inspectNotebookAutomatically = false;
+    releaseExplicitDiscovery();
+    await refresh;
+
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+    expect(provider.snapshot()).toMatchObject({
+      state: "empty",
+      message: expect.stringContaining("Automatic notebook inspection is paused"),
+      variables: []
+    });
+  });
+
   it("associates a Python source with its first externally executed Interactive cell", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);
