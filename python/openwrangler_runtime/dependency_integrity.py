@@ -1,3 +1,5 @@
+# pyright: strict
+
 """Run one quiet, bounded ``pip check`` for the selected interpreter."""
 
 from __future__ import annotations
@@ -7,13 +9,13 @@ import json
 import os
 import runpy
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 
 PROTOCOL = "openwrangler-dependency-integrity-v1"
 
 
 @contextlib.contextmanager
-def _silence_pip_output() -> Iterator[None]:
+def _silence_pip_output() -> Generator[None, None, None]:
     stdout_object = sys.stdout
     stderr_object = sys.stderr
     saved_stdout = -1
