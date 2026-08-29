@@ -317,7 +317,7 @@ async function measureGridInteraction({
   const frame = await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
   recordProgress("interaction:usable-grid");
 
-  const cachedRows = [0, 400] as const;
+  const cachedRows = [0, 100] as const;
   for (const row of cachedRows) {
     await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row);
   }
