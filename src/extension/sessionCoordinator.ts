@@ -83,7 +83,6 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly pendingOpenWaiters = new Set<() => void>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
-  private activePublicationGeneration = 0;
   private disposed = false;
   private persistenceOwnerOrdinal = 0;
   private shutdownPromise: Promise<void> | undefined;
@@ -253,7 +252,6 @@ export class SessionCoordinator implements vscode.Disposable {
       const next = sessionId ? this.sessions.get(sessionId) : undefined;
       if (next) this.invalidateStepInspection(next);
     }
-    this.activePublicationGeneration += 1;
     this.activeSessionId = sessionId;
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     this.activeSessionEmitter.fire(session ? activeSessionSnapshot(session) : undefined);
@@ -999,13 +997,14 @@ export class SessionCoordinator implements vscode.Disposable {
         close: (closeOptions) => this.closeSession(session, closeOptions),
         responseCallbacks: {
           activate: (registerRollback) => {
-            if (this.isLiveSession(session)) {
-              const rollback = registerRollback ? this.captureActivePublicationRollback(session) : undefined;
-              if (rollback && registerRollback) {
-                const generation = this.activePublicationGeneration + 1;
-                registerRollback(() => rollback(generation));
+            registerRollback?.(() => {
+              if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+                this.activeSessionEmitter.fire(activeSessionSnapshot(session));
               }
-              this.setActive(session.publicId);
+              return true;
+            });
+            if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+              this.activeSessionEmitter.fire(activeSessionSnapshot(session));
             }
           },
           publishInspection: () => {
@@ -1068,44 +1067,6 @@ export class SessionCoordinator implements vscode.Disposable {
     this.responseCommitter.releaseSession(session.publicId);
     if (this.activeSessionId === session.publicId) this.setActive(undefined);
     this.runtimeCleanup.releaseIfIdle(session.delegate);
-  }
-
-  private captureActivePublicationRollback(session: CoordinatedSession): (generation: number) => boolean {
-    const previousActiveSessionId = this.activeSessionId;
-    const previousActiveSession = previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined;
-    const inspections = new Map<
-      CoordinatedSession,
-      Pick<CoordinatedSession, "stepInspection" | "latestStepInspectionKey">
-    >();
-    const captureInspection = (candidate: CoordinatedSession | undefined): void => {
-      if (candidate && !inspections.has(candidate)) {
-        inspections.set(candidate, {
-          stepInspection: candidate.stepInspection,
-          latestStepInspectionKey: candidate.latestStepInspectionKey
-        });
-      }
-    };
-    captureInspection(previousActiveSession);
-    captureInspection(session);
-
-    return (generation) => {
-      if (
-        this.activePublicationGeneration !== generation ||
-        this.sessions.get(session.publicId) !== session ||
-        (previousActiveSessionId !== undefined && this.sessions.get(previousActiveSessionId) !== previousActiveSession)
-      ) {
-        return false;
-      }
-      for (const [candidate, inspection] of inspections) {
-        candidate.stepInspection = inspection.stepInspection;
-        candidate.latestStepInspectionKey = inspection.latestStepInspectionKey;
-      }
-      this.activePublicationGeneration += 1;
-      this.activeSessionId = previousActiveSessionId;
-      const active = previousActiveSessionId ? this.sessions.get(previousActiveSessionId) : undefined;
-      this.activeSessionEmitter.fire(active ? activeSessionSnapshot(active) : undefined);
-      return true;
-    };
   }
 
   private installRuntimeSettlementBarrier(session: CoordinatedSession, settlement: Promise<void>): void {
