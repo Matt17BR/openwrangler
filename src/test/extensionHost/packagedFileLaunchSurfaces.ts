@@ -32,13 +32,7 @@ export interface PackagedFileLaunchSurfacesDependencies {
     commandCandidates: readonly string[]
   ) => Promise<void>;
   readonly connectToEditorWorkbench: () => Promise<Page>;
-  readonly exercisePrimarySortJourney: (
-    testing: TestApi,
-    workbench: Page,
-    frame: Frame,
-    sessionId: string,
-    checkpoint: string
-  ) => Promise<void>;
+  readonly exercisePrimarySortJourney: (testing: TestApi, frame: Frame, checkpoint: string) => Promise<void>;
   readonly isOpenWranglerSessionTab: (tab: vscode.Tab) => boolean;
   readonly openEditorTabContextMenu: (
     page: Page,
@@ -438,13 +432,7 @@ export function createPackagedFileLaunchSurfaces(
     assert.equal(await counts.getAttribute("aria-pressed"), "true");
     await insights.getByRole("button", { name: "Close panel" }).click();
     await insights.waitFor({ state: "hidden", timeout: 10_000 });
-    await exercisePrimarySortJourney(
-      testing,
-      page,
-      gridTarget.frame,
-      active.metadata.sessionId,
-      "verify:file-launch:title-action:sort-journey"
-    );
+    await exercisePrimarySortJourney(testing, gridTarget.frame, "verify:file-launch:title-action:sort-journey");
     assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(
