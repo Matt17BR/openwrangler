@@ -44,23 +44,24 @@ function compareNumericVersionParts(left, right) {
   return 0;
 }
 
-function dailyPreviewSeriesFromSourceVersion(sourceVersion) {
-  const parts = numericVersionParts(sourceVersion);
-  if (parts === undefined) return undefined;
+function dailyPreviewSeriesFromStableVersion(stableVersion) {
+  const classification = classifyNumericReleaseVersion(stableVersion);
+  const parts = numericVersionParts(stableVersion);
+  if (classification?.channel !== "stable" || parts === undefined) return undefined;
   return parts[0] < 2n ? PRE_V2_DAILY_PREVIEW_SERIES : `${parts[0]}.${parts[1]}`;
 }
 
-export function dailyPreviewVersionFromDate(date, sourceVersion) {
+export function dailyPreviewVersionFromDate(date, stableVersion) {
   if (typeof date !== "string" || !/^\d{8}$/u.test(date)) return undefined;
-  const series = dailyPreviewSeriesFromSourceVersion(sourceVersion);
+  const series = dailyPreviewSeriesFromStableVersion(stableVersion);
   if (series === undefined) return undefined;
   const version = `${series}.${date}`;
-  const sourceParts = numericVersionParts(sourceVersion);
+  const stableParts = numericVersionParts(stableVersion);
   const previewParts = numericVersionParts(version);
   return dailyPreviewDateFromVersion(version) === date &&
-    sourceParts !== undefined &&
+    stableParts !== undefined &&
     previewParts !== undefined &&
-    compareNumericVersionParts(previewParts, sourceParts) > 0
+    compareNumericVersionParts(previewParts, stableParts) > 0
     ? version
     : undefined;
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
+All notable changes to Open Wrangler are documented here. Stable releases follow Semantic Versioning. Preview builds remain unstable.
 
 ## [Unreleased]
 

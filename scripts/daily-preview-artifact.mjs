@@ -11,6 +11,7 @@ import {
 import { parseStrictJson } from "./strict-json.mjs";
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
+const CANONICAL_NUMERIC_RELEASE_TAG = /^v(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/u;
 const VERSION_FILES = Object.freeze([
   ["packageJson", "package.json"],
   ["packageLock", "package-lock.json"],
@@ -77,15 +78,120 @@ function inspectVersionSources({ packageJson, packageLock, runtimeVersion }, lab
   return { lock, manifest, version };
 }
 
-function renderVersionSources(sources, date) {
-  const source = inspectVersionSources(sources, "Source", false);
-  if (isDailyPreviewVersion(source.version)) {
-    throw new Error("Protected-main source metadata must not already be a daily preview.");
+function compareReleaseVersions(left, right) {
+  const leftParts = left.split(".").map(BigInt);
+  const rightParts = right.split(".").map(BigInt);
+  for (let index = 0; index < leftParts.length; index += 1) {
+    if (leftParts[index] < rightParts[index]) return -1;
+    if (leftParts[index] > rightParts[index]) return 1;
   }
-  const version = dailyPreviewVersionFromDate(date, source.version);
-  if (version === undefined) {
-    throw new Error("A daily preview requires one valid UTC date in YYYYMMDD form after its protected-main version.");
+  return 0;
+}
+
+function requireFullTagCheckout(root) {
+  if (git(root, ["rev-parse", "--is-shallow-repository"]).trim() !== "false") {
+    throw new Error("Stable release tag authority requires one full source checkout with tags.");
   }
+}
+
+function inspectStableTagAuthority(root, sourceCommit, tag, expectedCommit) {
+  requireFullTagCheckout(root);
+  const tagMatch = CANONICAL_NUMERIC_RELEASE_TAG.exec(tag);
+  const version = tagMatch?.groups?.version;
+  if (version === undefined || classifyNumericReleaseVersion(version)?.channel !== "stable") {
+    throw new Error(`Stable release tag authority requires one canonical stable tag; received ${String(tag)}.`);
+  }
+  let commit;
+  let type;
+  try {
+    commit = git(root, ["rev-parse", "--verify", "--end-of-options", `refs/tags/${tag}`]).trim();
+    type = git(root, ["cat-file", "-t", `refs/tags/${tag}`]).trim();
+  } catch {
+    throw new Error(`Stable release tag ${tag} is missing from the full source checkout.`);
+  }
+  if (type !== "commit" || !FULL_SHA.test(commit)) {
+    throw new Error(`Stable release tag ${tag} must be one lightweight commit ref.`);
+  }
+  if (expectedCommit !== undefined && commit !== expectedCommit) {
+    throw new Error(`Stable release tag ${tag} moved from its bound commit.`);
+  }
+  try {
+    git(root, ["merge-base", "--is-ancestor", commit, sourceCommit]);
+  } catch {
+    throw new Error(`Stable release tag ${tag} is not reachable from the protected-main source commit.`);
+  }
+  let tagged;
+  try {
+    tagged = inspectVersionSources(versionSources(root, commit), `Stable release tag ${tag}`, false);
+  } catch {
+    throw new Error(`Stable release tag ${tag} does not contain coherent stable version metadata.`);
+  }
+  if (tagged.version !== version || tagged.manifest.preview !== false) {
+    throw new Error(`Stable release tag ${tag} does not match its coherent stable version metadata.`);
+  }
+  return Object.freeze({ commit, tag, version });
+}
+
+function latestStableTagAuthority(root, sourceCommit) {
+  if (!FULL_SHA.test(sourceCommit ?? "")) {
+    throw new Error("Stable release tag authority requires one full protected-main source commit.");
+  }
+  requireFullTagCheckout(root);
+  const tags = git(root, ["tag", "--no-column", "--merged", sourceCommit, "--list", "--format=%(refname:strip=2)"])
+    .split("\n")
+    .filter((tag) => tag.length > 0);
+  const stable = [];
+  for (const tag of tags) {
+    const match = CANONICAL_NUMERIC_RELEASE_TAG.exec(tag);
+    if (match === null) continue;
+    const classification = classifyNumericReleaseVersion(match.groups?.version);
+    if (classification === undefined) {
+      throw new Error(`Reachable numeric release tag ${tag} does not describe a permitted release channel.`);
+    }
+    if (classification.channel === "stable") {
+      stable.push({ tag, version: classification.version });
+    }
+  }
+  if (stable.length === 0) {
+    throw new Error("No canonical stable release tag is reachable from the protected-main source commit.");
+  }
+  let latest = stable[0];
+  for (const candidate of stable.slice(1)) {
+    if (compareReleaseVersions(candidate.version, latest.version) > 0) latest = candidate;
+  }
+  const matches = stable.filter((candidate) => compareReleaseVersions(candidate.version, latest.version) === 0);
+  if (matches.length !== 1) {
+    throw new Error("The latest reachable stable release tag authority is ambiguous.");
+  }
+  return inspectStableTagAuthority(root, sourceCommit, latest.tag);
+}
+
+function stableAuthorityFromCommitMessage(root, commit, parentCommit, previewVersion) {
+  const object = git(root, ["cat-file", "commit", commit]);
+  const messageStart = object.indexOf("\n\n");
+  if (messageStart === -1) {
+    throw new Error("The daily preview commit does not contain one canonical commit message.");
+  }
+  const message = object.slice(messageStart + 2);
+  if (message === `Prepare daily preview ${previewVersion}\n`) {
+    return Object.freeze({ legacySourceSeries: true });
+  }
+  const match = new RegExp(
+    `^Prepare daily preview ${previewVersion.replaceAll(".", "\\.")}\\n\\n` +
+      "Stable-Release-Tag: (?<tag>v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*))\\n" +
+      "Stable-Release-Commit: (?<commit>[0-9a-f]{40})\\n$",
+    "u"
+  ).exec(message);
+  if (match?.groups?.tag === undefined || match.groups.commit === undefined) {
+    throw new Error("The daily preview commit does not bind one stable release tag authority.");
+  }
+  return Object.freeze({
+    legacySourceSeries: false,
+    stable: inspectStableTagAuthority(root, parentCommit, match.groups.tag, match.groups.commit)
+  });
+}
+
+function renderVersionSourcesAtVersion(sources, source, version) {
   return {
     packageJson: `${JSON.stringify({ ...source.manifest, preview: true, version }, null, 2)}\n`,
     packageLock: `${JSON.stringify(
@@ -102,12 +208,50 @@ function renderVersionSources(sources, date) {
   };
 }
 
-export function dailyPreviewIdentity(environment = process.env, sourceVersion) {
-  const version = dailyPreviewVersionFromDate(environment.PREVIEW_DATE, sourceVersion);
+function renderVersionSources(sources, date, stableVersion) {
+  const source = inspectVersionSources(sources, "Source", false);
+  if (isDailyPreviewVersion(source.version)) {
+    throw new Error("Protected-main source metadata must not already be a daily preview.");
+  }
+  const version = dailyPreviewVersionFromDate(date, stableVersion);
+  if (version === undefined) {
+    throw new Error("A daily preview requires one valid UTC date after its bound stable release version.");
+  }
+  return renderVersionSourcesAtVersion(sources, source, version);
+}
+
+function renderLegacySourceSeriesVersionSources(sources, date) {
+  const source = inspectVersionSources(sources, "Legacy daily preview source", false);
+  const [sourceMajor, sourceMinor] = source.version.split(".").map(BigInt);
+  const series = sourceMajor < 2n ? "1.99" : `${sourceMajor}.${sourceMinor}`;
+  const version = `${series}.${date}`;
+  if (
+    isDailyPreviewVersion(source.version) ||
+    dailyPreviewDateFromVersion(version) !== date ||
+    compareReleaseVersions(version, source.version) <= 0
+  ) {
+    throw new Error("A trailerless daily preview must match the exact previous source-series generator.");
+  }
+  return renderVersionSourcesAtVersion(sources, source, version);
+}
+
+export function dailyPreviewIdentity(environment = process.env, stableAuthority) {
+  const version = dailyPreviewVersionFromDate(environment.PREVIEW_DATE, stableAuthority?.version);
   if (environment.GITHUB_REF !== "refs/heads/main") throw new Error("A daily preview must come from refs/heads/main.");
   if (!FULL_SHA.test(environment.SOURCE_SHA ?? "")) throw new Error("SOURCE_SHA must be one lowercase commit SHA.");
+  if (!FULL_SHA.test(stableAuthority?.commit ?? "") || stableAuthority?.tag !== `v${stableAuthority?.version}`) {
+    throw new Error("A daily preview requires one bound stable release tag authority.");
+  }
   if (version === undefined) throw new Error("PREVIEW_DATE must be one valid UTC date in YYYYMMDD form.");
-  return { date: environment.PREVIEW_DATE, releaseTag: `v${version}`, sourceSha: environment.SOURCE_SHA, version };
+  return {
+    date: environment.PREVIEW_DATE,
+    releaseTag: `v${version}`,
+    sourceSha: environment.SOURCE_SHA,
+    stableCommit: stableAuthority.commit,
+    stableTag: stableAuthority.tag,
+    stableVersion: stableAuthority.version,
+    version
+  };
 }
 
 export function dailyPreviewReleaseNotes({ sourceSha, version }) {
@@ -149,29 +293,51 @@ export function inspectDailyPreviewSourceCommit({ commit, expectedParent, releas
   if (!changed.endsWith("\0") || JSON.stringify(changedPaths) !== JSON.stringify(VERSION_PATHS)) {
     throw new Error("The daily preview commit may change only its three version files.");
   }
-  const expected = renderVersionSources(versionSources(sourceRoot, parentCommit), date);
+  const binding = stableAuthorityFromCommitMessage(sourceRoot, commit, parentCommit, parsed.version);
+  const stable = binding.legacySourceSeries ? latestStableTagAuthority(sourceRoot, parentCommit) : binding.stable;
+  const parentSources = versionSources(sourceRoot, parentCommit);
+  const expected = renderVersionSources(parentSources, date, stable.version);
+  if (binding.legacySourceSeries) {
+    const legacyExpected = renderLegacySourceSeriesVersionSources(parentSources, date);
+    if (
+      legacyExpected.version !== expected.version ||
+      VERSION_FILES.some(([key]) => current[key] !== legacyExpected[key])
+    ) {
+      throw new Error("The trailerless daily preview series does not match the latest stable release tag.");
+    }
+  }
   if (parsed.version !== expected.version) {
-    throw new Error("The daily preview series does not match its protected-main source.");
+    throw new Error("The daily preview series does not match its bound stable release tag.");
   }
   if (VERSION_FILES.some(([key]) => current[key] !== expected[key])) {
     throw new Error("The daily preview version files differ from their protected-main source.");
   }
-  return { commit, parentCommit, previewDate: date, releaseTag, version: parsed.version };
+  return {
+    commit,
+    parentCommit,
+    previewDate: date,
+    releaseTag,
+    stableCommit: stable.commit,
+    stableTag: stable.tag,
+    stableVersion: stable.version,
+    version: parsed.version
+  };
 }
 
 export function prepareDailyPreviewCommit({ environment = process.env, root }) {
   const sourceRoot = repositoryRoot(root);
   const sourceSha = git(sourceRoot, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
   const sourceFiles = versionSources(sourceRoot, sourceSha);
-  const source = inspectVersionSources(sourceFiles, "Source", false);
-  const identity = dailyPreviewIdentity(environment, source.version);
+  inspectVersionSources(sourceFiles, "Source", false);
+  const stable = latestStableTagAuthority(sourceRoot, sourceSha);
+  const identity = dailyPreviewIdentity(environment, stable);
   if (sourceSha !== identity.sourceSha) {
     throw new Error("Daily preview preparation must start at SOURCE_SHA.");
   }
   if (git(sourceRoot, ["status", "--porcelain=v1", "--untracked-files=all"]).trim() !== "") {
     throw new Error("Daily preview preparation requires one clean source checkout.");
   }
-  const rendered = renderVersionSources(sourceFiles, identity.date);
+  const rendered = renderVersionSources(sourceFiles, identity.date, identity.stableVersion);
   for (const [key, path] of VERSION_FILES) writeFileSync(resolve(sourceRoot, path), rendered[key]);
   git(sourceRoot, ["add", "--", ...VERSION_PATHS]);
   const commitDate = `${identity.date.slice(0, 4)}-${identity.date.slice(4, 6)}-${identity.date.slice(6, 8)}T00:00:00Z`;
@@ -184,7 +350,9 @@ export function prepareDailyPreviewCommit({ environment = process.env, root }) {
       "--quiet",
       "--no-gpg-sign",
       "-m",
-      `Prepare daily preview ${identity.version}`
+      `Prepare daily preview ${identity.version}`,
+      "-m",
+      `Stable-Release-Tag: ${identity.stableTag}\nStable-Release-Commit: ${identity.stableCommit}`
     ],
     {
       ...process.env,
