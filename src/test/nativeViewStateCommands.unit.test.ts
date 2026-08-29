@@ -987,6 +987,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       bufferId: expect.any(String),
+      bufferVersion: 0,
       bufferInvalid: false,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
@@ -999,11 +1000,18 @@ describe("native state and presentation commands", () => {
     expect(codePreviewView.description).toBe("Python");
     const readOnlyBufferId = (posted.at(-1) as { bufferId: string }).bufferId;
 
-    receive?.({ kind: "codeChanged", bufferId: readOnlyBufferId, code: "raise RuntimeError('should be ignored')" });
+    receive?.({
+      kind: "codeChanged",
+      bufferId: readOnlyBufferId,
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: 0, insert: "raise RuntimeError('should be ignored')" }]
+    });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       bufferId: readOnlyBufferId,
+      bufferVersion: 0,
       bufferInvalid: false,
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
       editable: false,
@@ -1020,6 +1028,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       bufferId: expect.any(String),
+      bufferVersion: 0,
       bufferInvalid: false,
       code: editable.code,
       editable: true,
@@ -1034,7 +1043,9 @@ describe("native state and presentation commands", () => {
     receive?.({
       kind: "codeChanged",
       bufferId: editableBufferId,
-      code: "raise RuntimeError('unknown field')",
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: editable.code.length, insert: "raise RuntimeError('unknown field')" }],
       unexpected: true
     });
     receive?.({ kind: "ready" });
@@ -1043,27 +1054,112 @@ describe("native state and presentation commands", () => {
     receive?.({
       kind: "codeChanged",
       bufferId: editableBufferId,
-      code: "def clean_data(df):\n    return df.dropna()\n"
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: editable.code.length, insert: "def clean_data(df):\n    return df.dropna()\n" }]
     });
     receive?.({ kind: "ready" });
-    expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
+    expect(posted.at(-1)).toMatchObject({
+      bufferVersion: 1,
+      code: "def clean_data(df):\n    return df.dropna()\n"
+    });
+    receive?.({
+      kind: "codeChanged",
+      bufferId: editableBufferId,
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: editable.code.length, insert: "# stale same-buffer edit" }]
+    });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({
+      bufferVersion: 1,
+      code: "def clean_data(df):\n    return df.dropna()\n"
+    });
 
-    const copy = command("openWrangler.copyCode")();
-    const pendingRequest = posted.at(-1) as { requestId: string; bufferId: string };
-    expect(pendingRequest).toMatchObject({ kind: "codeSnapshotRequest", bufferId: editableBufferId });
+    const crossingCode = "def clean_data(df):\n    return df.dropna()\n# crossing edit\n";
+    const crossingCopy = command("openWrangler.copyCode")();
+    const crossingRequest = posted.at(-1) as { requestId: string; bufferId: string; bufferVersion: number };
+    expect(crossingRequest).toMatchObject({
+      kind: "codeSnapshotRequest",
+      bufferId: editableBufferId,
+      bufferVersion: 1
+    });
+    receive?.({
+      kind: "codeChanged",
+      bufferId: editableBufferId,
+      baseVersion: 1,
+      bufferVersion: 2,
+      changes: [
+        {
+          from: "def clean_data(df):\n    return df.dropna()\n".length,
+          to: "def clean_data(df):\n    return df.dropna()\n".length,
+          insert: "# crossing edit\n"
+        }
+      ]
+    });
+    receive?.({
+      kind: "codeSnapshot",
+      requestId: crossingRequest.requestId,
+      bufferId: crossingRequest.bufferId,
+      baseVersion: crossingRequest.bufferVersion,
+      bufferVersion: 2,
+      code: crossingCode
+    });
+    await expect(crossingCopy).resolves.toBe(crossingCode);
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ bufferVersion: 2, code: crossingCode });
+
+    const currentAfterDisagreement = `${crossingCode}# current edit\n`;
+    const disagreeingCopy = command("openWrangler.copyCode")();
+    const disagreeingRequest = posted.at(-1) as { requestId: string; bufferId: string; bufferVersion: number };
+    receive?.({
+      kind: "codeChanged",
+      bufferId: editableBufferId,
+      baseVersion: 2,
+      bufferVersion: 3,
+      changes: [
+        {
+          from: crossingCode.length,
+          to: crossingCode.length,
+          insert: "# current edit\n"
+        }
+      ]
+    });
+    receive?.({
+      kind: "codeSnapshot",
+      requestId: disagreeingRequest.requestId,
+      bufferId: disagreeingRequest.bufferId,
+      baseVersion: disagreeingRequest.bufferVersion,
+      bufferVersion: 3,
+      code: `${crossingCode}# stale snapshot\n`
+    });
+    await expect(disagreeingCopy).resolves.toBe(false);
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ bufferVersion: 3, code: currentAfterDisagreement });
+
+    const staleCopy = command("openWrangler.copyCode")();
+    const pendingRequest = posted.at(-1) as { requestId: string; bufferId: string; bufferVersion: number };
+    expect(pendingRequest).toMatchObject({
+      kind: "codeSnapshotRequest",
+      bufferId: editableBufferId,
+      bufferVersion: 3
+    });
     const rEditable = rNotebookSnapshot();
     registered.setActiveSession(rEditable);
-    await expect(copy).resolves.toBe(false);
+    await expect(staleCopy).resolves.toBe(false);
     receive?.({
       kind: "codeSnapshot",
       requestId: pendingRequest.requestId,
       bufferId: pendingRequest.bufferId,
+      baseVersion: pendingRequest.bufferVersion,
+      bufferVersion: pendingRequest.bufferVersion,
       code: "# late stale buffer"
     });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       bufferId: expect.any(String),
+      bufferVersion: 0,
       bufferInvalid: false,
       code: rEditable.code,
       editable: true,
@@ -1082,6 +1178,7 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       bufferId: expect.any(String),
+      bufferVersion: 0,
       bufferInvalid: false,
       code: viewingOnly.code,
       editable: false,
