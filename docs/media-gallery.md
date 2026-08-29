@@ -1,7 +1,8 @@
 # Product gallery
 
-These scenes use generated business data and show Open Wrangler as users see it in VS Code and Cursor. Dataset
-sizes in the images describe the example, not a row or column limit.
+Open Wrangler targets VS Code and editors based on it. These scenes use generated business data and show the product
+in VS Code, with Cursor as one concrete compatibility example. Dataset sizes in the images describe the example, not
+a row or column limit.
 
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
@@ -214,11 +215,11 @@ Decimal, time-zone-aware timestamp, list, and struct values remain typed through
     <td width="50%"><a href="images/readme/v1.2/gallery/high-contrast-explore.png"><img alt="Open Wrangler in a high-contrast theme with the operations sidebar, orders grid, and revenue profile outlined in cyan" src="images/readme/v1.2/gallery/high-contrast-explore.png" width="960"></a></td>
   </tr>
   <tr>
-    <td>The same VSIX is release-tested in VS Code and Cursor.</td>
+    <td>The same VSIX is qualified in VS Code. Bounded Linux Cursor platform smoke covers representative grid, cleaning, export, and recovery flows, but not the full VS Code qualification matrix.</td>
     <td>The grid, sidebars, profiles, and controls use the editor's high-contrast theme tokens.</td>
   </tr>
 </table>
 
-Other desktop VS Code forks are experimental. The automated visual and accessibility suite also covers light and
-dark themes, 80% to 200% zoom, keyboard-only operation, loading and error states, empty frames, long Unicode
-content, and narrow and wide layouts. See [Testing](testing.md) for the acceptance process.
+Broader compatibility with VS Code-based editors remains experimental. The automated visual and accessibility suite
+also covers light and dark themes, 80% to 200% zoom, keyboard-only operation, loading and error states, empty frames,
+long Unicode content, and narrow and wide layouts. See [Testing](testing.md) for the acceptance process.

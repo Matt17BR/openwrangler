@@ -49,7 +49,7 @@ body:
       description: Copy the Open Wrangler version from the Extensions view and the editor version from Help > About. List other exact versions when they matter; say when a value could not be found.
       placeholder: |
         Open Wrangler:
-        Editor (VS Code or Cursor):
+        Editor and version (VS Code or a VS Code-based editor, such as Cursor):
         Operating system:
         Python or R (if relevant):
     validations:
