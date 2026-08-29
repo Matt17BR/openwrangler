@@ -116,7 +116,7 @@ draft = manager.preview_step(
     0,
     4,
 )
-draft["summaries"] = manager.get_summary(
+draft["harnessSummaries"] = manager.get_summary(
     session_id,
     draft["revision"],
     {"logic": "and", "filters": [], "sort": []},
@@ -179,7 +179,7 @@ example_draft = example_manager.preview_step(
     0,
     10,
 )
-example_draft["summaries"] = example_manager.get_summary(
+example_draft["harnessSummaries"] = example_manager.get_summary(
     example_id,
     example_draft["revision"],
     {"logic": "and", "filters": [], "sort": []},
@@ -468,93 +468,6 @@ duplicateColumnPayload.metadata.schema = duplicateColumnPayload.metadata.schema.
   id: `c:source:${position}`,
   name: ["value", "value", "7", ""][position]
 }));
-const rProfileAccessibilityPayload = structuredClone(payloads.summaryFamilies);
-const rProfileRawTypes = ["double", "character", "logical", "POSIXct", "character"];
-const rProfileColumnIds = rProfileAccessibilityPayload.metadata.schema.map((_, position) => `r:c:${position}`);
-rProfileAccessibilityPayload.metadata = {
-  ...rProfileAccessibilityPayload.metadata,
-  backend: "r",
-  rDataframeFlavor: "r.data.frame",
-  mode: "viewing",
-  source: {
-    kind: "notebookVariable",
-    label: "R profile accessibility",
-    uri: "file:///workspace/r-profile-accessibility.ipynb",
-    variableName: "r_profile_accessibility"
-  },
-  capabilities: {
-    editable: false,
-    lazy: false,
-    cancel: false,
-    exportCsv: false,
-    exportParquet: false,
-    notebookInsert: false,
-    filter: false,
-    sort: true,
-    profile: true,
-    columnValues: false
-  },
-  schema: rProfileAccessibilityPayload.metadata.schema.map((column, position) => ({
-    ...column,
-    id: rProfileColumnIds[position],
-    rawType: rProfileRawTypes[position],
-    nullable: true
-  }))
-};
-rProfileAccessibilityPayload.page.columnIds = [...rProfileColumnIds];
-rProfileAccessibilityPayload.page.rows = rProfileAccessibilityPayload.page.rows.map((row, index) => ({
-  ...row,
-  id: `r:r:${index}`,
-  values: row.values.map((value, position) => {
-    if (position === 0 && value.kind === "number") {
-      return { ...value, display: String(value.raw) };
-    }
-    if (position === 2 && value.kind === "boolean") {
-      return { ...value, display: value.raw ? "TRUE" : "FALSE" };
-    }
-    if (position === 3 && value.kind === "datetime") {
-      const instant = new Date(`${value.raw}Z`);
-      return {
-        ...value,
-        raw: String(instant.getTime() / 1000),
-        display: instant.toISOString().replace(".000Z", ".000000")
-      };
-    }
-    if (value.kind === "null") {
-      return { ...value, display: "NA" };
-    }
-    return value;
-  }),
-  rowLabel: ["baseline", "candidate", "control", "follow-up"][index] ?? `row-${index + 1}`
-}));
-rProfileAccessibilityPayload.harnessSummaries = rProfileAccessibilityPayload.harnessSummaries.map(
-  (summary, position) => {
-    const next = {
-      ...summary,
-      columnId: rProfileColumnIds[position],
-      rawType: rProfileRawTypes[position]
-    };
-    if (position === 2) {
-      next.topValues = summary.topValues.map((entry) => ({
-        ...entry,
-        value: entry.value === "True" ? "TRUE" : entry.value === "False" ? "FALSE" : entry.value
-      }));
-    }
-    if (position === 3) {
-      const rDatetimeDisplay = (value) =>
-        new Date(`${value.replace(" ", "T")}Z`).toISOString().replace(".000Z", ".000000");
-      next.topValues = summary.topValues.map((entry) => ({ ...entry, value: rDatetimeDisplay(entry.value) }));
-      if (summary.visualization?.kind === "datetime") {
-        next.visualization = {
-          ...summary.visualization,
-          min: rDatetimeDisplay(summary.visualization.min),
-          max: rDatetimeDisplay(summary.visualization.max)
-        };
-      }
-    }
-    return next;
-  }
-);
 const terminalRangePayload = structuredClone(payloads.wide);
 terminalRangePayload.metadata.shape.rows = 100_000_000;
 terminalRangePayload.metadata.filteredShape.rows = 100_000_000;
@@ -874,14 +787,6 @@ writeWebviewHarness(
     }
   }
 );
-writeWebviewHarness(
-  "r-profile-accessibility.html",
-  rProfileAccessibilityPayload,
-  {},
-  "acceptance/r-profile-accessibility-unused.png",
-  {},
-  { capture: false, defaultColumnWidth: 190 }
-);
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
   "grid-light-1280.html",
@@ -975,9 +880,9 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     ${zoomViewportStyles}
   </style>
   <script>
-    const sessionPayload = ${stringifyForInlineScript(sessionPayload)};
+    const { harnessSummaries, ...sessionPayload } = ${stringifyForInlineScript(sessionPayload)};
     window.openWranglerSessionPayload = sessionPayload;
-    const profileSummaries = sessionPayload.harnessSummaries ?? sessionPayload.summaries ?? [];
+    const profileSummaries = harnessSummaries ?? sessionPayload.summaries ?? [];
     const columnValues = ${stringifyForInlineScript(columnValues)};
     const pages = ${stringifyForInlineScript(suppliedPages)};
     const stepInspections = ${stringifyForInlineScript(stepInspections)};
