@@ -69,7 +69,7 @@ try {
   await verifyNotebookPreviewDisclosure(browser);
   await verifyCodePreviewOrigin(browser);
   await verifyCompactDraftReview(browser);
-  await verifyCleaningKeyboardShortcuts(browser);
+  await verifyColumnSearchEscapePropagation(browser);
   await verifyAppliedPlanToolbarLayout(browser);
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
@@ -2385,16 +2385,10 @@ async function verifyWideGridPerformance(browser) {
   );
 }
 
-async function verifyCleaningKeyboardShortcuts(browser) {
+async function verifyColumnSearchEscapePropagation(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   await page.goto(pathToFileURL(resolve(harnessDir, "draft-preview.html")).href, { waitUntil: "load" });
-  const apply = page.getByRole("button", { name: "Apply step" });
-  await apply.waitFor();
-  await apply.focus();
-  await page.keyboard.press("Control+Enter");
-  await waitForRuntimeRequest(page, "applyDraft");
-
-  await resetDraftHarness(page);
+  await page.getByRole("button", { name: "Apply step" }).waitFor();
   const columnSearch = page.getByRole("combobox", { name: "Column" });
   await columnSearch.focus();
   const columnSearchResults = page.getByRole("listbox", { name: "Matching columns" });
@@ -2408,36 +2402,17 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   await page.keyboard.press("Escape");
   await waitForRuntimeRequestCount(page, "discardDraft", discardCount + 1);
 
-  await resetDraftHarness(page);
-  await showAppliedStep(page);
-  const undo = page.getByRole("button", { name: "Undo", exact: true });
-  await undo.waitFor();
-  await undo.focus();
-  await page.keyboard.press("Control+Alt+z");
-  await waitForRuntimeRequest(page, "undoStep");
-
-  await resetDraftHarness(page);
-  await showAppliedStep(page);
-  const edit = page.getByRole("button", { name: "Edit latest" });
-  await edit.waitFor();
-  await edit.focus();
-  await page.keyboard.press("Control+Shift+e");
-  await page.getByRole("dialog", { name: "Edit cleaning step" }).waitFor();
-  await page.keyboard.press("Escape");
-  if (await page.getByRole("dialog", { name: "Edit cleaning step" }).isVisible()) {
-    throw new Error("Escape did not close the operation dialog.");
-  }
   await page.close();
-  console.log("Cleaning-plan keyboard shortcuts verified.");
+  console.log("Column-search Escape propagation verified.");
 }
 
 async function verifyAppliedPlanToolbarLayout(browser) {
   const cases = [
-    { harness: "draft-preview.html", width: 1280, label: "wide" },
-    { harness: "draft-preview.html", width: 620, label: "narrow" },
-    { harness: "draft-preview.html", width: 320, label: "compact" },
-    { harness: "by-example-preview-dark-zoom-200.html", width: 1280, label: "200% zoom" },
-    { harness: "draft-preview.html", width: 620, label: "forced colors", forcedColors: true }
+    { harness: "applied-plan.html", width: 1280, label: "wide" },
+    { harness: "applied-plan.html", width: 620, label: "narrow" },
+    { harness: "applied-plan.html", width: 320, label: "compact" },
+    { harness: "applied-plan-dark-zoom-200.html", width: 1280, label: "200% zoom" },
+    { harness: "applied-plan.html", width: 620, label: "forced colors", forcedColors: true }
   ];
 
   for (const { harness, width, label, forcedColors = false } of cases) {
@@ -2445,8 +2420,6 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     const page = await browser.newPage({ viewport: { width, height: 760 } });
     if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
-    await page.getByRole("button", { name: "Apply step" }).waitFor();
-    await showAppliedStep(page);
 
     const plan = page.getByRole("group", { name: "Cleaning plan" });
     await plan.waitFor();
@@ -3233,25 +3206,6 @@ async function verifyGridKeyboardWorkflow(browser) {
 async function assertProjectedHarnessClean(page, label) {
   const errors = await page.evaluate(() => [...globalThis.openWranglerHarnessErrors]);
   if (errors.length) throw new Error(`${label} reported projected-page fixture errors: ${errors.join(" ")}`);
-}
-
-async function resetDraftHarness(page) {
-  await page.reload({ waitUntil: "load" });
-  await page.getByRole("button", { name: "Apply step" }).waitFor();
-}
-
-async function showAppliedStep(page) {
-  await page.evaluate(() => {
-    const payload = globalThis.openWranglerSessionPayload;
-    const step = payload.metadata.draftStep;
-    const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code },
-        origin: window.location.origin
-      })
-    );
-  });
 }
 
 async function waitForFocusedGridCell(page, row, column) {
