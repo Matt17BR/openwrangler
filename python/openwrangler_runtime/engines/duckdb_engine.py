@@ -2607,8 +2607,7 @@ def _duckdb_pivot_wider_identifier_expression(name: str, raw_type: str) -> str:
 
 
 def _is_float_type(raw_type: str) -> bool:
-    lowered = raw_type.lower()
-    return any(token in lowered for token in ("float", "double", "real"))
+    return raw_type.strip().lower() in {"float", "double", "real"}
 
 
 def _is_integer_type(raw_type: str) -> bool:
@@ -3246,8 +3245,7 @@ def _ow_unique(existing, base):
 
 
 def _ow_is_float(raw_type):
-    lowered = str(raw_type).lower()
-    return any(token in lowered for token in ("float", "double", "real"))
+    return str(raw_type).strip().lower() in {"float", "double", "real"}
 
 
 def _ow_is_integer(raw_type):
