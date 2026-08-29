@@ -10,7 +10,8 @@ import {
   INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
   INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
   buildInstalledPerformanceReport,
-  isInstalledPerformanceNumericGateError
+  isInstalledPerformanceNumericGateError,
+  summarizeInstalledDurationSamples
 } from "./installed-performance-report.mjs";
 import {
   PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
@@ -126,6 +127,25 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
   );
   assert.equal(isInstalledPerformanceNumericGateError(gateError), true);
   assert.deepEqual(gateError.failures, ["vscode filter outstanding renderer heartbeat 100ms >= 100ms"]);
+
+  const cachedGridFailure = structuredClone(report);
+  cachedGridFailure.editors[0].results.gridInteraction.cached = summarizeInstalledDurationSamples(
+    samples(100, INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT)
+  );
+  const expectedCachedGridFailure =
+    "vscode cached grid had 200 of 200 samples >= 100ms (failure threshold 16); " +
+    "cached min/median/p95/max 100/100/100/100ms; " +
+    "uncached min/median/p95/max 50/50/50/50ms; " +
+    "renderer heartbeat min/median/p95/max 5/5/5/5ms";
+  assert.throws(
+    () => gate(cachedGridFailure),
+    (error) => {
+      gateError = error;
+      return error.message.includes(expectedCachedGridFailure);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(gateError), true);
+  assert.deepEqual(gateError.failures, [expectedCachedGridFailure]);
 });
 
 function createFixtureManifest() {

@@ -937,7 +937,10 @@ function installedPerformanceFailureDetails(
     ).length;
     if (cachedSlowSampleCount >= INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleFailureCount) {
       numeric(
-        `${label} cached grid had ${cachedSlowSampleCount} of ${interaction.cached.count} samples >= ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleBoundaryMs}ms (failure threshold ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleFailureCount})`
+        `${label} cached grid had ${cachedSlowSampleCount} of ${interaction.cached.count} samples >= ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleBoundaryMs}ms (failure threshold ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleFailureCount}); ` +
+          `cached min/median/p95/max ${interaction.cached.minMs}/${interaction.cached.medianMs}/${interaction.cached.p95Ms}/${interaction.cached.maxMs}ms; ` +
+          `uncached min/median/p95/max ${interaction.uncached.minMs}/${interaction.uncached.medianMs}/${interaction.uncached.p95Ms}/${interaction.uncached.maxMs}ms; ` +
+          `renderer heartbeat min/median/p95/max ${interaction.heartbeat.minMs}/${interaction.heartbeat.medianMs}/${interaction.heartbeat.p95Ms}/${interaction.heartbeat.maxMs}ms`
       );
     }
     for (const [name, actual, limit] of [
