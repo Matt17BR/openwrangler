@@ -9,11 +9,14 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Daily previews keep the `x.y.YYYYMMDD` format and take `x.y` from the latest reachable stable tag. Intended manual
   stable releases normally advance the minor version; major versions are reserved for substantially larger changes.
 - Release candidates now audit the full Node lock, including development dependencies, before publication.
+- Source builds now support Node.js 22.17 and newer 22.x releases, plus Node.js 24. Node.js 23 remains unsupported.
 
 ### Fixed
 
 - The file picker now ignores unsupported values inserted manually into `openWrangler.enabledFileTypes`. A non-array
   value restores the defaults, while an empty array still disables every file type.
+- Code Preview now sends bounded incremental edits instead of retransmitting the full document after every change.
+  Full snapshots still initialize the editor and recover synchronization.
 
 ## [2.0.0] - 2026-08-29
 
