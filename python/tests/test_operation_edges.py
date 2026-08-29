@@ -444,12 +444,12 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     if isinstance(engine, PandasEngine):
         labels_frame = pd.DataFrame(
             {
-                "tags": pd.Categorical([None, "", "red|β"]),
-                "value": [1, 2, 3],
+                "tags": pd.Categorical([None, "", "red|β", "β"]),
+                "value": [1, 2, 3, 4],
             }
         )
     else:
-        labels_frame = pl.DataFrame({"tags": [None, "", "red|β"], "value": [1, 2, 3]}).with_columns(
+        labels_frame = pl.DataFrame({"tags": [None, "", "red|β", "β"], "value": [1, 2, 3, 4]}).with_columns(
             pl.col("tags").cast(pl.Categorical)
         )
     labels = bound_step(
@@ -463,8 +463,8 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     label_rows = records(labels_result)
 
     assert list(label_rows[0]) == ["tags", "value", "tag_red", "tag_β"]
-    assert [row["tag_red"] for row in label_rows] == [0, 0, 1]
-    assert [row["tag_β"] for row in label_rows] == [0, 0, 1]
+    assert [row["tag_red"] for row in label_rows] == [0, 0, 1, 0]
+    assert [row["tag_β"] for row in label_rows] == [0, 0, 1, 1]
     assert_records_equal(labels_result, execute_generated(engine, labels_frame, labels))
 
     empty_labels_frame = frame_for(engine, {"tags": [None, ""], "value": [1, 2]})
