@@ -499,17 +499,22 @@ describe("SessionCoordinator persistence diagnostics", () => {
     }
   );
 
-  it("rolls back real active-session publication side effects when a page callback fails", async () => {
+  it("keeps explicit active ownership when inactive page publication completes or rolls back", async () => {
     let stored: Record<string, unknown> = {};
+    const failedWrite = rejectingDeferred<void>();
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 2) return failedWrite.promise;
+      stored = value;
+    });
     const workspaceState = {
       get: vi.fn((_key: string, fallback?: unknown) => stored ?? fallback),
-      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
-        stored = value;
-      }),
+      update,
       keys: vi.fn(() => [SESSION_STORAGE_KEY])
     } as unknown as Memento;
     let runtimeOrdinal = 0;
     const runtimeSources = new Map<string, SessionSource>();
+    const latePage = rejectingDeferred<OpenWranglerResponse>();
+    let latePageRequest: Extract<OpenWranglerRequest, { kind: "getPage" }> | undefined;
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
         const runtimeId = `runtime-${++runtimeOrdinal}`;
@@ -522,22 +527,8 @@ describe("SessionCoordinator persistence diagnostics", () => {
       }
       if (request.kind === "inspectStep") return stepInspectionResponse(request);
       if (request.kind === "getPage") {
-        const source = runtimeSources.get(request.sessionId);
-        if (!source) throw new Error("Expected the runtime source to remain mapped.");
-        const opened = openedResponse(request.sessionId);
-        return {
-          kind: "page",
-          revision: request.revision,
-          viewRequestId: request.viewRequestId,
-          metadata: {
-            ...opened.metadata,
-            source,
-            steps: [inspectionStep],
-            shape: { rows: 1, columns: 0 },
-            filteredShape: { rows: 1, columns: 0 }
-          },
-          page: { ...opened.page, offset: request.offset, limit: request.limit, totalRows: 1 }
-        };
+        latePageRequest = request;
+        return latePage.promise;
       }
       if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
       throw new Error(`Unexpected publication rollback request: ${request.kind}`);
@@ -548,8 +539,21 @@ describe("SessionCoordinator persistence diagnostics", () => {
     const secondSource: SessionSource = { ...openRequest.source, path: "/workspace/second.csv" };
     const second = await bridge.request({ ...openRequest, source: secondSource });
     if (first.kind !== "sessionOpened" || second.kind !== "sessionOpened") {
-      throw new Error("Expected both transactional-publication sessions to open.");
+      throw new Error("Expected both publication-owner sessions to open.");
     }
+
+    const pendingPage = bridge.request({
+      kind: "getPage",
+      sessionId: second.metadata.sessionId,
+      revision: 0,
+      viewRequestId: "late-page",
+      offset: 0,
+      limit: 100,
+      columnOffset: 0,
+      columnLimit: 16,
+      filterModel: second.metadata.filterModel
+    });
+    await vi.waitFor(() => expect(latePageRequest).toBeDefined());
     coordinator.setActive(first.metadata.sessionId);
     const inspect = (sessionId: string) =>
       bridge.request({
@@ -562,49 +566,50 @@ describe("SessionCoordinator persistence diagnostics", () => {
         columnOffset: 0,
         columnLimit: 16
       });
-    await inspect(second.metadata.sessionId);
     await inspect(first.metadata.sessionId);
     const beforeActive = coordinator.activeSession();
     const beforeFirst = coordinator.sessionSnapshot(first.metadata.sessionId);
-    const beforeSecond = coordinator.sessionSnapshot(second.metadata.sessionId);
     expect(beforeFirst?.stepInspection).toBeDefined();
-    expect(beforeSecond?.stepInspection).toBeDefined();
 
-    const callbackFailure = new Error("active publication failed after candidate emission");
     const publications: Array<ReturnType<SessionCoordinator["activeSession"]>> = [];
-    let rejectCandidate = true;
     const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
       publications.push(snapshot);
-      if (rejectCandidate && snapshot?.sessionId === second.metadata.sessionId) {
-        rejectCandidate = false;
-        throw callbackFailure;
-      }
     });
-
-    await expect(
-      bridge.request({
-        kind: "getPage",
-        sessionId: second.metadata.sessionId,
-        revision: 0,
-        viewRequestId: "candidate-page",
-        offset: 0,
-        limit: 100,
-        columnOffset: 0,
-        columnLimit: 16,
-        filterModel: second.metadata.filterModel
-      })
-    ).rejects.toBe(callbackFailure);
-
-    expect(publications).toHaveLength(2);
-    expect(publications[0]).toMatchObject({
-      sessionId: second.metadata.sessionId,
-      metadata: { shape: { rows: 1, columns: 0 } }
+    if (!latePageRequest) throw new Error("Expected the late page request to start.");
+    const source = runtimeSources.get(latePageRequest.sessionId);
+    if (!source) throw new Error("Expected the runtime source to remain mapped.");
+    const opened = openedResponse(latePageRequest.sessionId);
+    latePage.resolve({
+      kind: "page",
+      revision: latePageRequest.revision,
+      viewRequestId: latePageRequest.viewRequestId,
+      metadata: {
+        ...opened.metadata,
+        source,
+        steps: [inspectionStep],
+        shape: { rows: 1, columns: 0 },
+        filteredShape: { rows: 1, columns: 0 }
+      },
+      page: { ...opened.page, offset: latePageRequest.offset, limit: latePageRequest.limit, totalRows: 1 }
     });
-    expect(publications[0]?.stepInspection).toBeUndefined();
-    expect(publications[1]).toEqual(beforeActive);
+    await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+
+    expect(publications).toEqual([]);
     expect(coordinator.activeSession()).toEqual(beforeActive);
-    expect(coordinator.sessionSnapshot(first.metadata.sessionId)).toEqual(beforeFirst);
-    expect(coordinator.sessionSnapshot(second.metadata.sessionId)).toEqual(beforeSecond);
+    expect(coordinator.sessionSnapshot(first.metadata.sessionId)?.stepInspection).toEqual(beforeFirst?.stepInspection);
+    coordinator.setActive(second.metadata.sessionId);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]).toMatchObject({ metadata: { shape: { rows: 1, columns: 0 } } });
+
+    failedWrite.reject(new Error("final persistence unavailable"));
+    await expect(pendingPage).resolves.toMatchObject({
+      kind: "error",
+      code: "persistence_unavailable",
+      message: expect.stringContaining("left unchanged")
+    });
+    expect(publications).toHaveLength(2);
+    expect(publications[1]).toMatchObject({ metadata: { shape: { rows: 0, columns: 0 } } });
+    expect(coordinator.activeSession()).toMatchObject({ metadata: { shape: { rows: 0, columns: 0 } } });
 
     subscription.dispose();
     await coordinator.shutdown();
