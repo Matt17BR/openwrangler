@@ -1092,9 +1092,10 @@ rename_frame <- data.frame(
   row.names = c("row-a", "row-b")
 )
 rename_before <- unserialize(serialize(rename_frame, NULL, version = 3L))
-renamed_frame <- openwrangler_r_frame_contract$rename_column(
+renamed_frame <- openwrangler_r_frame_contract$rename_column_at(
   rename_frame,
-  list(id = "r:c:2", name = "non syntactic"),
+  3L,
+  "non syntactic",
   "event date"
 )
 renamed_capture <- openwrangler_r_frame_contract$capture_frame(renamed_frame)
@@ -1121,9 +1122,10 @@ assert_identical(rename_frame[[1L]][[1L]], 1L, "the renamed data.frame shared co
 
 rename_tibble <- tibble::as_tibble(rename_frame, .name_repair = "minimal")
 rename_tibble_before <- unserialize(serialize(rename_tibble, NULL, version = 3L))
-renamed_tibble <- openwrangler_r_frame_contract$rename_column(
+renamed_tibble <- openwrangler_r_frame_contract$rename_column_at(
   rename_tibble,
-  list(id = "r:c:1", name = "duplicate"),
+  2L,
+  "duplicate",
   "second duplicate"
 )
 assert_identical(
@@ -1145,9 +1147,10 @@ rename_table <- data.table::data.table(
 )
 data.table::setkeyv(rename_table, "primary key")
 rename_table_before <- data.table::copy(rename_table)
-renamed_table <- openwrangler_r_frame_contract$rename_column(
+renamed_table <- openwrangler_r_frame_contract$rename_column_at(
   rename_table,
-  list(id = "r:c:0", name = "primary key"),
+  1L,
+  "primary key",
   "order key"
 )
 renamed_table_capture <- openwrangler_r_frame_contract$capture_frame(renamed_table)
@@ -1187,9 +1190,10 @@ assert_identical(
 )
 clone_before <- unserialize(serialize(clone_frame, NULL, version = 3L))
 clone_capture <- openwrangler_r_frame_contract$capture_frame(clone_frame)
-cloned_frame <- openwrangler_r_frame_contract$clone_column(
+cloned_frame <- openwrangler_r_frame_contract$clone_column_at(
   clone_frame,
-  list(id = "r:c:1", name = "duplicate"),
+  2L,
+  "duplicate",
   "duplicate copy"
 )
 clone_source_positions <- c(1L, 2L, 3L, 2L)
@@ -1261,9 +1265,10 @@ poison_cloned_frame <- local({
     }), envir = .GlobalEnv)
   }
   on.exit(rm(list = method_names, envir = .GlobalEnv), add = TRUE)
-  openwrangler_r_frame_contract$clone_column(
+  openwrangler_r_frame_contract$clone_column_at(
     poison_clone_frame,
-    list(id = "r:c:1", name = "right"),
+    2L,
+    "right",
     "right copy"
   )
 })
@@ -1281,9 +1286,10 @@ assert_identical(
 
 clone_tibble <- tibble::as_tibble(clone_frame, .name_repair = "minimal")
 clone_tibble_before <- unserialize(serialize(clone_tibble, NULL, version = 3L))
-cloned_tibble <- openwrangler_r_frame_contract$clone_column(
+cloned_tibble <- openwrangler_r_frame_contract$clone_column_at(
   clone_tibble,
-  list(id = "r:c:2", name = "non syntactic"),
+  3L,
+  "non syntactic",
   "date copy"
 )
 assert_identical(
@@ -1307,9 +1313,10 @@ assert_identical(
 clone_table_before <- data.table::copy(clone_table)
 data.table::setattr(.subset2(clone_table_before, 2L), "names", clone_table_element_names)
 clone_table_capture <- openwrangler_r_frame_contract$capture_frame(clone_table)
-cloned_table <- openwrangler_r_frame_contract$clone_column(
+cloned_table <- openwrangler_r_frame_contract$clone_column_at(
   clone_table,
-  list(id = "r:c:1", name = "value"),
+  2L,
+  "value",
   "value copy"
 )
 cloned_table_capture <- openwrangler_r_frame_contract$capture_frame(
@@ -1341,37 +1348,32 @@ cloned_table[, `value copy` := "changed"]
 assert_identical(clone_table, clone_table_before, "the cloned data.table shared storage with its source")
 
 assert_error(
-  openwrangler_r_frame_contract$clone_column(
+  openwrangler_r_frame_contract$clone_column_at(
     clone_frame,
-    list(id = "r:c:1", name = "duplicate"),
+    2L,
+    "duplicate",
     "duplicate"
   ),
   "column-name-collision"
 )
 assert_error(
-  openwrangler_r_frame_contract$clone_column(clone_frame, list(id = "r:c:1", name = "duplicate"), ""),
+  openwrangler_r_frame_contract$clone_column_at(clone_frame, 2L, "duplicate", ""),
   "invalid-column-name"
 )
 assert_error(
-  openwrangler_r_frame_contract$clone_column(
+  openwrangler_r_frame_contract$clone_column_at(
     clone_frame,
-    list(id = "r:c:1", name = "duplicate"),
+    2L,
+    "duplicate",
     "__OPEN_WRANGLER_INTERNAL_ROW_ID_clone"
   ),
   "reserved-column-name"
 )
 assert_error(
-  openwrangler_r_frame_contract$clone_column(
+  openwrangler_r_frame_contract$clone_column_at(
     clone_frame,
-    list(id = "r:c:99", name = "duplicate"),
-    "copy"
-  ),
-  "stale-column"
-)
-assert_error(
-  openwrangler_r_frame_contract$clone_column(
-    clone_frame,
-    list(id = "r:c:1", name = "wrong"),
+    2L,
+    "wrong",
     "copy"
   ),
   "stale-column"
@@ -1382,9 +1384,10 @@ private_clone_frame <- data.frame(
   check.names = FALSE
 )
 assert_error(
-  openwrangler_r_frame_contract$clone_column(
+  openwrangler_r_frame_contract$clone_column_at(
     private_clone_frame,
-    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    1L,
+    "__open_wrangler_internal_row_id_source",
     "copy"
   ),
   "reserved-column-name"
@@ -1980,14 +1983,7 @@ formula_frame <- data.frame(
 )
 formula_before <- unserialize(serialize(formula_frame, NULL, version = 3L))
 formula_capture <- openwrangler_r_frame_contract$capture_frame(formula_frame)
-formula_result <- openwrangler_r_frame_contract$formula_column(
-  formula_frame,
-  list(id = "r:c:0", name = "duplicate"),
-  "add",
-  "duplicate sum",
-  right_column_reference = list(id = "r:c:1", name = "duplicate")
-)
-formula_generated_equivalent <- openwrangler_r_frame_contract$formula_column_at(
+formula_result <- openwrangler_r_frame_contract$formula_column_at(
   formula_frame,
   1L,
   "duplicate",
@@ -1995,11 +1991,6 @@ formula_generated_equivalent <- openwrangler_r_frame_contract$formula_column_at(
   "duplicate sum",
   right_position = 2L,
   right_name = "duplicate"
-)
-assert_identical(
-  formula_result,
-  formula_generated_equivalent,
-  "formula stable-reference and bound-position execution diverged"
 )
 assert_identical(
   formula_result$`duplicate sum`,
@@ -2498,9 +2489,10 @@ text_length_frame <- data.frame(
 )
 text_length_before <- unserialize(serialize(text_length_frame, NULL, version = 3L))
 text_length_capture <- openwrangler_r_frame_contract$capture_frame(text_length_frame)
-text_length_result <- openwrangler_r_frame_contract$text_length_column(
+text_length_result <- openwrangler_r_frame_contract$text_length_column_at(
   text_length_frame,
-  list(id = "r:c:0", name = "duplicate"),
+  1L,
+  "duplicate",
   "character count"
 )
 text_length_source_positions <- c(1L, 2L, 3L, 1L)
@@ -2541,9 +2533,10 @@ assert_identical(text_length_frame, text_length_before, "the text length result 
 
 text_length_tibble <- tibble::as_tibble(text_length_frame, .name_repair = "minimal")
 text_length_tibble_before <- unserialize(serialize(text_length_tibble, NULL, version = 3L))
-text_length_tibble_result <- openwrangler_r_frame_contract$text_length_column(
+text_length_tibble_result <- openwrangler_r_frame_contract$text_length_column_at(
   text_length_tibble,
-  list(id = "r:c:1", name = "duplicate"),
+  2L,
+  "duplicate",
   "factor count"
 )
 assert_identical(
@@ -2561,9 +2554,10 @@ assert_identical(text_length_tibble, text_length_tibble_before, "text length mut
 text_length_table <- data.table::data.table(primary_key = c(2L, 1L), value = c("\U0001F642", NA_character_))
 data.table::setkey(text_length_table, primary_key)
 text_length_table_before <- data.table::copy(text_length_table)
-text_length_table_result <- openwrangler_r_frame_contract$text_length_column(
+text_length_table_result <- openwrangler_r_frame_contract$text_length_column_at(
   text_length_table,
-  list(id = "r:c:1", name = "value"),
+  2L,
+  "value",
   "value count"
 )
 assert_identical(
@@ -2576,21 +2570,22 @@ assert_identical(text_length_table_result[[3L]], c(NA_integer_, 1L), "data.table
 assert_identical(text_length_table, text_length_table_before, "text length mutated the source data.table")
 
 for (invalid_text_length in list(
-  list(reference = list(id = "r:c:2", name = "number"), new_name = "number count", code = "invalid-view-query"),
-  list(reference = list(id = "r:c:99", name = "duplicate"), new_name = "count", code = "stale-column"),
-  list(reference = list(id = "r:c:0", name = "wrong"), new_name = "count", code = "stale-column"),
-  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "duplicate", code = "column-name-collision"),
-  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "", code = "invalid-column-name"),
+  list(position = 3L, old_name = "number", new_name = "number count", code = "invalid-view-query"),
+  list(position = 1L, old_name = "wrong", new_name = "count", code = "stale-column"),
+  list(position = 1L, old_name = "duplicate", new_name = "duplicate", code = "column-name-collision"),
+  list(position = 1L, old_name = "duplicate", new_name = "", code = "invalid-column-name"),
   list(
-    reference = list(id = "r:c:0", name = "duplicate"),
+    position = 1L,
+    old_name = "duplicate",
     new_name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_length",
     code = "reserved-column-name"
   )
 )) {
   assert_error(
-    openwrangler_r_frame_contract$text_length_column(
+    openwrangler_r_frame_contract$text_length_column_at(
       text_length_frame,
-      invalid_text_length$reference,
+      invalid_text_length$position,
+      invalid_text_length$old_name,
       invalid_text_length$new_name
     ),
     invalid_text_length$code
@@ -2602,9 +2597,10 @@ private_text_length_frame <- data.frame(
   check.names = FALSE
 )
 assert_error(
-  openwrangler_r_frame_contract$text_length_column(
+  openwrangler_r_frame_contract$text_length_column_at(
     private_text_length_frame,
-    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    1L,
+    "__open_wrangler_internal_row_id_source",
     "count"
   ),
   "reserved-column-name"
@@ -2615,9 +2611,10 @@ invalid_bytes_frame <- data.frame(value = invalid_bytes_text, check.names = FALS
 invalid_bytes_before <- unserialize(serialize(invalid_bytes_frame, NULL, version = 3L))
 invalid_bytes_error <- tryCatch(
   {
-    openwrangler_r_frame_contract$text_length_column(
+    openwrangler_r_frame_contract$text_length_column_at(
       invalid_bytes_frame,
-      list(id = "r:c:0", name = "value"),
+      1L,
+      "value",
       "count"
     )
     NULL
@@ -2633,9 +2630,10 @@ wide_text_length_source <- as.data.frame(
   optional = TRUE
 )
 assert_error(
-  openwrangler_r_frame_contract$text_length_column(
+  openwrangler_r_frame_contract$text_length_column_at(
     wide_text_length_source,
-    list(id = "r:c:0", name = "wide_0001"),
+    1L,
+    "wide_0001",
     "count"
   ),
   "invalid-view-query"
@@ -2661,9 +2659,10 @@ lower_frame <- data.frame(
 )
 lower_before <- unserialize(serialize(lower_frame, NULL, version = 3L))
 lower_capture <- openwrangler_r_frame_contract$capture_frame(lower_frame)
-lower_derived <- openwrangler_r_frame_contract$lower_text_column(
+lower_derived <- openwrangler_r_frame_contract$lower_text_column_at(
   lower_frame,
-  list(id = "r:c:0", name = "duplicate"),
+  1L,
+  "duplicate",
   "lower copy"
 )
 lower_derived_capture <- openwrangler_r_frame_contract$capture_frame(
@@ -2693,9 +2692,10 @@ assert_identical(
 
 lower_tibble <- tibble::as_tibble(lower_frame, .name_repair = "minimal")
 lower_tibble_before <- unserialize(serialize(lower_tibble, NULL, version = 3L))
-lower_tibble_result <- openwrangler_r_frame_contract$lower_text_column(
+lower_tibble_result <- openwrangler_r_frame_contract$lower_text_column_at(
   lower_tibble,
-  list(id = "r:c:1", name = "duplicate")
+  2L,
+  "duplicate"
 )
 lower_tibble_capture <- openwrangler_r_frame_contract$capture_frame(
   lower_tibble_result,
@@ -2716,14 +2716,16 @@ lower_table <- data.table::data.table(
 )
 data.table::setkey(lower_table, primary_key)
 lower_table_before <- data.table::copy(lower_table)
-lower_table_append <- openwrangler_r_frame_contract$lower_text_column(
+lower_table_append <- openwrangler_r_frame_contract$lower_text_column_at(
   lower_table,
-  list(id = "r:c:0", name = "primary_key"),
+  1L,
+  "primary_key",
   "lower key"
 )
-lower_table_replace <- openwrangler_r_frame_contract$lower_text_column(
+lower_table_replace <- openwrangler_r_frame_contract$lower_text_column_at(
   lower_table,
-  list(id = "r:c:1", name = "payload")
+  2L,
+  "payload"
 )
 for (result in list(lower_table_append, lower_table_replace)) {
   assert_identical(data.table::key(result), "primary_key", "lowerText changed a retained data.table key")
@@ -2732,30 +2734,32 @@ for (result in list(lower_table_append, lower_table_replace)) {
 assert_identical(lower_table_append$`lower key`, c("b", "a"), "derived lowerText changed keyed source values")
 assert_identical(lower_table_replace$payload, c("second", "first"), "in-place lowerText changed non-key values")
 assert_error(
-  openwrangler_r_frame_contract$lower_text_column(
+  openwrangler_r_frame_contract$lower_text_column_at(
     lower_table,
-    list(id = "r:c:0", name = "primary_key")
+    1L,
+    "primary_key"
   ),
   "choose a new output column"
 )
 assert_identical(lower_table, lower_table_before, "lowerText mutated its source data.table")
 
 for (invalid_lower in list(
-  list(reference = list(id = "r:c:2", name = "number"), new_name = NULL, code = "invalid-view-query"),
-  list(reference = list(id = "r:c:99", name = "duplicate"), new_name = NULL, code = "stale-column"),
-  list(reference = list(id = "r:c:0", name = "wrong"), new_name = NULL, code = "stale-column"),
-  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "number", code = "column-name-collision"),
-  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "", code = "invalid-column-name"),
+  list(position = 3L, old_name = "number", new_name = NULL, code = "invalid-view-query"),
+  list(position = 1L, old_name = "wrong", new_name = NULL, code = "stale-column"),
+  list(position = 1L, old_name = "duplicate", new_name = "number", code = "column-name-collision"),
+  list(position = 1L, old_name = "duplicate", new_name = "", code = "invalid-column-name"),
   list(
-    reference = list(id = "r:c:0", name = "duplicate"),
+    position = 1L,
+    old_name = "duplicate",
     new_name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_lower",
     code = "reserved-column-name"
   )
 )) {
   assert_error(
-    openwrangler_r_frame_contract$lower_text_column(
+    openwrangler_r_frame_contract$lower_text_column_at(
       lower_frame,
-      invalid_lower$reference,
+      invalid_lower$position,
+      invalid_lower$old_name,
       invalid_lower$new_name
     ),
     invalid_lower$code
@@ -2766,18 +2770,20 @@ Encoding(invalid_lower_text) <- "bytes"
 invalid_lower_frame <- data.frame(value = invalid_lower_text, check.names = FALSE)
 invalid_lower_before <- unserialize(serialize(invalid_lower_frame, NULL, version = 3L))
 assert_error(
-  openwrangler_r_frame_contract$lower_text_column(
+  openwrangler_r_frame_contract$lower_text_column_at(
     invalid_lower_frame,
-    list(id = "r:c:0", name = "value")
+    1L,
+    "value"
   ),
   "invalid-text"
 )
 assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
 assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
 
-upper_result <- openwrangler_r_frame_contract$upper_text_column(
+upper_result <- openwrangler_r_frame_contract$upper_text_column_at(
   lower_frame,
-  list(id = "r:c:0", name = "duplicate"),
+  1L,
+  "duplicate",
   "upper copy"
 )
 upper_capture <- openwrangler_r_frame_contract$capture_frame(
@@ -2803,9 +2809,10 @@ text_tools_frame <- data.frame(
   check.names = FALSE
 )
 text_tools_before <- unserialize(serialize(text_tools_frame, NULL, version = 3L))
-capitalized <- openwrangler_r_frame_contract$capitalize_text_column(
+capitalized <- openwrangler_r_frame_contract$capitalize_text_column_at(
   text_tools_frame,
-  list(id = "r:c:1", name = "category"),
+  2L,
+  "category",
   "capitalized"
 )
 assert_identical(
@@ -2816,18 +2823,20 @@ assert_identical(
 assert_identical(typeof(capitalized$capitalized), "character", "capitalizeText retained factor storage")
 assert_identical(row.names(capitalized), row.names(text_tools_frame), "capitalizeText changed row names")
 
-default_stripped <- openwrangler_r_frame_contract$strip_text_column(
+default_stripped <- openwrangler_r_frame_contract$strip_text_column_at(
   text_tools_frame,
-  list(id = "r:c:0", name = "text")
+  1L,
+  "text"
 )
 assert_identical(
   default_stripped$text,
   c("hÉLLO world", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
   "stripText changed the shared default whitespace behavior"
 )
-literal_stripped <- openwrangler_r_frame_contract$strip_text_column(
+literal_stripped <- openwrangler_r_frame_contract$strip_text_column_at(
   text_tools_frame,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   ".[]",
   "literal strip"
 )
@@ -2837,9 +2846,10 @@ assert_identical(
   "stripText treated regex metacharacters as an expression"
 )
 
-split_empty <- openwrangler_r_frame_contract$split_text_column(
+split_empty <- openwrangler_r_frame_contract$split_text_column_at(
   text_tools_frame,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "||",
   1L,
   "middle"
@@ -2849,9 +2859,10 @@ assert_identical(
   c(NA_character_, NA_character_, "", "", NA_character_),
   "splitText did not preserve empty fields or NA out-of-range values"
 )
-split_tail <- openwrangler_r_frame_contract$split_text_column(
+split_tail <- openwrangler_r_frame_contract$split_text_column_at(
   text_tools_frame,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "||",
   2L,
   "tail"
@@ -2861,9 +2872,10 @@ assert_identical(
   c(NA_character_, NA_character_, "right", NA_character_, NA_character_),
   "splitText changed literal multi-character delimiter behavior"
 )
-split_columns <- openwrangler_r_frame_contract$split_text_columns(
+split_columns <- openwrangler_r_frame_contract$split_text_columns_at(
   data.frame(value = c("a||b||c||ignored", "left||||tail", "plain", NA_character_), check.names = FALSE),
-  list(id = "r:c:0", name = "value"),
+  1L,
+  "value",
   "||",
   c("first", "second", "third")
 )
@@ -2987,18 +2999,20 @@ assert_identical(
   "Regex extraction changed its portable source-limit diagnostic"
 )
 assert_error(
-  openwrangler_r_frame_contract$split_text_columns(
+  openwrangler_r_frame_contract$split_text_columns_at(
     data.frame(value = "a||b", second = "keep", check.names = FALSE),
-    list(id = "r:c:0", name = "value"),
+    1L,
+    "value",
     "||",
     c("first", "second")
   ),
   "column-name-collision"
 )
 assert_error(
-  openwrangler_r_frame_contract$split_text_columns(
+  openwrangler_r_frame_contract$split_text_columns_at(
     data.frame(value = "a||b", check.names = FALSE),
-    list(id = "r:c:0", name = "value"),
+    1L,
+    "value",
     "||",
     c("first", "__open_wrangler_internal_row_id_0")
   ),
@@ -3006,9 +3020,10 @@ assert_error(
 )
 non_nullable_split_source <- data.frame(text = c("plain", "also plain"), check.names = FALSE)
 non_nullable_split_capture <- openwrangler_r_frame_contract$capture_frame(non_nullable_split_source)
-non_nullable_split_result <- openwrangler_r_frame_contract$split_text_column(
+non_nullable_split_result <- openwrangler_r_frame_contract$split_text_column_at(
   non_nullable_split_source,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "||",
   1L,
   "part"
@@ -3028,9 +3043,10 @@ assert_identical(
 
 text_tools_tibble <- tibble::as_tibble(text_tools_frame)
 text_tools_tibble_before <- unserialize(serialize(text_tools_tibble, NULL, version = 3L))
-text_tools_tibble_result <- openwrangler_r_frame_contract$capitalize_text_column(
+text_tools_tibble_result <- openwrangler_r_frame_contract$capitalize_text_column_at(
   text_tools_tibble,
-  list(id = "r:c:1", name = "category")
+  2L,
+  "category"
 )
 assert_identical(
   class(text_tools_tibble_result),
@@ -3044,22 +3060,25 @@ text_tools_table <- data.table::data.table(primary_key = c(" [B] ", " [a] "), pa
 data.table::setkey(text_tools_table, primary_key)
 text_tools_table_before <- data.table::copy(text_tools_table)
 assert_error(
-  openwrangler_r_frame_contract$capitalize_text_column(
+  openwrangler_r_frame_contract$capitalize_text_column_at(
     text_tools_table,
-    list(id = "r:c:0", name = "primary_key")
+    1L,
+    "primary_key"
   ),
   "choose a new output column"
 )
 assert_error(
-  openwrangler_r_frame_contract$strip_text_column(
+  openwrangler_r_frame_contract$strip_text_column_at(
     text_tools_table,
-    list(id = "r:c:0", name = "primary_key")
+    1L,
+    "primary_key"
   ),
   "choose a new output column"
 )
-text_tools_table_result <- openwrangler_r_frame_contract$split_text_column(
+text_tools_table_result <- openwrangler_r_frame_contract$split_text_column_at(
   text_tools_table,
-  list(id = "r:c:1", name = "payload"),
+  2L,
+  "payload",
   "||",
   1L,
   "suffix"
@@ -3070,28 +3089,32 @@ assert_identical(text_tools_table_result$suffix, c("", "tail"), "splitText chang
 assert_identical(text_tools_table, text_tools_table_before, "text tools mutated their source data.table")
 
 for (invalid_text_tool in list(
-  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$strip_text_column(
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$strip_text_column_at(
     text_tools_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     ""
   )),
-  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$split_text_column(
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$split_text_column_at(
     text_tools_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "",
     0L,
     "part"
   )),
-  list(code = "invalid-range", run = function() openwrangler_r_frame_contract$split_text_column(
+  list(code = "invalid-range", run = function() openwrangler_r_frame_contract$split_text_column_at(
     text_tools_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "||",
     -1L,
     "part"
   )),
-  list(code = "invalid-column-name", run = function() openwrangler_r_frame_contract$split_text_column(
+  list(code = "invalid-column-name", run = function() openwrangler_r_frame_contract$split_text_column_at(
     text_tools_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "||",
     0L,
     "text"
@@ -3108,9 +3131,10 @@ text_cleanup_frame <- data.frame(
   row.names = c("row-a", "row-b", "row-c", "row-d")
 )
 text_cleanup_before <- unserialize(serialize(text_cleanup_frame, NULL, version = 3L))
-literal_replaced <- openwrangler_r_frame_contract$find_replace_column(
+literal_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   text_cleanup_frame,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "-",
   "/"
 )
@@ -3119,9 +3143,10 @@ assert_identical(
   c("alpha/12", "béta/34", NA_character_, ""),
   "literal findReplace returned the wrong values"
 )
-regex_replaced <- openwrangler_r_frame_contract$find_replace_column(
+regex_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   text_cleanup_frame,
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "^(.+)-([0-9]+)$",
   "\\2:\\1",
   TRUE,
@@ -3133,9 +3158,10 @@ assert_identical(
   "regex findReplace lost captures, Unicode, or NA"
 )
 assert_identical(row.names(regex_replaced), row.names(text_cleanup_frame), "findReplace changed explicit row names")
-factor_replaced <- openwrangler_r_frame_contract$find_replace_column(
+factor_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   text_cleanup_frame,
-  list(id = "r:c:1", name = "category"),
+  2L,
+  "category",
   "a",
   "A",
   FALSE,
@@ -3148,9 +3174,10 @@ assert_identical(
 )
 assert_identical(typeof(factor_replaced$`category result`), "character", "findReplace retained factor storage")
 
-blank_replaced <- openwrangler_r_frame_contract$find_replace_column(
+blank_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   data.frame(text = c("ab", "", NA_character_)),
-  list(id = "r:c:0", name = "text"),
+  1L,
+  "text",
   "",
   "\\1"
 )
@@ -3160,9 +3187,10 @@ assert_identical(
   "literal blank findReplace did not preserve replacement text at character boundaries"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     text_cleanup_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "(",
     "x",
     TRUE
@@ -3171,9 +3199,10 @@ assert_error(
 )
 regex_warning_error <- tryCatch(
   withCallingHandlers(
-    openwrangler_r_frame_contract$find_replace_column(
+    openwrangler_r_frame_contract$find_replace_column_at(
       data.frame(text = paste0(strrep("a", 100L), "b")),
-      list(id = "r:c:0", name = "text"),
+      1L,
+      "text",
       "(*LIMIT_MATCH=1)(a+)+$",
       "x",
       TRUE
@@ -3193,18 +3222,20 @@ assert_identical(
   "the R regex-warning diagnostic exposed engine details"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     data.frame(text = paste(rep("x", 8192L), collapse = "")),
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "",
     "x"
   ),
   "operation-output-too-large"
 )
 for (escaped_replacement in c("\\\\1", "\\\\U", "\\\\L")) {
-  escaped_result <- openwrangler_r_frame_contract$find_replace_column(
+  escaped_result <- openwrangler_r_frame_contract$find_replace_column_at(
     data.frame(text = strrep("a", 4000L)),
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "(a)",
     escaped_replacement,
     TRUE
@@ -3216,18 +3247,20 @@ for (escaped_replacement in c("\\\\1", "\\\\U", "\\\\L")) {
   )
 }
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     data.frame(text = strrep("a", 4096L)),
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "a",
     "xxx"
   ),
   "operation-output-too-large"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     data.frame(text = strrep("a", 2700L)),
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "(?=(a+))",
     "\\1",
     TRUE
@@ -3235,9 +3268,10 @@ assert_error(
   "operation-output-too-large"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     data.frame(text = strrep("a", 4096L)),
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "(a)",
     "\\1\\1\\1",
     TRUE
@@ -3245,9 +3279,10 @@ assert_error(
   "operation-output-too-large"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     text_cleanup_frame,
-    list(id = "r:c:0", name = "text"),
+    1L,
+    "text",
     "alpha",
     "omega",
     FALSE,
@@ -3260,24 +3295,27 @@ text_cleanup_table <- data.table::data.table(primary_key = c("b", "a"), payload 
 data.table::setkey(text_cleanup_table, primary_key)
 text_cleanup_table_before <- data.table::copy(text_cleanup_table)
 assert_error(
-  openwrangler_r_frame_contract$upper_text_column(
+  openwrangler_r_frame_contract$upper_text_column_at(
     text_cleanup_table,
-    list(id = "r:c:0", name = "primary_key")
+    1L,
+    "primary_key"
   ),
   "choose a new output column"
 )
 assert_error(
-  openwrangler_r_frame_contract$find_replace_column(
+  openwrangler_r_frame_contract$find_replace_column_at(
     text_cleanup_table,
-    list(id = "r:c:0", name = "primary_key"),
+    1L,
+    "primary_key",
     "a",
     "A"
   ),
   "choose a new output column"
 )
-table_replaced <- openwrangler_r_frame_contract$find_replace_column(
+table_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   text_cleanup_table,
-  list(id = "r:c:0", name = "primary_key"),
+  1L,
+  "primary_key",
   "a",
   "A",
   FALSE,
@@ -3565,23 +3603,12 @@ datetime_frame <- data.frame(
 )
 datetime_before <- unserialize(serialize(datetime_frame, NULL, version = 3L))
 datetime_capture <- openwrangler_r_frame_contract$capture_frame(datetime_frame)
-formatted_date <- openwrangler_r_frame_contract$format_datetime_column(
-  datetime_frame,
-  list(id = "r:c:0", name = "duplicate"),
-  "%Y/%m/%d",
-  "formatted date"
-)
-formatted_date_bound <- openwrangler_r_frame_contract$format_datetime_column_at(
+formatted_date <- openwrangler_r_frame_contract$format_datetime_column_at(
   datetime_frame,
   1L,
   "duplicate",
   "%Y/%m/%d",
   "formatted date"
-)
-assert_identical(
-  formatted_date,
-  formatted_date_bound,
-  "formatDatetime stable-reference and bound-position execution diverged"
 )
 assert_identical(
   formatted_date$`formatted date`,
@@ -4923,9 +4950,10 @@ for (case in cast_cases) {
   source <- data.frame(value = case$input, check.names = FALSE)
   source_before <- unserialize(serialize(source, NULL, version = 3L))
   source_capture <- openwrangler_r_frame_contract$capture_frame(source)
-  result <- openwrangler_r_frame_contract$cast_column(
+  result <- openwrangler_r_frame_contract$cast_column_at(
     source,
-    list(id = "r:c:0", name = "value"),
+    1L,
+    "value",
     case$dtype
   )
   result_capture <- openwrangler_r_frame_contract$capture_frame(
@@ -4951,9 +4979,10 @@ for (case in cast_cases) {
 
 cast_nonnullable_source <- data.frame(value = c("1", "2"), check.names = FALSE)
 cast_nonnullable_capture <- openwrangler_r_frame_contract$capture_frame(cast_nonnullable_source)
-cast_nonnullable_result <- openwrangler_r_frame_contract$cast_column(
+cast_nonnullable_result <- openwrangler_r_frame_contract$cast_column_at(
   cast_nonnullable_source,
-  list(id = "r:c:0", name = "value"),
+  1L,
+  "value",
   "integer"
 )
 cast_nonnullable_result_capture <- openwrangler_r_frame_contract$capture_frame(
@@ -4975,9 +5004,10 @@ cast_datetime_source <- data.frame(
   instant = as.POSIXct(c("2026-01-02 03:04:05", NA), tz = "Europe/Berlin"),
   check.names = FALSE
 )
-cast_datetime_string <- openwrangler_r_frame_contract$cast_column(
+cast_datetime_string <- openwrangler_r_frame_contract$cast_column_at(
   cast_datetime_source,
-  list(id = "r:c:0", name = "instant"),
+  1L,
+  "instant",
   "string"
 )
 assert_identical(
@@ -4991,14 +5021,16 @@ cast_ancient_text <- data.frame(
   datetime = c("2024-02-29T12:00:00Z", "0001-01-01T00:00:00Z", "0000-01-01T00:00:00Z"),
   check.names = FALSE
 )
-cast_ancient_date <- openwrangler_r_frame_contract$cast_column(
+cast_ancient_date <- openwrangler_r_frame_contract$cast_column_at(
   cast_ancient_text,
-  list(id = "r:c:0", name = "date"),
+  1L,
+  "date",
   "date"
 )
-cast_ancient_datetime <- openwrangler_r_frame_contract$cast_column(
+cast_ancient_datetime <- openwrangler_r_frame_contract$cast_column_at(
   cast_ancient_text,
-  list(id = "r:c:1", name = "datetime"),
+  2L,
+  "datetime",
   "datetime"
 )
 assert_identical(
@@ -5018,9 +5050,10 @@ cast_ancient_posix <- data.frame(
   instant = as.POSIXct(c("2024-02-29 12:00:00", "0001-01-01 00:00:00"), tz = "UTC"),
   check.names = FALSE
 )
-cast_ancient_posix_date <- openwrangler_r_frame_contract$cast_column(
+cast_ancient_posix_date <- openwrangler_r_frame_contract$cast_column_at(
   cast_ancient_posix,
-  list(id = "r:c:0", name = "instant"),
+  1L,
+  "instant",
   "date"
 )
 assert_identical(
@@ -5035,14 +5068,16 @@ cast_wide <- data.frame(
   check.names = FALSE
 )
 cast_wide_before <- unserialize(serialize(cast_wide, NULL, version = 3L))
-cast_wide_integer <- openwrangler_r_frame_contract$cast_column(
+cast_wide_integer <- openwrangler_r_frame_contract$cast_column_at(
   cast_wide,
-  list(id = "r:c:0", name = "wide"),
+  1L,
+  "wide",
   "integer"
 )
-cast_wide_string <- openwrangler_r_frame_contract$cast_column(
+cast_wide_string <- openwrangler_r_frame_contract$cast_column_at(
   cast_wide,
-  list(id = "r:c:0", name = "wide"),
+  1L,
+  "wide",
   "string"
 )
 assert_identical(cast_wide_integer$wide, cast_wide$wide, "integer64 cast to integer lost precision")
@@ -5053,9 +5088,10 @@ assert_identical(
 )
 for (dtype in c("float", "boolean", "date", "datetime")) {
   assert_error(
-    openwrangler_r_frame_contract$cast_column(
+    openwrangler_r_frame_contract$cast_column_at(
       cast_wide,
-      list(id = "r:c:0", name = "wide"),
+      1L,
+      "wide",
       dtype
     ),
     "castColumn cannot convert"
@@ -5085,9 +5121,10 @@ cast_source_matrix <- list(
 for (dtype in names(cast_source_matrix)) {
   for (source_kind in names(cast_matrix_sources)) {
     source <- data.frame(value = cast_matrix_sources[[source_kind]], check.names = FALSE)
-    expression <- quote(openwrangler_r_frame_contract$cast_column(
+    expression <- quote(openwrangler_r_frame_contract$cast_column_at(
       source,
-      list(id = "r:c:0", name = "value"),
+      1L,
+      "value",
       dtype
     ))
     if (source_kind %in% cast_source_matrix[[dtype]]) {
@@ -5101,9 +5138,10 @@ for (dtype in names(cast_source_matrix)) {
 
 cast_tibble <- tibble::tibble(id = 1:3, value = factor(c("1.9", "bad", NA)))
 cast_tibble_before <- unserialize(serialize(cast_tibble, NULL, version = 3L))
-cast_tibble_result <- openwrangler_r_frame_contract$cast_column(
+cast_tibble_result <- openwrangler_r_frame_contract$cast_column_at(
   cast_tibble,
-  list(id = "r:c:1", name = "value"),
+  2L,
+  "value",
   "integer"
 )
 assert_identical(class(cast_tibble_result), c("tbl_df", "tbl", "data.frame"), "castColumn changed tibble class")
@@ -5117,18 +5155,20 @@ cast_table <- data.table::data.table(
 )
 data.table::setkey(cast_table, primary_key)
 cast_table_before <- data.table::copy(cast_table)
-cast_table_result <- openwrangler_r_frame_contract$cast_column(
+cast_table_result <- openwrangler_r_frame_contract$cast_column_at(
   cast_table,
-  list(id = "r:c:1", name = "value"),
+  2L,
+  "value",
   "integer"
 )
 assert_identical(data.table::key(cast_table_result), "primary_key", "castColumn changed a retained data.table key")
 assert_identical(cast_table_result$row_marker, cast_table_before$row_marker, "castColumn changed data.table row order")
 assert_identical(cast_table_result$value, c(NA_integer_, 2L), "castColumn changed non-key data.table values")
 assert_error(
-  openwrangler_r_frame_contract$cast_column(
+  openwrangler_r_frame_contract$cast_column_at(
     cast_table,
-    list(id = "r:c:0", name = "primary_key"),
+    1L,
+    "primary_key",
     "string"
   ),
   "clone the column before casting it"
@@ -5136,17 +5176,19 @@ assert_error(
 assert_identical(cast_table, cast_table_before, "castColumn mutated its source data.table")
 
 assert_error(
-  openwrangler_r_frame_contract$cast_column(
+  openwrangler_r_frame_contract$cast_column_at(
     data.frame(value = 1L),
-    list(id = "r:c:0", name = "value"),
+    1L,
+    "value",
     "decimal"
   ),
   "dtype must be one of"
 )
 assert_error(
-  openwrangler_r_frame_contract$cast_column(
+  openwrangler_r_frame_contract$cast_column_at(
     data.frame(value = 1L),
-    list(id = "r:c:0", name = "wrong"),
+    1L,
+    "wrong",
     "float"
   ),
   "stale-column"
@@ -5162,9 +5204,10 @@ drop_frame <- data.frame(
 )
 drop_before <- unserialize(serialize(drop_frame, NULL, version = 3L))
 drop_capture <- openwrangler_r_frame_contract$capture_frame(drop_frame)
-dropped_frame <- openwrangler_r_frame_contract$drop_columns(
+dropped_frame <- openwrangler_r_frame_contract$drop_columns_at(
   drop_frame,
-  list(list(id = "r:c:1", name = "duplicate"))
+  2L,
+  "duplicate"
 )
 dropped_capture <- openwrangler_r_frame_contract$capture_frame(
   dropped_frame,
@@ -5202,9 +5245,10 @@ assert_identical(drop_frame, drop_before, "dropping mutated the source data.fram
 dropped_frame[[1L]][1L] <- 99L
 assert_identical(drop_frame[[1L]][1L], 1L, "the dropped data.frame shared column storage with its source")
 
-kept_duplicates <- openwrangler_r_frame_contract$drop_columns(
+kept_duplicates <- openwrangler_r_frame_contract$drop_columns_at(
   drop_frame,
-  list(list(id = "r:c:2", name = "non syntactic"))
+  3L,
+  "non syntactic"
 )
 assert_identical(
   names(kept_duplicates),
@@ -5214,9 +5258,10 @@ assert_identical(
 
 drop_tibble <- tibble::as_tibble(drop_frame, .name_repair = "minimal")
 drop_tibble_before <- unserialize(serialize(drop_tibble, NULL, version = 3L))
-dropped_tibble <- openwrangler_r_frame_contract$drop_columns(
+dropped_tibble <- openwrangler_r_frame_contract$drop_columns_at(
   drop_tibble,
-  list(list(id = "r:c:1", name = "duplicate"))
+  2L,
+  "duplicate"
 )
 assert_identical(
   class(dropped_tibble),
@@ -5234,9 +5279,10 @@ drop_table <- data.table::data.table(k1 = c(1L, 1L), k2 = c(1L, 2L), value = c("
 data.table::setkey(drop_table, k1, k2)
 drop_table_before <- data.table::copy(drop_table)
 drop_table_capture <- openwrangler_r_frame_contract$capture_frame(drop_table)
-drop_table_non_key <- openwrangler_r_frame_contract$drop_columns(
+drop_table_non_key <- openwrangler_r_frame_contract$drop_columns_at(
   drop_table,
-  list(list(id = "r:c:3", name = "other"))
+  4L,
+  "other"
 )
 drop_table_non_key_capture <- openwrangler_r_frame_contract$capture_frame(
   drop_table_non_key,
@@ -5249,9 +5295,10 @@ assert_identical(
   I(c("r:c:0", "r:c:1")),
   "dropping a non-key changed stable data.table key identities"
 )
-drop_table_trailing_key <- openwrangler_r_frame_contract$drop_columns(
+drop_table_trailing_key <- openwrangler_r_frame_contract$drop_columns_at(
   drop_table,
-  list(list(id = "r:c:1", name = "k2"))
+  2L,
+  "k2"
 )
 drop_table_trailing_capture <- openwrangler_r_frame_contract$capture_frame(
   drop_table_trailing_key,
@@ -5264,34 +5311,31 @@ assert_identical(
   I("r:c:0"),
   "dropping a trailing key changed the retained key identity"
 )
-drop_table_leading_key <- openwrangler_r_frame_contract$drop_columns(
+drop_table_leading_key <- openwrangler_r_frame_contract$drop_columns_at(
   drop_table,
-  list(list(id = "r:c:0", name = "k1"))
+  1L,
+  "k1"
 )
 assert_identical(data.table::key(drop_table_leading_key), NULL, "dropping the first key did not clear the data.table key")
 assert_true(identical(drop_table, drop_table_before), "dropping mutated the source data.table")
 
 assert_error(
-  openwrangler_r_frame_contract$drop_columns(
+  openwrangler_r_frame_contract$drop_columns_at(
     drop_frame,
-    list(list(id = "r:c:1", name = "duplicate"), list(id = "r:c:1", name = "duplicate"))
+    c(2L, 2L),
+    c("duplicate", "duplicate")
   ),
-  "column_references may address each column only once"
-)
-assert_error(
-  openwrangler_r_frame_contract$drop_columns(drop_frame, list(list(id = "r:c:99", name = "duplicate"))),
   "stale-column"
 )
 assert_error(
-  openwrangler_r_frame_contract$drop_columns(drop_frame, list(list(id = "r:c:0", name = "wrong"))),
+  openwrangler_r_frame_contract$drop_columns_at(drop_frame, 1L, "wrong"),
   "stale-column"
 )
 assert_error(
-  openwrangler_r_frame_contract$drop_columns(
+  openwrangler_r_frame_contract$drop_columns_at(
     drop_frame,
-    lapply(seq_len(ncol(drop_frame)), function(position) {
-      list(id = sprintf("r:c:%d", position - 1L), name = names(drop_frame)[[position]])
-    })
+    seq_len(ncol(drop_frame)),
+    names(drop_frame)
   ),
   "dropColumns must leave at least one visible column"
 )
@@ -5308,13 +5352,9 @@ select_frame <- data.frame(
 )
 select_before <- unserialize(serialize(select_frame, NULL, version = 3L))
 select_capture <- openwrangler_r_frame_contract$capture_frame(select_frame)
-select_references <- list(
-  list(id = "r:c:3", name = "keep"),
-  list(id = "r:c:1", name = "duplicate"),
-  list(id = "r:c:0", name = "duplicate"),
-  list(id = "r:c:2", name = "non syntactic")
-)
-selected_frame <- openwrangler_r_frame_contract$select_columns(select_frame, select_references)
+select_positions <- c(4L, 2L, 1L, 3L)
+select_names <- c("keep", "duplicate", "duplicate", "non syntactic")
+selected_frame <- openwrangler_r_frame_contract$select_columns_at(select_frame, select_positions, select_names)
 selected_capture <- openwrangler_r_frame_contract$capture_frame(
   selected_frame,
   nullability_source = select_capture,
@@ -5353,7 +5393,7 @@ assert_identical(select_frame, select_before, "the selected data.frame shared st
 
 select_tibble <- tibble::as_tibble(select_frame, .name_repair = "minimal")
 select_tibble_before <- unserialize(serialize(select_tibble, NULL, version = 3L))
-selected_tibble <- openwrangler_r_frame_contract$select_columns(select_tibble, select_references)
+selected_tibble <- openwrangler_r_frame_contract$select_columns_at(select_tibble, select_positions, select_names)
 assert_identical(
   class(selected_tibble),
   c("tbl_df", "tbl", "data.frame"),
@@ -5370,13 +5410,10 @@ select_table <- data.table::data.table(k1 = c(1L, 1L), k2 = c(1L, 2L), value = c
 data.table::setkey(select_table, k1, k2)
 select_table_before <- data.table::copy(select_table)
 select_table_capture <- openwrangler_r_frame_contract$capture_frame(select_table)
-select_table_full_key <- openwrangler_r_frame_contract$select_columns(
+select_table_full_key <- openwrangler_r_frame_contract$select_columns_at(
   select_table,
-  list(
-    list(id = "r:c:3", name = "other"),
-    list(id = "r:c:1", name = "k2"),
-    list(id = "r:c:0", name = "k1")
-  )
+  c(4L, 2L, 1L),
+  c("other", "k2", "k1")
 )
 select_table_full_capture <- openwrangler_r_frame_contract$capture_frame(
   select_table_full_key,
@@ -5394,14 +5431,16 @@ assert_identical(
   I(c("r:c:0", "r:c:1")),
   "selecting reordered columns changed stable data.table key identities"
 )
-select_table_prefix <- openwrangler_r_frame_contract$select_columns(
+select_table_prefix <- openwrangler_r_frame_contract$select_columns_at(
   select_table,
-  list(list(id = "r:c:3", name = "other"), list(id = "r:c:0", name = "k1"))
+  c(4L, 1L),
+  c("other", "k1")
 )
 assert_identical(data.table::key(select_table_prefix), "k1", "selecting a key prefix did not retain it")
-select_table_without_prefix <- openwrangler_r_frame_contract$select_columns(
+select_table_without_prefix <- openwrangler_r_frame_contract$select_columns_at(
   select_table,
-  list(list(id = "r:c:1", name = "k2"), list(id = "r:c:3", name = "other"))
+  c(2L, 4L),
+  c("k2", "other")
 )
 assert_identical(data.table::key(select_table_without_prefix), NULL, "selecting without the first key retained a stale key")
 assert_identical(select_table, select_table_before, "selecting mutated the source data.table")
@@ -5409,27 +5448,16 @@ select_table_full_key[, other := 99L]
 assert_identical(select_table, select_table_before, "the selected data.table shared storage with its source")
 
 assert_error(
-  openwrangler_r_frame_contract$select_columns(
+  openwrangler_r_frame_contract$select_columns_at(
     select_frame,
-    list(list(id = "r:c:0", name = "duplicate"), list(id = "r:c:0", name = "duplicate"))
+    c(1L, 1L),
+    c("duplicate", "duplicate")
   ),
-  "column_references may address each column only once"
-)
-assert_error(
-  openwrangler_r_frame_contract$select_columns(select_frame, list(list(id = "r:c:99", name = "duplicate"))),
   "stale-column"
 )
 assert_error(
-  openwrangler_r_frame_contract$select_columns(select_frame, list(list(id = "r:c:0", name = "wrong"))),
+  openwrangler_r_frame_contract$select_columns_at(select_frame, 1L, "wrong"),
   "stale-column"
-)
-assert_error(openwrangler_r_frame_contract$select_columns(select_frame, list()), "non-empty unnamed list")
-assert_error(
-  openwrangler_r_frame_contract$select_columns(
-    select_frame,
-    list(named = list(id = "r:c:0", name = "duplicate"))
-  ),
-  "non-empty unnamed list"
 )
 private_select_frame <- data.frame(
   `__OPEN_WRANGLER_INTERNAL_ROW_ID_user` = 1L,
@@ -5437,16 +5465,18 @@ private_select_frame <- data.frame(
   check.names = FALSE
 )
 assert_error(
-  openwrangler_r_frame_contract$select_columns(
+  openwrangler_r_frame_contract$select_columns_at(
     private_select_frame,
-    list(list(id = "r:c:0", name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"))
+    1L,
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"
   ),
   "reserved-column-name"
 )
 assert_error(
-  openwrangler_r_frame_contract$drop_columns(
+  openwrangler_r_frame_contract$drop_columns_at(
     private_select_frame,
-    list(list(id = "r:c:0", name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"))
+    1L,
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"
   ),
   "reserved-column-name"
 )
@@ -5454,41 +5484,37 @@ assert_identical(select_frame, select_before, "a failed selection mutated its so
 
 collision_frame <- data.frame(first = 1L, second = 2L)
 assert_error(
-  openwrangler_r_frame_contract$rename_column(
+  openwrangler_r_frame_contract$rename_column_at(
     collision_frame,
-    list(id = "r:c:0", name = "first"),
+    1L,
+    "first",
     "second"
   ),
   "column-name-collision"
 )
 assert_error(
-  openwrangler_r_frame_contract$rename_column(
+  openwrangler_r_frame_contract$rename_column_at(
     collision_frame,
-    list(id = "r:c:0", name = "first"),
+    1L,
+    "first",
     ""
   ),
   "invalid-column-name"
 )
 assert_error(
-  openwrangler_r_frame_contract$rename_column(
+  openwrangler_r_frame_contract$rename_column_at(
     collision_frame,
-    list(id = "r:c:99", name = "first"),
+    1L,
+    "second",
     "renamed"
   ),
   "stale-column"
 )
 assert_error(
-  openwrangler_r_frame_contract$rename_column(
+  openwrangler_r_frame_contract$rename_column_at(
     collision_frame,
-    list(id = "r:c:0", name = "second"),
-    "renamed"
-  ),
-  "stale-column"
-)
-assert_error(
-  openwrangler_r_frame_contract$rename_column(
-    collision_frame,
-    list(id = "r:c:0", name = "first"),
+    1L,
+    "first",
     "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"
   ),
   "reserved-column-name"
@@ -5498,9 +5524,10 @@ private_frame <- data.frame(
   check.names = FALSE
 )
 assert_error(
-  openwrangler_r_frame_contract$rename_column(
+  openwrangler_r_frame_contract$rename_column_at(
     private_frame,
-    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    1L,
+    "__open_wrangler_internal_row_id_source",
     "public"
   ),
   "reserved-column-name"
