@@ -1182,6 +1182,40 @@ def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     )
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_group_missing_value_aggregations_match_generated_code(lazy: bool) -> None:
+    engine = PolarsEngine()
+    eager = pl.DataFrame(
+        {
+            "group": ["a", "a", "a", "a", "b", "b"],
+            "value": [float("nan"), None, 1.5, 2.5, float("nan"), None],
+        }
+    )
+    frame = eager.lazy() if lazy else eager
+    operation = bound_step(
+        "group-missing-values",
+        "groupBy",
+        keys=[bound_ref("c:source:0", "group", 0)],
+        aggregations=[
+            {
+                "column": bound_ref("c:source:1", "value", 1),
+                "operation": aggregation,
+                "alias": aggregation,
+            }
+            for aggregation in ("count", "nUnique", "first", "last")
+        ],
+    )
+
+    live = engine.apply_transform(frame, operation)
+    generated = execute_generated(engine, frame, [operation])
+
+    assert records(live) == [
+        {"group": "a", "count": 2, "nUnique": 2, "first": 1.5, "last": 2.5},
+        {"group": "b", "count": 0, "nUnique": 0, "first": None, "last": None},
+    ]
+    assert_semantically_equal(live, generated)
+
+
 def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
     engine, frame = engine_and_frame
     public_plan = [
