@@ -134,6 +134,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code: "# untrusted replacement",
           editable: true,
           runtimeIdentity: {
@@ -156,6 +158,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code: "# malformed private identity",
           editable: true,
           runtimeIdentity: {
@@ -177,6 +181,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code: "# unexpected private field",
           editable: true,
           runtimeIdentity: {
@@ -200,6 +206,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code,
           editable: false,
           runtimeIdentity: {
@@ -232,6 +240,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code,
           editable: false,
           runtimeIdentity: {
@@ -271,6 +281,8 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          bufferId: "00000000-0000-4000-8000-000000000001",
+          bufferInvalid: false,
           code,
           editable: true,
           runtimeIdentity: {
