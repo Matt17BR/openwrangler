@@ -201,7 +201,7 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest 
 function createLegacyVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   const zip = new ZipFile();
   for (const [name, value] of releaseEntries(readmeSection, manifest)) {
-    zip.addBuffer(Buffer.from(value), name, { compress: true });
+    zip.addBuffer(Buffer.from(value), name, { compress: true, forceDosTimestamp: true });
   }
   return new Promise((resolveBytes, rejectBytes) => {
     const chunks = [];

@@ -59,6 +59,7 @@ function createArchive(
     if (entry.kind === "directory") {
       zip.addEmptyDirectory(entry.name, {
         fileComment: fileComments.get(entry.name),
+        forceDosTimestamp: true,
         mode: directoryMode,
         mtime
       });
@@ -66,6 +67,7 @@ function createArchive(
       zip.addBuffer(entry.bytes, entry.name, {
         compress: typeof compress === "function" ? compress(entry) : compress,
         fileComment: fileComments.get(entry.name),
+        forceDosTimestamp: true,
         mode,
         mtime
       });

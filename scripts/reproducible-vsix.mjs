@@ -322,6 +322,7 @@ function writeCanonicalArchive(entries, predictedBytes) {
     for (const entry of entries) {
       zip.addBuffer(entry.bytes, entry.name, {
         compress: false,
+        forceDosTimestamp: true,
         mode: CANONICAL_REGULAR_MODE,
         mtime
       });
