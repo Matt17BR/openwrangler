@@ -1165,6 +1165,46 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     engine.close()
 
 
+def test_duckdb_nested_float_containers_use_container_missing_semantics() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        """
+        SELECT CAST([1.0] AS DOUBLE[]) AS items,
+               {'score': CAST(1.0 AS DOUBLE)} AS record
+        UNION ALL
+        SELECT NULL::DOUBLE[], NULL::STRUCT(score DOUBLE)
+        """
+    )
+    columns = [
+        bound_ref("c:source:0", "items", 0),
+        bound_ref("c:source:1", "record", 1),
+    ]
+    operation = bound_step("dropMissingRows", columns=columns, how="any")
+
+    try:
+        summaries = engine.summaries(source, [(0, "c:items"), (1, "c:record")])
+        assert [(summary["type"], summary["nullCount"], summary["nanCount"]) for summary in summaries] == [
+            ("list", 1, 0),
+            ("struct", 1, 0),
+        ]
+        assert engine.header_stats(source) == {
+            "missingCells": 2,
+            "missingRows": 1,
+            "duplicateRows": 0,
+            "missingValuesByColumn": [
+                {"column": "items", "count": 1},
+                {"column": "record", "count": 1},
+            ],
+        }
+
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert_same_relation(live, generated)
+        assert rows(live) == [([1.0], {"score": 1.0})]
+    finally:
+        engine.close()
+
+
 def test_duckdb_text_summaries_are_exact_native_unicode_aggregates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
