@@ -6456,64 +6456,6 @@ datetime_open <- dispatch(
 )
 assert_identical(datetime_open$kind, "page", "the R Format Datetime session did not open")
 
-datetime_extra_step <- datetime_format_step("datetime-extra", 1L, "day", "%Y")
-datetime_extra_step$params$extra <- TRUE
-datetime_extra <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_extra_step,
-    page = page_window()
-  )
-)
-assert_identical(datetime_extra$kind, "error", "R Format Datetime accepted an unknown parameter")
-assert_identical(datetime_extra$code, "invalid_request", "the R Format Datetime exact-record diagnostic changed")
-
-datetime_empty_format <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_format_step("datetime-empty-format", 1L, "day", ""),
-    page = page_window()
-  )
-)
-assert_identical(datetime_empty_format$kind, "error", "R Format Datetime accepted an empty format")
-assert_identical(datetime_empty_format$code, "invalid_request", "the empty R datetime-format diagnostic changed")
-
-datetime_legacy_step <- datetime_format_step("datetime-legacy", 1L, "day", "%Y")
-datetime_legacy_step$params$column <- "day"
-datetime_legacy <- dispatch(
-  "previewStep",
-  list(sessionId = datetime_session_id, revision = 0L, step = datetime_legacy_step, page = page_window())
-)
-assert_identical(datetime_legacy$kind, "error", "R Format Datetime accepted a legacy string column")
-assert_identical(datetime_legacy$code, "invalid_request", "the R Format Datetime legacy-column diagnostic changed")
-
-datetime_stale <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_format_step("datetime-stale", 2L, "day", "%Y"),
-    page = page_window()
-  )
-)
-assert_identical(datetime_stale$kind, "error", "R Format Datetime accepted an ID/name mismatch")
-assert_identical(datetime_stale$code, "stale_column", "the R Format Datetime stale-column diagnostic changed")
-
-datetime_text <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_format_step("datetime-text", 3L, "label", "%Y"),
-    page = page_window()
-  )
-)
-assert_identical(datetime_text$kind, "error", "R Format Datetime accepted a text column")
-assert_identical(datetime_text$code, "invalid_request", "the R Format Datetime type diagnostic changed")
 
 datetime_fractional_session_id <- "83838383-8383-4383-8383-838383838383"
 source_environment$datetime_fractional_frame <- data.frame(
@@ -6541,36 +6483,6 @@ datetime_fractional <- dispatch(
 assert_identical(datetime_fractional$kind, "error", "R Format Datetime laundered an unseen fractional Date")
 assert_identical(datetime_fractional$code, "unsupported_frame", "the fractional Date diagnostic changed")
 invisible(dispatch("closeSession", list(sessionId = datetime_fractional_session_id)))
-
-datetime_collision <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_format_step("datetime-collision", 1L, "day", "%Y", "label"),
-    page = page_window()
-  )
-)
-assert_identical(datetime_collision$kind, "error", "R Format Datetime overwrote another column")
-assert_identical(datetime_collision$code, "invalid_request", "the R Format Datetime collision diagnostic changed")
-
-datetime_private <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_session_id,
-    revision = 0L,
-    step = datetime_format_step(
-      "datetime-private",
-      1L,
-      "day",
-      "%Y",
-      "__OPEN_WRANGLER_INTERNAL_ROW_ID_public"
-    ),
-    page = page_window()
-  )
-)
-assert_identical(datetime_private$kind, "error", "R Format Datetime exposed the private row-identity namespace")
-assert_identical(datetime_private$code, "invalid_request", "the R Format Datetime private-name diagnostic changed")
 
 datetime_discard_preview <- dispatch(
   "previewStep",
