@@ -114,7 +114,6 @@
     "test:extension-host:run": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
     "test:packaged-editors": "npm run test:packaged-editors:prepare --",
     "test:packaged-editors:prepare": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
-    "test:packaged-editors:run": "node scripts/run-packaged-editor-tests.mjs",
     "test:packaged-grid-column-copy": "npm run build:test-extension && node scripts/packaged-grid-column-copy-selector.mjs",
     "prepare:xvfb": "node scripts/prepare-xvfb.mjs --print-path",
     "license:check": "node scripts/check-licenses.mjs",
