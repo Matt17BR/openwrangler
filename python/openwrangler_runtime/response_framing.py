@@ -1,8 +1,10 @@
+# pyright: strict
+
 from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import TypeGuard, TypeVar
 
 MAX_STRICT_RESPONSE_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_FRAME_BYTES = 17 * 1024 * 1024
@@ -20,7 +22,7 @@ class ResponseFrameTooLargeError(ValueError):
     """Raised before writing a response that exceeds the stdout frame cap."""
 
 
-def strict_json_byte_length(value: Any, maximum_bytes: int) -> int:
+def strict_json_byte_length(value: object, maximum_bytes: int) -> int:
     """Return the compact strict-JSON UTF-8 size or ``maximum_bytes + 1``."""
     writer = _StrictJsonWriter(maximum_bytes, retain_bytes=False)
     try:
@@ -30,7 +32,7 @@ def strict_json_byte_length(value: Any, maximum_bytes: int) -> int:
     return writer.byte_length
 
 
-def encode_response_frame(payload: Any, maximum_bytes: int | None = None) -> bytes:
+def encode_response_frame(payload: object, maximum_bytes: int | None = None) -> bytes:
     """Encode one compact strict-JSON LF frame without retaining oversized prefixes."""
     limit = MAX_RESPONSE_FRAME_BYTES if maximum_bytes is None else maximum_bytes
     writer = _StrictJsonWriter(limit - 1, retain_bytes=True)
@@ -73,7 +75,7 @@ class _StrictJsonWriter:
         return bytes(self._encoded)
 
 
-def _write_strict_json(value: Any, writer: _StrictJsonWriter) -> None:
+def _write_strict_json(value: object, writer: _StrictJsonWriter) -> None:
     active_containers: set[int] = set()
     try:
         _write_strict_json_value(value, 0, active_containers, writer)
@@ -85,31 +87,45 @@ def _write_strict_json(value: Any, writer: _StrictJsonWriter) -> None:
         raise ResponseEncodingError("Response could not be encoded as strict JSON.") from error
 
 
+_Scalar = TypeVar("_Scalar", str, bool, int, float)
+
+
+def _is_exact_scalar(value: object, expected: type[_Scalar]) -> TypeGuard[_Scalar]:
+    return type(value) is expected
+
+
+def _is_exact_dict(value: object) -> TypeGuard[dict[object, object]]:
+    return type(value) is dict
+
+
+def _is_exact_list(value: object) -> TypeGuard[list[object]]:
+    return type(value) is list
+
+
 def _write_strict_json_value(
-    value: Any,
+    value: object,
     parent_depth: int,
     active_containers: set[int],
     writer: _StrictJsonWriter,
 ) -> None:
-    value_type = type(value)
-    if value_type is str:
+    if _is_exact_scalar(value, str):
         _write_json_string(value, writer)
         return
     if value is None:
         writer.write("null")
         return
-    if value_type is bool:
+    if _is_exact_scalar(value, bool):
         writer.write("true" if value else "false")
         return
-    if value_type is int:
+    if _is_exact_scalar(value, int):
         _write_json_integer(value, writer)
         return
-    if value_type is float:
+    if _is_exact_scalar(value, float):
         if not math.isfinite(value):
             raise ResponseEncodingError("Response contains a non-finite JSON number.")
         writer.write(json.dumps(value, allow_nan=False, separators=(",", ":")))
         return
-    if value_type not in {dict, list}:
+    if not (_is_exact_dict(value) or _is_exact_list(value)):
         raise ResponseEncodingError("Response contains a value outside the strict JSON data model.")
 
     depth = parent_depth + 1
@@ -120,11 +136,11 @@ def _write_strict_json_value(
         raise ResponseEncodingError("Response contains a cyclic JSON collection.")
     active_containers.add(identity)
     try:
-        if value_type is dict:
+        if _is_exact_dict(value):
             writer.write("{")
             first = True
             for key, nested in value.items():
-                if type(key) is not str:
+                if not _is_exact_scalar(key, str):
                     raise ResponseEncodingError("Response contains a non-string JSON object key.")
                 if not first:
                     writer.write(",")
@@ -134,6 +150,7 @@ def _write_strict_json_value(
                 _write_strict_json_value(nested, depth, active_containers, writer)
             writer.write("}")
         else:
+            assert _is_exact_list(value)
             writer.write("[")
             first = True
             for nested in value:
