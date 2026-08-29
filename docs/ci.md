@@ -13,8 +13,8 @@ Every pull request runs the same five owners:
   `platform-smoke` / `daily-core` selector.
 - **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
 
-There is no path classifier. The inline `validate` job has no repository checkout or custom parser; it requires all
-five job results to equal `success`. The separate CodeQL gate remains required by branch protection.
+There is no path classifier. Branch protection directly requires all five product-owner jobs to pass. The separate
+CodeQL gate remains required by branch protection.
 
 Drafts and ready pull requests use the same jobs. A new commit cancels the older run for that pull request. Successful
 pull-request jobs do not upload build output. The packaged smoke may upload its bounded diagnostics only after that
@@ -58,7 +58,7 @@ source-test owners.
 ## Reading a red check
 
 Start with the failing owner. Source, Python, R, installed-package, and Windows failures should each identify the
-boundary that regressed. A red `validate` result means at least one of those owners did not succeed.
+boundary that regressed.
 
 Do not retry a deterministic failure to make it green. Fix the product or prerequisite, classify an external outage,
 or remove a check that cannot name a distinct failure. Third-party workflow actions remain commit-pinned, and write
