@@ -631,33 +631,35 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   }
 
   private async runActiveRefreshes(showEmptyMessage: boolean): Promise<void> {
+    let initialRefreshShowsEmptyMessage: boolean | undefined = showEmptyMessage;
     try {
       do {
-        showEmptyMessage ||= this.queuedRefreshShowsEmptyMessage;
+        const currentRefreshShowsEmptyMessage = initialRefreshShowsEmptyMessage ?? this.queuedRefreshShowsEmptyMessage;
+        initialRefreshShowsEmptyMessage = undefined;
         this.refreshAgain = false;
         this.queuedRefreshShowsEmptyMessage = false;
         const notebook = this.activeTarget;
         if (!notebook || !isSoleOpenNotebookDocument(notebook)) return;
-        if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+        if (!currentRefreshShowsEmptyMessage && !shouldInspectNotebookAutomatically()) {
           this.publishAutomaticInspectionPaused(notebook);
           continue;
         }
         try {
           const discovery = await discoverVariablesForSelectedKernel(notebook);
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
-          if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+          if (!currentRefreshShowsEmptyMessage && !shouldInspectNotebookAutomatically()) {
             this.publishAutomaticInspectionPaused(notebook);
             continue;
           }
           this.publishDiscovery(notebook, discovery);
-          if (showEmptyMessage && discovery.variables.length === 0) {
+          if (currentRefreshShowsEmptyMessage && discovery.variables.length === 0) {
             void vscode.window.showInformationMessage(
               "No live Pandas, Polars, DuckDB, PySpark, or R dataframe was found in this kernel."
             );
           }
         } catch (error) {
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
-          if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
+          if (!currentRefreshShowsEmptyMessage && !shouldInspectNotebookAutomatically()) {
             this.publishAutomaticInspectionPaused(notebook);
             continue;
           }
