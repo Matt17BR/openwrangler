@@ -397,44 +397,6 @@ export function isOpenWranglerResponse(value: unknown): value is OpenWranglerRes
   }
 }
 
-export function decodeOpenWranglerPresentationFallback(value: unknown) {
-  if (!isRecord(value) || !isSessionMetadata(value.metadata, false)) return undefined;
-  const metadata = value.metadata;
-  switch (value.kind) {
-    case "sessionOpened":
-      return isLiveGridPageForMetadata(value.page, metadata) &&
-        isColumnSummaryArray(value.summaries, metadata.schema, false)
-        ? { kind: value.kind, metadata, page: value.page, summaries: value.summaries }
-        : undefined;
-    case "page":
-      return isNonEmptyString(value.viewRequestId) && isLiveGridPageForMetadata(value.page, metadata)
-        ? { kind: value.kind, viewRequestId: value.viewRequestId, page: value.page, metadata }
-        : undefined;
-    case "stepPreview":
-      return isNonNegativeInteger(value.revision) &&
-        isGridPageForRowAxis(value.page, metadata.schema, metadata.rowAxis) &&
-        isDataDiff(value.diff, metadata.schema) &&
-        (value.remainingMissingCells === undefined || isNonNegativeInteger(value.remainingMissingCells)) &&
-        (value.warnings === undefined || (Array.isArray(value.warnings) && value.warnings.every(isString)))
-        ? {
-            kind: value.kind,
-            revision: value.revision,
-            metadata,
-            page: value.page,
-            diff: value.diff,
-            remainingMissingCells: value.remainingMissingCells,
-            warnings: value.warnings as string[] | undefined
-          }
-        : undefined;
-    case "planUpdated":
-      return isGridPageForRowAxis(value.page, metadata.schema, metadata.rowAxis)
-        ? { kind: value.kind, metadata, page: value.page }
-        : undefined;
-    default:
-      return undefined;
-  }
-}
-
 function isInitializedResponse(value: unknown): boolean {
   const candidate = exactRecord(value, ["kind", "protocolVersion", "runtimeVersion", "capabilities"]);
   return (

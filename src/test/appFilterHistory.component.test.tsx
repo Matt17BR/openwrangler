@@ -245,7 +245,11 @@ describe("App confirmed viewing-filter history", () => {
       kind: "renameColumn",
       params: { column: { id: "c:0", name: "city" }, newName: "location" }
     };
-    const withStep = { ...metadata, steps: [step] } satisfies SessionMetadata;
+    const withStep = {
+      ...metadata,
+      steps: [step],
+      latestStepInputSchema: metadata.schema
+    } satisfies SessionMetadata;
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata: withStep, page, summaries: [] });
 
@@ -271,7 +275,13 @@ describe("App confirmed viewing-filter history", () => {
 
     dispatchAppMessage({
       kind: "sessionOpened",
-      metadata: { ...metadata, backend: "pandas", revision: 2, filterModel: filter.filterModel },
+      metadata: {
+        ...metadata,
+        backend: "pandas",
+        rowAxis: { kind: "positional", levelNames: [] },
+        revision: 2,
+        filterModel: filter.filterModel
+      },
       page,
       summaries: []
     });
@@ -307,8 +317,7 @@ function confirmPage(
     revision: sourceMetadata.revision,
     viewRequestId: request.viewRequestId,
     metadata: { ...sourceMetadata, filterModel: request.filterModel },
-    page,
-    summaries: []
+    page
   });
 }
 

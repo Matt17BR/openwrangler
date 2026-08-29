@@ -45,6 +45,7 @@ const metadata: SessionMetadata = {
   filteredShape: { rows: 400, columns: schema.length },
   filterModel: { filters: [], sort: [] },
   steps: [step],
+  latestStepInputSchema: schema,
   schema
 };
 
