@@ -1,8 +1,9 @@
+# pyright: strict
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import TypeGuard
 
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 
@@ -19,14 +20,14 @@ class LivePagePayloadError(ValueError):
     """A recoverable live-page value or serialization limit failure."""
 
 
-def validate_live_page_payload(page: Mapping[str, Any]) -> int:
+def validate_live_page_payload(page: object) -> int:
     """Validate one engine-neutral live page and return its strict JSON byte size."""
 
-    if not isinstance(page, Mapping):
+    if not _is_mapping(page):
         raise LivePagePayloadError("Live paging returned a malformed page payload.")
     column_ids = page.get("columnIds")
     rows = page.get("rows")
-    if not isinstance(column_ids, list) or not isinstance(rows, list):
+    if not _is_list(column_ids) or not _is_list(rows):
         raise LivePagePayloadError("Live paging returned malformed rows or column identities.")
     for column_id in column_ids:
         _validate_live_page_text(column_id)
@@ -34,7 +35,7 @@ def validate_live_page_payload(page: Mapping[str, Any]) -> int:
     cell_count = 0
     remaining_complex_nodes = LIVE_PAGE_COMPLEX_NODE_LIMIT
     for row in rows:
-        if not isinstance(row, Mapping):
+        if not _is_mapping(row):
             raise LivePagePayloadError("Live paging returned a malformed row payload.")
         _validate_live_page_text(row.get("id"))
         if "rowLabel" in row:
@@ -47,7 +48,7 @@ def validate_live_page_payload(page: Mapping[str, Any]) -> int:
                 subject="Live page row labels",
             )
         values = row.get("values")
-        if not isinstance(values, list):
+        if not _is_list(values):
             raise LivePagePayloadError("Live paging returned malformed row values.")
         cell_count += len(values)
         if cell_count > LIVE_PAGE_CELL_LIMIT:
@@ -56,14 +57,14 @@ def validate_live_page_payload(page: Mapping[str, Any]) -> int:
                 f"this page contains at least {cell_count:,}. Request fewer rows or columns."
             )
         for cell in values:
-            if not isinstance(cell, Mapping):
+            if not _is_mapping(cell):
                 raise LivePagePayloadError("Live paging returned a malformed typed cell.")
             _validate_live_page_text(cell.get("kind"))
             _validate_live_page_text(cell.get("display"))
             raw = cell.get("raw")
             if isinstance(raw, str):
                 _validate_live_page_text(raw)
-            if isinstance(raw, Mapping | list | tuple):
+            if _is_complex_container(raw):
                 consumed_nodes = _validate_live_page_complex_graph(raw, remaining_complex_nodes)
                 remaining_complex_nodes -= consumed_nodes
 
@@ -91,7 +92,7 @@ def validate_live_page_payload(page: Mapping[str, Any]) -> int:
 
 
 def _validate_live_page_text(
-    value: Any,
+    value: object,
     *,
     maximum_characters: int | None = None,
     subject: str = "Live page text values",
@@ -110,10 +111,10 @@ def _validate_live_page_text(
         raise LivePagePayloadError(f"{subject} must be valid strict UTF-8.") from error
 
 
-def _validate_live_page_complex_graph(value: Any, remaining_nodes: int) -> int:
+def _validate_live_page_complex_graph(value: object, remaining_nodes: int) -> int:
     nodes = 0
     active_containers: set[int] = set()
-    stack: list[tuple[bool, Any, int]] = [(False, value, 1)]
+    stack: list[tuple[bool, object, int]] = [(False, value, 1)]
     while stack:
         leaving, current, depth = stack.pop()
         if leaving:
@@ -129,7 +130,7 @@ def _validate_live_page_complex_graph(value: Any, remaining_nodes: int) -> int:
             )
         _validate_live_page_text(current)
 
-        if not isinstance(current, Mapping | list | tuple):
+        if not _is_complex_container(current):
             continue
         if depth > LIVE_PAGE_COMPLEX_DEPTH_LIMIT:
             raise LivePagePayloadError(
@@ -141,11 +142,25 @@ def _validate_live_page_complex_graph(value: Any, remaining_nodes: int) -> int:
             raise LivePagePayloadError("Live page complex values must not contain cyclic containers.")
         active_containers.add(identity)
         stack.append((True, current, depth))
-        if isinstance(current, Mapping):
+        if _is_mapping(current):
             for key, nested in current.items():
-                stack.append((False, nested, depth + 1 if isinstance(nested, Mapping | list | tuple) else depth))
+                stack.append((False, nested, depth + 1 if _is_complex_container(nested) else depth))
                 stack.append((False, key, depth))
         else:
             for nested in current:
-                stack.append((False, nested, depth + 1 if isinstance(nested, Mapping | list | tuple) else depth))
+                stack.append((False, nested, depth + 1 if _is_complex_container(nested) else depth))
     return nodes
+
+
+def _is_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
+def _is_list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _is_complex_container(
+    value: object,
+) -> TypeGuard[Mapping[object, object] | list[object] | tuple[object, ...]]:
+    return isinstance(value, Mapping | list | tuple)
