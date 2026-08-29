@@ -72,6 +72,29 @@ def test_response_frame_does_not_invoke_custom_string_coercion() -> None:
     assert value.calls == 0
 
 
+@pytest.mark.parametrize(
+    ("builtin_type", "value"),
+    (
+        (str, "value"),
+        (int, 1),
+        (float, 1.5),
+        (dict, {"value": 1}),
+        (list, [1]),
+    ),
+)
+def test_response_frame_rejects_subclasses_of_json_builtins(
+    builtin_type: type[Any],
+    value: object,
+) -> None:
+    subclass = type(f"Json{builtin_type.__name__}Subclass", (builtin_type,), {})
+
+    with pytest.raises(
+        ResponseEncodingError,
+        match=r"^Response contains a value outside the strict JSON data model\.$",
+    ):
+        encode_response_frame(subclass(value))
+
+
 def test_response_frame_matches_canonical_json_escaping_and_numbers() -> None:
     shared = [1, -0.0, 1e30]
     payload = {
