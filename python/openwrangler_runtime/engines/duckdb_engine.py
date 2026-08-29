@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import ast
 import os
 import re
+import symtable
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import lru_cache
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
 from threading import RLock
@@ -1122,23 +1125,24 @@ class DuckDBEngine(DataFrameEngine):
                 column = bound_column_name(params["column"], "renameColumn")
                 query = f"SELECT * RENAME ({_quote_ident(column)} AS {_quote_ident(params['newName'])}) FROM ({query})"
             return f"def clean_data(df):\n    return df.query('ow', {query!r})\n"
-        generated_helpers = _GENERATED_HELPERS.rstrip()
-        if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
-            generated_helpers = f"from collections import Counter\n\n{generated_helpers}"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
-        lines = [
-            *(custom_code_prelude_lines() if has_custom_code else []),
-            generated_helpers,
-            "",
-            *generated_view_value_helper_lines(),
-        ]
+        clean_data_lines = ["def clean_data(df):"]
+        for index, step in enumerate(plan):
+            clean_data_lines.extend(self._compile_step(step, index))
+        clean_data_lines.append("    return df")
+        clean_data = "\n".join(clean_data_lines)
+        generated_helpers = _reachable_generated_helper_source(clean_data)
+        uses_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
+
+        lines = [*(custom_code_prelude_lines() if has_custom_code else [])]
+        if uses_counter:
+            lines.extend(["from collections import Counter", ""])
+        if generated_helpers:
+            lines.extend([generated_helpers, ""])
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
                 lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
-        lines.append("def clean_data(df):")
-        for index, step in enumerate(plan):
-            lines.extend(self._compile_step(step, index))
-        lines.append("    return df")
+        lines.append(clean_data)
         return "\n".join(lines) + "\n"
 
     def export_data(
@@ -3103,6 +3107,95 @@ def _regex_extract_expression(column: str, pattern: str, group: int) -> str:
         f"CASE WHEN {source} IS NULL THEN NULL "
         f"WHEN regexp_matches({source}, {_sql_literal(pattern)}) THEN {extracted} ELSE NULL END"
     )
+
+
+_GENERATED_HELPER_FILENAME = "<open-wrangler-duckdb-generated-helpers>"
+
+
+def _generated_helper_source() -> str:
+    return "\n".join(
+        [
+            _GENERATED_HELPERS.rstrip(),
+            "",
+            *generated_view_value_helper_lines(),
+        ]
+    ).rstrip()
+
+
+def _generated_helper_bound_names(node: ast.stmt) -> tuple[str, ...]:
+    if isinstance(node, ast.Import):
+        return tuple(alias.asname or alias.name.partition(".")[0] for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        if node.module == "__future__":
+            raise RuntimeError("Generated DuckDB helpers cannot use future imports.")
+        if any(alias.name == "*" for alias in node.names):
+            raise RuntimeError("Generated DuckDB helpers cannot use wildcard imports.")
+        return tuple(alias.asname or alias.name for alias in node.names)
+    if isinstance(node, ast.Assign):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            raise RuntimeError("Generated DuckDB helper constants must use one direct name.")
+        return (node.targets[0].id,)
+    if isinstance(node, ast.FunctionDef):
+        return (node.name,)
+    raise RuntimeError(f"Unsupported generated DuckDB helper statement: {type(node).__name__}.")
+
+
+def _generated_helper_statement_source(source: str, node: ast.stmt) -> str:
+    statement = ast.get_source_segment(source, node)
+    if statement is None:
+        raise RuntimeError("Generated DuckDB helper source cannot be recovered exactly.")
+    if isinstance(node, ast.FunctionDef) and node.decorator_list:
+        lines = source.splitlines(keepends=True)
+        statement = "".join(lines[node.decorator_list[0].lineno - 1 : node.lineno - 1]) + statement
+    return statement
+
+
+def _generated_global_references(source: str) -> frozenset[str]:
+    root = symtable.symtable(source, _GENERATED_HELPER_FILENAME, "exec")
+    references: set[str] = set()
+    pending = [root]
+    while pending:
+        table = pending.pop()
+        references.update(
+            symbol.get_name() for symbol in table.get_symbols() if symbol.is_global() and symbol.is_referenced()
+        )
+        pending.extend(table.get_children())
+    return frozenset(references)
+
+
+@lru_cache(maxsize=1)
+def _generated_helper_catalog() -> tuple[tuple[str, tuple[str, ...], frozenset[str]], ...]:
+    source = _generated_helper_source()
+    module = ast.parse(source, filename=_GENERATED_HELPER_FILENAME, mode="exec")
+    definitions: set[str] = set()
+    catalog = []
+    for node in module.body:
+        names = _generated_helper_bound_names(node)
+        repeated_names = {name for name in names if names.count(name) > 1}
+        if repeated_names:
+            raise RuntimeError(f"Duplicate generated DuckDB helper definition: {min(repeated_names)}.")
+        duplicates = definitions.intersection(names)
+        if duplicates:
+            raise RuntimeError(f"Duplicate generated DuckDB helper definition: {min(duplicates)}.")
+        definitions.update(names)
+        statement = _generated_helper_statement_source(source, node)
+        catalog.append((statement, names, _generated_global_references(statement)))
+    return tuple(catalog)
+
+
+def _reachable_generated_helper_source(clean_data_source: str) -> str:
+    catalog = _generated_helper_catalog()
+    providers = {name: index for index, (_source, names, _references) in enumerate(catalog) for name in names}
+    pending = [name for name in _generated_global_references(clean_data_source) if name in providers]
+    selected: set[int] = set()
+    while pending:
+        name = pending.pop()
+        index = providers[name]
+        if index in selected:
+            continue
+        selected.add(index)
+        pending.extend(reference for reference in catalog[index][2] if reference in providers)
+    return "\n\n".join(catalog[index][0] for index in sorted(selected))
 
 
 _GENERATED_HELPERS = r"""import math
