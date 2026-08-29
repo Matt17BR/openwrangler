@@ -25,41 +25,14 @@ const README_BADGES = `<p align="center">
   <a href="${OPEN_VSX_URL}"><img src="https://img.shields.io/open-vsx/v/Matt17BR/openwrangler?label=Open%20VSX" alt="Open VSX version"></a>
   <a href="${LICENSE_URL}"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
 </p>`;
-const README_EDITOR_SUPPORT = `| Editor                      | Support        |
-| --------------------------- | -------------- |
-| VS Code                     | Release-tested |
-| Cursor                      | Release-tested |
-| Other VS Code desktop forks | Experimental   |
-| Browser-hosted \`vscode.dev\` | Unsupported    |`;
-const README_RUNTIME_REQUIREMENTS = `Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
-3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything.
+const README_INSTALL = `## Install
 
-R support uses the environment that owns the dataframe: the selected IRkernel for a notebook, the selected official
-VS Code R terminal for an interactive session, or the \`Rscript\` chosen by \`openWrangler.rscriptPath\` or \`PATH\` for
-a trusted \`.R\`, \`.Rmd\`, or \`.qmd\` document. Install \`jsonlite\` and \`rlang\` in that same environment. Parquet
-export also needs \`nanoparquet\` 0.5.1 or newer there; CSV export does not. R notebooks remain available on Windows,
-but direct R-document execution is currently limited to macOS and Linux.`;
-const README_TRUST_REQUIREMENT =
-  "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
-const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}), choose the newest
-  stable version from [Open VSX](${OPEN_VSX_URL})'s version list, or download the [latest stable GitHub Release](${LATEST_STABLE_RELEASE_URL}).
-- **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
-  this differently; select the newest version marked as preview. The same VSIX is available from [GitHub prereleases](${RELEASES_URL}).
-- **Current \`main\`:** build the latest source below. It may be ahead of the published preview.`;
-const README_SOURCE_BUILD = `To build and install the current \`main\` branch:
+- **Stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}) or [Open VSX](${OPEN_VSX_URL}),
+  or download the [latest GitHub release](${LATEST_STABLE_RELEASE_URL}).
+- **Preview:** choose **Install Pre-Release Version** on the editor listing, or download a preview from
+  [GitHub prereleases](${RELEASES_URL}).
 
-\`\`\`bash
-git clone --depth 1 --branch main https://github.com/Matt17BR/openwrangler.git
-cd openwrangler
-npm ci --ignore-scripts
-npm run package:dev
-\`\`\`
-
-The shallow clone retains \`.git\` for package source guards without downloading repository history or release tags.
-
-Then run \`code --install-extension openwrangler-dev.vsix --force\` or
-\`cursor --install-extension openwrangler-dev.vsix --force\`.`;
+For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -88,19 +61,7 @@ ${README_BADGES}
 
 > Preview release. Features and behavior may still change.
 
-## Install
-
-${README_EDITOR_SUPPORT}
-
-${README_INSTALL_TRACKS}
-
-For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
-
-${README_SOURCE_BUILD}
-
-${README_RUNTIME_REQUIREMENTS}
-
-${README_TRUST_REQUIREMENT}
+${README_INSTALL}
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -108,19 +69,7 @@ export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
 ${README_BADGES}
 
-## Install
-
-${README_INSTALL_TRACKS}
-
-For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
-
-${README_SOURCE_BUILD}
-
-${README_EDITOR_SUPPORT}
-
-${README_RUNTIME_REQUIREMENTS}
-
-${README_TRUST_REQUIREMENT}
+${README_INSTALL}
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -129,8 +78,6 @@ export const PERFORMANCE_EVIDENCE_README_RELEASE_SECTION = `${README_RELEASE_SEC
 > **Release status:** Validation candidate. This build is not for distribution.
 
 ## Install
-
-${README_EDITOR_SUPPORT}
 
 This candidate is installed only by the isolated validation workflow. Use a stable release for normal installation.
 
