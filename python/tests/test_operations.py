@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
 from math import isnan
 from typing import Any
@@ -795,6 +796,46 @@ def test_column_and_type_operations_match_generated_code(engine_and_frame):
     assert result[0]["score"] == 20
     assert result[0]["text_length"] == 11
     assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
+
+
+@pytest.mark.parametrize(
+    ("target", "values", "expected_dtype", "expected_values"),
+    [
+        ("string", [1, None], pl.String, ["1", None]),
+        ("integer", ["7", "bad", None], pl.Int64, [7, None, None]),
+        ("float", ["1.5", "bad", None], pl.Float64, [1.5, None, None]),
+        ("boolean", [1, 0, None], pl.Boolean, [True, False, None]),
+        ("date", [0, 2**31, None], pl.Date, [date(1970, 1, 1), None, None]),
+        (
+            "datetime",
+            [0.0, 1_000_000.0, float("nan"), None],
+            pl.Datetime,
+            [datetime(1970, 1, 1), datetime(1970, 1, 1, 0, 0, 1), None, None],
+        ),
+    ],
+)
+def test_polars_cast_targets_match_generated_dtype_and_coercion(
+    target: str,
+    values: list[Any],
+    expected_dtype: Any,
+    expected_values: list[Any],
+) -> None:
+    engine = PolarsEngine()
+    frame = pl.DataFrame({"value": values})
+    operation = bound_step(
+        f"cast-{target}",
+        "castColumn",
+        column=bound_ref("c:source:0", "value", 0),
+        dtype=target,
+    )
+
+    live = engine.apply_transform(frame, operation)
+    generated = execute_generated(engine, frame, [operation])
+
+    assert live.get_column("value").dtype == expected_dtype
+    assert generated.get_column("value").dtype == expected_dtype
+    assert live.get_column("value").to_list() == expected_values
+    assert_semantically_equal(live, generated)
 
 
 @pytest.mark.parametrize(

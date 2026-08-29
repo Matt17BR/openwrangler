@@ -77,6 +77,17 @@ _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
 
 
+def _polars_cast_target(dtype: str) -> tuple[str, Literal[False]]:
+    return {
+        "string": "String",
+        "integer": "Int64",
+        "float": "Float64",
+        "boolean": "Boolean",
+        "date": "Date",
+        "datetime": "Datetime",
+    }[dtype], False
+
+
 def _polars_require_pivot_output_names(existing_names: Sequence[str], outputs: Sequence[str]) -> None:
     keys = [portable_pivot_longer_name_key(name) for name in outputs]
     if len(set(keys)) != len(keys):
@@ -1231,15 +1242,10 @@ class PolarsEngine(DataFrameEngine):
         if kind == "cloneColumn":
             return df.with_columns(pl.col(bound_column_name(params["column"], kind)).alias(params["newName"]))
         if kind == "castColumn":
-            dtype = {
-                "string": pl.String,
-                "integer": pl.Int64,
-                "float": pl.Float64,
-                "boolean": pl.Boolean,
-                "date": pl.Date,
-                "datetime": pl.Datetime,
-            }[params["dtype"]]
-            return df.with_columns(pl.col(bound_column_name(params["column"], kind)).cast(dtype, strict=False))
+            dtype_attribute, strict = _polars_cast_target(params["dtype"])
+            return df.with_columns(
+                pl.col(bound_column_name(params["column"], kind)).cast(getattr(pl, dtype_attribute), strict=strict)
+            )
         if kind == "formula":
             right = (
                 pl.col(bound_column_name(params["rightColumn"], kind))
@@ -2013,15 +2019,8 @@ class PolarsEngine(DataFrameEngine):
             return [f"{prefix}df = df.with_columns(pl.col({column!r}).alias({params['newName']!r}))"]
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
-            dtype = {
-                "string": "pl.String",
-                "integer": "pl.Int64",
-                "float": "pl.Float64",
-                "boolean": "pl.Boolean",
-                "date": "pl.Date",
-                "datetime": "pl.Datetime",
-            }[params["dtype"]]
-            return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast({dtype}, strict=False))"]
+            dtype_attribute, strict = _polars_cast_target(params["dtype"])
+            return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.{dtype_attribute}, strict={strict!r}))"]
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
             right = (
