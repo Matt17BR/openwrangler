@@ -269,12 +269,25 @@ export function measureRendererGridScroll(
     const ariaRowCountMatches = grid?.getAttribute("aria-rowcount") === String(input.totalRows + 1);
     const ariaColumnCountMatches = grid?.getAttribute("aria-colcount") === String(input.totalColumns + 1);
     const textMatches = cell?.textContent === input.expectedText;
-    const scrollerVisibleStyle = hasVisibleStyle(scroller);
-    const gridVisibleStyle = grid ? hasVisibleStyle(grid) : false;
-    const cellVisibleStyle = cell ? hasVisibleStyle(cell) : false;
-    const scrollerRectangle = scroller.getBoundingClientRect();
-    const cellRectangle = cell?.getBoundingClientRect();
-    const scrollerPositiveSize = scrollerRectangle.width > 0 && scrollerRectangle.height > 0;
+    const candidateReady =
+      Boolean(grid && cell) &&
+      scrollerConnected &&
+      gridConnected &&
+      cellConnected &&
+      scrollerContainsGrid &&
+      scrollerContainsCell &&
+      ariaBusyMatches &&
+      ariaRowCountMatches &&
+      ariaColumnCountMatches &&
+      textMatches;
+    const scrollerVisibleStyle = candidateReady && hasVisibleStyle(scroller);
+    const gridVisibleStyle = candidateReady && grid !== null && hasVisibleStyle(grid);
+    const cellVisibleStyle = candidateReady && cell !== null && hasVisibleStyle(cell);
+    const scrollerRectangle = candidateReady ? scroller.getBoundingClientRect() : undefined;
+    const cellRectangle = candidateReady && cell !== null ? cell.getBoundingClientRect() : undefined;
+    const scrollerPositiveSize = Boolean(
+      scrollerRectangle && scrollerRectangle.width > 0 && scrollerRectangle.height > 0
+    );
     const cellPositiveSize = Boolean(cellRectangle && cellRectangle.width > 0 && cellRectangle.height > 0);
     const viewportRectangle: RendererRectangle = {
       top: 0,
@@ -285,7 +298,11 @@ export function measureRendererGridScroll(
       height: viewportHeight
     };
     const cellIntersectsScroller = Boolean(
-      cellRectangle && scrollerPositiveSize && cellPositiveSize && rectanglesIntersect(cellRectangle, scrollerRectangle)
+      cellRectangle &&
+      scrollerRectangle &&
+      scrollerPositiveSize &&
+      cellPositiveSize &&
+      rectanglesIntersect(cellRectangle, scrollerRectangle)
     );
     const cellIntersectsViewport = Boolean(
       cellRectangle &&
@@ -295,16 +312,7 @@ export function measureRendererGridScroll(
       rectanglesIntersect(cellRectangle, viewportRectangle)
     );
     const matches =
-      Boolean(grid && cell) &&
-      scrollerConnected &&
-      gridConnected &&
-      cellConnected &&
-      scrollerContainsGrid &&
-      scrollerContainsCell &&
-      ariaBusyMatches &&
-      ariaRowCountMatches &&
-      ariaColumnCountMatches &&
-      textMatches &&
+      candidateReady &&
       scrollerVisibleStyle &&
       gridVisibleStyle &&
       cellVisibleStyle &&
@@ -423,7 +431,6 @@ export function measureRendererGridScroll(
     try {
       started = runtime.performance.now();
       scroller.scrollTop = targetScrollTop;
-      lastDiagnostic = observeCommittedTarget(0, 0).diagnostic;
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));
       return;
