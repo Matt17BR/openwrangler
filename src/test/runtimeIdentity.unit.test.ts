@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DataBackend } from "../shared/protocol";
-import { CODE_PREVIEW_MAX_UTF8_BYTES, isValidCodePreviewText } from "../shared/codePreviewLimits";
+import {
+  CODE_PREVIEW_MAX_UTF8_BYTES,
+  canonicalizeCodePreviewText,
+  isCanonicalCodePreviewText,
+  isValidCodePreviewText
+} from "../shared/codePreviewLimits";
 import { isCodePreviewHostMessage, isCodePreviewWebviewMessage } from "../shared/codePreviewMessages";
 import {
   codeDialectLanguageLabel,
@@ -88,6 +93,7 @@ describe("private Code Preview messages", () => {
       isCodePreviewHostMessage({
         kind: "codePreview",
         bufferId,
+        bufferVersion: 0,
         bufferInvalid: false,
         code: "def clean_data(df):\n    return df\n",
         editable: true,
@@ -98,6 +104,7 @@ describe("private Code Preview messages", () => {
       isCodePreviewHostMessage({
         kind: "codePreview",
         bufferId,
+        bufferVersion: 0,
         bufferInvalid: false,
         code: "# Open a dataframe to preview generated code.",
         editable: false,
@@ -108,6 +115,7 @@ describe("private Code Preview messages", () => {
       isCodePreviewHostMessage({
         kind: "codePreview",
         bufferId,
+        bufferVersion: 0,
         bufferInvalid: false,
         code: "# PySpark viewing-only session.",
         editable: false,
@@ -118,18 +126,38 @@ describe("private Code Preview messages", () => {
       isCodePreviewHostMessage({
         kind: "codePreview",
         bufferId,
+        bufferVersion: 0,
         bufferInvalid: false,
         code: "clean_data <- function(df) df\n",
         editable: true,
         runtimeIdentity: rIdentity
       })
     ).toBe(true);
-    expect(isCodePreviewHostMessage({ kind: "codeSnapshotRequest", requestId, bufferId })).toBe(true);
+    expect(isCodePreviewHostMessage({ kind: "codeSnapshotRequest", requestId, bufferId, bufferVersion: 0 })).toBe(true);
     expect(isCodePreviewWebviewMessage({ kind: "ready" })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", bufferId, code: "# edited" })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeChangedInvalid", bufferId })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeSnapshot", requestId, bufferId, code: "# current" })).toBe(true);
-    expect(isCodePreviewWebviewMessage({ kind: "codeSnapshotInvalid", requestId, bufferId })).toBe(true);
+    expect(
+      isCodePreviewWebviewMessage({
+        kind: "codeChanged",
+        bufferId,
+        baseVersion: 0,
+        bufferVersion: 1,
+        changes: [{ from: 0, to: 0, insert: "# edited" }]
+      })
+    ).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeChangedInvalid", bufferId, baseVersion: 0 })).toBe(true);
+    expect(
+      isCodePreviewWebviewMessage({
+        kind: "codeSnapshot",
+        requestId,
+        bufferId,
+        baseVersion: 0,
+        bufferVersion: 4,
+        code: "# current"
+      })
+    ).toBe(true);
+    expect(isCodePreviewWebviewMessage({ kind: "codeSnapshotInvalid", requestId, bufferId, baseVersion: 0 })).toBe(
+      true
+    );
   });
 
   it.each([
@@ -150,27 +178,53 @@ describe("private Code Preview messages", () => {
     expect(isValidCodePreviewText(code, maximumUtf8Bytes)).toBe(expected);
   });
 
+  it.each([
+    ["CRLF", "first\r\nsecond\r\n", "first\nsecond\n"],
+    ["bare CR", "first\rsecond\r", "first\nsecond\n"]
+  ])("canonicalizes %s Code Preview text before transport", (_label, source, expected) => {
+    expect(canonicalizeCodePreviewText(source)).toBe(expected);
+    expect(isCanonicalCodePreviewText(source)).toBe(false);
+    expect(isCanonicalCodePreviewText(expected)).toBe(true);
+  });
+
   it("wires the generated-code ceiling into both message decoders", () => {
     const oversized = "a".repeat(CODE_PREVIEW_MAX_UTF8_BYTES + 1);
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
         bufferId,
+        bufferVersion: 0,
         bufferInvalid: false,
         code: oversized,
         editable: true,
         runtimeIdentity: polarsIdentity
       })
     ).toBe(false);
-    expect(isCodePreviewWebviewMessage({ kind: "codeChanged", bufferId, code: oversized })).toBe(false);
+    expect(
+      isCodePreviewWebviewMessage({
+        kind: "codeChanged",
+        bufferId,
+        baseVersion: 0,
+        bufferVersion: 1,
+        changes: [{ from: 0, to: 0, insert: oversized }]
+      })
+    ).toBe(false);
   });
 
   it.each([
-    { kind: "codePreview", bufferId, bufferInvalid: false, code: "# missing identity", editable: false },
-    { kind: "codeSnapshotRequest", requestId: "not-a-request-id", bufferId },
     {
       kind: "codePreview",
       bufferId,
+      bufferVersion: 0,
+      bufferInvalid: false,
+      code: "# missing identity",
+      editable: false
+    },
+    { kind: "codeSnapshotRequest", requestId: "not-a-request-id", bufferId, bufferVersion: 0 },
+    {
+      kind: "codePreview",
+      bufferId,
+      bufferVersion: 0,
       bufferInvalid: false,
       code: "# unknown field",
       editable: false,
@@ -180,10 +234,20 @@ describe("private Code Preview messages", () => {
     {
       kind: "codePreview",
       bufferId,
+      bufferVersion: 0,
       bufferInvalid: false,
       code: "# no generated dialect",
       editable: true,
       runtimeIdentity: pysparkIdentity
+    },
+    {
+      kind: "codePreview",
+      bufferId,
+      bufferVersion: 0,
+      bufferInvalid: false,
+      code: "# non-canonical\r\n",
+      editable: false,
+      runtimeIdentity: null
     }
   ])("rejects a malformed private host message: %j", (candidate) => {
     expect(isCodePreviewHostMessage(candidate)).toBe(false);
@@ -192,10 +256,48 @@ describe("private Code Preview messages", () => {
   it.each([
     { kind: "ready", unknown: true },
     { kind: "codeChanged" },
-    { kind: "codeChangedInvalid", bufferId, unknown: true },
-    { kind: "codeChanged", bufferId, code: "# edited", unknown: true },
-    { kind: "codeSnapshot", requestId: "not-a-request-id", bufferId, code: "# edited" },
-    { kind: "codeSnapshotInvalid", requestId, bufferId, unknown: true },
+    { kind: "codeChangedInvalid", bufferId, baseVersion: 0, unknown: true },
+    {
+      kind: "codeChanged",
+      bufferId,
+      baseVersion: 0,
+      bufferVersion: 2,
+      changes: [{ from: 0, to: 0, insert: "# skipped version" }]
+    },
+    {
+      kind: "codeChanged",
+      bufferId,
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [
+        { from: 2, to: 4, insert: "a" },
+        { from: 3, to: 5, insert: "b" }
+      ]
+    },
+    {
+      kind: "codeChanged",
+      bufferId,
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: 0, insert: "# edited" }],
+      unknown: true
+    },
+    {
+      kind: "codeChanged",
+      bufferId,
+      baseVersion: 0,
+      bufferVersion: 1,
+      changes: [{ from: 0, to: 0, insert: "# non-canonical\r" }]
+    },
+    {
+      kind: "codeSnapshot",
+      requestId: "not-a-request-id",
+      bufferId,
+      baseVersion: 0,
+      bufferVersion: 0,
+      code: "# edited"
+    },
+    { kind: "codeSnapshotInvalid", requestId, bufferId, baseVersion: 0, unknown: true },
     { kind: "future" }
   ])("rejects a malformed private webview message: %j", (candidate) => {
     expect(isCodePreviewWebviewMessage(candidate)).toBe(false);

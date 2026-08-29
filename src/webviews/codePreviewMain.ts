@@ -1,15 +1,23 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState, Transaction, type EditorSelection, type Extension, type Text } from "@codemirror/state";
+import {
+  EditorState,
+  Transaction,
+  type ChangeSet,
+  type EditorSelection,
+  type Extension,
+  type Text
+} from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, type ViewUpdate } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import {
   CODE_PREVIEW_EDIT_DEBOUNCE_MS,
+  CODE_PREVIEW_MAX_EDIT_CHANGES,
   CODE_PREVIEW_MAX_UTF8_BYTES,
-  isValidCodePreviewText
+  isCanonicalCodePreviewText
 } from "../shared/codePreviewLimits";
-import { isCodePreviewHostMessage } from "../shared/codePreviewMessages";
+import { isCodePreviewHostMessage, type CodePreviewChange } from "../shared/codePreviewMessages";
 import { codeDialectLanguageLabel, type CodeDialect, type RuntimeIdentity } from "../shared/runtimeIdentity";
 
 interface VsCodeApi {
@@ -27,8 +35,10 @@ let applyingHostUpdate = false;
 let editTimer: ReturnType<typeof setTimeout> | undefined;
 let pageDisposed = false;
 let bufferId: string | undefined;
+let bufferVersion = 0;
 let bufferInvalid = false;
 let localEdit = false;
+let pendingChanges: ChangeSet | undefined;
 let currentCodeDialect: CodeDialect | null = null;
 let currentEditable = false;
 let currentLanguageLabel: "Python" | "R" | undefined;
@@ -98,8 +108,10 @@ const handleHostMessage = (event: MessageEvent<unknown>): void => {
     editor.setState(createEditorState(message.code, codeDialect, message.editable, languageLabel));
     clearHistoryAccounting();
     bufferId = message.bufferId;
+    bufferVersion = message.bufferVersion;
     bufferInvalid = message.bufferInvalid;
     localEdit = false;
+    pendingChanges = undefined;
     currentCodeDialect = codeDialect;
     currentEditable = message.editable;
     currentLanguageLabel = languageLabel;
@@ -154,6 +166,7 @@ function createEditorState(
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingHostUpdate) {
           localEdit = true;
+          pendingChanges = pendingChanges ? pendingChanges.compose(update.changes) : update.changes;
           chargeRetainedHistory(update);
           scheduleCodeChanged();
         }
@@ -176,12 +189,21 @@ function cancelPendingEdit(): void {
   editTimer = undefined;
 }
 
-function publishCurrentCode(request?: { readonly requestId: string; readonly bufferId: string }): void {
+function publishCurrentCode(request?: {
+  readonly requestId: string;
+  readonly bufferId: string;
+  readonly bufferVersion: number;
+}): void {
   cancelPendingEdit();
   const currentBufferId = bufferId;
   if (!currentBufferId) return;
-  if (request && request.bufferId !== currentBufferId) {
-    vscode.postMessage({ kind: "codeSnapshotInvalid", requestId: request.requestId, bufferId: currentBufferId });
+  if (request && (request.bufferId !== currentBufferId || request.bufferVersion > bufferVersion)) {
+    vscode.postMessage({
+      kind: "codeSnapshotInvalid",
+      requestId: request.requestId,
+      bufferId: currentBufferId,
+      baseVersion: bufferVersion
+    });
     return;
   }
   if ((!localEdit && bufferInvalid) || editor.state.doc.length > CODE_PREVIEW_MAX_UTF8_BYTES) {
@@ -189,30 +211,83 @@ function publishCurrentCode(request?: { readonly requestId: string; readonly buf
     return;
   }
   const code = editor.state.doc.toString();
-  if (!isValidCodePreviewText(code)) {
+  if (!isCanonicalCodePreviewText(code)) {
     publishInvalidCode(request, currentBufferId);
     return;
   }
+  if (localEdit) publishPendingCodeChanges(currentBufferId, code);
+  if (!request) return;
+  vscode.postMessage({
+    kind: "codeSnapshot",
+    requestId: request.requestId,
+    bufferId: currentBufferId,
+    baseVersion: request.bufferVersion,
+    bufferVersion,
+    code
+  });
+}
+
+function publishPendingCodeChanges(currentBufferId: string, code: string): void {
+  const baseVersion = bufferVersion;
+  const changes = pendingChanges ? encodeCodePreviewChanges(pendingChanges, editor.state.doc, code) : [];
+  const nextVersion = baseVersion + (changes.length === 0 ? 0 : 1);
   bufferInvalid = false;
   localEdit = false;
-  vscode.postMessage(
-    request
-      ? { kind: "codeSnapshot", requestId: request.requestId, bufferId: currentBufferId, code }
-      : { kind: "codeChanged", bufferId: currentBufferId, code }
-  );
+  pendingChanges = undefined;
+  bufferVersion = nextVersion;
+  vscode.postMessage({ kind: "codeChanged", bufferId: currentBufferId, baseVersion, bufferVersion, changes });
 }
 
 function publishInvalidCode(
-  request: { readonly requestId: string; readonly bufferId: string } | undefined,
+  request: { readonly requestId: string; readonly bufferId: string; readonly bufferVersion: number } | undefined,
   currentBufferId: string
 ): void {
   bufferInvalid = true;
-  localEdit = false;
   vscode.postMessage(
     request
-      ? { kind: "codeSnapshotInvalid", requestId: request.requestId, bufferId: currentBufferId }
-      : { kind: "codeChangedInvalid", bufferId: currentBufferId }
+      ? {
+          kind: "codeSnapshotInvalid",
+          requestId: request.requestId,
+          bufferId: currentBufferId,
+          baseVersion: request.bufferVersion
+        }
+      : { kind: "codeChangedInvalid", bufferId: currentBufferId, baseVersion: bufferVersion }
   );
+}
+
+function encodeCodePreviewChanges(changes: ChangeSet, doc: Text, currentCode: string): readonly CodePreviewChange[] {
+  if (changes.empty) return [];
+  let changeCount = 0;
+  let firstFromA = 0;
+  let firstFromB = 0;
+  let lastToA = 0;
+  let lastToB = 0;
+  changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (changeCount === 0) {
+      firstFromA = fromA;
+      firstFromB = fromB;
+    }
+    changeCount += 1;
+    lastToA = toA;
+    lastToB = toB;
+  });
+
+  if (changeCount <= CODE_PREVIEW_MAX_EDIT_CHANGES) {
+    const encoded: CodePreviewChange[] = [];
+    let validInsertions = true;
+    changes.iterChanges((from, to, _fromNew, _toNew, insert) => {
+      const text = insert.toString();
+      if (!isCanonicalCodePreviewText(text)) validInsertions = false;
+      encoded.push({ from, to, insert: text });
+    });
+    if (validInsertions) return encoded;
+  }
+
+  const boundedInsert = doc.sliceString(firstFromB, lastToB);
+  if (isCanonicalCodePreviewText(boundedInsert)) {
+    return [{ from: firstFromA, to: lastToA, insert: boundedInsert }];
+  }
+  return [{ from: 0, to: changes.length, insert: currentCode }];
 }
 
 function chargeRetainedHistory(update: ViewUpdate): void {

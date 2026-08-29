@@ -12,8 +12,12 @@ import {
 } from "../shared/operations";
 import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
-import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
-import { isValidCodePreviewText } from "../shared/codePreviewLimits";
+import {
+  isCodePreviewWebviewMessage,
+  type CodePreviewChange,
+  type CodePreviewHostMessage
+} from "../shared/codePreviewMessages";
+import { canonicalizeCodePreviewText, isCanonicalCodePreviewText } from "../shared/codePreviewLimits";
 import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
 import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
@@ -256,6 +260,7 @@ interface PendingCodePreviewRequest {
   readonly view: vscode.WebviewView;
   readonly snapshot: ActiveSessionSnapshot;
   readonly bufferId: string;
+  readonly bufferVersion: number;
   readonly resolve: (result: CodePreviewActionCode) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
 }
@@ -282,6 +287,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private sourceInvalid = false;
   private bufferInvalid = false;
   private bufferId = "";
+  private bufferVersion = 0;
 
   constructor(
     private readonly context: NativeRegistrationContext,
@@ -313,29 +319,64 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return;
       }
       if (message.kind === "codeChanged") {
-        if (message.bufferId !== this.bufferId || !isEditableCodePreview(this.snapshot)) return;
+        if (
+          message.bufferId !== this.bufferId ||
+          message.baseVersion !== this.bufferVersion ||
+          !isEditableCodePreview(this.snapshot)
+        ) {
+          return;
+        }
+        const code = applyCodePreviewChanges(this.displayedCode, message.changes);
+        if (code === undefined) {
+          this.markBufferInvalid();
+          return;
+        }
         this.bufferInvalid = false;
-        this.displayedCode = message.code;
+        this.displayedCode = code;
+        this.bufferVersion = message.bufferVersion;
         return;
       }
       if (message.kind === "codeChangedInvalid") {
-        if (message.bufferId !== this.bufferId || !isEditableCodePreview(this.snapshot)) return;
+        if (
+          message.bufferId !== this.bufferId ||
+          message.baseVersion !== this.bufferVersion ||
+          !isEditableCodePreview(this.snapshot)
+        ) {
+          return;
+        }
         this.markBufferInvalid();
         return;
       }
       const pending = this.pendingCodeRequests.get(message.requestId);
       if (!pending || pending.view !== view) return;
-      if (message.bufferId !== pending.bufferId || pending.bufferId !== this.bufferId) {
+      if (
+        message.bufferId !== pending.bufferId ||
+        pending.bufferId !== this.bufferId ||
+        message.baseVersion !== pending.bufferVersion
+      ) {
         this.settleCodeRequest(message.requestId, { kind: "unavailable" });
         return;
       }
+      const currentStillAtRequest = this.bufferVersion === pending.bufferVersion;
       if (message.kind === "codeSnapshotInvalid") {
+        if (!currentStillAtRequest) {
+          this.settleCodeRequest(message.requestId, { kind: "unavailable" });
+          return;
+        }
         this.markBufferInvalid();
         this.settleCodeRequest(message.requestId, { kind: "invalid" });
         return;
       }
+      const snapshotAdvancesUnchangedRequest = currentStillAtRequest && message.bufferVersion > this.bufferVersion;
+      const snapshotAgreesWithCurrent =
+        !this.bufferInvalid && message.bufferVersion === this.bufferVersion && message.code === this.displayedCode;
+      if (!snapshotAdvancesUnchangedRequest && !snapshotAgreesWithCurrent) {
+        this.settleCodeRequest(message.requestId, { kind: "unavailable" });
+        return;
+      }
       this.bufferInvalid = false;
       this.displayedCode = message.code;
+      this.bufferVersion = message.bufferVersion;
       this.settleCodeRequest(message.requestId, {
         kind: "available",
         snapshot: pending.snapshot,
@@ -356,7 +397,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const snapshot = this.snapshot;
     if (!snapshot?.code) return { kind: this.sourceInvalid || this.bufferInvalid ? "invalid" : "missing" };
     const view = this.view;
-    if (view && this.viewReady) return this.requestCurrentCode(view, snapshot, this.bufferId);
+    if (view && this.viewReady) return this.requestCurrentCode(view, snapshot, this.bufferId, this.bufferVersion);
     if (this.bufferInvalid) return { kind: "invalid" };
     if (!view) {
       if (this.hadLiveView) return { kind: "unavailable" };
@@ -368,25 +409,34 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   setCodeForExportForTests(code: string): void {
     this.cancelCodeRequests();
     this.bufferId = randomUUID();
-    if (!isValidCodePreviewText(code)) {
+    this.bufferVersion = 0;
+    const canonicalCode = canonicalizeCodePreviewText(code);
+    if (!isCanonicalCodePreviewText(canonicalCode)) {
       this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
       this.sourceInvalid = true;
       this.bufferInvalid = true;
       if (this.snapshot) this.snapshot = { ...this.snapshot, code: "" };
     } else {
-      this.displayedCode = code;
+      this.displayedCode = canonicalCode;
       this.sourceInvalid = false;
       this.bufferInvalid = false;
-      if (this.snapshot) this.snapshot = { ...this.snapshot, code };
+      if (this.snapshot) this.snapshot = { ...this.snapshot, code: canonicalCode };
     }
     this.render();
   }
 
   private render(): void {
     if (!this.view || !this.viewReady) return;
-    if (!isValidCodePreviewText(this.displayedCode)) {
+    if (this.bufferInvalid && this.displayedCode !== CODE_PREVIEW_INVALID_PLACEHOLDER) {
       this.cancelCodeRequests();
       this.bufferId = randomUUID();
+      this.bufferVersion = 0;
+      this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
+    }
+    if (!isCanonicalCodePreviewText(this.displayedCode)) {
+      this.cancelCodeRequests();
+      this.bufferId = randomUUID();
+      this.bufferVersion = 0;
       this.bufferInvalid = true;
       this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
     }
@@ -394,6 +444,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const message: CodePreviewHostMessage = {
       kind: "codePreview",
       bufferId: this.bufferId,
+      bufferVersion: this.bufferVersion,
       bufferInvalid: this.bufferInvalid,
       code: this.displayedCode,
       editable: isEditableCodePreview(this.snapshot),
@@ -405,8 +456,9 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private applySnapshot(snapshot: ActiveSessionSnapshot | undefined): boolean {
     const rawCode = snapshot?.code ?? "";
-    const validSource = isValidCodePreviewText(rawCode);
-    const nextGeneratedCode = validSource ? rawCode : "";
+    const canonicalCode = canonicalizeCodePreviewText(rawCode);
+    const validSource = isCanonicalCodePreviewText(canonicalCode);
+    const nextGeneratedCode = validSource ? canonicalCode : "";
     const nextSourceInvalid = Boolean(snapshot && !validSource);
     const nextInspectionStepId = snapshot?.stepInspection?.stepId;
     const nextInspectionActive = Boolean(snapshot?.stepInspectionActive);
@@ -432,6 +484,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (replace) {
       this.cancelCodeRequests();
       this.bufferId = randomUUID();
+      this.bufferVersion = 0;
       this.bufferInvalid = nextSourceInvalid;
       this.displayedCode = nextSourceInvalid ? CODE_PREVIEW_INVALID_PLACEHOLDER : nextGeneratedCode || nextPlaceholder;
     }
@@ -441,7 +494,8 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private requestCurrentCode(
     view: vscode.WebviewView,
     snapshot: ActiveSessionSnapshot,
-    bufferId: string
+    bufferId: string,
+    bufferVersion: number
   ): Promise<CodePreviewActionCode> {
     const requestId = randomUUID();
     return new Promise((resolve) => {
@@ -449,8 +503,10 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         () => this.settleCodeRequest(requestId, { kind: "unavailable" }),
         CODE_PREVIEW_SNAPSHOT_TIMEOUT_MS
       );
-      this.pendingCodeRequests.set(requestId, { view, snapshot, bufferId, resolve, timeout });
-      void Promise.resolve(view.webview.postMessage({ kind: "codeSnapshotRequest", requestId, bufferId })).then(
+      this.pendingCodeRequests.set(requestId, { view, snapshot, bufferId, bufferVersion, resolve, timeout });
+      void Promise.resolve(
+        view.webview.postMessage({ kind: "codeSnapshotRequest", requestId, bufferId, bufferVersion })
+      ).then(
         (delivered) => {
           if (!delivered) this.settleCodeRequest(requestId, { kind: "unavailable" });
         },
@@ -461,7 +517,6 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private markBufferInvalid(): void {
     this.bufferInvalid = true;
-    this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
   }
 
   private settleCodeRequest(requestId: string, result: CodePreviewActionCode): void {
@@ -501,6 +556,19 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const nonce = createSecureNonce();
     return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0;overflow:hidden;background:var(--vscode-editor-background)}</style></head><body><div id="root"></div><script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
   }
+}
+
+function applyCodePreviewChanges(base: string, changes: readonly CodePreviewChange[]): string | undefined {
+  const pieces: string[] = [];
+  let position = 0;
+  for (const change of changes) {
+    if (change.from < position || change.to > base.length) return undefined;
+    pieces.push(base.slice(position, change.from), change.insert);
+    position = change.to;
+  }
+  pieces.push(base.slice(position));
+  const code = pieces.join("");
+  return isCanonicalCodePreviewText(code) ? code : undefined;
 }
 
 type CodePreviewActionFailure = Exclude<CodePreviewActionCode, { readonly kind: "available" }>;
@@ -1505,8 +1573,8 @@ function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
 }
 
 function safePlaceholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
-  const placeholder = placeholderCode(snapshot);
-  return isValidCodePreviewText(placeholder) ? placeholder : CODE_PREVIEW_INVALID_PLACEHOLDER;
+  const placeholder = canonicalizeCodePreviewText(placeholderCode(snapshot));
+  return isCanonicalCodePreviewText(placeholder) ? placeholder : CODE_PREVIEW_INVALID_PLACEHOLDER;
 }
 
 export function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string): vscode.Uri {
