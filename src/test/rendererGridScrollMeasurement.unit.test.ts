@@ -37,6 +37,9 @@ function createElement(parentElement: RendererGridMeasurementElement | null = nu
 class ImmediateGridRuntime implements RendererGridMeasurementRuntime {
   now = 0;
   observationCostMs = 0;
+  styleReadCount = 0;
+  geometryReadCount = 0;
+  cellPresent = true;
   readonly scroller = createElement();
   readonly grid = createElement(this.scroller);
   readonly cell = createElement(this.grid);
@@ -49,6 +52,8 @@ class ImmediateGridRuntime implements RendererGridMeasurementRuntime {
     this.cell.textContent = "400";
     this.grid.getAttribute = (name) =>
       ({ "aria-busy": "false", "aria-rowcount": "1001", "aria-colcount": "51" })[name] ?? null;
+    this.scroller.getBoundingClientRect = () => this.readRectangle();
+    this.cell.getBoundingClientRect = () => this.readRectangle();
   }
 
   readonly document = {
@@ -56,7 +61,7 @@ class ImmediateGridRuntime implements RendererGridMeasurementRuntime {
     querySelector: (selector: string): RendererGridMeasurementElement | null => {
       if (selector === '[data-testid="data-grid-scroller"]') return this.scroller;
       if (selector === 'table[role="grid"]') return this.grid;
-      if (selector === '[data-grid-row="400"][data-grid-column="0"]') return this.cell;
+      if (selector === '[data-grid-row="400"][data-grid-column="0"]') return this.cellPresent ? this.cell : null;
       return null;
     }
   };
@@ -77,15 +82,22 @@ class ImmediateGridRuntime implements RendererGridMeasurementRuntime {
   clearTimeout(): void {}
 
   getComputedStyle(): { display: string; visibility: string; opacity: string } {
+    this.styleReadCount += 1;
     this.now += this.observationCostMs;
     return { display: "block", visibility: "visible", opacity: "1" };
   }
 
-  advanceFrame(milliseconds = 50): void {
-    this.now += milliseconds;
+  advanceFrame(timestamp: number, callbackNow = timestamp): void {
+    this.now = callbackNow;
     const callback = this.animationFrame;
     this.animationFrame = undefined;
-    callback?.(this.now);
+    callback?.(timestamp);
+  }
+
+  private readRectangle(): typeof rectangle {
+    this.geometryReadCount += 1;
+    this.now += this.observationCostMs;
+    return rectangle;
   }
 }
 
@@ -101,27 +113,39 @@ const input: RendererGridScrollMeasurementInput = {
 };
 
 describe("cached renderer grid scroll timing", () => {
-  it("reports the first exact usable frame before its observation work", async () => {
+  it("reports the first candidate-ready rAF without charging observation work", async () => {
     const runtime = new ImmediateGridRuntime();
-    const measurement = measureRendererGridScroll(input, runtime);
     runtime.observationCostMs = 5;
+    runtime.cellPresent = false;
+    const measurement = measureRendererGridScroll(input, runtime);
 
-    runtime.advanceFrame();
-    runtime.advanceFrame();
+    expect([runtime.styleReadCount, runtime.geometryReadCount]).toEqual([0, 0]);
+    runtime.advanceFrame(40, 47);
 
-    await expect(measurement).resolves.toBe(50);
+    runtime.cellPresent = true;
+    runtime.cell.textContent = "stale";
+    runtime.advanceFrame(80, 87);
+    expect([runtime.styleReadCount, runtime.geometryReadCount]).toEqual([0, 0]);
+
+    runtime.cell.textContent = "400";
+    runtime.advanceFrame(120, 127);
+    expect(runtime.styleReadCount).toBeGreaterThan(0);
+    expect(runtime.geometryReadCount).toBeGreaterThan(0);
+    runtime.advanceFrame(160, 167);
+
+    await expect(measurement).resolves.toBe(120);
   });
 
   it("forgets an earlier matching frame when the target stops matching", async () => {
     const runtime = new ImmediateGridRuntime();
     const measurement = measureRendererGridScroll(input, runtime);
 
-    runtime.advanceFrame();
+    runtime.advanceFrame(50);
     runtime.cell.textContent = "stale";
-    runtime.advanceFrame();
+    runtime.advanceFrame(100);
     runtime.cell.textContent = "400";
-    runtime.advanceFrame();
-    runtime.advanceFrame();
+    runtime.advanceFrame(150);
+    runtime.advanceFrame(200);
 
     await expect(measurement).resolves.toBe(150);
   });
