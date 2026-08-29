@@ -1644,11 +1644,11 @@ function fetchGridBlockSize(
   backend?: DataBackend,
   settings = readWebviewBootstrapSettings()
 ): { pageSize: number; columnLimit: number } {
-  const pageSize = settings.fetchBlockSize;
   const columnLimit = settings.fetchColumnBlockSize;
-  if (backend !== "r") return { pageSize, columnLimit };
+  const transportRowLimit = Math.floor(100_000 / columnLimit) - (backend === "pyspark" ? 2 : 0);
+  const pageSize = Math.min(settings.fetchBlockSize, transportRowLimit);
   return {
-    pageSize: Math.min(pageSize, 1_000, Math.floor(100_000 / columnLimit)),
+    pageSize: backend === "r" ? Math.min(pageSize, 1_000) : pageSize,
     columnLimit
   };
 }

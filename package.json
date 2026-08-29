@@ -937,14 +937,14 @@
           "description": "Initial grid column width in CSS pixels."
         },
         "openWrangler.fetchBlockSize": {
-          "type": "number",
+          "type": "integer",
           "default": 200,
           "minimum": 25,
           "maximum": 2000,
           "description": "Number of rows fetched for each virtual grid block."
         },
         "openWrangler.fetchColumnBlockSize": {
-          "type": "number",
+          "type": "integer",
           "default": 16,
           "minimum": 1,
           "maximum": 256,
