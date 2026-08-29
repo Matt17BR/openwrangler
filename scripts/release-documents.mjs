@@ -45,7 +45,7 @@ const README_TRUST_REQUIREMENT =
 const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}), choose the newest
   stable version from [Open VSX](${OPEN_VSX_URL})'s version list, or download the [latest stable GitHub Release](${LATEST_STABLE_RELEASE_URL}).
 - **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
-  this differently; select the newest \`1.99.x\` version. The same VSIX is available from [GitHub prereleases](${RELEASES_URL}).
+  this differently; select the newest version marked as preview. The same VSIX is available from [GitHub prereleases](${RELEASES_URL}).
 - **Current \`main\`:** build the latest source below. It may be ahead of the published preview.`;
 const README_SOURCE_BUILD = `To build and install the current \`main\` branch:
 
@@ -86,7 +86,7 @@ export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
 ${README_BADGES}
 
-> Open Wrangler 1.99 previews version 2. Features and behavior may still change.
+> Preview release. Features and behavior may still change.
 
 ## Install
 
@@ -796,10 +796,7 @@ export function inspectStableReadme(contents, label = "README.md") {
   if (typeof normalizedContents !== "string") {
     return releaseRegionProblems;
   }
-  return [
-    ...releaseRegionProblems,
-    ...inspectStablePublicCopy(normalizedContents.replace(STABLE_README_RELEASE_SECTION, ""), label)
-  ];
+  return [...releaseRegionProblems, ...inspectStablePublicCopy(normalizedContents, label)];
 }
 
 export function inspectPerformanceEvidenceReadme(contents, label = "README.md") {

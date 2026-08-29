@@ -20,7 +20,7 @@
   <a href="https://github.com/Matt17BR/openwrangler/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
 </p>
 
-> Open Wrangler 1.99 previews version 2. Features and behavior may still change.
+> Preview release. Features and behavior may still change.
 
 ## Install
 
@@ -34,7 +34,7 @@
 - **Latest stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler), choose the newest
   stable version from [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler)'s version list, or download the [latest stable GitHub Release](https://github.com/Matt17BR/openwrangler/releases/latest).
 - **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
-  this differently; select the newest `1.99.x` version. The same VSIX is available from [GitHub prereleases](https://github.com/Matt17BR/openwrangler/releases).
+  this differently; select the newest version marked as preview. The same VSIX is available from [GitHub prereleases](https://github.com/Matt17BR/openwrangler/releases).
 - **Current `main`:** build the latest source below. It may be ahead of the published preview.
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
