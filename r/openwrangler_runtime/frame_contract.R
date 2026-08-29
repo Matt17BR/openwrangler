@@ -3598,17 +3598,6 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  rename_column <- function(value, column_reference, new_name) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    rename_column_at(value, resolved$position, resolved$name, new_name)
-  }
-
   clone_column_at <- function(value, position, old_name, new_name) {
     inspected <- inspect_frame(
       value,
@@ -3681,21 +3670,6 @@ openwrangler_r_frame_contract <- local({
       result <- columns
     }
     result
-  }
-
-  clone_column <- function(value, column_reference, new_name) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolver_descriptor <- inspected$descriptor
-    resolver_schema <- unclass(resolver_descriptor$schema)
-    attributes(resolver_schema) <- NULL
-    resolver_descriptor$schema <- resolver_schema
-    resolved <- resolve_column_reference(column_reference, resolver_descriptor, "column_reference")
-    clone_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   by_example_column_at <- function(value, positions, expected_names, new_name, result_kind, evaluator) {
@@ -4515,46 +4489,6 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  one_hot_encode_columns <- function(
-    value,
-    column_references,
-    prefix_separator = "_",
-    drop_original = TRUE
-  ) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    if (
-      !is.list(column_references) ||
-        is.object(column_references) ||
-        !is.null(attributes(column_references)) ||
-        length(column_references) == 0L
-    ) {
-      abort("invalid-view-query", "column_references must be a non-empty unnamed list")
-    }
-    resolved <- lapply(seq_along(column_references), function(index) {
-      resolve_column_reference(
-        column_references[[index]],
-        inspected$descriptor,
-        sprintf("column_references[[%d]]", index)
-      )
-    })
-    ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
-    if (anyDuplicated(ids)) {
-      abort("invalid-view-query", "column_references may address each column only once")
-    }
-    one_hot_encode_columns_at(
-      value,
-      vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE),
-      vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE),
-      prefix_separator,
-      drop_original
-    )
-  }
-
   multi_label_binarize_column_at <- function(
     value,
     position,
@@ -4661,30 +4595,6 @@ openwrangler_r_frame_contract <- local({
       rep.int(position, length(labels)),
       generated_names,
       generated_columns,
-      drop_original
-    )
-  }
-
-  multi_label_binarize_column <- function(
-    value,
-    column_reference,
-    delimiter,
-    prefix = NULL,
-    drop_original = FALSE
-  ) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    multi_label_binarize_column_at(
-      value,
-      resolved$position,
-      resolved$name,
-      delimiter,
-      prefix,
       drop_original
     )
   }
@@ -4918,38 +4828,6 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  formula_column <- function(
-    value,
-    left_column_reference,
-    operator,
-    new_name,
-    right_column_reference = NULL,
-    right_value = NULL
-  ) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    left <- resolve_column_reference(left_column_reference, inspected$descriptor, "left_column_reference")
-    right <- if (is.null(right_column_reference)) {
-      NULL
-    } else {
-      resolve_column_reference(right_column_reference, inspected$descriptor, "right_column_reference")
-    }
-    formula_column_at(
-      value,
-      left$position,
-      left$name,
-      operator,
-      new_name,
-      if (is.null(right)) NULL else right$position,
-      if (is.null(right)) NULL else right$name,
-      right_value
-    )
-  }
-
   text_length_column_at <- function(value, position, old_name, new_name) {
     inspected <- inspect_frame(
       value,
@@ -5000,17 +4878,6 @@ openwrangler_r_frame_contract <- local({
       names(result) <- c(original_names, new_name)
     }
     result
-  }
-
-  text_length_column <- function(value, column_reference, new_name) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    text_length_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   transform_text_column_at <- function(value, position, old_name, new_name, operation, transform) {
@@ -5112,30 +4979,8 @@ openwrangler_r_frame_contract <- local({
     transform_text_column_at(value, position, old_name, new_name, "lowerText", tolower)
   }
 
-  lower_text_column <- function(value, column_reference, new_name = NULL) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    lower_text_column_at(value, resolved$position, resolved$name, new_name)
-  }
-
   upper_text_column_at <- function(value, position, old_name, new_name = NULL) {
     transform_text_column_at(value, position, old_name, new_name, "upperText", toupper)
-  }
-
-  upper_text_column <- function(value, column_reference, new_name = NULL) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    upper_text_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   capitalize_text_value <- function(value) {
@@ -5149,17 +4994,6 @@ openwrangler_r_frame_contract <- local({
 
   capitalize_text_column_at <- function(value, position, old_name, new_name = NULL) {
     transform_text_column_at(value, position, old_name, new_name, "capitalizeText", capitalize_text_value)
-  }
-
-  capitalize_text_column <- function(value, column_reference, new_name = NULL) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    capitalize_text_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   strip_text_column_at <- function(value, position, old_name, characters = NULL, new_name = NULL) {
@@ -5179,17 +5013,6 @@ openwrangler_r_frame_contract <- local({
       paste0(source_characters[seq.int(retained[[1L]], retained[[length(retained)]])], collapse = "")
     }
     transform_text_column_at(value, position, old_name, new_name, "stripText", strip_value)
-  }
-
-  strip_text_column <- function(value, column_reference, characters = NULL, new_name = NULL) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    strip_text_column_at(value, resolved$position, resolved$name, characters, new_name)
   }
 
   split_text_value <- function(value, delimiter, index) {
@@ -5227,17 +5050,6 @@ openwrangler_r_frame_contract <- local({
       "splitText",
       function(source) split_text_value(source, delimiter, index)
     )
-  }
-
-  split_text_column <- function(value, column_reference, delimiter, index, new_name) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    split_text_column_at(value, resolved$position, resolved$name, delimiter, index, new_name)
   }
 
   split_text_columns_at <- function(value, position, old_name, delimiter, new_names) {
@@ -5310,17 +5122,6 @@ openwrangler_r_frame_contract <- local({
       }
     }
     result
-  }
-
-  split_text_columns <- function(value, column_reference, delimiter, new_names) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    split_text_columns_at(value, resolved$position, resolved$name, delimiter, new_names)
   }
 
   capture_pivot_longer_at <- function(
@@ -5997,32 +5798,6 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  find_replace_column <- function(
-    value,
-    column_reference,
-    find,
-    replacement,
-    regex = FALSE,
-    new_name = NULL
-  ) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    find_replace_column_at(
-      value,
-      resolved$position,
-      resolved$name,
-      find,
-      replacement,
-      regex,
-      new_name
-    )
-  }
-
   round_integer64_values <- function(values, digits) {
     if (!requireNamespace("bit64", quietly = TRUE)) {
       abort("missing-package", "bit64 is required to round an integer64 column")
@@ -6412,17 +6187,6 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  format_datetime_column <- function(value, column_reference, format, new_name = NULL) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    format_datetime_column_at(value, resolved$position, resolved$name, format, new_name)
-  }
-
   integer64_fill_value <- function(text, label) {
     if (!requireNamespace("bit64", quietly = TRUE)) {
       abort("missing-package", "bit64 is required to fill an integer64 column")
@@ -6670,17 +6434,6 @@ openwrangler_r_frame_contract <- local({
       result[[position]] <- filled$column
     }
     result
-  }
-
-  fill_missing_column <- function(value, column_reference, replacement) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    fill_missing_column_at(value, resolved$position, resolved$name, replacement)
   }
 
   fill_missing_from_fallback_columns_at <- function(
@@ -7492,17 +7245,6 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  cast_column <- function(value, column_reference, dtype) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
-    cast_column_at(value, resolved$position, resolved$name, dtype)
-  }
-
   drop_columns_at <- function(value, positions, expected_names) {
     inspected <- inspect_frame(
       value,
@@ -7550,37 +7292,6 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  drop_columns <- function(value, column_references) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    if (
-      !is.list(column_references) ||
-        is.object(column_references) ||
-        !is.null(attributes(column_references)) ||
-        length(column_references) == 0L
-    ) {
-      abort("invalid-view-query", "column_references must be a non-empty unnamed list")
-    }
-    resolved <- lapply(seq_along(column_references), function(index) {
-      resolve_column_reference(
-        column_references[[index]],
-        inspected$descriptor,
-        sprintf("column_references[[%d]]", index)
-      )
-    })
-    column_ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
-    if (anyDuplicated(column_ids)) {
-      abort("invalid-view-query", "column_references may address each column only once")
-    }
-    positions <- vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE)
-    expected_names <- vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE)
-    drop_columns_at(value, positions, expected_names)
-  }
-
   select_columns_at <- function(value, positions, expected_names) {
     inspected <- inspect_frame(
       value,
@@ -7623,37 +7334,6 @@ openwrangler_r_frame_contract <- local({
       names(result) <- expected_names
     }
     result
-  }
-
-  select_columns <- function(value, column_references) {
-    inspected <- inspect_frame(
-      value,
-      conservative_nullable = TRUE,
-      validate_values = FALSE,
-      metrics = new_capture_metrics()
-    )
-    if (
-      !is.list(column_references) ||
-        is.object(column_references) ||
-        !is.null(attributes(column_references)) ||
-        length(column_references) == 0L
-    ) {
-      abort("invalid-view-query", "column_references must be a non-empty unnamed list")
-    }
-    resolved <- lapply(seq_along(column_references), function(index) {
-      resolve_column_reference(
-        column_references[[index]],
-        inspected$descriptor,
-        sprintf("column_references[[%d]]", index)
-      )
-    })
-    column_ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
-    if (anyDuplicated(column_ids)) {
-      abort("invalid-view-query", "column_references may address each column only once")
-    }
-    positions <- vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE)
-    expected_names <- vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE)
-    select_columns_at(value, positions, expected_names)
   }
 
   compare_unsigned_decimal <- function(left, right) {
@@ -9735,53 +9415,35 @@ openwrangler_r_frame_contract <- local({
     capture_live_frame = capture_live_frame,
     isolate_capture = isolate_capture,
     isolate_custom_code_input = isolate_custom_code_input,
-    rename_column = rename_column,
     rename_column_at = rename_column_at,
-    clone_column = clone_column,
     clone_column_at = clone_column_at,
     by_example_column_at = by_example_column_at,
-    one_hot_encode_columns = one_hot_encode_columns,
     one_hot_encode_columns_at = one_hot_encode_columns_at,
-    multi_label_binarize_column = multi_label_binarize_column,
     multi_label_binarize_column_at = multi_label_binarize_column_at,
-    formula_column = formula_column,
     formula_column_at = formula_column_at,
-    text_length_column = text_length_column,
     text_length_column_at = text_length_column_at,
-    lower_text_column = lower_text_column,
     lower_text_column_at = lower_text_column_at,
-    upper_text_column = upper_text_column,
     upper_text_column_at = upper_text_column_at,
-    capitalize_text_column = capitalize_text_column,
     capitalize_text_column_at = capitalize_text_column_at,
-    strip_text_column = strip_text_column,
     strip_text_column_at = strip_text_column_at,
-    split_text_column = split_text_column,
     split_text_column_at = split_text_column_at,
-    split_text_columns = split_text_columns,
     split_text_columns_at = split_text_columns_at,
     capture_pivot_longer_at = capture_pivot_longer_at,
     capture_pivot_wider_at = capture_pivot_wider_at,
     extract_regex_group_at = extract_regex_group_at,
-    find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
     min_max_scale_column_at = min_max_scale_column_at,
     round_number_column_at = round_number_column_at,
     floor_number_column_at = floor_number_column_at,
     ceil_number_column_at = ceil_number_column_at,
-    format_datetime_column = format_datetime_column,
     format_datetime_column_at = format_datetime_column_at,
-    fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,
     fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
     fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
-    cast_column = cast_column,
     cast_column_at = cast_column_at,
-    drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
-    select_columns = select_columns,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
     capture_group_result = capture_group_result,
