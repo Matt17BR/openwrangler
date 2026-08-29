@@ -35,11 +35,14 @@ The exact-artifact installed smoke and its environment are documented once in [T
 
 The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:
 
-- Each scheduled run derives its `1.99.YYYYMMDD` version from that workflow run's immutable UTC creation timestamp,
-  creates one deterministic direct child of protected `main` that changes only the three version files, and qualifies
-  one canonical VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The
-  accepted bytes are then published automatically as a GitHub prerelease. GitHub dispatches Open VSX, while the tag
-  triggers Azure Marketplace.
+- Each scheduled run derives its version from that workflow run's immutable UTC creation timestamp and the exact
+  protected-main source commit's coherent release metadata. Pre-v2 automatic public previews remain fixed at
+  `1.99.YYYYMMDD`, never the legacy `1.2.YYYYMMDD` series. Once that source metadata is stable v2 or later, the preview
+  uses its `major.minor` plus the UTC date (`2.0.z` → `2.0.YYYYMMDD`; `2.1.z` → `2.1.YYYYMMDD`). The run creates one
+  deterministic direct child that changes only the three version files and qualifies one canonical
+  VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The accepted bytes
+  are then published automatically as a GitHub prerelease. GitHub dispatches Open VSX, while the tag triggers Azure
+  Marketplace.
 - A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
   publication remains explicit through its `publish` input.
 - Release candidate trusts the required checks already attached to protected `main` rather than repeating the source

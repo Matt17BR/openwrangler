@@ -17,9 +17,12 @@ A release pull request contains only:
 Write the release notes using [the writing guide](writing-style.md). Product changes, test changes, generated media,
 and unrelated documentation land before the release pull request.
 
-Numeric `0.<odd-minor>.x` versions are preview bands. Manual `1.99.N` previews end at `1.99.7`, while automatic daily
-public previews use `1.99.YYYYMMDD`; all require `package.json.preview` to be `true`. Stable versions require
-`preview` to be `false`. The package verifier rejects a VSIX whose embedded manifest disagrees with that channel.
+Numeric `0.<odd-minor>.x` versions are preview bands. Manual `1.99.N` previews end at `1.99.7`. Automatic daily public
+previews use the exact protected-main source commit's coherent release metadata: pre-v2 previews remain fixed at
+`1.99.YYYYMMDD`, never the legacy `1.2.YYYYMMDD` series, while a stable v2-or-later source uses its `major.minor` plus
+the UTC date (`2.0.z` → `2.0.YYYYMMDD`; `2.1.z` → `2.1.YYYYMMDD`). All previews require `package.json.preview` to be
+`true`. Stable versions require `preview` to be `false`. The package verifier rejects a VSIX whose embedded manifest
+disagrees with that channel.
 
 ## Source and package commands
 
@@ -51,9 +54,9 @@ verified VSIX path.
 ## Daily preview
 
 The schedule in `.github/workflows/preview-release.yml` reads the workflow run's immutable UTC `created_at` timestamp
-and binds that run to version `1.99.YYYYMMDD`. From the exact protected `main` commit, it creates a deterministic
-single-parent child that changes only `package.json`, `package-lock.json`, and
-`python/openwrangler_runtime/version.py`. The workflow packages one canonical VSIX/checksum/provenance bundle and
+and derives the version from the exact protected `main` commit under the source-series policy above. From that same
+source commit, it creates a deterministic single-parent child that changes only `package.json`, `package-lock.json`,
+and `python/openwrangler_runtime/version.py`. The workflow packages one canonical VSIX/checksum/provenance bundle and
 qualifies those exact bytes in stable VS Code with the existing `daily-core` selector.
 
 After qualification, the protected publication job creates or verifies the direct-child lightweight tag and GitHub
