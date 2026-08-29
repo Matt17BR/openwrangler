@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { flushSync } from "react-dom";
 import type {
   ColumnSchema,
@@ -35,7 +27,7 @@ import {
   viewSortModelSignature,
   type FilterModel
 } from "../shared/filterModel";
-import { emptyGridViewState, encodeGridViewState, type GridViewState } from "../shared/viewState";
+import type { GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { sessionModeAction } from "../shared/sessionMode";
@@ -88,14 +80,13 @@ import {
   type PendingStepInspection,
   type QueuedOperationIntent,
   type QueuedStepSelection,
-  type RendererSynchronizationMessage,
   type SummaryRequestOwner,
   type ViewSortActionTarget
 } from "./appState";
+import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
-const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const nonCancellableMutationProfileRestartDelayMs = 2_000;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
@@ -163,14 +154,19 @@ export function App() {
   const [stepInspectionError, setStepInspectionError] = useState<string | undefined>();
   const [draftBefore, setDraftBefore] = useState<DiffBeforeState | undefined>();
   const [activeViewContextId, setActiveViewContextId] = useState("");
-  const [gridViewState, setGridViewState] = useState<GridViewState>(emptyGridViewState);
-  const [viewStateRestoreVersion, setViewStateRestoreVersion] = useState(0);
-  const [pendingRendererSynchronization, setPendingRendererSynchronization] = useState<
-    RendererSynchronizationMessage | undefined
-  >();
-  const pendingRendererSynchronizationRef = useRef<RendererSynchronizationMessage | undefined>(undefined);
-  const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
-  const rendererRetirementPublished = useRef(false);
+  const {
+    acceptedSynchronization,
+    acceptSynchronization,
+    clearSynchronization,
+    flushGridViewState,
+    gridViewState,
+    publishGridViewState,
+    resetGridViewState,
+    restoreGridViewport,
+    restoreHostGridViewState,
+    takeGridViewStateForSessionModeChange,
+    viewStateRestoreVersion
+  } = useRendererPresentationLifecycle(metadata);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
@@ -214,9 +210,6 @@ export function App() {
   const sessionModeChangeReturnFocus = useRef<HTMLButtonElement | null>(null);
   const sessionModeChangeFocusFrame = useRef<number | undefined>(undefined);
   const operationWasOpen = useRef(false);
-  const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
-  const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
-  const gridViewStateTimer = useRef<number | undefined>(undefined);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
@@ -251,6 +244,10 @@ export function App() {
         window.cancelAnimationFrame(importOptionsDispatchFrame.current);
       }
       importOptionsReturnFocus.current = null;
+      if (sessionModeChangeFocusFrame.current !== undefined) {
+        window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
+      }
+      sessionModeChangeReturnFocus.current = null;
     },
     []
   );
@@ -339,11 +336,6 @@ export function App() {
     setFailedPageRequest(next);
   }, []);
 
-  const storeGridViewState = useCallback((next: GridViewState) => {
-    gridViewStateRef.current = next;
-    setGridViewState(next);
-  }, []);
-
   const storeGoToColumnRequest = useCallback((next: ColumnRevealRequest | undefined) => {
     goToColumnRequestRef.current = next;
     setGoToColumnRequest(next);
@@ -399,39 +391,16 @@ export function App() {
     [scheduleImportOptionsFocusRestoration]
   );
 
-  const flushGridViewState = useCallback(() => {
-    if (gridViewStateTimer.current !== undefined) {
-      window.clearTimeout(gridViewStateTimer.current);
-      gridViewStateTimer.current = undefined;
-    }
-    const pending = pendingGridViewState.current;
-    pendingGridViewState.current = undefined;
-    const state = pending ? encodeGridViewState(pending) : undefined;
-    if (state) vscode.postMessage({ kind: "updateViewState", state });
-  }, []);
-
-  const publishGridViewState = useCallback(
-    (next: GridViewState) => {
-      storeGridViewState(next);
-      pendingGridViewState.current = next;
-      if (gridViewStateTimer.current !== undefined) window.clearTimeout(gridViewStateTimer.current);
-      gridViewStateTimer.current = window.setTimeout(flushGridViewState, 100);
+  const requestSessionModeChange = useCallback(
+    (target: SessionMode, trigger: HTMLButtonElement) => {
+      const state = takeGridViewStateForSessionModeChange();
+      if (!state) return;
+      sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
+      setSessionModeChangeTarget(target);
+      vscode.postMessage({ kind: "switchSessionMode", mode: target, state });
     },
-    [flushGridViewState, storeGridViewState]
+    [takeGridViewStateForSessionModeChange]
   );
-
-  const requestSessionModeChange = useCallback((target: SessionMode, trigger: HTMLButtonElement) => {
-    const state = encodeGridViewState(gridViewStateRef.current);
-    if (!state) return;
-    if (gridViewStateTimer.current !== undefined) {
-      window.clearTimeout(gridViewStateTimer.current);
-      gridViewStateTimer.current = undefined;
-    }
-    pendingGridViewState.current = undefined;
-    sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
-    setSessionModeChangeTarget(target);
-    vscode.postMessage({ kind: "switchSessionMode", mode: target, state });
-  }, []);
 
   const restoreSessionModeChangeFocus = useCallback((targetMode: SessionMode) => {
     if (sessionModeChangeFocusFrame.current !== undefined) {
@@ -454,40 +423,6 @@ export function App() {
       document.querySelector<HTMLButtonElement>("[data-session-mode-action]:not(:disabled)")?.focus();
     });
   }, []);
-
-  useEffect(() => {
-    const handlePageHide = (event: PageTransitionEvent) => {
-      flushGridViewState();
-      if (event.persisted || rendererRetirementPublished.current) return;
-      const synchronization = pendingRendererSynchronizationRef.current;
-      if (!synchronization || acknowledgedRendererSynchronizationId.current !== synchronization.syncId) return;
-      const current = metadataRef.current;
-      const matchesCommittedSession =
-        synchronization.sessionId === null && synchronization.revision === null
-          ? current === undefined
-          : current?.sessionId === synchronization.sessionId && current.revision === synchronization.revision;
-      if (!matchesCommittedSession) return;
-      rendererRetirementPublished.current = true;
-      vscode.postMessage({
-        kind: "rendererRetiring",
-        syncId: synchronization.syncId,
-        sessionId: synchronization.sessionId,
-        revision: synchronization.revision
-      });
-    };
-    const handleBeforeUnload = () => flushGridViewState();
-    window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => {
-      window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      flushGridViewState();
-      if (sessionModeChangeFocusFrame.current !== undefined) {
-        window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
-      }
-      sessionModeChangeReturnFocus.current = null;
-    };
-  }, [flushGridViewState]);
 
   const storeBackgroundDiagnostics = useCallback(
     (
@@ -1120,14 +1055,7 @@ export function App() {
           ? { row: focusedRow, column: focusedColumn }
           : undefined;
       const restoreGridFocus = focusedCell !== undefined || focusedElement === document.body;
-      publishGridViewState({
-        ...gridViewStateRef.current,
-        viewport: {
-          firstVisibleRow: confirmedPage.offset,
-          scrollLeft: gridViewStateRef.current.viewport.scrollLeft
-        }
-      });
-      setViewStateRestoreVersion((current) => current + 1);
+      restoreGridViewport(confirmedPage.offset);
       if (restoreGridFocus) {
         scheduleWebviewFocusRestoration(() => {
           scheduleWebviewFocusRestoration(() => {
@@ -1142,7 +1070,7 @@ export function App() {
         });
       }
     },
-    [publishGridViewState, restoreConfirmedViewState]
+    [restoreConfirmedViewState, restoreGridViewport]
   );
 
   useEffect(() => {
@@ -1180,8 +1108,7 @@ export function App() {
           // This marker is the host's publication barrier. Commit every
           // authoritative message that preceded it before allowing recovery
           // pulls or a native view reveal to invalidate the marker.
-          pendingRendererSynchronizationRef.current = response;
-          flushSync(() => setPendingRendererSynchronization(response));
+          acceptSynchronization(response);
         }
         return;
       }
@@ -1270,13 +1197,7 @@ export function App() {
         return;
       }
       if (response.kind === "viewState") {
-        pendingGridViewState.current = undefined;
-        if (gridViewStateTimer.current !== undefined) {
-          window.clearTimeout(gridViewStateTimer.current);
-          gridViewStateTimer.current = undefined;
-        }
-        storeGridViewState(response.state);
-        setViewStateRestoreVersion((current) => current + 1);
+        restoreHostGridViewState(response.state);
         return;
       }
       if (response.kind === "editorAction") {
@@ -1461,9 +1382,7 @@ export function App() {
           setForegroundError(response.message);
           return;
         } else if (!metadataRef.current) {
-          pendingRendererSynchronizationRef.current = undefined;
-          setPendingRendererSynchronization(undefined);
-          acknowledgedRendererSynchronizationId.current = undefined;
+          clearSynchronization();
           setLoading(false);
           setProjectionLoading(false);
           setRuntimeDependencyInstallPending(false);
@@ -1496,9 +1415,7 @@ export function App() {
           } else if (importOptionsPendingRef.current) {
             return;
           } else if (!metadataRef.current) {
-            pendingRendererSynchronizationRef.current = undefined;
-            setPendingRendererSynchronization(undefined);
-            acknowledgedRendererSynchronizationId.current = undefined;
+            clearSynchronization();
             setLoading(false);
             setProjectionLoading(false);
             setForegroundErrorCode(undefined);
@@ -1541,9 +1458,7 @@ export function App() {
         const preservesOpenOperation =
           current?.sessionId === response.metadata.sessionId && current.revision === response.metadata.revision;
         undoPlanReturnFocus.current = null;
-        pendingRendererSynchronizationRef.current = undefined;
-        setPendingRendererSynchronization(undefined);
-        acknowledgedRendererSynchronizationId.current = undefined;
+        clearSynchronization();
         storeImportOptionsPending(false);
         if (!preservesOpenOperation) {
           setQueuedOperationIntent(undefined);
@@ -1565,7 +1480,7 @@ export function App() {
         setForegroundError(undefined);
         setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
-        storeGridViewState(emptyGridViewState());
+        resetGridViewState();
         storePendingStepInspection(undefined);
         storeStepInspection(undefined);
         storeStepInspectionTarget(undefined);
@@ -1675,9 +1590,7 @@ export function App() {
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
         const undoReturnTarget = undoPlanReturnFocus.current;
         undoPlanReturnFocus.current = null;
-        pendingRendererSynchronizationRef.current = undefined;
-        setPendingRendererSynchronization(undefined);
-        acknowledgedRendererSynchronizationId.current = undefined;
+        clearSynchronization();
         const previous = mutationSnapshot.current;
         latestPageRequest.current = undefined;
         setFilterBarRequestLifecycle({});
@@ -1844,10 +1757,12 @@ export function App() {
       return true;
     }
   }, [
+    acceptSynchronization,
     beginMutation,
     cancelMutationProfileRestart,
     canProfileConfirmedView,
     clearBackgroundDiagnostic,
+    clearSynchronization,
     clearStepInspection,
     confirmView,
     deleteStep,
@@ -1861,6 +1776,8 @@ export function App() {
     requestStatsForConfirmedView,
     requestStepInspection,
     resetConfirmedFilterHistory,
+    resetGridViewState,
+    restoreHostGridViewState,
     restoreSessionModeChangeFocus,
     restartProfilingAfterMutation,
     restartProfilingForConfirmedView,
@@ -1873,7 +1790,6 @@ export function App() {
     storeConfirmedFilterHistory,
     storeFailedPageRequest,
     storeFilterModel,
-    storeGridViewState,
     storeGoToColumnRequest,
     storeImportOptionsPending,
     storeMetadata,
@@ -1954,63 +1870,6 @@ export function App() {
     queuedStepSelection,
     requestStepInspection
   ]);
-
-  useLayoutEffect(() => {
-    const synchronization = pendingRendererSynchronization;
-    if (!synchronization || acknowledgedRendererSynchronizationId.current === synchronization.syncId) return;
-    const matchesCommittedSession =
-      synchronization.sessionId === null && synchronization.revision === null
-        ? metadata === undefined
-        : metadata?.sessionId === synchronization.sessionId && metadata.revision === synchronization.revision;
-    if (!matchesCommittedSession) return;
-    vscode.postMessage({
-      kind: "rendererSynchronized",
-      syncId: synchronization.syncId,
-      sessionId: synchronization.sessionId,
-      revision: synchronization.revision
-    });
-    acknowledgedRendererSynchronizationId.current = synchronization.syncId;
-    flushGridViewState();
-  }, [flushGridViewState, metadata, pendingRendererSynchronization]);
-
-  const rendererNeedsSnapshot = pendingRendererSynchronization === undefined;
-  useEffect(() => {
-    if (!rendererNeedsSnapshot) return;
-    let retryIndex = 0;
-    let retry: number | undefined;
-    const clearRetry = () => {
-      if (retry !== undefined) window.clearTimeout(retry);
-      retry = undefined;
-    };
-    const scheduleRetry = () => {
-      clearRetry();
-      if (document.visibilityState !== "visible" || retryIndex >= sessionSnapshotRetryDelaysMs.length) return;
-      retry = window.setTimeout(() => {
-        retry = undefined;
-        if (document.visibilityState !== "visible" || pendingRendererSynchronizationRef.current !== undefined) {
-          return;
-        }
-        vscode.postMessage({ kind: "requestSessionSnapshot" });
-        retryIndex += 1;
-        scheduleRetry();
-      }, sessionSnapshotRetryDelaysMs[retryIndex]);
-    };
-    const restoreVisibleSnapshot = () => {
-      clearRetry();
-      retryIndex = 0;
-      if (document.visibilityState === "visible" && pendingRendererSynchronizationRef.current === undefined) {
-        vscode.postMessage({ kind: "requestSessionSnapshot" });
-        retryIndex = 1;
-        scheduleRetry();
-      }
-    };
-    document.addEventListener("visibilitychange", restoreVisibleSnapshot);
-    scheduleRetry();
-    return () => {
-      clearRetry();
-      document.removeEventListener("visibilitychange", restoreVisibleSnapshot);
-    };
-  }, [rendererNeedsSnapshot]);
 
   const schemaById = useMemo(() => new Map(metadata?.schema.map((column) => [column.id, column]) ?? []), [metadata]);
   const selectedSummaryColumnId = useMemo(() => {
@@ -2620,9 +2479,9 @@ export function App() {
       data-session-id={metadata?.sessionId}
       data-renderer-sync-id={
         metadata &&
-        pendingRendererSynchronization?.sessionId === metadata.sessionId &&
-        pendingRendererSynchronization.revision === metadata.revision
-          ? pendingRendererSynchronization.syncId
+        acceptedSynchronization?.sessionId === metadata.sessionId &&
+        acceptedSynchronization.revision === metadata.revision
+          ? acceptedSynchronization.syncId
           : undefined
       }
       tabIndex={-1}
