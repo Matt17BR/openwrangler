@@ -4,6 +4,7 @@ import json
 import os
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 from math import isnan
 from pathlib import Path
 from threading import Event
@@ -145,6 +146,58 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     result = namespace["clean_data"](frame)
     assert isinstance(result, duckdb.DuckDBPyRelation)
     return result
+
+
+@pytest.mark.parametrize(
+    ("dtype", "source_expression", "expected_type", "expected_value"),
+    [
+        ("string", "42::INTEGER", "VARCHAR", "42"),
+        ("integer", "'42'::VARCHAR", "BIGINT", 42),
+        ("float", "1.25::ow_cast_source", "DOUBLE", 1.25),
+        ("boolean", "'true'::VARCHAR", "BOOLEAN", True),
+        ("date", "'2024-01-02'::VARCHAR", "DATE", date(2024, 1, 2)),
+        (
+            "datetime",
+            "'2024-01-02 03:04:05'::VARCHAR",
+            "TIMESTAMP",
+            datetime(2024, 1, 2, 3, 4, 5),
+        ),
+    ],
+)
+def test_duckdb_cast_targets_match_live_and_generated_code(
+    dtype: str,
+    source_expression: str,
+    expected_type: str,
+    expected_value: Any,
+) -> None:
+    engine = DuckDBEngine()
+    source = None
+    live = None
+    generated = None
+
+    try:
+        duckdb.execute("CREATE TYPE ow_cast_source AS DECIMAL(9, 2)")
+        source = duckdb.sql(f'SELECT {source_expression} AS "source""value"')
+        operation = bound_step(
+            "castColumn",
+            column=bound_ref("c:source:0", 'source"value', 0),
+            dtype=dtype,
+        )
+        live = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert live.types == [expected_type]
+        assert [str(item) for item in generated.types] == [expected_type]
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == [(expected_value,)]
+        assert generated.fetchall() == [(expected_value,)]
+    finally:
+        source = None
+        live = None
+        generated = None
+        try:
+            engine.close()
+        finally:
+            duckdb.execute("DROP TYPE IF EXISTS ow_cast_source")
 
 
 def test_duckdb_rename_only_generated_code_matches_live_with_quoted_names() -> None:
