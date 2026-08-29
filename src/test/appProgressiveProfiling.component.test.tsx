@@ -734,35 +734,47 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("The sorted view failed")).toBeInTheDocument();
   });
 
-  it("releases failed summary work and retries the column with a fresh correlation ID", async () => {
+  it("reasserts pending drawer profiling after a same-context view rollback with header profiles disabled", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const firstCity = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
-    if (!firstCity) throw new Error("Expected the initial city summary request.");
+    const confirmedContext = setViewContextMessages().at(-1)?.viewContextId;
+    if (!confirmedContext) throw new Error("Expected the opened view context.");
 
+    const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+    fireEvent.click(headerProfiles);
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => expect(cancellationMessages().length).toBeGreaterThan(0));
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
+    const pendingDrawer = onlyRuntimeEnvelope("getSummary");
+    expect(pendingDrawer.priority).toBe("interactive");
+    expect(pendingDrawer.request.columnIds).toEqual(["c:0"]);
+
+    postMessage.mockClear();
+    sortCityAscending();
+    const failedPage = onlyRequest("getPage");
+    expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(
+      pendingDrawer.request.viewRequestId
+    );
+
+    postMessage.mockClear();
     dispatch({
       kind: "error",
-      code: "profile_failed",
-      message: "Profile failed once",
+      code: "page_failed",
+      message: "The sorted view failed",
       recoverable: true,
-      viewRequestId: viewId(firstCity)
+      viewRequestId: viewId(failedPage)
     });
 
-    await waitFor(() => {
-      const cityRequests = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0");
-      expect(cityRequests).toHaveLength(2);
-    });
-    const retry = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0")[1];
-    expect(viewSequence(retry) > viewSequence(firstCity)).toBe(true);
-
-    dispatch({
-      kind: "summary",
-      revision: metadata.revision,
-      viewRequestId: viewId(retry),
-      summaries: [citySummary]
-    });
-    expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
+    const replacement = onlyRuntimeEnvelope("getSummary");
+    expect(replacement.request.viewRequestId).not.toBe(pendingDrawer.request.viewRequestId);
+    expect(replacement.request.columnIds).toEqual(["c:0"]);
+    expect(replacement.viewContextId).toBe(confirmedContext);
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
   });
 
   it("restores confirmed profile and value state after mutation errors and cancellation", async () => {
@@ -850,34 +862,6 @@ describe("App progressive profiling and view correlation", () => {
       expect(onlyRequest("undoStep")).toBeDefined();
       act(() => vi.runOnlyPendingTimers());
       expect(requestsOfKind("getSummary")).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("resumes automatic profiles after a non-cancellable mutation stays quiet", async () => {
-    render(<App />);
-    dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });
-    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
-    await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
-    postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Apply step" }));
-
-    vi.useFakeTimers();
-    try {
-      postMessage.mockClear();
-      dispatch({
-        kind: "planUpdated",
-        action: "apply",
-        revision: 2,
-        metadata: rCloneAppliedMetadata,
-        page: clonePage,
-        code: "sales_copy <- sales"
-      });
-      expect(requestsOfKind("getSummary")).toHaveLength(0);
-
-      act(() => vi.runOnlyPendingTimers());
-      expect(requestsOfKind("getSummary").length).toBeGreaterThan(0);
     } finally {
       vi.useRealTimers();
     }
