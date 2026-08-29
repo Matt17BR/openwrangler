@@ -97,7 +97,7 @@ import {
   runRemoteJupyterAcceptanceLifecycle,
   startRemoteJupyterAcceptanceFixture
 } from "./remote-jupyter-acceptance.mjs";
-import { readPackagedEditorIdentity } from "./packaged-editor-candidate.mjs";
+import { inspectVsixArchive, packagedOpenWranglerIdentity, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localEvidenceArtifactBase = resolve(root, "tmp", "editor-acceptance-artifacts");
@@ -189,7 +189,9 @@ try {
           validateEditorAcceptancePrivatePathOverrides();
           const vsix = resolve(root, process.argv[2] ?? "openwrangler.vsix");
           if (!existsSync(vsix)) throw new Error("The packaged extension was not found.");
-          const expectedExtension = (await readPackagedEditorIdentity(vsix)).qualified;
+          const snapshot = readBoundedVsixFileSnapshot(vsix, { requireOwner: true });
+          const archive = await inspectVsixArchive(snapshot.bytes);
+          const expectedExtension = packagedOpenWranglerIdentity(archive.packagedPackageJson).qualified;
           const pythonExtensionInstallTarget = resolvePythonExtensionAcceptanceInstallTarget();
           let jupyterExtensionInstallTarget = resolveJupyterExtensionAcceptanceInstallTarget();
           const dataWranglerExtensionInstallTarget = resolveDataWranglerExtensionAcceptanceInstallTarget();
