@@ -282,7 +282,9 @@ export function installedPerformanceReportGateForOptions(
   options,
   { releaseGate = assertInstalledPerformanceReleaseGate, evidenceGate = assertInstalledPerformanceEvidenceGate } = {}
 ) {
-  if (options?.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) return evidenceGate;
+  if (options?.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+    return (report) => evidenceGate(report, { requiredEditors: options.editors });
+  }
   if (
     options?.artifactKind === STABLE_RELEASE_ARTIFACT_KIND ||
     options?.artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND

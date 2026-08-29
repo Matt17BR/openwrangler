@@ -18,8 +18,8 @@ import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v8";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v11";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v6";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v12";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v7";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT = 200;
@@ -178,8 +178,6 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     limits: { ...INSTALLED_PERFORMANCE_LIMITS },
     editors
   };
-  const failures = installedPerformanceFailures(report);
-  report[evidenceOnly ? "evidenceGate" : "releaseGate"] = { passed: failures.length === 0, failures };
   assertPublicEvidence(report);
   return report;
 }
@@ -190,7 +188,6 @@ export function assertInstalledPerformanceReleaseGate(
 ) {
   return assertInstalledPerformanceGate(report, {
     protocol: INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
-    verdictKey: "releaseGate",
     candidateBuildMethods: new Set([
       "guarded-clean-head-v1",
       "canonical-release-artifact-v1",
@@ -208,7 +205,6 @@ export function assertInstalledPerformanceEvidenceGate(
 ) {
   return assertInstalledPerformanceGate(report, {
     protocol: INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
-    verdictKey: "evidenceGate",
     candidateBuildMethods: new Set(["performance-evidence-artifact-v1"]),
     requiredEditors,
     requireLinuxReference,
@@ -218,21 +214,11 @@ export function assertInstalledPerformanceEvidenceGate(
 
 function assertInstalledPerformanceGate(
   report,
-  { protocol, verdictKey, candidateBuildMethods, requiredEditors, requireLinuxReference, gateLabel }
+  { protocol, candidateBuildMethods, requiredEditors, requireLinuxReference, gateLabel }
 ) {
   exactKeys(
     report,
-    [
-      "protocol",
-      "generatedAtUtc",
-      "candidate",
-      "source",
-      "fixtureManifest",
-      "measurement",
-      "limits",
-      "editors",
-      verdictKey
-    ],
+    ["protocol", "generatedAtUtc", "candidate", "source", "fixtureManifest", "measurement", "limits", "editors"],
     [],
     "installed performance report"
   );
@@ -295,13 +281,8 @@ function assertInstalledPerformanceGate(
     validateProvenance(editor.provenance);
     validateGroupedResults(editor.results);
   }
-  exactKeys(report[verdictKey], ["passed", "failures"], [], `${gateLabel}-gate verdict`);
   const failureDetails = installedPerformanceFailureDetails(report, { requiredEditors, requireLinuxReference });
   const failures = failureDetails.map((failure) => failure.message);
-  const expectedVerdict = { passed: failures.length === 0, failures };
-  if (JSON.stringify(report[verdictKey]) !== JSON.stringify(expectedVerdict)) {
-    throw new Error(`Installed performance report ${gateLabel} verdict does not match its measurements.`);
-  }
   assertPublicEvidence(report);
   if (failures.length > 0) {
     const error = new Error(`Installed performance ${gateLabel} gates failed:\n${failures.join("\n")}`);
@@ -911,15 +892,6 @@ function validateSummary(summary, expectedCount) {
   if (JSON.stringify(summary) !== JSON.stringify(expected)) {
     throw new TypeError("Duration summary does not match its retained samples.");
   }
-}
-
-function installedPerformanceFailures(
-  report,
-  { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
-) {
-  return installedPerformanceFailureDetails(report, { requiredEditors, requireLinuxReference }).map(
-    (failure) => failure.message
-  );
 }
 
 function installedPerformanceFailureDetails(
