@@ -32,6 +32,22 @@ def cell(raw: Any, *, kind: str = "list", display: str = "value") -> dict[str, A
     }
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (None, "malformed page payload"),
+        ({"columnIds": (), "rows": []}, "malformed rows or column identities"),
+        ({"columnIds": [], "rows": ()}, "malformed rows or column identities"),
+        ({"columnIds": [], "rows": [None]}, "malformed row payload"),
+        ({"columnIds": [], "rows": [{"id": "r:0", "values": ()}]}, "malformed row values"),
+        ({"columnIds": ["c:0"], "rows": [{"id": "r:0", "values": [None]}]}, "malformed typed cell"),
+    ],
+)
+def test_live_page_shape_boundary_rejects_malformed_values(payload: object, message: str) -> None:
+    with pytest.raises(LivePagePayloadError, match=message):
+        validate_live_page_payload(payload)
+
+
 def test_live_page_budget_rejects_cells_nodes_depth_cycles_and_invalid_utf8(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
