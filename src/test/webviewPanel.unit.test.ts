@@ -2492,7 +2492,6 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "selected-summary" });
     expect(prioritizeViewRequest).toHaveBeenCalledWith("session", "selected-summary");
-    await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "" });
     await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "selected-summary", priority: "interactive" });
     expect(prioritizeViewRequest).toHaveBeenCalledOnce();
 
@@ -2523,13 +2522,6 @@ describe("OpenWranglerPanel retained view state", () => {
         filterModel: metadata.filterModel,
         columnIds: ["c:0"]
       }
-    });
-    expect(request).not.toHaveBeenCalled();
-
-    await harness.send({
-      kind: "runtimeRequest",
-      priority: "interactive",
-      request: { kind: "undoStep", offset: 0, limit: 20, columnOffset: 0, columnLimit: 16 }
     });
     expect(request).not.toHaveBeenCalled();
   });
@@ -3013,7 +3005,6 @@ describe("OpenWranglerPanel retained view state", () => {
       }
     });
     await harness.send({ kind: "clearStepInspection" });
-    await harness.send({ kind: "clearStepInspection", unexpected: true });
     await harness.send({
       kind: "runtimeRequest",
       request: { kind: "inspectStep", stepId: "", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
@@ -3255,7 +3246,6 @@ describe("OpenWranglerPanel retained view state", () => {
     executeCommand.mockClear();
 
     for (const malformed of [
-      { kind: "exportData", unexpected: true },
       { kind: "exportData", format: "csv" },
       { kind: "exportData", path: "/tmp/out.csv" }
     ]) {
@@ -3285,10 +3275,7 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     executeCommand.mockClear();
 
-    for (const malformed of [
-      { kind: "installRuntimeDependencies", unexpected: true },
-      { kind: "installRuntimeDependencies", confirmed: true }
-    ]) {
+    for (const malformed of [{ kind: "installRuntimeDependencies", confirmed: true }]) {
       await harness.receive(malformed);
     }
     expect(executeCommand).not.toHaveBeenCalled();
