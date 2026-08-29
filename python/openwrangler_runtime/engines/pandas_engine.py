@@ -108,6 +108,27 @@ def _pandas_cast_strategy(dtype: str) -> tuple[str, str]:
     return "astype", {"string": "string", "integer": "Int64", "float": "Float64", "boolean": "boolean"}[dtype]
 
 
+def _pandas_fill_strategy(
+    replacement: Mapping[str, Any],
+) -> Literal[
+    "value",
+    "fallback",
+    "directional",
+    "grouped",
+    "linear",
+]:
+    kind = replacement.get("kind")
+    if kind == "fallbackColumns":
+        return "fallback"
+    if kind == "directional":
+        return "directional"
+    if kind == "groupedStatistic":
+        return "grouped"
+    if kind == "linearInterpolation":
+        return "linear"
+    return "value"
+
+
 @lru_cache(maxsize=1)
 def _pandas_row_axis_trusted_scalar_types() -> tuple[tuple[type[Any], ...], type[Any], type[Any]]:
     import numpy as np
@@ -610,7 +631,8 @@ class PandasEngine(DataFrameEngine):
         if kind == "fillMissingValues":
             position = self._bound_frame_position(df, params["column"], kind)
             replacement = params["replacement"]
-            if replacement.get("kind") == "fallbackColumns":
+            strategy = _pandas_fill_strategy(replacement)
+            if strategy == "fallback":
                 fallback_positions = [self._bound_frame_position(df, column, kind) for column in replacement["columns"]]
                 df.isetitem(
                     position,
@@ -619,7 +641,7 @@ class PandasEngine(DataFrameEngine):
                         [df.iloc[:, fallback_position] for fallback_position in fallback_positions],
                     ),
                 )
-            elif replacement.get("kind") == "directional":
+            elif strategy == "directional":
                 order_rules = [
                     (
                         self._bound_frame_position(df, rule["column"], kind),
@@ -638,7 +660,7 @@ class PandasEngine(DataFrameEngine):
                         replacement.get("maxGap"),
                     ),
                 )
-            elif replacement.get("kind") == "groupedStatistic":
+            elif strategy == "grouped":
                 key_positions = [self._bound_frame_position(df, key, kind) for key in replacement["keys"]]
                 df.isetitem(
                     position,
@@ -649,7 +671,7 @@ class PandasEngine(DataFrameEngine):
                         replacement["statistic"],
                     ),
                 )
-            elif replacement.get("kind") == "linearInterpolation":
+            elif strategy == "linear":
                 coordinate_position = self._bound_frame_position(df, replacement["coordinate"], kind)
                 df.isetitem(
                     position,
@@ -1088,7 +1110,11 @@ class PandasEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
+        needs_view_value_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
+        fill_strategies = {
+            _pandas_fill_strategy(step["params"]["replacement"]) for step in plan if step["kind"] == "fillMissingValues"
+        }
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
@@ -1180,7 +1206,8 @@ class PandasEngine(DataFrameEngine):
         if needs_pivot_wider_helpers:
             lines.extend(_generated_pandas_pivot_wider_helpers())
         if needs_missing_helpers:
-            lines.extend(generated_view_value_helper_lines())
+            if needs_view_value_helpers:
+                lines.extend(generated_view_value_helper_lines())
             lines.extend(
                 [
                     "def _open_wrangler_is_null(value):",
@@ -1210,7 +1237,7 @@ class PandasEngine(DataFrameEngine):
                 ]
             )
         if needs_fill_helpers:
-            lines.extend(_generated_pandas_fill_helpers())
+            lines.extend(_generated_pandas_fill_helpers(fill_strategies))
         if needs_object_isolation:
             lines.extend(
                 [
@@ -1532,7 +1559,8 @@ class PandasEngine(DataFrameEngine):
             series = f"_fill_series_{index}"
             missing = f"_fill_missing_{index}"
             replacement = params["replacement"]
-            if replacement.get("kind") == "fallbackColumns":
+            strategy = _pandas_fill_strategy(replacement)
+            if strategy == "fallback":
                 fallback_positions = [bound_column_position(column, kind) for column in replacement["columns"]]
                 return [
                     f"{prefix}{series} = df.iloc[:, {position}]",
@@ -1541,7 +1569,7 @@ class PandasEngine(DataFrameEngine):
                         f"{series}, [df.iloc[:, position] for position in {fallback_positions!r}]))"
                     ),
                 ]
-            if replacement.get("kind") == "directional":
+            if strategy == "directional":
                 order_rules = [
                     (
                         bound_column_position(rule["column"], kind),
@@ -1557,7 +1585,7 @@ class PandasEngine(DataFrameEngine):
                         f"{replacement.get('maxGap')!r}))"
                     )
                 ]
-            if replacement.get("kind") == "groupedStatistic":
+            if strategy == "grouped":
                 key_positions = [bound_column_position(key, kind) for key in replacement["keys"]]
                 return [
                     (
@@ -1565,7 +1593,7 @@ class PandasEngine(DataFrameEngine):
                         f"df, {position}, {key_positions!r}, {replacement['statistic']!r}))"
                     )
                 ]
-            if replacement.get("kind") == "linearInterpolation":
+            if strategy == "linear":
                 coordinate_position = bound_column_position(replacement["coordinate"], kind)
                 return [
                     (
@@ -3811,7 +3839,6 @@ def _pandas_fill_missing_grouped_statistic(
     key_positions: Sequence[int],
     statistic: str,
 ) -> Any:
-    import numpy as np
     import pandas as pd
 
     series = frame.iloc[:, target_position]
@@ -3839,61 +3866,8 @@ def _pandas_fill_missing_grouped_statistic(
         prepared_keys.append(key_series)
     key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)
     groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, observed=True).indices.values()
-
     semantic_type = _pandas_semantic_type(series)
-    identity_mode = statistic == "mostFrequent" and _pandas_grouped_identity_required(series)
-
-    unresolved = object()
-
-    def calculate(values: list[Any]) -> Any:
-        if not values:
-            return unresolved
-        if statistic == "mostFrequent":
-            from collections import Counter
-
-            try:
-                if identity_mode:
-                    identities = [_pandas_grouped_scalar_identity(value) for value in values]
-                    counts = Counter(identities)
-                    originals = dict(zip(identities, values, strict=True))
-                else:
-                    counts = Counter(values)
-                    originals = {value: value for value in values}
-            except TypeError as error:
-                raise EngineError(
-                    "Grouped most-common fill is unavailable for values that cannot be compared exactly."
-                ) from error
-            highest = max(counts.values())
-            winners = [value for value, count in counts.items() if count == highest]
-            return originals[winners[0]] if len(winners) == 1 else unresolved
-        ordered = sorted(values)
-        if statistic == "median":
-            lower = ordered[(len(ordered) - 1) // 2]
-            upper = ordered[len(ordered) // 2]
-            if semantic_type == "integer":
-                return exact_integer_median(lower, upper)
-            if semantic_type == "decimal":
-                return exact_decimal_median(lower, upper, *_pandas_decimal_spec(series, values))
-            try:
-                result = safe_float_midpoint(lower, upper)
-            except (TypeError, ValueError, OverflowError) as error:
-                raise EngineError(f"Cannot calculate a grouped numeric median: {error}") from error
-            return unresolved if isnan(result) else result
-
-        values_array = np.asarray(values, dtype=np.float64)
-        has_positive_infinity = bool(np.isposinf(values_array).any())
-        has_negative_infinity = bool(np.isneginf(values_array).any())
-        if has_positive_infinity and has_negative_infinity:
-            return unresolved
-        if has_positive_infinity:
-            return float("inf")
-        if has_negative_infinity:
-            return float("-inf")
-        scale = float(np.max(np.abs(values_array)))
-        if scale == 0:
-            return 0.0
-        scaled_mean = float(np.mean(values_array / scale))
-        return max(-1.0, min(1.0, scaled_mean)) * scale
+    exact_identity = statistic == "mostFrequent" and _pandas_grouped_identity_required(series)
 
     result = series.copy()
     try:
@@ -3903,8 +3877,15 @@ def _pandas_fill_missing_grouped_statistic(
             if not len(missing_positions):
                 continue
             present_positions = positions[~missing[positions]]
-            fill_value = calculate(list(source.iloc[present_positions].array))
-            if fill_value is unresolved:
+            fill_value = _pandas_fill_statistic(
+                series,
+                list(source.iloc[present_positions].array),
+                statistic,
+                semantic_type,
+                required=False,
+                exact_identity=exact_identity,
+            )
+            if fill_value is None:
                 continue
             result.iloc[missing_positions] = fill_value
     except (TypeError, ValueError, OverflowError) as error:
@@ -3955,60 +3936,121 @@ def _pandas_grouped_scalar_identity(value: Any) -> tuple[Any, ...]:
     return (type(value).__module__, type(value).__qualname__, value)
 
 
+def _pandas_fill_statistic(
+    series: Any,
+    values: list[Any],
+    statistic: str,
+    semantic_type: str,
+    *,
+    required: bool,
+    exact_identity: bool = False,
+) -> Any | None:
+    import numpy as np
+
+    if not values:
+        if not required:
+            return None
+        if statistic == "mostFrequent":
+            raise EngineError("This column has no non-missing values. Choose a specific value.")
+        raise EngineError(
+            f"Cannot fill with the {statistic} because the selected column has no present numeric values."
+        )
+
+    if statistic == "mostFrequent":
+        from collections import Counter
+
+        originals: dict[Any, Any] = {}
+        try:
+            if exact_identity:
+                identities = [_pandas_grouped_scalar_identity(value) for value in values]
+                counts = Counter(identities)
+                originals = dict(zip(identities, values, strict=True))
+            else:
+                counts = Counter(values)
+                if not required:
+                    originals = {value: value for value in values}
+        except TypeError as error:
+            message = (
+                "Most common value is unavailable for values that cannot be compared exactly."
+                if required
+                else "Grouped most-common fill is unavailable for values that cannot be compared exactly."
+            )
+            raise EngineError(message) from error
+        highest = max(counts.values())
+        winners = [value for value, count in counts.items() if count == highest]
+        if len(winners) == 1:
+            if required and not exact_identity:
+                return winners[0]
+            return originals[winners[0]]
+        if required:
+            raise EngineError(
+                f"This column has no single most common value: {len(winners)} values are tied. Choose a specific value."
+            )
+        return None
+
+    if statistic == "median":
+        ordered = sorted(values)
+        lower = ordered[(len(ordered) - 1) // 2]
+        upper = ordered[len(ordered) // 2]
+        if semantic_type == "integer":
+            return exact_integer_median(lower, upper)
+        if semantic_type == "decimal":
+            return exact_decimal_median(lower, upper, *_pandas_decimal_spec(series, values))
+        try:
+            result = safe_float_midpoint(lower, upper)
+        except (TypeError, ValueError, OverflowError) as error:
+            scope = "" if required else "grouped "
+            raise EngineError(f"Cannot calculate a {scope}numeric median: {error}") from error
+        if isnan(result):
+            if required:
+                raise EngineError("Cannot fill with the median because the selected column has no finite median.")
+            return None
+        return result
+
+    try:
+        values_array = np.asarray(values, dtype=np.float64)
+    except (OverflowError, TypeError, ValueError) as error:
+        if not required:
+            raise
+        raise EngineError(
+            "Cannot fill with the mean because the selected column contains a value that cannot be represented "
+            "as a floating-point number."
+        ) from error
+    has_positive_infinity = bool(np.isposinf(values_array).any())
+    has_negative_infinity = bool(np.isneginf(values_array).any())
+    if has_positive_infinity and has_negative_infinity:
+        if required:
+            raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
+        return None
+    if has_positive_infinity:
+        return float("inf")
+    if has_negative_infinity:
+        return float("-inf")
+    scale = float(np.max(np.abs(values_array)))
+    if scale == 0:
+        return 0.0
+    scaled_mean = float(np.mean(values_array / scale))
+    return max(-1.0, min(1.0, scaled_mean)) * scale
+
+
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
     missing = _null_mask(series) | _nan_mask(series)
     replacement_kind = replacement.get("kind")
     semantic_type = _pandas_semantic_type(series)
-    if replacement_kind == "mean":
-        if semantic_type != "float":
+    if replacement_kind in {"mean", "median", "mostFrequent"}:
+        if replacement_kind == "mean" and semantic_type != "float":
             raise EngineError("Mean fill requires a floating-point column.")
         if not bool(missing.any()):
             return series.copy()
-        fill_value = _pandas_stable_float_mean(series, missing)
-        try:
-            return series.copy().mask(missing, fill_value)
-        except (TypeError, ValueError) as error:
-            raise EngineError(f"The mean is incompatible with the selected Pandas column: {error}") from error
-
-    if replacement_kind == "median":
-        if not bool(missing.any()):
-            return series.copy()
         present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
-        if not present:
-            raise EngineError("Cannot fill with the median because the selected column has no present numeric values.")
-        ordered = sorted(present)
-        lower = ordered[(len(ordered) - 1) // 2]
-        upper = ordered[len(ordered) // 2]
-        if semantic_type == "integer":
-            fill_value = exact_integer_median(lower, upper)
-        elif semantic_type == "decimal":
-            precision, scale = _pandas_decimal_spec(series, present)
-            fill_value = exact_decimal_median(lower, upper, precision, scale)
-        else:
-            try:
-                fill_value = safe_float_midpoint(lower, upper)
-            except (TypeError, ValueError, OverflowError) as error:
-                raise EngineError(f"Cannot calculate a numeric median for the selected column: {error}") from error
-            if isnan(fill_value):
-                raise EngineError("Cannot fill with the median because the selected column has no finite median.")
+        fill_value = _pandas_fill_statistic(series, present, str(replacement_kind), semantic_type, required=True)
         try:
             return series.copy().mask(missing, fill_value)
         except (TypeError, ValueError) as error:
-            raise EngineError(f"The median is incompatible with the selected Pandas column: {error}") from error
-
-    if replacement_kind == "mostFrequent":
-        if not bool(missing.any()):
-            return series.copy()
-        present = (value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing)
-        fill_value = _pandas_most_frequent_value(present)
-        try:
-            return series.copy().mask(missing, fill_value)
-        except (TypeError, ValueError) as error:
-            raise EngineError(
-                f"The most common value is incompatible with the selected Pandas column: {error}"
-            ) from error
+            label = "most common value" if replacement_kind == "mostFrequent" else replacement_kind
+            raise EngineError(f"The {label} is incompatible with the selected Pandas column: {error}") from error
 
     fill_value = decode_fill_replacement(replacement)
     if semantic_type == "decimal":
@@ -4026,51 +4068,6 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
         return target.mask(missing, fill_value)
     except (TypeError, ValueError) as error:
         raise EngineError(f"The replacement value is incompatible with the selected Pandas column: {error}") from error
-
-
-def _pandas_stable_float_mean(series: Any, missing: Any) -> float:
-    import numpy as np
-
-    try:
-        values = np.asarray(series.array[~missing.array], dtype=np.float64)
-    except (OverflowError, TypeError, ValueError) as error:
-        raise EngineError(
-            "Cannot fill with the mean because the selected column contains a value that cannot be represented "
-            "as a floating-point number."
-        ) from error
-    if values.size == 0:
-        raise EngineError("Cannot fill with the mean because the selected column has no present numeric values.")
-    has_positive_infinity = bool(np.isposinf(values).any())
-    has_negative_infinity = bool(np.isneginf(values).any())
-    if has_positive_infinity and has_negative_infinity:
-        raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
-    if has_positive_infinity:
-        return float("inf")
-    if has_negative_infinity:
-        return float("-inf")
-    scale = float(np.max(np.abs(values)))
-    if scale == 0:
-        return 0.0
-    scaled_mean = float(np.mean(values / scale))
-    return max(-1.0, min(1.0, scaled_mean)) * scale
-
-
-def _pandas_most_frequent_value(present: Iterable[Any]) -> Any:
-    from collections import Counter
-
-    try:
-        counts = Counter(present)
-    except TypeError as error:
-        raise EngineError("Most common value is unavailable for values that cannot be compared exactly.") from error
-    if not counts:
-        raise EngineError("This column has no non-missing values. Choose a specific value.")
-    highest = max(counts.values())
-    winners = [value for value, count in counts.items() if count == highest]
-    if len(winners) != 1:
-        raise EngineError(
-            f"This column has no single most common value: {len(winners)} values are tied. Choose a specific value."
-        )
-    return winners[0]
 
 
 def _pandas_decimal_spec(series: Any, present: list[Any]) -> tuple[int, int]:
@@ -4103,7 +4100,7 @@ def _pandas_datetime_awareness(series: Any) -> bool:
     return awareness.pop()
 
 
-def _generated_pandas_fill_helpers() -> list[str]:
+def _generated_pandas_fill_type_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_semantic_type(series):",
         "    if pd.api.types.is_integer_dtype(series.dtype):",
@@ -4133,6 +4130,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return 'other'",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_decimal_helpers() -> list[str]:
+    return [
         "def _open_wrangler_decimal_at_scale(value, precision, scale):",
         "    if not value.is_finite() or precision < 1 or scale < 0 or scale > precision:",
         "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).')",
@@ -4163,6 +4165,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return 38, scale",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_datetime_helpers() -> list[str]:
+    return [
         "def _open_wrangler_datetime_awareness(series):",
         "    if isinstance(series.dtype, pd.DatetimeTZDtype):",
         "        return True",
@@ -4181,6 +4188,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return awareness.pop()",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_midpoint_helpers() -> list[str]:
+    return [
         "def _open_wrangler_float_midpoint(lower, upper):",
         "    left = float(lower)",
         "    right = float(upper)",
@@ -4193,6 +4205,118 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return (left + right) / 2.0",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_statistic_helpers() -> list[str]:
+    return [
+        (
+            "def _open_wrangler_fill_statistic("
+            "series, values, statistic, semantic_type, required, exact_identity=False):"
+        ),
+        "    if not values:",
+        "        if not required:",
+        "            return None",
+        "        if statistic == 'mostFrequent':",
+        "            raise ValueError('This column has no non-missing values. Choose a specific value.')",
+        (
+            "        raise ValueError(f'Cannot fill with the {statistic} because the selected column has no "
+            "present numeric values.')"
+        ),
+        "    if statistic == 'mostFrequent':",
+        "        originals = {}",
+        "        try:",
+        "            if exact_identity:",
+        "                identities = [_open_wrangler_grouped_scalar_identity(value) for value in values]",
+        "                counts = Counter(identities)",
+        "                originals = dict(zip(identities, values))",
+        "            else:",
+        "                counts = Counter(values)",
+        "                if not required:",
+        "                    originals = {value: value for value in values}",
+        "        except TypeError as error:",
+        "            message = (",
+        "                'Most common value is unavailable for values that cannot be compared exactly.'",
+        "                if required",
+        "                else 'Grouped most-common fill is unavailable for values that cannot be compared exactly.'",
+        "            )",
+        "            raise ValueError(message) from error",
+        "        highest = max(counts.values())",
+        "        winners = [value for value, count in counts.items() if count == highest]",
+        "        if len(winners) == 1:",
+        "            if required and not exact_identity:",
+        "                return winners[0]",
+        "            return originals[winners[0]]",
+        "        if required:",
+        (
+            "            raise ValueError(f'This column has no single most common value: {len(winners)} values "
+            "are tied. Choose a specific value.')"
+        ),
+        "        return None",
+        "    if statistic == 'median':",
+        "        ordered = sorted(values)",
+        "        lower = ordered[(len(ordered) - 1) // 2]",
+        "        upper = ordered[len(ordered) // 2]",
+        "        if semantic_type == 'integer':",
+        "            total = int(lower) + int(upper)",
+        "            if total % 2:",
+        (
+            "                raise ValueError('The integer median is fractional. Cast the column to float or "
+            "decimal before filling missing values.')"
+        ),
+        "            return total // 2",
+        "        if semantic_type == 'decimal':",
+        "            precision, scale = _open_wrangler_decimal_spec(series, values)",
+        "            with localcontext() as context:",
+        (
+            "                context.prec = max(80, precision + scale + 4, "
+            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
+        ),
+        "                value = (lower + upper) / Decimal(2)",
+        "            return _open_wrangler_decimal_at_scale(value, precision, scale)",
+        "        value = _open_wrangler_float_midpoint(lower, upper)",
+        "        if np.isnan(value):",
+        "            if required:",
+        (
+            "                raise ValueError('Cannot fill with the median because the selected column has no "
+            "finite median.')"
+        ),
+        "            return None",
+        "        return value",
+        "    try:",
+        "        values_array = np.asarray(values, dtype=np.float64)",
+        "    except (OverflowError, TypeError, ValueError) as error:",
+        "        if not required:",
+        "            raise",
+        (
+            "        raise ValueError('Cannot fill with the mean because the selected column contains a value "
+            "that cannot be represented as a floating-point number.') from error"
+        ),
+        "    has_positive = bool(np.isposinf(values_array).any())",
+        "    has_negative = bool(np.isneginf(values_array).any())",
+        "    if has_positive and has_negative:",
+        "        if required:",
+        (
+            "            raise ValueError('Cannot fill with the mean because positive and negative infinity "
+            "make it undefined.')"
+        ),
+        "        return None",
+        "    if has_positive:",
+        "        return float('inf')",
+        "    if has_negative:",
+        "        return float('-inf')",
+        "    scale = float(np.max(np.abs(values_array)))",
+        "    if scale == 0:",
+        "        return 0.0",
+        "    scaled_mean = float(np.mean(values_array / scale))",
+        "    return max(-1.0, min(1.0, scaled_mean)) * scale",
+        "",
+        "",
+    ]
+
+
+def _generated_pandas_fill_fallback_helpers() -> list[str]:
+    return [
         "def _open_wrangler_fill_missing_from_columns(target, fallbacks):",
         "    result = target.copy()",
         "    semantic_type = _open_wrangler_fill_semantic_type(target)",
@@ -4292,6 +4416,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return result",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_directional_helpers() -> list[str]:
+    return [
         "def _open_wrangler_fill_missing_directional(df, target_position, order_rules, direction, max_gap):",
         "    series = df.iloc[:, target_position]",
         (
@@ -4342,6 +4471,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return restored",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_linear_helpers() -> list[str]:
+    return [
         "def _open_wrangler_linear_interpolation_weight(current, left, right):",
         "    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(",
         "        isinstance(value, Integral) for value in (current, left, right)",
@@ -4485,6 +4619,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return restored",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_grouped_helpers() -> list[str]:
+    return [
         "def _open_wrangler_fill_missing_grouped_statistic(df, target_position, key_positions, statistic):",
         "    series = df.iloc[:, target_position]",
         (
@@ -4511,65 +4650,7 @@ def _generated_pandas_fill_helpers() -> list[str]:
             "observed=True).indices.values()"
         ),
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
-        ("    identity_mode = statistic == 'mostFrequent' and _open_wrangler_grouped_identity_required(series)"),
-        "    unresolved = object()",
-        "    def calculate(values):",
-        "        if not values:",
-        "            return unresolved",
-        "        if statistic == 'mostFrequent':",
-        "            try:",
-        "                if identity_mode:",
-        "                    identities = [_open_wrangler_grouped_scalar_identity(value) for value in values]",
-        "                    counts = Counter(identities)",
-        "                    originals = dict(zip(identities, values))",
-        "                else:",
-        "                    counts = Counter(values)",
-        "                    originals = {value: value for value in values}",
-        "            except TypeError as error:",
-        (
-            "                raise ValueError('Grouped most-common fill is unavailable for values that cannot "
-            "be compared exactly.') from error"
-        ),
-        "            highest = max(counts.values())",
-        "            winners = [value for value, count in counts.items() if count == highest]",
-        "            return originals[winners[0]] if len(winners) == 1 else unresolved",
-        "        ordered = sorted(values)",
-        "        if statistic == 'median':",
-        "            lower = ordered[(len(ordered) - 1) // 2]",
-        "            upper = ordered[len(ordered) // 2]",
-        "            if semantic_type == 'integer':",
-        "                total = int(lower) + int(upper)",
-        "                if total % 2:",
-        (
-            "                    raise ValueError('The integer median is fractional. Cast the column to float "
-            "or decimal before filling missing values.')"
-        ),
-        "                return total // 2",
-        "            if semantic_type == 'decimal':",
-        "                precision, scale = _open_wrangler_decimal_spec(series, values)",
-        "                with localcontext() as context:",
-        (
-            "                    context.prec = max(80, precision + scale + 4, "
-            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
-        ),
-        "                    value = (lower + upper) / Decimal(2)",
-        "                return _open_wrangler_decimal_at_scale(value, precision, scale)",
-        "            value = _open_wrangler_float_midpoint(lower, upper)",
-        "            return unresolved if np.isnan(value) else value",
-        "        values_array = np.asarray(values, dtype=np.float64)",
-        "        has_positive = bool(np.isposinf(values_array).any())",
-        "        has_negative = bool(np.isneginf(values_array).any())",
-        "        if has_positive and has_negative:",
-        "            return unresolved",
-        "        if has_positive:",
-        "            return float('inf')",
-        "        if has_negative:",
-        "            return float('-inf')",
-        "        scale = float(np.max(np.abs(values_array)))",
-        "        if scale == 0:",
-        "            return 0.0",
-        "        scaled_mean = float(np.mean(values_array / scale))",
-        "        return max(-1.0, min(1.0, scaled_mean)) * scale",
+        "    exact_identity = statistic == 'mostFrequent' and _open_wrangler_grouped_identity_required(series)",
         "    result = series.copy()",
         "    source = series.reset_index(drop=True)",
         "    for positions in groups:",
@@ -4577,8 +4658,11 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "        if not len(missing_positions):",
         "            continue",
         "        present_positions = positions[~missing[positions]]",
-        "        fill_value = calculate(list(source.iloc[present_positions].array))",
-        "        if fill_value is unresolved:",
+        "        fill_value = _open_wrangler_fill_statistic(",
+        "            series, list(source.iloc[present_positions].array), statistic, semantic_type, False,",
+        "            exact_identity,",
+        "        )",
+        "        if fill_value is None:",
         "            continue",
         "        result.iloc[missing_positions] = fill_value",
         "    return result",
@@ -4638,104 +4722,23 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return (type(value).__module__, type(value).__qualname__, value)",
         "",
         "",
+    ]
+
+
+def _generated_pandas_fill_value_helpers() -> list[str]:
+    return [
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
-        "    if replacement_kind == 'mean':",
-        "        if semantic_type != 'float':",
+        "    if replacement_kind in {'mean', 'median', 'mostFrequent'}:",
+        "        if replacement_kind == 'mean' and semantic_type != 'float':",
         "            raise ValueError('Mean fill requires a floating-point column.')",
         "        if not missing.any():",
         "            return series.copy()",
-        "        try:",
-        "            values = np.asarray(series.array[~missing.array], dtype=np.float64)",
-        "        except (OverflowError, TypeError, ValueError) as error:",
-        (
-            "            raise ValueError('Cannot fill with the mean because the selected column contains a value "
-            "that cannot be represented as a floating-point number.') from error"
-        ),
-        "        if values.size == 0:",
-        (
-            "            raise ValueError('Cannot fill with the mean because the selected column has no "
-            "present numeric values.')"
-        ),
-        "        has_positive_infinity = bool(np.isposinf(values).any())",
-        "        has_negative_infinity = bool(np.isneginf(values).any())",
-        "        if has_positive_infinity and has_negative_infinity:",
-        (
-            "            raise ValueError('Cannot fill with the mean because positive and negative infinity "
-            "make it undefined.')"
-        ),
-        "        if has_positive_infinity:",
-        "            fill_value = float('inf')",
-        "        elif has_negative_infinity:",
-        "            fill_value = float('-inf')",
-        "        else:",
-        "            scale = float(np.max(np.abs(values)))",
-        "            if scale == 0:",
-        "                fill_value = 0.0",
-        "            else:",
-        "                scaled_mean = float(np.mean(values / scale))",
-        "                fill_value = max(-1.0, min(1.0, scaled_mean)) * scale",
-        "        return series.copy().mask(missing, fill_value)",
-        "    if replacement_kind == 'median':",
-        "        if not missing.any():",
-        "            return series.copy()",
         "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
-        "        if not present:",
-        (
-            "            raise ValueError('Cannot fill with the median because the selected column has no "
-            "present numeric values.')"
-        ),
-        "        ordered = sorted(present)",
-        "        lower = ordered[(len(ordered) - 1) // 2]",
-        "        upper = ordered[len(ordered) // 2]",
-        "        if semantic_type == 'integer':",
-        "            total = int(lower) + int(upper)",
-        "            if total % 2:",
-        (
-            "                raise ValueError('The integer median is fractional. Cast the column to float or "
-            "decimal before filling missing values.')"
-        ),
-        "            fill_value = total // 2",
-        "        elif semantic_type == 'decimal':",
-        "            precision, scale = _open_wrangler_decimal_spec(series, present)",
-        "            with localcontext() as context:",
-        (
-            "                context.prec = max(80, precision + scale + 4, "
-            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
-        ),
-        "                fill_value = (lower + upper) / Decimal(2)",
-        "            fill_value = _open_wrangler_decimal_at_scale(fill_value, precision, scale)",
-        "        else:",
-        "            fill_value = _open_wrangler_float_midpoint(lower, upper)",
-        "            if np.isnan(fill_value):",
-        (
-            "                raise ValueError('Cannot fill with the median because the selected column has no "
-            "finite median.')"
-        ),
+        "        fill_value = _open_wrangler_fill_statistic(",
+        "            series, present, replacement_kind, semantic_type, True",
+        "        )",
         "        return series.copy().mask(missing, fill_value)",
-        "    if replacement_kind == 'mostFrequent':",
-        "        if not missing.any():",
-        "            return series.copy()",
-        "        try:",
-        (
-            "            counts = Counter(item for item, is_missing in zip(series.array, missing.array) "
-            "if not is_missing)"
-        ),
-        "        except TypeError as error:",
-        (
-            "            raise ValueError('Most common value is unavailable for values that cannot be compared "
-            "exactly.') from error"
-        ),
-        "        if not counts:",
-        "            raise ValueError('This column has no non-missing values. Choose a specific value.')",
-        "        highest = max(counts.values())",
-        "        winners = [value for value, count in counts.items() if count == highest]",
-        "        if len(winners) != 1:",
-        (
-            "            raise ValueError(f'This column has no single most common value: {len(winners)} values "
-            "are tied. Choose a specific value.')"
-        ),
-        "        return series.copy().mask(missing, winners[0])",
         "    fill_value = replacement_value",
         "    if semantic_type == 'decimal':",
         "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
@@ -4754,6 +4757,30 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "",
         "",
     ]
+
+
+def _generated_pandas_fill_helpers(strategies: set[str]) -> list[str]:
+    lines: list[str] = []
+    if strategies & {"fallback", "grouped", "linear", "value"}:
+        lines.extend(_generated_pandas_fill_type_helpers())
+    if strategies & {"fallback", "grouped", "value"}:
+        lines.extend(_generated_pandas_fill_decimal_helpers())
+    if strategies & {"fallback", "value"}:
+        lines.extend(_generated_pandas_fill_datetime_helpers())
+    if strategies & {"grouped", "value"}:
+        lines.extend(_generated_pandas_fill_midpoint_helpers())
+        lines.extend(_generated_pandas_fill_statistic_helpers())
+    if "fallback" in strategies:
+        lines.extend(_generated_pandas_fill_fallback_helpers())
+    if "directional" in strategies:
+        lines.extend(_generated_pandas_fill_directional_helpers())
+    if "linear" in strategies:
+        lines.extend(_generated_pandas_fill_linear_helpers())
+    if "grouped" in strategies:
+        lines.extend(_generated_pandas_fill_grouped_helpers())
+    if "value" in strategies:
+        lines.extend(_generated_pandas_fill_value_helpers())
+    return lines
 
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:

@@ -1997,6 +1997,31 @@ def test_most_frequent_fill_preserves_categorical_types(backend: str, monkeypatc
         engine.close()
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        [1, 1.0, None],
+        [True, 1, None],
+    ],
+)
+def test_pandas_most_frequent_fill_preserves_the_first_equal_object_representative(values: list[Any]) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object)})
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "mostFrequent"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert type(live.iloc[2, 0]) is type(values[0])
+        assert type(generated.iloc[2, 0]) is type(values[0])
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_categorical_fill_with_no_missing_values_is_an_exact_type_no_op(
     backend: str, monkeypatch: pytest.MonkeyPatch
