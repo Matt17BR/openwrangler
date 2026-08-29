@@ -43,6 +43,11 @@ describe("webview message decoding", () => {
     expect(decodeWebviewMessage({ ...message, unexpected: true }, context())).toBeUndefined();
   });
 
+  it.each([null, { kind: "changeImportOptions", actionId: "short" }] as const)(
+    "rejects malformed top-level and import-action controls %#",
+    (message) => expect(decodeWebviewMessage(message, context())).toBeUndefined()
+  );
+
   it("requires one exact renderer identity shape", () => {
     expect(
       decodeWebviewMessage(
