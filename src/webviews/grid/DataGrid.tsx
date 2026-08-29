@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEventHandler } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEventHandler, ReactNode } from "react";
 import type {
   CellDiff,
   CellValue,
   ColumnFilter,
   ColumnSchema,
   ColumnSummary,
-  ColumnVisualization,
   DataDiff,
   GridPage,
   LiveGridPage,
@@ -18,9 +17,7 @@ import {
   ambiguousViewColumnMessage,
   countViewColumnNames,
   supportsTypedViewComparison,
-  viewCellSelectionFilter,
-  viewNumericBinFilter,
-  viewValueSelectionFilter
+  viewCellSelectionFilter
 } from "../../shared/filterModel";
 import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
 import {
@@ -32,15 +29,8 @@ import {
 } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import { columnTypePresentation } from "../columnTypes";
-import { ProfileValueToggle } from "../ProfileValueToggle";
-import { NumericHistogram } from "../visualizations/NumericHistogram";
-import {
-  describeProfileValue,
-  formatProfileValue,
-  profileDistributionDenominator,
-  type ProfileValueMode
-} from "../profileValueMode";
-import { CompactExtremum, HeaderProfileValue } from "./GridHeaderProfileValues";
+import type { ProfileValueMode } from "../profileValueMode";
+import { useGridHeaderProfiles } from "./GridHeaderProfileValues";
 import { useColumnResizeLifecycle, type BeginColumnResize } from "./useColumnResizeLifecycle";
 import { useCellActionMenuLifecycle } from "./useCellActionMenuLifecycle";
 
@@ -127,10 +117,6 @@ const scrollQuantizationTolerance = 1;
 // after this budget is exhausted and may start another bounded watch.
 const maximumColumnRevealLayoutFrames = 120;
 const maximumRenderedCellCharacters = 4_096;
-const headerProfileFitTolerance = 1;
-const compactHeaderProfilesDescription =
-  "Header profile distributions are temporarily hidden until the grid has enough room.";
-const restoredHeaderProfilesDescription = "Header profile distributions are visible again.";
 const gridSelectionInstructions =
   "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Select a column header or press Ctrl/Cmd+Space on it to prepare the whole filtered and sorted column for copying. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
 const pointerAutoScrollEdge = 32;
@@ -139,17 +125,6 @@ const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { f
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 const ignoreColumnRevealSignal = (): void => undefined;
-
-function expandedProfileHeaderHeight(header: HTMLTableSectionElement): number {
-  const compactInsights = [...header.querySelectorAll<HTMLElement>(".columnInsight.compact")];
-  if (compactInsights.length === 0) return header.offsetHeight;
-  for (const insight of compactInsights) insight.classList.remove("compact");
-  try {
-    return header.offsetHeight;
-  } finally {
-    for (const insight of compactInsights) insight.classList.add("compact");
-  }
-}
 
 export function requestedGridPageOffset(
   desiredOffset: number,
@@ -208,21 +183,14 @@ export function DataGrid({
     ? `${metadata.rowAxis.kind}:${metadata.rowAxis.levelNames.map((name) => name ?? "").join("\u0000")}`
     : "legacy";
   const currentHasRowLabels = pageHasRowLabels || rowAxisHeader !== undefined;
-  const summaryByColumnId = useMemo(
-    () => new Map(summaries.map((summary) => [summary.columnId, summary])),
-    [summaries]
-  );
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata.schema), [metadata.schema]);
   const diffPresentation = useMemo(
     () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
-  const headerProfilesButtonRef = useRef<HTMLButtonElement>(null);
   const beginColumnResize = useColumnResizeLifecycle();
   const pointerSelection = useRef<GridPointerSelection | undefined>(undefined);
-  const profileFitDescriptionId = useId();
   const gridSelectionInstructionsId = useId();
   const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows, rowAxisHeader);
   const [rowHeaderState, setRowHeaderState] = useState({
@@ -285,25 +253,6 @@ export function DataGrid({
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
-  const startsWithHeaderProfilesOff = metadata.backend === "pyspark" || metadata.backend === "r";
-  const [showInsights, setShowInsights] = useState(
-    startsWithHeaderProfilesOff || profilesDisabled ? false : insightsOnOpen
-  );
-  const [profileFitState, setProfileFitState] = useState({ compact: false, sessionId: metadata.sessionId });
-  const [profileFitAnnouncement, setProfileFitAnnouncement] = useState({
-    message: "",
-    sessionId: metadata.sessionId
-  });
-  const compactHeaderProfiles =
-    showInsights && !profilesDisabled && profileFitState.sessionId === metadata.sessionId && profileFitState.compact;
-  const profileFitStatusText =
-    !showInsights || profilesDisabled
-      ? ""
-      : compactHeaderProfiles
-        ? compactHeaderProfilesDescription
-        : profileFitAnnouncement.sessionId === metadata.sessionId
-          ? profileFitAnnouncement.message
-          : "";
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
@@ -814,6 +763,32 @@ export function DataGrid({
     filters: metadata.filterModel.filters,
     sort: metadata.filterModel.sort
   })}`;
+  const applyHeaderProfileFilter = useCallback(
+    (column: ColumnSchema, filter: ColumnFilter): void => {
+      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+      onApplyProfileFilter?.(filter);
+    },
+    [onApplyProfileFilter, reportViewState]
+  );
+  const {
+    controls: headerProfileControls,
+    headerRef: headerProfilesRef,
+    renderColumnProfile
+  } = useGridHeaderProfiles({
+    backend: metadata.backend,
+    sessionId: metadata.sessionId,
+    scrollerRef,
+    visibleColumns,
+    summaries,
+    visibleSummaryOwner: viewScope,
+    insightsOnOpen,
+    disabled: profilesDisabled,
+    disabledReason: profilesDisabledReason,
+    valueMode: profileValueMode,
+    onValueModeChange: onProfileValueModeChange,
+    onApplyFilter: onApplyProfileFilter ? applyHeaderProfileFilter : undefined,
+    onVisibleSummaryColumnsChange
+  });
   const rowScrollModel = createRowScrollModel(logicalRowExtent, viewport.height);
   const globalFirstRow = viewport.firstVisibleRow;
   const physicallyAvailableOverscanRows = Math.floor(viewport.scrollTop / gridRowHeight);
@@ -852,91 +827,8 @@ export function DataGrid({
   }, [rovingColumn, rovingRow]);
 
   useEffect(() => {
-    onVisibleSummaryColumnsChange(showInsights && !profilesDisabled ? visibleColumns.map((column) => column.id) : []);
-  }, [onVisibleSummaryColumnsChange, profilesDisabled, showInsights, viewScope, visibleColumns]);
-
-  useLayoutEffect(() => {
-    const scroller = scrollerRef.current;
-    const header = tableHeaderRef.current;
-    if (!showInsights || profilesDisabled) return;
-    if (!scroller || !header) return;
-
-    const updateProfileFit = (): void => {
-      const scrollerHeight = scroller.clientHeight;
-      if (scrollerHeight <= 0) return;
-      const hasDistributions = header.querySelector(".summaryDistribution") !== null;
-      if (!hasDistributions) {
-        if (profileFitState.sessionId === metadata.sessionId && profileFitState.compact) {
-          setProfileFitState({ compact: false, sessionId: metadata.sessionId });
-        }
-        if (profileFitAnnouncement.sessionId === metadata.sessionId && profileFitAnnouncement.message !== "") {
-          setProfileFitAnnouncement({ message: "", sessionId: metadata.sessionId });
-        }
-        return;
-      }
-
-      // offsetHeight and clientHeight share the element's layout-pixel
-      // coordinate system. getBoundingClientRect() is scaled by CSS zoom,
-      // which would make a 200%-zoom editor compact profiles too early.
-      const expandedHeight = expandedProfileHeaderHeight(header);
-      if (expandedHeight <= 0) return;
-      const currentCompact = profileFitState.sessionId === metadata.sessionId && profileFitState.compact;
-      const nextCompact = currentCompact
-        ? scrollerHeight < expandedHeight + gridRowHeight + headerProfileFitTolerance
-        : scrollerHeight - expandedHeight < gridRowHeight;
-      if (nextCompact === currentCompact) return;
-
-      if (nextCompact) {
-        const activeElement = document.activeElement;
-        if (
-          activeElement instanceof Element &&
-          [...header.querySelectorAll(".summaryDistribution")].some((distribution) =>
-            distribution.contains(activeElement)
-          )
-        ) {
-          headerProfilesButtonRef.current?.focus({ preventScroll: true });
-        }
-      }
-      setProfileFitAnnouncement({
-        message: nextCompact ? compactHeaderProfilesDescription : restoredHeaderProfilesDescription,
-        sessionId: metadata.sessionId
-      });
-      setProfileFitState({ compact: nextCompact, sessionId: metadata.sessionId });
-    };
-
-    updateProfileFit();
-    const resizeObserver =
-      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => updateProfileFit());
-    resizeObserver?.observe(scroller);
-    resizeObserver?.observe(header);
-    window.addEventListener("resize", updateProfileFit);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", updateProfileFit);
-    };
-  }, [
-    metadata.sessionId,
-    profileFitAnnouncement.message,
-    profileFitAnnouncement.sessionId,
-    profileFitState.compact,
-    profileFitState.sessionId,
-    profileValueMode,
-    profilesDisabled,
-    showInsights,
-    summaries,
-    visibleColumns
-  ]);
-
-  useEffect(() => {
     visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
   }, [busy, loadedColumnSignature, logicalViewContext, page.offset, visibleColumnRange.end, visibleColumnRange.start]);
-
-  useEffect(
-    () => () => {
-      onVisibleSummaryColumnsChange([]);
-    },
-    [onVisibleSummaryColumnsChange]
-  );
 
   useLayoutEffect(() => {
     if (
@@ -1316,7 +1208,7 @@ export function DataGrid({
             ))}
             {rightSpacerWidth > 0 && <col style={{ width: rightSpacerWidth }} />}
           </colgroup>
-          <thead ref={tableHeaderRef}>
+          <thead ref={headerProfilesRef}>
             <tr>
               <th
                 className={`rowHeader${hasRowLabels ? " labeledRowHeader" : ""}`}
@@ -1339,10 +1231,7 @@ export function DataGrid({
                     clipboardAction={gridClipboard.columnCopyAction(column)}
                     logicalViewOwner={logicalViewContext}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
-                    showInsights={showInsights}
-                    compactInsights={compactHeaderProfiles}
-                    summary={summaryByColumnId.get(column.id)}
-                    profileValueMode={profileValueMode}
+                    headerProfile={(filterAvailable) => renderColumnProfile(column, filterAvailable)}
                     viewControlsDisabled={viewControlsDisabled}
                     viewControlsDisabledReason={viewControlsDisabledReason}
                     filterControlsDisabled={filterControlsDisabled}
@@ -1359,13 +1248,11 @@ export function DataGrid({
                     }}
                     onSortColumn={onSortColumn}
                     onClearSortColumn={onClearSortColumn}
-                    onActivate={() => reportViewState({ ...viewStateRef.current, selectedColumnId: column.id })}
                     onSelect={() => {
                       reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       gridClipboard.selectColumn(column);
                     }}
                     onCopy={() => gridClipboard.copyColumn(column)}
-                    onApplyProfileFilter={onApplyProfileFilter}
                     onBeginResize={beginColumnResize}
                     onResize={(width) =>
                       reportViewState({
@@ -1795,57 +1682,7 @@ export function DataGrid({
           {gridSelectionInstructions}
         </span>
         <GridClipboardControls controller={gridClipboard} />
-        <div className="gridProfileControls">
-          {!profilesDisabled && onProfileValueModeChange && (
-            <ProfileValueToggle
-              mode={profileValueMode}
-              onChange={onProfileValueModeChange}
-              ariaLabel="Header profile values"
-              countAriaLabel="Show header profile counts"
-              percentAriaLabel="Show header profile percentages"
-              compact
-            />
-          )}
-          <button
-            ref={headerProfilesButtonRef}
-            type="button"
-            className="headerProfilesButton"
-            aria-pressed={showInsights}
-            aria-describedby={compactHeaderProfiles ? profileFitDescriptionId : undefined}
-            disabled={profilesDisabled}
-            title={
-              profilesDisabled
-                ? profilesDisabledReason
-                : compactHeaderProfiles
-                  ? compactHeaderProfilesDescription
-                  : metadata.backend === "pyspark"
-                    ? "Runs Spark profiling queries for the visible columns."
-                    : metadata.backend === "r"
-                      ? "Runs R profiling queries for the visible columns."
-                      : undefined
-            }
-            onClick={() => {
-              if (profilesDisabled) return;
-              if (showInsights) {
-                setProfileFitState({ compact: false, sessionId: metadata.sessionId });
-                setProfileFitAnnouncement({ message: "", sessionId: metadata.sessionId });
-              }
-              setShowInsights(!showInsights);
-            }}
-          >
-            {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
-          </button>
-          <span
-            id={profileFitDescriptionId}
-            className="headerProfilesFitStatus"
-            role="status"
-            aria-label="Header profile layout"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {profileFitStatusText}
-          </span>
-        </div>
+        {headerProfileControls}
       </div>
     </div>
   );
@@ -2201,10 +2038,7 @@ function ColumnHeader({
   clipboardAction,
   logicalViewOwner,
   added,
-  showInsights,
-  compactInsights,
-  summary,
-  profileValueMode,
+  headerProfile,
   viewControlsDisabled,
   viewControlsDisabledReason,
   filterControlsDisabled,
@@ -2218,10 +2052,8 @@ function ColumnHeader({
   onOpenFilter,
   onSortColumn,
   onClearSortColumn,
-  onActivate,
   onSelect,
   onCopy,
-  onApplyProfileFilter,
   onBeginResize,
   onResize
 }: {
@@ -2238,10 +2070,7 @@ function ColumnHeader({
   };
   logicalViewOwner: string;
   added: boolean;
-  showInsights: boolean;
-  compactInsights: boolean;
-  summary: ColumnSummary | undefined;
-  profileValueMode: ProfileValueMode;
+  headerProfile(filterAvailable: boolean): ReactNode;
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
   filterControlsDisabled: boolean;
@@ -2255,10 +2084,8 @@ function ColumnHeader({
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn(column: string): void;
-  onActivate(): void;
   onSelect(): void;
   onCopy(): Promise<boolean>;
-  onApplyProfileFilter?: (filter: ColumnFilter) => void;
   onBeginResize: BeginColumnResize;
   onResize(width: number): void;
 }) {
@@ -2297,13 +2124,6 @@ function ColumnHeader({
     : sortControlsDisabled
       ? sortControlsDisabledReason
       : ambiguityReason;
-  const distributionFilterAvailable =
-    !filterUnavailable && !comparisonUnavailable && onApplyProfileFilter !== undefined;
-  const applyProfileFilter = (filter: ColumnFilter) => {
-    if (!distributionFilterAvailable || !onApplyProfileFilter) return;
-    onActivate();
-    onApplyProfileFilter(filter);
-  };
   const beginResize: PointerEventHandler<HTMLButtonElement> = (event) => {
     if (viewControlsDisabled) return;
     onBeginResize(event, width, onResize);
@@ -2567,39 +2387,7 @@ function ColumnHeader({
           onKeyDown={resizeWithKeyboard}
         />
       </div>
-      {showInsights &&
-        (summary ? (
-          <div className={`columnInsight${compactInsights ? " compact" : ""}`}>
-            <div className="exactSummaryStats">
-              <HeaderProfileValue
-                label="Missing"
-                value={summary.nullCount + summary.nanCount}
-                denominator={summary.totalCount}
-                mode={profileValueMode}
-              />
-              <HeaderProfileValue
-                label="Distinct"
-                value={summary.distinctCount}
-                denominator={summary.totalCount}
-                mode={profileValueMode}
-              />
-              {summary.numeric && <CompactExtremum label="Min" summary={summary.numeric} bound="min" />}
-              {summary.numeric && <CompactExtremum label="Max" summary={summary.numeric} bound="max" />}
-            </div>
-            <div className="summaryDistribution">
-              {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
-              <MiniChart
-                visualization={summary.visualization}
-                column={column}
-                valueMode={profileValueMode}
-                denominator={profileDistributionDenominator(summary)}
-                onApplyFilter={distributionFilterAvailable ? applyProfileFilter : undefined}
-              />
-            </div>
-          </div>
-        ) : (
-          <span className="columnInsight emptyInsight">Profiling…</span>
-        ))}
+      {headerProfile(!filterUnavailable && !comparisonUnavailable)}
     </th>
   );
 }
@@ -2614,151 +2402,6 @@ function gridCellControlTarget(target: EventTarget, cell: HTMLTableCellElement):
   if (!(target instanceof Element)) return false;
   const control = target.closest("button, [role='menu'], [role='menuitem']");
   return control !== null && control !== cell;
-}
-
-function MiniChart({
-  visualization,
-  column,
-  valueMode,
-  denominator,
-  onApplyFilter
-}: {
-  visualization: ColumnVisualization | undefined;
-  column: ColumnSchema;
-  valueMode: ProfileValueMode;
-  denominator: number;
-  onApplyFilter?: (filter: ColumnFilter) => void;
-}) {
-  if (!visualization) return <span className="miniChart emptyInsight">No chart</span>;
-  if (visualization.kind === "numeric") {
-    return (
-      <NumericHistogram
-        visualization={visualization}
-        compact
-        valueMode={valueMode}
-        percentDenominator={denominator}
-        onSelectBin={
-          onApplyFilter
-            ? (bin, index) => onApplyFilter(viewNumericBinFilter(column, bin, index === visualization.bins.length - 1))
-            : undefined
-        }
-      />
-    );
-  }
-  if (visualization.kind === "boolean") {
-    const total = Math.max(1, visualization.trueCount + visualization.falseCount);
-    const trueDescription = describeProfileValue("True", visualization.trueCount, denominator);
-    const falseDescription = describeProfileValue("False", visualization.falseCount, denominator);
-    const values = [
-      { label: "True", value: true, count: visualization.trueCount, description: trueDescription },
-      { label: "False", value: false, count: visualization.falseCount, description: falseDescription }
-    ] as const;
-    return (
-      <span
-        className={`booleanMiniChart${onApplyFilter ? " interactive" : ""}`}
-        role={onApplyFilter ? "group" : "img"}
-        aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: ${trueDescription}, ${falseDescription}.`}
-      >
-        <span className="miniChartLegend">
-          {values.map((item) => {
-            const contents = (
-              <>
-                {item.label} {formatProfileValue(item.count, denominator, valueMode)}
-              </>
-            );
-            return onApplyFilter ? (
-              <button
-                type="button"
-                className="booleanMiniValue"
-                key={item.label}
-                aria-label={`Filter ${column.name} to ${item.label}; ${item.description}`}
-                title={`Filter ${column.name} to ${item.label} · ${item.description}`}
-                onClick={() => onApplyFilter(viewValueSelectionFilter(column, item.value))}
-              >
-                {contents}
-              </button>
-            ) : (
-              <span key={item.label} title={item.description}>
-                {contents}
-              </span>
-            );
-          })}
-        </span>
-        <span className="stackedMiniChart" aria-hidden="true">
-          <i style={{ width: `${(visualization.trueCount / total) * 100}%` }} />
-          <b style={{ width: `${(visualization.falseCount / total) * 100}%` }} />
-        </span>
-      </span>
-    );
-  }
-  if (visualization.kind === "categorical") {
-    const max = Math.max(1, ...visualization.categories.map((category) => category.count), visualization.otherCount);
-    const visibleCategories = visualization.categories.slice(0, 3);
-    const categoryLabel = [
-      ...visibleCategories.map((category) => describeProfileValue(category.value, category.count, denominator)),
-      ...(visualization.otherCount > 0 ? [describeProfileValue("Other", visualization.otherCount, denominator)] : [])
-    ].join(", ");
-    return (
-      <span
-        className={`categoryMiniChart${onApplyFilter ? " interactive" : ""}`}
-        role={onApplyFilter ? "group" : "img"}
-        aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
-      >
-        {visibleCategories.map((category, index) => {
-          const description = describeProfileValue(category.value || "Empty string", category.count, denominator);
-          const contents = (
-            <>
-              <span className="categoryMiniLabel" title={category.value}>
-                {category.value}
-              </span>
-              <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
-              <small title={description}>{formatProfileValue(category.count, denominator, valueMode)}</small>
-            </>
-          );
-          return onApplyFilter ? (
-            <button
-              type="button"
-              className="categoryMiniRow interactive"
-              key={`${category.value}-${index}`}
-              aria-label={`Filter ${column.name} to ${category.value || "empty string"}; ${description}`}
-              onClick={() => onApplyFilter(viewValueSelectionFilter(column, category.selectionValue ?? category.value))}
-            >
-              {contents}
-            </button>
-          ) : (
-            <span className="categoryMiniRow" key={`${category.value}-${index}`}>
-              {contents}
-            </span>
-          );
-        })}
-        {visualization.otherCount > 0 && (
-          <span className="categoryMiniRow">
-            <span className="categoryMiniLabel">Other</span>
-            <i aria-hidden="true" style={{ width: `${(visualization.otherCount / max) * 100}%` }} />
-            <small title={describeProfileValue("Other", visualization.otherCount, denominator)}>
-              {formatProfileValue(visualization.otherCount, denominator, valueMode)}
-            </small>
-          </span>
-        )}
-      </span>
-    );
-  }
-  const min = visualization.min ?? "n/a";
-  const max = visualization.max ?? "n/a";
-  return (
-    <span
-      className="datetimeMiniChart"
-      role="img"
-      aria-label={`${visualization.sampled ? "Sampled " : ""}datetime distribution: minimum ${min}, maximum ${max}.`}
-    >
-      <span title={`Minimum ${min}`}>
-        <b>Min</b> {min}
-      </span>
-      <span title={`Maximum ${max}`}>
-        <b>Max</b> {max}
-      </span>
-    </span>
-  );
 }
 
 function columnRange(
