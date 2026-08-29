@@ -1,843 +1,335 @@
 # Architecture
 
-## Product boundaries
-
-Open Wrangler has three cooperating parts:
-
-1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
-2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
-3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
-   Jupyter kernel. R notebooks use the bundled R reader inside the selected IRkernel. On macOS and Linux, a trusted
-   `.R`, `.Rmd`, or `.qmd` document can run in its own Open Wrangler `Rscript` process. A dataframe that already
-   exists in the official R extension's terminal uses an `rInteractiveVariable` source with no invented file or
-   notebook location; the host keeps that session pinned to the exact terminal that supplied it.
-
-Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
-R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
-Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate.
-The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
-language, dataframe flavor, and generated-code dialect separate.
-
-The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
-
-Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.
-
-Operations may use vscode-R's workspace metadata as a read-only hint for one exact active `Terminal`. This path is
-available only when the terminal creation options contain vscode-R's exact profile, initializer, and watcher paths.
-For an existing session, Open Wrangler can read the workspace tree already exported by vscode-R's loaded module when
-its status names the same process ID. It does not load or activate that module. During terminal startup it checks both
-that tree and vscode-R's attach files, so an unready source does not hold up the other one.
-The watcher attach record must match `Terminal.processId` before and after setup. Its request, workspace, and marker
-files are size-bounded, opened without following links, checked for owner and identity changes, and read as marker →
-JSON → marker. The provider watches that session's `workspace.lock` and `workspace.json`; it never writes to vscode-R's
-files or sends terminal text. Because both extension events and filesystem notifications can be coalesced or lost,
-a serialized reconciliation read compares the bounded metadata signature every two seconds and publishes only a
-change. It never runs overlapping reads or keeps the extension host alive. Missing, malformed, stale, foreign, or replaced
-metadata leaves the explicit Refresh action available. A foreign or overwritten record must stay unchanged through a
-500 ms startup grace before the automatic path gives up; it never restores the old minute-long wait.
-
-Opening a watcher-listed dataframe or choosing Refresh rechecks the exact terminal and process before creating the
-native transport. That explicit action installs Open Wrangler's bundled dispatcher and one R task callback. After a
-top-level R command, the callback writes the full bounded dataframe list to each attached private mailbox. The host
-debounces those notifications and publishes the latest decoded list without another R command. Dispatcher requests
-suppress their own callback notification. The provider never polls the R process, runs a source document
-automatically, or moves to a different terminal.
-
-R source tabs use `openWrangler.openRDataframe` for their stable title action. A plain `.R` editor opens from the
-selected official R terminal when one is active and otherwise delegates to `openWrangler.runRDocument` on macOS and
-Linux extension hosts. An `.Rmd` or `.qmd` editor instead captures the exact active `TextEditor`, `TextDocument`,
-version, URI, view column, and every selection before command activation can await. A bounded Markdown fence parser
-identifies the one chunk that owns the primary cursor, including ordinary labels and `#|` options. Quarto accepts
-backtick and tilde fences; R Markdown accepts backtick fences. Python ownership follows the document executor rather
-than the fence label alone: R Markdown and knitr/reticulate Quarto cells stay in the exact selected R terminal, while
-Jupyter Quarto cells stay pinned to the exact new Interactive Window cell whose source URI matches the captured
-document and whose source line maps to the captured Python chunk. Later reuse maps that source line against the
-current, unchanged document and a supported Python chunk. Both paths require Jupyter/Python kernel ownership; an
-Interactive cell may report `languageId: quarto`, so its language ID alone does not establish the engine. Explicit
-`engine`, `knitr`, and `jupyter` metadata and Quarto's R-cell inference are recognized; the bounded YAML parser rejects
-aliases, duplicate or case-variant ownership keys, and conflicting or unsupported metadata. Display math, raw TeX,
-raw HTML, and comments are opaque to chunk lookup. After resolving the chunk, Open Wrangler checks the required
-Quarto, Jupyter, and R integrations before asking for a terminal or kernel. An R-backed chunk is sent with discovery
-as one correlated request to the exact selected R terminal, so vscode-R cannot interleave another multiline command
-between evaluation and discovery. Jupyter-owned Python chunks run in the exact Interactive Window associated with the
-source document. The released Jupyter selection command is fire-and-forget, so its fulfilled command promise is not
-execution authority. On a fresh run, Open Wrangler first sends an empty selection to create the source-routed
-Interactive Window without user code. It requires the exact new sole-open window either to expose Jupyter's marked
-system cell or to remain user-cell-free with a canonically auto-selected Python kernel. When Cursor exposes only the
-proposed REPL surface, Open Wrangler reveals that exact captured document through the stable notebook-editor API. The
-public kernel-picker command has no result value, so completion alone is not selection proof: an already auto-selected
-scaffold must explicitly carry nonconflicting canonical nested Jupyter metadata naming Python, or a metadata-free
-marked scaffold must acquire it after the picker closes. A bounded macrotask and a second exact-object/scaffold
-check let Jupyter's controller listener settle before Open Wrangler restores and revalidates the source and dispatches
-the real chunk once. Publication and completion stay pinned to that notebook
-through the shared operation deadline; there is no Quarto retry. Every activation, execution, discovery, picker, and
-focus-restoration await revalidates the captured editor object, document object, version, URI uniqueness, cursor
-selections, and—on R paths—the exact terminal object.
-The primary literate action never renders or executes the complete document. Outside a supported chunk it can reuse
-one exact associated Python Interactive Window or the selected R session; when both exist it asks explicitly which
-one to open.
-
-Ordinary candidate `.qmd` acceptance owns that Open Wrangler title-action/session/source/code/cleanup contract and no
-third-party Quarto preview, render-server, tab, terminal, or HTML lifecycle. Linux product-media capture is the sole
-exception: it dispatches one bounded `quarto.preview`, identifies the exact
-`mainThreadWebview-quarto.previewView` `TabInputWebview`, proves its owned terminal, stable rendered HTML, and visible
-preview, then performs bounded cleanup. This separation is an acceptance-ownership boundary, not a change to the
-product title action.
-
-The stable action remains visible on Windows because live R and Python sessions do not require Open Wrangler to own a
-local document process. On macOS and Linux the tab menu keeps the explicit R-document choices, and Explorer keeps the
-document command. Cursor pins the stable action alongside the file and notebook actions. The explicit
-`openWrangler.runRDocument` is always the explicit whole-document command, including when its zero-argument form is
-invoked while the cursor is inside a chunk. The separate internal title-action route owns cursor execution. The public
-command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
-different active editor after an await. The document must remain the sole open object
-for its URI through variable discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
-backtick-fenced `{r}` cells from a first-line-YAML document. Every cell is parsed separately before any cell runs,
-then the parsed cells share one private R environment in document order. This is an isolated lexical R-cell run, not
-a knitr/Quarto render or an attachment to a terminal or editor extension. Safe prose, horizontal rules, display math,
-and closed raw-TeX blocks are ignored. Enabled cells reject syntax that can replace their code, including alternate
-engines and external chunk references. A syntactically valid cell with literal `eval=FALSE` is skipped instead.
-Indented cells, raw-string chunk options, and R-looking fences inside an opaque Markdown container remain errors.
-
-The active-R path is separate from explicit document execution. It activates the official R extension, captures one exact `R`
-or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
-For a cursor-owned chunk, that dispatcher evaluates the bounded UTF-8 source and discovers dataframes before writing
-one correlated response; discovery cannot overtake or detach from the evaluation that produced those variables. The
-chunk runs with the source document's directory as its working directory, then restores the terminal's previous
-working directory even when parsing or evaluation fails.
-The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
-invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
-integration does not read vscode-R extension storage or private process details. These variables follow the notebook
-start-mode setting, so they open in Viewing mode by default and can be reopened in Editing mode without changing the
-live R object. A session opened directly from Operations, or reused while the literate cursor is outside an executable
-chunk, has no notebook or text-document origin, so its generated R can be copied or saved but not inserted. Only a
-successfully run cursor-owned literate R chunk retains its exact source-document origin and may insert generated code
-while that same document object and version remain valid.
-
-The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
-
-## Runtime and engines
-
-Only stable, final PySpark 4.2.x releases support viewing local Classic and Connect batch DataFrames from live notebooks.
-Alpha, beta, release-candidate, and `.dev` builds are rejected before runtime session creation. The installed prerelease-denial journey remains unearned; mocked provisioning proves only runner plumbing.
-PySpark does not support files, editing, streaming DataFrames, remote or authenticated clusters, Spark setup, saved-output formatting, cleaning, exports, or persistence.
-
-Every request that can run work against an open PySpark session carries its protocol request ID into the adapter. The runtime checks the notebook variable binding and Spark-session liveness before it touches the prior request state. This lets a replaced variable recover even when its old Classic Spark context has already stopped. Classic Spark then uses the request ID for a unique job group and restores the caller's prior job description, group, and interrupt-on-cancel properties afterward, including after an error. It does not change job tags, scheduler pools, or signal handlers. Terminal close skips this scope because it schedules no Spark action and must work after a Spark context stops. Spark Connect already gives each action its own operation ID and handles `KeyboardInterrupt` against that operation. Its public action API does not accept a caller-supplied operation ID, so Open Wrangler keeps the protocol ID in local request state and does not patch the Connect client or add tags.
-
-Spark Connect transport errors are handled according to what the server reports. A temporary endpoint outage leaves the confirmed view untouched and allows the failed read to be retried. A missing server session or dataframe blocks ordinary retries and shows a user-initiated **Reconnect** action instead. Reconnect reuses the existing live-variable replay path: it looks up the same variable name in the exact notebook and kernel that opened the view, requires the same schema, and restores the confirmed filter, sort, viewport, widths, and selection before replacing the private runtime. A failed reconnect closes only its candidate and leaves the old confirmed view in place. It never starts Spark, creates a dataframe, switches kernels, loops automatically, or uses captured notebook output as a fallback.
-
-Cleaned-data publication is host-owned for every editing-capable engine. Before a Pandas, Polars, or DuckDB export
-reaches the Python runtime, the standalone or notebook bridge starts the existing atomic file transaction against the
-requested destination and the exact captured source. The transaction reserves one exclusive sibling temporary file,
-closes its host descriptor, and sends Python only that internal absolute path plus its filesystem identity. Python
-requires the target to remain a singly linked regular file with that identity before and after the engine-native
-writer. DuckDB registers one connection-scoped, non-cacheable fsspec 2026.7.0 filesystem whose random URI grants
-exactly two metadata probes and one binary write open backed by the already identity-validated descriptor. Native
-CSV/Parquet COPY therefore streams into the reserved object without any second filesystem path, dataframe conversion,
-or reusable filesystem capability; the relation is released before that filesystem unregisters. Python
-does not create, unlink, rename, or resolve the user's destination. After a correlated success with the expected
-revision, format, and temporary path, the host revalidates the source, destination, destination parent, and temporary
-identities immediately before one atomic rename. It then reports the user's requested path. Any runtime, validation,
-or commit failure leaves the prior destination and source unchanged and removes only the still-identified owned
-temporary file. Native R uses the same host transaction and final validation; its runtime streams bytes without
-receiving either the temporary or final destination path.
-On Windows minimally read-participating retained parent and target pins omit delete sharing to block ordinary rename,
-unlink, and reparse pathname substitution. Required shared write access cannot distinguish the authorized native
-engine from a malicious same-UID writer or privileged reparse mutation; this residual is accepted only for
-trusted-workspace export execution (invariant 4), not the artifact-handoff exclusion (invariant 40).
-
-The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
-without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
-columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
-after the user-owned source reader returns, they also revalidate the locked capture, its fixed top-level bindings, and
-the live-state and sort-cache leaves against the pre-call receipt before inspecting the returned frame or materializing
-rows. Telemetry counters are not authorization state. The isolated contract helper still copies its input for
-unit-level value tests. The page keeps
-duplicate and non-syntactic names while using stable source-column IDs for identity. A retained column keeps its ID
-when an editing step changes its position. Its column metadata records factors,
-ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
-signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
-silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
-with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
-original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
-sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
-unrecognized attributes fail instead of losing R semantics. A plain `names` attribute is accepted on an atomic or
-classed column only when it is an unclassed character vector aligned to that column; those element labels never
-replace positional row or column identity. Source positions provide stable row identity. Explicit R
-row names travel separately as row labels and appear in the grid gutter instead of becoming a data column. Original
-and other contiguous row identities are retained as a locked, structurally validated offset and row-count range, so a
-steady-state page or profile does not allocate or rescan one origin per row. Filters and sorts that produce an
-arbitrary derived-frame mapping retain the complete mapping and validate every origin, bound, and duplicate before
-each public read. A page or profile public read validates the capture before its internal source and page
-materializers run; a live read then performs one fixed-size post-callback revalidation without repeating any
-row-scaled origin scan.
-
-This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a
-base `data.frame`; `qTBL()` and `qDT()` return the already supported tibble and `data.table` class vectors. Open Wrangler
-does not load or depend on `collapse`. Grouped `GRP_df` and indexed `indexed_frame` objects are rejected because
-silently dropping their grouping or index metadata would change their meaning.
-
-The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
-filter and sort names a column by both its stable ID and captured name, which keeps duplicate names unambiguous
-and rejects stale references. Filters support per-column and cross-column AND/OR logic, typed predicates, null and
-NaN controls, and selected values. Public date, datetime, and duration literals follow the same fixture-backed rules
-as Python and saved notebook views. Rules are applied in priority order, with independent direction and missing-value
-placement; ties keep their previous order.
-R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
-Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
-does not reorder or otherwise change the source frame. A sorted page keeps each source row ID and explicit row label,
-while `rowNumber` records its current logical position in the grid. A live session caches at most four sort columns
-and 32 MiB of row-order state. It rebuilds that order when those values change, including after a `data.table`
-by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
-retaining an unbounded cache.
-
-Column profiles and value searches use the same captured schema, stable column IDs, and viewing filters as grid
-pages. A profile request can include up to 64 columns. Profiles scan in 65,536-row chunks, so row count, `NA`/`NaN`,
-numeric extrema/mean/deviation, logical counts, Unicode text lengths, and date/time bounds remain exact without
-materializing an all-column filtered frame. Median, distinct counts, histograms, and categorical distributions are
-exact while the non-missing column fits 100,000 rows. Above that bound, the expensive distribution uses a
-deterministic fixed-seed sample of at most 100,000 non-missing values. Sampling restores the user's R random state and
-avoids fixed intervals that can lock onto periodic data. The response omits statistics it did not calculate exactly
-and marks a sampled histogram or category chart with `sampled`; the webview displays `n/a` for an omitted distinct
-count and uses the sampled population as the percentage denominator. The runtime returns at most ten common values
-and twenty numeric histogram bins per column.
-
-Dataset profiles scan exact missing-cell, missing-row, and per-column missing counts in the same bounded chunks.
-Duplicate detection is exact when the visible view fits 100,000 rows and 5,000,000 cells; otherwise it uses the same
-deterministic row sample within both bounds and publishes `duplicateRowsSampleSize`. Shared protocol
-validation, the R transport decoder, the bridge, and both Summary views reject an impossible sample or count, and the
-UI labels the duplicate count with its sample size. The private response also carries the filtered row count from the
-same correlated request.
-
-Opening Filters requests an initial value discovery. Views above 100,000 rows use the same deterministic
-row sample instead of starting an exhaustive scan. `ValuesResponse.sampleSize` identifies sampled counts, `hasMore`
-stays true, and the webview labels the sample. A non-empty user search scans exact values in 65,536-row chunks. Each
-chunk is discarded after its matching values have been counted; only counts and first source positions for distinct
-matches survive between chunks. The retained state is capped at 10,000 distinct matches and 16 MiB of key text; crossing
-either bound returns a recoverable diagnostic asking for a narrower search. This bound is independent of total rows, so
-low-cardinality searches remain exact on large frames. Column-value responses still obey the requested result limit and 16 MiB payload cap.
-ASCII case folding is used for search, and signed zero has one selection token that matches both `-0` and `+0`. Profiling
-reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do not modify
-the source object.
-
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 5, exact fields, canonical
-class/type combinations, unique stable column IDs, contiguous column positions, unique in-range source row IDs,
-logical row positions, matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
-explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
-columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
-text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
-complete object or JSON string is built. The canonical grid protocol carries row labels independently from logical
-row numbers. The kernel agent uses a small R-only transport, which `RKernelBridge` validates and maps to the shared
-host protocol; the Python runtime never reads those messages.
-
-`r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
-and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
-statistics, and column-value requests read through that binding and reject structural changes. These messages have a
-separate private transport-v14 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
-request IDs, and oversized responses. The trusted runtime sources are gzip-compressed and then base64-embedded in the
-kernel bootstrap; base R decompresses them before evaluation, while the exact uncompressed sources still determine the
-bundle identity. A remote IRkernel therefore does not need access to the extension filesystem.
-
-Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
-the original, committed result, and optional draft separate. Filter Rows and Sort Rows reuse the typed viewing rules
-after binding every referenced column by stable ID and name. Drop Missing Rows treats `NA` and `NaN` as missing. In
-Any mode it drops a row if at least one selected value is missing; in All mode it drops a row only if every selected
-value is missing. Drop Duplicates compares the selected columns, or all columns by default, and can keep the first,
-last, or no row from each repeated group. All four row operations retain the original private row identity while
-tracking the active row count separately. The two drop operations preserve source order and compatible `data.table`
-keys. Filtering does the same; an explicit sort keeps stable ties and clears key metadata because its new order no
-longer promises that key. Rename, Drop, Select, Clone, Fill Missing Values, Convert type, Text Length, Lowercase,
-Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, and Ceiling resolve every
-`{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
-refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
-retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
-the new column independently. Text Length accepts character and factor input, appends a nullable integer column with
-the same derived-ID form, and uses `nchar(..., type = "chars")` so Unicode text is counted as characters rather than
-bytes while `NA` remains missing. The text operations accept character and factor input, convert factors to their
-labels, and keep `NA`. Lowercase and Uppercase call R's native casing functions. Capitalize uppercases the first
-character and lowercases the rest. Find and replace uses `gsub()` with literal or regular-expression matching. Strip
-text removes the shared whitespace set by default or a literal set of characters from both ends. Split text uses a
-literal delimiter, always creates a new character column, and returns `NA` when the requested part does not exist.
-Except for Split text, each operation can update the source column or create a character column. An in-place change to
-a `data.table` key column is rejected; choosing a new output column leaves the existing key and row order alone. Base
-data frames and tibbles are copied with R serialization; `data.table` uses
-`data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
-Fill Missing Values offers a typed value, an exact numeric median, a mean for double columns, or the most common
-non-missing value for character, factor, and logical columns. Median, mean, and most common replacements can also be
-calculated within one or more groups. It accepts an ordered list of same-type fallback columns and takes the first
-present value in each row. Directional fills use an explicit stable sort, restore the original row order, and may
-reject a whole missing run above a chosen limit. Forward fill leaves leading gaps
-unresolved; backward fill leaves trailing gaps unresolved. A double column can instead interpolate between finite
-anchors along an ordinary numeric, `Date`, or `POSIXct` coordinate. Coordinates must be complete, finite, and unique.
-The calculation uses their actual distance, fills only bracketed runs, and restores source order. `integer64` is not a
-supported coordinate. Calculated replacements ignore `NA` and `NaN`. When
-missing cells need filling, ties, all-missing columns, and undefined means fail before a draft is published. Factors,
-ordered factors, dates, datetimes, and `integer64` keep their native types. A no-op returns the unchanged column. Key
-columns are blocked because replacing a key value can invalidate the data-table order. R text replacements use the
-frame contract's 8 KiB UTF-8 limit, which the operation form checks before preview.
-Convert type replaces one column while retaining its name, position, and stable ID. It targets character, integer,
-double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
-`integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
-lose units or `integer64` precision fail. Active data-table key columns must be cloned before conversion.
-Formula appends one numeric column from an exact left-column reference and either an exact right-column reference or
-a finite scalar. It supports addition, subtraction, multiplication, division, modulo, and power. Ordinary R integer
-and double arithmetic follows R's native widening rules, while exact `integer64` addition, subtraction,
-multiplication, and modulo stay `integer64` when both operands are integral. Division, power, and any mixed
-`integer64`/double operation produce doubles. `NA` propagates; existing `NaN` and infinities follow R arithmetic,
-while a newly introduced overflow, `NaN`, or infinity fails before publication. Live execution and generated R use
-the same positional bindings and result rules.
-Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
-range becomes zero. Missing values and non-finite doubles produce missing output. Wide `integer64` values are scaled
-without first converting the source column to doubles. A keyed `data.table` column must use a new output column.
-Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
-outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
-and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
-new output column is allowed and leaves the key alone.
-One-hot encode binds one or more exact scalar columns and derives categories from observed non-missing values. `NA`,
-`NaN`, blank text, and unused factor levels do not create outputs. Multi-label binarize accepts one exact character,
-factor, or ordered-factor column, splits each present value on the literal non-empty delimiter without trimming, and
-ignores blank tokens. An omitted multi-label prefix derives from the selected column name; an explicit empty prefix
-is retained. Both operations append globally UTF-8-ordered, collision-free base-integer 0/1 columns and can retain or
-drop their selected inputs. The R kernel returns this value-dependent schema with stable generated identities, while
-the host independently validates the retained lineage, generated names, types, order, viewing-query reconciliation,
-and exact diff before publishing the draft. A dynamically empty encoder always fails, independently of whether its
-input columns would otherwise remain; immutable zero-column sources are a separate source capability. Aggregate
-categorical output is bounded before publication. Live and generated execution preserve the exact supported frame
-family, source object, retained `data.table` key, and a valid data-table self-reference.
-Format Datetime accepts an exact `Date` or `POSIXct` column and a non-empty bounded R format string. It can replace
-the source column or append a new character column. POSIXct formatting uses the column's declared time zone and
-uses UTC when none is declared. Every formatted UTF-8 value remains bounded, and replacing an active `data.table`
-key is rejected. Formatting runs in 1,024-row chunks and the retained character-vector slots plus UTF-8 bytes may
-not exceed 64 MiB, so a valid but highly expansive format cannot allocate an unbounded result. Generated R repeats
-the same type, name, time-zone, key, per-value, and aggregate-output checks.
-Group and aggregate binds every key and input by stable ID and name. It keeps groups in first-seen order, treats
-`NA` and `NaN` keys as the same missing group, and supports sum, mean, median, minimum, maximum, count, distinct
-count, first, and last. The result stays a base data frame, tibble, or data table to match its input. A data-table
-key is cleared because the grouped output does not promise keyed order. Grouped rows receive new identities after
-the input identity domain, so page diffs cannot mistake an aggregate row for a source row. Exact integer and
-`integer64` sums keep their native R type. Base R and `bit64` do not provide an exact 38-digit integer type, so a
-sum outside that native type's range fails before publication instead of being converted to text or another engine.
-Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
-same-sign boundary pairs. First and last use source order.
-Transform by example binds an ordered array of public `{id, name}` source references and aligns every example input
-array to that exact order. A new draft may omit its program; native R then uses the shared deterministic candidate
-ordering to synthesize one canonical bounded AST and returns that AST in the retained step. Preview, apply,
-latest-step edit, persisted replay, applied-step inspection, undo, and executable generated R evaluate that retained
-program rather than synthesizing again. Live and generated evaluators share the same portable text, regex, numeric,
-date, datetime, duration, factor, and null behavior. They preserve R's existing double `NaN` and infinities while
-exact integral addition, subtraction, and multiplication use the shared `-(10^38 - 1)` through `10^38 - 1`
-envelope and publish an integral result only when it fits an exact R integer or `bit64::integer64` value.
-
-The R decoder and synthesizer fail closed on malformed or stale references, misaligned arrays, unsupported source or
-program types, non-strict JSON scalars, non-portable numeric examples, structural signed zero, and unsafe whole
-numbers. They enforce the shared limits of 16 sources, 64 examples, 256 AST nodes, depth 64, 64 concatenated parts,
-64 warning strings, 8 KiB per text value, and 64 KiB total UTF-8 text before synthesis and again on the canonical
-result. Evaluation runs in bounded 1,024-row chunks and uses the frame contract's per-value and aggregate-output
-budgets. The same frame helper isolates the source and preserves the supported family, retained metadata, and stable
-derived output identity for all six concrete flavors: base `data.frame`, tibble, `data.table`, and ordinary
-`collapse::qDF()`, `collapse::qTBL()`, and `collapse::qDT()` output.
-A live session reports nullability conservatively. Schema changes retain existing nullability metadata. Fill Missing
-Values can mark its output non-nullable; Min-max scale always marks its double output nullable. Preview, apply,
-discard, latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
-response before publishing the candidate state. Generated code repeats the positional and stale-name checks for the
-supported operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
-for the chosen rules instead of embedding a generic interpreter in every preview.
-
-`RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
-session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
-again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
-started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
-finishes. Page and profile requests that time out or are cancelled still retain the original execution's settlement
-promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
-ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
-have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
-response, a later host cancellation cannot hide the new revision. A CSV or Parquet export is first written inside
-that same kernel. IRkernel and active-terminal transports read it by byte offset in chunks of at most 1 MiB. R sends
-each chunk as unwrapped canonical base64, and the host closes the exact process-local artifact after the transfer.
-A timed-out request must settle before cleanup is sent to the mapped kernel; cleanup never looks up a replacement
-notebook or kernel.
-
-`RProcessSessionTransport` provides the same request interface for trusted R documents. It starts one private
-`Rscript --vanilla` process and uses the document's directory for relative `read.csv()` and `source()` calls. Plain R
-source is parsed once. R Markdown and Quarto cells are written as separate bounded source units; the process reads
-and parses every unit before it evaluates them in order in one dedicated environment. Runtime paths travel in private environment variables that
-are removed before user code runs, so `commandArgs(trailingOnly = TRUE)` behaves as it would for a normal no-argument
-script. User output cannot corrupt protocol messages: requests and responses use bounded files under one private
-temporary directory, and responses are published by atomic rename. Requests are serialized inside that process while
-different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
-removes its temporary directory.
-
-An editable R notebook, active-terminal, or local R document session can export its committed cleaning result as CSV
-or Parquet. CSV is part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the
-session; the runtime checks this when the session opens and again when export starts. An owned document process writes
-an opaque file in its host-private directory; the extension verifies and streams that file. IRkernel and the official
-active R terminal keep their artifacts inside the exact R process and return bounded, offset-addressed chunks. Both
-routes feed the shared host publication transaction described above. Drafts and stale revisions are rejected. Viewing filters and
-sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to the
-current local extension host; the public export request does not yet carry a VS Code remote authority. The
-active-terminal export path is not counted as release evidence until its packaged VS Code and Cursor journey passes.
-
-Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
-process started by user R code has exited. The command can be enabled there only after the extension owns the R
-process tree with a Windows Job Object or an equivalent mechanism. IRkernel notebook sessions are unaffected.
-
-Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
-a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
-`stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
-code. Native variable discovery and runtime bootstrap require `jsonlite` 1.0 or newer and `rlang` 0.4.5 or newer in
-the selected R runtime. It recognizes exact base
-`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The packages must
-be installed in the environment that owns the session: the selected IRkernel, the selected official R terminal, or
-the `Rscript` used for an Open Wrangler-managed document. Notebook, active-terminal, and R-document commands enable
-native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
-Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
-Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format
-Datetime, Group and aggregate, Transform by example, and Custom code.
-
-Custom Code retains the public protocol-v2 `{code}` step while private transport v14 adds its effective-view receipt.
-Both host and R decoders bound the exact source at 64 KiB of UTF-8 and reject unpaired text, NUL, blank/comment-only
-input, and parse errors before evaluation. R parses once, then evaluates the expressions in a child of a shield
-environment. The `df` binding is a further-isolated copy; the shield locks the selected source name and `result`, so an
-ordinary `<<-` or by-reference update cannot mutate the selected source through those names. The step must create an
-exact local, non-active `result` that has at least one column and the same canonical base-data-frame, tibble, or
-`data.table` flavor. Deliberate access through another alias or the global environment, and filesystem or network side
-effects, remain trusted arbitrary R behavior and are not transactional.
-
-The result may change row count, schema, row names, and a `data.table` key. Equal output names consume matching input
-column identities in FIFO order, including duplicates; unmatched output columns receive
-`c:step:<step-id>:<created-output-ordinal>`. Every Custom Code result receives a fresh row-identity generation. Preview
-reconciles filters and sorts against columns whose stable identity and required type still match, returns that exact
-effective view, and represents the diff as a full row replacement; any active filter makes the bounded diff
-conservatively truncated. Session revision, plan, draft, schema, identities, generated code, and effective view publish
-together only after output validation, so failure restores the last confirmed state. This atomicity does not roll back
-the ambient side effects described above.
-
-Executable generated R safely embeds the exact Custom Code text as one quoted scalar, parses it once, and repeats the
-same input isolation, shield, result validation, flavor normalization, lineage, and resource checks. It is equivalent
-to live execution when code, input, and ambient environment are deterministic. For the ordinary generated helpers,
-the plan implementation evaluates in a fresh environment whose parent is `baseenv()`, while an explicit private
-binding identifies only the caller environment from which the exact source variable is copied. Custom Code alone uses
-that caller environment as its shield parent because it is intentionally arbitrary R.
-The shared source preflight and the Formula, Format Datetime, and categorical implementation helpers avoid
-caller-defined operator, S3-method, and helper-name lookup; this is not a blanket claim for every older generated
-operation. Generated code rejects an
-active output binding before source evaluation, after a delayed source promise settles, and again immediately before
-publication. It normally publishes `open_wrangler_result`; when that is the source variable, it preserves the source
-and publishes `open_wrangler_result_2`. Live capture rejects malformed
-row-name structures and unequal ordinary column lengths before its isolated snapshot; its ordinary inspection then
-rejects unsupported column classes or attributes and frames beyond the 2,048-column bound. Generated replay performs
-all of those checks before copying its source or running a step, and keeps aggregate factor-level validation within the
-shared metadata budget.
-Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session.
-Notebook insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the
-complete resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects
-generated code containing a standalone backtick fence that knitr would close early. Active-terminal sessions have no
-insertion target. A stale or ambiguous document is never retried. R sessions open with header profiles off so opening
-a frame does not immediately scan every visible column. Users can enable header profiles,
-and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing run
-checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
-rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
-The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. Local packaged acceptance keeps fresh core, value, and categorical editing profiles
-and moves candidate native-frame and restart work into dedicated selectors. Explicit candidate `core-operations`
-owns one complete installed Clone Column lifecycle: preview, apply, applied-step inspection, editing and reapplying
-the same step while preserving its step and output identities, then undo. Dedicated local-source contracts now own
-the strict ordered 32-operation catalog and production generated-code execution/replay. The separate TypeScript host
-contract proves byte-exact clipboard and atomic script export with distinct executable operation-labelled buffers.
-Fresh installed all-32 candidate and performance ownership remains outstanding. The
-`value-operations` targeted slice still owns exactly Find and
-replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
-and Split text. The
-`categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
-values, generated calls, preview, apply, and undo in VS Code. macOS, Windows, and Cursor retain representative
-platform/editor seams. Candidate core, value, and categorical
-omit the former shared native-frame scaffold. `native-frames` makes Linux VS Code the comprehensive collapse/viewing
-and native tibble/data-table Rename/Drop owner; macOS, Windows, and Cursor retain representative Rename/Drop seams.
-`kernel-restart` owns restart/reopen. Explicit
-candidate core omits both on Linux, macOS, and Windows. Linux executes the dedicated selectors in VS Code and Cursor,
-while macOS and Windows execute them in VS Code. Default/unset manual core retains its full catalog and the remote R
-journey retains its representative embedded behavior. The routing retains one native-frame and restart compatibility
-seam on every platform without repeating comprehensive proof or adding a selector, job, phase, deadline, or retry.
-Categorical Undo uses one
-authoritative one-shot dispatch receipt
-and waits up to 75 seconds for that queued mutation to complete; crossing the dispatch boundary can never trigger a
-retry. The remote R Docker journey retains its independent `lowerText` (Lowercase) check. Across the packaged
-journeys, the base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo;
-Convert type is applied and undone.
-Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The run
-checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed data tables additionally
-cover editable open plus Rename and Drop preview/discard. The direct R suites cover all supported operations, plus
-class and key behavior for tibbles and data tables.
-An applied-step
-inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
-retained input and output schemas and calculates the public diff only after all three responses agree.
-
-An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
-
-Every standalone interpreter lookup is one coordinator-owned resolution attempt with a non-configurable 30-second monotonic deadline. That single budget includes optional Python-extension activation, active-environment resolution, system discovery, every interpreter probe, and a reported-`sys.executable` re-probe; an individual subprocess is capped at 10 seconds or the smaller remaining aggregate budget. An explicit `openWrangler.pythonPath` is authoritative and never falls through. Windows fallback reads only the non-mutating launcher inventory, ranks supported 3.10 to 3.14 candidates by minor version descending, normal ABI before free-threaded ABI, then case-insensitive normalized path, and caps the ranked list at 16 before filesystem checks. Linux and macOS retain the fixed `python3`, then `python` order.
-
-A pending resource-scoped selection owns an exact `AbortController`. Request cancellation, selection/configuration invalidation, Workspace Trust loss, broker or bridge disposal, supersession, and aggregate timeout are terminal outcomes rather than ordinary candidate failures. Cancellation while selection is unresolved aborts that shared attempt: the owner receives the existing not-started cancellation and joiners become stale; cancellation after confirmation does not evict the selected environment. Invalidation and shutdown abort the exact old attempt before removing it, and publication is guarded by the exact selection object and trust/current predicates across every await, so a late success or rejection cannot populate, delete, or replace a newer same-key selection. A caller may detach after its deadline from shared Python-extension activation, but only a compatible API may later be cached by a still-live broker; the stale environment-selection attempt never resumes.
-
-Before the standalone server submits an `openSession` to an executor, its process-owned stdin reader thread creates a separate transient adapter for the selected backend (or the automatic Polars file default), loads that backend's top-level native module, and closes the adapter. Polars Excel preparation also initializes discoverable PyArrow on that owner thread. Supported `fastexcel` releases before the optional bridge transition import PyArrow directly, while newer releases use it for eager output when available. Windows Python 3.14 stage diagnostics showed that allowing the bridge to begin PyArrow's NumPy-backed native import only after the reader returned to blocking stdin could stall the open; preloading PyArrow removed the stall, while skipping Polars preparation and changing Arrow's allocator did not. Missing PyArrow keeps the newer native capsule path, and `fastexcel`, the source read, and session construction remain worker-dispatched so independent sessions retain concurrency. Preparation failures return a correlated engine diagnostic instead of entering a worker, and no adapter is shared or unrelated engine probed.
-
-By-example requests have two deliberately different validation phases. A new draft may omit `params.program` so the runtime can synthesize and return the canonical candidate, but any retained step in runtime metadata, notebook output, or workspace persistence must already contain that program; replay never silently synthesizes a different transform. By-example examples use strict JSON scalars. The operation editor lexically rejects integer number tokens outside JavaScript's exact safe-integer range before `JSON.parse` can round them; users can infer the same program with an in-range example, and the retained program still executes against engine-native integers throughout the shared 38-digit arithmetic envelope.
-
-The runtime exposes one protocol across standalone and notebook transports. `protocol/openwrangler.v2.schema.json` is the canonical contract; `npm run generate:protocol` produces `src/shared/protocol.generated.ts`, and CI rejects stale generated types. `src/shared/protocolValidation.ts` validates every request and response envelope plus every nested variant before the extension or coordinator can observe it. Transformation steps are a discriminated union: each operation kind has an exact parameter shape, and the same guard protects webview intents, runtime metadata, saved notebook output, and persisted replay state. A session may narrow the shared operation registry with `capabilities.supportedOperations`; omitting the field keeps the full catalog for existing editing engines. The webview, extension host, and Activity Bar all enforce the same list. `editable` remains the separate switch that decides whether any cleaning action can run. The editor webview may send only the page/profile and draft/plan intents it owns, plus one exact no-argument `exportData` intent that delegates to the public extension-host export command. The extension host still owns the destination picker, source-safety checks, filesystem write, environment mutation, and close. An added-column preview uses the stable output identity already present in the confirmed schema to issue an ephemeral grid-navigation request; it changes no runtime, viewing, or persisted state. `npm run generate:reference` derives the public command, setting, operation, protocol-message, and MIME tables in `docs/reference.md` from their canonical registries; CI compares the generated document byte-for-byte. Python's explicit decoder rejects malformed versions, correlation IDs, priorities, request shapes, revisions, and import descriptors before dispatch. Standalone requests use newline-delimited envelopes on standard input/output; notebook requests use the stable `@vscode/jupyter-extension` `kernels.getKernel()` and `executeCode()` surface with a marker-delimited encoded envelope. The standalone process duplicates its original stdout into one private, non-inheritable protocol writer before worker dispatch, redirects the public stdout descriptor away from that pipe, and exposes only request-aware Python stream routers to engine code. Pandas, Polars, and DuckDB Custom Code capture stdout and stderr independently under fixed 8 KiB UTF-8 budgets; successful-step output is discarded, while failure diagnostics are bounded and redact credential syntax, common opaque tokens, unsafe controls, and private-key material. Concurrent steps retain separate thread-owned captures. Generated scripts keep ordinary Python stdout/stderr behavior because they execute outside the runtime transport. Both transports return the canonical protocol-v2 response envelope for successes, decoder failures, engine diagnostics, cancellations, and unexpected errors, preserving an available `viewRequestId` so logical runtime failures do not masquerade as kernel transport failures. The runtime handshake and Python packaging metadata both read `python/openwrangler_runtime/version.py`; documentation checks require it to match the extension package version. Once trusted kernel access succeeds, Open Wrangler transfers its versioned pure-Python runtime through that API into a content-addressed kernel-temporary directory, then registers MIME v2 Pandas/Polars formatters. It never assumes a remote kernel can read the local extension filesystem.
-
-Standalone and notebook responses share one compact UTF-8 encoder that accepts only plain JSON dictionaries, lists, and primitive values. Producers own typed-value normalization; the transport rejects unsupported objects, non-finite numbers, invalid Unicode, cycles, and transport nesting beyond 128 levels without invoking string coercion or echoing a rejected value. Producer-owned page and cleaning-plan limits remain 64 levels and fit inside their protocol wrappers. The complete LF-delimited frame is size-checked before publication, preserving the correlated mutation preflight and terminal standalone publication rules.
-
-`NotebookPreviewCoordinator` prepares those formatters proactively for each trusted, exact, visible Jupyter `NotebookDocument`, rather than waiting for the first Open Wrangler command. The stable Jupyter lookup is observation-only: it can return only a kernel the user has already started, so an API-opened background notebook never starts or acquires one. Preparation is bounded, retries transiently while the same document remains visible and valid, lets a real notebook change bypass pending backoff, and runs again after that exact kernel is invalidated or restarted. Hiding the notebook disposes only its formatter-preparation bridge; showing it again creates a fresh exact-document preparation. `openWrangler.notebookPreviewProvider` owns the formatter choice: `openWrangler` prepares, while `dataWrangler` and `disabled` leave the kernel untouched. `ask` resolves directly to Open Wrangler when Microsoft Data Wrangler is absent; when it is installed, one modal provider choice is required before Open Wrangler registers anything. A later switch away from Open Wrangler applies to newly started or restarted kernels because an already installed kernel formatter cannot be removed safely from another extension's process.
-
-The first cell can finish before that observation-only preparation sees its newly started kernel. A lightweight
-tracker starts before activation's first await and observes the selected kernel when a Python cell begins execution.
-It carries that exact kernel object and restart generation through the completed `execute_result`, even when the
-execution summary and output arrive separately or the first result finishes while kernel lookup is still settling.
-A history-neutral check of the matching `Out` value confirms that it is a supported dataframe before the cell status
-bar offers **Open in Open Wrangler**. `display_data`, stream output, Styler,
-and unrelated HTML therefore do not get a button that cannot open. A lower or repeated execution number clears earlier
-entries, and each entry retains a hash of the exact cell source. The command captures the exact `NotebookCell`, its
-sole visible editor, exact `NotebookDocument`, execution order, source hash, and kernel binding before any await. It
-checks the source against IPython's raw input history and reads the matching `Out` value through `executeCode()`, which
-does not increment history or rerun source. Every captured value gets an opaque weak live-result handle, even when a
-canonical variable name is available for its label, so later rebinding cannot change what the panel opens. Repeated
-opens of the same live object reuse that handle. Cell reruns, cleared outputs, restart collisions, edited source,
-closed or duplicate notebooks, split-editor ambiguity before or during lookup, hidden origin editors, and kernel
-changes reject the launch before a panel opens.
-
-For Pandas and Polars, formatter registration retains `text/plain`, suppresses only the default dataframe `text/html` representation so the validated Open Wrangler MIME remains the rich output, and leaves an explicit user-installed per-type HTML formatter untouched.
-
-The Jupyter extension remains optional and is never a package dependency. Its Variables action and Open Wrangler's notebook-variable command converge on the same exact `NotebookDocument`-owned launch path. Menu placement uses only stable VS Code context: VS Code exposes the command in the notebook toolbar, or in the editor title when the global notebook toolbar is disabled; Cursor receives the same canonical command as a declaratively pinned editor-title action because it does not currently render the third-party notebook-toolbar contribution consistently. One immutable app-name-derived context selects that Cursor fallback during activation and suppresses the standard notebook-toolbar contribution, so a host can never render both actions together. No Jupyter-private context key determines visibility or provenance. At command receipt, a manual toolbar launch reconciles any direct public URI with the public active `NotebookEditor` and `TabInputNotebook`; every available signal must identify the same URI, the tab and document must both use the exact `jupyter-notebook` type, and exactly one still-open `NotebookDocument` must own it. That exact object is captured before the variable prompt and revalidated afterward, so toolbar focus may clear `activeNotebookEditor` without permitting a URI-only, stale-tab, duplicate-document, non-Jupyter, or private-context fallback. The command still validates the released Jupyter API, exact notebook, kernel, and dataframe value before opening a session. Jupyter owns the first-use kernel-access consent; denial persists until the user changes Jupyter's access decision and cannot be bypassed by Open Wrangler. A kernel restart invalidates the bridge generation, after which the coordinator reacquires the exact notebook kernel, transfers the runtime again, and replays only the last confirmed plan. For a correlated Native-R `r_kernel_changed` response, that replay occurs on one freshly reverified notebook/kernel/variable delegate and atomically replaces only the private runtime. The public session, confirmed revision, cleaning plan or draft, generated code, source, and view remain unchanged. The failed read or mutation response is returned exactly once and is never retried; a later request uses the replacement runtime. Concurrent failures from one runtime generation share one replacement, while cancellation, closure, stale correlation, source/schema/variable drift, or failed verification prevents publication and cleans each owned runtime exactly once. R documents and interactive-R sessions have no notebook replacement capability and retain the ordinary same-delegate replay path. Status invalidation remains scoped to the exact observed generation, while a timeout or cancellation before dispatch may detach only its still-current acquisition epoch. After dispatch, a host timeout or cancellation is a typed indeterminate boundary rather than transport loss: the observed kernel generation remains owned, the exact execution stays alive with a never-cancelled token, and the coordinator parks that session behind its settlement promise. Reads are never replayed through that boundary; mutations restore the last confirmed state only after the original execution settles. A failed or detached open likewise chains exact-kernel candidate cleanup after its original open settles, so an early `unknown_session` close can never retire an identity before a late open creates it. Released-package acceptance therefore uses independently rooted allow and deny profiles, workspaces, Jupyter state, and IPython state so consent and kernels cannot leak between cases. Those phases run a disposable dependency-only kernel interpreter that cannot import `openwrangler_runtime` before Open Wrangler bootstraps it; the same absence is rechecked after an observed real kernel restart, preventing an editable development install from masking failed runtime transfer or recovery.
-
-The notebook agent tracks concurrent entry through a bounded queued/running/completed registry without adding a process-wide dispatch lock. It emits a cancellation acknowledgement only when a queued target was marked before the shared dispatcher; the target's own correlated response then reports that cancellation. The existing per-session scheduler continues to own cross-session concurrency, foreground/profile overlap, priority, and close ordering. A running target cannot be interrupted: cancellation returns `cancellation_unavailable`, the detached host stale-ignores its result, and the original correlated response remains authoritative. Recent completed targets are distinguished from unknown targets without retaining unbounded request history, and repeated cancellation cannot manufacture a second completion.
-
-Pandas, Polars, and DuckDB adapters implement the same engine contract for schema, blocks, profiling, viewing queries, transformations, code generation, and exports. Each adapter retains its native frame type; runtime paths never bridge a dataframe through another engine. An ordered engine registry stores factories rather than adapter singletons: automatic file selection tries fresh Polars, DuckDB, then Pandas candidates, closes every rejected candidate, and transfers the matching instance to exactly one session. Built-in factories import their implementation module only when that factory is invoked. The `engines` package resolves its existing public adapter-class exports through the same per-class lazy boundary, so importing the runtime or completing a standalone `initialize` loads no Pandas, Polars, DuckDB, or PySpark implementation module. Explicit selection loads only its chosen implementation; automatic notebook detection deliberately invokes candidates in registry order until one matches. Immutable engine capabilities independently describe supported source kinds, editing, lazy file extensions, exports, shutdown interruption, and request cancellation; wire capabilities combine those facts with the current source and session mode. `python/openwrangler_runtime/operations.py` is the validated operation registry and shared transformation IR boundary: it rejects unknown operations, malformed predicates/sorts, invalid option types, and conflicting group aliases before an adapter runs them. Engine results and executable generated functions must agree on semantic output while generated code remains idiomatic to the source engine. Shared semantics include stable ordered sorts with per-column null placement, source-ordered groups with null-excluding `nUnique`/`first`/`last`, independently typed null and NaN filters, missing-value fills that treat null and NaN alike, distinct values ordered by count descending then display text ascending, null/blank-excluding categorical encodings, output-collision rejection, globally ordered one-hot output for numeric, boolean, date, and text values, categorical-null-safe multi-label encoding, empty literal find replacement at every text boundary, and finite-only min-max scaling. Explicit fill values are type-checked before their stable column reference is bound. Mean, median, and most-common fills exclude missing values and operate on the complete cleaned dataframe, independently of viewing filters. Mean is currently limited to floating-point columns and uses a scaled calculation so large finite values do not overflow only because of an intermediate sum. Ordered fallback fills read only same-type columns from the same row, keep the first present target or fallback value, and leave the target missing if every candidate is missing. Separate categorical or enum columns may have different native domains, so Python engines preserve the target type when selected fallback values fit and expose any required widening to ordinary text in the draft preview. When a fill is needed, the most-common method requires one winner under the engine's native equality; ties and all-missing columns return a clear error. A column without missing cells returns unchanged before any widening or cast. On Python engines, an explicit value can also widen a categorical or enum column to text; a most-common fill uses an existing value and preserves the category type. Median fills preserve the native column type; an integer midpoint must be integral and a decimal midpoint must fit the existing precision and scale exactly. Explicit decimal values follow the same exact-scale rule. Datetime replacements must match the column's timezone awareness. Unicode casing remains native and is golden-tested per adapter; default stripping uses one explicit Unicode/control-whitespace set in every live and generated path. Pandas custom-code execution and its generated function recursively isolate object-dtype cell values before arbitrary code runs, because Pandas' normal deep copy does not clone nested Python objects.
-
-Pandas, Polars, and DuckDB Custom Code uses one function-body scope in live execution and generated scripts. The
-function receives `df`, can use the matching `pd`, `pl`, or `duckdb` module, and must assign its dataframe result to
-`result`. Ordinary imports, explicit `from` imports, control flow, multiline statements, and nested functions or
-closures are supported. A nested function may use its own `return` or `yield`. Decorator, default, and keyword-default
-expressions execute in the outer scope, while annotations use an explicitly postponed future-annotations mode. Yields
-in any of those expressions remain outside the supported scope. Future imports, wildcard imports, `global`,
-`nonlocal`, and `return` or `yield` in the outer Custom Code scope are rejected. The validator parses the same
-`splitlines()`-normalized body that both execution paths render, walks it iteratively under fixed node and depth bounds,
-and maps parser or compiler complexity failures to the Custom Code error contract. Generated wrappers are compiled at
-module scope under the canonical function name and retained under unique raw bindings, so private names, `__class__`,
-the canonical name and qualified name, and globals lookup retain live semantics. Every generated Custom Code plan
-declares postponed annotations and retains a private builtins-module binding. Every invocation then receives a fresh
-globals dictionary in the same observable order: only its matching engine module, the builtins dictionary, and the
-canonical function binding; generated-
-plan helpers and another Custom Code step's globals are not visible. Generated Pandas and Polars code applies the same
-result-type checks and Series-to-DataFrame normalization as live execution, while DuckDB retains its relation check.
-Validation runs before a new or replacement draft can compile or execute. Streaming generated-size preflight counts
-each complete Custom Code definition, namespace, invocation, result guard, and indexed name before any adapter can
-allocate the `splitlines()`-expanded program.
-
-Polars normalization converts a `Series` to a one-column `DataFrame` but retains a notebook `LazyFrame` unchanged.
-Session-owned row identity is added as another lazy expression. Open evaluates an exact row-count aggregate, reads the
-schema without executing column profiles, and collects only the projected first-page slice. Filters, sorts, ordinary
-profiles, and lazy-preserving cleaning steps remain in the Polars plan; their terminal collections are bounded pages
-or fixed-size aggregate results. The wire `lazy` capability reflects the frame currently retained by the session, so
-a live notebook LazyFrame is reported as lazy. CSV and Parquet exports use Polars lazy sinks. None of these operations
-mutates the notebook object or replaces its plan.
-
-One-hot encode and Multi-label binarize are explicit materialization boundaries for a lazy Polars session. Their
-output schema depends on every observed category or label, so previewing either operation collects the current frame
-before it builds the generated columns; metadata then reports the eager draft accurately. Custom Polars code can also
-materialize data or return an eager frame because its behavior is the user's explicit request. No open, page, filter,
-sort, profile, lazy-preserving edit, export, or close path crosses that boundary implicitly.
-
-Directional fill rules carry their own non-empty transform sort and never read the current viewing sort. Each engine
-uses the source row position as the final stable tie-breaker, calculates previous- or next-value fills in that order,
-then restores the earlier row order. An optional maximum gap applies to the whole consecutive missing run: a longer
-run is left unchanged rather than partially filled. The target cannot also be an ordering column. Because edge and
-over-limit gaps may remain, directional fills keep conservative nullable metadata.
-
-Grouped fills carry one or more stable grouping-column references and never read the viewing query. Float-key NaN
-and null values share one missing-key group. Median and mean candidates follow the same type rules as their global
-counterparts; a tied mode, undefined statistic, or all-missing group leaves that group's target gaps unresolved.
-Existing values and row order do not change, and nullable metadata remains conservative.
-
-A Fill Missing Values preview includes `remainingMissingCells`, the exact null-plus-NaN count in the target column
-after the draft runs against the complete cleaned dataframe. Other preview operations must not send the field. The
-host rejects a missing, negative, non-integer, or larger-than-row-count result before publishing the draft. Pandas,
-Polars, DuckDB, and R compute the single-column aggregate in their own engines; lazy Polars collects the aggregate in
-streaming mode.
-
-Text summaries carry an optional protocol-v2 `text` block only for semantic string columns. It always contains an exact `emptyCount`; either all three length scalars (`minLength`, `maxLength`, and `meanLength`) are present or none are. Nulls and NaNs never contribute, an empty string is exactly a zero-length value without trimming, and length means Unicode code points rather than UTF-8 bytes or UTF-16 code units. A zero minimum therefore requires a positive empty count, an all-empty column has only zero length statistics, and an all-null text column reports `emptyCount: 0` with no invented bounds. Pandas and eager Polars compute the values within their native frames; lazy Polars, DuckDB, and PySpark use fixed-size native aggregate projections. Pandas mixed-object and non-string categorical columns fall back to the same normalized cell display used by the grid, avoiding both engine conversion and a disagreement between visible text and measured text. Saved notebook snapshots use the identical contract over their bounded captured truth. The validator rejects negative, partial, non-finite, contradictory, or non-string text summaries, while omission remains valid for saved protocol-v2 output created before this field existed. Column profiles hide a zero-valued NaN row for text but retain it whenever Pandas reports actual NaN-backed missing values.
-
-Stable/final PySpark 4.2.x is a supported, viewing-only live-notebook backend for local Classic and local Spark Connect DataFrames. It is not a file or editing backend. External or authenticated clusters, Spark provisioning, notebook-output formatting, cleaning plans, code/data export, and persistence are outside this contract. Every pinned or auto-detected PySpark launch runs a bounded type-and-version preflight inside the authoritative `KernelBridge` generation immediately before the runtime open dispatch. The bridge revalidates that the exact acquired kernel remains selected both before and after the probe; a silent A→B selection change or an observed restart invalidates the generation, reacquires B, and reprobes before dispatch. The probe executes with isolated locals, reads only already-loaded module dictionaries, does not invoke module `__getattr__`, and leaves the user namespace unchanged. Missing PySpark and versions outside the strict supported stable/final 4.2.x grammar fail with an actionable diagnostic before any runtime session is published. The adapter detects supported DataFrames only inside the active Jupyter kernel and advertises `notebookVariable` plus read-only viewing capabilities; unpinned notebook-variable detection may select it only after the runtime object is verified as a PySpark DataFrame. Open rejects streaming frames, duplicate or case-fold-colliding column names, names in the private row-identity namespace, unsupported profile leaves even when nested inside arrays, maps, or structs, and duplicate or case-fold-colliding fields in any nested struct scope. Nested field conflicts fail before paging because protocol structs are JSON objects and cannot preserve both values. The adapter adds one private `monotonically_increasing_id()` expression to an immutable logical plan without persisting, counting, or executing it during open. The session therefore publishes an exact schema and an unknown row total. Its first grid request projects only the visible column window, reads one bounded block plus one-row lookahead, and validates byte size from those bounded row lengths rather than an aggregate over the whole relation. A short terminal block promotes the row total to exact and invalidates unknown-total cache entries atomically.
-
-Paging is a bounded session traversal rather than arbitrary Spark random access, both before and after a terminal block reveals the exact total. The first block establishes a retained boundary identity; each forward-contiguous block refetches one overlap row and rejects a mismatch with recoverable reopen guidance. A previously visited block may be read backward only while its own or predecessor boundary remains in the fixed-cap history. The webview converts scrollbar jumps into adjacent block demand, and runtime recovery reconstructs a saved nonzero viewport by walking contiguous blocks from zero. Recovery performs at most 16 page requests for that presentation-only reconstruction; a farther viewport resets to row zero while its confirmed filters, sorts, widths, and selected column survive. This cap also applies when the replacement's first page already establishes an exact total. Exact-total promotion invalidates pages that still reported an unknown total but does not waive the anchor requirement. These checks detect observed boundary drift; they do not prove that every interior row is stable. `monotonically_increasing_id()` and an unordered DataFrame have no public deterministic global-order guarantee. Explicit user sorts append the private identity as a tie-breaker for the current traversal, not as a repeatability guarantee. The toolbar labels an unsorted view **Source order** and an explicitly sorted view **Sorted**. Its ordering disclosure tells users that Spark may change source order, rows tied across every sort key may move on rerun, and repeatable rows need a unique final sort key. Queued or superseded reads are discarded before kernel dispatch. Once Spark work is running, a host deadline or closed panel detaches and stale-ignores its result: Jupyter cancellation is kernel-wide, and PySpark's default SIGINT handler may cancel unrelated Spark jobs. Exact late-session cleanup drops adapter references without stopping the user's SparkSession. Duplicate counts, distinct counts, and top values canonicalize arrays, maps, nested maps, structs, and binary values into orderable Spark expressions, while a separate native display expression preserves readable JSON or Base64 output. Map equality is independent of entry insertion order and no raw map participates in a profile ordering.
-
-Only a requested bounded page/value sample or fixed-size profile result is collected into the kernel process. A page may contain at most 100,000 cells. The exact row and column window is projected to Spark-native scalar or JSON/Base64 transport expressions. Its row-byte length and values share one terminal action so validation cannot observe a different unordered traversal or double the first-grid action count. The fixed 8 MiB page allowance is divided conservatively across the bounded requested rows; Spark substitutes null for every value in a row that exceeds its share, while the colocated exact length makes the driver reject the page with guidance to request fewer rows. Therefore an oversized row value never crosses into Python, and the locally summed lengths still enforce the aggregate allowance. The returned page is then limited to 16 MiB of strict protocol JSON, 100,000 complex JSON nodes, and 64 nested complex-value levels. Complex Spark values cross as bounded JSON text and are scanned for node count and depth before Python allocates their container graph; schema-aware decoding preserves nested Decimal values exactly. Summary and distinct-value results have independent 8 MiB Spark-side transport and 16 MiB strict protocol limits. Their terminal projection contains only the measured display value and count, never the potentially larger private grouping key. Equal complex values select a deterministic display representative, and canonical nested floating leaves normalize signed zero to Spark's native equality. `toPandas()`, `toArrow()`, Pandas/Polars/DuckDB conversion paths, persistence, full-frame opening counts, and unbounded collection or iteration are prohibited. Automatic visible-column profiling is disabled for PySpark even when insights-on-open is configured, because each requested summary runs Spark work. Closing the Open Wrangler session releases only adapter-owned references; Spark session, cluster, authentication, and Spark Connect lifecycle remain user-owned.
-
-A multi-column summary greedily batches both its fixed scalar aggregates and its bounded terminal branches. One
-fixed-metric batch contains at most four syntactically distinct exact-distinct argument groups and 32 scalar aliases.
-Numeric columns consume two distinct groups; every other supported column consumes one. For exact top values, at
-most four compatible columns become one Spark-native long projection through a bounded array/explode, retaining a
-profile index plus a lossless canonical key and display encoding. One grouping and per-profile top-ten window then
-use one source scan and one guarded terminal action. A supported type without a lossless inverse, including day-time
-intervals, CHAR/VARCHAR, and non-binary string collations, keeps its original singleton action and native grouping
-key. Up to four
-nonconstant numeric histograms likewise share one native aggregate over at most 80 fixed count expressions, without
-unioning independent source plans. The action count is `B + T + G`, where `B` is the fixed-metric batch count, `T` is
-the bounded top-value batch count, and `G` is the bounded histogram batch count. These limits preserve native
-equality, profile values, projection order, and transport budgets without persisting or caching the relation.
-
-Protocol-v2 viewing filters, sorts, and distinct-value requests remain deliberately name-addressed and separate from stable-ID cleaning operations. Every viewing sort list names each column at most once; the TypeScript and Python protocol decoders reject duplicates, while a malformed persisted view is dropped independently from its valid cleaning plan. Text predicate values and selected scalar strings accept at most 65,536 Unicode code points in the canonical schema, both transport decoders, and the saved-snapshot model before engine-specific or arbitrary-precision coercion. Webview predicate inputs truncate to the same code-point bound and use a safe native ceiling of 131,072 UTF-16 code units so astral characters are not rejected early. Pandas therefore resolves a viewing name only when exactly one visible raw label has that string representation: duplicate labels and distinct labels such as integer `7` and string `"7"` return the correlated `ambiguous_view_column` diagnostic in both standalone and kernel transports instead of targeting the first match. Saved notebook snapshots use the same fail-closed rule. The webview counts schema names in a `Map`, labels duplicate selector entries by position, and disables only the ambiguous name-addressed controls; paging, profiling, resizing, stable-ID cleaning, and clearing an existing viewing query remain available.
-
-Cleaning-plan mutations reconcile that independent viewing query against the resulting schema instead of clearing it. A draft preview uses an ephemeral reconciled copy: it retains value selections, searches, advanced predicates, and sort keys only when their displayed column name still resolves uniquely and keeps the exact same semantic type; sorts must also remain comparable. Surviving rules keep their exact order, including multi-sort priority. With no later view edit, Discard restores the exact pre-draft query against the committed schema and Apply commits the reconciled query. A view explicitly changed while the draft is open instead remains authoritative through either action and is reconciled from the draft schema to the committed result. One in-memory applied-step receipt lets an immediate Undo restore the pre-first-apply query only when no explicit view edit has occurred since that draft preview began; latest-step replacement carries that original receipt forward instead of rebasing it to the edited result. A view changed after Apply remains authoritative. This applied-step receipt is neither persisted plan history nor a compatibility retry. Every preview/apply/discard/undo path, its draft-start view epoch, and both receipts participate in the session's atomic mutation snapshot, so a failed transform cannot publish or retain a partially pruned view.
-
-Twenty-nine cleaning operations use stable column identity at the public/runtime boundary. Alongside row/order, structural, categorical, text, numeric, and datetime operations, this includes ordered fill-fallback columns, `groupBy` keys and aggregation inputs, plus `byExample` source columns and every saved-program column leaf. Their public steps carry exact `{id, name}` references and never legacy strings or name-keyed example maps; by-example input arrays align exactly with the ordered source-reference array. Transform-specific filter and sort types remain distinct from the non-destructive viewing `FilterModel`: the operation builder resolves a viewing query against the exact step-input schema and rejects missing or duplicate-name ambiguity instead of guessing. After protocol and IR validation, the private binder resolves every reference against the operation's input schema and lineage, verifies current ID/name/type compatibility, rejects duplicates where the operation requires uniqueness, output-name collisions, the private row-identity namespace, and a drop that would remove every visible column, then adds the zero-based visible `position`. Reusing one aggregation input for multiple aliases is valid. A session retains the serializable public plan separately from its private bound plan; preview, latest-step edit, apply, undo replay, applied-step inspection, and code compilation all use the bound form, and both forms participate in atomic snapshots. Positions and execution-only type annotations never enter protocol metadata or persistence. Latest-step replacement retains the applied step ID and derives each new-output identity as `c:step:<stepId>:<created-output-ordinal>` from the edited result, so preview, inspection, undo, and recovery reproduce exact identities. Pandas live execution and generated functions select bound positions for every addressed operation, including fallback fills, grouping, and nested by-example leaves, so duplicate or non-string labels target one exact column. Polars and DuckDB consume already-verified native names, and DuckDB rejects case-fold-equivalent schemas. Grouped null and NaN keys form one missing group, aggregate null/NaN handling is normalized to typed nulls without erasing a genuinely computed NaN, and aliases cannot collide with keys or each other. Pandas prepares semantic-string object and categorical inputs as nullable strings before group minima/maxima so supported Pandas 2.x and 3.x releases share one missing-value and ordering contract. Integer group sums and by-example arithmetic use a common checked range of `-(10^38 - 1)` through `10^38 - 1`; exact final-result validation permits order-independent cancellation but rejects an out-of-envelope result. Pandas boxes NumPy integers before arithmetic, preserves wide keys/extrema, and computes Decimal sums in a local exact context that retains scale; its fast object-schema inference escalates only ambiguous temporal/object cases. Polars uses native signed 128-bit expressions where safe, an exact scalar fallback for otherwise unrepresentable UInt128 arithmetic, and five bounded base-1e9 native limb aggregates plus a constant-size per-group finalizer for group sums. DuckDB uses exact `HUGEINT`/`BIGNUM` arithmetic so UHUGEINT cancellation cannot wrap. Lazy plans and engine-native frames remain intact and no cross-engine conversion occurs. Decimal mean/median outputs normalize to the shared nullable-float result. By-example synthesis revalidates the deterministic saved AST, uses ASCII-only casing and literal regex replacement across engines, and rejects non-portable source/program type combinations before adapter dispatch. Its retained parameters are bounded to 16 sources, 64 examples, 256 AST nodes, depth 64, 64 concat parts, 64 warning strings, 8 KiB per text value, and 64 KiB total UTF-8 text; cheap collection/node guards precede recursive text accounting, and text budgets are checked before synthesis and again on the canonical output. Every operation's explicit input/output column parameters reject the private namespace case-insensitively, every transformed frame retains at least one visible column, and immutable zero-column sources remain supported where an engine can represent them.
-
-File-backed Polars CSV/TSV, Parquet, and JSONL sessions use lazy scans; filters, multi-sort, projections, page slices, and CSV/Parquet export stay native. Their local source path is always a single literal filename: readers disable native glob expansion when the installed Polars API exposes that control, otherwise they use an encoded local-file URI without copying or rewriting the source. DuckDB supports the same file formats through an immutable, connection-free `DuckDBSqlPlan` containing replayable native SQL plus column and type metadata. Each file terminal read replays that SQL on a fresh connection so paging and profiling can overlap without sharing a cursor. A file-session `DuckDBPyRelation` exists only while binding a plan, running custom code, or writing an export, and is dereferenced before its request-owned connection closes. This lifetime rule is required because DuckDB 1.5 relations retain their connection owner, so closing a connection while storing the relation cannot guarantee that Windows releases the source handle.
-
-Public `extractRegexGroup` is distinct from literal splitting, find/replace regex mode, and the private by-example
-regex AST. One shared parser accepts a bounded single-line Unicode-scalar subset with no more than nine captures and
-one variable-width quantifier. It rejects nonportable constructs, nullable optional groups, and resource-dangerous
-quantifier combinations before adapter dispatch. Live and executable generated Pandas, Polars, DuckDB, and Native R
-select the same group from the first leftmost match: group 0 is the full match; null input, no match, and an unmatched
-optional group yield null; a participating empty capture remains an empty string. Every engine checks the shared
-8,192-scalar/8,192-byte source bound before regex evaluation and the output-name/collision/private-namespace contract
-before scanning values. DuckDB additionally case-folds output addressability. The source remains present, the output
-uses the step's stable ordinal-zero identity, and PySpark remains viewing-only.
-
-Pickle conversion is a one-shot file command, not a dataframe session. `.pkl` and `.pickle` stay out of the custom
-editor and ordinary file-open registries. After Workspace Trust, destination, dependency, and explicit warning checks,
-the extension starts the selected interpreter directly in isolated mode with the bundled conversion helper. The helper
-accepts only a Pandas DataFrame and writes to an already reserved sibling temporary file. The extension then repeats
-the source, destination, parent, and temporary-file checks before one atomic rename. After the worker stops, cancellation
-or failure removes only the temporary file it still owns. If Open Wrangler cannot confirm that the worker stopped, it
-closes its file handle and leaves the unpublished file alone. No dataframe session or long-lived runtime is created.
-
-Live notebook relations use a separate viewing-only `DuckDBNotebookPlan`. One engine-owned wrapper retains the exact user-owned relation and evaluates derived SQL through `relation.query()` on that originating connection. Its accesses are serialized, and closing the Open Wrangler session releases only the wrapper's strong reference without calling `DuckDBPyRelation.close()` or closing the user's connection. This is required for connection-private tables, views, and registered objects whose `sql_query()` text cannot be replayed on a fresh connection. After a kernel restart, Open Wrangler never serializes or replays that SQL: the exact notebook must recreate the same variable in the observed replacement kernel, then the coordinator reopens it with the confirmed DuckDB backend and atomically restores the public session, ordered schema, filter/sort model, and presentation state. A missing or wrong-type replacement variable fails closed instead of converting or guessing. Notebook relation cleaning, generated-code insertion, and data export remain disabled.
-
-Open Wrangler does not use `DuckDBPyRelation.close()` because it executes an unexecuted relation and closes only the query result. Every Open Wrangler-owned DuckDB connection disables known-extension auto-install and autoload, preventing an implicit network download or extension load, disables the external-file cache, and pins `TimeZone = 'UTC'` so TIMESTAMPTZ materialization is independent of the editor host's local zone. DECIMAL, TIMESTAMPTZ, LIST, and STRUCT Parquet values cross the protocol as exact, strict-JSON-safe typed cells. Missing JSON-reader support is classified from DuckDB's anchored diagnostic category rather than arbitrary user-controlled path text, so malformed or missing JSONL remains an input diagnostic. DuckDB paths never convert through Pandas, Polars, or Arrow. Pandas notebook values, Polars DataFrames and Series, and Excel inputs are eager; Polars notebook LazyFrames retain their plans. The public Excel sheet index is zero-based for Pandas and Polars, while DuckDB Excel and `.duckdb` table browsing remain outside the current engine capabilities. A lazy-file session fingerprints the resolved source path, filesystem identity, size, and nanosecond modification time before reading it, validates the same version after the initial response and around every later data read, and rejects a changed or deleted source with a recoverable reopen diagnostic. This prevents cached exact metadata from being paired with rows re-read from another file version while leaving close and cleanup available. Opening prepares the complete unprofiled response before registering the session; reader, normalization, schema, page, source-version, or metadata failures dispose the acquired engine and retain no partial session.
-
-The extension host assigns stable public session IDs and monotonic public revisions while each runtime owns replaceable internal IDs and revisions. A live-kernel open additionally carries a host-generated `requestedSessionId`; the runtime reserves and echoes that exact identity. Once an open succeeds, the coordinator pins both the runtime-confirmed backend and effective mode in the replay request rather than retaining an automatic backend or a caller mode that the selected engine normalized. Strict recovery therefore validates the confirmed session contract, including viewing-only DuckDB and PySpark notebook sessions, without weakening response identity checks. If acquisition, execution, cancellation, timeout, response parsing, or identity correlation fails, the bridge can queue a bounded close for the known candidate even when the successful open response was lost. Mutations, exports, and lifecycle changes remain exclusive within a dataframe, while a read-only foreground page or values query may run beside one immutable profiling-view lease; different dataframes also run concurrently. Each session has interactive and background queues: interactive reads overtake active and queued profiling, exclusive work waits for active profile leases, queued profiles are cancelled on terminal close, and the stdio server reserves separate worker capacity so profiles in other sessions cannot occupy every interactive worker. This is priority scheduling, not a promise that running work is request-cancellable. A standalone cancellation removes a future only if it has not started; an already-running request keeps its authoritative correlated result. DuckDB's interrupt support is reserved for terminal runtime shutdown so active terminal connections can be drained within the shutdown bound. That shutdown interrupt does not make an ordinary DuckDB request cancellable and can never silently discard a mutation or advance the runtime behind the coordinator's revision. Requests carry the current revision, and every page, summary, dataset-statistics, and values query also carries an opaque `viewRequestId` that is echoed on success, cancellation, or error. A separate opaque logical-view context links the accepted page with its summaries and statistics across distinct request IDs. Queued work revalidates its public revision immediately before dispatch. Profiling evaluates its requested immutable view without mutating the confirmed grid filter, and the extension and webview reject responses that no longer belong to the latest requested and confirmed logical view; filter equality is not a freshness token. A current renderer-owned summary or dataset-statistics read may become the first request to discover that its runtime has exited. Because those reads are idempotent, the coordinator may replay the confirmed session and reissue that exact request only while its `viewRequestId` remains active and its logical-view context remains both latest and confirmed. Cancellation observed before replay suppresses recovery; cancellation arriving during a shared replay allows that recovery to complete for other current work but suppresses only the cancelled profile's reissue. A context superseded during replay receives a stale response. Recovery is serialized against the failed private runtime identity, so a concurrent foreground read and background profile share one replacement instead of replaying twice. This exception never extends to a mutation, export, lifecycle request, unowned background request, or ambiguous commit. The panel's retained renderer snapshot applies the same freshness rule independently: it adopts a page only while that page remains the latest requested view, and an accepted mutation invalidates the prior page identity before any renderer replay can publish it. A page that finishes after a draft or plan update therefore cannot roll the panel revision backward or erase the new cleaning state. Both standalone and notebook transports resolve deadlines through one policy: `openSession` uses the configurable 60-second `sessionOpenTimeoutMs` budget for cold engine or kernel initialization, while initialized-session work retains the 30-second `requestTimeoutMs` recovery bound. An explicit internal cleanup/test deadline remains authoritative and is never widened by either setting.
-
-Preview, apply, discard, and undo publish runtime state transactionally: an exception after computation restores the prior frame, plan, draft, revision, lineage, and block cache before returning an error. The coordinator independently validates the response kind, action, runtime ID, revision, column, export destination, and view correlation expected by the original request. Only page, summary, statistics, values, and applied-step inspection reads may be reissued after an ambiguous transport failure. A mutation with an uncertain result is never reissued; the coordinator marks that runtime generation uncertain and reconstructs the last confirmed plan in a fresh internal session before accepting later work. Previewing a validated step creates one bounded draft frame, increments the revision, and returns a page-level typed diff plus generated code. Toolbar, host-message, native-view, and command entry points cannot start another operation until that draft is applied or discarded. A new draft anchors its before-page and before-schema to the immediately preceding committed state; a latest-step replacement instead uses the recorded input boundary of that step. Apply, discard, and undo each increment the revision; undo replays the validated plan from the immutable source. Applied steps have unique stable IDs. Inspecting one replays only its engine-native source-to-step prefix under the session read lease and returns its input/output pages, identity-aware diff, and generated code through that step without changing revisions, drafts, viewing state, or caches and without retaining historical frames. The input schema for the latest step is retained separately from the committed schema so structural steps remain editable after renames or drops.
-
-Closing an editor marks the coordinator session terminal before queuing `closeSession`; later work is rejected, close is never replayed as user work, and a cancelled, mismatched, or failed acknowledgement receives one fresh bounded cleanup attempt plus a diagnostic before local release. The first terminal request and every fallback explicitly disable runtime startup and timeout recovery, so closing an already-exited standalone or kernel runtime cannot create a replacement process merely to report an unknown session. Recovery candidates, retired generations, saved-plan fallbacks, and late opens use the same correlated no-start cleanup path. Detached cleanups participate in shutdown tracking, and their timeout never restarts a standalone process that may also own the live replacement session. Both the coordinator and Python runtime treat the supplied close revision as advisory: cleanup must still remove the exact session and invoke its owned engine hook once when a panel knows only the last confirmed revision but an ambiguous response or external action may already have advanced the session. Unknown session IDs remain errors. Concurrent runtime shutdown callers join one drain, including pending opens, while late extension-host opens are closed without registration. Async extension deactivation waits within a bound for standalone and live-kernel closes. Normal standalone stops end stdin, cancels queued futures, and starts engine/session cleanup immediately; the extension retains a bounded force-kill fallback for a process whose active non-interruptible work does not drain. The bridge continues to report that runtime as active and gates every replacement start until the exact child emits exit; after forced termination, a second bound requires exit confirmation, and missing confirmation latches a shutdown failure instead of allowing overlapping runtimes. Notebook snapshots enforce source capabilities and surface cleanup failure after successful rendering without masking an earlier render failure. Standalone process creation is single-flight, so concurrent session recovery cannot spawn competing runtimes. The complete session-establishment critical section, covering ordinary opens, saved-state restoration, and recovery candidate open-and-restore, is serialized per runtime delegate, preventing new or recovering sessions from racing native engine initialization while independent standalone or kernel runtimes remain concurrent. Every restart advances an epoch that invalidates a pending start; after the last session closes, the coordinator releases the idle Python process. An ordinary standalone request timeout restarts the process forcefully, while a detached cleanup timeout only abandons that cleanup request. Recovery builds and fully restores a candidate runtime session, closes it on failure, and only then swaps internal IDs; the public revision never moves backward. Notebook kernel acquisition and bootstrap are single-flight and generation-safe. One end-to-end deadline covers acquisition, bootstrap, execution, response parsing, and the sole permitted retry; only explicitly idempotent reads may retry after dispatch, so a lost mutation response cannot execute the mutation twice. Permission denial and user cancellation never trigger a retry.
-
-A supported live variable can move between Viewing and Editing without changing its public session ID. The reverse
-transition is accepted only while the confirmed cleaning plan is empty and no draft exists, so a mode change cannot
-discard cleaning work. For notebook variables, the toolbar action uses the coordinator's captured `NotebookDocument`;
-it never looks up `activeNotebookEditor` after an await. The coordinator opens a candidate in the requested mode on
-the same origin, restores the confirmed filters, sorts, widths, selection, and viewport, rechecks that the exact
-notebook is still uniquely open, and then swaps runtimes. Active R-terminal variables use the same transaction without
-notebook provenance. A failed candidate is closed and the existing session stays active. This host-only lifecycle
-operation does not change protocol v2.
-
-The standalone bridge partitions Python ownership by selection scope: a source inside a workspace uses that workspace-folder URI, a source outside every workspace uses its exact URI, and requests without a resource use one explicit default scope. Each scope owns its environment-selection epoch, process/start/stop state, stderr, pending requests, provisional candidates, and confirmed sessions. Sources in one workspace folder share one single-flight process; different roots remain concurrent and isolated even when they resolve to the same executable. Session-bound requests route only through the exact confirmed owner, cancellations route through the pending request owner, and an ordinary query can never use an unconfirmed candidate merely because its requested ID is known.
-
-An `openSession` with `requestedSessionId` reserves the exact `(session ID, open request ID, scope)` tuple until its correlated response arrives. Only the matching, still-pending reservation can become a confirmed session. A cleanup close may route to that reservation, but marks it terminal before dispatch; timeout, cancellation, write failure, arbitrary cleanup failure, late success, wrong identity, duplicate ownership, or a response from another scope cannot promote it. Such an ambiguous late open fails closed and restarts only its owning scope. An open timeout likewise restarts its scope even when a caller suppresses generic cleanup-timeout recovery, preventing a delayed success from becoming an orphan beside another confirmed session. Runtime stop and process failure release only that scope's ownership, while extension shutdown awaits all slots and preserves failures in deterministic slot order.
-
-Orderly runtime shutdown is a terminal drain even when an engine cleanup hook fails. It keeps closing the remaining sessions, aggregates every cleanup fault in session-registration order, and returns the same terminal result to the initiating caller, concurrent joiners, and later callers without invoking a hook twice.
-
-Replacement startup remains blocked while a stopped child has not produced exit confirmation; a later exit from that exact child clears ownership uncertainty only for future requests. Overlapping stops await every owned child's bounded result and preserve multiple failures in child-registration order. Extension deactivation first drains coordinator-owned sessions, then awaits the standalone bridge's bounded child-exit proof. Bridge cleanup attempts listener disposal, child shutdown, exit confirmation, and output disposal independently, preserving one failure or aggregating multiple failures in that order. A sole extension shutdown failure is preserved, while simultaneous coordinator and bridge failures are returned as one ordered aggregate. Synchronous VS Code disposal starts the same idempotent shutdown and observes its rejection because extension-context async disposals are not awaited.
-
-Runtime discovery resolves an explicit `openWrangler.pythonPath`, then the active Python extension environment for the exact resource, then system interpreters. A path-like override may resolve only below a workspace or the extension; a bare command name can resolve only through absolute `PATH` entries, so an empty or relative entry and a same-named workspace file cannot redirect it. The first isolated launch pins the fully qualified `abspath(sys.executable)` reported by Python and re-probes that exact path once when a launcher or wrapper intervenes; it never `realpath`s the executable because that would escape a virtual environment. Windows system fallback invokes the absolute `py.exe` only with the non-mutating `-0p` installed-runtime listing, disables automatic installation and legacy PATH search, strictly extracts supported direct `.exe` paths (including free-threaded tags), and never asks the launcher or Python Install Manager to start or install a runtime. All later dependency probes, pip installs, and runtime starts reject an executable that is not fully qualified. Open Wrangler accepts Python 3.10 to 3.14 and uses isolated-mode probes under one controlled subprocess environment that removes inherited Python paths, homes, user sites, launchers, and active-environment markers. The strict result contains the exact version, canonical absolute `realpath(sys.prefix)`, and a usable string-safe filesystem identity with a 64-bit device and up-to-128-bit Windows inode; an all-zero identity fails closed. Engine/format dependency probes use the same isolation. Live runtimes receive only the controlled Python variables plus Open Wrangler's bundled runtime path and disable user-site loading, so probe and execution semantics cannot diverge through the extension host's environment. The optional Python integration activates `ms-python.python` lazily and requires the released `@vscode/python-extension` environment-selection event as well as its resolution methods; it adds no hard extension dependency. API activation is single-flight, installs one listener before the first selection is used, and is terminal after disposal. An absent, disabled, failed, or malformed optional API falls through to system discovery, while disposal during activation or resolution rejects instead of silently choosing another interpreter.
-
-Python-extension events invalidate only current scopes they can affect: a workspace-folder event covers that root, a file event covers its exact external-file scope or every selected sibling in the same workspace folder, and an unscoped event covers all Python-extension selections. An explicit `openWrangler.pythonPath` remains authoritative and ignores Python-extension selection events for normal runtime selection. Per-scope epochs reject stale environment resolutions and dependency probes after every awaited boundary; invalidation clears the affected selection, dependency keys, actionable install target, and process without disturbing another root. An `openSession` preflight may consume exactly one fresh-selection retry when that invalidation lands before its runtime envelope is dispatched. A second change fails with `runtime_selection_changed`; caller cancellation, initialized-session work, mutations, and every already-dispatched request are never retried. A dependency mutation registers a filesystem-identity barrier before invalidating every cached probe, current selection, active process, pending start, and already-stopping child that shares the probed package root; `python`, `python3`, absolute paths, symlinks, Windows junctions, and `/proc` aliases therefore cannot bypass one another. Dependency probes are single-flight only under a canonical identity containing that package-root prefix, the normalized fully qualified executable, exact Python version, and every ordered dependency descriptor field; Python 3.12 and 3.14 under one `/usr` prefix therefore never share results. Scope invalidation, package mutation, and shutdown detach exact in-flight and completed owners. Every joined consumer of a detached result fails stale, and a late completion cannot delete or publish over a same-key replacement. Successful completed results use a separate 128-entry least-recently-used cache whose hits refresh recency; failures remain uncached, and shutdown detaches without cancelling or awaiting probe subprocesses. The bridge records stopping-child ownership before clearing its active selection or disposing an externally supplied cancellation listener, so a cleanup fault cannot let an install overtake a still-live runtime. Package writes start only after every matching bounded runtime stop succeeds. The approved install owns a separate target-scoped authorization epoch; after quiescence it freshly resolves the interpreter and rechecks Workspace Trust, normalized executable, exact version, canonical root identity, requirements, lifecycle, and exact mutation-barrier ownership immediately before the synchronous spawn. A failed stop or changed authorization launches no pip process and retains ownership only until the operation can settle safely. A newer selection whose package-root identity is genuinely different remains independent.
-
-Engine and format probes name every package required by the selected path. DuckDB requires the tested `duckdb>=1.5.4,<1.6` range, exact `fsspec==2026.7.0` writer capability, and `pytz` for deterministic time-zone-aware Python values. Missing or non-exact fsspec fails before runtime startup. Excel probes and readers share one explicit mapping: Pandas `.xlsx` uses `openpyxl>=3.1.5`, Pandas `.xls` uses `xlrd>=2.0.1`, and Polars uses the Calamine-backed `fastexcel>=0.9` path for both formats. A live Excel session may lease that exact confirmed runtime briefly to list worksheet names through the bundled read-only helper; the coordinator translates and validates session/source/backend identity, the child uses the selected interpreter with the normal sanitized Python environment, and cancellation, trust loss, runtime replacement, or malformed bounded output publishes no names. Initial open remains selector-free from the user's perspective and uses zero-based sheet 0; only explicit **Change Import Options** presents the discovered names. `utf8-lossy` is an import policy, never a codec literal: automatic backend resolution selects Pandas directly, which calls the UTF-8 reader with replacement error handling instead of probing Polars or DuckDB. Automatic file opening may probe later backends as fallbacks, but when none is ready the structured diagnostic and retained install target name only the first preferred backend and its exact missing descriptors; requirements from mutually exclusive backend alternatives are never merged. The zero-argument production install command always displays those exact requirements and target interpreter in a modal and proceeds only for the literal affirmative action; caller arguments and webview messages can never supply confirmation. The initial file-error action invokes that same command and starts one fresh open only after it returns confirmed success; decline, failure, or Workspace Trust rejection preserves the retryable diagnostic. Installation is single-flight and revalidates the current selection object and epoch, normalized executable, executable file identity, exact Python version, canonical package-root identity, requirements, Workspace Trust, lifecycle, and authorization epoch after runtime quiescence and again immediately before authorizing writes. Changes to `openWrangler.pythonPath` invalidate in-flight selection work, while later successful probes clear a stale actionable target. The activation API returned when `OPEN_WRANGLER_EXTENSION_TESTS=1` exposes no affirmative dependency decision; its deterministic decline cannot become a sticky override for a later public command.
-
-Dependency writes run through the bundled stdlib-only `python/openwrangler_runtime/dependency_guard.py`, not a naked pip child. Under the selected interpreter, the guard acquires an OS-released lock in the canonical package root, exclusively creates and durably flushes a strict bounded UUID marker, revalidates the executable and package-root filesystem identities, publishes a bounded READY frame, and waits for the parent to return a matching GO frame. It exits without invoking pip if the parent disappears before GO. After GO it keeps the same lock while invoking pip in-process as `python -I -m pip install --no-input --no-user ...`, with no shell or retained stdout/stderr. Pip configuration files are disabled and inherited `PIP_*` behavior is denied by default; only explicit index, proxy, certificate, cache, timeout, retry, trusted-host, and version-check settings survive before Open Wrangler writes its own noninteractive/no-user controls. The interpreter runs from a private mode-0700 empty directory through authoritative guard close, so neither a home directory nor a neighboring `pip.py` can shadow the selected environment. A post-READY bridge check repeats trust, current-selection identity, executable/root identity, requirements, authorization epoch, and barrier ownership before sending GO. On POSIX, a status-only check may fall back from `O_RDWR` to `O_RDONLY` after `EROFS` only for an existing identity-validated lock, retaining the same exclusive inode lock and complete journal validation; lock creation, installation, temporary-state recovery, and marker validation/removal still require write access. Windows creates the journal and every leaf with a protected explicit DACL owned by the current token user and containing only full-control entries for that user, LocalSystem, and Builtin Administrators. The guard validates the exact owner, protection flags, and ACE allowlist through no-follow handles and pins the exact journal with delete sharing denied throughout the OS-lock critical section. An inherited, broadened, malformed, or changed existing v1 journal is treated as uncertain state; the guard never repairs, deletes, or replaces it.
-
-The guard process's `close` event is the sole post-spawn exit proof; an `error` or `exit` event cannot impersonate completion. Exit code zero means pip returned successfully, but the environment remains uncertain until a separate validator acquires the same OS lock, observes the exact UUID marker, imports every recorded module, checks the recorded distribution bounds, and removes only that exact marker. Nonzero pip, failed or inconclusive validation, timeout, editor/extension-host interruption, or operating-system interruption retains the marker. Ordinary opens inspect guard status before using cached dependency probes or starting a runtime; dirty, busy, malformed, unreadable, identity-changed, and timed-out state returns a recoverable `dependency_environment_uncertain` diagnostic and cannot be silently cleared.
-
-**Open Wrangler: Revalidate Runtime Dependencies** is the only recovered-marker path. It is zero-argument and trust-gated, uses the exact retained selection/environment/token rather than caller data, checks fresh status before displaying a modal, repeats trust, selection, full executable/root identity, status, and mutation-barrier checks after the literal **Revalidate** action, quiesces matching runtimes, then asks the same lock-owning validator to validate and clear only the same UUID. A live orphan writer keeps the lock busy; a changed marker requires a fresh command and confirmation. Clean state may release an exact in-memory block only when another exact validator already removed that marker, but command success is reported solely for a correlated exact-token validation. There is no Clear, Ignore, expiry, record-only stale deletion, user attestation, token-bearing public argument, or affirmative test hook. Install and recovery are locally mutually exclusive. Extension shutdown is idempotent, invalidates pending UI/progress continuations, waits briefly for an authorized guard, suppresses every later cache or UI publication, and never signals or kills a package writer. Successful completion releases the mutation barrier and scope lease before any non-action notification.
-
-Status and validation subprocesses are also explicit owners rather than bare promises. The bridge retains each child through exact close, coalesces only the existing exact status flight, and removes only that command's handle when it settles. Shutdown idempotently unreferences every still-open helper child, stdin, and stdout without waiting, signalling, or killing it; the package-root lock and marker remain authoritative if the helper continues. Actionless information and error notifications are fire-and-forget, so an editor toast that remains open cannot retain an install/recovery single-flight or package mutation barrier.
-
-The bridge retains at most 128 inactive scope bundles across runtime slots, environment selections, per-scope epochs, and recency metadata. A separate monotonic recency map supplies least-recently-used order without changing runtime-slot insertion order, which remains the deterministic shutdown/error order. An exact-object lease spans environment resolution, dependency probing, process selection/start/stop waits, and the synchronous handoff to pending or session ownership. Process state, stopping children, local or global pending requests, provisional or confirmed sessions, cancellation targets, and the exact actionable missing-dependency target also pin a scope. If all excess scopes are pinned, temporary overflow is intentional; releasing an owner synchronously trims the oldest newly inactive bundle.
-
-Scope eviction has no awaited boundary. It revalidates the exact slot and every owner, removes only the matching selection, epoch, and recency entries, and scrubs scope-local stderr, exit diagnostics, and stale process-selection references. Completed dependency probes are independent of scope retention and expire only through their own 128-entry LRU or explicit invalidation; this may repeat a harmless probe but cannot retain arbitrary results. Stale resolution/probe callbacks and stale lease releases cannot affect a same-key recreation. Metadata with no selection or slot can be pruned, but an orphan unresolved selection fails closed. A rejected process stop retains the exact slot and child until a later correlated exit establishes that ownership is gone.
-
-`python/benchmarks/runtime_performance.py` measures deterministic synthetic CSV/Parquet work at two Python boundaries: direct `SessionManager` calls and canonical protocol-v2 round trips through a standalone runtime process. `--backend` labels native Polars, DuckDB, or Pandas runs; the default and strict release thresholds remain Polars-only. Package/runtime/machine provenance and best-effort process RSS evidence make results reproducible, but they exclude the extension host, VS Code/Cursor, webview layout, and paint. They must not be reported as editor first-paint timings; packaged-editor interaction and visual acceptance are separate evidence.
-
-Installed-editor performance has a different boundary. It gates observable first-grid, virtual-grid, cache-residency,
-outstanding-work responsiveness, authoritative cancellation, and terminal cleanup behavior in owned VS Code/Cursor
-processes. It retains path-free platform and storage provenance but does not sample the whole Electron process group or
-infer a product memory invariant from mutable `/proc` membership. Editor-process ownership and tree-empty attestation
-remain part of the shared native-runner cleanup contract; removing incidental RSS measurement does not weaken those
-guards. The direct-runtime benchmark retains its bounded-process RSS evidence, while the separate Data Wrangler
-comparison study retains its Linux process-tree PSS sampler.
-
-PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
-
-Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
-
-An explicitly prioritized selected-column summary may use the session's single foreground read beside an active
-passive profile. It keeps its original request ID, while unrelated profiles stay queued and mutations remain
-exclusive.
-
-## UI composition
-
-Every accepted renderer synchronization marker arms the acknowledgement watchdog, including a marker published after
-import reconfiguration, because message delivery alone cannot prove that the renderer document consumed it. An exact
-acknowledgement cancels that watchdog; an unacknowledged visible renderer receives the existing bounded HTML reload and
-authoritative session replay without reopening the runtime or repeating the mutation.
-
-After an exact synchronization is committed, the webview flushes pending presentation state and emits one
-receipt-bound `rendererRetiring` message on a non-persisted `pagehide`. The host accepts only the exact current
-hydrated session/revision receipt, clears renderer readiness and synchronization, and arms that same bounded HTML
-reload; it does not reopen or close the runtime session. Persisted transitions and stale, malformed, unhydrated,
-disposed, or host-replacement receipts are inert. This handles graceful document retirement only. A hard renderer
-process death that emits no lifecycle event remains outside the contract because Open Wrangler has no heartbeat or
-liveness watchdog.
-
-The packaged import-reconfiguration journey exercises that real lifecycle rather than a test-only synchronization
-path: it retires the synchronized document through non-persisted `pagehide`, observes automatic receipt invalidation,
-and waits passively for the existing bounded replacement while proving that the same session, runtime generation, and
-view survive. It does not call `synchronizePanelForSession`, focus the panel, request a reload, or reopen the source or
-runtime.
-
-When the selected-column drawer claims a summary that is still in the background queue, the webview asks the
-coordinator to move that same request into the interactive queue. An active summary is left alone, and the request ID
-does not change. This avoids repeating engine work while keeping the selected statistics ahead of unrelated queued
-header profiles.
-
-The operation builder is an application-modal dialog: while it is open, the surrounding workbench subtree is inert and hidden from assistive technology, Tab and Shift+Tab wrap within the dialog, and closing restores focus to the exact opener when possible or to a stable operation/grid fallback. This applies equally to toolbar, native-view, command, and latest-step edit entry points. Every focus restoration that survives a render, animation frame, page request, or virtualized-scroll commit proves that the webview document still owns host focus immediately before focusing; a workbench QuickInput or another editor surface therefore cannot be displaced by stale iframe state.
-
-The data grid is a custom readonly editor because opening and cleaning a source does not mutate that document. Its public editor type is `openWrangler.viewer`; transient command/notebook panels use the distinct internal `openWrangler.session` type so VS Code forks cannot classify one tab as the other. A session-keyed panel registry supports exact lifecycle cleanup even when focus or tab-input subclasses differ between editors. File and live notebook-variable sessions begin opening immediately; saved-output sessions wait for their renderer readiness so a late renderer event cannot replay a denied or completed open. Open Wrangler contributes native view containers for Operations, Summary, Filters/Sorts, Cleaning Steps, and Code Preview. A session coordinator publishes the active editor's state to these views and routes actions back to the correct runtime session. The active snapshot includes the confirmed filter model and stable selected-column identity, so the custom editor and native Summary/Filters views describe the same logical view; viewport and width-only updates are persisted without producing native-view refresh churn. Selecting any applied Cleaning Steps node stores one bounded, ephemeral inspection in the coordinator and presents that step's paged input/output boundary, identity-aware diff, and prefix code. Inspection has its own grid context, disables filtering/sorting/profiling, never enters persisted view state, and clears on Original Data, Escape, mutation, recovery, or active-session change so the exact confirmed view is restored. Switching between retained editor panels clears the outgoing and incoming inspection presentation, and a recreated webview receives an explicit host-side clear before its confirmed state, preventing an ephemeral selection from leaking between active tabs. A successful `postMessage` is not treated as renderer hydration. A `false` delivery from a renderer that has completed its ready handshake retires that generation and requires a fresh handshake. Before the first ready handshake, the same result leaves the initial document in place for its startup grace period. If a visible panel has already received its runtime result but does not acknowledge the exact synchronized snapshot or error, the host retains the confirmed state and assigns fresh webview HTML up to two times at five-second intervals. Hidden panels wait until they are shown, and the finite allowance prevents a reload loop. An empty visible webview uses one finite backoff burst to pull retained state, pauses while hidden, and starts a fresh bounded burst when shown; receiving metadata alone does not stop that recovery. After publishing the snapshot or error, presentation, view state, retained import response, and busy state, the host sends a fresh opaque completion marker. Receipt of that marker synchronously establishes a publication barrier, React commits every preceding ordered message, and a layout effect acknowledges only the exact committed session/revision before a pending recovery timer can issue another pull. Stale markers are ignored. The host rejects and corrects renderer presentation writes while that authoritative replay is locked, then unlocks them only on the exact acknowledgement. Ordinary page revisions do not acquire this lock. A configured Code Preview reveal is likewise deferred until that acknowledgement, so a workbench transition cannot hide the primary renderer before its draft exists physically. A native import-options command then uses a separate opaque action ID and runs the host fallback exactly once if the renderer does not acknowledge the prepared action within its bound. Manual and correlated intents coalesce, concurrent native commands share one request and transaction, and a busy renderer still flushes pending presentation state before host fallback, so late responses cannot duplicate the transaction or lose the current view. Once the renderer prepares the action, every coalesced native command awaits that exact transaction through prompt completion and publication; Cursor or VS Code therefore cannot restore the custom-editor iframe over an open QuickInput merely because a command returned early. Draft/history state also drives VS Code context keys, so apply/discard/edit/undo keybindings cannot run against the wrong custom editor or plan state. The sandboxed webview mirrors those shortcuts for focused keyboard use and preserves native editing keys inside text controls. The editor and Activity Bar share the same 32-operation registry. The public `openWrangler.startOperation` command accepts no operation argument and opens the unselected catalog; validated Activity Bar nodes pass one registry kind to preselect their operation. Add and edit-latest entry points remain unavailable in viewing mode or while a draft exists. Each operation opens an accessible parameter form, while the bottom Code Preview uses CodeMirror with VS Code theme tokens and switches to selected-step prefix code during inspection; copy/export use the displayed buffer. Edited preview text is isolated from the applied plan.
-
-The extension host keeps runtime language, dataframe flavor, and generated-code dialect as separate TypeScript values. It derives them only from the backend confirmed in an active session: Pandas, Polars, and DuckDB use their own Python dialect descriptors, the three R dataframe flavors share `r.base`, and viewing-only PySpark has no generated-code dialect. Code Preview receives this identity in its exact-key private host message and publishes it as deterministic root data attributes. Python code uses the Python parser; R code is currently plain text and is labeled **R**. The identity is not part of protocol v2, saved notebook MIME, session persistence, or the Python runtime contract.
-
-The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. Packaged generated-R acceptance records the post-draft host code receipt, requires exact session/revision hydration, rechecks that same receipt from acknowledged host state, and only then pins the current CodeMirror renderer generation. It may reacquire only after proving that generation was replaced, then revalidates the replacement before any measurement. Initial 0×0 layout is treated as unsettled, not as missing product state: the pinned generation must retain its receipt and connected document/scroller identity while the renderer viewport and preview bounds become finite, positive, and stable, and the exact scroller becomes finite, positive, fully contained in that viewport, and unchanged across two animation-frame observations; its scroll offset must be finite and non-negative, with positive consistent extents. Revealing an operation line then changes only that exact `.cm-scroller` scroll position and succeeds only after two stable, fully visible measurements from the same renderer/document/scroller generation; bounded diagnostics report receipts and geometry/generation state without retaining generated code. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
-
-Renderer synchronization requests are coalesced but drained before the host releases their single runner, including a request that arrives after the runner's final loop check. This guarantees that a committed mutation cannot lose its authoritative replay.
-
-Native Filters / Sorts nodes are projections of the confirmed active view. Sort-node context actions carry a private session- and model-bound target rather than a public column argument; the host rejects malformed, boundary, duplicate, and stale targets before it sends a narrow editor action. The webview validates the target against its current filter model and applies the reorder or removal through the same `getPage` view transaction as its own controls, so the Activity Bar can never mutate coordinator-only display state.
-
-By-example is a deterministic IR operation rather than an opaque model call. Two or more scalar input/output examples are evaluated against bounded candidate families for direct/literal values, slicing, splitting, concatenation, regex extraction/replacement, casing, datetime parsing/formatting, and arithmetic. Candidates are ranked by stable complexity and canonical JSON order. The winning expression AST, examples, candidate count, and ambiguity warnings are validated and stored in the step; all three editing adapters translate the same AST to native expressions and generated code. The user must inspect the draft diff and explicitly apply it.
-
-Pivot longer is one fixed-output structural operation over 2–64 ordered stable column references. Every selected
-column must have one exactly compatible scalar type; classed values additionally retain exact category domains and
-ordering, time zones, duration units, or `integer64` semantics. The engines never find a lossy common type. Unselected
-columns keep their order and IDs and repeat for each selected column. The selected columns become label and value
-outputs with IDs `c:step:<stepId>:0` and `c:step:<stepId>:1`; labels are the public source names, and rows are emitted
-in selected-column-major order with source order preserved within each block. Shared row-count and collision
-preflights run before adapter dispatch. Each successful reshape gets a positional row axis and fresh deterministic
-private row identities. Native R clears a `data.table` key rather than reordering the result, resets positional row
-names, concatenates classed storage without caller S3 dispatch, and restores only the verified exact attributes.
-
-Pivot wider is a separate deterministic fixed-output reshape. One stable text/factor `namesFrom` reference and one
-distinct compatible scalar `valuesFrom` reference are removed; all remaining columns are identifier columns retained
-in source order with unchanged IDs. Its 2–64 ordered output specifications pair canonical versioned string selection
-tokens with explicit portable names and derive `c:step:<stepId>:<ordinal>` identities. The complete non-null key domain
-must be declared, duplicate identifier/key rows always fail, and missing combinations become typed nulls without
-aggregation or common-type coercion. Identifier groups follow first source occurrence. Pandas, eager/lazy Polars,
-DuckDB SQL, and Native R implement matching live and generated paths; Native R retains exact factor/timezone/difftime/
-integer64 value metadata, clears data.table keys, and publishes fresh positional row identities.
-
-Grid blocks use stable row/column identities and typed cells. Every page-producing protocol request is a required two-dimensional row/column window, and every returned row value vector aligns with the page's exact ordered `columnIds` rather than global schema positions. The webview keeps the complete schema for widths, selection, keyboard destinations, and ARIA coordinates while retaining only one bounded projected page; horizontal demand is aligned to configurable blocks and uses a fresh request ID inside the same logical view. It rechecks visible demand whenever row or mutation work settles, so a diagonal scroll cannot strand blank cells, and exposes projection work as an accessible busy reason without blocking grid navigation. The runtime resolves the projection under the request revision, includes it in cache identity, fetches the private row ID alongside the selected visible columns, and never lets presentation projection change filters, sorts, cleaning code, or exports. Pandas selects duplicate/non-string columns positionally, lazy Polars selects before slice/streaming collection so scan projection can push down, and DuckDB emits an explicit quoted terminal projection instead of `SELECT *`. Preview, apply, discard, undo, and both sides of applied-step inspection use the same bounded contract, and cell diffs carry stable column IDs so reordered or duplicate labels cannot be confused. Self-contained saved notebook outputs remain full-schema and must include exact `columnIds`; malformed or projected captures are rejected because no live runtime exists to fetch omitted columns.
-
-Cell encodings preserve large integers, decimals, dates/time zones, nanosecond datetimes and durations, binary, lists/structs, null, NaN, and infinity as strict JSON; Pandas and NumPy scalar wrappers are normalized at this boundary. Container dtypes are classified by their outer type before their nested children, and zero-column frames are valid schema/page/summary results. Each source row receives a private session token that native filters, sorts, projections, and value transforms preserve; grouping or custom code receives a new generation of tokens. Pandas retains the token's row ordinal as a fixed-width native integer and constructs the unchanged public `r:<token>:<ordinal>` identity only for a bounded page. The token column is excluded from schema, profiling, duplicate detection, custom-code input, generated code, and exports. Column lineage is maintained separately from dataframe values: source positions are unique even for duplicate Pandas labels, renames/reorders retain identity, and new/grouped outputs receive deterministic step identities. Page diffs join on those identities instead of names or current positions. Rows and columns are virtualized with bounded overscan, keyboard/pointer column resizing, sticky headers, roving keyboard focus, and far-column focus restoration. Pandas, Polars, and DuckDB open with exact cached shape/schema metadata and the first block with no eager summaries or dataset statistics. PySpark opens with exact schema width but an unknown row total, fetches one bounded block plus lookahead, and promotes the current view to an exact total only when a terminal block reaches the end. A session-local least-recently-used cache retains only a small number of two-dimensional blocks and enforces a payload-weight ceiling; any filter, draft, plan, source-version, or disposal change clears it. Visible-column summaries are requested one stable column ID at a time in the background. The runtime binds those IDs to the exact current schema positions before native profiling and requires every returned summary to carry the matching ID in request order; missing, duplicate, unknown, or reordered results fail before coordinator state changes. Pandas therefore profiles duplicate and non-string labels positionally, while Polars and DuckDB use the already-validated native name associated with that identity. The coordinator, snapshot bridge, retained panel state, native views, and webview all key and order summaries by ID rather than display label. The **Column profiles** drawer owns only the selected stable column while its Column view is active. Dataset-level missing and duplicate statistics run only in Dataset, while value candidates run only in Filters. A producer that samples any statistic must publish matching sample metadata so the UI can label it; unmarked results retain their exact interpretation. Leaving either view cancels its pending work, and opening the drawer never starts a whole-schema profiling queue. Failed or cancelled page and mutation requests restore the complete last-confirmed UI snapshot and resume only the profiling owners that remain visible. Numeric histograms use at most 20 deterministic equal-width bins. Pandas computes them over every finite value; lazy Polars, DuckDB, and PySpark issue native aggregate queries, so sparse tails are retained without materializing whole columns or crossing engine boundaries. Large native R profiles instead use the bounded, explicitly marked sample described above. The legacy JSON-number scalar fields and histogram math remain available for compatibility. Integer and decimal summaries may additionally carry a paired `exactMin`/`exactMax` encoded as typed cells; every engine reuses the native extrema already returned by its summary aggregation, and saved notebook previews compare their captured typed cells directly. Producers emit the pair only when both native endpoints are finite, representable by the accepted exact typed-cell syntax, and ordered; otherwise both fields are omitted while finite approximate scalars and histograms remain available. Pandas performs Decimal mean, median, and sample-deviation arithmetic in Decimal space before converting only each final approximate scalar. General Pandas and saved-snapshot Decimal cells may still contain infinity for rows, counting, ordering, and approximate profiles, but infinity is never an exact extremum. The protocol rejects a partial pair, the wrong semantic type, malformed or non-finite cells, non-canonical safe/wide integer encodings, and reversed bounds. Column headers and **Column profiles** prefer these lossless values while summaries that predate the additive fields retain their prior display. The selected-column drawer paints at most 96 characters of an exact endpoint with middle elision while retaining the complete protocol-bounded value in its accessible name and hover title, so a 65,536-character endpoint cannot create an enormous panel. The final histogram bin includes the maximum, and the protocol retains an explicit sampled marker only for a source that actually supplies sampled evidence, including a large native R profile. Viewing queries support independent AND/OR composition within a column and across columns, plus ordered multi-sort, without entering the transformation plan. Webviews use VS Code theme tokens, bundle-relative external assets, nonce-protected scripts, same-origin validated messages, accessible grid/menu/form semantics, automated screenshot diffs, and Playwright-driven axe scans. The nonmodal **Column profiles** drawer moves focus to its deterministic Close control, closes on Escape, and restores the exact connected opener when focus still belongs to the webview. Its Column, Dataset, and Filters tabs use roving keyboard focus and explicit tab to panel relationships. Chart families expose their meaning through visible text and accessible names without relying on color. Every numeric bin is keyboard-focusable and exposes its exact interval and row count through accessible text and a native hover title. The grid keeps its row-block range and native Previous/Next controls in a non-sticky status bar below the table scroller, separate from the independently pressed **Header profiles** state. Vite emits the Codicon font beside its production CSS so the same asset resolves under VS Code, Cursor, and the browser harness instead of relying on an origin-root or system fallback, and the main webview CSP explicitly permits that bundled origin through `font-src`. Host-derived diagnostic keys remain in `Map` instances so column names can never become object properties.
-
-Every active, latest-step-input, and applied-step inspection schema is validated as one identity-bearing sequence at the response boundary: IDs are non-empty and unique, and positions are exactly `0..n-1`. An otherwise well-shaped runtime or kernel response with ambiguous identities is rejected before coordinator or webview state can consume it.
-
-The renderer keeps saved notebook output portable: host messaging is optional, `onRenderer:openWrangler.renderer` activates the extension host before desktop actions are delivered, and the validated inline table remains readable when messaging is unavailable. A payload with one canonical `variableName` link exposes one **Open in Open Wrangler** action. That action binds synchronously to the exact visible sender `NotebookEditor` and its exact open `NotebookDocument`, acquires only that document's selected kernel, and opens the complete current variable through the ordinary live-session path with fresh backend detection. It never routes captured rows into a workbench. An output without a valid link shows an inline instruction to run the cell again and exposes no open action; a stale variable or unavailable kernel returns the same actionable recovery direction. The static preview remains the portable artifact: its page-size control offers 10, 20, 50, or 100 captured rows, Previous/Next stay inside the capture, every captured column remains horizontally available, and truncation is labeled honestly.
-
-`media/notebookRenderer.js` is built as one self-contained module with a named `activate` export and no static, dynamic, or re-exported module dependency. Shared validation is inlined during the dedicated renderer build, and VSIX verification parses the exact archive entry before installation.
-
-Saved captures are bounded at 10,000 rows, 2,048 columns, 100,000 cells, 16 MiB of strict UTF-8 JSON, 64 nested graph levels, and 1,000,000 graph nodes, with separate label/column/cell text limits. A documentation gate keeps the Python producer and TypeScript consumer constants identical. The producer counts serialization through bounded incremental UTF-8 chunks and aborts once the byte limit is crossed; it never constructs an oversized encoded payload merely to measure it. Validation rejects repeated/cyclic containers, incoherent typed-cell flags, oversized Unicode fields, partial pages, and unsupported backends before coordinator state exists. Capture performs no eager summaries or statistics; a Polars `LazyFrame` remains lazy through streamed shape/schema discovery and only the bounded full-width page is collected. The bridge yields before background profiling so foreground pages and values can overtake it, and each page filters/sorts the capture exactly once. Type-specific predicates and selections use the shared `fixtures/view-literal-contract.json` grammar and preserve exact integers, decimals, booleans, Python-compatible temporal and duration bounds, infinities, null, and NaN; every operator and literal is validated before row evaluation, while Pandas versus Polars sort differences remain tied to the saved backend. Semantic-string snapshots retain native cells while applying Pandas equality to mixed numeric, boolean, and decimal values, so integer `1`, float `1.0`, boolean `true`, and decimal `1` share counts and duplicate identity but string `"1"` remains distinct. When equal display text cannot identify one such group, `ValueCount.selectionValue` carries a bounded version-1 `TypedSelectionToken` with a non-missing normalized scalar representative; the UI keys that token canonically while continuing to accept legacy scalar selections. Literal search and case-insensitive contains use the same explicit ASCII fold across saved, live, and generated-code paths, leaving non-ASCII code points exact rather than inheriting different engine Unicode tables.
-
-The retained snapshot query machinery is non-public and exercised only through direct model and bridge contract tests. It supports correlated read-only filtering, sorting, profiling, and cleanup over bounded captured rows, but it never enters the panel, native-view, persistence, recovery, or kernel lifecycle. It cannot mutate, export, recover uncaptured rows, or claim executable cleaning lineage. Visual and accessibility acceptance execute against the production bundles in the Chromium revision pinned by `playwright-core`, so the 1% pixel gate is not coupled to a moving system-browser installation.
-
-After file validation, every primary CSV/TSV launch reads at most one 64 KiB prefix from the extension host's filesystem and opens without Quick Input. For `vscode-remote`, that extension host and bounded read live on the remote workspace host; an inaccessible source fails soft to deterministic suffix defaults. The pure detector scores comma, tab, semicolon, and pipe structure independently of the suffix. It recognizes UTF-8 with or without a BOM, decodes BOM-marked UTF-16LE and UTF-16BE inside that same prefix before dialect and header inference, and conservatively falls back to Windows-1252 for invalid BOM-less UTF-8. It preserves standard double-quote CSV semantics in the presence of ordinary apostrophes and infers a likely header. Excel opens at zero-based sheet index 0. **Change Import Options** remains the explicit advanced recovery path for a nonblank **Sheet Name**, non-negative zero-based **Sheet Index**, or delimited override, including explicit UTF-16LE and UTF-16BE choices. The shared import-option contract has no compatibility aliases: unknown fields, a name plus an index, Excel and delimited fields in one object, blank names/encodings, non-safe indices, and delimiters or quote characters that are not exactly one Unicode scalar value fail validation. Lone high or low UTF-16 surrogates are not scalar values and fail at the JSON Schema, TypeScript, Python, and persisted-configuration boundaries; a valid supplementary character remains one scalar even though it uses a surrogate pair in UTF-16 and multiple UTF-8 bytes. Automatic selection filters its normal Polars → DuckDB → Pandas order by the selected options: a multibyte delimiter excludes Polars, while a multibyte quote character or UTF-16 encoding permits only Pandas. If the user pins an incompatible backend, the extension returns `unsupported_import_options` before resolving an interpreter, probing dependencies, or starting Python. Settings independently control file/notebook start mode, enabled file types, header profiles on open, filter mode, column width, fetch block size, code-panel reveal behavior, backend selection, and the Python override.
-
-**Change Import Options** is available from a configurable file grid, its initial-load error, the editor toolbar and tab context menu, and the Command Palette. Before sending that intent, the webview synchronously flushes any debounced scroll, width, or selection update, enters a host-owned busy state, closes an open operation form, and interlocks grid and cleaning actions. Once the host transaction begins, later runtime intents receive `session_reconfiguring`; a late presentation-only view update is not accepted and the host republishes the confirmed view instead. The coordinator then drains already accepted work and opens the same immutable file behind a host-generated private candidate identity. An explicitly selected backend stays pinned; automatic selection may move only to an option-compatible backend. The candidate replays the last confirmed committed plan, optional draft, and non-destructive view before one atomic swap advances the stable public session revision. The serialized workspace-state write for that restored snapshot settles before the replacement is acknowledged, so an immediate terminal close or shutdown cannot drop it. A cancellation, transport failure, malformed response, replay failure, concurrent close, or source-identity mismatch closes the candidate when addressable and leaves the exact confirmed public snapshot unchanged; an ambiguous transport failure also reconstructs that confirmed runtime before accepting later work. After a successful swap, the previous private runtime closes asynchronously with restart-on-timeout disabled. Candidate and retired cleanups retain ownership of the delegate until they settle, so `onIdle` cannot stop the shared runtime early. Neither path writes to the source file.
-
-Custom engine code is never dispatched from an untrusted workspace. The extension host enforces this independently of the webview, and the extension's workspace capability prevents all Python-backed sessions from activating before trust is granted.
-
-Code may be copied from the editable CodeMirror buffer, saved as a Python script, or inserted as a tagged Python cell in the exact notebook document owned by an editing-capable live-variable session. Notebook commands capture one currently open `NotebookDocument` before any picker or Jupyter await; renderer messages bind synchronously to the exact visible `NotebookEditor` and open `NotebookDocument` supplied by VS Code. The notebook-toolbar command then inspects only that document's selected Python kernel through the stable Jupyter API and presents a bounded, typed QuickPick of supported Pandas, Polars, PySpark, and DuckDB relation variables; it never accepts a free-form variable name. Discovery validates canonical runtime types, names, ordering, counts, output size, and marker framing and, while output remains valid, rechecks exact document identity and sole-URI ownership before and after every activation, lookup, execution, iterator, and picker await. After the first provenance, framing, type, count, byte, or kernel-output failure, discovery retains that original failure, clears accumulated text, and drains the exact dispatched iterator to settlement while discarding all later output; its never-cancel token is disposed only after that settlement. A DuckDB relation opens as a native viewing-only session bound to its exact originating relation; it does not expose cleaning, code insertion, or data export. Released Jupyter variable-viewer arguments identify their origin only through `fileName`. The field may be an actual `vscode.Uri` or the exact canonical JSON envelope produced when VS Code carries that URI through Jupyter's Variables webview; the decoder validates a bounded ordinary data object, reconstructs only from URI components, and requires the reconstructed URI to serialize back to the identical optional-cache shape. Unknown origin aliases, serialized strings, unknown keys, malformed caches, controls, surrogate errors, and oversized fields fail closed instead of falling back to active state. Manual toolbar launches use only stable public receipt-time editor, tab, and direct-URI signals; object fields supplied by private toolbar context are ignored. The coordinator retains the captured document object only as host state, never in protocol or persistence, and revalidates it before and after runtime open. Because Jupyter's stable lookup is URI-addressed, the captured object must also be the sole open document with that URI before and after every lookup await; an overlapping replacement fails closed and any dispatched candidate is cleaned on its exact kernel. The live bridge derives its URI from that required document and rechecks exact object membership and sole-URI ownership around Jupyter activation, kernel lookup, bootstrap, dispatch, and response publication. Every Jupyter `executeCode` call owns a fresh token that is never cancelled: a Jupyter interrupt is kernel-wide, and PySpark's default SIGINT handler may call `SparkContext.cancelAllJobs()` for unrelated work even when the request targets Pandas, Polars, or DuckDB. Host deadlines and panel disposal only detach and stale-ignore. Automatic formatter preparation keeps one underlying acquisition/bootstrap execution through its 30-second reporting deadline; the coordinator then parks on that exact settlement identity and may retry only after the execution settles or the observed kernel generation changes. Every dispatched session identity maps to its exact kernel independently of the restartable lifecycle; a detached, malformed, or stale open queues bounded cleanup of its host-known candidate on that original kernel, while a directly observed wrong-ID response closes both identities. A correlated late close still retires its mapping after the host stops waiting. Unconfirmed cleanup retains exact ownership rather than claiming success. Before-dispatch detachment has no candidate to clean. The Python session manager represents absence with a typed `UnknownSessionError` carrying the exact identity; both the notebook agent and standalone server map that type to `code: unknown_session` plus `sessionId` without parsing exception text. PySpark runtime sessions additionally retain the exact raw DataFrame object while the host separately retains the exact originating `NotebookDocument`; reads validate the same-named DataFrame binding plus authoritative Classic/Connect stopped state before and after every live read, including cached pages. Replacement or stop clears cached blocks and returns correlated `live_source_invalidated`; only a current idempotent read may reopen the same variable on the exact captured notebook and kernel. Recovery requires the complete schema to match before restoring the confirmed filter, ordered sorts, selected column, widths, and viewport. A mismatched schema leaves the old public session retryable and asks the user to reopen. Terminal `session_cleanup_failed` means the runtime already removed that exact session; its kernel mapping is retired while the cleanup fault remains diagnostic. There is no other-split, replacement-document, or captured-row fallback for a live-variable action, and neither explicit Variables origins nor captured manual origins may retarget after receipt. Generated-code insertion is trust-gated, serialized per document, and repeats exact-object, version, cell-count, and same-URI uniqueness checks immediately before dispatch. The stable VS Code `NotebookEdit` surface itself addresses a URI rather than a document/version, so Open Wrangler reports success only after the same object contains the uniquely marked Python cell. If VS Code accepts an edit after provenance becomes unprovable, the command reports an indeterminate result and deliberately does not retry or roll back; a stale origin detected before dispatch is never edited. After trust and active-code prerequisites pass, the public script command is zero-argument and waits for VS Code's Save dialog; deterministic destinations exist only on the environment-gated acceptance API and use the same production writer. The coordinator pins public source metadata to the immutable open request, so a malformed runtime response cannot redirect the export guard. Exact source URIs take precedence over fallback paths so `vscode-remote` authority is retained; when a remote workspace and source are both present their authorities must match. Local and current-remote script destinations are checked against every source representation by normalized path, canonical path, and usable filesystem identity, including symlink and hard-link aliases. The writer anchors the selected parent mapping, exclusively creates a bounded random sibling temp, records its filesystem identity, writes and flushes the edited buffer, closes it, then revalidates the temp type/identity plus the source, destination, parent, and remote authority before one same-directory atomic rename. Dialog cancellation creates nothing; write, sync, close, validation, or replace failures remove only the still-identified temp, preserve the source and prior destination, and aggregate any cleanup fault. A substituted temp is deliberately left untouched and reported. Existing symlink, directory, special-file, virtual, and cross-remote destinations fail closed. Cleaned-data export independently remains a revision-checked protocol request that refuses pending drafts, exports the committed dataframe rather than the viewing query, rejects the source path, writes a temporary sibling file, and atomically replaces the chosen CSV or Parquet destination.
-
-Spark Connect failures are read from PySpark's public condition, message-parameter, and gRPC-status accessors. An exhausted `UNAVAILABLE` request keeps the current runtime session and confirmed grid so the user can retry against the same endpoint. If the server reports that its session or DataFrame no longer exists, Open Wrangler clears runtime page blocks but keeps the confirmed host view. It never creates a Spark session or rebuilds a notebook DataFrame. The user must recreate the variable in the notebook before retrying or reopening it. These errors do not enable request cancellation.
-
-Every live notebook-variable open reports attempt-scoped kernel acquisition, runtime bootstrap, and variable-opening stages to its owning renderer, including automatic backend detection. Only an explicitly pinned PySpark open replaces the generic final stage with plain copy explaining that the first page loads without counting every row and that the exact total appears after the last page. Renderer recreation replays the current stage; terminal, stale, or disposed attempts cannot publish another update. There is no **Cancel opening** control because Jupyter cannot safely cancel only one Open Wrangler execution. Closing the view sends a host-only detach signal: the UI stops owning the attempt, no kernel token is cancelled, and exact late-session cleanup remains observed in the extension host.
-
-After dispatch, generated-code insertion observes the exact original document for at most 10 seconds and succeeds only when exactly one uniquely marked matching cell is present. A false edit result is rejected; an asynchronous failure or accepted edit whose exact-document result cannot be proved is indeterminate and is never retried or rolled back. Actionless status notifications are not awaited, while confirmations, pickers, and Save dialogs remain awaited.
-
-## Release-candidate acceptance topology
-
-Preview and stable releases produce one canonical candidate and call the shared candidate-acceptance workflow once
-through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. Linux
-VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code/Cursor cells run
-the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate
-`r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then
-`kernel-restart`. Protected pull-request CI solely owns the direct R 4.4/4.5 contract; candidate acceptance consumes
-installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle
-executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
-`literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
-partitions scheduling while keeping the installed Clone lifecycle in the existing core phase, the unchanged complete
-value and categorical slices, one comprehensive Linux native-frame owner, and representative native/restart seams on
-every hosted platform. The dedicated direct R catalog contract now gives every one of the exact ordered 32 operations
-a fresh-session live/generated replay, and the TypeScript export contract binds the same bridge/public catalog order
-to exact clipboard and atomic-save bytes for distinct executable operation-labelled buffers. This local-source
-evidence is not hosted installed/performance evidence. The unhosted addition changes no candidate selector, job,
-phase, shard, deadline, or retry policy.
-
-Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
-fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own
-private roots, and is followed immediately by its sealed failure-evidence upload. The cell reports failure only after
-all of its raw phase outcomes and uploads have had a chance to complete. All editor phases retain independent
-300-second hard and 180-second changed-checkpoint inactivity deadlines and are never automatically retried.
-
-The shared workflow exports no acceptance result that a caller could reinterpret. Its terminal fan-in evaluates the
-literal result of every internal job and succeeds only when all are `success`. Publication separately depends on
-literal success from package production, the single candidate-workflow call, and Remote SSH. Candidate core omits
-embedded native-frame and restart work on all three hosted platforms because the dedicated selectors own it. Linux
-runs both in VS Code and Cursor; macOS and Windows run both in VS Code. Focused value and categorical selectors also
-omit native-frame work and remain restart-free. Default/unset manual core retains its full catalog, while the remote R
-journey retains representative embedded behavior. Every hosted platform retains a native/restart seam, while only
-Linux repeats the comprehensive depth. The manually dispatched Released Jupyter workflow therefore remains a serial,
-backward-compatible, non-authoritative diagnostic and is intentionally not part of that release proof.
-
-Preview [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the two-shard redesign at
-21m57s overall versus run #73's 33m15s (34% lower), with the slower R shard at 15m19s versus 31m15s (51% lower).
-Runner use increased from 119.75 to 130.78 minutes (9.2%), and macOS became the observed bottleneck at 19m54s. Every
-raw lane except lifecycle core passed; core reached `restart:start` and crossed its unchanged 300-second outer
-deadline. Publication was skipped, so no `v1.99.6` was created.
-
-Preview [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) measured 21m18s and 134.07
-positive-duration runner-minutes. Dedicated Linux restart, value/categorical editing, and macOS/Windows native-R
-platform journeys passed. Linux core was the sole raw blocker: VS Code 1.133.0 crossed the outer deadline at about
-300.012 seconds after `jupyter-r:orders_table:editing-renderer-ready`, and macOS passed after consuming about 289.66 of
-its 300-second native-editor budget. Publication was again skipped.
-
-Preview [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) exercised the explicit
-core/native-frame/restart split at 19m19s and 95m20s of positive-duration runner time. Package and canonical artifact
-proof passed, as did every raw lane except auxiliary installed-performance process enumeration and Linux Cursor's
-literate generated-code 0×0 layout race. Both are harness/runner failures rather than product or release-invariant
-signals, but the fan-in and publication remained correctly blocked. The frozen RSS-boundary and literate-layout fixes
-described above have no hosted candidate proof; a fresh run is required.
-
-Preview [run #78](https://github.com/Matt17BR/openwrangler/actions/runs/31854945486) from exact protected `main`
-commit `add29a1e096bb8eb25f154dfcd1a7f0f3f6be7e0` authored canonical artifact `9238748514`: the exact
-1,132,638-byte VSIX has SHA-256 `45ff8cf81d682007039167b253e32053df79d7eff2e21f5bb9a33e238ebfe99c`, and its
-checksum and provenance revalidated. Installed-performance artifact `9238855519` was green. Its three raw blockers
-were distinct: Cursor `platform-smoke` artifact `9238818316` exposed the product's stale hydrated renderer receipt;
-native-R core artifact `9238867261` was indeterminate harness evidence at edited Clone apply because the accumulated
-journey lacked decisive dispatch/scheduler/final-state receipts; and literate artifact `9238988590` was a
-deterministic harness failure because it looked for unprefixed `quarto.previewView` instead of VS Code's exact
-`mainThreadWebview-quarto.previewView` `TabInputWebview` identity. Its later `ERR_CONNECTION_REFUSED` followed missed
-preview ownership and cleanup rather than proving a product defect. The fan-in failed, and run #78 created no
-`v1.99.6` tag, GitHub prerelease, Open VSX package, or Azure Marketplace package. Run #78 remains failed hosted
-evidence. Run #79 later published `v1.99.6` from the corrected protected source; that historical 26-operation artifact
-does not host or validate the current Transform-by-example slice.
-
-## Persistence and identity
-
-Persistence validates retained plans more strictly than a draft-preview request: a by-example step without its canonical saved program is malformed cleaning state and is discarded through the normal cleaning-recovery path instead of being re-synthesized.
-
-Open Wrangler has one public identity: package `Matt17BR.openwrangler`, command/settings namespace `openWrangler.*`, custom editor `openWrangler.viewer`, runtime package `openwrangler_runtime`, and notebook MIME `application/vnd.openwrangler.viewer.v2+json`. Keeping these names canonical avoids parallel aliases and ambiguous extension state. Release verification enumerates the VSIX before reading packaged content and rejects every forbidden, missing, or duplicate archive path. It then compares the packaged `package.json.preview` status with `extension.vsixmanifest`: preview artifacts require exactly one `Microsoft.VisualStudio.Code.PreRelease` property with `Value="true"`, while stable artifacts must contain no such property.
-
-Serializable import options and session state are stored by source-and-backend identity in VS Code workspace state. The exact `openWrangler.persistedSessions.v4` payload separates a cleaning section (validated steps, an optional draft, and that draft's optional validated base filter model) from a viewing section (the confirmed current filter/sort model, stable-ID column widths and selection, and the first visible row plus horizontal scroll position). Column widths are owned internally by a `Map` and cross renderer and persistence boundaries only as a bounded ordered array of `[columnId, width]` tuples; prototype-name and Unicode IDs remain data, while duplicate, malformed, or over-budget entries fail closed. The base model is a replay receipt, not a second active view: recovery confirms it against the committed schema before recreating the draft, then restores the independently saved current view. This reproduces both no-edit Discard and Apply behavior after reload. A missing, malformed, or schema-stale base receipt is ignored without dropping valid steps or a valid draft; ordinary viewing recovery still independently falls back to empty when its section is missing, malformed, or stale. The payload contains no binary dataframe content, runtime IDs, profiles, or statistics, and the strict decoder has no migration aliases. A separate `openWrangler.confirmedFileConfigurations.v2` registry retains at most 128 file configurations by exact canonical URI. Every entry records both the concrete backend that produced the confirmed session and the user's logical backend preference (`auto` or an explicit Pandas, Polars, or DuckDB selection). CSV/TSV entries require complete delimited options, Excel requires exactly one selector, Parquet/JSONL require `importOptions` to be absent, and there is no compatibility alias. The custom-editor provider allows one Open Wrangler editor per document URI; recreation rebuilds the last confirmed source and pins its concrete backend before the exact source-plus-backend cleaning/view lookup, even if engine availability or the default-backend setting later changes. It passes the logical preference separately as host-only provenance: recovery remains pinned to the confirmed backend, while a later **Change Import Options** may re-run compatible automatic selection only when the original preference was `auto`; an explicit preference remains pinned. This prevents a backend chosen by `auto` from silently becoming a user-authored pin after reload. The registry updates only after a correlated file `sessionOpened`; errors and cancellations cannot replace the last confirmed choice. An initial open and a correlated replacement both enter their authoritative source, revision, and snapshot into panel state before the asynchronous registry write, so an immediate import command or a newer queued change builds on the confirmed session even while persistence is delayed; only publication from a superseded pre-confirmation UI generation is suppressed. Reopening validates and replays cleaning independently, then requests the page block containing the saved visible row under the saved viewing query; a smaller result clamps to its final valid row. Only a cleaning replay failure reopens the immutable original. If even the empty view cannot load, the candidate runtime session is closed and the open fails with a structured diagnostic instead of publishing partial state. The extension host validates and reconciles presentation messages, prunes widths and selection for removed column IDs, and keeps those messages outside runtime protocol v2 because they cannot mutate dataframe state. Generated code and an optional draft's diff, warnings, and before-schema are recomputed on persisted replay, crash recovery, and import reconfiguration, then published under the confirmed public session revision; a stale presentation cannot repaint a newer view. Debounced presentation state flushes on page hide, window unload, and webview unmount so a quick tab close does not lose the last scroll, width, or selection change. Recovery pins the session's resolved backend and carries the same viewing section into the replacement session; automatic selection cannot silently replay an engine-specific plan through another backend. Notebook sessions can only replay when their variable exists again.
-
-Acceptance-only runtime diagnostics and restart controls are returned from extension activation only when `OPEN_WRANGLER_EXTENSION_TESTS=1`. Normal packaged activation returns no test API. The installed-package harness uses this boundary to assert process generations, runtime-ID replacement, and zero retained sessions without adding a user-accessible backdoor.
-
-Protocol v2 is the active internal contract. Notebook snapshots include complete protocol metadata under `application/vnd.openwrangler.viewer.v2+json`; the renderer validates the payload before opening its read-only grid.
+Open Wrangler is a VS Code extension with a sandboxed React workbench and bundled native runtimes. This document
+describes the durable ownership and safety boundaries. It intentionally leaves operation parameters to the generated
+[reference](reference.md), qualification procedures to [testing](testing.md), and release procedure to
+[releasing](releasing.md). Product status and incomplete acceptance gates belong in the
+[feature-parity matrix](feature-parity.md), not here.
+
+## Component ownership
+
+- `src/extension/` owns VS Code APIs, workspace trust, commands, source discovery, custom editors, notebook and
+  terminal provenance, runtime processes, session coordination, persistence, export, and recovery. Only this layer
+  can read editor state, start a process, use a kernel, or authorize and select a user destination. It owns temporary
+  file identity and the final commit; runtimes may write a host-issued temporary or their own private artifacts.
+- `src/shared/` owns the versioned protocol types, validators, operation catalog, stable column references, typed
+  values, and limits shared by the host and renderers. Generated protocol and reference files derive from these
+  registries.
+- `src/webviews/` owns the React grid, operation forms, profiling presentation, generated-code editor, and notebook
+  output renderer. It has no Node or filesystem access and communicates only through validated messages.
+- `python/openwrangler_runtime/` owns Python dataframe adapters, native queries and transformations, profiling,
+  generated Python code, and file-data export.
+- `r/openwrangler_runtime/` owns the native R frame contract used in IRkernel, an exact official R terminal, or an
+  Open Wrangler-owned `Rscript` process. R frames never cross through Python.
+- `protocol/openwrangler.v2.schema.json` is the canonical coordinator-facing request and response schema. Its
+  generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
+  limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
+  has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
+  protocol v2.
+
+The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
+terminal, or export destination by supplying an identifier the host did not issue and retain.
+
+## Sources, sessions, and data flow
+
+The protocol recognizes five source kinds: `file`, `notebookVariable`, `documentVariable`, `rInteractiveVariable`,
+and `notebookOutput`. The host resolves each source to an exact owner before opening it:
+
+- a file URI plus validated format-specific import options;
+- one live variable in one exact notebook and kernel;
+- one variable produced from an exact source document execution;
+- one variable in one exact official R terminal and process; or
+- a bounded static notebook capture.
+
+`notebookOutput` describes capture metadata; it does not authorize a workbench or runtime session. Only a validated
+live link may open the current value represented by a capture.
+
+The source dataframe is immutable from Open Wrangler's perspective. A live session owns a source descriptor, a
+confirmed backend, an independent viewing query, an ordered cleaning plan, at most one draft, generated code, and a
+revision. Filters and sorts used to view data never enter the cleaning plan or alter the source. Applying a draft
+publishes a new cleaned result; discarding it restores the last confirmed state. Export writes a separate destination.
+
+The normal flow is:
+
+1. The extension validates the source, its provenance, import options, engine choice, and trust requirements.
+2. The coordinator creates a host-known candidate identity and opens the source in the exact runtime owner.
+3. The runtime validates the request, creates a session-owned native engine, and returns schema, capabilities, a
+   bounded initial page, and generated code.
+4. The host confirms the candidate, assigns it to the panel, and publishes one validated snapshot to the webview.
+5. Later pages, profiles, viewing queries, previews, mutations, and exports route through that confirmed session only.
+6. Closing the editor, losing its runtime, or replacing import options retires the corresponding runtime session and
+   invalidates work that can no longer belong to the active view.
+
+A failed open retains no session. A file session opened lazily represents exactly the source fingerprint observed at
+open. Reads check that fingerprint before and after work; replacement, deletion, resize, or schema change invalidates
+cached blocks and returns a recoverable reopen diagnostic. Page caches are session-local, bounded by entry count and
+payload weight, and keyed by both row and column projection. A view, source, plan, draft, or disposal change
+invalidates incompatible entries.
+
+Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
+candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
+once, and then retires the prior runtime. Failure leaves the prior confirmed session unchanged. The public session
+identity remains stable while the runtime identity may change.
+
+## Protocol and publication
+
+Every coordinator-facing request and response uses protocol v2, passes strict decoding, and carries the identifiers
+needed to correlate it to a request and session. Python bridges implement that boundary directly; `RKernelBridge`
+validates and translates between it and native R's private transport and frame contracts. Public transform parameters
+never contain private bound positions. Unknown fields, malformed unions, invalid limits, stale identities, and schema
+inconsistencies fail before adapter dispatch or UI publication.
+
+Runtime work has three relevant classes:
+
+- mutations and exports are exclusive;
+- a foreground read may overtake an immutable background profiling lease; and
+- background profiles use bounded capacity and are cancelled or drained during close.
+
+Each logical view has an opaque context, and each request within it has a `viewRequestId`. Session revision or filter
+equality is not enough to establish freshness. Pages, summaries, statistics, values, errors, and profiles update the
+UI or retained panel state only while their request belongs to the active confirmed view. Cancellation is
+authoritative only when the original correlated request returns. A cancellation acknowledgement may remove queued
+work, but it cannot invent completion for running work or conceal a mutation that may have committed.
+
+Python and R kernel execution is not treated as safely interruptible. Timeout or cancellation stops publication and
+triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and
+dataset-statistics reads may recover once after a lost runtime when the view is still current. Mutation retry rules do
+not change, and concurrent recovery shares one replacement per runtime owner.
+
+Mutation state crosses the runtime and webview boundary atomically. Preview, apply, discard, undo, import replacement,
+and recovery either publish a complete confirmed snapshot or restore the prior revision, plan, draft, metadata, page
+cache, code, selected column, and profiling ownership. No layer constructs a plausible partial result after an
+ambiguous response.
+
+## Runtime ownership
+
+The standalone Python runtime is single-flight per Python-selection scope. A workspace folder, an exact external
+resource, and the default resource have separate process, startup, pending, provisional, and confirmed-session state.
+Requests and cancellations route through the exact owner. Restart invalidates that owner's pending start; closing its
+last session stops its process after bounded stdin/EOF shutdown. A forced kill is reserved for recovery or an expired
+shutdown bound.
+
+A requested session ID is provisional until the exact still-pending tuple of session ID, open request ID, and Python
+scope receives its correlated open response. While provisional, it may route only `closeSession` terminal cleanup;
+ordinary work routes only through confirmed ownership. A late, ambiguous, or mismatched promotion restarts that scope
+only. A `closeSession` revision is advisory so terminal cleanup can use the last confirmed revision after an ambiguous
+mutation. Unknown sessions remain errors, and every open-failure, explicit-close, shutdown, or recovery path invokes
+session cleanup at most once.
+
+Engine registries hold factories, not shared adapters. Each live or transient session owns one engine instance, and
+open failure, close, shutdown, and notebook snapshot completion clean it up at most once. The standalone server
+prepares native dependencies before dispatching session work; preparation does not authorize conversion through a
+different dataframe engine.
+
+Live notebook sessions instead belong to their exact kernel. R document-process sessions belong to their exact
+Open Wrangler process, and interactive R sessions belong to their exact terminal. These owners never share a session
+merely because another resource has the same URI, variable name, or display label.
+
+## Engine boundaries and capabilities
+
+The public catalog contains 32 cleaning operations. The 31 operations that address input columns accept only public
+`{id, name}` references; Custom Code is the sole non-column-addressing operation. The runtime binds public references
+against the exact input schema and lineage to private positions before execution. Unknown, stale, repeated where
+disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
+parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
+
+Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only queries. A committed Filter Rows or Sort
+Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
+representations are never inferred from one another by name fallback.
+
+### Pandas
+
+Pandas executes viewing, all 32 cleaning operations, profiling, generated code, and supported exports in Pandas.
+Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
+before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
+source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+
+### Polars
+
+Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
+collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit
+cleaning exceptions: each materializes the complete lazy frame in Polars to derive its dynamic output columns. They do
+not convert through another dataframe engine. Viewing, all 32 cleaning operations, profiling, generated code, and
+supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
+Excel reader requires it; it is not a transport conversion path.
+
+### DuckDB
+
+DuckDB file sessions retain a connection-free native SQL plan plus immutable column and type metadata. Each request
+creates and closes its own hardened connection, and any `DuckDBPyRelation` is dereferenced before that connection
+closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
+caching remain disabled.
+
+CSV, TSV, JSONL, and Parquet file sessions have native viewing and the complete 32-operation live/generated catalog,
+but DuckDB remains an experimental, partially qualified backend; Excel and database browsing are not claimed. A live
+notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
+its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
+
+### PySpark
+
+Supported local final/stable PySpark 4.2.x Classic and Connect dataframes are live-notebook, viewing-only sources.
+Open Wrangler does not clean them, generate cleaning code for them, or export them. Projection, filtering, sorting,
+counting, and aggregation stay in Spark. The runtime never calls `toPandas()`, `toArrow()`, or an unbounded
+`collect()`/iterator. A page must pass Spark-side transport-byte preflight before values are collected and then remain
+inside the cell, strict-protocol-byte, complex-node, and nesting-depth limits. Only that bounded page/value sample or a
+fixed-size aggregate result crosses into the kernel process.
+
+### Native R
+
+Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
+R-terminal, and owned `Rscript` transports share the same native frame contract and current 32-operation catalog,
+including generated R. The runtime never routes an R frame through Python. The public status remains preview and
+Partial until the installed and performance gates named in the feature-parity matrix are complete.
+
+Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
+terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
+sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal
+`sendText` to install or drive Open Wrangler's private dispatcher. Open Wrangler never writes vscode-R's files or
+silently moves the session to another terminal. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` sources may use
+an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents
+resolve the owning executor before choosing R or Python; the fence label alone is not authority.
+
+The accepted design and language boundary are recorded in
+[ADR 0001: Native R runtime for Open Wrangler 2](decisions/0001-native-r-runtime.md). The generated reference and
+feature-parity matrix, rather than the ADR's operation examples, are authoritative for the current catalog and
+qualification status.
+
+## Schemas and bounded transport
+
+Every schema that crosses the runtime, host, or webview boundary has non-empty unique column IDs and positions exactly
+`0..n-1`. Active, latest-step-input, and applied-step-inspection schemas are validated independently. Column names are
+display data; IDs establish identity. A private row identity supports stable viewing but cannot be named by any public
+operation and never appears in pages, generated public metadata, or exports.
+
+Typed cells are strict-JSON-safe and preserve the distinctions needed by filtering, rendering, saved notebook output,
+and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
+User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
+
+Every live grid request is a two-dimensional row-and-column window. The protocol caps one page at 10,000 rows and 256
+columns. The response returns the exact ordered stable `columnIds` corresponding to every row vector; a missing,
+reordered, duplicated, or partial identity list fails closed. Filters, sorts, full-schema ARIA coordinates, generated
+code, and exports remain independent of the transported projection.
+
+Profiles are progressive and bounded. The initial open does not profile all columns, background capacity is limited,
+and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Applied-step
+inspection is also bounded, read-only, and ephemeral; it replays only the selected prefix and never changes the live
+plan or revision.
+
+Saved notebook MIME v2 is one bounded static inline capture. Its caps are 10,000 rows, 2,048 columns, 100,000 cells,
+16 MiB, 64 graph levels, and 1,000,000 graph nodes, with separate field-text limits. It is full-width and carries exact
+`columnIds`. The inline renderer pages only captured rows and never treats them as a live session, cleaning source,
+export source, or fallback. An Open action is offered only for a validated live link and opens the current live value
+through its exact notebook and kernel.
+
+## Notebook, kernel, terminal, and document provenance
+
+Notebook launch retains the exact open `NotebookDocument` captured at command or renderer-message receipt. Renderer
+actions also retain the exact visible sender `NotebookEditor`. Before and after every await, the host requires that
+document object to remain the sole open object for its URI and revalidates the selected kernel. It never reacquires an
+origin from `activeNotebookEditor`, a matching URI, or another split after work has started.
+
+The host creates each live-kernel candidate session ID before dispatch and maps it to the exact kernel. A malformed,
+cancelled, timed-out, stale, or mis-correlated open makes one bounded direct cleanup attempt for that candidate on the
+same mapped kernel. Cleanup never looks up a replacement kernel by URI. Kernel replacement invalidates every session
+owned by the old kernel; recovery may reopen only against the still-exact originating document and its newly selected
+kernel.
+
+Generated-code insertion repeats exact object, version, URI-uniqueness, and kernel preflight immediately before
+dispatch. Success is reported only after the same notebook contains the uniquely marked inserted cell. Because the
+stable VS Code edit API is URI-addressed, an accepted edit that cannot be proven against the original object is
+indeterminate: Open Wrangler does not retry, roll it back, or claim success against a replacement document.
+
+R terminal sessions apply the equivalent rule to the exact terminal object and process ID. R and Quarto document
+commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved executor across every
+activation, discovery, picker, execution, and focus-restoration await.
+
+## Persistence and recovery
+
+Persisted state is keyed by both source identity and confirmed backend. The cleaning section contains validated
+committed steps, at most one draft, and its confirmed base-view receipt. The viewing section independently contains
+the confirmed filter/sort model and bounded presentation state such as stable-ID widths, selection, and viewport.
+Malformed or stale viewing state falls back to an empty view without dropping valid cleaning. Only cleaning replay
+failure reopens the immutable original.
+
+Confirmed file configuration stores both the concrete backend that produced the session and the user's logical
+choice of `auto` or an explicit engine. Recovery pins the concrete backend so an automatic fallback cannot reinterpret
+saved operations. A later import-options change may select again only when the retained logical choice was `auto`.
+Persistence contains no dataframe bytes, runtime session IDs, profiles, or statistics, and debounced presentation
+state flushes before a webview disappears.
+
+A runtime crash rejects pending work and invalidates internal runtime identities. Recovery opens a private replacement
+on the same source and backend, replays the confirmed cleaning and viewing sections independently, regenerates code
+and draft metadata, and publishes only the complete correlated result. The source remains the authority; captured
+pages are never replay input.
+
+## Trust, source integrity, and export
+
+Python and R execution, dependency installation, custom code, generated-code insertion, and data or script export
+require a trusted workspace. Restricted Mode does not expose a hidden affirmative installation or execution path.
+Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may run pip.
+Custom code is trusted arbitrary code in the selected environment, not a sandbox.
+
+Open Wrangler never overwrites user data. Readers validate supported schemes, regular-file identity, and format
+options before runtime startup. Lazy readers revalidate the source around each read. Transformations operate on
+session-owned state, not the source variable or source file.
+
+Data export and generated-script export require a new destination. The public script command always uses VS Code's
+Save dialog and chooses a Python or R suffix from the active session. Only the extension host chooses or commits the
+user destination. It protects every retained source and the destination through normalized path, authority, canonical
+identity, and file-type checks, then reserves and identity-pins an exclusive host-owned sibling temporary. The runtime
+never receives the authority to choose or commit the final destination. For Python data export, it receives the
+temporary path and pinned identity only after the host syncs and closes its descriptor. Python then opens, truncates,
+writes, flushes, and closes its writer for that exact temporary. Native R streams chunks through the host writer, and
+the host writes generated-script bytes itself.
+
+After the applicable writer closes, the host revalidates the temporary, source, destination, parent mapping, and
+remote authority and performs one atomic rename. A runtime may use an additional private engine artifact internally,
+but publication always terminates at the host-owned temporary. No path truncates, unlinks, follows, or replaces the
+active source or a destination symlink, and failure cleans only the still-identified temporary.
+
+## Webview and accessibility boundary
+
+Webviews receive the minimum local resource roots, a restrictive content security policy, bundle-relative assets, and
+scripts authorized by a per-document nonce. Runtime and user-derived content is data, never markup or executable
+script. Incoming messages are exact-shape validated and accepted only from the current webview owner. The packaged
+Codicon font resolves beside the production CSS, and its exact webview origin is allowed by `font-src`.
+
+UI colors, borders, focus states, and typography use VS Code theme tokens. The grid and operation UI expose accessible
+names, full-schema row and column coordinates, keyboard navigation, focus restoration, and light, dark, and
+high-contrast behavior. Virtualization changes what is rendered, not the accessible schema or stable column identity.
+Editable-field undo remains owned by the field; state-scoped workbench shortcuts are mirrored in the webview and
+documented in the generated reference.
+
+## Package and release identity
+
+The extension identity is `Matt17BR.openwrangler`; its commands and settings use `openWrangler.*`, the custom editor is
+`openWrangler.viewer`, the Python package is `openwrangler_runtime`, and notebook output uses
+`application/vnd.openwrangler.viewer.v2+json`. The bundled runtime version in
+`python/openwrangler_runtime/version.py` is PEP 440-equivalent to `package.json` and drives the initialize handshake.
+
+A release candidate is exactly one `openwrangler.vsix`, `openwrangler.vsix.sha256`, and
+`openwrangler.vsix.provenance.json` triple produced by the canonical packaging job. The provenance binds extension
+identity and version, preview/stable status, release tag, exact source commit, VSIX size, and lowercase SHA-256. Every
+installed-performance, editor, and publication consumer revalidates those same bytes and metadata; it does not rebuild
+or substitute a candidate. Stable publication promotes the accepted bytes, and conflicting tags, registry bytes, or
+metadata fail closed.
+
+Current native-R candidate acceptance has three distinct parts rather than the older monolithic journey:
+
+- cross-platform VS Code jobs on Linux, macOS, and Windows each run fresh `core-operations`, `native-frames`, and
+  `kernel-restart` phases;
+- two Linux VS Code shards split lifecycle work (`core-operations`, `kernel-restart`, `interactive-terminal`, and
+  `literate-documents`) from editing work (`native-frames`, `value-operations`, and `categorical-operations`); and
+- remote R Jupyter runs as its own phase in the Jupyter matrix.
+
+Each phase consumes and reverifies the canonical candidate. Source checks, installed-editor isolation, failure-artifact
+privacy, exact R versions, current workflow matrices, and release gates are maintained in [testing](testing.md),
+[releasing](releasing.md), and the workflows themselves.
+
+## Related authorities
+
+- [Generated reference](reference.md) — commands, settings, operation parameters, and shortcuts.
+- [Feature parity](feature-parity.md) — current engine status, completed slices, and open release gates.
+- [Testing](testing.md) — required source, runtime, webview, editor, accessibility, package, and manual checks.
+- [Releasing](releasing.md) — canonical packaging, candidate qualification, publication, and recovery.
+- [Native R ADR](decisions/0001-native-r-runtime.md) — accepted native R ownership and release boundary.
