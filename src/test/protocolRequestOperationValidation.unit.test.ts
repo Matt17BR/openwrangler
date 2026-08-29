@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { operationCatalog } from "../shared/operationCatalog.generated";
 import { MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES } from "../shared/protocolLimits.generated";
 import { isOpenWranglerRequest, isRuntimeRequestEnvelope, isTransformStep } from "../shared/protocolValidation";
 import {
@@ -634,6 +635,47 @@ describe("protocol-v2 operation request validation", () => {
         columnLimit: 16
       })
     ).toBe(false);
+  });
+
+  it("uses generated operation shapes to reject missing and unknown top-level parameters", () => {
+    const steps = [
+      { id: "rename", kind: "renameColumn", params: { column: valueReference, newName: "amount" } },
+      { id: "drop-missing", kind: "dropMissingRows", params: { columns: [valueReference], how: "any" } },
+      {
+        id: "formula",
+        kind: "formula",
+        params: { leftColumn: valueReference, operator: "multiply", value: 2, newColumn: "doubled" }
+      },
+      { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
+      {
+        id: "example",
+        kind: "byExample",
+        params: {
+          sourceColumns: [valueReference],
+          newColumn: "clean",
+          examples: [
+            { inputs: ["a"], output: "A" },
+            { inputs: ["b"], output: "B" }
+          ],
+          warnings: [],
+          candidateCount: 1
+        }
+      }
+    ] as const;
+    const definitions = new Map(operationCatalog.map((definition) => [definition.kind, definition]));
+
+    for (const step of steps) {
+      const definition = definitions.get(step.kind);
+      expect(definition).toBeDefined();
+      if (definition === undefined) continue;
+      expect(isTransformStep(step), step.kind).toBe(true);
+      expect(isTransformStep({ ...step, params: { ...step.params, unexpected: true } }), step.kind).toBe(false);
+      for (const required of definition.required) {
+        const params: Record<string, unknown> = { ...step.params };
+        delete params[required];
+        expect(isTransformStep({ ...step, params }), `${step.kind}.${required}`).toBe(false);
+      }
+    }
   });
 
   it.each([

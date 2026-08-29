@@ -59,6 +59,19 @@ if (process.argv.includes("--check")) {
 
 function renderTypeScriptCatalog(catalog) {
   const groups = [...new Set(catalog.map((entry) => entry.group))];
+  const definitions = catalog
+    .map(
+      (entry) => `Object.freeze({
+  kind: ${JSON.stringify(entry.kind)},
+  title: ${JSON.stringify(entry.title)},
+  description: ${JSON.stringify(entry.description)},
+  group: ${JSON.stringify(entry.group)},
+  icon: ${JSON.stringify(entry.icon)},
+  required: Object.freeze(${JSON.stringify(entry.required)}),
+  optional: Object.freeze(${JSON.stringify(entry.optional)})
+})`
+    )
+    .join(",");
   return `/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */
 import type { OperationKind } from "./protocol.generated";
 
@@ -70,13 +83,13 @@ export interface OperationCatalogItem {
   readonly description: string;
   readonly group: OperationGroup;
   readonly icon: string;
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
 }
 
 export const operationGroups = Object.freeze(${JSON.stringify(groups)}) satisfies readonly OperationGroup[];
 
-export const operationCatalog = Object.freeze(${JSON.stringify(
-    catalog.map(({ required: _required, optional: _optional, ...entry }) => entry)
-  )}) satisfies readonly OperationCatalogItem[];
+export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([${definitions}]);
 
 export const operationKinds = Object.freeze(operationCatalog.map(({ kind }) => kind)) as readonly OperationKind[];
 `;

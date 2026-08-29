@@ -25,7 +25,34 @@ const renameOnlyCapabilities: SourceCapabilities = {
   supportedOperations: ["renameColumn"]
 };
 
+function assertGeneratedCatalogReadonlyAtCompileTime(): void {
+  // @ts-expect-error The generated catalog is readonly.
+  operationCatalog.push(operationCatalog[0]!);
+  // @ts-expect-error Generated operation definitions are readonly.
+  operationCatalog[0]!.kind = "sortRows";
+  // @ts-expect-error Generated parameter-name arrays are readonly.
+  operationCatalog[0]!.required.push("rules");
+  // @ts-expect-error Generated parameter-name arrays are readonly.
+  operationCatalog[0]!.optional.push("newColumn");
+}
+void assertGeneratedCatalogReadonlyAtCompileTime;
+
 describe("operation entry-point predicates", () => {
+  it("publishes runtime-frozen parameter definitions through a readonly catalog", () => {
+    expect(Object.isFrozen(operationCatalog)).toBe(true);
+    expect(Reflect.set(operationCatalog, operationCatalog.length, operationCatalog[0])).toBe(false);
+    for (const operation of operationCatalog) {
+      expect(Object.isFrozen(operation)).toBe(true);
+      expect(Object.isFrozen(operation.required)).toBe(true);
+      expect(Object.isFrozen(operation.optional)).toBe(true);
+      expect(Reflect.set(operation, "kind", "unexpected")).toBe(false);
+      expect(Reflect.set(operation.required, 0, "unexpected")).toBe(false);
+      expect(Reflect.set(operation.optional, 0, "unexpected")).toBe(false);
+      const parameterNames = [...operation.required, ...operation.optional];
+      expect(new Set(parameterNames).size).toBe(parameterNames.length);
+    }
+  });
+
   it("allows a new operation only for an editing session without a draft", () => {
     expect(canStartOperation({ mode: "editing", draftStep: undefined })).toBe(true);
     expect(canStartOperation({ mode: "viewing", draftStep: undefined })).toBe(false);
