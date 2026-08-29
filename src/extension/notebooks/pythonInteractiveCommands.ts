@@ -156,8 +156,9 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   private activeSource: vscode.TextDocument | undefined;
   private currentSnapshot: NotebookLiveVariableSnapshot | undefined;
   private readonly variablesByHandle = new Map<string, CachedVariable>();
-  private refreshRunning = false;
   private refreshAgain = false;
+  private queuedRefreshShowsEmptyMessage = false;
+  private refreshCompletion: Promise<void> | undefined;
   private runCellRunning = false;
   private disposed = false;
   private diagnosticInvocation = 0;
@@ -607,19 +608,34 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     void this.refreshActive(false);
   }
 
-  private async refreshActive(showEmptyMessage: boolean): Promise<void> {
+  private refreshActive(showEmptyMessage: boolean): Promise<void> {
     if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
       if (this.activeTarget) this.publishAutomaticInspectionPaused(this.activeTarget);
-      return;
+      return Promise.resolve();
     }
-    if (this.refreshRunning) {
+    const running = this.refreshCompletion;
+    if (running) {
       this.refreshAgain = true;
-      return;
+      this.queuedRefreshShowsEmptyMessage ||= showEmptyMessage;
+      return running;
     }
-    this.refreshRunning = true;
+    let resolveCompletion!: () => void;
+    let rejectCompletion!: (error: unknown) => void;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    this.refreshCompletion = completion;
+    void this.runActiveRefreshes(showEmptyMessage).then(resolveCompletion, rejectCompletion);
+    return completion;
+  }
+
+  private async runActiveRefreshes(showEmptyMessage: boolean): Promise<void> {
     try {
       do {
+        showEmptyMessage ||= this.queuedRefreshShowsEmptyMessage;
         this.refreshAgain = false;
+        this.queuedRefreshShowsEmptyMessage = false;
         const notebook = this.activeTarget;
         if (!notebook || !isSoleOpenNotebookDocument(notebook)) return;
         if (!showEmptyMessage && !shouldInspectNotebookAutomatically()) {
@@ -659,7 +675,9 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         }
       } while (this.refreshAgain && !this.disposed);
     } finally {
-      this.refreshRunning = false;
+      this.refreshAgain = false;
+      this.queuedRefreshShowsEmptyMessage = false;
+      this.refreshCompletion = undefined;
     }
   }
 

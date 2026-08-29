@@ -533,6 +533,64 @@ describe("Python Interactive Window coordinator and discovery", () => {
     });
   });
 
+  it("queues an explicit refresh behind in-flight automatic discovery without losing its mode", async () => {
+    const active = notebook("file:///workspace/queued-explicit-refresh.ipynb", "jupyter-notebook", [], "python");
+    pythonMocks.notebookDocuments.push(active.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+
+    let releaseAutomaticDiscovery!: () => void;
+    const automaticDiscovery = new Promise<{
+      variables: ReturnType<typeof pandasFrame>[];
+      truncated: false;
+    }>((resolve) => {
+      releaseAutomaticDiscovery = () => resolve({ variables: [pandasFrame("automatic")], truncated: false });
+    });
+    let releaseExplicitDiscovery!: () => void;
+    const explicitDiscovery = new Promise<{
+      variables: ReturnType<typeof pandasFrame>[];
+      truncated: false;
+    }>((resolve) => {
+      releaseExplicitDiscovery = () => resolve({ variables: [pandasFrame("explicit")], truncated: false });
+    });
+    pythonMocks.discover.mockReturnValueOnce(automaticDiscovery).mockReturnValueOnce(explicitDiscovery);
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+    expect(pythonMocks.discover).toHaveBeenCalledOnce();
+
+    pythonMocks.inspectNotebookAutomatically = false;
+    let refreshSettled = false;
+    const refresh = Promise.resolve(command("openWrangler.refreshNotebookVariables")());
+    void refresh.then(() => {
+      refreshSettled = true;
+    });
+    await settle();
+
+    expect(refreshSettled).toBe(false);
+    expect(pythonMocks.discover).toHaveBeenCalledOnce();
+
+    releaseAutomaticDiscovery();
+    await settle();
+
+    expect(refreshSettled).toBe(false);
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+    expect(provider.snapshot()).toMatchObject({
+      state: "empty",
+      message: expect.stringContaining("Automatic notebook inspection is paused"),
+      variables: []
+    });
+
+    releaseExplicitDiscovery();
+    await refresh;
+
+    expect(refreshSettled).toBe(true);
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(2);
+    expect(provider.snapshot()).toMatchObject({
+      state: "ready",
+      variables: [expect.objectContaining({ label: "explicit" })]
+    });
+  });
+
   it("associates a Python source with its first externally executed Interactive cell", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);
