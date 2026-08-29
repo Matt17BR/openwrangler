@@ -8,8 +8,6 @@
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png" width="960"></a>
 
-_The workbench shows the dataframe, column profiles, filters, and cleaning steps in one editor._
-
 <p align="center">Open Wrangler is an open-source project inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>. It was built independently and uses no Microsoft Data Wrangler code or assets.</p>
 
 <!-- open-wrangler-release-status:start -->
@@ -70,10 +68,8 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 <!-- open-wrangler-release-status:end -->
 
 Native R is a channel-neutral **Preview** feature. It can ship in a stable Open Wrangler release without becoming
-stable support, and it does not block stable publication. The current source supports the complete generated
-operation catalog; the [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
-is authoritative for operation names and parameters. R Custom Code runs trusted arbitrary R in the selected
-environment; it is not a sandbox and is unavailable in Restricted Mode.
+stable support. The current source supports the complete generated operation catalog. R Custom Code runs arbitrary R
+in the selected environment and is unavailable in Restricted Mode.
 
 The R Preview has these notebook, terminal, and document entry points:
 
@@ -87,266 +83,80 @@ The R Preview has these notebook, terminal, and document entry points:
 R-document support follows the machine running the extension host. Remote document execution is experimental, and a
 Windows extension host rejects it. IRkernel notebooks work on Windows.
 
-## Why Open Wrangler
-
-- View and clean Pandas, Polars, R, or file-backed DuckDB data without conversion. DuckDB notebook relations and local stable/final PySpark 4.2.x Classic/Connect dataframes are view-only.
-- Each cleaning step previews changed values and generated code before you apply it.
-- Filters and multi-column sorts change only the view. Active typed filters stay above the grid, where each rule can
-  be removed, all filters can be cleared without dropping sorts, and the latest confirmed filter change can be
-  undone independently of cleaning history. Exports write a separate file.
-- The grid fetches visible rows and columns on demand. Supported file-backed sources and live notebook Polars
-  LazyFrames keep their lazy plans.
+Release qualification covers local desktop VS Code and Cursor. Remote SSH is not release-qualified.
 
 ## Workbench
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/sidebar-overview.png" width="960"></a>
-
-The sidebar keeps operations, dataset health, filter and sort builders, and cleaning history beside the grid. Active
-filter rules remain visible in a compact row above the data while the sidebar is closed. See the
-[product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
-by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
-
-If an unexpected renderer failure stops the workbench, Open Wrangler replaces the editor content with a focused
-**Reload Open Wrangler** action. Reloading restores the view from the existing session instead of opening another one.
+The workbench shows the grid, column profiles, filters, sorts, and cleaning history together. Pandas, Polars, R, and
+file-backed DuckDB remain in their native engines; DuckDB notebook relations and PySpark notebook dataframes are
+view-only. Filters and sorts change only the view, cleaning drafts show changed values and generated code before they
+are applied, and exports write a separate file. The grid fetches visible row and column blocks on demand.
 
 ## Open files
 
-Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. BOM-marked UTF-16LE
-and UTF-16BE files open through Pandas automatically. **Import options** is available when a source needs an explicit
-override. Excel adds sheet selection; Parquet and JSONL/NDJSON open directly.
+Open CSV, TSV, Parquet, JSONL/NDJSON, and Excel files from Explorer, the editor toolbar or tab menu, the Command
+Palette, or **Open With**. CSV and TSV sources use automatic delimiter, encoding, quote, and header detection;
+BOM-marked UTF-16 files open through Pandas. **Open Wrangler: Change Import Options** provides explicit delimited-file
+options and Excel sheet selection.
 
-<table>
-  <tr>
-    <td width="58%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/file-explorer-action.png"><img alt="Opening a CSV in Open Wrangler from the VS Code Explorer context menu" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/file-explorer-action-detail.png" width="920"></a></td>
-    <td width="42%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final item in a 417-column synthetic dataframe" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/column-search-wide-detail.png" width="540"></a></td>
-  </tr>
-  <tr>
-    <td>Open supported files from Explorer, the editor toolbar, tab menu, Command Palette, or <strong>Open With</strong>.</td>
-    <td>Column search covers the full schema and includes data-type icons.</td>
-  </tr>
-</table>
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing 14,287 Benelux rows, Filter and Clear in Column profiles, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/filter-result.png" width="960"></a>
-
-_The active filter matches 14,287 rows. Column profiles, the grid, and the sidebar show the same filter and Clear
-action without changing the source._
-
-Hover or right-click a scalar grid cell to keep or exclude its exact value. Null and NaN have separate actions.
-Drag across cells with a mouse or pen, or extend the focused selection with Shift+click or Shift+Arrow, to select a
-rectangle. Ctrl/Cmd+click starts a new rectangle; non-contiguous selections are not supported. Select a column header,
-or press Ctrl/Cmd+Space while it is focused, to prepare the whole filtered and sorted data column. The grid footer
-copies one cell, the loaded columns in its row, the selected range, or the prepared column as tab-separated displayed
-values; Ctrl/Cmd+C copies the current cell range or prepared column. Prepared-column copies start with the column
-header. An off-block keyboard rectangle remains selected, but Copy range and Ctrl/Cmd+C report that every selected row
-and column must be loaded before copying. They do not copy a partial rectangle.
-
-<table>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
-  </tr>
-  <tr>
-    <td>Switch between counts and percentages from the grid or column panel. Hover or focus a bin for both, or click a value or bin to filter. In a compact but usable grid, exact header statistics stay visible while taller distributions hide and return automatically as the layout changes.</td>
-    <td>Add multiple sort keys, then reorder them or change direction and null placement.</td>
-  </tr>
-</table>
+The grid supports full-schema column search, typed filters, ordered multi-column sorts, cell and rectangular
+selection, and copying displayed values. Null and NaN remain distinct filter values. See
+[Accessibility and keyboard use](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md) for grid
+shortcuts, focus behavior, screen-reader semantics, and current limits.
 
 ## Transformations
 
-Choose from 32 operations, including filling missing values, multi-output literal splitting, portable
-regular-expression extraction, deterministic Pivot longer and Pivot wider, engine-native custom Python or R code, and
-transformations inferred from examples. A draft stays separate until you apply it. You can inspect any applied step.
-Any applied step can be inspected, edited, or deleted; cleaning Undo still targets the most recent committed step.
-
-Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
-sort key, or fallback column appear only when the dataframe has a compatible column.
-
-Pivot longer turns 2–64 ordered, exactly compatible scalar columns into one label column and one value column. It
-keeps unselected columns, preserves values without common-type coercion, and emits selected-column-major rows.
-
-Pivot wider uses one text/factor key column and one scalar value column with 2–64 explicitly declared typed keys and
-output names. Duplicate identifier/key rows fail instead of aggregating; missing declared combinations become typed
-nulls, retained identifiers keep their public lineage, and groups follow first source occurrence.
-
-| Column type                | Methods                                                                                                           |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Floating point             | Median, mean, grouped median or mean, linear interpolation, previous or next value, fallback columns, fixed value |
-| Integer or decimal         | Median, grouped median, previous or next value, fallback columns, fixed value                                     |
-| Text, category, or boolean | Most common value across the column or within groups, previous or next value, fallback columns, fixed value       |
-| Date or date-time          | Previous or next value, fallback columns, fixed value                                                             |
-| Duration or binary         | Previous or next value                                                                                            |
-| Unknown scalar type        | Fixed typed value                                                                                                 |
-
-Ordered fills use sort keys you choose and can leave long gaps untouched. Fallback columns are checked in your chosen
-order on the same row. Every preview reports how many values are still missing before you apply the step.
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png" width="960"></a>
-
-_This preview shows the changed values and generated Polars code. The two sorts affect only the current view._
-
-<table>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/latest-step-edited.png"><img alt="Cleaning Steps after editing the latest formula while preserving the earlier uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/latest-step-edited-detail.png" width="448"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula and retaining the uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/latest-step-undone-detail.png" width="448"></a></td>
-  </tr>
-  <tr>
-    <td>Editing the latest step updates that history entry instead of adding a duplicate.</td>
-    <td>Undo removes the latest step without clearing filters or sorts.</td>
-  </tr>
-</table>
+Editing mode provides 32 operations for rows, columns, types, text, categorical and numeric data, missing values,
+reshaping, grouped summaries, custom engine-native code, and transformations inferred from examples. A draft remains
+separate until it is applied. Applied steps can be inspected, edited, deleted, or undone without clearing viewing
+filters and sorts. The
+[generated operation reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
+lists the current parameters and supported methods.
 
 ## Notebook workflows
 
-In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs
-and lists the live dataframes in Operations and the notebook action. **Open in Open Wrangler** loads the current live
-dataframe from that same kernel. Unassigned results such as `orders.tail(20)` also get the button while the result is
-still available in the kernel. The first supported result upgrades to the Open Wrangler preview automatically when
-formatter setup completes; no rerun or fallback action is needed.
+In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs.
+The notebook toolbar and Operations view list supported Pandas, Polars, DuckDB, and local PySpark variables.
+**Open in Open Wrangler** loads the current live variable from the notebook's kernel. Unassigned supported results can
+be opened while they remain available in that kernel. If formatter setup finishes after the first supported result,
+that output upgrades automatically without a rerun or fallback action.
 
 Supported live dataframes open in Viewing mode by default. Viewing filters and sorts only the grid; it does not build
-a cleaning plan or change the source. Use **Switch to Editing** to build a plan. You can return with **Switch to
-Viewing** while the plan is empty and no draft is open. DuckDB notebook relations remain view-only.
+a cleaning plan or change the source. Use **Switch to Editing** to build a plan. DuckDB and PySpark sessions remain
+view-only.
 
 Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
 the file in Python Interactive and opens the live dataframe you choose. If the file uses `# %%` cells, it runs only
-the cell under the cursor. Once the Interactive window is open, its own **Open in Open Wrangler** action lists the
-dataframes already in memory without rerunning the source cell.
+the cell under the cursor.
 
 If Microsoft Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler:
 Choose Notebook Preview Provider**.
 
-<table>
-  <tr>
-    <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602"></a></td>
-    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-code-insertion.png" width="960"></a></td>
-  </tr>
-  <tr>
-    <td>The notebook picker labels each live variable by engine and dataframe type.</td>
-    <td>Insert generated code into the notebook that opened the dataframe.</td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/notebook-pandas.png"><img alt="Pandas dataframe previewed inline inside a VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-pandas-detail.png" width="698"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-polars-detail.png" width="884"></a></td>
-  </tr>
-  <tr>
-    <td>Pandas outputs open as live Pandas dataframes.</td>
-    <td>Polars dataframes stay native and generate Polars code.</td>
-  </tr>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820"></a></td>
-  </tr>
-  <tr>
-    <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Local stable/final PySpark 4.2.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles.</td>
-  </tr>
-</table>
-
-PySpark support is notebook-only and view-only. It uses an existing local stable/final PySpark 4.2.x Classic or Connect session; Open
-Wrangler does not install or configure Spark. Streaming DataFrames and remote or authenticated clusters are not
-supported.
-
-PySpark loads pages sequentially. The toolbar says **Source order** until you add a sort, then **Sorted**. Spark can
-change source order, and rows tied across every sort key can move when it reruns the DataFrame. Use a unique final
-sort key when you need repeatable rows.
-
-Open Wrangler does not count or cache the whole PySpark dataframe before showing the first page; the row total
-appears after the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the
-variable. A temporary Spark Connect outage leaves the current grid in place and shows **Retry page**. If the server
-has lost the session or dataframe, rerun the cell that creates the same variable and choose **Reconnect**. The old
-grid stays visible unless that reconnect works.
-
-Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
-jobs.
+PySpark support is notebook-only and view-only. It uses an existing local stable/final PySpark 4.2.x Classic or
+Connect batch session; Open Wrangler does not install or configure Spark. Streaming DataFrames and remote or
+authenticated clusters are unsupported. Pages load sequentially, and a unique final sort key is required when row
+order must remain repeatable across Spark executions.
 
 Open Wrangler handles base R `data.frame`, tibble, and `data.table` objects in the R process where they already live.
-The entry point determines which process owns the session:
+IRkernel and selected-terminal dataframes open in Viewing mode and can switch to Editing without overwriting the live
+object. Managed R documents use the file start-mode setting. Use **Open Wrangler: Refresh R Dataframes** if the
+selected terminal's vscode-R metadata is unavailable. In `.Rmd` and `.qmd` editors, **Open in Open Wrangler** runs
+only the enabled chunk at the cursor; **Run R Document in Open Wrangler…** runs a trusted local R document or its
+supported top-level R cells on macOS and Linux.
 
-- In an IRkernel notebook, open a loaded dataframe from Operations, the notebook toolbar, or Jupyter Variables.
-  Operations refreshes after a cell finishes. The dataframe opens in Viewing mode; use **Switch to Editing** when you
-  want to build a cleaning plan. You can return to Viewing while the plan is empty and no draft is open. Generated R
-  can be inserted into that exact notebook.
-- For an interactive session from the official R extension, select its terminal. Operations reads the dataframe
-  names already maintained by vscode-R; it does not run anything in R just to fill the sidebar. If that metadata is
-  unavailable, use **Refresh R dataframes**. Opening a dataframe or refreshing explicitly connects Open Wrangler to
-  that exact R process. **Start R and show dataframes…** opens a session when none is running. The list and every
-  opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
-  They can return to Viewing while the cleaning plan is empty and no draft is open. The **Open in Open Wrangler**
-  title action uses this session while it is active. Generated R can be copied or saved, but it cannot be inserted
-  because the terminal has no source document.
-- In an `.Rmd` or `.qmd` editor, the primary **Open in Open Wrangler** action detects the fenced chunk at the exact
-  cursor. It runs only that enabled chunk in its existing R or Python session and then opens a dataframe from that
-  session. R Markdown and knitr/reticulate Quarto Python chunks stay in the selected R terminal;
-  Jupyter Quarto Python chunks use the exact resulting Interactive Window. Common labels and `#|` option lines are
-  accepted; Quarto supports backtick and tilde fences, while R Markdown uses backtick fences. Select the owning R
-  terminal before an R-backed run. Open Wrangler reports missing Quarto, R, or Jupyter support before asking for a
-  session. Ambiguous executor metadata, a terminal switch, or a changed cursor/document stops the open. Outside a
-  runnable chunk, the action asks which session to use when both R and Python are available. It never renders or runs
-  the complete document.
-- On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
-  top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. It uses its own R process and follows
-  the file start-mode setting, which defaults to Editing. This does not replace Quarto or R Markdown rendering.
-  Generated R can be inserted back into the exact open document. This explicit all-R fallback remains separate from
-  the cursor-owned mixed-language action.
-
-Remote R-document execution is experimental.
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
-
-Switching a live notebook or terminal dataframe from Viewing to Editing keeps its filters, sorts, column widths, and
-grid position. Open Wrangler does not overwrite the live R object.
-
-The R workbench supports paging, filters, multi-column sorts, value search, profiles, and cleaning steps for rows,
-columns, text, numbers, missing values, and grouped summaries. Missing values can use a typed value, median, mean,
-mode, a fallback column, ordered forward or backward fill, grouped statistics, or numeric interpolation when the
-column type supports it. Numeric columns can also be scaled to 0–1 or transformed with Round, Floor, and Ceiling.
-Formula creates a numeric column from another column and either a second column or a finite scalar. Date and datetime
-columns can be formatted in place or into a new text column. POSIXct values use their declared time zone, or UTC
-when none is declared. One-hot encoding accepts one or more supported scalar columns, while multi-label binarization
-splits a text or factor column on an exact delimiter. Both produce deterministic integer indicator columns, ignore
-missing or blank categories, and can keep or drop their selected inputs.
-Transform by Example accepts ordered source columns and example input/output rows, deterministically infers a portable
-program, and shows that canonical program with its generated R before creating a new column. Retained plans replay the
-same program instead of inferring it again.
-Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
-undone. A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
-source and publishes `open_wrangler_result_2`. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
-lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
-
-Large R frames are profiled in chunks. Row and missing-value counts, common numeric and text statistics, and date ranges
-stay exact. Histograms and categories may use a clearly labeled sample; searches still scan the full column. Very broad
-searches ask for a more specific term.
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
-
-The draft groups regional orders by market and channel and previews total revenue before the step is applied.
-
-Generated R can always be copied or saved as a script. Insertion is available only when the session came from an
-IRkernel notebook or an Open Wrangler-managed R document, because those workflows retain an exact source document.
-Local R sessions opened in Editing mode can export cleaned CSV files. They can also export Parquet when
-`nanoparquet` 0.5.1 or newer is installed in the R environment that owns the dataframe. Reopen the dataframe after
-installing the package so Open Wrangler can refresh its export choices.
+Generated R can be copied or saved from every R session. It can be inserted only into the IRkernel notebook or
+managed R document that opened the dataframe. Local R editing sessions export cleaned CSV, and export Parquet when
+`nanoparquet` 0.5.1 or newer is installed in the owning R environment.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
-data-table paths without adding `collapse` as a dependency. Their atomic and classed columns may retain ordinary
-element names when they open. Grouped `GRP_df` and indexed `indexed_frame` objects are not supported. The [R gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#r-notebooks-and-documents-preview)
-also shows the variable picker, profiles, and generated code inserted into a notebook.
+data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
+unsupported.
 
 ## Export
 
-<table>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Generated native Polars cleaning code saved as a Python script" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/export-script-detail.png" width="960"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/export-data-detail.png" width="960"></a></td>
-  </tr>
-  <tr>
-    <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Pandas, Polars, DuckDB, and local R editing sessions export cleaned CSV or Parquet files. R uses nanoparquet for Parquet.</td>
-  </tr>
-</table>
+Copy generated code or use **Open Wrangler: Export Generated Script** to save Python or R. Notebook and managed
+R-document sessions can insert code into the document that opened the dataframe. Pandas, Polars, DuckDB, and local R
+editing sessions export cleaned CSV or Parquet to a separate destination.
 
 ## Engines and formats
 
@@ -360,39 +170,30 @@ also shows the variable picker, profiles, and generated code inserted into a not
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
-stable/final PySpark 4.2.x Classic/Connect batch DataFrames. Polars LazyFrames remain lazy when opened from a notebook. Pages and
-profiles collect only bounded results. One-hot encode and Multi-label binarize materialize a lazy result when you
-preview those operations because their output columns depend on the values in the dataframe. Custom Polars code can
-also choose to return an eager DataFrame.
-
-To keep a notebook result native to DuckDB, open the relation itself. For example,
-`orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
-Wrangler correctly opens that resulting object with Pandas.
+stable/final PySpark 4.2.x Classic/Connect batch DataFrames. Notebook Polars LazyFrames retain their lazy plan; pages
+and profiles collect bounded results. Operations whose output columns depend on dataframe values may materialize a
+lazy result for preview.
 
 For a trusted Pandas pickle, right-click the file and choose **Convert Trusted Pickle to Parquet…**. Open Wrangler
 asks where to save the Parquet file and asks again before Python loads the pickle. The conversion is saved separately;
 Open Wrangler never overwrites the pickle.
 
-See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
-for the complete surface.
+See the generated reference for all public
+[commands](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#commands),
+[settings](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#settings), and
+[transformation operations](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations).
 
 ## Performance
 
-Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed
-Polars sessions use lazy scans, and live notebook LazyFrames keep their existing lazy plan. Filtering, sorting, and
-column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in
-Pandas, and DuckDB relations stay in DuckDB.
-
-The optional [Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md)
-and [latest dated review](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-remain historical evidence. They are not a stable-release gate or a substitute for testing the exact packaged
-candidate.
+Open Wrangler sends visible grid blocks to the webview. File-backed Polars sessions use lazy scans, and Pandas,
+DuckDB, and Spark work stays in its native engine. The
+[Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md) is an
+optional historical study of public-UI workloads and dated reviews.
 
 ## Roadmap
 
 The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) records current
-support boundaries and the next product priorities. Pandas named-index and MultiIndex fidelity is implemented,
-including explicit preserve-or-omit export choices. Native R remains Preview and does not block stable releases.
+support boundaries and priorities. Native R remains Preview.
 
 ## Contributing and support
 
