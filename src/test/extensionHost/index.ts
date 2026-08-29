@@ -544,6 +544,7 @@ const exercisePackagedTrustedPickleConversion = createPackagedTrustedPickleJourn
 });
 
 const exercisePackagedDailyCore = createPackagedDailyCoreJourney({
+  assertOpenWranglerTabBrandIcon,
   connectToEditorWorkbench,
   recordAcceptanceProgress,
   waitFor,

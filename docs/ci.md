@@ -10,8 +10,8 @@ Every pull request runs the same five owners:
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
   plus the native kernel-agent shard.
-- **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes in stable VS Code with the
-  `platform-smoke` / `daily-core` selector.
+- **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
+  `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
 - **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
 
 There is no path classifier. Branch protection directly requires all five product-owner jobs to pass. The separate

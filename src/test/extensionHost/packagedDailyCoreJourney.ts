@@ -2,7 +2,7 @@ import * as assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { Frame, Page } from "playwright-core";
+import type { Frame, Locator, Page } from "playwright-core";
 import * as vscode from "vscode";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
 import { assertExactBytes } from "./acceptanceSourceFixture";
@@ -21,6 +21,7 @@ interface PackagedDailyCoreRendererButton {
 }
 
 export interface PackagedDailyCoreJourneyDependencies {
+  readonly assertOpenWranglerTabBrandIcon: (tab: Locator) => Promise<void>;
   readonly connectToEditorWorkbench: () => Promise<Page>;
   readonly recordAcceptanceProgress: (checkpoint: string) => void;
   readonly waitFor: (
@@ -54,6 +55,7 @@ export interface PackagedDailyCoreJourneyDependencies {
 }
 
 export function createPackagedDailyCoreJourney({
+  assertOpenWranglerTabBrandIcon,
   connectToEditorWorkbench,
   recordAcceptanceProgress,
   waitFor,
@@ -196,6 +198,11 @@ export function createPackagedDailyCoreJourney({
       const target = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
       const grid = target.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
       await grid.waitFor({ state: "visible", timeout: 10_000 });
+      const openWranglerTab = activeEditorGroup
+        .locator(".tabs-container .tab.active")
+        .filter({ hasText: path.basename(fixture.fsPath) })
+        .last();
+      await assertOpenWranglerTabBrandIcon(openWranglerTab);
       assert.equal(await grid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
       const firstCell = target.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
       await firstCell.waitFor({ state: "visible", timeout: 10_000 });

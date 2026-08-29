@@ -93,6 +93,8 @@ const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
 const EDITOR_DOWNLOAD_COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
 const EDITOR_COMMAND_RESOURCE_FAILURE_CODE = "EDITOR_COMMAND_RESOURCE_RELEASE_FAILED";
 const EDITOR_DOWNLOAD_HELPER_PATH = fileURLToPath(new URL("./download-editor.mjs", import.meta.url));
+const DEFAULT_PACKAGED_VSCODE_EXECUTABLE = "/usr/share/code/code";
+const DEFAULT_PACKAGED_VSCODE_CLI = "/usr/share/code/bin/code";
 const WINDOWS_JOB_SUPERVISOR_PATH = fileURLToPath(new URL("./windows-job-supervisor.ps1", import.meta.url));
 const WINDOWS_JOB_OWNERSHIP = Symbol("openWranglerWindowsJobOwnership");
 const WINDOWS_JOB_CAPTURE_STDERR = Symbol("openWranglerWindowsJobCaptureStderr");
@@ -1436,6 +1438,28 @@ async function stopChildWithVerifiedExit(child, exit) {
   await waitForChildExit(exit, XVFB_STOP_TIMEOUT_MS);
   if (!isRunning()) return;
   throw unverifiedEditorProcessTreeError("The private Xvfb process remained after forced termination.");
+}
+
+export function resolvePackagedVscodeAcquisitionPlan(environment, pathExists) {
+  if (environment === null || typeof environment !== "object" || Array.isArray(environment)) {
+    throw new TypeError("Packaged VS Code acquisition requires an environment object.");
+  }
+  if (typeof pathExists !== "function") {
+    throw new TypeError("Packaged VS Code acquisition requires a path-existence function.");
+  }
+  if (Object.hasOwn(environment, "VSCODE_TEST_VERSION")) {
+    return { kind: "download", version: environment.VSCODE_TEST_VERSION };
+  }
+
+  const executable = environment.OPEN_WRANGLER_VSCODE_EXECUTABLE ?? DEFAULT_PACKAGED_VSCODE_EXECUTABLE;
+  const cli = environment.OPEN_WRANGLER_VSCODE_CLI ?? DEFAULT_PACKAGED_VSCODE_CLI;
+  if (pathExists(executable) && pathExists(cli)) {
+    return {
+      kind: "existing",
+      editor: { name: "VS Code", key: "vscode", executable, cli, sharedDataDir: true }
+    };
+  }
+  return { kind: "download", version: "stable" };
 }
 
 export async function downloadEditorWithRetry(

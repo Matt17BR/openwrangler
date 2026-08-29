@@ -67,7 +67,8 @@ The pull-request workflow has five direct owners:
   licenses, the retained script contracts, and Vitest.
 - Python runtime contracts: Ruff, Pyright, and Pytest.
 - Native R frame, kernel, and transport contracts: the three R 4.5 selections above.
-- Packaged VS Code smoke: one production VSIX opened in stable VS Code.
+- Packaged VS Code smoke: one production VSIX opened in the declared minimum VS Code 1.106.0 and current stable VS
+  Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
 There is no path classifier or aggregate workflow test. Branch protection directly requires all five owners to pass.
@@ -90,8 +91,8 @@ uploads only the exact sealed path emitted through `GITHUB_OUTPUT`; it never upl
 
 ## Exact-artifact installed smoke
 
-For a local or pull-request installed-editor smoke, build and verify one VSIX, then give that exact file to the stable
-VS Code runner:
+For a local or pull-request installed-editor smoke, build and verify one VSIX, then give that exact file first to the
+declared minimum VS Code 1.106.0 and then to current stable VS Code:
 
 ```bash
 npm ci --ignore-scripts
@@ -101,6 +102,11 @@ npm run build
 npm run package:prepared -- --out openwrangler.vsix
 npm run verify:vsix -- openwrangler.vsix
 npm run build:test-extension
+OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
+OPEN_WRANGLER_PACKAGED_MODE=platform-smoke \
+OPEN_WRANGLER_TEST_SELECTOR=daily-core \
+VSCODE_TEST_VERSION=1.106.0 \
+node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
 OPEN_WRANGLER_PACKAGED_MODE=platform-smoke \
 OPEN_WRANGLER_TEST_SELECTOR=daily-core \
