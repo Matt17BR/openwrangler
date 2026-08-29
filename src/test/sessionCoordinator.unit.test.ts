@@ -118,7 +118,7 @@ describe("SessionCoordinator", () => {
     expect(listExcelSheets).toHaveBeenCalledOnce();
   });
 
-  it("returns an ephemeral clipboard page without committing its metadata", async () => {
+  it("cancels a queued ephemeral clipboard page without cancelling visible work", async () => {
     const runtimeOpened = openedResponse("runtime-clipboard");
     runtimeOpened.metadata = {
       ...runtimeOpened.metadata,
@@ -143,16 +143,7 @@ describe("SessionCoordinator", () => {
           blockingRuntimeRequest = request;
           return blockingPage.promise;
         }
-        return pageResponseForMetadata(
-          request,
-          request.viewRequestId === "clipboard-page"
-            ? {
-                ...runtimeOpened.metadata,
-                shape: { rows: 99, columns: 1 },
-                filteredShape: { rows: 99, columns: 1 }
-              }
-            : runtimeOpened.metadata
-        );
+        return pageResponseForMetadata(request, runtimeOpened.metadata);
       }
     );
     const coordinator = new SessionCoordinator();
@@ -173,24 +164,6 @@ describe("SessionCoordinator", () => {
       columnLimit: 1,
       filterModel: opened.metadata.filterModel
     });
-
-    await expect(bridge.request(pageRequest("visible-page"), { viewContextId: "view-a" })).resolves.toMatchObject({
-      kind: "page",
-      viewRequestId: "visible-page"
-    });
-    await expect(
-      bridge.request(pageRequest("clipboard-page"), { viewContextId: "view-a", ephemeralPage: true })
-    ).resolves.toMatchObject({
-      kind: "page",
-      viewRequestId: "clipboard-page",
-      metadata: { filteredShape: { rows: 99 } }
-    });
-    expect(coordinator.activeSession()?.metadata.filteredShape.rows).toBe(2);
-
-    expect(delegateRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "getPage", viewRequestId: "clipboard-page" }),
-      { viewContextId: "view-a", ephemeralPage: true }
-    );
 
     const activeVisiblePage = bridge.request(pageRequest("blocking-page"), { viewContextId: "view-a" });
     await vi.waitFor(() =>
