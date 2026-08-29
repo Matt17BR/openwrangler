@@ -341,7 +341,6 @@ def _marker_paths(fixture: GuardFixture) -> list[Path]:
 
 def _create_manual_empty_journal(fixture: GuardFixture) -> None:
     if os.name == "nt":
-        guard = _load_dependency_guard()
         assert (
             guard._windows_create_secure_directory(
                 fixture.journal,
@@ -374,7 +373,6 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
         path.write_bytes(payload)
         path.chmod(0o600)
         return
-    guard = _load_dependency_guard()
     descriptor = guard._windows_create_secure_leaf_descriptor(
         path,
         desired_access=(
@@ -393,7 +391,6 @@ def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
 
 
 def _write_locked_journal_leaf(fixture: GuardFixture, path: Path, payload: bytes) -> None:
-    guard = _load_dependency_guard()
     identity = guard._validate_private_directory(fixture.journal)
     with guard._JournalLock(fixture.journal, identity, create=False):
         _write_manual_journal_leaf(path, payload)
@@ -478,8 +475,10 @@ def _load_dependency_guard() -> Any:
     return module
 
 
+guard = _load_dependency_guard()
+
+
 def test_in_process_request_normalization_covers_every_protocol_mode() -> None:
-    guard = _load_dependency_guard()
     environment = guard._actual_environment()
     dependency = {
         "importModule": "example.module",
@@ -516,7 +515,6 @@ def test_in_process_request_normalization_covers_every_protocol_mode() -> None:
 
 
 def test_in_process_request_normalization_rejects_noncanonical_inputs() -> None:
-    guard = _load_dependency_guard()
     environment = guard._actual_environment()
     dependency = {
         "importModule": "example.module",
@@ -578,7 +576,6 @@ def _arm(
 
 
 def test_journal_marker_capability_is_current_acquisition_only(guard_fixture: GuardFixture) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     identity = guard._validate_private_directory(guard_fixture.journal)
     token = str(uuid.uuid4())
@@ -629,7 +626,6 @@ def test_journal_marker_capability_is_current_acquisition_only(guard_fixture: Gu
 def test_journal_lock_exit_preserves_a_primary_body_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     lock = object.__new__(guard._JournalLock)
     close_modes: list[bool] = []
 
@@ -650,7 +646,6 @@ def test_journal_lock_exit_preserves_a_primary_body_exception(
 def test_journal_lock_exit_preserves_body_over_release_and_close_faults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     lock = object.__new__(guard._JournalLock)
     primary = RuntimeError("primary body failure")
     cleanup_calls: list[str] = []
@@ -673,7 +668,6 @@ def test_journal_lock_exit_preserves_body_over_release_and_close_faults(
 def test_journal_lock_exit_preserves_a_primary_release_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     lock = object.__new__(guard._JournalLock)
     primary = RuntimeError("primary release failure")
     close_modes: list[bool] = []
@@ -725,7 +719,6 @@ def test_status_locks_an_existing_clean_journal_on_a_read_only_mount(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     before = lock.stat()
@@ -771,7 +764,6 @@ def test_read_only_status_reports_a_valid_retained_marker_as_dirty_without_chang
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     identity = guard._validate_private_directory(guard_fixture.journal)
@@ -819,7 +811,6 @@ def test_read_only_status_never_accepts_an_existing_journal_without_a_lock(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_empty_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     original_open = guard.os.open
@@ -846,7 +837,6 @@ def test_read_only_status_never_hides_an_unrecoverable_pending_marker(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     pending = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
@@ -882,7 +872,6 @@ def test_read_only_status_never_hides_an_unknown_journal_leaf(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     unknown = guard_fixture.journal / "unexpected.json"
@@ -918,7 +907,6 @@ def test_status_read_only_fallback_rejects_every_error_except_erofs(
     open_errno: int,
     expected_code: str,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     original_open = guard.os.open
@@ -945,7 +933,6 @@ def test_status_read_only_fallback_rejects_lock_replacement_between_opens(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     displaced = guard_fixture.root / "displaced-lock"
@@ -985,7 +972,6 @@ def test_mutating_dependency_paths_never_use_a_read_only_journal_lock(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     original_open = guard.os.open
@@ -1014,7 +1000,6 @@ def test_mutating_dependency_paths_never_use_a_read_only_journal_lock(
 def test_windows_status_creates_exact_protected_journal_and_lock_acls(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     assert code == 0
     assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
@@ -1031,7 +1016,6 @@ def test_windows_status_creates_exact_protected_journal_and_lock_acls(
 def test_windows_secure_state_excludes_broad_parent_inheritance(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _run_icacls(
         guard_fixture.root,
         "/grant",
@@ -1068,7 +1052,6 @@ def test_windows_malformed_journal_acl_fails_closed_without_repair(
     guard_fixture: GuardFixture,
     acl_arguments: tuple[str, ...],
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     _run_icacls(guard_fixture.journal, *acl_arguments)
@@ -1088,7 +1071,6 @@ def test_windows_malformed_journal_acl_fails_closed_without_repair(
 def test_windows_malformed_leaf_acl_fails_closed_without_repair(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     _run_icacls(lock, "/grant", "*S-1-1-0:R")
@@ -1107,7 +1089,6 @@ def test_windows_malformed_leaf_acl_fails_closed_without_repair(
 def test_windows_expected_principal_mask_downgrade_is_rejected_without_repair(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     lock = guard_fixture.journal / "mutation.lock"
     user_sid = guard._windows_token_user_sid(code="malformed_state")
@@ -1127,7 +1108,6 @@ def test_windows_expected_principal_mask_downgrade_is_rejected_without_repair(
 def test_windows_malformed_orphan_temp_acl_is_retained(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     temporary = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
     _write_locked_journal_leaf(guard_fixture, temporary, b"partial")
@@ -1147,7 +1127,6 @@ def test_windows_malformed_orphan_temp_acl_is_retained(
 def test_windows_private_directory_handle_blocks_namespace_replacement(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     replacement = guard_fixture.root / f"{JOURNAL_NAME}-replacement"
 
@@ -1166,7 +1145,6 @@ def test_windows_private_directory_handle_blocks_namespace_replacement(
 def test_windows_empty_directory_handle_alone_blocks_namespace_replacement(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_empty_journal(guard_fixture)
     replacement = guard_fixture.root / f"{JOURNAL_NAME}-replacement"
 
@@ -1318,7 +1296,6 @@ def test_install_publishes_before_ready_waits_for_go_and_suppresses_pip_output(
 
 
 def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: GuardFixture) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     journal_identity = guard._validate_private_directory(guard_fixture.journal)
     token = str(uuid.uuid4())
@@ -1354,7 +1331,6 @@ def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: G
 def test_windows_marker_publication_protects_temp_and_final_leaf_acls(
     guard_fixture: GuardFixture,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     journal_identity = guard._validate_private_directory(guard_fixture.journal)
     token = str(uuid.uuid4())
@@ -1383,7 +1359,6 @@ def test_windows_marker_publication_never_replaces_racing_destination(
     guard_fixture: GuardFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     journal_identity = guard._validate_private_directory(guard_fixture.journal)
     token = str(uuid.uuid4())
@@ -1412,7 +1387,6 @@ def test_windows_marker_publication_never_replaces_racing_destination(
 
 @pytest.mark.skipif(os.name != "nt", reason="Requires native Windows CreateFile sharing semantics.")
 def test_windows_marker_reader_denies_same_size_concurrent_writer(guard_fixture: GuardFixture) -> None:
-    guard = _load_dependency_guard()
     _create_manual_journal(guard_fixture)
     token = str(uuid.uuid4())
     expected_marker = {
