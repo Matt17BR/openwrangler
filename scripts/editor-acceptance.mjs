@@ -44,7 +44,6 @@ const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
-const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
 const DAILY_CORE_SELECTOR = "daily-core";
 const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
 const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
@@ -4199,7 +4198,6 @@ export async function runEditorAcceptancePhase(
   }
   if (
     testSelector !== undefined &&
-    testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
     testSelector !== PYSPARK_PRERELEASE_DENIAL_SELECTOR &&
     testSelector !== "core-operations" &&
     testSelector !== "categorical-operations" &&
@@ -4213,14 +4211,8 @@ export async function runEditorAcceptancePhase(
     testSelector !== GRID_RANGE_COPY_SELECTOR
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy".'
+      'An editor acceptance test selector must be unset, "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy".'
     );
-  }
-  if (
-    testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
-    (phase !== "jupyter-allow" || editor?.key !== "cursor")
-  ) {
-    throw new Error('The candidate compatibility selector requires the "jupyter-allow" phase in the Cursor editor.');
   }
   if (
     (testSelector === DAILY_CORE_SELECTOR || testSelector === GRID_RANGE_COPY_SELECTOR) &&
@@ -4236,7 +4228,6 @@ export async function runEditorAcceptancePhase(
   }
   if (
     testSelector !== undefined &&
-    testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
     testSelector !== DAILY_CORE_SELECTOR &&
     testSelector !== GRID_RANGE_COPY_SELECTOR &&
     testSelector !== PYSPARK_PRERELEASE_DENIAL_SELECTOR &&

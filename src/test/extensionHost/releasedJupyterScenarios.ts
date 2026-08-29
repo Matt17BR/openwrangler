@@ -1,10 +1,8 @@
 import type { PackagedEvidenceSceneId } from "./evidenceScenes";
 
-export const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
 export const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
 
 export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
-  CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
   PYSPARK_PRERELEASE_DENIAL_SELECTOR,
   "core-operations",
   "categorical-operations",
@@ -88,17 +86,6 @@ export const RELEASED_JUPYTER_SCENARIOS: readonly ReleasedJupyterScenarioDefinit
       "notebook-polars",
       "notebook-duckdb"
     ]
-  },
-  {
-    phaseId: "jupyter-allow",
-    selector: CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
-    tierRiskOwner: "released-jupyter",
-    editorEligibility: ["cursor"],
-    platformEligibility: "all",
-    prerequisites: ["host-python", "released-jupyter"],
-    runnerKey: "released-jupyter",
-    declaredProgressSections: [],
-    evidenceSceneIds: []
   },
   {
     phaseId: "jupyter-pyspark",

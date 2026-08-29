@@ -116,8 +116,6 @@
     "test:packaged-editors:prepare": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
     "test:packaged-editors:run": "node scripts/run-packaged-editor-tests.mjs",
     "test:packaged-grid-column-copy": "npm run build:test-extension && node scripts/packaged-grid-column-copy-selector.mjs",
-    "test:remote-workspace": "npm run test:remote-workspace:run",
-    "test:remote-workspace:run": "npm run build:test-extension && node scripts/run-remote-workspace-smoke.mjs",
     "prepare:xvfb": "node scripts/prepare-xvfb.mjs --print-path",
     "license:check": "node scripts/check-licenses.mjs",
     "brand:generate": "node scripts/generate-brand-assets.mjs --contact-sheet",
