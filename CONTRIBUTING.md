@@ -182,7 +182,6 @@ editorial read; do not rely on an AI detector or a word list.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable
   generated-code coverage for every editing-capable engine.
-- Update the documentation listed in the `AGENTS.md` matrix.
 - Review user-facing text and pull request summaries against `docs/writing-style.md`.
 - Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
 - A release pull request contains only the version bump, changelog, release notes, and release metadata. Merge product,

@@ -178,8 +178,8 @@ fixed-size aggregate result crosses into the kernel process.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and current 32-operation catalog,
-including generated R. The runtime never routes an R frame through Python. The public status remains preview and
-Partial until the installed and performance gates named in the feature-parity matrix are complete.
+including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
+Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
