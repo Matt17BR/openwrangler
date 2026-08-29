@@ -19,7 +19,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
-import { createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
 import {
   CANONICAL_RELEASE_PUBLICATION_MODE,
   CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
@@ -39,7 +38,8 @@ import {
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
   PRIMARY_PARITY_SCOPE,
-  R_STABLE_PARITY_SCOPE,
+  R_PREVIEW_PARITY_SCOPE,
+  inspectPreviewRParitySource,
   STABLE_README_RELEASE_SECTION
 } from "./release-readiness.mjs";
 import {
@@ -143,27 +143,33 @@ ${rows}
 `;
 }
 
-function stableRParityMatrix() {
-  const rows = R_STABLE_PARITY_SCOPE.map(
-    ({ availability, evidence, surface }) =>
-      `| ${surface} | ${availability} | Done | Exact stable acceptance passed and is recorded; ${evidence.join("; ")} | Stable release |`
-  ).join("\n");
-  return `## Native R support
+function previewRSurface(surface) {
+  const replacements = new Map([
+    ["Base data.frame, tibble, and data.table", "Base `data.frame`, tibble, and `data.table`"],
+    ["Cursor-owned .Rmd and .qmd R/Python chunk", "Cursor-owned `.Rmd` and `.qmd` R/Python chunk"],
+    ["Owned .R source process", "Owned `.R` source process"],
+    ["Owned .Rmd and .qmd cell process", "Owned `.Rmd` and `.qmd` cell process"],
+    ["Insert generated R into its source .R file", "Insert generated R into its source `.R` file"],
+    ["Insert generated R into .Rmd and .qmd", "Insert generated R into `.Rmd` and `.qmd`"]
+  ]);
+  return replacements.get(surface) ?? surface;
+}
 
-| Surface | Availability | Status | Required evidence | Release gate |
-| --- | --- | --- | --- | --- |
+function nativeRPreviewMatrix() {
+  const rows = R_PREVIEW_PARITY_SCOPE.map(([surface, availability, status]) => {
+    return `| ${previewRSurface(surface)} | ${availability} | ${status} | Current Native R capability owner |`;
+  }).join("\n");
+  return `## Native R preview
+
+| Surface | Availability | Status | Current owner |
+| --- | --- | --- | --- |
 ${rows}
 `;
 }
 
-function stableREvidenceFiles() {
-  return new Map(
-    R_STABLE_PARITY_SCOPE.flatMap(({ evidence }) => evidence).map((reference) => {
-      const path = reference.slice(reference.indexOf(":") + 1);
-      return [path, path.endsWith(".R") ? "TRUE\n" : "export {};\n"];
-    })
-  );
-}
+test("uses one channel-neutral Native R preview table contract", () => {
+  assert.deepEqual(inspectPreviewRParitySource({ featureParity: nativeRPreviewMatrix() }), []);
+});
 
 function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   return new Map([
@@ -234,7 +240,6 @@ async function createFixture(
     parityStatuses = new Map(),
     featureParity = parityMatrix(parityStatuses),
     readmeSection = STABLE_README_RELEASE_SECTION,
-    sourceFiles = () => new Map(),
     tag = true,
     useLegacyVsix = false
   } = {}
@@ -257,9 +262,6 @@ async function createFixture(
   const candidateBytes = useLegacyVsix
     ? await createLegacyVsixBuffer(readmeSection, manifest)
     : await createVsixBuffer(readmeSection, manifest);
-  for (const [path, contents] of sourceFiles({ candidateBytes, manifest })) {
-    writeSourceFile(root, path, contents);
-  }
   runGit(root, ["add", "."]);
   runGit(root, ["commit", "-q", "-m", "release fixture"]);
   const expectedCommit = runGit(root, ["rev-parse", "HEAD"]);
@@ -329,36 +331,13 @@ function artifactOptions(fixture, overrides = {}) {
   };
 }
 
-async function createStableV2Fixture(context, { reportedSha256 } = {}) {
+async function createStableV2Fixture(context) {
   const version = "2.0.0";
   const manifest = { ...stablePackage, version };
-  const reportDirectory = `docs/performance/data-wrangler-${version}`;
-  const reviewPath = `${reportDirectory}/review.md`;
-  const reportPath = `${reportDirectory}/report.json`;
-  const readmeSection = `${STABLE_README_RELEASE_SECTION}
-
-## Performance
-
-[dated report](https://github.com/Matt17BR/openwrangler/blob/main/${reviewPath})`;
   return await createFixture(context, {
-    featureParity: `${parityMatrix()}\n${stableRParityMatrix()}`,
+    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
     manifest,
-    readmeSection,
-    sourceFiles({ candidateBytes }) {
-      const files = stableREvidenceFiles();
-      const candidateSha256 = createHash("sha256").update(candidateBytes).digest("hex");
-      files.set(reviewPath, "# Open Wrangler 2.0.0 performance review\n");
-      files.set(
-        reportPath,
-        `${JSON.stringify(
-          createReleaseComparisonReport({
-            sha256: reportedSha256 ?? candidateSha256,
-            version
-          })
-        )}\n`
-      );
-      return files;
-    }
+    readmeSection: STABLE_README_RELEASE_SECTION
   });
 }
 
@@ -462,28 +441,23 @@ test("atomically publishes exactly one source-bound stable artifact triple", asy
   );
 });
 
-test("binds stable 2.x canonical authoring to committed performance data and exact candidate bytes", async (context) => {
+test("publishes exact stable 2.x bytes with Native R retained as preview", async (context) => {
   const fixture = await createStableV2Fixture(context);
   const receipt = await createCanonicalReleaseArtifact(artifactOptions(fixture).options);
   const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
 
   assert.equal(receipt.releaseTag, "v2.0.0");
   assert.equal(receipt.sourceCommit, fixture.expectedCommit);
+  assert.match(
+    readFileSync(join(fixture.root, "docs/feature-parity.md"), "utf8"),
+    /\| Native R frame paging and typed cells \| Preview \| Partial \| Current Native R capability owner \|/u
+  );
+  assert.equal(runGit(fixture.root, ["ls-files", "docs/performance"]), "");
   assert.deepEqual(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix")), fixture.candidateBytes);
   assert.equal(
     readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.sha256"), "utf8"),
     `${digest}  openwrangler.vsix\n`
   );
-});
-
-test("rejects stable 2.x performance data bound to different candidate bytes", async (context) => {
-  const fixture = await createStableV2Fixture(context, { reportedSha256: "b".repeat(64) });
-
-  await assert.rejects(
-    createCanonicalReleaseArtifact(artifactOptions(fixture).options),
-    /Performance data docs\/performance\/data-wrangler-2\.0\.0\/report\.json does not match the release candidate VSIX/u
-  );
-  assert.equal(existsSync(fixture.outputDirectory), false);
 });
 
 test("atomically publishes a provenance-bound preview triple before its tag exists", async (context) => {

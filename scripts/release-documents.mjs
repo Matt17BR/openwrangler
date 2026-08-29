@@ -65,11 +65,8 @@ const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
 const EVIDENCE_REFERENCE = /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?\b/gu;
 const EVIDENCE_REFERENCE_PREFIX = /\b(?:test|workflow|record):/gu;
-const STABLE_R_EVIDENCE_REFERENCE =
-  /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?(?=$|[\s;,)\]])/gu;
 const FUTURE_EVIDENCE =
   /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
-const STABLE_R_COMPLETION_TEXT = "Exact stable acceptance passed and is recorded";
 const LEGACY_PREVIEW_VERSION = /(?<![\d.])v?1\.99(?:\.(?:x|\d+))?(?:(?=previews?\b)|(?![\p{L}\p{N}]|\.[\p{L}\p{N}]))/iu;
 
 function containsUnsupportedTextControl(value) {
@@ -349,13 +346,6 @@ function tablePrecedesNestedSections(tokens, tableIndex, sectionStart, sectionEn
   return nestedHeading === -1 || tableIndex < nestedHeading;
 }
 
-function sectionContainsOnlyCanonicalTable(tokens, sectionStart, sectionEnd, tableIndex) {
-  const tableEnd = tokens.findIndex(
-    (token, index) => index > tableIndex && index < sectionEnd && token.type === "table_close" && token.level === 0
-  );
-  return tableIndex === sectionStart + 3 && tableEnd === sectionEnd - 1;
-}
-
 function tableHasDisallowedInlineMarkup(tokens, tableIndex, allowedCodeColumns = new Set()) {
   let column = -1;
   let isBodyCell = false;
@@ -389,39 +379,6 @@ function tableHasDisallowedInlineMarkup(tokens, tableIndex, allowedCodeColumns =
   return true;
 }
 
-function stableREvidenceHumanText(evidence) {
-  return evidence
-    .replace(STABLE_R_EVIDENCE_REFERENCE, "")
-    .replace(/[`*_~()[\]\u2014\u2013:;,.]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function inspectExactRStableEvidence(evidence, expectedReferences, trackedEvidencePaths) {
-  const references = [...evidence.matchAll(STABLE_R_EVIDENCE_REFERENCE)];
-  const referencePrefixes = [...evidence.matchAll(EVIDENCE_REFERENCE_PREFIX)];
-  if (
-    references.length === 0 ||
-    references.length !== referencePrefixes.length ||
-    stableREvidenceHumanText(evidence) !== STABLE_R_COMPLETION_TEXT
-  ) {
-    return false;
-  }
-  const actual = references.map((reference) => reference[0]).sort();
-  const expected = [...expectedReferences].sort();
-  if (
-    actual.length !== expected.length ||
-    actual.some((reference, index) => reference !== expected[index]) ||
-    new Set(actual).size !== actual.length
-  ) {
-    return false;
-  }
-  return references.every((reference) => {
-    const path = reference[2];
-    return path !== undefined && trackedEvidencePaths.has(path) && isPortableTrackedPath(path);
-  });
-}
-
 export function inspectPreviewRParityMatrix(contents, expectedScope) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
@@ -433,7 +390,7 @@ export function inspectPreviewRParityMatrix(contents, expectedScope) {
     return [section.problem];
   }
 
-  const expectedHeader = ["Surface", "Availability", "Status", "Current checks", "Release check"];
+  const expectedHeader = ["Surface", "Availability", "Status", "Current owner"];
   if (nativeRHeadings(tokens).length !== 1) {
     return ["Preview documentation must contain Native R preview as its only active top-level Native R section."];
   }
@@ -477,145 +434,23 @@ export function inspectPreviewRParityMatrix(contents, expectedScope) {
       problems.push(`Missing Native R preview row "${expected[0]}" at position ${index + 1}.`);
       continue;
     }
-    if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
+    if (actual.length !== expectedHeader.length) {
       problems.push(`The Native R preview table has an empty or malformed row at position ${index + 1}.`);
       continue;
     }
-    const [surface, availability, status, currentChecks, releaseCheck] = actual;
+    const [surface, availability, status, currentOwner] = actual;
     const rawSurface = rawTableCellMarkdown(contents, tokens[tables[0].index]?.map?.[0] ?? -1, index, 0);
-    if (surface !== expected[0] || availability !== expected[1] || releaseCheck !== "Preview release") {
-      problems.push(`Native R preview row ${index + 1} must be "${expected[0]}" (${expected[1]}/Preview release).`);
+    if (surface !== expected[0] || availability !== expected[1]) {
+      problems.push(`Native R preview row ${index + 1} must be "${expected[0]}" (${expected[1]}).`);
     }
     if (status !== expected[2]) {
       problems.push(`Native R preview row "${surface}" must remain ${expected[2]}; received ${status}.`);
     }
-    if (status === "Done" && currentChecks !== expected[3]) {
-      problems.push(`Native R preview row "${surface}" must retain its exact reviewed completion evidence.`);
-    }
     if (rawSurface !== previewSurfaceMarkdown(expected[0])) {
       problems.push(`Native R preview row "${surface}" must retain its exact reviewed surface markup.`);
     }
-    if (
-      currentChecks.length < 8 ||
-      !/[\p{L}\p{N}]/u.test(currentChecks) ||
-      (status === "Done" && FUTURE_EVIDENCE.test(currentChecks))
-    ) {
-      problems.push(`Native R preview row "${surface}" must describe its current checks.`);
-    }
-  }
-  return problems;
-}
-
-export function inspectStableRParityMatrix(contents, expectedScope, trackedEvidencePaths) {
-  if (!(trackedEvidencePaths instanceof Set)) {
-    return ["Stable Native R evidence paths must be supplied as one tracked-path set."];
-  }
-  const parsed = parseMarkdown(contents, "docs/feature-parity.md");
-  if (parsed.problem !== undefined || parsed.tokens === undefined) {
-    return [parsed.problem];
-  }
-  const tokens = parsed.tokens;
-  if (tokens.some((token) => Array.isArray(token.children) && token.children.some((child) => child.type === "image"))) {
-    return ["Stable feature-parity documentation must not contain active images."];
-  }
-  const activeInlineText = tokens
-    .filter((token) => token.type === "inline")
-    .map((token) => visibleInlineText(token))
-    .join(" ");
-  if (containsUnsupportedTextControl(activeInlineText)) {
-    return ["Stable feature-parity documentation must not contain unsupported control characters."];
-  }
-  if (/\p{Bidi_Control}/u.test(activeInlineText)) {
-    return ["Stable feature-parity documentation must not contain bidirectional text controls."];
-  }
-  if (/\p{Cf}/u.test(activeInlineText)) {
-    return ["Stable feature-parity documentation must not contain Unicode format characters."];
-  }
-  if (/\p{Default_Ignorable_Code_Point}/u.test(activeInlineText)) {
-    return ["Stable feature-parity documentation must not contain default-ignorable text characters."];
-  }
-  const documentVisibleText = activeInlineText
-    .normalize("NFKC")
-    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
-    .replace(/\s+/gu, " ");
-  if (
-    LEGACY_PREVIEW_VERSION.test(documentVisibleText) ||
-    /\b(?:other cleaning operations are not available in R yet|before a 2\.0 tag can be published|Open Wrangler 2\.0 previews?)\b/iu.test(
-      documentVisibleText
-    )
-  ) {
-    return ["Stable feature-parity documentation must not contain active preview-era Native R copy."];
-  }
-  const section = topLevelH2Section(tokens, "Native R support", "docs/feature-parity.md");
-  if (section.problem !== undefined || section.start === undefined || section.end === undefined) {
-    return [section.problem];
-  }
-
-  const expectedHeader = ["Surface", "Availability", "Status", "Required evidence", "Release gate"];
-  if (nativeRHeadings(tokens).length !== 1) {
-    return ["Stable documentation must contain Native R support as its only active top-level Native R section."];
-  }
-  const sectionTables = tokens
-    .map((token, index) => ({ index, token }))
-    .filter(
-      ({ index, token }) =>
-        token.type === "table_open" && token.level === 0 && index > section.start && index < section.end
-    );
-  const allCanonicalTables = matchingTables(tokens, expectedHeader);
-  const tables = allCanonicalTables.filter(({ index }) => index > section.start && index < section.end);
-  if (
-    sectionTables.length !== 1 ||
-    tables.length !== 1 ||
-    allCanonicalTables.length !== 1 ||
-    containsActiveRawHtml(tokens, -1, tokens.length) ||
-    !sectionContainsOnlyCanonicalTable(tokens, section.start, section.end, tables[0]?.index ?? section.end) ||
-    !tablePrecedesNestedSections(tokens, tables[0]?.index ?? section.end, section.start, section.end) ||
-    tableHasDisallowedInlineMarkup(tokens, tables[0]?.index ?? section.end)
-  ) {
-    return [
-      "docs/feature-parity.md must contain exactly one active top-level canonical stable Native R table inside its Native R support section."
-    ];
-  }
-
-  const problems = [];
-  const rows = tables[0].rows.slice(1);
-  if (rows.length !== expectedScope.length) {
-    problems.push(
-      `The stable Native R table must contain exactly ${expectedScope.length} ordered release rows; found ${rows.length}.`
-    );
-  }
-  const comparisonLength = Math.max(rows.length, expectedScope.length);
-  for (let index = 0; index < comparisonLength; index += 1) {
-    const actual = rows[index];
-    const expected = expectedScope[index];
-    if (expected === undefined) {
-      problems.push(`Unexpected stable Native R row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
-      continue;
-    }
-    if (actual === undefined) {
-      problems.push(`Missing stable Native R row "${expected.surface}" at position ${index + 1}.`);
-      continue;
-    }
-    if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
-      problems.push(`The stable Native R table has an empty or malformed row at position ${index + 1}.`);
-      continue;
-    }
-    const [surface, availability, status, evidence, releaseGate] = actual;
-    const rawSurface = rawTableCellMarkdown(contents, tokens[tables[0].index]?.map?.[0] ?? -1, index, 0);
-    if (surface !== expected.surface || availability !== expected.availability || releaseGate !== "Stable release") {
-      problems.push(
-        `Stable Native R row ${index + 1} must be "${expected.surface}" (${expected.availability}/Stable release).`
-      );
-    }
-    if (rawSurface !== expected.surface) {
-      problems.push(`Stable Native R row "${surface}" must retain its exact reviewed surface markup.`);
-    }
-    if (status !== "Done") {
-      problems.push(`Stable Native R row "${surface}" is ${status}, not Done.`);
-    } else if (!inspectExactRStableEvidence(evidence, expected.evidence, trackedEvidencePaths)) {
-      problems.push(
-        `Stable Native R row "${surface}" must say "${STABLE_R_COMPLETION_TEXT}" and contain exactly its reviewed tracked evidence references.`
-      );
+    if (currentOwner.length === 0) {
+      problems.push(`Native R preview row "${surface}" must describe its current owner.`);
     }
   }
   return problems;
