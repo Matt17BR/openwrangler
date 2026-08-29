@@ -133,6 +133,7 @@ test("stable-series preparation is deterministic, recoverable, and changes only 
   const metadata = { preview: false, version: "2.0.4" };
   const firstRoot = repository(context, metadata);
   const secondRoot = repository(context, metadata);
+  const mismatchedRoot = repository(context, metadata);
   const sourceSha = git(firstRoot, ["rev-parse", "HEAD"]);
   assert.equal(git(secondRoot, ["rev-parse", "HEAD"]), sourceSha);
   const environment = {
@@ -145,6 +146,14 @@ test("stable-series preparation is deterministic, recoverable, and changes only 
     environment: { ...environment, EXPECTED_GENERATED_SHA: first.generatedSha },
     root: secondRoot
   });
+  assert.throws(
+    () =>
+      prepareDailyPreviewCommit({
+        environment: { ...environment, EXPECTED_GENERATED_SHA: sourceSha },
+        root: mismatchedRoot
+      }),
+    /reconstructed daily preview commit differs from the qualified source commit/u
+  );
   assert.equal(second.generatedSha, first.generatedSha);
   assert.equal(first.version, "2.0.20260828");
   assert.equal(JSON.parse(readFileSync(join(firstRoot, "package.json"), "utf8")).version, first.version);
