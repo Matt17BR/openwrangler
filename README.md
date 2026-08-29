@@ -65,9 +65,8 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
-Native R is a channel-neutral **Preview** feature. It can ship in a stable Open Wrangler release without becoming
-stable support. The current source supports the complete generated operation catalog. R Custom Code runs arbitrary R
-in the selected environment and is unavailable in Restricted Mode.
+Native R remains **Preview** even when it is included in a stable Open Wrangler release. All 32 cleaning operations
+generate R. **Custom Code** runs arbitrary R in the selected environment and is unavailable in Restricted Mode.
 
 The R Preview has these notebook, terminal, and document entry points:
 
@@ -81,13 +80,13 @@ The R Preview has these notebook, terminal, and document entry points:
 R-document support follows the machine running the extension host. Remote document execution is experimental, and a
 Windows extension host rejects it. IRkernel notebooks work on Windows.
 
-Release qualification covers local desktop VS Code and Cursor. Remote SSH is not release-qualified.
+Each release is tested in local desktop VS Code and Cursor. Remote SSH is not tested for release.
 
 ## Workbench
 
 The workbench shows the grid, column profiles, filters, sorts, and cleaning history together. Pandas, Polars, R, and
-file-backed DuckDB remain in their native engines; DuckDB notebook relations and PySpark notebook dataframes are
-view-only. Filters and sorts change only the view, cleaning drafts show changed values and generated code before they
+file-backed DuckDB run in their native engines. DuckDB notebook relations and PySpark notebook dataframes are
+view-only. Filters and sorts change only the view. Cleaning drafts show changed values and generated code before they
 are applied, and exports write a separate file. The grid fetches visible row and column blocks on demand.
 
 ## Open files
@@ -184,9 +183,9 @@ See the generated reference for all public
 ## Performance
 
 Open Wrangler sends visible grid blocks to the webview. File-backed Polars sessions use lazy scans, and Pandas,
-DuckDB, and Spark work stays in its native engine. The
-[Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md) is an
-optional historical study of public-UI workloads and dated reviews.
+DuckDB, and Spark work stays in its native engine. A dated
+[Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md) measures
+the two extensions through their public interfaces.
 
 ## Roadmap
 
