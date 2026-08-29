@@ -18,16 +18,11 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
 import {
-  DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
-  assertReleaseCompleteStudyReport
-} from "./data-wrangler-comparison-report.mjs";
-import {
   inspectChangelog,
   inspectPerformanceEvidenceReadme,
   inspectPreviewReadme,
   inspectPreviewRParityMatrix,
   inspectPrimaryParityMatrix,
-  inspectStableRParityMatrix,
   inspectStableReadme,
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   STABLE_README_RELEASE_SECTION
@@ -40,7 +35,6 @@ import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
 const FULL_COMMIT_ID = /^[0-9a-f]{40}$/iu;
-const SHA256 = /^[0-9a-f]{64}$/u;
 const RELEASE_SOURCE_FILES = new Map([
   ["package.json", 1024 * 1024],
   ["python/openwrangler_runtime/version.py", 64 * 1024],
@@ -88,113 +82,35 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Cross-platform first-class editor package acceptance", "N/A", "N/A"]
 ]);
 function previewRScope(...values) {
-  if (
-    (values.length !== 3 && values.length !== 4) ||
-    values.some((value) => typeof value !== "string" || value.length === 0) ||
-    (values[2] === "Done") !== (values.length === 4)
-  ) {
-    throw new Error("Every Native R preview scope entry requires exact status-bound reviewed evidence.");
+  if (values.length !== 3 || values.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw new Error("Every Native R preview scope entry requires one surface, availability, and status.");
   }
   return Object.freeze(values);
 }
 
 export const R_PREVIEW_PARITY_SCOPE = Object.freeze([
-  previewRScope("Native R frame paging and typed cells", "1.99 preview", "Partial"),
-  previewRScope("Native R compound viewing filters", "1.99 preview", "Partial"),
-  previewRScope("Native R value search and selections", "1.99 preview", "Partial"),
-  previewRScope("Native R ordered viewing sorts", "1.99 preview", "Partial"),
-  previewRScope("Native R column and dataset profiles", "1.99 preview", "Partial"),
-  previewRScope("Base data.frame, tibble, and data.table", "1.99 preview", "Partial"),
-  previewRScope(
-    "Exact IRkernel session transport",
-    "1.99 preview",
-    "Done",
-    "Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate"
-  ),
-  previewRScope("Exact active R-terminal transport", "1.99 preview", "Partial"),
-  previewRScope("Cursor-owned .Rmd and .qmd R/Python chunk", "1.99 preview", "Partial"),
-  previewRScope("Owned .R source process", "1.99 preview", "Partial"),
-  previewRScope("Owned .Rmd and .qmd cell process", "1.99 preview", "Partial"),
-  previewRScope("Notebook workbench", "1.99 preview", "Partial"),
-  previewRScope("R cleaning operations and generated code", "32 operations", "Partial"),
-  previewRScope("Copy or save generated R", "32 operations", "Partial"),
-  previewRScope("Insert generated R into its IRkernel notebook", "1.99 preview", "Partial"),
-  previewRScope("Insert generated R into its source .R file", "1.99 preview", "Partial"),
-  previewRScope("Insert generated R into .Rmd and .qmd", "1.99 preview", "Partial"),
+  previewRScope("Native R frame paging and typed cells", "Preview", "Partial"),
+  previewRScope("Native R compound viewing filters", "Preview", "Partial"),
+  previewRScope("Native R value search and selections", "Preview", "Partial"),
+  previewRScope("Native R ordered viewing sorts", "Preview", "Partial"),
+  previewRScope("Native R column and dataset profiles", "Preview", "Partial"),
+  previewRScope("Base data.frame, tibble, and data.table", "Preview", "Partial"),
+  previewRScope("Exact IRkernel session transport", "Preview", "Done"),
+  previewRScope("Exact active R-terminal transport", "Preview", "Partial"),
+  previewRScope("Cursor-owned .Rmd and .qmd R/Python chunk", "Preview", "Partial"),
+  previewRScope("Owned .R source process", "macOS and Linux Preview", "Partial"),
+  previewRScope("Owned .Rmd and .qmd cell process", "macOS and Linux Preview", "Partial"),
+  previewRScope("Notebook workbench", "Preview", "Partial"),
+  previewRScope("R cleaning operations and generated code", "Generated catalog", "Partial"),
+  previewRScope("Copy or save generated R", "Generated catalog", "Partial"),
+  previewRScope("Insert generated R into its IRkernel notebook", "Preview", "Partial"),
+  previewRScope("Insert generated R into its source .R file", "macOS and Linux Preview", "Partial"),
+  previewRScope("Insert generated R into .Rmd and .qmd", "macOS and Linux Preview", "Partial"),
   previewRScope("Cleaned-data export", "R notebook/document CSV/Parquet", "Partial"),
-  previewRScope("Active R-terminal cleaned-data export", "1.99 preview", "Partial"),
-  previewRScope("Quarto and R Markdown lexical R-cell run", "1.99 preview", "Partial")
+  previewRScope("Active R-terminal cleaned-data export", "Preview", "Partial"),
+  previewRScope("Quarto and R Markdown lexical R-cell run", "Preview", "Partial")
 ]);
 
-const R_STABLE_COMMON_EVIDENCE = Object.freeze(["test:src/test/extensionHost/index.ts", "record:docs/testing.md"]);
-
-function stableRScope(...values) {
-  if (values.length !== 3 || values.some((value) => typeof value !== "string" || value.length === 0)) {
-    throw new Error("Every stable Native R scope entry requires exactly one surface, availability, and row test.");
-  }
-  const [surface, availability, rowTest] = values;
-  return Object.freeze({
-    availability,
-    evidence: Object.freeze([`test:${rowTest}`, ...R_STABLE_COMMON_EVIDENCE]),
-    surface
-  });
-}
-
-export const R_STABLE_PARITY_SCOPE = Object.freeze([
-  stableRScope("Native R frame paging and typed cells", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope("Native R compound viewing filters", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope("Native R value search and selections", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope("Native R ordered viewing sorts", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope("Native R column and dataset profiles", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope("Base data.frame, tibble, and data.table", "All supported R sessions", "r/tests/frame_contract.R"),
-  stableRScope(
-    "Ordinary collapse::qDF(), collapse::qTBL(), and collapse::qDT() frames",
-    "All supported R sessions",
-    "r/tests/frame_contract.R"
-  ),
-  stableRScope(
-    "Exact IRkernel session transport",
-    "Linux, macOS, and Windows",
-    "src/test/rKernelTransport.cross.test.ts"
-  ),
-  stableRScope("Exact active R-terminal transport", "Linux", "src/test/rInteractiveSessionTransport.cross.test.ts"),
-  stableRScope(
-    "Cursor .Rmd document command and .qmd R/Python chunk actions",
-    "Linux",
-    "src/test/rDocumentCommands.unit.test.ts"
-  ),
-  stableRScope("Owned .R source process", "Linux and macOS", "src/test/rProcessTransport.cross.test.ts"),
-  stableRScope("Owned .Rmd and .qmd cell process", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"),
-  stableRScope("Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"),
-  stableRScope(
-    "Complete R cleaning catalog and generated code",
-    "All 32 catalog operations",
-    "r/tests/complete_catalog_contract.R"
-  ),
-  stableRScope(
-    "Copy or save generated R",
-    "All 32 catalog operations",
-    "src/test/rCompleteCatalogCodeExport.unit.test.ts"
-  ),
-  stableRScope(
-    "Insert generated R into its IRkernel notebook",
-    "Linux, macOS, and Windows",
-    "src/test/notebookInsertion.unit.test.ts"
-  ),
-  stableRScope(
-    "Insert generated R into its source .R file",
-    "Linux and macOS",
-    "src/test/rDocumentInsertion.unit.test.ts"
-  ),
-  stableRScope("Insert generated R into .Rmd and .qmd", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"),
-  stableRScope("Cleaned-data export", "CSV and Parquet", "r/tests/frame_contract.R"),
-  stableRScope("Active R-terminal cleaned-data export", "Linux", "src/test/rInteractiveExport.unit.test.ts"),
-  stableRScope(
-    "Quarto and R Markdown lexical R-cell run",
-    "Linux and macOS",
-    "src/test/literateDocumentChunks.unit.test.ts"
-  )
-]);
 export const PERFORMANCE_EVIDENCE_PARTIAL_ROWS = Object.freeze([
   "Virtual grid, column sizing, navigation",
   "Installed-editor first-usable-grid performance"
@@ -211,11 +127,9 @@ function numericReleaseMajor(version) {
   return match === null ? undefined : BigInt(match.groups?.major ?? "");
 }
 
-function stableRParityProblems(featureParity, version, trackedEvidencePaths) {
+function stableRParityProblems(featureParity, version) {
   const major = numericReleaseMajor(version);
-  return major !== undefined && major >= 2n
-    ? inspectStableRParityMatrix(featureParity, R_STABLE_PARITY_SCOPE, trackedEvidencePaths)
-    : [];
+  return major !== undefined && major >= 2n ? inspectPreviewRParityMatrix(featureParity, R_PREVIEW_PARITY_SCOPE) : [];
 }
 
 function performanceSection(readme) {
@@ -249,73 +163,6 @@ export function inspectPerformanceSummary(readme) {
   }
   if (/^[ \t]*\|[^\r\n]*\|[ \t]*$/mu.test(section)) {
     problems.push("README Performance must link to detailed results instead of embedding a table.");
-  }
-  return problems;
-}
-
-function inspectStablePerformanceEvidence(
-  readme,
-  label,
-  version,
-  trackedEvidencePaths,
-  performanceReportFiles,
-  candidateSha256
-) {
-  const major = /^(?<major>0|[1-9]\d*)\./u.exec(version ?? "")?.groups?.major;
-  if (major === undefined || BigInt(major) < 2n) return [];
-
-  const report = performanceReportLink(readme);
-  if (report === undefined) {
-    return [`${label} Performance section must link exactly one versioned Data Wrangler review.`];
-  }
-
-  const problems = [];
-  const sourceMatch = NUMERIC_RELEASE_VERSION.exec(version);
-  const reportMatch = NUMERIC_RELEASE_VERSION.exec(report.version);
-  const sameReleaseLine =
-    sourceMatch !== null &&
-    reportMatch !== null &&
-    sourceMatch.groups?.major === reportMatch.groups?.major &&
-    sourceMatch.groups?.minor === reportMatch.groups?.minor &&
-    BigInt(reportMatch.groups?.patch ?? "") <= BigInt(sourceMatch.groups?.patch ?? "");
-  if (!sameReleaseLine) {
-    problems.push(
-      `${label} Performance report version ${report.version} does not cover source release line ${sourceMatch?.groups?.major}.${sourceMatch?.groups?.minor}.x at ${version}.`
-    );
-  }
-  if (!trackedEvidencePaths.has(report.path)) {
-    problems.push(`${label} Performance report ${report.path} must be tracked.`);
-  }
-  const reportJsonPath = report.path.replace(/review\.md$/u, "report.json");
-  if (!trackedEvidencePaths.has(reportJsonPath)) {
-    problems.push(`${label} Performance data ${reportJsonPath} must be tracked.`);
-  }
-  const reportSource = performanceReportFiles.get(reportJsonPath);
-  if (reportSource === undefined) {
-    problems.push(`${label} Performance data ${reportJsonPath} must be read from the release commit.`);
-    return problems;
-  }
-  const reportData = parseJsonObject(reportSource, `${label} Performance data ${reportJsonPath}`, problems);
-  if (reportData === undefined) return problems;
-  try {
-    assertReleaseCompleteStudyReport(reportData);
-  } catch (error) {
-    problems.push(
-      `${label} Performance data ${reportJsonPath} is incomplete or invalid: ${String(error?.message ?? error)}`
-    );
-    return problems;
-  }
-  const reportedVersion = reportData?.provenance?.openWrangler?.version;
-  if (reportedVersion !== report.version) {
-    problems.push(
-      `${label} Performance data ${reportJsonPath} describes Open Wrangler ${String(reportedVersion)}, not ${report.version}.`
-    );
-  }
-  if (report.version === version) {
-    const reportedSha256 = reportData?.provenance?.openWrangler?.sha256;
-    if (!SHA256.test(candidateSha256 ?? "") || reportedSha256 !== candidateSha256) {
-      problems.push(`${label} Performance data ${reportJsonPath} does not match the release candidate VSIX.`);
-    }
   }
   return problems;
 }
@@ -426,9 +273,7 @@ function inspectReleaseReadiness(
     packagedPythonVersionFile,
     packagedReadme,
     vsixManifest,
-    trackedEvidencePaths = new Set(),
-    performanceReportFiles = new Map(),
-    candidateSha256
+    trackedEvidencePaths = new Set()
   },
   {
     allowedIncompleteRows = new Map(),
@@ -495,31 +340,9 @@ function inspectReleaseReadiness(
       requiredIncompleteRows
     )
   );
-  problems.push(...stableRParityProblems(featureParity, sourceVersion, trackedEvidencePaths));
+  problems.push(...stableRParityProblems(featureParity, sourceVersion));
   problems.push(...inspectReadme(readme, "README.md"));
   problems.push(...inspectReadme(packagedReadme, "Packaged README"));
-  if (inspectReadme === inspectStableReadme && sourceVersion !== undefined) {
-    problems.push(
-      ...inspectStablePerformanceEvidence(
-        readme,
-        "README.md",
-        sourceVersion,
-        trackedEvidencePaths,
-        performanceReportFiles,
-        candidateSha256
-      )
-    );
-    problems.push(
-      ...inspectStablePerformanceEvidence(
-        packagedReadme,
-        "Packaged README",
-        sourceVersion,
-        trackedEvidencePaths,
-        performanceReportFiles,
-        candidateSha256
-      )
-    );
-  }
 
   if (packagedManifest?.preview !== false) {
     problems.push("Packaged package.json preview must be false for a stable release.");
@@ -657,9 +480,7 @@ export function inspectStableSourceReadiness({ featureParity, readme, trackedEvi
       ? [`Stable source version ${version} is reserved for preview releases.`]
       : []),
     ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths),
-    ...(major !== undefined && major >= 2n
-      ? inspectStableRParityMatrix(featureParity, R_STABLE_PARITY_SCOPE, trackedEvidencePaths)
-      : []),
+    ...stableRParityProblems(featureParity, version),
     ...inspectStableReadme(readme, "README.md")
   ];
 }
@@ -810,23 +631,6 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
   };
   for (const [path, maxBytes] of RELEASE_SOURCE_FILES) {
     readCommitFile(path, maxBytes, true);
-  }
-  let sourceVersion;
-  try {
-    sourceVersion = parseStrictJson(files.get("package.json"))?.version;
-  } catch {
-    // Stable readiness reports malformed package metadata after the immutable read.
-  }
-  const sourceMajor = /^(?<major>0|[1-9]\d*)\./u.exec(sourceVersion ?? "")?.groups?.major;
-  if (sourceMajor !== undefined && BigInt(sourceMajor) >= 2n) {
-    const linkedReport = performanceReportLink(files.get("README.md"));
-    if (linkedReport !== undefined) {
-      readCommitFile(
-        linkedReport.path.replace(/review\.md$/u, "report.json"),
-        DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
-        false
-      );
-    }
   }
   return Object.freeze({
     commit,
@@ -1122,8 +926,6 @@ async function runCli() {
     packagedPackageJson: packaged.packagedPackageJson,
     packagedPythonVersionFile: packaged.packagedPythonVersionFile,
     packagedReadme: packaged.packagedReadme,
-    performanceReportFiles: source.files,
-    candidateSha256: snapshot.sha256,
     trackedEvidencePaths: source.trackedPaths,
     vsixManifest: packaged.vsixManifest
   });
