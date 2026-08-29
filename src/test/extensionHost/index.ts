@@ -1404,7 +1404,7 @@ async function exerciseReleasedDataWranglerCoexistence(
     assert.equal(
       initialProvider?.globalValue,
       expectation.provider,
-      "The provider selected before editor restart must persist globally."
+      "A restart phase must seed its expected persisted provider globally."
     );
     assert.equal(configuration.get("notebookPreviewProvider", "ask"), expectation.provider);
   }
@@ -1498,7 +1498,13 @@ async function exerciseReleasedDataWranglerCoexistence(
         await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
       }
       await firstExecution;
-      assertDataWranglerCoexistenceOutput(notebook.cellAt(0), expectation.provider);
+      await assertDataWranglerCoexistenceOutput(
+        workbench,
+        notebook,
+        notebookEditor,
+        ownershipSentinel,
+        expectation.provider
+      );
     }
 
     const firstExecutionKernel = dataWranglerCoexistenceFirstExecutionResult(notebook.cellAt(0));
@@ -1539,7 +1545,13 @@ async function exerciseReleasedDataWranglerCoexistence(
         "The coexistence restart phase must exercise a replacement kernel process."
       );
       assert.equal(canonicalAcceptancePath(String(replacementKernel.executable)), canonicalAcceptancePath(testPython));
-      assertDataWranglerCoexistenceOutput(notebook.cellAt(0), expectation.provider);
+      await assertDataWranglerCoexistenceOutput(
+        workbench,
+        notebook,
+        notebookEditor,
+        ownershipSentinel,
+        expectation.provider
+      );
       await assertNotebookPreviewConflictAbsent(
         workbench,
         1_500,
@@ -1593,13 +1605,13 @@ async function captureDataWranglerFirstOutput(
   const htmlOutputs = cell.outputs.flatMap((output) =>
     output.items.filter((item) => item.mime === "text/html").map((htmlItem) => ({ output, htmlItem }))
   );
-  assert.equal(htmlOutputs.length, 1, "The unresolved first dataframe must retain one ordinary HTML item.");
+  assert.equal(htmlOutputs.length, 1, "The first dataframe must retain one ordinary HTML item.");
   const { output, htmlItem } = htmlOutputs[0]!;
   assert.equal(output.metadata?.outputType, "execute_result");
   assert.equal(
     cell.outputs.some((candidate) => candidate.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2)),
     false,
-    "Open Wrangler MIME must not exist before the provider choice resolves."
+    "The ordinary first dataframe must not also contain Open Wrangler MIME."
   );
   const html = Buffer.from(htmlItem.data).toString("utf8");
   assert.ok(html.includes(ownershipSentinel), "The exact ordinary HTML item omitted its unique ownership sentinel.");
@@ -1648,7 +1660,7 @@ async function captureDataWranglerFirstOutput(
         };
       }),
       NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS,
-      "the exact unresolved inline owner state"
+      "the exact ordinary inline owner state"
     ),
     { connected: true, ordinary: true, upgraded: false }
   );
@@ -1796,27 +1808,27 @@ async function assertDataWranglerFirstOutputUnchanged(
   receipt: DataWranglerFirstOutputReceipt,
   provider: "openWrangler" | "dataWrangler"
 ): Promise<void> {
-  assertExactVisibleReleasedNotebookEditor(notebook, receipt.editor, "after resolving the provider choice");
-  assert.equal(notebook.cellAt(0), receipt.cell, "Provider selection must retain the exact first dataframe cell.");
+  assertExactVisibleReleasedNotebookEditor(notebook, receipt.editor, "after resolving the notebook preview provider");
+  assert.equal(notebook.cellAt(0), receipt.cell, "Provider rendering must retain the exact first dataframe cell.");
   assert.equal(
     receipt.cell.executionSummary?.executionOrder,
     receipt.executionOrder,
-    "Provider selection must not rerun the first dataframe cell."
+    "Provider rendering must not rerun the first dataframe cell."
   );
-  assert.equal(receipt.cell.outputs.length, receipt.outputCount, "Provider selection must not add an output.");
-  assert.ok(receipt.cell.outputs.includes(receipt.output), "Provider selection replaced the dataframe output object.");
-  assert.equal(receipt.output.items.length, receipt.itemCount, "Provider selection must not add an output item.");
-  assert.ok(receipt.output.items.includes(receipt.htmlItem), "Provider selection replaced the ordinary HTML item.");
+  assert.equal(receipt.cell.outputs.length, receipt.outputCount, "Provider rendering must not add an output.");
+  assert.ok(receipt.cell.outputs.includes(receipt.output), "Provider rendering replaced the dataframe output object.");
+  assert.equal(receipt.output.items.length, receipt.itemCount, "Provider rendering must not add an output item.");
+  assert.ok(receipt.output.items.includes(receipt.htmlItem), "Provider rendering replaced the ordinary HTML item.");
   assert.equal(
     receipt.cell.outputs.some((output) => output.items.some((item) => item.mime === OPEN_WRANGLER_MIME_V2)),
     false,
     "The inline upgrade must not mutate the notebook output into Open Wrangler MIME."
   );
-  assert.equal(notebook.isDirty, receipt.dirty, "Provider selection must not dirty the notebook.");
+  assert.equal(notebook.isDirty, receipt.dirty, "Provider rendering must not dirty the notebook.");
 
   const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
   do {
-    assertExactVisibleReleasedNotebookEditor(notebook, receipt.editor, "while verifying the provider choice");
+    assertExactVisibleReleasedNotebookEditor(notebook, receipt.editor, "while verifying provider rendering");
     let state:
       | {
           readonly owner: { readonly connected: boolean; readonly upgraded: boolean };
@@ -1860,13 +1872,24 @@ async function assertDataWranglerFirstOutputUnchanged(
   );
 }
 
-function assertDataWranglerCoexistenceOutput(
-  cell: vscode.NotebookCell,
+async function assertDataWranglerCoexistenceOutput(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  ownershipSentinel: string,
   provider: "openWrangler" | "dataWrangler"
-): void {
+): Promise<void> {
+  const cell = notebook.cellAt(0);
   const mimes = cell.outputs.flatMap((output) => output.items.map((item) => item.mime));
   if (provider === "openWrangler") {
-    assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2));
+    if (mimes.includes(OPEN_WRANGLER_MIME_V2)) return;
+    const receipt = await captureDataWranglerFirstOutput(workbench, notebook, notebookEditor, ownershipSentinel);
+    try {
+      await assertDataWranglerFirstOutputUnchanged(workbench, notebook, receipt, provider);
+    } finally {
+      await receipt.owner.dispose().catch(() => undefined);
+      await receipt.ordinaryTable.dispose().catch(() => undefined);
+    }
     return;
   }
   assert.equal(
