@@ -395,13 +395,10 @@ Polars sessions use lazy scans, and live notebook LazyFrames keep their existing
 column selection stay in that plan until a bounded result or explicit export is requested. Pandas data stays in
 Pandas, and DuckDB relations stay in DuckDB.
 
-The latest reviewed comparison found faster notebook previews and CSV column profiling in Open Wrangler; Parquet
-workbench and profiling times were close. One important difference is how Polars is handled: Open Wrangler keeps it in
-Polars, while Data Wrangler converts it to Pandas. The benchmark starts after loading, so it does not measure the
-conversion itself.
-
-See the [dated benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-for the test setup and reviewed results.
+See the [benchmark protocol](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md) and
+[latest dated review](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+for the method and historical evidence. This README will not state a current comparative result until a complete 2.0
+report is available.
 
 ## Roadmap
 
