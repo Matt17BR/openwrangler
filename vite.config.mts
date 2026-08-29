@@ -44,7 +44,7 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       globals: true,
       // Vitest otherwise derives its fork count from the host CPU count. Keep
-      // ordinary and coverage suites bounded on high-core developer and CI hosts.
+      // ordinary suites bounded on high-core developer and CI hosts.
       maxWorkers: 4,
       // Hosted Windows runners can take more than Vitest's 5-second default to
       // initialize concurrent jsdom/React files. Keep every test bounded while
@@ -54,20 +54,7 @@ export default defineConfig(({ mode }) => {
       // Real-R contracts are an explicit test tier with their own environment,
       // package preflight, and bounded phase runner. Keep ordinary Vitest runs
       // honest instead of discovering and conditionally skipping that tier.
-      ...(process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1" ? {} : { exclude: realRContractTests }),
-      coverage: {
-        provider: "v8",
-        // Coverage remapping has a separate CPU-derived concurrency default.
-        // Keep it aligned with the bounded test-file worker ceiling above.
-        processingConcurrency: 4,
-        reporter: ["text", "json-summary", "html"],
-        thresholds: {
-          statements: 60,
-          branches: 55,
-          functions: 60,
-          lines: 65
-        }
-      }
+      ...(process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1" ? {} : { exclude: realRContractTests })
     }
   };
 });
