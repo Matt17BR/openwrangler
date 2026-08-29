@@ -339,12 +339,26 @@ describe("DataGrid rectangular selection", () => {
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
     expect(setPointerCapture).not.toHaveBeenCalled();
   });
+
+  it("makes an active pointer drag inert when its logical view changes", () => {
+    const view = renderGrid({ viewContextId: "selection-view-a" });
+    const city = screen.getByRole("cell", { name: "Milan" });
+
+    fireEvent.pointerDown(city, pointerEvent(23));
+    view.rerender(gridElement({ viewContextId: "selection-view-b" }));
+    fireEvent.pointerMove(screen.getByRole("cell", { name: "" }), pointerEvent(23));
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(23);
+    expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
+    expect(screen.getByRole("cell", { name: "Milan" })).toHaveAttribute("data-clipboard-selected", "true");
+  });
 });
 
 interface GridRenderOptions {
   metadata?: SessionMetadata;
   page?: GridPage;
   onPage?(offset: number): void;
+  viewContextId?: string;
   viewState?: GridViewState;
 }
 
@@ -357,7 +371,7 @@ function gridElement(options: GridRenderOptions = {}) {
       pageSize={2}
       defaultColumnWidth={190}
       insightsOnOpen={false}
-      viewContextId="selection-view"
+      viewContextId={options.viewContextId ?? "selection-view"}
       viewState={options.viewState}
       onPage={options.onPage ?? (() => undefined)}
       onSortColumn={() => undefined}
