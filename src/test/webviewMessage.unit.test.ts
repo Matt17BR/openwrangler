@@ -4,6 +4,9 @@ import { decodeWebviewMessage, type WebviewMessageDecodeContext } from "../exten
 import { openedResponse } from "./sessionCoordinatorTestFixtures";
 
 const controlId = "A".repeat(32);
+const maximumViewIdCodeUnits = 256;
+const maximumCancellationIds = 1_024;
+const maximumCancellationIdCodeUnits = 64 * 1_024;
 
 function context(snapshot: SessionOpenedResponse | undefined = openedResponse("runtime-session")) {
   return {
@@ -83,7 +86,7 @@ describe("webview message decoding", () => {
     expect(decodeWebviewMessage(message, context())).toBeUndefined();
   });
 
-  it("copies only bounded non-empty view request identities", () => {
+  it("copies valid cancellation identities only after validation", () => {
     const viewRequestIds = ["summary-a", "stats-a"];
     const decoded = decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds }, context());
     expect(decoded).toEqual({ kind: "cancelViewRequests", viewRequestIds });
@@ -94,6 +97,74 @@ describe("webview message decoding", () => {
       decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: ["summary-a", ""] }, context())
     ).toBeUndefined();
     expect(decodeWebviewMessage({ kind: "prioritizeViewRequest", viewRequestId: "" }, context())).toBeUndefined();
+  });
+
+  it("bounds every renderer view request and context identity", () => {
+    const exactId = "v".repeat(maximumViewIdCodeUnits);
+    const oversizedId = `${exactId}v`;
+    const request = {
+      kind: "getDatasetStats",
+      viewRequestId: "stats-a",
+      filterModel: { filters: [], sort: [] }
+    } as const;
+
+    for (const message of [
+      { kind: "setViewContext", viewContextId: exactId },
+      { kind: "prioritizeViewRequest", viewRequestId: exactId },
+      { kind: "cancelViewRequests", viewRequestIds: [exactId] },
+      { kind: "runtimeRequest", viewContextId: exactId, request },
+      { kind: "runtimeRequest", viewContextId: "view-a", request: { ...request, viewRequestId: exactId } }
+    ]) {
+      expect(decodeWebviewMessage(message, context())).toBeDefined();
+    }
+
+    for (const message of [
+      { kind: "setViewContext", viewContextId: oversizedId },
+      { kind: "prioritizeViewRequest", viewRequestId: oversizedId },
+      { kind: "cancelViewRequests", viewRequestIds: [oversizedId] },
+      { kind: "runtimeRequest", viewContextId: oversizedId, request },
+      { kind: "runtimeRequest", viewContextId: "view-a", request: { ...request, viewRequestId: oversizedId } }
+    ]) {
+      expect(decodeWebviewMessage(message, context())).toBeUndefined();
+    }
+  });
+
+  it("bounds cancellation batch count before decoding its entries", () => {
+    const exactIds = Array.from({ length: maximumCancellationIds }, (_, index) => `request-${index}`);
+    expect(decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: exactIds }, context())).toBeDefined();
+
+    const oversizedIds = [...exactIds, "request-one-over"];
+    Object.defineProperty(oversizedIds, 0, {
+      configurable: true,
+      get: () => {
+        throw new Error("An oversized cancellation batch must not be traversed.");
+      }
+    });
+    expect(
+      decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: oversizedIds }, context())
+    ).toBeUndefined();
+  });
+
+  it("bounds aggregate cancellation identity text", () => {
+    const exactIds = Array.from({ length: 512 }, (_, index) => {
+      const prefix = `request-${index.toString(36)}-`;
+      return `${prefix}${"v".repeat(128 - prefix.length)}`;
+    });
+    expect(exactIds.reduce((total, viewRequestId) => total + viewRequestId.length, 0)).toBe(
+      maximumCancellationIdCodeUnits
+    );
+    expect(decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: exactIds }, context())).toBeDefined();
+
+    const oversizedIds = exactIds.map((viewRequestId, index) => (index === 0 ? `${viewRequestId}v` : viewRequestId));
+    expect(
+      decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: oversizedIds }, context())
+    ).toBeUndefined();
+  });
+
+  it("rejects duplicate cancellation identities", () => {
+    expect(
+      decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds: ["summary-a", "summary-a"] }, context())
+    ).toBeUndefined();
   });
 
   it("accepts only an exact bounded host-owned plan rewrite", () => {
