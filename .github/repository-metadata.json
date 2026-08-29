@@ -1,5 +1,5 @@
 {
-  "description": "Open source dataframe workbench for VS Code and editors based on it: Pandas/Polars editing, experimental DuckDB file editing and relation viewing, PySpark 4.2.x notebook viewing, and preview native R.",
+  "description": "Open Wrangler is an open-source visual dataframe editor for VS Code and editors based on it. Explore files or live notebook data, make changes visually, and keep generated Python or R code.",
   "homepage": "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler",
   "topics": [
     "csv",
