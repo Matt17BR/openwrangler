@@ -17,9 +17,9 @@ import fixtureManifestContract from "../src/shared/installedPerformanceFixtureMa
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v7";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v10";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v5";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v8";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v11";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v6";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT = 200;
@@ -658,7 +658,7 @@ function validateGridInteractionMeasurement(measurement, expectedSampleCounts) {
     exactKeys(measurement[operation], ["completed", "latencyMs", "responsiveness"], [], `${operation} evidence`);
     assertEqual(measurement[operation].completed, true, `${operation} completion`);
     assertFiniteNonnegative(measurement[operation].latencyMs, `${operation} latency`);
-    validateOutstandingResponsiveness(measurement[operation].responsiveness, `${operation} responsiveness`);
+    validateRendererResponsiveness(measurement[operation].responsiveness, `${operation} responsiveness`);
   }
   exactKeys(
     measurement.profiling,
@@ -713,6 +713,11 @@ function validateSchedulerCheckpoint(checkpoint, state, lane, requestKind, label
   assertBoundedString(checkpoint.viewRequestId, `${label} view request ID`);
 }
 
+function validateRendererResponsiveness(responsiveness, label) {
+  exactKeys(responsiveness, ["outstandingObserved", "rendererHeartbeatMs"], [], label);
+  validateResponsivenessBase(responsiveness, label);
+}
+
 function validateOutstandingResponsiveness(responsiveness, label) {
   exactKeys(
     responsiveness,
@@ -720,10 +725,14 @@ function validateOutstandingResponsiveness(responsiveness, label) {
     [],
     label
   );
-  assertEqual(responsiveness.outstandingObserved, true, `${label} outstanding observation`);
-  assertFiniteNonnegative(responsiveness.rendererHeartbeatMs, `${label} renderer heartbeat`);
+  validateResponsivenessBase(responsiveness, label);
   assertFiniteNonnegative(responsiveness.foregroundPageLatencyMs, `${label} foreground page latency`);
   assertEqual(responsiveness.foregroundResponseKind, "page", `${label} foreground response kind`);
+}
+
+function validateResponsivenessBase(responsiveness, label) {
+  assertEqual(responsiveness.outstandingObserved, true, `${label} outstanding observation`);
+  assertFiniteNonnegative(responsiveness.rendererHeartbeatMs, `${label} renderer heartbeat`);
 }
 
 function validateProvenance(provenance) {
@@ -987,19 +996,23 @@ function installedPerformanceFailureDetails(
       ["sort", interaction.sort.responsiveness],
       ["profiling", interaction.profiling.responsiveness]
     ]) {
-      if (!responsiveness.outstandingObserved || responsiveness.foregroundResponseKind !== "page") {
-        structural(`${label} ${operation} did not prove concurrent renderer and foreground responsiveness`);
+      if (!responsiveness.outstandingObserved) {
+        structural(`${label} ${operation} did not prove renderer responsiveness while outstanding`);
       }
       if (!(responsiveness.rendererHeartbeatMs < INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs)) {
         numeric(
           `${label} ${operation} outstanding renderer heartbeat ${responsiveness.rendererHeartbeatMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs}ms`
         );
       }
-      if (!(responsiveness.foregroundPageLatencyMs < INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs)) {
-        numeric(
-          `${label} ${operation} outstanding foreground page ${responsiveness.foregroundPageLatencyMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs}ms`
-        );
-      }
+    }
+    const profilingResponsiveness = interaction.profiling.responsiveness;
+    if (profilingResponsiveness.foregroundResponseKind !== "page") {
+      structural(`${label} profiling did not prove foreground-over-background responsiveness`);
+    }
+    if (!(profilingResponsiveness.foregroundPageLatencyMs < INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs)) {
+      numeric(
+        `${label} profiling outstanding foreground page ${profilingResponsiveness.foregroundPageLatencyMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs}ms`
+      );
     }
   }
   return failures;

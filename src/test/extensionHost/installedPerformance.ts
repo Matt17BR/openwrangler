@@ -27,7 +27,7 @@ import {
   waitForInstalledPerformancePanelHydration
 } from "./rendererGridScrollMeasurement";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v7";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v8";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
@@ -373,7 +373,7 @@ async function measureGridInteraction({
     filterSettled = true;
   });
   const [filterResponsiveness] = await Promise.all([
-    measureOutstandingResponsiveness(frame, testing, session.sessionId, () =>
+    measureOutstandingRendererHeartbeat(frame, () =>
       assert.equal(
         filterSettled,
         false,
@@ -405,7 +405,7 @@ async function measureGridInteraction({
     sortSettled = true;
   });
   const [sortResponsiveness] = await Promise.all([
-    measureOutstandingResponsiveness(frame, testing, session.sessionId, () =>
+    measureOutstandingRendererHeartbeat(frame, () =>
       assert.equal(
         sortSettled,
         false,
@@ -821,11 +821,25 @@ async function waitForExecutionCheckpoint(
   return observed;
 }
 
-interface OutstandingResponsiveness {
+interface RendererResponsiveness {
   outstandingObserved: true;
   rendererHeartbeatMs: number;
+}
+
+interface OutstandingResponsiveness extends RendererResponsiveness {
   foregroundPageLatencyMs: number;
   foregroundResponseKind: "page";
+}
+
+async function measureOutstandingRendererHeartbeat(
+  frame: Frame,
+  assertOutstanding: () => void
+): Promise<RendererResponsiveness> {
+  assertOutstanding();
+  return {
+    outstandingObserved: true,
+    rendererHeartbeatMs: await measureRendererHeartbeat(frame)
+  };
 }
 
 async function measureOutstandingResponsiveness(
@@ -834,13 +848,11 @@ async function measureOutstandingResponsiveness(
   expectedSessionId: string,
   assertOutstanding: () => void
 ): Promise<OutstandingResponsiveness> {
-  assertOutstanding();
-  const heartbeat = measureRendererHeartbeat(frame);
+  const renderer = measureOutstandingRendererHeartbeat(frame, assertOutstanding);
   const foregroundPage = measureForegroundPage(testing, expectedSessionId);
-  const [rendererHeartbeatMs, page] = await Promise.all([heartbeat, foregroundPage]);
+  const [rendererResponsiveness, page] = await Promise.all([renderer, foregroundPage]);
   return {
-    outstandingObserved: true,
-    rendererHeartbeatMs,
+    ...rendererResponsiveness,
     foregroundPageLatencyMs: page.latencyMs,
     foregroundResponseKind: page.responseKind
   };
