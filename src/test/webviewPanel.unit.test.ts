@@ -2452,6 +2452,25 @@ describe("OpenWranglerPanel retained view state", () => {
     });
   });
 
+  it("caps the maximum configured grid block before exposing or requesting it", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+      get: (key: string, fallback?: unknown): unknown =>
+        key === "fetchBlockSize" ? 2_000 : key === "fetchColumnBlockSize" ? 256 : fallback
+    } as vscode.WorkspaceConfiguration);
+    const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => openedResponse);
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+
+    expect(harness.html).toContain('data-fetch-block-size="390" data-fetch-column-block-size="256"');
+    expect(request).not.toHaveBeenCalled();
+    await harness.open();
+    expect(request.mock.calls[0]?.[0]).toMatchObject({
+      kind: "openSession",
+      pageSize: 390,
+      columnOffset: 0,
+      columnLimit: 256
+    });
+  });
+
   it("forwards validated profile priority and rejects unsupported values", async () => {
     const request = vi.fn(
       async (candidate: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
@@ -4991,7 +5010,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(setActiveSession).toHaveBeenLastCalledWith("session"));
   });
 
-  it("forces a Variables-view PySpark session into viewing mode", async () => {
+  it("forces a Variables-view PySpark session into viewing mode with bounded lookahead", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+      get: (key: string, fallback?: unknown): unknown =>
+        key === "fetchBlockSize" ? 2_000 : key === "fetchColumnBlockSize" ? 256 : fallback
+    } as vscode.WorkspaceConfiguration);
     const source: SessionSource = {
       kind: "notebookVariable",
       label: "spark_frame",
@@ -5021,26 +5044,33 @@ describe("OpenWranglerPanel retained view state", () => {
       throw new Error(`Unexpected request ${candidate.kind}`);
     });
 
-    createPanelHarness(
+    const harness = createPanelHarness(
       { request },
       { createViaFactory: true, delegateOpen: true, source, backend: "pyspark", backendPreference: "pyspark" }
     );
 
-    await vi.waitFor(() =>
-      expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
+    expect(harness.html).toContain('data-fetch-block-size="388" data-fetch-column-block-size="256"');
+    await vi.waitFor(() => {
+      const openRequest = request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0];
+      expect(openRequest).toMatchObject({
         backend: "pyspark",
-        mode: "viewing"
-      })
-    );
+        mode: "viewing",
+        pageSize: 388,
+        columnOffset: 0,
+        columnLimit: 256
+      });
+      if (!openRequest || openRequest.kind !== "openSession") throw new Error("Expected an open-session request.");
+      expect((openRequest.pageSize + 2) * openRequest.columnLimit).toBeLessThanOrEqual(100_000);
+    });
   });
 
-  it("uses the default viewing mode for R notebooks and caps the initial page to 100,000 cells", async () => {
+  it("uses the default viewing mode for R notebooks and keeps the native 1,000-row cap", async () => {
     vi.spyOn(workspace, "getConfiguration").mockImplementation(
       () =>
         ({
           get: (key: string, fallback?: unknown): unknown => {
             if (key === "fetchBlockSize") return 2_000;
-            if (key === "fetchColumnBlockSize") return 256;
+            if (key === "fetchColumnBlockSize") return 1;
             return fallback;
           }
         }) as vscode.WorkspaceConfiguration
@@ -5075,22 +5105,21 @@ describe("OpenWranglerPanel retained view state", () => {
       throw new Error(`Unexpected request ${candidate.kind}`);
     });
 
-    createPanelHarness(
+    const harness = createPanelHarness(
       { request },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
 
+    expect(harness.html).toContain('data-fetch-block-size="1000" data-fetch-column-block-size="1"');
     await vi.waitFor(() => {
       const openRequest = request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0];
       expect(openRequest).toMatchObject({
         backend: "r",
         mode: "viewing",
-        pageSize: 390,
+        pageSize: 1_000,
         columnOffset: 0,
-        columnLimit: 256
+        columnLimit: 1
       });
-      if (!openRequest || openRequest.kind !== "openSession") throw new Error("Expected an open-session request.");
-      expect(openRequest.pageSize * openRequest.columnLimit).toBeLessThanOrEqual(100_000);
     });
   });
 

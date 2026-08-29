@@ -611,10 +611,18 @@ describe("notebook launch contributions", () => {
 });
 
 describe("grid block configuration", () => {
-  it("bounds the default horizontal fetch block", () => {
+  it("bounds both fetch dimensions to integers", () => {
+    expect(manifest.contributes?.configuration?.properties?.["openWrangler.fetchBlockSize"]).toEqual(
+      expect.objectContaining({
+        type: "integer",
+        default: 200,
+        minimum: 25,
+        maximum: 2_000
+      })
+    );
     expect(manifest.contributes?.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]).toEqual(
       expect.objectContaining({
-        type: "number",
+        type: "integer",
         default: 16,
         minimum: 1,
         maximum: 256
