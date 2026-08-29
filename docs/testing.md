@@ -70,7 +70,7 @@ The pull-request workflow has five direct owners:
 - Packaged VS Code smoke: one production VSIX opened in stable VS Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
-There is no path classifier or aggregate workflow test. The inline `validate` job requires all five owners to pass.
+There is no path classifier or aggregate workflow test. Branch protection directly requires all five owners to pass.
 See [CI](ci.md) for the job names.
 
 ## Failure-artifact allowlist

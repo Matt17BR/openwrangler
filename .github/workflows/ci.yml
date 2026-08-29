@@ -215,23 +215,3 @@ jobs:
           npx --no-install vitest run
           src/test/dependencyInstaller.unit.test.ts
           src/test/processShutdown.unit.test.ts
-
-  validate:
-    name: validate
-    needs:
-      - javascript
-      - python
-      - r
-      - package-editor
-      - windows
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every CI owner
-        run: |
-          test "${{ needs.javascript.result }}" = success
-          test "${{ needs.python.result }}" = success
-          test "${{ needs.r.result }}" = success
-          test "${{ needs.package-editor.result }}" = success
-          test "${{ needs.windows.result }}" = success
