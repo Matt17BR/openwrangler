@@ -173,13 +173,14 @@ jobs:
       - name: Compile the installed-editor harness
         run: npm run build:test-extension
       - id: packaged_editor
-        name: Open the package in stable VS Code
-        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        name: Open the package in minimum and stable VS Code
+        run: |
+          VSCODE_TEST_VERSION=1.106.0 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+          VSCODE_TEST_VERSION=stable node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
           OPEN_WRANGLER_TEST_SELECTOR: daily-core
-          VSCODE_TEST_VERSION: stable
       - name: Upload packaged-editor failure diagnostics
         if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

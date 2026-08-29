@@ -20,6 +20,7 @@ import {
   resolveDownloadedEditorCliPath,
   resolveDataWranglerExtensionAcceptanceInstallTarget,
   resolveJupyterExtensionAcceptanceInstallTarget,
+  resolvePackagedVscodeAcquisitionPlan,
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
   runBoundedEditorCliCommand,
@@ -334,14 +335,12 @@ try {
           process.env.OPEN_WRANGLER_TEST_PYTHON = testPython;
           process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
 
+          const vscodeRequested = !requested?.length || requested.includes("vscode");
+          const vscodeAcquisitionPlan = vscodeRequested
+            ? resolvePackagedVscodeAcquisitionPlan(process.env, existsSync)
+            : undefined;
           let candidates = [
-            {
-              name: "VS Code",
-              key: "vscode",
-              executable: process.env.OPEN_WRANGLER_VSCODE_EXECUTABLE ?? "/usr/share/code/code",
-              cli: process.env.OPEN_WRANGLER_VSCODE_CLI ?? "/usr/share/code/bin/code",
-              sharedDataDir: true
-            },
+            ...(vscodeAcquisitionPlan?.kind === "existing" ? [vscodeAcquisitionPlan.editor] : []),
             {
               name: "Cursor",
               key: "cursor",
@@ -351,16 +350,12 @@ try {
             }
           ].filter(
             (editor) =>
-              existsSync(editor.executable) &&
-              existsSync(editor.cli) &&
+              (editor.key === "vscode" || (existsSync(editor.executable) && existsSync(editor.cli))) &&
               (!requested?.length || requested.includes(editor.key))
           );
-          if (
-            !candidates.some((editor) => editor.key === "vscode") &&
-            (!requested?.length || requested.includes("vscode"))
-          ) {
+          if (vscodeAcquisitionPlan?.kind === "download") {
             writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:download-vscode");
-            const executable = await downloadEditorWithRetry(process.env.VSCODE_TEST_VERSION ?? "stable");
+            const executable = await downloadEditorWithRetry(vscodeAcquisitionPlan.version);
             const downloadedCli = resolveDownloadedEditorCliPath(executable);
             if (!existsSync(downloadedCli)) {
               throw new Error("The downloaded VS Code CLI was not found.");

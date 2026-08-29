@@ -9,6 +9,7 @@ import {
   createEditorAcceptanceArtifactParent,
   sealEditorAcceptanceEvidence
 } from "./editor-acceptance-artifact.mjs";
+import { downloadEditorWithRetry, resolvePackagedVscodeAcquisitionPlan } from "./editor-acceptance.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 
@@ -46,6 +47,68 @@ test("sealed failure evidence is re-redacted and identity-pinned through handoff
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("packaged VS Code acquisition honors explicit versions and otherwise reuses or downloads stable", async () => {
+  const configuredExecutable = "/opt/openwrangler/code";
+  const configuredCli = "/opt/openwrangler/code-cli";
+  const defaultExecutable = "/usr/share/code/code";
+  const defaultCli = "/usr/share/code/bin/code";
+  const existingPaths = new Set([configuredExecutable, configuredCli, defaultExecutable, defaultCli]);
+  const pathExists = (candidate) => existingPaths.has(candidate);
+
+  for (const version of ["1.106.0", "stable"]) {
+    assert.deepEqual(
+      resolvePackagedVscodeAcquisitionPlan(
+        {
+          VSCODE_TEST_VERSION: version,
+          OPEN_WRANGLER_VSCODE_EXECUTABLE: configuredExecutable,
+          OPEN_WRANGLER_VSCODE_CLI: configuredCli
+        },
+        pathExists
+      ),
+      { kind: "download", version }
+    );
+  }
+
+  assert.deepEqual(
+    resolvePackagedVscodeAcquisitionPlan(
+      {
+        OPEN_WRANGLER_VSCODE_EXECUTABLE: configuredExecutable,
+        OPEN_WRANGLER_VSCODE_CLI: configuredCli
+      },
+      pathExists
+    ),
+    {
+      kind: "existing",
+      editor: {
+        name: "VS Code",
+        key: "vscode",
+        executable: configuredExecutable,
+        cli: configuredCli,
+        sharedDataDir: true
+      }
+    }
+  );
+  assert.deepEqual(resolvePackagedVscodeAcquisitionPlan({}, pathExists), {
+    kind: "existing",
+    editor: {
+      name: "VS Code",
+      key: "vscode",
+      executable: defaultExecutable,
+      cli: defaultCli,
+      sharedDataDir: true
+    }
+  });
+  assert.deepEqual(
+    resolvePackagedVscodeAcquisitionPlan({}, () => false),
+    { kind: "download", version: "stable" }
+  );
+
+  assert.throws(() => resolvePackagedVscodeAcquisitionPlan(null, pathExists), /environment object/u);
+  assert.throws(() => resolvePackagedVscodeAcquisitionPlan({}, undefined), /path-existence function/u);
+  const malformedPlan = resolvePackagedVscodeAcquisitionPlan({ VSCODE_TEST_VERSION: "../moving" }, pathExists);
+  await assert.rejects(() => downloadEditorWithRetry(malformedPlan.version), /download version/u);
 });
 
 test("packaged-editor workflows upload only exact revalidated emitted artifact paths", async () => {
