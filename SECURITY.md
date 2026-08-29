@@ -2,9 +2,8 @@
 
 ## Supported versions
 
-Open Wrangler 1.2.x and older are unsupported. Until 2.0 is published, only the latest public 1.99 preview receives
-security fixes. After 2.0, the latest stable release and the latest public preview, when it is newer than stable, are
-supported. Fixes are not backported to older releases.
+The latest stable Open Wrangler release is supported. The latest public preview is also supported when it is newer
+than stable. Security fixes are not backported to older releases.
 
 ## Reporting a vulnerability
 
