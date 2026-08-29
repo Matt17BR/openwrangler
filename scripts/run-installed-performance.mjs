@@ -58,7 +58,6 @@ import {
 import { readInstalledPlatformProvenance, readInstalledStorageProvenance } from "./installed-performance-system.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
-import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
 import { acquirePinnedVSCodeClient, resolveRemoteInspectionPython } from "./remote-workspace-acquisition.mjs";
 import { verifyExtensionTestRuntimeAssets } from "./copy-extension-test-runtime-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
@@ -1251,12 +1250,11 @@ export async function collectInstalledPerformanceEditorRuns({
   return runs;
 }
 
-export async function acquirePinnedInstalledPerformanceEditors(
+export async function acquirePinnedInstalledPerformanceVSCode(
   privateRoot,
   environment,
   {
     acquireVscode = (root, options) => acquirePinnedVSCodeClient(root, options),
-    acquireCursor = (root) => acquirePinnedCursor(root, { platform: "linux", architecture: "x64" }),
     inspectionPython = environment?.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON
   } = {}
 ) {
@@ -1265,43 +1263,18 @@ export async function acquirePinnedInstalledPerformanceEditors(
     !isAbsolute(privateRoot) ||
     environment === null ||
     typeof environment !== "object" ||
-    typeof acquireVscode !== "function" ||
-    typeof acquireCursor !== "function"
+    typeof acquireVscode !== "function"
   ) {
     throw new TypeError("Pinned installed-performance editor acquisition arguments are malformed.");
   }
-  if (typeof environment.DBUS_SESSION_BUS_ADDRESS !== "string" || environment.DBUS_SESSION_BUS_ADDRESS.length === 0) {
-    throw new Error(
-      "Pinned Cursor performance requires one isolated D-Bus session; run the canonical benchmark through dbus-run-session."
-    );
-  }
   const exactInspectionPython = resolveRemoteInspectionPython(inspectionPython);
-  const acquisitions = await Promise.allSettled([
-    acquireVscode(privateRoot, { inspectionPython: exactInspectionPython }),
-    acquireCursor(privateRoot)
-  ]);
-  const failures = acquisitions.filter((result) => result.status === "rejected").map((result) => result.reason);
-  if (failures.length > 0) {
-    throw failures.length === 1
-      ? failures[0]
-      : new AggregateError(failures, "Pinned VS Code and Cursor acquisition failed.");
-  }
-  const [vscode, cursor] = acquisitions.map((result) => result.value);
-  if (
-    vscode?.editor?.key !== "vscode" ||
-    cursor?.editor?.key !== "cursor" ||
-    !isAbsolute(vscode.editor.executable) ||
-    !isAbsolute(vscode.editor.cli) ||
-    !isAbsolute(cursor.editor.executable) ||
-    !isAbsolute(cursor.editor.cli)
-  ) {
-    throw new Error("Pinned editor acquisition returned a malformed VS Code or Cursor installation.");
+  const vscode = await acquireVscode(privateRoot, { inspectionPython: exactInspectionPython });
+  if (vscode?.editor?.key !== "vscode" || !isAbsolute(vscode.editor.executable) || !isAbsolute(vscode.editor.cli)) {
+    throw new Error("Pinned editor acquisition returned a malformed VS Code installation.");
   }
   environment.OPEN_WRANGLER_VSCODE_EXECUTABLE = vscode.editor.executable;
   environment.OPEN_WRANGLER_VSCODE_CLI = vscode.editor.cli;
-  environment.OPEN_WRANGLER_CURSOR_EXECUTABLE = cursor.editor.executable;
-  environment.OPEN_WRANGLER_CURSOR_CLI = cursor.editor.cli;
-  return Object.freeze([vscode, cursor]);
+  return vscode;
 }
 
 export async function runInstalledPerformance(options, environment = process.env) {
@@ -1310,7 +1283,7 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
   }
   if (options?.mode === "consume" && options.pinnedEditors !== true) {
-    throw new Error("Canonical installed performance requires the exact pinned VS Code and Cursor artifacts.");
+    throw new Error("Canonical installed performance requires the exact pinned VS Code artifact.");
   }
   if (options?.mode !== "consume" && options?.pinnedEditors === true) {
     throw new Error("Pinned editor acquisition is reserved for canonical candidate consumption.");
@@ -1386,7 +1359,7 @@ export async function runInstalledPerformance(options, environment = process.env
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
 
     if (options.pinnedEditors) {
-      await acquirePinnedInstalledPerformanceEditors(privateRoot, environment, { inspectionPython });
+      await acquirePinnedInstalledPerformanceVSCode(privateRoot, environment, { inspectionPython });
     }
 
     const editors = await resolveInstalledPerformanceEditors(options.editors, environment, {

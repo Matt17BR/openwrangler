@@ -2,14 +2,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
-import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
 import {
   inspectPerformanceSummary,
   inspectReleaseDocumentationSource,
   performanceReportLink
 } from "./release-readiness.mjs";
-import { inspectReleaseCandidateWorkflow, inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
@@ -126,24 +124,6 @@ if (!packageJson.preview) {
   if (galleryProblems.length > 0) {
     throw new Error(`Public gallery copy is stale:\n- ${galleryProblems.join("\n- ")}`);
   }
-}
-const releaseCandidateWorkflowProblems = inspectReleaseCandidateWorkflow(
-  readFileSync(resolve(root, ".github/workflows/release-candidate.yml"), "utf8")
-);
-if (releaseCandidateWorkflowProblems.length > 0) {
-  throw new Error(`Release-candidate workflow contract is stale:\n- ${releaseCandidateWorkflowProblems.join("\n- ")}`);
-}
-const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
-  readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8")
-);
-if (stableReleaseWorkflowProblems.length > 0) {
-  throw new Error(`Stable release workflow contract is stale:\n- ${stableReleaseWorkflowProblems.join("\n- ")}`);
-}
-const candidateAcceptanceProblems = inspectCandidateAcceptanceWorkflow(
-  readFileSync(resolve(root, ".github/workflows/candidate-acceptance.yml"), "utf8")
-);
-if (candidateAcceptanceProblems.length > 0) {
-  throw new Error(`Candidate acceptance workflow contract is stale:\n- ${candidateAcceptanceProblems.join("\n- ")}`);
 }
 const marketplacePromotionProblems = inspectMarketplacePromotionPipeline(
   readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8")

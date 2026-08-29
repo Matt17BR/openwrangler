@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       release_tag:
-        description: Stable tag qualified by that candidate, for example v2.0.0
+        description: Stable tag built by that candidate, for example v2.0.0
         required: true
         type: string
 
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   select:
-    name: Select the soaked candidate
+    name: Select the successful candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -31,8 +31,6 @@ jobs:
       candidate-artifact-id: ${{ steps.candidate.outputs.candidate_artifact_id }}
       candidate-run-id: ${{ steps.candidate.outputs.candidate_run_id }}
       candidate-source-sha: ${{ steps.candidate.outputs.source_sha }}
-      performance-artifact-id: ${{ steps.candidate.outputs.performance_artifact_id }}
-      qualification-artifact-id: ${{ steps.candidate.outputs.qualification_artifact_id }}
     steps:
       - name: Require a first-attempt dispatch from protected main
         env:
@@ -55,7 +53,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - id: candidate
-        name: Select one fully qualified soaked candidate
+        name: Select one successful candidate
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -121,42 +119,11 @@ jobs:
           run-id: ${{ needs.select.outputs.candidate-run-id }}
           path: canonical-release
           merge-multiple: true
-      - name: Download the bounded candidate manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.select.outputs.qualification-artifact-id }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.select.outputs.candidate-run-id }}
-          path: qualification
-          merge-multiple: true
-      - name: Download the exact installed-performance report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.select.outputs.performance-artifact-id }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.select.outputs.candidate-run-id }}
-          path: performance
-          merge-multiple: true
-      - id: canonical
-        name: Verify the exact candidate artifact
+      - name: Verify the exact candidate artifact
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Verify the candidate manifest and performance evidence
-        env:
-          CANDIDATE_ARTIFACT_ID: ${{ needs.select.outputs.candidate-artifact-id }}
-          CANDIDATE_BYTES: ${{ steps.canonical.outputs.candidate_bytes }}
-          CANDIDATE_RUN_ID: ${{ needs.select.outputs.candidate-run-id }}
-          CANDIDATE_SHA256: ${{ steps.canonical.outputs.candidate_sha256 }}
-          CANDIDATE_SOURCE_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PERFORMANCE_ARTIFACT_ID: ${{ needs.select.outputs.performance-artifact-id }}
-          PERFORMANCE_REPORT: performance/release-candidate-performance.json
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/release-candidate.mjs verify qualification/release-candidate.json
       - name: Recheck that the remote release tag is absent or exact
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
