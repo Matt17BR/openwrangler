@@ -130,7 +130,7 @@ Development Host, and produce a development VSIX.
    ```
 
    `package:dev` performs a clean build and writes `openwrangler-dev.vsix`. It does not run the source test suite or
-   the release-candidate matrix. Install it with one of these commands when you need to test the package in your
+   installed release qualification. Install it with one of these commands when you need to test the package in your
    normal editor:
 
    ```bash

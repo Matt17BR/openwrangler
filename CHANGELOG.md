@@ -17,11 +17,19 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Closed the current notebook fidelity work: the first supported result upgrades automatically after formatter setup
+  ([#659](https://github.com/Matt17BR/openwrangler/issues/659)), Pandas index presentation and export fidelity are
+  complete ([#844](https://github.com/Matt17BR/openwrangler/issues/844)), and verified Native R sessions recover after
+  an R-kernel restart ([#776](https://github.com/Matt17BR/openwrangler/issues/776)).
+- Stable candidate qualification now uses the already-checked protected-main source to package once, run pinned VS
+  Code installed-performance and Cursor platform-smoke against the same bytes, and make only that canonical artifact
+  eligible for promotion. Native R remains a channel-neutral, nonblocking Preview; the Data Wrangler comparison
+  remains optional historical evidence.
 - Native-R notebook sessions now prepare one freshly verified private delegate after an exact correlated kernel-change
   response, replay confirmed state, and swap runtimes without changing the public session. The failed read or mutation
   is returned without retry, cancellation and stale ownership fail closed, concurrent failures coalesce, and ordinary
-  R-document and interactive-R recovery keep their existing delegate path. Focused source checks cover this change;
-  the strengthened installed scalar restart journey has not yet been run.
+  R-document and interactive-R recovery keep their existing delegate path. Focused source checks and the installed
+  scalar restart journey cover the recovered path.
 - Registry promotion now verifies only the canonical VSIX, checksum, provenance, channel, and downloaded public VSIX
   identity. README and gallery image hosting no longer blocks Open VSX or Marketplace publication.
 - Manual `v1.99.7` preview publication now qualifies one canonical protected-main artifact in stable VS Code before an

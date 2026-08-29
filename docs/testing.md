@@ -43,19 +43,21 @@ npm run check:r-dependency-lock
 npm run license:check
 ```
 
-`npm run check` runs those static checks sequentially. `npm test` runs the three source suites sequentially. The
-release-candidate workflow uses `npm run check:pr`, which is the same two commands in sequence.
+`npm run check` runs those static checks sequentially. `npm test` runs the three source suites sequentially.
+`npm run check:pr` runs the two commands in sequence for local and protected-main source qualification. The
+release-candidate workflow consumes that already-checked protected-main source and does not repeat the source suites.
 
-Native R changes use the source contract or one of its two direct shards:
+Native R changes use the source contract or one of its three pull-request selections:
 
 ```bash
 npm run test:r-contract
 npm run test:r-contract:frame-and-interactive-transport
 npm run test:r-contract:catalog-and-process-transport
+node scripts/run-r-contract-tests.mjs --shard kernel-agent
 ```
 
-The shards keep real-R process ownership serial while separating native frame/interactive transport failures from
-catalog/process transport failures.
+The selections keep real-R process ownership serial while separating native frame/interactive transport,
+catalog/process transport, and native kernel-agent failures.
 
 ## Pull-request CI
 
@@ -64,7 +66,7 @@ The pull-request workflow has five direct owners:
 - Source contracts: formatting, lint, types, generated protocol/reference output, documentation, dependency locks,
   licenses, the retained script contracts, and Vitest.
 - Python runtime contracts: Ruff, Pyright, and Pytest.
-- Native R frame and transport contracts: the two R 4.5 shards above.
+- Native R frame, kernel, and transport contracts: the three R 4.5 selections above.
 - Packaged VS Code smoke: one production VSIX opened in stable VS Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
@@ -88,7 +90,7 @@ uploads only the exact sealed path emitted through `GITHUB_OUTPUT`; it never upl
 
 ## Exact-artifact installed smoke
 
-This is the only ordinary installed-editor smoke. Build and verify one VSIX, then give that exact file to the stable
+For a local or pull-request installed-editor smoke, build and verify one VSIX, then give that exact file to the stable
 VS Code runner:
 
 ```bash
@@ -108,6 +110,19 @@ node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
 
 The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
 failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
+
+## Release-candidate checks
+
+The release-candidate workflow packages the protected-main source once and retains one canonical VSIX, checksum, and
+provenance triple. It does not repeat protected-main source checks. The candidate job:
+
+1. Audits the published Node and Python dependencies.
+2. Runs pinned VS Code installed-performance against the canonical triple.
+3. Reverifies the triple and runs pinned Cursor `platform-smoke` against the same VSIX.
+4. Reverifies and uploads only the canonical triple for stable promotion.
+
+This is the complete retained candidate flow. Stable publication consumes those exact bytes and does not rebuild
+them.
 
 ## Change-focused editor checks
 

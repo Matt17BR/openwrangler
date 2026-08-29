@@ -7,7 +7,8 @@ Every pull request runs the same five owners:
 - **Source contracts (Node 24)** runs formatting, lint, TypeScript types, generated protocol/reference checks,
   documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
-- **Native R frame and transport contracts** installs the R 4.5 lock and runs the two direct R shards.
+- **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
+  plus the native kernel-agent shard.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes in stable VS Code with the
   `platform-smoke` / `daily-core` selector.
 - **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
@@ -41,8 +42,9 @@ The consolidated preview workflow owns both the automatic daily public train and
   triggers Azure Marketplace.
 - A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
   publication remains explicit through its `publish` input.
-- Release candidate validates protected `main`, packages once, and passes the same canonical artifact to its existing
-  installed and external consumers.
+- Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
+  suites. It validates stable metadata, packages once, audits published dependencies, runs pinned VS Code
+  installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. It does not rebuild the
   extension.
 

@@ -6,7 +6,7 @@ sizes in the images describe the example, not a row or column limit.
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
 [Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
-[R preview](#r-notebooks-and-documents-199-preview) ·
+[R preview](#r-notebooks-and-documents-preview) ·
 [Editors](#editor-and-theme-support)
 
 ## Grid and sidebar
@@ -161,7 +161,10 @@ page loads without counting or caching the entire DataFrame, and the exact row t
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
 
-## R notebooks and documents (1.99 preview)
+## R notebooks and documents (Preview)
+
+Native R keeps its Preview label in every release channel. The label describes support maturity and does not block a
+stable Open Wrangler release.
 
 <a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 
