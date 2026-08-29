@@ -2371,6 +2371,7 @@ class PolarsEngine(DataFrameEngine):
             for aggregation_index, aggregation in enumerate(params["aggregations"]):
                 column = bound_column_name(aggregation["column"], kind)
                 value = f"_group_value_{index}_{aggregation_index}"
+                _, _, checked_integer_sum = _polars_group_aggregation_semantics(aggregation["operation"])
                 lines.extend(
                     [
                         f"{prefix}{value} = pl.col({column!r})",
@@ -2378,7 +2379,7 @@ class PolarsEngine(DataFrameEngine):
                         f"{prefix}    {value} = {value}.fill_nan(None)",
                     ]
                 )
-                if aggregation["operation"] == "sum":
+                if checked_integer_sum:
                     lines.extend(
                         [
                             f"{prefix}if {schema}[{column!r}].is_integer():",
@@ -3785,7 +3786,9 @@ def _polars_step_needs_checked_integer_helpers(step: Mapping[str, Any]) -> bool:
     if step.get("kind") == "groupBy":
         params = step.get("params")
         return isinstance(params, Mapping) and any(
-            isinstance(aggregation, Mapping) and aggregation.get("operation") == "sum"
+            isinstance(aggregation, Mapping)
+            and isinstance(aggregation.get("operation"), str)
+            and _polars_group_aggregation_semantics(aggregation["operation"])[2]
             for aggregation in params.get("aggregations", [])
         )
     if step.get("kind") != "byExample":
@@ -3966,25 +3969,28 @@ def _polars_aggregation(aggregation: Mapping[str, Any], dtype: Any) -> Any:
     if dtype.is_float():
         expression = expression.fill_nan(None)
     operation = aggregation["operation"]
-    if operation == "sum" and dtype.is_integer():
+    method, drop_nulls, checked_integer_sum = _polars_group_aggregation_semantics(operation)
+    if checked_integer_sum and dtype.is_integer():
         return _polars_checked_integer_sum(expression, dtype).alias(aggregation["alias"])
-    if operation == "nUnique":
-        result = expression.drop_nulls().n_unique()
-    elif operation == "count":
-        result = expression.count()
-    elif operation in {"first", "last"}:
-        result = getattr(expression.drop_nulls(), operation)()
-    else:
-        result = getattr(expression, operation)()
-    return result.alias(aggregation["alias"])
+    if drop_nulls:
+        expression = expression.drop_nulls()
+    return getattr(expression, method)().alias(aggregation["alias"])
+
+
+def _polars_group_aggregation_semantics(operation: str) -> tuple[str, bool, bool]:
+    return (
+        "n_unique" if operation == "nUnique" else operation,
+        operation in {"nUnique", "first", "last"},
+        operation == "sum",
+    )
 
 
 def _compile_polars_aggregation(aggregation: Mapping[str, Any], expression: str | None = None) -> str:
     operation = aggregation["operation"]
     expression = expression or f"pl.col({bound_column_name(aggregation['column'], 'groupBy')!r})"
-    if operation in {"nUnique", "first", "last"}:
+    method, drop_nulls, _ = _polars_group_aggregation_semantics(operation)
+    if drop_nulls:
         expression += ".drop_nulls()"
-    method = "n_unique" if operation == "nUnique" else operation
     return f"{expression}.{method}().alias({aggregation['alias']!r})"
 
 
