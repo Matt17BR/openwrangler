@@ -1925,7 +1925,9 @@ async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
         assert.equal(await allow.count(), 1);
         consentAccepted = true;
         await allow.click();
-        await dialog.waitFor({ state: "hidden", timeout: Math.max(1, deadline - Date.now()) });
+        await dialog
+          .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
+          .waitFor({ state: "hidden", timeout: Math.max(1, deadline - Date.now()) });
         continue;
       }
       assert.equal(message, NOTEBOOK_PREVIEW_CONFLICT_MESSAGE);
