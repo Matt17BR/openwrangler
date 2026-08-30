@@ -39,6 +39,7 @@ import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 import openwrangler_runtime.kernel_agent as kernel_agent
 import openwrangler_runtime.server as server
+import openwrangler_runtime.session as session_runtime
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.pyspark_version_policy_generated import (
@@ -46,12 +47,12 @@ from openwrangler_runtime.pyspark_version_policy_generated import (
     safe_pyspark_version_diagnostic,
 )
 from openwrangler_runtime.session import (
-    LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
     Session,
     SessionManager,
 )
+from openwrangler_runtime.session_source import LiveSourceInvalidatedError, SessionSource
 
 sample_frame = _shared_sample_frame
 spark_session = _shared_spark_session
@@ -173,7 +174,7 @@ def test_runtime_rejects_unqualified_pyspark_before_notebook_namespace_resolutio
         resolution_calls += 1
         raise AssertionError("An unqualified PySpark runtime must fail before resolving the notebook namespace.")
 
-    monkeypatch.setattr(manager, "_resolve_notebook_variable", fail_resolution)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", fail_resolution)
 
     with pytest.raises(EngineError, match="requires a final PySpark 4[.]2[.]x release") as captured:
         manager.open_session(
@@ -213,15 +214,15 @@ def test_clone_open_rechecks_pyspark_version_before_any_frame_access(
             raise AssertionError("The clone must qualify PySpark before reading withColumn.")
 
     source = {"kind": "notebookVariable", "variableName": "spark_frame", "label": "spark_frame"}
+    source_owner = SessionSource.capture("confirmed-spark", source, PySparkEngine())
+    source_owner.bind_loaded_value(PySparkEngine(), UnqualifiedFrame())
     source_session = SimpleNamespace(
         backend="pyspark",
         disposed=False,
-        live_source_value=UnqualifiedFrame(),
         mode="viewing",
         original=UnqualifiedFrame(),
         revision=0,
-        source=source,
-        source_fingerprint=None,
+        source=source_owner,
     )
     manager = SessionManager()
     manager.sessions["confirmed-spark"] = cast(Session, source_session)
@@ -450,7 +451,7 @@ def test_manager_preserves_connect_session_and_reports_structured_failure(
     session = _FailureClassifyingSession(session_id, engine)
     manager = SessionManager()
     manager.sessions[session_id] = session  # type: ignore[assignment]
-    source_before = dict(session.source)
+    source_before = dict(session.source.metadata)
 
     with (
         pytest.raises(expected_error, match="current Open Wrangler view is unchanged") as classified,
@@ -463,7 +464,7 @@ def test_manager_preserves_connect_session_and_reports_structured_failure(
 
     assert classified.value.session_id == session_id  # type: ignore[attr-defined]
     assert manager.sessions[session_id] is session
-    assert session.source == source_before
+    assert session.source.metadata == source_before
     assert session.disposed is False
     assert (session.page_cache == {}) is cache_cleared
     assert session.page_cache_bytes == (0 if cache_cleared else 128)

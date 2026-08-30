@@ -19,11 +19,11 @@ import openwrangler_runtime.protocol as runtime_protocol
 import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
 from openwrangler_runtime.session import (
-    LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
     SessionCleanupError,
 )
+from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 
 
 class _PassthroughRequestScope:

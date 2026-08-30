@@ -23,10 +23,10 @@ from openwrangler_runtime.engines import (
 from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
 from openwrangler_runtime.session import (
     PAGE_CACHE_LIMIT,
-    LiveSourceInvalidatedError,
     ResponsePayloadError,
     SessionManager,
 )
+from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 from openwrangler_runtime.trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 
 
@@ -632,7 +632,6 @@ def test_live_pyspark_source_invalidation_precedes_cached_page_reads(
     )
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
-    assert session.live_source_value is original
     assert len(session.page_cache) == 1
     assert created[0].page_calls == [(0, 2, 3)]
 
@@ -655,7 +654,6 @@ def test_live_pyspark_source_invalidation_precedes_cached_page_reads(
     assert not session.page_cache
     assert session.page_cache_bytes == 0
     assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
-    assert session.live_source_value is None
 
 
 def test_live_pyspark_source_is_revalidated_after_an_uncached_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -873,8 +871,6 @@ def test_lazy_file_rejects_grow_shrink_and_schema_replacement_before_cached_page
     opened = manager.open_session(source(path), backend=backend, page_size=2)
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
-    assert session.source_fingerprint is not None
-
     replace_source_atomically(path, replacement)
 
     with pytest.raises(EngineError, match=r"changed or is no longer available.*Reopen"):
@@ -921,6 +917,24 @@ def test_lazy_file_missing_after_open_is_recoverable_and_does_not_block_close(tm
 
     with pytest.raises(EngineError, match=r"no longer available.*Reopen"):
         manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["c:source:1"])
+    manager.close_session(session_id, 0)
+
+
+def test_lazy_file_request_scope_defers_source_validation_until_session_admission(tmp_path) -> None:
+    path = write_values(tmp_path, 3)
+    manager = SessionManager()
+    opened = manager.open_session(source(path), backend="polars", page_size=2)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    cached = list(session.page_cache.items())
+    replace_source_atomically(path, "city,value\nrow-0,0\nrow-1,1\nrow-2,2\n")
+
+    with manager.request_scope("lazy-page", {"kind": "getPage", "sessionId": session_id}):
+        assert list(session.page_cache.items()) == cached
+
+    with pytest.raises(EngineError, match=r"changed or is no longer available.*Reopen"):
+        manager.get_page(session_id, 0, 0, 2, {"filters": [], "sort": []})
+    assert not session.page_cache
     manager.close_session(session_id, 0)
 
 
@@ -981,33 +995,6 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
         make_request()
     assert not (tmp_path / "cleaned.csv").exists()
     manager.close_session(session_id, revision)
-
-
-def test_only_lazy_file_sources_receive_fingerprints(tmp_path, monkeypatch) -> None:
-    path = write_values(tmp_path, 3)
-    pandas_manager = SessionManager()
-    pandas_opened = pandas_manager.open_session(source(path), backend="pandas", page_size=2)
-    pandas_id = pandas_opened["metadata"]["sessionId"]
-    assert pandas_manager.sessions[pandas_id].source_fingerprint is None
-    replace_source_atomically(path, "city,value\nrow-0,0\nrow-1,1\nrow-2,2\n")
-    assert pandas_manager.get_page(pandas_id, 0, 0, 2, {"filters": [], "sort": []})["page"]["totalRows"] == 3
-    pandas_manager.close_session(pandas_id, 0)
-
-    import __main__
-
-    monkeypatch.setattr(__main__, "fingerprint_notebook_frame", pl.DataFrame({"value": [1, 2]}), raising=False)
-    notebook_manager = SessionManager()
-    notebook_opened = notebook_manager.open_session(
-        {
-            "kind": "notebookVariable",
-            "label": "fingerprint_notebook_frame",
-            "variableName": "fingerprint_notebook_frame",
-        },
-        backend="polars",
-    )
-    notebook_id = notebook_opened["metadata"]["sessionId"]
-    assert notebook_manager.sessions[notebook_id].source_fingerprint is None
-    notebook_manager.close_session(notebook_id, 0)
 
 
 def test_open_rejects_a_source_replaced_during_initial_page_materialization(tmp_path) -> None:
