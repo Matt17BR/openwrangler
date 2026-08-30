@@ -6,7 +6,6 @@ import type {
   LiveGridPage,
   OperationKind,
   SessionMetadata,
-  SessionMode,
   StepInspectionResponse,
   TransformStep
 } from "../shared/protocol";
@@ -77,6 +76,7 @@ import {
 } from "./appState";
 import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
+import { useSessionModeChangeLifecycle } from "./sessionModeChangeLifecycle";
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
@@ -118,8 +118,6 @@ export function App() {
   const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
   const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
-  const [sessionModeChangePending, setSessionModeChangePending] = useState(false);
-  const [sessionModeChangeTarget, setSessionModeChangeTarget] = useState<SessionMode | undefined>();
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
@@ -155,6 +153,18 @@ export function App() {
     viewStateRestoreVersion
   } = useRendererPresentationLifecycle(metadata);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
+  const readCurrentSessionMode = useCallback(() => metadataRef.current?.mode, []);
+  const {
+    pending: sessionModeChangePending,
+    target: sessionModeChangeTarget,
+    requestModeChange: requestSessionModeChange,
+    settleModeChange
+  } = useSessionModeChangeLifecycle({
+    takeGridViewState: takeGridViewStateForSessionModeChange,
+    readCurrentMode: readCurrentSessionMode,
+    scheduleFocusRestoration: scheduleWebviewFocusRestoration,
+    canRestoreFocus: canRestoreFocusTo
+  });
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
@@ -184,8 +194,6 @@ export function App() {
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
-  const sessionModeChangeReturnFocus = useRef<HTMLButtonElement | null>(null);
-  const sessionModeChangeFocusFrame = useRef<number | undefined>(undefined);
   const operationWasOpen = useRef(false);
 
   const nextViewRequestId = useCallback(() => {
@@ -221,10 +229,6 @@ export function App() {
         window.cancelAnimationFrame(importOptionsDispatchFrame.current);
       }
       importOptionsReturnFocus.current = null;
-      if (sessionModeChangeFocusFrame.current !== undefined) {
-        window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
-      }
-      sessionModeChangeReturnFocus.current = null;
     },
     []
   );
@@ -357,39 +361,6 @@ export function App() {
     },
     [scheduleImportOptionsFocusRestoration]
   );
-
-  const requestSessionModeChange = useCallback(
-    (target: SessionMode, trigger: HTMLButtonElement) => {
-      const state = takeGridViewStateForSessionModeChange();
-      if (!state) return;
-      sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
-      setSessionModeChangeTarget(target);
-      vscode.postMessage({ kind: "switchSessionMode", mode: target, state });
-    },
-    [takeGridViewStateForSessionModeChange]
-  );
-
-  const restoreSessionModeChangeFocus = useCallback((targetMode: SessionMode) => {
-    if (sessionModeChangeFocusFrame.current !== undefined) {
-      window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
-    }
-    const returnTarget = sessionModeChangeReturnFocus.current;
-    sessionModeChangeReturnFocus.current = null;
-    sessionModeChangeFocusFrame.current = scheduleWebviewFocusRestoration(() => {
-      sessionModeChangeFocusFrame.current = undefined;
-      const changedMode = metadataRef.current?.mode === targetMode;
-      if (!changedMode && canRestoreFocusTo(returnTarget)) {
-        returnTarget.focus();
-        return;
-      }
-      if (metadataRef.current?.mode === "editing") {
-        const primaryAction = document.querySelector<HTMLElement>("[data-operation-focus-fallback]:not(:disabled)");
-        (primaryAction ?? document.querySelector<HTMLElement>("main.app"))?.focus();
-        return;
-      }
-      document.querySelector<HTMLButtonElement>("[data-session-mode-action]:not(:disabled)")?.focus();
-    });
-  }, []);
 
   const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
     const confirmed = {
@@ -825,12 +796,7 @@ export function App() {
         return;
       }
       if (response.kind === "sessionModeChangeState") {
-        setSessionModeChangePending(response.busy);
-        if (response.busy) setSessionModeChangeTarget(response.mode);
-        else {
-          setSessionModeChangeTarget(undefined);
-          restoreSessionModeChangeFocus(response.mode);
-        }
+        settleModeChange(response.busy, response.mode);
         return;
       }
       if (response.kind === "sessionPresentation") {
@@ -1387,7 +1353,7 @@ export function App() {
     resetConfirmedFilterHistory,
     resetGridViewState,
     restoreHostGridViewState,
-    restoreSessionModeChangeFocus,
+    settleModeChange,
     restartProfilingAfterMutation,
     restartProfilingForConfirmedView,
     restoreConfirmedViewState,
