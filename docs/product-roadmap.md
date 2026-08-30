@@ -13,10 +13,10 @@ are ready. The generated [reference](reference.md) lists commands, settings, ope
 - PySpark 4.2 support is limited to local-notebook viewing of Classic and Connect batch DataFrames. Open Wrangler does
   not edit, export, install, or configure Spark. Streaming, remote clusters, and authenticated clusters are
   unsupported.
-- Open Wrangler targets desktop VS Code and editors based on it. Release checks qualify VS Code directly. Cursor is
-  one concrete compatibility example: bounded Linux platform smoke covers representative grid, cleaning, export, and
-  recovery flows, but not the full VS Code qualification matrix. Broader compatibility remains experimental. Browser
-  and virtual workspace hosts are unsupported, and Remote SSH is not tested for release.
+- Open Wrangler is release-qualified on desktop VS Code. Cursor receives a smaller Linux compatibility check covering
+  representative grid, cleaning, export, and recovery flows, not the full VS Code test set. Compatibility with Cursor
+  and other VS Code-based editors remains experimental. Browser and virtual workspace hosts are unsupported, and
+  Remote SSH is not part of release testing.
 
 ## Release priorities
 
