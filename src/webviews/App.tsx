@@ -874,7 +874,9 @@ export function App() {
           return;
         }
         if (result.kind === "cancelled") {
-          setStepInspectionError("Applied-step inspection was cancelled.");
+          setStepInspectionError(
+            "Loading the step was cancelled. Your confirmed data is unchanged. Choose Show confirmed data, then select the step again."
+          );
           return;
         }
         const currentMetadata = metadataRef.current;
@@ -884,7 +886,9 @@ export function App() {
           result.inputPage.offset !== response.offset ||
           result.outputPage.offset !== response.offset
         ) {
-          setStepInspectionError("Ignored an invalid applied-step inspection response.");
+          setStepInspectionError(
+            "Open Wrangler could not safely show the step. Your confirmed data is unchanged. Choose Show confirmed data, then select the step again."
+          );
           return;
         }
         inspectionColumnWindow.current = columnWindowFromPage(
