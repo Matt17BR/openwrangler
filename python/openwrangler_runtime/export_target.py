@@ -9,7 +9,7 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 from .error_causality import add_exception_note
 
@@ -64,7 +64,7 @@ class ExportTarget:
     inode: int
 
     @classmethod
-    def from_request(cls, path: str, identity: Mapping[str, Any] | None) -> ExportTarget:
+    def from_request(cls, path: str, identity: Mapping[str, object] | None) -> ExportTarget:
         target = Path(path)
         if not target.is_absolute():
             raise ExportTargetError("Python data export requires an absolute host-owned target path.")
@@ -149,7 +149,7 @@ class ExportTarget:
             pinned.close()
 
 
-def _identity_component(value: Any, label: str) -> int:
+def _identity_component(value: object, label: str) -> int:
     if not isinstance(value, str) or not value or len(value) > 39:
         raise ExportTargetError(f"The host-owned export target {label} is invalid.")
     if value != "0" and (value[0] == "0" or not value.isascii() or not value.isdecimal()):
