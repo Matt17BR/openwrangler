@@ -13,24 +13,25 @@ from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import (
     ExportOptions,
-    PageColumnProjection,
-    SummaryColumnProjection,
     reconcile_view_filter_model,
 )
 from .export_target import ExportTarget, ExportTargetError
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
-from .live_page_payload import (
-    LIVE_PAGE_COMPLEX_DEPTH_LIMIT,
-    LivePagePayloadError,
-    validate_live_page_payload,
-)
 from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
 from .protocol import MAX_COLUMN_LIMIT
-from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .session_access import SessionRequestAdmission
 from .session_plan import compile_plan_with_limits, preflight_retained_plan
+from .session_result import (
+    MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
+    column_window,
+    read_live_page,
+    strict_response_payload_size,
+    summary_projection,
+    validate_summary_projection,
+)
+from .session_result import ResponsePayloadError as ResponsePayloadError
 from .session_source import (
     SessionSource,
     SourceChangedError,
@@ -79,14 +80,6 @@ class SessionCleanupError(EngineError):
 
     def __init__(self, session_id: str, message: str) -> None:
         self.session_id = session_id
-        super().__init__(message)
-
-
-class ResponsePayloadError(EngineError):
-    """A bounded operation-specific failure produced before response publication."""
-
-    def __init__(self, message: str, code: str) -> None:
-        self.code = code
         super().__init__(message)
 
 
@@ -547,13 +540,14 @@ class SessionManager:
         session = self._session(session_id)
         with self._profile_view(session, revision, filter_model) as filtered:
             schema = self._active_schema(session)
-            projection = self._summary_projection(schema, column_ids)
+            projection = summary_projection(schema, column_ids)
             summaries = session.engine.summaries(filtered, projection)
-            self._validate_summary_projection(summaries, schema, projection)
-            self._strict_response_payload_size(
+            validate_summary_projection(summaries, schema, projection)
+            strict_response_payload_size(
                 summaries,
                 "column profile",
                 "Request fewer columns.",
+                maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
             )
             return {
                 "kind": "summary",
@@ -575,10 +569,11 @@ class SessionManager:
             self._assert_revision(session, revision)
             filtered = self._view_query_frame(session, filter_model)
             values, has_more = session.engine.column_values(filtered, column, search, limit)
-            self._strict_response_payload_size(
+            strict_response_payload_size(
                 values,
                 "column-values result",
                 "Request fewer values or narrow the search.",
+                maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
             )
             return {
                 "kind": "columnValues",
@@ -597,10 +592,11 @@ class SessionManager:
         session = self._session(session_id)
         with self._profile_view(session, revision, filter_model) as filtered:
             stats = session.engine.header_stats(filtered)
-            self._strict_response_payload_size(
+            strict_response_payload_size(
                 stats,
                 "dataset-statistics result",
                 "Reduce the size of the active schema.",
+                maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
             )
             return {
                 "kind": "datasetStats",
@@ -728,13 +724,13 @@ class SessionManager:
             self._refresh_filtered(session, reconciled_filter_model)
             preview_page = self._page(session, offset, limit, column_offset, column_limit)
             before_schema_with_lineage = schema_with_lineage(diff_base_schema, diff_base_lineage)
-            before_projection = self._column_window(
+            before_projection = column_window(
                 before_schema_with_lineage,
                 column_offset,
                 column_limit,
             )
-            before_page, _before_page_size = self._read_live_page(
-                session,
+            before_page, _before_page_size = read_live_page(
+                session.engine,
                 diff_base_view,
                 offset,
                 limit,
@@ -824,18 +820,18 @@ class SessionManager:
                 output_schema = schema_with_lineage(after_raw_schema, after_lineage)
             except ValueError as error:
                 raise EngineError("The applied cleaning-step history is inconsistent.") from error
-            input_projection = self._column_window(input_schema, column_offset, column_limit)
-            output_projection = self._column_window(output_schema, column_offset, column_limit)
-            input_page, _input_page_size = self._read_live_page(
-                session,
+            input_projection = column_window(input_schema, column_offset, column_limit)
+            output_projection = column_window(output_schema, column_offset, column_limit)
+            input_page, _input_page_size = read_live_page(
+                session.engine,
                 before,
                 offset,
                 limit,
                 total_rows=before_shape["rows"],
                 column_projection=input_projection,
             )
-            output_page, _output_page_size = self._read_live_page(
-                session,
+            output_page, _output_page_size = read_live_page(
+                session.engine,
                 after,
                 offset,
                 limit,
@@ -874,10 +870,11 @@ class SessionManager:
                 ),
                 "code": generated_code,
             }
-            self._strict_response_payload_size(
+            strict_response_payload_size(
                 response,
                 "step-inspection result",
                 "Request fewer rows or columns.",
+                maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
             )
             return response
 
@@ -1249,7 +1246,7 @@ class SessionManager:
         column_limit: int,
     ) -> dict[str, Any]:
         schema = cls._active_schema(session)
-        projection = cls._column_window(schema, column_offset, column_limit)
+        projection = column_window(schema, column_offset, column_limit)
         column_ids = tuple(identifier for _position, identifier in projection)
         key = (session.view_generation, session.revision, offset, limit, column_ids)
         cached = session.page_cache.get(key)
@@ -1257,8 +1254,8 @@ class SessionManager:
             session.page_cache.move_to_end(key)
             return cached.payload
 
-        page, page_size = cls._read_live_page(
-            session,
+        page, page_size = read_live_page(
+            session.engine,
             session.filtered,
             offset,
             limit,
@@ -1277,10 +1274,12 @@ class SessionManager:
             # metadata so a later cache hit cannot regress that count.
             cls._invalidate_page_cache(session)
             key = (session.view_generation, session.revision, offset, limit, column_ids)
-        cls._assert_strict_response_payload_size(
-            page_size,
+        strict_response_payload_size(
+            page,
             "page",
             "Request fewer rows or columns.",
+            maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
+            precomputed_size=page_size,
         )
         if page_size > PAGE_CACHE_BYTE_LIMIT:
             return page
@@ -1294,49 +1293,6 @@ class SessionManager:
         return page
 
     @classmethod
-    def _read_live_page(
-        cls,
-        session: Session,
-        frame: Any,
-        offset: int,
-        limit: int,
-        *,
-        total_rows: int | None,
-        column_projection: PageColumnProjection,
-    ) -> tuple[dict[str, Any], int]:
-        try:
-            page = session.engine.page(
-                frame,
-                offset,
-                limit,
-                total_rows=total_rows,
-                column_projection=column_projection,
-            )
-        except RecursionError as error:
-            raise ResponsePayloadError(
-                "Live page complex values must not be cyclic and may contain at most "
-                f"{LIVE_PAGE_COMPLEX_DEPTH_LIMIT} nested levels.",
-                "page_payload_invalid",
-            ) from error
-        cls._validate_page_projection(page, column_projection)
-        try:
-            return page, validate_live_page_payload(page)
-        except LivePagePayloadError as error:
-            raise ResponsePayloadError(str(error), "page_payload_invalid") from error
-
-    @staticmethod
-    def _strict_response_payload_size(value: Any, subject: str, recovery: str) -> int:
-        try:
-            size = strict_json_byte_length(value, MAX_STRICT_RESPONSE_PAYLOAD_BYTES)
-        except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as error:
-            raise ResponsePayloadError(
-                f"The requested {subject} could not be encoded as strict JSON. {recovery}",
-                "response_encoding_failed",
-            ) from error
-        SessionManager._assert_strict_response_payload_size(size, subject, recovery)
-        return size
-
-    @classmethod
     def _preflight_mutation_response(
         cls,
         response: dict[str, Any],
@@ -1344,10 +1300,11 @@ class SessionManager:
     ) -> dict[str, Any]:
         """Prove an edit response publishable before its atomic state can commit."""
 
-        cls._strict_response_payload_size(
+        strict_response_payload_size(
             response,
             "mutation response",
             "Request fewer rows or columns.",
+            maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
         )
         if response_preflight is not None:
             # Standalone and notebook transports supply the exact correlated
@@ -1355,15 +1312,6 @@ class SessionManager:
             # envelope failure restores the same state as a payload failure.
             response_preflight(response)
         return response
-
-    @staticmethod
-    def _assert_strict_response_payload_size(size: int, subject: str, recovery: str) -> None:
-        if size > MAX_STRICT_RESPONSE_PAYLOAD_BYTES:
-            raise ResponsePayloadError(
-                f"The requested {subject} exceeds the "
-                f"{MAX_STRICT_RESPONSE_PAYLOAD_BYTES:,}-byte strict response payload limit. {recovery}",
-                "response_too_large",
-            )
 
     @staticmethod
     def _active_schema(session: Session) -> list[dict[str, Any]]:
@@ -1374,88 +1322,6 @@ class SessionManager:
             return schema_with_lineage(session.display_schema, lineage)
         except ValueError as error:
             raise EngineError("The active dataframe schema and column lineage are inconsistent.") from error
-
-    @staticmethod
-    def _column_window(
-        schema: list[dict[str, Any]],
-        column_offset: int,
-        column_limit: int,
-    ) -> list[tuple[int, str]]:
-        if not isinstance(column_offset, int) or isinstance(column_offset, bool) or column_offset < 0:
-            raise EngineError("columnOffset must be a non-negative integer.")
-        if (
-            not isinstance(column_limit, int)
-            or isinstance(column_limit, bool)
-            or column_limit < 1
-            or column_limit > MAX_COLUMN_LIMIT
-        ):
-            raise EngineError(f"columnLimit must be an integer between 1 and {MAX_COLUMN_LIMIT}.")
-        return [
-            (int(column["position"]), str(column["id"]))
-            for column in schema[column_offset : column_offset + column_limit]
-        ]
-
-    @staticmethod
-    def _summary_projection(
-        schema: list[dict[str, Any]],
-        column_ids: list[str] | None,
-    ) -> list[tuple[int, str]]:
-        if column_ids is None:
-            selected = schema
-        else:
-            if (
-                not column_ids
-                or any(not isinstance(column_id, str) or not column_id for column_id in column_ids)
-                or len(set(column_ids)) != len(column_ids)
-            ):
-                raise EngineError("Summary column identities must be a non-empty unique list.")
-            schema_by_id = {str(column["id"]): column for column in schema}
-            unknown = [column_id for column_id in column_ids if column_id not in schema_by_id]
-            if unknown:
-                raise EngineError(f"Unknown summary column identity: {unknown[0]}")
-            selected = [schema_by_id[column_id] for column_id in column_ids]
-        return [(int(column["position"]), str(column["id"])) for column in selected]
-
-    @staticmethod
-    def _validate_summary_projection(
-        summaries: Any,
-        schema: list[dict[str, Any]],
-        projection: SummaryColumnProjection,
-    ) -> None:
-        if not isinstance(summaries, list) or len(summaries) != len(projection):
-            raise EngineError("The dataframe engine returned summaries for the wrong column projection.")
-        schema_by_id = {str(column["id"]): column for column in schema}
-        expected_ids = [identifier for _position, identifier in projection]
-        returned_ids = [summary.get("columnId") if isinstance(summary, Mapping) else None for summary in summaries]
-        if returned_ids != expected_ids or len(set(returned_ids)) != len(returned_ids):
-            raise EngineError("The dataframe engine returned summaries for the wrong column projection.")
-        for summary in summaries:
-            column = schema_by_id.get(str(summary["columnId"]))
-            if (
-                column is None
-                or summary.get("column") != column["name"]
-                or summary.get("type") != column["type"]
-                or summary.get("rawType") != column["rawType"]
-            ):
-                raise EngineError("The dataframe engine returned a summary that does not match the active schema.")
-
-    @staticmethod
-    def _validate_page_projection(
-        page: Mapping[str, Any],
-        projection: PageColumnProjection,
-    ) -> None:
-        expected_ids = [identifier for _position, identifier in projection]
-        if not isinstance(page, Mapping):
-            raise EngineError("The dataframe engine returned a malformed projected page.")
-        if page.get("columnIds") != expected_ids:
-            raise EngineError("The dataframe engine returned a page for the wrong column projection.")
-        rows = page.get("rows")
-        if not isinstance(rows, list):
-            raise EngineError("The dataframe engine returned a malformed projected page.")
-        for row in rows:
-            values = row.get("values") if isinstance(row, Mapping) else None
-            if not isinstance(values, list) or len(values) != len(expected_ids):
-                raise EngineError("The dataframe engine returned a row with the wrong projected width.")
 
     def _metadata(self, session: Session) -> dict[str, Any]:
         display_lineage = session.draft_lineage if session.draft_frame is not None else session.committed_lineage
@@ -1667,11 +1533,11 @@ class SessionManager:
         before_ids = [column["id"] for column in before_schema]
         after_ids = [column["id"] for column in after_schema]
         common_ids = [identifier for identifier in before_ids if identifier in after_ids]
-        before_projection = self._column_window(before_schema, column_offset, column_limit)
-        after_projection = self._column_window(after_schema, column_offset, column_limit)
+        before_projection = column_window(before_schema, column_offset, column_limit)
+        after_projection = column_window(after_schema, column_offset, column_limit)
         if before_page is None:
-            before_page, _before_page_size = self._read_live_page(
-                session,
+            before_page, _before_page_size = read_live_page(
+                session.engine,
                 before,
                 offset,
                 limit,
@@ -1679,16 +1545,14 @@ class SessionManager:
                 column_projection=before_projection,
             )
         if after_page is None:
-            after_page, _after_page_size = self._read_live_page(
-                session,
+            after_page, _after_page_size = read_live_page(
+                session.engine,
                 after,
                 offset,
                 limit,
                 total_rows=after_shape["rows"],
                 column_projection=after_projection,
             )
-        self._validate_page_projection(before_page, before_projection)
-        self._validate_page_projection(after_page, after_projection)
         before_positions = {identifier: index for index, identifier in enumerate(before_page.get("columnIds", []))}
         after_positions = {identifier: index for index, identifier in enumerate(after_page.get("columnIds", []))}
         compared_ids = [

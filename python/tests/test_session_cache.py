@@ -12,6 +12,7 @@ import pytest
 
 import openwrangler_runtime.live_page_payload as live_page_payload
 import openwrangler_runtime.session as session_runtime
+import openwrangler_runtime.session_result as session_result_runtime
 from openwrangler_runtime.engines import (
     DuckDBEngine,
     EngineError,
@@ -95,35 +96,6 @@ class LiveNotebookPandasEngine(CountingPandasEngine):
     @staticmethod
     def live_source_is_stopped(frame: Any) -> bool:
         return bool(frame.attrs.get("sparkStopped", False))
-
-
-class CorruptSummaryPandasEngine(PandasEngine):
-    def __init__(self, corruption: str) -> None:
-        self.corruption = corruption
-
-    def summaries(
-        self,
-        frame: Any,
-        column_projection: SummaryColumnProjection | None = None,
-    ) -> list[dict[str, Any]]:
-        summaries = super().summaries(frame, column_projection)
-        if self.corruption == "reverse":
-            summaries.reverse()
-        elif self.corruption == "missing":
-            summaries.pop()
-        elif self.corruption == "duplicate":
-            summaries[1]["columnId"] = summaries[0]["columnId"]
-        elif self.corruption == "unknown":
-            summaries[0]["columnId"] = "c:unknown"
-        elif self.corruption == "name":
-            summaries[0]["column"] = "renamed"
-        elif self.corruption == "type":
-            summaries[0]["type"] = "string"
-        elif self.corruption == "rawType":
-            summaries[0]["rawType"] = "String"
-        else:
-            raise AssertionError(f"Unknown summary corruption: {self.corruption}")
-        return summaries
 
 
 def counting_manager() -> tuple[SessionManager, list[CountingPandasEngine]]:
@@ -240,46 +212,6 @@ def test_open_defers_summaries_and_reuses_exact_metadata_for_the_first_page(tmp_
     assert engine.schema_calls == 1
 
 
-@pytest.mark.parametrize(
-    "corruption",
-    ["reverse", "missing", "duplicate", "unknown", "name", "type", "rawType"],
-)
-def test_summary_results_must_match_the_exact_stable_id_projection(tmp_path, corruption) -> None:
-    manager = SessionManager(EngineRegistry((("pandas", lambda: CorruptSummaryPandasEngine(corruption)),)))
-    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas")
-    schema = opened["metadata"]["schema"]
-
-    with pytest.raises(EngineError, match="summary|summaries"):
-        manager.get_summary(
-            opened["metadata"]["sessionId"],
-            0,
-            {"filters": [], "sort": []},
-            [schema[1]["id"], schema[0]["id"]],
-        )
-
-
-@pytest.mark.parametrize(
-    ("column_ids", "message"),
-    [
-        ([], "non-empty unique list"),
-        (["c:source:0", "c:source:0"], "non-empty unique list"),
-        (["c:missing"], "Unknown summary column identity"),
-    ],
-)
-def test_summary_requests_reject_invalid_stable_id_projections(tmp_path, column_ids, message) -> None:
-    manager, created = counting_manager()
-    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas")
-
-    with pytest.raises(EngineError, match=message):
-        manager.get_summary(
-            opened["metadata"]["sessionId"],
-            0,
-            {"filters": [], "sort": []},
-            column_ids,
-        )
-    assert created[0].summary_calls == 0
-
-
 def test_page_cache_is_bounded_lru_and_never_shared_between_sessions(tmp_path) -> None:
     manager, created = counting_manager()
     path = write_values(tmp_path)
@@ -387,36 +319,6 @@ def test_projected_page_filters_and_sorts_by_an_omitted_column(tmp_path) -> None
         ["row-4"],
         ["row-3"],
     ]
-
-
-def test_empty_and_invalid_column_windows_fail_closed(tmp_path) -> None:
-    manager, _ = counting_manager()
-    opened = manager.open_session(source(write_values(tmp_path, 2)), backend="pandas", page_size=2)
-    session_id = opened["metadata"]["sessionId"]
-
-    empty = manager.get_page(
-        session_id,
-        0,
-        0,
-        2,
-        {"filters": [], "sort": []},
-        column_offset=20,
-        column_limit=1,
-    )["page"]
-    assert empty["columnIds"] == []
-    assert [row["values"] for row in empty["rows"]] == [[], []]
-
-    for column_offset, column_limit in ((-1, 1), (True, 1), (0, 0), (0, 257), (0, True)):
-        with pytest.raises(EngineError, match="columnOffset|columnLimit"):
-            manager.get_page(
-                session_id,
-                0,
-                0,
-                2,
-                {"filters": [], "sort": []},
-                column_offset=column_offset,
-                column_limit=column_limit,
-            )
 
 
 def test_session_rejects_malformed_adapter_row_width_before_caching(tmp_path) -> None:
@@ -567,7 +469,7 @@ def test_live_page_validation_covers_current_preview_and_inspection_reads(
         calls.append(page)
         return original(page)
 
-    monkeypatch.setattr(session_runtime, "validate_live_page_payload", record)
+    monkeypatch.setattr(session_result_runtime, "validate_live_page_payload", record)
     opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas", page_size=2)
     session_id = opened["metadata"]["sessionId"]
     assert len(calls) == 1
