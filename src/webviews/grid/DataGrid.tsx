@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEventHandler, ReactNode } from "react";
 import type {
-  CellDiff,
   CellValue,
   ColumnFilter,
   ColumnSchema,
@@ -41,6 +40,7 @@ import {
   terminalPageOverlapsViewport,
   type VisibleColumnRange
 } from "./gridVirtualWindow";
+import { createGridDiffPresentation } from "./gridDiffPresentation";
 
 export type { VisibleColumnRange } from "./gridVirtualWindow";
 
@@ -157,7 +157,7 @@ export function DataGrid({
   );
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata.schema), [metadata.schema]);
   const diffPresentation = useMemo(
-    () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
+    () => createGridDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -990,17 +990,14 @@ export function DataGrid({
                         })
                       ? "range"
                       : undefined;
-                  const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
+                  const diffCell = diffPresentation?.cell(row.id, column.id);
+                  const changedCell = diffCell?.state === "changed";
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
                   const displayCell = gridCellPresentation(cell);
                   const renderedCell = boundedGridText(displayCell.text);
-                  const diffLabel = cellDiff
-                    ? changedCellLabel(column.name, row.rowNumber, cellDiff)
-                    : addedColumn
-                      ? addedCellLabel(column.name, row.rowNumber, cell)
-                      : undefined;
                   const accessibleLabel =
-                    diffLabel ?? (cellUnavailable ? `Loading ${column.name}, row ${row.rowNumber + 1}` : undefined);
+                    diffCell?.accessibilityLabel ??
+                    (cellUnavailable ? `Loading ${column.name}, row ${row.rowNumber + 1}` : undefined);
                   const ambiguityReason =
                     (viewColumnNameCounts.get(column.name) ?? 0) > 1
                       ? ambiguousViewColumnMessage(column.name, viewColumnNameCounts.get(column.name) ?? 0)
@@ -1068,7 +1065,7 @@ export function DataGrid({
                       aria-colindex={column.position + 2}
                       aria-selected={clipboardSelected}
                       aria-label={accessibleLabel ?? renderedCell ?? ""}
-                      data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
+                      data-diff-state={changedCell ? "changed" : addedColumn ? "added" : undefined}
                       data-clipboard-selected={clipboardSelected ? "true" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={[
@@ -1076,7 +1073,7 @@ export function DataGrid({
                         cell?.isNull || cell?.isNaN ? "missingCell" : "",
                         viewState.selectedColumnId === column.id ? "selectedColumn" : "",
                         clipboardSelected ? "gridClipboardSelected" : "",
-                        cellDiff ? "diffChangedCell" : "",
+                        changedCell ? "diffChangedCell" : "",
                         addedColumn ? "diffAddedColumn" : "",
                         cellMenuOpen ? "cellFilterMenuOpen" : ""
                       ]
@@ -1413,163 +1410,6 @@ function gridCellPresentation(cell: CellValue | undefined): { text: string | und
     ? "-0"
     : String(Number.parseFloat(cell.raw.toPrecision(maximumGridNumberSignificantDigits)));
   return text === cell.display ? { text } : { text, title: cell.display };
-}
-
-interface GridDiffPresentation {
-  addedColumnIds: Set<string>;
-  addedColumns: Array<{ name: string; rawType: string | undefined }>;
-  removedColumns: Array<{ name: string; rawType: string | undefined }>;
-  changedCells: Map<string, CellDiff>;
-}
-
-function buildDiffPresentation(
-  diff: DataDiff | undefined,
-  page: LiveGridPage,
-  schema: ColumnSchema[],
-  beforePage: GridPage | undefined,
-  beforeSchema: ColumnSchema[] | undefined
-): GridDiffPresentation | undefined {
-  if (!diff) return undefined;
-
-  const addedColumnIds = resolveAddedColumnIds(diff.addedColumns, schema, beforeSchema);
-  const changedCells = new Map<string, CellDiff>();
-  const rowsByNumber = new Map(page.rows.map((row) => [row.rowNumber, row]));
-  const beforeRowsById = new Map(beforePage?.rows.map((row) => [row.id, row]) ?? []);
-  const pagePositionById = new Map(page.columnIds.map((columnId, position) => [columnId, position]));
-  const beforePositionById = new Map(beforePage?.columnIds.map((columnId, position) => [columnId, position]) ?? []);
-  const schemaById = new Map(schema.map((column) => [column.id, column]));
-  const comparableColumns = page.columnIds.flatMap((columnId, afterPosition) => {
-    const column = schemaById.get(columnId);
-    const beforePosition = beforePositionById.get(columnId);
-    return column && beforePosition !== undefined ? [{ column, beforePosition, afterPosition }] : [];
-  });
-  const rememberChangedCell = (columnId: string, cellDiff: CellDiff) => {
-    changedCells.set(diffCellKey(cellDiff.rowNumber, columnId), cellDiff);
-  };
-
-  if (beforePage && beforeSchema) {
-    for (const row of page.rows) {
-      const beforeRow = beforeRowsById.get(row.id);
-      if (!beforeRow) continue;
-      for (const { column, beforePosition, afterPosition } of comparableColumns) {
-        const before = beforeRow.values[beforePosition];
-        const after = row.values[afterPosition];
-        if (!before || !after || sameCellValue(before, after)) continue;
-        rememberChangedCell(column.id, {
-          rowNumber: row.rowNumber,
-          columnId: column.id,
-          column: column.name,
-          before,
-          after
-        });
-      }
-    }
-  }
-
-  for (const cellDiff of diff.cells) {
-    const key = diffCellKey(cellDiff.rowNumber, cellDiff.columnId);
-    if (changedCells.has(key)) continue;
-    const row = rowsByNumber.get(cellDiff.rowNumber);
-    if (!row) continue;
-    const afterPosition = pagePositionById.get(cellDiff.columnId);
-    if (afterPosition === undefined || !sameCellValue(row.values[afterPosition], cellDiff.after)) continue;
-    rememberChangedCell(cellDiff.columnId, cellDiff);
-  }
-
-  return {
-    addedColumnIds,
-    addedColumns: diff.addedColumns.map((name) => ({
-      name,
-      rawType: schema.find((column) => column.name === name)?.rawType
-    })),
-    removedColumns: diff.removedColumns.map((name) => ({
-      name,
-      rawType: beforeSchema?.find((column) => column.name === name)?.rawType
-    })),
-    changedCells
-  };
-}
-
-function resolveAddedColumnIds(
-  addedColumnNames: string[],
-  schema: ColumnSchema[],
-  beforeSchema: ColumnSchema[] | undefined
-): Set<string> {
-  const remainingByName = countNames(addedColumnNames);
-  const beforeIds = new Set(beforeSchema?.map((column) => column.id) ?? []);
-  const addedIds = new Set<string>();
-  const takeMatchingColumns = (columns: ColumnSchema[]) => {
-    for (const column of columns) {
-      const remaining = remainingByName.get(column.name) ?? 0;
-      if (remaining <= 0 || addedIds.has(column.id)) continue;
-      addedIds.add(column.id);
-      remainingByName.set(column.name, remaining - 1);
-    }
-  };
-  if (beforeSchema) takeMatchingColumns(schema.filter((column) => !beforeIds.has(column.id)));
-  takeMatchingColumns(schema);
-  return addedIds;
-}
-
-function countNames(names: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
-  return counts;
-}
-
-function sameCellValue(left: CellValue | null | undefined, right: CellValue | null | undefined): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return (
-    left.kind === right.kind &&
-    left.display === right.display &&
-    left.isNull === right.isNull &&
-    left.isNaN === right.isNaN &&
-    left.sign === right.sign &&
-    sameJsonValue(left.raw, right.raw)
-  );
-}
-
-function sameJsonValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return (
-      Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => sameJsonValue(value, right[index]))
-    );
-  }
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord).sort();
-  const rightKeys = Object.keys(rightRecord).sort();
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every((key, index) => key === rightKeys[index] && sameJsonValue(leftRecord[key], rightRecord[key]))
-  );
-}
-
-function diffCellKey(rowNumber: number, columnId: string): string {
-  return `${rowNumber}\u0000${columnId}`;
-}
-
-function changedCellLabel(column: string, rowNumber: number, diff: CellDiff): string {
-  return `${column}, row ${rowNumber + 1}: changed from ${describeCellValue(diff.before)} to ${describeCellValue(diff.after)}`;
-}
-
-function addedCellLabel(column: string, rowNumber: number, value: CellValue | undefined): string {
-  return `${column}, row ${rowNumber + 1}: added column; before column absent; after ${describeCellValue(value)}`;
-}
-
-function describeCellValue(value: CellValue | null | undefined): string {
-  if (!value) return "no value";
-  if (value.isNull) return "null";
-  if (value.isNaN) return "NaN";
-  if (value.display.length === 0) return value.kind === "string" ? "empty string" : "empty value";
-  const normalized = value.display.replace(/\s+/gu, " ");
-  return normalized.length > 160 ? `${normalized.slice(0, 159)}…` : normalized;
 }
 
 function cellFilterActionLabel(cell: CellValue | undefined, action: "include" | "exclude"): string {
