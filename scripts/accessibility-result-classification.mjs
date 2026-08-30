@@ -150,10 +150,6 @@ export function createAxeResultPublication(writeResult, writeClassificationError
   return Object.freeze(publication);
 }
 
-export function classifyAxeScanResult(input) {
-  return classifyPreparedAxeScan(prepareAxeScanInput(captureAxeScanEnvelope(input), 0));
-}
-
 function captureAxeScanEnvelope(input) {
   const envelope = requirePlainRecord(input, "invalid_findings", "Axe scan results must be plain objects.");
   const harness = readOwnDataProperty(
