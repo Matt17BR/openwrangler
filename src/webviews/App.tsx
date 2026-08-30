@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { flushSync } from "react-dom";
 import type {
   DataDiff,
   LiveGridPage,
@@ -73,6 +72,7 @@ import {
   type ViewSortActionTarget
 } from "./appState";
 import { useOperationDialogLifecycle } from "./operationDialogLifecycle";
+import { useImportOptionsLifecycle } from "./importOptionsLifecycle";
 import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 import { useSessionModeChangeLifecycle } from "./sessionModeChangeLifecycle";
@@ -113,7 +113,6 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
-  const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
   const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
@@ -169,6 +168,14 @@ export function App() {
     canRestoreFocus: canRestoreFocusTo
   });
   const operationOpen = operationDialog !== undefined;
+  const {
+    pending: importOptionsPending,
+    isPending: isImportOptionsPending,
+    beginRequest: beginImportOptionsRequest,
+    settlePending: settleImportOptionsPending
+  } = useImportOptionsLifecycle({
+    scheduleFocusRestoration: scheduleWebviewFocusRestoration
+  });
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
@@ -185,7 +192,6 @@ export function App() {
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
-  const importOptionsPendingRef = useRef(false);
   const importOptionsUiBusyRef = useRef(true);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
@@ -194,42 +200,11 @@ export function App() {
   const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
-  const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
-  const importOptionsFocusFrame = useRef<number | undefined>(undefined);
-  const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
     return `view-${viewRequestEpoch}-${lastViewRequestSequence}`;
   }, []);
-
-  const scheduleImportOptionsFocusRestoration = useCallback((returnTarget: HTMLButtonElement) => {
-    if (importOptionsFocusFrame.current !== undefined) {
-      window.cancelAnimationFrame(importOptionsFocusFrame.current);
-    }
-    importOptionsFocusFrame.current = scheduleWebviewFocusRestoration(() => {
-      importOptionsFocusFrame.current = undefined;
-      const targetIsAvailable = returnTarget.isConnected && !returnTarget.matches(":disabled");
-      if (targetIsAvailable) {
-        returnTarget.focus();
-        return;
-      }
-      document.querySelector<HTMLButtonElement>("[data-import-options-action]:not(:disabled)")?.focus();
-    });
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (importOptionsFocusFrame.current !== undefined) {
-        window.cancelAnimationFrame(importOptionsFocusFrame.current);
-      }
-      if (importOptionsDispatchFrame.current !== undefined) {
-        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
-      }
-      importOptionsReturnFocus.current = null;
-    },
-    []
-  );
 
   useEffect(() => {
     if (!sidePanelOpen) return;
@@ -310,27 +285,17 @@ export function App() {
     [storeGoToColumnRequest]
   );
 
-  const storeImportOptionsPending = useCallback(
-    (pending: boolean) => {
-      const wasPending = importOptionsPendingRef.current;
-      if (!pending && importOptionsDispatchFrame.current !== undefined) {
-        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
-        importOptionsDispatchFrame.current = undefined;
-      }
-      importOptionsPendingRef.current = pending;
-      setImportOptionsPending(pending);
+  const setImportOptionsRequestPending = useCallback(
+    (pending: boolean): boolean => {
+      const wasPending = settleImportOptionsPending(pending);
       if (pending) {
         setQueuedOperationIntent(undefined);
         closeOperationDialog();
         setLoading(true);
       } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
-      if (!pending && wasPending) {
-        const returnTarget = importOptionsReturnFocus.current;
-        importOptionsReturnFocus.current = null;
-        if (returnTarget) scheduleImportOptionsFocusRestoration(returnTarget);
-      }
+      return wasPending;
     },
-    [closeOperationDialog, scheduleImportOptionsFocusRestoration]
+    [closeOperationDialog, settleImportOptionsPending]
   );
 
   const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
@@ -345,18 +310,21 @@ export function App() {
     return confirmed;
   }, []);
 
-  const canProfileConfirmedView = useCallback((viewContextId: string): boolean => {
-    const confirmed = confirmedView.current;
-    const pendingPage = latestPageRequest.current;
-    return Boolean(
-      confirmed &&
-      confirmed.viewContextId === viewContextId &&
-      !importOptionsPendingRef.current &&
-      !stepInspectionTargetRef.current &&
-      foregroundRequest.current !== "mutation" &&
-      (!pendingPage || pendingPage.viewContextId === confirmed.viewContextId)
-    );
-  }, []);
+  const canProfileConfirmedView = useCallback(
+    (viewContextId: string): boolean => {
+      const confirmed = confirmedView.current;
+      const pendingPage = latestPageRequest.current;
+      return Boolean(
+        confirmed &&
+        confirmed.viewContextId === viewContextId &&
+        !isImportOptionsPending() &&
+        !stepInspectionTargetRef.current &&
+        foregroundRequest.current !== "mutation" &&
+        (!pendingPage || pendingPage.viewContextId === confirmed.viewContextId)
+      );
+    },
+    [isImportOptionsPending]
+  );
 
   const readConfirmedProfileView = useCallback(() => {
     const currentMetadata = metadataRef.current;
@@ -411,53 +379,27 @@ export function App() {
         importOptionsUiBusyRef.current ||
         foregroundRequest.current ||
         pendingStepInspectionRef.current?.reason === "projection" ||
-        importOptionsPendingRef.current
+        isImportOptionsPending()
       ) {
         return;
       }
-      if (importOptionsFocusFrame.current !== undefined) {
-        window.cancelAnimationFrame(importOptionsFocusFrame.current);
-        importOptionsFocusFrame.current = undefined;
-      }
-      if (importOptionsDispatchFrame.current !== undefined) {
-        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
-        importOptionsDispatchFrame.current = undefined;
-      }
-      const returnTarget =
-        trigger?.isConnected && document.hasFocus() && trigger === document.activeElement ? trigger : null;
-      importOptionsReturnFocus.current = returnTarget;
-      if (returnTarget) {
-        returnTarget.blur();
-      } else if (actionId !== undefined && document.hasFocus() && document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-      }
-      flushSync(() => storeImportOptionsPending(true));
-      const message = {
-        kind: "changeImportOptions",
-        ...(actionId === undefined ? {} : { actionId })
-      } as const;
-      if (actionId !== undefined && trigger === undefined) {
-        importOptionsDispatchFrame.current = window.requestAnimationFrame(() => {
-          importOptionsDispatchFrame.current = undefined;
-          vscode.postMessage(message);
-        });
-      } else {
-        vscode.postMessage(message);
-      }
+      setQueuedOperationIntent(undefined);
+      closeOperationDialog();
+      setLoading(true);
+      beginImportOptionsRequest(actionId, trigger);
     },
-    [flushGridViewState, storeImportOptionsPending, suspendProfiling]
+    [beginImportOptionsRequest, closeOperationDialog, flushGridViewState, isImportOptionsPending, suspendProfiling]
   );
 
   const updateImportOptionsPending = useCallback(
     (pending: boolean) => {
-      const wasPending = importOptionsPendingRef.current;
       if (pending) suspendProfiling();
-      storeImportOptionsPending(pending);
+      const wasPending = setImportOptionsRequestPending(pending);
       if (!pending && wasPending && metadataRef.current) {
         restartProfilingForConfirmedView();
       }
     },
-    [restartProfilingForConfirmedView, storeImportOptionsPending, suspendProfiling]
+    [restartProfilingForConfirmedView, setImportOptionsRequestPending, suspendProfiling]
   );
 
   const captureConfirmedViewState = useCallback((): ConfirmedViewState | undefined => {
@@ -524,7 +466,7 @@ export function App() {
       ) {
         return;
       }
-      if (importOptionsPendingRef.current) {
+      if (isImportOptionsPending()) {
         setForegroundError("Wait for the current import-options change to finish.");
         return;
       }
@@ -564,7 +506,7 @@ export function App() {
         ...(selectedInputSchema === undefined ? {} : { editingStepInputSchema: selectedInputSchema })
       });
     },
-    [clearStepInspection, openOperationDialog]
+    [clearStepInspection, isImportOptionsPending, openOperationDialog]
   );
 
   const requestStepInspection = useCallback(
@@ -617,7 +559,7 @@ export function App() {
   );
 
   const beginMutation = useCallback((): boolean => {
-    if (importOptionsPendingRef.current) {
+    if (isImportOptionsPending()) {
       setForegroundError("Wait for the current import-options change to finish.");
       return false;
     }
@@ -652,6 +594,7 @@ export function App() {
     captureConfirmedViewState,
     clearStepInspection,
     flushGridViewState,
+    isImportOptionsPending,
     resetViewProfiling,
     storeFailedPageRequest,
     storeMetadata
@@ -859,7 +802,7 @@ export function App() {
             ...(response.stepId ? { stepId: response.stepId } : {})
           };
           setQueuedOperationIntent(undefined);
-          if (importOptionsPendingRef.current || foregroundRequest.current) {
+          if (isImportOptionsPending() || foregroundRequest.current) {
             setQueuedStepSelection(selection);
             return;
           }
@@ -868,7 +811,7 @@ export function App() {
           else clearStepInspection();
           return;
         }
-        if (importOptionsPendingRef.current) {
+        if (isImportOptionsPending()) {
           setForegroundError("Wait for the current import-options change to finish.");
           return;
         }
@@ -984,7 +927,7 @@ export function App() {
             ) {
               foregroundRequest.current = undefined;
               if (pendingPage.reason === "projection") setProjectionLoading(false);
-              else setLoading(importOptionsPendingRef.current);
+              else setLoading(isImportOptionsPending());
             }
             restoreViewAfterPageFailure(pendingPage, response.code === "pyspark_connect_state_lost");
             storeFailedPageRequest(pendingPage);
@@ -1003,10 +946,10 @@ export function App() {
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
           setMutationPending(false);
-          setLoading(importOptionsPendingRef.current);
+          setLoading(isImportOptionsPending());
           setProjectionLoading(false);
           if (previous) restoreConfirmedViewState(previous);
-        } else if (importOptionsPendingRef.current) {
+        } else if (isImportOptionsPending()) {
           setForegroundError(response.message);
           return;
         } else if (!metadataRef.current) {
@@ -1023,7 +966,7 @@ export function App() {
       if (response.kind === "cancelled") {
         if (!response.viewRequestId) {
           if (
-            importOptionsPendingRef.current &&
+            isImportOptionsPending() &&
             (response.targetRequestId === "change-import-options" ||
               response.targetRequestId.startsWith("reconfigure-import:"))
           ) {
@@ -1036,11 +979,11 @@ export function App() {
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
             setMutationPending(false);
-            setLoading(importOptionsPendingRef.current);
+            setLoading(isImportOptionsPending());
             setProjectionLoading(false);
             if (previous) restoreConfirmedViewState(previous);
             setForegroundError("The cleaning operation was cancelled.");
-          } else if (importOptionsPendingRef.current) {
+          } else if (isImportOptionsPending()) {
             return;
           } else if (!metadataRef.current) {
             clearSynchronization();
@@ -1062,7 +1005,7 @@ export function App() {
           ) {
             foregroundRequest.current = undefined;
             if (pendingPage.reason === "projection") setProjectionLoading(false);
-            else setLoading(importOptionsPendingRef.current);
+            else setLoading(isImportOptionsPending());
           }
           restoreViewAfterPageFailure(pendingPage);
           storeFailedPageRequest(pendingPage);
@@ -1082,7 +1025,7 @@ export function App() {
           current?.sessionId === response.metadata.sessionId && current.revision === response.metadata.revision;
         undoPlanReturnFocus.current = null;
         clearSynchronization();
-        storeImportOptionsPending(false);
+        setImportOptionsRequestPending(false);
         if (!preservesOpenOperation) {
           setQueuedOperationIntent(undefined);
           setQueuedStepSelection(undefined);
@@ -1152,7 +1095,7 @@ export function App() {
         ) {
           foregroundRequest.current = undefined;
           if (pendingPage.reason === "projection") setProjectionLoading(false);
-          else setLoading(importOptionsPendingRef.current);
+          else setLoading(isImportOptionsPending());
         }
         setForegroundError(undefined);
         setForegroundErrorCode(undefined);
@@ -1220,7 +1163,7 @@ export function App() {
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
-        setLoading(importOptionsPendingRef.current);
+        setLoading(isImportOptionsPending());
         setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -1314,6 +1257,7 @@ export function App() {
     closeOperationDialog,
     confirmView,
     deleteStep,
+    isImportOptionsPending,
     nextViewRequestId,
     requestOperationIntent,
     requestImportOptionsChange,
@@ -1333,7 +1277,7 @@ export function App() {
     storeFailedPageRequest,
     storeFilterModel,
     storeGoToColumnRequest,
-    storeImportOptionsPending,
+    setImportOptionsRequestPending,
     storeMetadata,
     storePage,
     storePendingStepInspection,
@@ -1383,7 +1327,7 @@ export function App() {
       return;
     }
     const timer = window.setTimeout(() => {
-      if (foregroundRequest.current || importOptionsPendingRef.current) return;
+      if (foregroundRequest.current || isImportOptionsPending()) return;
       setQueuedStepSelection(undefined);
       const currentMetadata = metadataRef.current;
       if (
@@ -1405,6 +1349,7 @@ export function App() {
   }, [
     clearStepInspection,
     importOptionsPending,
+    isImportOptionsPending,
     loading,
     mutationPending,
     projectionLoading,
@@ -1460,11 +1405,7 @@ export function App() {
     model = filterModelRef.current,
     options: PageRequestOptions = {}
   ): string | undefined => {
-    if (
-      importOptionsPendingRef.current ||
-      foregroundRequest.current === "mutation" ||
-      stepInspectionTargetRef.current
-    ) {
+    if (isImportOptionsPending() || foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
       return undefined;
     }
     const currentMetadata = metadataRef.current;
@@ -1527,7 +1468,7 @@ export function App() {
   };
 
   const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
-    if (importOptionsPendingRef.current) return;
+    if (isImportOptionsPending()) return;
     if (stepInspectionTargetRef.current) {
       const currentInspection = stepInspectionRef.current;
       const currentMetadata = metadataRef.current;
@@ -1566,11 +1507,7 @@ export function App() {
   };
 
   const applyFilters = (model: FilterModel, options: ApplyFilterOptions = {}): string | undefined => {
-    if (
-      importOptionsPendingRef.current ||
-      foregroundRequest.current === "mutation" ||
-      stepInspectionTargetRef.current
-    ) {
+    if (isImportOptionsPending() || foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
       return;
     }
     const nextModel = compactFilterModel(model);
@@ -1627,7 +1564,7 @@ export function App() {
   };
 
   const undoLatestFilter = (): string | undefined => {
-    if (foregroundRequest.current || importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
+    if (foregroundRequest.current || isImportOptionsPending() || stepInspectionTargetRef.current) return;
     const undo = latestConfirmedFilterUndo(confirmedFilterHistoryRef.current, filterModelRef.current);
     if (!undo) return;
     return applyFilters(undo.model, { filterHistoryUndoTarget: undo.target });
