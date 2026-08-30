@@ -14,8 +14,9 @@ const pythonProtocolLimitsOutputPath = resolve(root, "python", "openwrangler_run
 const schema = JSON.parse(await readFile(schemaPath, "utf8"));
 const operationCatalog = canonicalOperationCatalog(schema);
 const protocolLimits = canonicalProtocolLimits(schema);
+const responseShapes = canonicalResponseShapes(schema);
 const prettierConfig = (await prettier.resolveConfig(catalogOutputPath)) ?? {};
-const protocolOutput = await compileFromFile(schemaPath, {
+const protocolTypesOutput = await compileFromFile(schemaPath, {
   bannerComment: "/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */",
   style: {
     bracketSpacing: true,
@@ -28,6 +29,11 @@ const protocolOutput = await compileFromFile(schemaPath, {
   },
   unreachableDefinitions: true
 });
+const responseShapesOutput = await prettier.format(renderTypeScriptResponseShapes(responseShapes), {
+  ...prettierConfig,
+  parser: "typescript"
+});
+const protocolOutput = `${protocolTypesOutput.trimEnd()}\n\n${responseShapesOutput}`;
 const catalogOutput = await prettier.format(renderTypeScriptCatalog(operationCatalog), {
   ...prettierConfig,
   parser: "typescript"
@@ -92,6 +98,102 @@ export const operationGroups = Object.freeze(${JSON.stringify(groups)}) satisfie
 export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([${definitions}]);
 
 export const operationKinds = Object.freeze(operationCatalog.map(({ kind }) => kind)) as readonly OperationKind[];
+`;
+}
+
+function canonicalResponseShapes(value) {
+  const definitions = value?.definitions;
+  const variants = definitions?.OpenWranglerResponse?.oneOf;
+  if (
+    definitions === null ||
+    typeof definitions !== "object" ||
+    Array.isArray(definitions) ||
+    !Array.isArray(variants) ||
+    variants.length === 0
+  ) {
+    throw new Error("Canonical response variants are missing or invalid.");
+  }
+
+  const kinds = new Set();
+  const shapes = variants.map((variant) => {
+    const reference = variant?.$ref;
+    const referenceMatch =
+      variant !== null &&
+      typeof variant === "object" &&
+      !Array.isArray(variant) &&
+      Object.keys(variant).length === 1 &&
+      typeof reference === "string"
+        ? /^#\/definitions\/([A-Za-z][A-Za-z0-9]*)$/u.exec(reference)
+        : null;
+    const definition =
+      referenceMatch !== null && Object.prototype.hasOwnProperty.call(definitions, referenceMatch[1])
+        ? definitions[referenceMatch[1]]
+        : undefined;
+    const properties = definition?.properties;
+    const required = definition?.required;
+    if (
+      definition === null ||
+      typeof definition !== "object" ||
+      Array.isArray(definition) ||
+      definition.type !== "object" ||
+      definition.additionalProperties !== false ||
+      properties === null ||
+      typeof properties !== "object" ||
+      Array.isArray(properties) ||
+      !Array.isArray(required)
+    ) {
+      throw new Error(`Response variant ${reference ?? "<unknown>"} is not a direct closed object definition.`);
+    }
+
+    const propertyKeys = Object.keys(properties);
+    const requiredKeys = new Set(required);
+    const kindSchema = properties.kind;
+    const kind = kindSchema?.const;
+    if (
+      propertyKeys.length === 0 ||
+      propertyKeys.some((key) => key.length === 0) ||
+      required.length === 0 ||
+      required.some((key) => typeof key !== "string" || key.length === 0 || !propertyKeys.includes(key)) ||
+      requiredKeys.size !== required.length ||
+      !requiredKeys.has("kind") ||
+      kindSchema === null ||
+      typeof kindSchema !== "object" ||
+      Array.isArray(kindSchema) ||
+      Object.keys(kindSchema).length !== 1 ||
+      typeof kind !== "string" ||
+      kind.length === 0 ||
+      kinds.has(kind)
+    ) {
+      throw new Error(`Response variant ${reference} has invalid keys or a non-unique required string kind.`);
+    }
+    kinds.add(kind);
+
+    return Object.freeze({
+      kind,
+      required: Object.freeze([...required]),
+      optional: Object.freeze(propertyKeys.filter((key) => !requiredKeys.has(key)))
+    });
+  });
+  return Object.freeze(shapes);
+}
+
+function renderTypeScriptResponseShapes(shapes) {
+  const definitions = shapes
+    .map(
+      (shape) => `Object.freeze({
+  kind: ${JSON.stringify(shape.kind)},
+  required: Object.freeze(${JSON.stringify(shape.required)}),
+  optional: Object.freeze(${JSON.stringify(shape.optional)})
+})`
+    )
+    .join(",");
+  return `export interface OpenWranglerResponseShape {
+  readonly kind: OpenWranglerResponse["kind"];
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+export const openWranglerResponseShapes = Object.freeze([${definitions}]) satisfies readonly OpenWranglerResponseShape[];
 `;
 }
 

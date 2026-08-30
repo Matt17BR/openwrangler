@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveGridPage, RuntimeResponseEnvelope, SessionMetadata } from "../shared/protocol";
+import { openWranglerResponseShapes } from "../shared/protocol";
 import {
   isOpenWranglerResponse,
   isRetainedTransformStep,
@@ -25,6 +26,37 @@ describe("protocol-v2 response validation", () => {
       expect(isRuntimeResponseEnvelope({ protocolVersion: 2, requestId: `request-${response.kind}`, response })).toBe(
         true
       );
+    }
+  );
+
+  it("keeps the generated response-shape catalog directly frozen", () => {
+    expect(openWranglerResponseShapes.map(({ kind }) => kind)).toEqual(responses.map(({ kind }) => kind));
+    expect(Object.isFrozen(openWranglerResponseShapes)).toBe(true);
+    for (const definition of openWranglerResponseShapes) {
+      expect(Object.isFrozen(definition)).toBe(true);
+      expect(Object.isFrozen(definition.required)).toBe(true);
+      expect(Object.isFrozen(definition.optional)).toBe(true);
+    }
+
+    const first = openWranglerResponseShapes[0];
+    expect(Reflect.set(openWranglerResponseShapes, 0, first)).toBe(false);
+    expect(Reflect.set(first, "kind", "changed")).toBe(false);
+    expect(Reflect.set(first.required, 0, "changed")).toBe(false);
+  });
+
+  it.each(responses.map((response) => [response.kind, response] as const))(
+    "rejects missing required and unknown top-level keys for %s",
+    (kind, response) => {
+      const definition = openWranglerResponseShapes.find((candidate) => candidate.kind === kind);
+      expect(definition).toBeDefined();
+      if (definition === undefined) return;
+
+      for (const requiredKey of definition.required) {
+        const missingRequired = { ...response } as Record<string, unknown>;
+        Reflect.deleteProperty(missingRequired, requiredKey);
+        expect(isOpenWranglerResponse(missingRequired)).toBe(false);
+      }
+      expect(isOpenWranglerResponse({ ...response, unknownTopLevelKey: true })).toBe(false);
     }
   );
 
