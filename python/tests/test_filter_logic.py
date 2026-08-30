@@ -12,6 +12,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import (
     EngineError,
@@ -20,11 +21,30 @@ from openwrangler_runtime.engines.base import (
     typed_selection_value,
 )
 from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
+from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.operations import FILTER_OPERATORS, validate_step
 from openwrangler_runtime.session import SessionManager
 
 _VIEW_LITERAL_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "view-literal-contract.json").read_text(encoding="utf-8")
 )
+
+_PANDAS_PREDICATE_PARITY_CASES = {
+    "equals": ("integer", {"value": 2}, ["two"]),
+    "notEquals": ("integer", {"value": 2}, ["one", "three", "four"]),
+    "contains": ("string", {"value": "PHA"}, ["alpha", "alphabet"]),
+    "startsWith": ("string", {"value": "alpha"}, ["alpha", "alphabet"]),
+    "endsWith": ("string", {"value": "ta"}, ["beta"]),
+    "gt": ("integer", {"value": 2}, ["three", "four"]),
+    "gte": ("integer", {"value": 2}, ["two", "three", "four"]),
+    "lt": ("integer", {"value": 3}, ["one", "two"]),
+    "lte": ("integer", {"value": 3}, ["one", "two", "three"]),
+    "between": ("integer", {"value": 2, "secondValue": 3}, ["two", "three"]),
+    "isNull": ("float", {}, ["null"]),
+    "isNotNull": ("float", {}, ["nan", "one"]),
+    "isNaN": ("float", {}, ["nan"]),
+    "isNotNaN": ("float", {}, ["null", "one"]),
+}
 
 
 @pytest.mark.parametrize("case", _VIEW_LITERAL_CONTRACT["accepted"], ids=lambda case: f"{case['type']}:{case['value']}")
@@ -178,6 +198,58 @@ def _execute_generated_filter(engine: Any, frame: Any, model: dict[str, Any]) ->
     step = {"id": "filter", "kind": "filterRows", "params": {"filterModel": bound_model}}
     exec(engine.compile_plan([step]), namespace, namespace)
     return namespace["clean_data"](frame)
+
+
+@pytest.mark.parametrize(
+    ("operator", "case"),
+    _PANDAS_PREDICATE_PARITY_CASES.items(),
+    ids=_PANDAS_PREDICATE_PARITY_CASES,
+)
+def test_pandas_predicate_operators_match_view_bound_and_generated(operator, case):
+    assert set(_PANDAS_PREDICATE_PARITY_CASES) == FILTER_OPERATORS
+    column_type, operands, expected = case
+    labels, values, dtype = {
+        "integer": (
+            ["one", "two", "three", "four", "missing"],
+            [1, 2, 3, 4, None],
+            "Int64",
+        ),
+        "string": (["missing", "alpha", "alphabet", "beta"], [None, "alpha", "alphabet", "beta"], "string"),
+        "float": (["null", "nan", "one"], [None, float("nan"), 1.0], "object"),
+    }[column_type]
+    frame = pd.DataFrame({"label": labels, "value": pd.Series(values, dtype=dtype)})
+    model = {
+        "logic": "and",
+        "filters": [
+            {
+                "column": "value",
+                "type": column_type,
+                "logic": "and",
+                "predicates": [{"kind": "predicate", "operator": operator, **operands}],
+            }
+        ],
+        "sort": [],
+    }
+
+    engine = PandasEngine()
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    public_model = deepcopy(model)
+    public_model["filters"][0]["column"] = lineage[1]
+    bound_step = bind_step(
+        validate_step({"id": "filter", "kind": "filterRows", "params": {"filterModel": public_model}}),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([bound_step]), namespace, namespace)
+
+    results = [
+        engine.apply_filter_model(frame, model),
+        engine.apply_transform(frame, bound_step),
+        namespace["clean_data"](frame),
+    ]
+    assert [result["label"].tolist() for result in results] == [expected, expected, expected]
 
 
 def _value_selection_model(column_type: str, value: Any) -> dict[str, Any]:
