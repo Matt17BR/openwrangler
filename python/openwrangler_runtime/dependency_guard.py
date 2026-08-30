@@ -440,29 +440,18 @@ def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, 
     return cast(dict[str, Any], value)
 
 
-def _normalize_marker_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
+def _normalize_dependencies(value: Any, *, code: str, allow_legacy: bool = False) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
         _fail(code)
     try:
-        normalized = [_normalize_dependency(dependency, code=code) for dependency in value]
+        dependencies = [_normalize_dependency(dependency, code=code) for dependency in value]
     except GuardError:
-        normalized = [_normalize_legacy_journal_dependency(dependency, code=code) for dependency in value]
-    modules = {dependency["importModule"] for dependency in normalized}
-    if len(modules) != len(normalized):
+        if not allow_legacy:
+            raise
+        dependencies = [_normalize_legacy_journal_dependency(dependency, code=code) for dependency in value]
+    modules = {dependency["importModule"] for dependency in dependencies}
+    if len(modules) != len(dependencies):
         _fail(code)
-    return normalized
-
-
-def _normalize_dependencies(value: Any, *, code: str) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
-        _fail(code)
-    dependencies = [_normalize_dependency(dependency, code=code) for dependency in value]
-    modules: set[str] = set()
-    for dependency in dependencies:
-        import_module = dependency["importModule"]
-        if import_module in modules:
-            _fail(code)
-        modules.add(import_module)
     return dependencies
 
 
@@ -2224,7 +2213,7 @@ def _read_marker(
     try:
         token = _canonical_uuid(decoded["token"])
         environment = _normalize_environment(decoded["environment"], compare_actual=False, code=code)
-        dependencies = _normalize_marker_dependencies(decoded["dependencies"], code=code)
+        dependencies = _normalize_dependencies(decoded["dependencies"], code=code, allow_legacy=True)
     except GuardError:
         _fail(code)
     marker = {
