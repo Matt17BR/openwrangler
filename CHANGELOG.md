@@ -37,13 +37,13 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Native R notebook sessions recover after an R-kernel restart by replaying confirmed state into a new runtime while
   keeping the same public session. The interrupted read or mutation is not retried
   ([#776](https://github.com/Matt17BR/openwrangler/issues/776)).
-- A release candidate builds one VSIX from protected `main`. Pinned VS Code performance checks and Cursor smoke tests
-  install those bytes, and only a passing candidate can be published.
-- Native R remains Preview. The Data Wrangler comparison remains an optional report.
-- Registry publication verifies the VSIX, checksum, provenance, channel, and downloaded package identity. README and
-  gallery image hosting no longer blocks publication.
-- The manual `v1.99.7` preview path checks one protected-`main` VSIX in stable VS Code before it can publish the same
-  bytes to Open VSX and the Visual Studio Marketplace.
+- Open Wrangler 2 publishes one VSIX from protected `main` only after its pinned VS Code performance checks and Cursor
+  smoke tests pass. Both install and test the exact VSIX bytes that are published.
+- Native R remains Preview. The Data Wrangler comparison remains optional.
+- Publication verifies the VSIX, its checksum and source provenance, the release channel, and the identity of the
+  downloaded package. README and gallery image hosting do not block the release.
+- The manual `v1.99.7` preview also tests one VSIX from protected `main` in stable VS Code, then publishes that file
+  unchanged to Open VSX and the Visual Studio Marketplace.
 - Pandas row labels now accept dateutil's bundled timezone implementation on Windows as well as its normal system
   timezone implementation.
 - Updated js-yaml to 5.3.0. Packaging copies the installed CommonJS file and includes its MIT notice.
