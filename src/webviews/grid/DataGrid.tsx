@@ -20,13 +20,7 @@ import {
   viewCellSelectionFilter
 } from "../../shared/filterModel";
 import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
-import {
-  createRowScrollModel,
-  gridRowHeight,
-  logicalRowForScrollTop,
-  renderedRowSegmentSpacers,
-  scrollTopForLogicalRow
-} from "./rowScrollModel";
+import { createRowScrollModel, gridRowHeight, logicalRowForScrollTop, scrollTopForLogicalRow } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import { columnTypePresentation } from "../columnTypes";
 import type { ProfileValueMode } from "../profileValueMode";
@@ -40,6 +34,15 @@ import {
   useGridColumnRevealLifecycle,
   type GridColumnRevealCommit
 } from "./useGridColumnRevealLifecycle";
+import {
+  createGridVirtualWindow,
+  gridColumnWidths,
+  requestedGridPageOffset,
+  terminalPageOverlapsViewport,
+  type VisibleColumnRange
+} from "./gridVirtualWindow";
+
+export type { VisibleColumnRange } from "./gridVirtualWindow";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -81,11 +84,6 @@ interface DataGridProps {
   onViewStateChange?(state: GridViewState): void;
 }
 
-export interface VisibleColumnRange {
-  start: number;
-  end: number;
-}
-
 interface ProgrammaticViewportTarget {
   firstVisibleRow: number;
   scrollTop: number;
@@ -103,8 +101,6 @@ interface ScrollInputs {
   totalRows: number;
 }
 
-const overscanRows = 8;
-const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
 const maximumRenderedCellCharacters = 4_096;
 const gridSelectionInstructions =
@@ -112,16 +108,6 @@ const gridSelectionInstructions =
 const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
-
-export function requestedGridPageOffset(
-  desiredOffset: number,
-  currentOffset: number,
-  pageSize: number,
-  contiguousOnly: boolean
-): number {
-  if (!contiguousOnly) return desiredOffset;
-  return Math.max(0, Math.max(currentOffset - pageSize, Math.min(desiredOffset, currentOffset + pageSize)));
-}
 
 export function DataGrid({
   metadata,
@@ -388,22 +374,37 @@ export function DataGrid({
   }, [page.offset]);
 
   const widths = useMemo(
-    () => metadata.schema.map((column) => viewState.columnWidths.get(column.id) ?? defaultColumnWidth),
+    () => gridColumnWidths(metadata.schema, viewState.columnWidths, defaultColumnWidth),
     [defaultColumnWidth, metadata.schema, viewState.columnWidths]
   );
-  const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width, rowHeaderWidth);
+  const gridVirtualWindow = useMemo(
+    () =>
+      createGridVirtualWindow({
+        logicalRowExtent,
+        page,
+        rowHeaderWidth,
+        viewport,
+        widths
+      }),
+    [logicalRowExtent, page, rowHeaderWidth, viewport, widths]
+  );
+  const {
+    bottomSpacerHeight,
+    leftSpacerWidth,
+    localRowStart: localStart,
+    pageColumnPositionById,
+    renderedColumnCount,
+    rightSpacerWidth,
+    topSpacerHeight,
+    totalColumnWidth,
+    visibleColumnRange,
+    visibleRows
+  } = gridVirtualWindow;
   const visibleColumns = useMemo(
     () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
     [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
   );
-  const pageColumnPositionById = useMemo(
-    () => new Map(page.columnIds.map((columnId, position) => [columnId, position])),
-    [page.columnIds]
-  );
   const loadedColumnSignature = page.columnIds.join("\u0000");
-  const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
-  const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
-  const renderedColumnCount = 1 + visibleColumns.length + Number(leftSpacerWidth > 0) + Number(rightSpacerWidth > 0);
   const commitColumnReveal = useCallback(
     ({
       columnId,
@@ -754,33 +755,12 @@ export function DataGrid({
     onApplyFilter: onApplyProfileFilter ? applyHeaderProfileFilter : undefined,
     onVisibleSummaryColumnsChange
   });
-  const rowScrollModel = createRowScrollModel(logicalRowExtent, viewport.height);
-  const globalFirstRow = viewport.firstVisibleRow;
-  const physicallyAvailableOverscanRows = Math.floor(viewport.scrollTop / gridRowHeight);
-  const localStart = Math.max(
-    0,
-    globalFirstRow - page.offset - Math.min(overscanRows, physicallyAvailableOverscanRows)
-  );
-  const visibleRowCount = Math.ceil(viewport.height / gridRowHeight) + overscanRows * 2;
-  const localEnd = Math.min(page.rows.length, localStart + visibleRowCount);
-  const pageIsVisible = pageIntersectsViewport(page.offset, page.rows.length, globalFirstRow, viewport.height);
-  const visibleRows = pageIsVisible ? page.rows.slice(localStart, localEnd) : [];
   const rovingRow = visibleRows.some((row) => row.rowNumber === focusedCell.row)
     ? focusedCell.row
     : visibleRows[0]?.rowNumber;
   const rovingColumn = visibleColumns.some((column) => column.position === focusedCell.column)
     ? focusedCell.column
     : visibleColumns[0]?.position;
-  const rowSegmentSpacers = renderedRowSegmentSpacers(
-    rowScrollModel,
-    viewport.scrollTop,
-    globalFirstRow,
-    page.offset + localStart,
-    visibleRows.length
-  );
-  const topSpacerHeight = rowSegmentSpacers.top;
-  const bottomSpacerHeight = rowSegmentSpacers.bottom;
-
   useLayoutEffect(() => {
     if (!preserveGridFocusAfterScroll.current) return;
     preserveGridFocusAfterScroll.current = false;
@@ -888,8 +868,8 @@ export function DataGrid({
         <table
           role="grid"
           style={{
-            width: rowHeaderWidth + sum(widths),
-            minWidth: rowHeaderWidth + sum(widths),
+            width: rowHeaderWidth + totalColumnWidth,
+            minWidth: rowHeaderWidth + totalColumnWidth,
             userSelect: "none",
             WebkitUserSelect: "none"
           }}
@@ -1415,32 +1395,6 @@ function boundedGridText(value: string | undefined): string | undefined {
   const finalCodeUnit = value.charCodeAt(end - 1);
   if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end -= 1;
   return `${value.slice(0, end)}…`;
-}
-
-function terminalPageOverlapsViewport(
-  pageOffset: number,
-  pageRowCount: number,
-  totalRows: number,
-  firstVisibleRow: number,
-  viewportHeight: number
-): boolean {
-  return (
-    pageOffset + pageRowCount === totalRows &&
-    firstVisibleRow < pageOffset &&
-    pageIntersectsViewport(pageOffset, pageRowCount, firstVisibleRow, viewportHeight)
-  );
-}
-
-function pageIntersectsViewport(
-  pageOffset: number,
-  pageRowCount: number,
-  firstVisibleRow: number,
-  viewportHeight: number
-): boolean {
-  const visibleRowCount = Math.max(1, Math.ceil(viewportHeight / gridRowHeight));
-  return (
-    pageRowCount > 0 && pageOffset < firstVisibleRow + visibleRowCount && pageOffset + pageRowCount > firstVisibleRow
-  );
 }
 
 const maximumGridNumberSignificantDigits = 12;
@@ -1999,36 +1953,8 @@ function gridCellControlTarget(target: EventTarget, cell: HTMLTableCellElement):
   return control !== null && control !== cell;
 }
 
-function columnRange(
-  widths: number[],
-  scrollLeft: number,
-  viewportWidth: number,
-  rowHeaderWidth: number
-): { start: number; end: number } {
-  let position = 0;
-  let start = 0;
-  while (start < widths.length && position + widths[start] < Math.max(0, scrollLeft - rowHeaderWidth)) {
-    position += widths[start];
-    start += 1;
-  }
-  let end = start;
-  let visibleWidth = position;
-  while (end < widths.length && visibleWidth < scrollLeft + viewportWidth) {
-    visibleWidth += widths[end];
-    end += 1;
-  }
-  return {
-    start: Math.max(0, start - overscanColumns),
-    end: Math.min(widths.length, end + overscanColumns)
-  };
-}
-
 function selectedColumnPosition(schema: ColumnSchema[], selectedColumnId: string | undefined): number {
   if (!schema.length) return 0;
   const selected = selectedColumnId ? schema.findIndex((column) => column.id === selectedColumnId) : -1;
   return selected >= 0 ? selected : 0;
-}
-
-function sum(values: number[]): number {
-  return values.reduce((total, value) => total + value, 0);
 }
