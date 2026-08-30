@@ -35,6 +35,11 @@ import { useColumnResizeLifecycle, type BeginColumnResize } from "./useColumnRes
 import { useCellActionMenuLifecycle } from "./useCellActionMenuLifecycle";
 import { useGridPointerDragLifecycle } from "./useGridPointerDragLifecycle";
 import { useGridRowHeaderLayout } from "./useGridRowHeaderLayout";
+import {
+  centeredColumnScrollLeft,
+  useGridColumnRevealLifecycle,
+  type GridColumnRevealCommit
+} from "./useGridColumnRevealLifecycle";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -101,19 +106,12 @@ interface ScrollInputs {
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
-// Chromium can publish the final horizontal grid geometry without notifying a
-// ResizeObserver (notably while Cursor reveals another workbench panel). Keep
-// one short, bounded post-layout watch so that silent geometry changes still
-// complete a requested column reveal. Concrete wake signals remain installed
-// after this budget is exhausted and may start another bounded watch.
-const maximumColumnRevealLayoutFrames = 120;
 const maximumRenderedCellCharacters = 4_096;
 const gridSelectionInstructions =
   "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Select a column header or press Ctrl/Cmd+Space on it to prepare the whole filtered and sorted column for copying. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
 const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
-const ignoreColumnRevealSignal = (): void => undefined;
 
 export function requestedGridPageOffset(
   desiredOffset: number,
@@ -185,16 +183,6 @@ export function DataGrid({
   } = useGridPointerDragLifecycle(scrollerRef);
   const beginColumnResize = useColumnResizeLifecycle();
   const gridSelectionInstructionsId = useId();
-  const requestedGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
-  const handledGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
-  const scheduleColumnRevealAttempt = useRef<() => void>(ignoreColumnRevealSignal);
-  const stopColumnRevealWakeSources = useRef<() => void>(ignoreColumnRevealSignal);
-  const goToColumnRequestRef = useRef({
-    columnId: goToColumnId,
-    requestId: goToColumnRequestId,
-    restoreVersion: viewStateRestoreVersion,
-    onHandled: onGoToColumnHandled
-  });
   const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
@@ -267,15 +255,6 @@ export function DataGrid({
   useEffect(() => {
     visibleColumnRangeHandler.current = onVisibleColumnRangeChange;
   }, [onVisibleColumnRangeChange]);
-
-  useLayoutEffect(() => {
-    goToColumnRequestRef.current = {
-      columnId: goToColumnId,
-      requestId: goToColumnRequestId,
-      restoreVersion: viewStateRestoreVersion,
-      onHandled: onGoToColumnHandled
-    };
-  }, [goToColumnId, goToColumnRequestId, onGoToColumnHandled, viewStateRestoreVersion]);
 
   const reportViewState = useCallback(
     (next: GridViewState): void => {
@@ -407,6 +386,91 @@ export function DataGrid({
   useEffect(() => {
     requestedOffset.current = page.offset;
   }, [page.offset]);
+
+  const widths = useMemo(
+    () => metadata.schema.map((column) => viewState.columnWidths.get(column.id) ?? defaultColumnWidth),
+    [defaultColumnWidth, metadata.schema, viewState.columnWidths]
+  );
+  const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width, rowHeaderWidth);
+  const visibleColumns = useMemo(
+    () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
+    [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
+  );
+  const pageColumnPositionById = useMemo(
+    () => new Map(page.columnIds.map((columnId, position) => [columnId, position])),
+    [page.columnIds]
+  );
+  const loadedColumnSignature = page.columnIds.join("\u0000");
+  const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
+  const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
+  const renderedColumnCount = 1 + visibleColumns.length + Number(leftSpacerWidth > 0) + Number(rightSpacerWidth > 0);
+  const commitColumnReveal = useCallback(
+    ({
+      columnId,
+      columnIndex,
+      firstVisibleRow,
+      height,
+      prepareFocus,
+      scrollLeft,
+      scrollTop,
+      targetIsVisible,
+      width
+    }: GridColumnRevealCommit): void => {
+      if (prepareFocus) {
+        preserveGridFocusAfterScroll.current = false;
+        focusRequested.current = document.hasFocus();
+      }
+      programmaticViewportTarget.current = { firstVisibleRow, scrollTop, scrollLeft };
+      setViewport((current) => {
+        const next = { firstVisibleRow, scrollLeft, scrollTop, width, height };
+        return current.firstVisibleRow === next.firstVisibleRow &&
+          current.scrollLeft === next.scrollLeft &&
+          current.scrollTop === next.scrollTop &&
+          current.width === next.width &&
+          current.height === next.height
+          ? current
+          : next;
+      });
+      if (!targetIsVisible) return;
+      setFocusedCell((current) => (current.column === columnIndex ? current : { ...current, column: columnIndex }));
+      const currentViewState = viewStateRef.current;
+      reportViewState({
+        ...currentViewState,
+        selectedColumnId: columnId,
+        viewport: { ...currentViewState.viewport, scrollLeft }
+      });
+    },
+    [reportViewState]
+  );
+  const { interrupt: interruptPendingColumnReveal, isPending: columnRevealIsPending } = useGridColumnRevealLifecycle({
+    busy,
+    columnId: goToColumnId,
+    defaultColumnWidth,
+    loadedColumnIds: page.columnIds,
+    loadedColumnSignature,
+    logicalViewContext,
+    onCommit: commitColumnReveal,
+    onHandled: onGoToColumnHandled,
+    pageOffset: page.offset,
+    projecting,
+    requestId: goToColumnRequestId,
+    restoreVersion: viewStateRestoreVersion,
+    rowHeaderWidth,
+    schema: metadata.schema,
+    scrollTolerance: scrollQuantizationTolerance,
+    scrollerRef,
+    viewStateRef,
+    viewportScrollLeft: viewport.scrollLeft,
+    viewportWidth: viewport.width,
+    visibleColumnRange,
+    widths
+  });
+  const interruptColumnReveal = useCallback(() => {
+    viewportUpdatesSuspended.current = false;
+    programmaticViewportTarget.current = undefined;
+    programmaticViewportRetryAvailable.current = false;
+    interruptPendingColumnReveal();
+  }, [interruptPendingColumnReveal]);
 
   const updateViewportFromScroller = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -570,16 +634,8 @@ export function DataGrid({
         : next
     );
     const currentViewState = viewStateRef.current;
-    const pendingColumnReveal = goToColumnRequestRef.current;
-    const columnRevealIsPending =
-      pendingColumnReveal.columnId !== undefined &&
-      pendingColumnReveal.requestId !== undefined &&
-      requestedGoToColumnRequest.current?.requestId === pendingColumnReveal.requestId &&
-      requestedGoToColumnRequest.current.restoreVersion === pendingColumnReveal.restoreVersion &&
-      (handledGoToColumnRequest.current?.requestId !== pendingColumnReveal.requestId ||
-        handledGoToColumnRequest.current.restoreVersion !== pendingColumnReveal.restoreVersion);
     if (
-      !columnRevealIsPending &&
+      !columnRevealIsPending() &&
       (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft)
     ) {
       reportViewState({
@@ -588,29 +644,14 @@ export function DataGrid({
       });
     }
     requestBlockForRow(row);
-  }, [continuePointerDragToRow, selectGridClipboardCell, setFocusedCell, setViewport, writeProgrammaticViewport]);
-
-  const interruptColumnReveal = useCallback(() => {
-    stopColumnRevealWakeSources.current();
-    viewportUpdatesSuspended.current = false;
-    programmaticViewportTarget.current = undefined;
-    programmaticViewportRetryAvailable.current = false;
-    const pending = goToColumnRequestRef.current;
-    if (
-      pending.columnId &&
-      pending.requestId !== undefined &&
-      requestedGoToColumnRequest.current?.requestId === pending.requestId &&
-      requestedGoToColumnRequest.current.restoreVersion === pending.restoreVersion &&
-      (handledGoToColumnRequest.current?.requestId !== pending.requestId ||
-        handledGoToColumnRequest.current.restoreVersion !== pending.restoreVersion)
-    ) {
-      handledGoToColumnRequest.current = {
-        requestId: pending.requestId,
-        restoreVersion: pending.restoreVersion
-      };
-      pending.onHandled(pending.requestId, "interrupted");
-    }
-  }, []);
+  }, [
+    columnRevealIsPending,
+    continuePointerDragToRow,
+    selectGridClipboardCell,
+    setFocusedCell,
+    setViewport,
+    writeProgrammaticViewport
+  ]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -682,23 +723,6 @@ export function DataGrid({
     updateViewportFromScroller();
   }, [busy, logicalRowExtent, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
 
-  const widths = useMemo(
-    () => metadata.schema.map((column) => viewState.columnWidths.get(column.id) ?? defaultColumnWidth),
-    [defaultColumnWidth, metadata.schema, viewState.columnWidths]
-  );
-  const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width, rowHeaderWidth);
-  const visibleColumns = useMemo(
-    () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
-    [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
-  );
-  const pageColumnPositionById = useMemo(
-    () => new Map(page.columnIds.map((columnId, position) => [columnId, position])),
-    [page.columnIds]
-  );
-  const loadedColumnSignature = page.columnIds.join("\u0000");
-  const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
-  const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
-  const renderedColumnCount = 1 + visibleColumns.length + Number(leftSpacerWidth > 0) + Number(rightSpacerWidth > 0);
   const viewScope = `${metadata.sessionId}:${metadata.revision}:${JSON.stringify({
     logic: metadata.filterModel.logic ?? "and",
     filters: metadata.filterModel.filters,
@@ -770,270 +794,6 @@ export function DataGrid({
   useEffect(() => {
     visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
   }, [busy, loadedColumnSignature, logicalViewContext, page.offset, visibleColumnRange.end, visibleColumnRange.start]);
-
-  useLayoutEffect(() => {
-    if (
-      !goToColumnId ||
-      goToColumnRequestId === undefined ||
-      (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion) ||
-      (requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
-    ) {
-      return;
-    }
-    const index = metadata.schema.findIndex((column) => column.id === goToColumnId);
-    if (index < 0) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    requestedGoToColumnRequest.current = {
-      requestId: goToColumnRequestId,
-      restoreVersion: viewStateRestoreVersion
-    };
-    preserveGridFocusAfterScroll.current = false;
-    focusRequested.current = document.hasFocus();
-    const grid = scroller.closest<HTMLElement>(".dataGrid");
-    const table = scroller.querySelector<HTMLElement>('table[role="grid"]');
-    let wakeSourcesActive = true;
-    let positionRevealed = false;
-    let scheduledFrame: number | undefined;
-    let resizeObserver: ResizeObserver | undefined;
-    let layoutFramesRemaining = 0;
-    let forceRevealOnNextFrame = false;
-    let lastRevealGeometry: string | undefined;
-    const revealGeometry = (): string => `${scroller.clientWidth}:${scroller.scrollWidth}:${scroller.scrollLeft}`;
-    const requestIsCurrent = (): boolean => {
-      if (scrollerRef.current !== scroller) return false;
-      const pending = goToColumnRequestRef.current;
-      return (
-        pending.columnId === goToColumnId &&
-        pending.requestId === goToColumnRequestId &&
-        pending.restoreVersion === viewStateRestoreVersion &&
-        (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
-          handledGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion)
-      );
-    };
-    const reveal = (): "pending" | "revealed" | "stale" => {
-      if (!requestIsCurrent()) return "stale";
-
-      const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
-      const targetWidth = widths[index] ?? defaultColumnWidth;
-      scroller.scrollLeft = centeredColumnScrollLeft(
-        widths,
-        index,
-        scroller.clientWidth,
-        rowHeaderWidth,
-        defaultColumnWidth
-      );
-      const scrollLeft = scroller.scrollLeft;
-      const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
-      programmaticViewportTarget.current = {
-        firstVisibleRow,
-        scrollTop: scroller.scrollTop,
-        scrollLeft
-      };
-      setViewport((current) => {
-        const next = {
-          firstVisibleRow,
-          scrollLeft,
-          scrollTop: scroller.scrollTop,
-          width: scroller.clientWidth,
-          height: scroller.clientHeight
-        };
-        return current.firstVisibleRow === next.firstVisibleRow &&
-          current.scrollLeft === next.scrollLeft &&
-          current.scrollTop === next.scrollTop &&
-          current.width === next.width &&
-          current.height === next.height
-          ? current
-          : next;
-      });
-
-      const columnEnd = columnStart + targetWidth;
-      const visibleStart = scrollLeft + rowHeaderWidth;
-      const visibleEnd = scrollLeft + scroller.clientWidth;
-      const requiredVisibleWidth = Math.min(targetWidth, Math.max(0, scroller.clientWidth - rowHeaderWidth));
-      const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
-      const targetIsVisible =
-        requiredVisibleWidth > 0 && actualVisibleWidth + scrollQuantizationTolerance >= requiredVisibleWidth;
-      if (!targetIsVisible) return "pending";
-
-      setFocusedCell((current) => (current.column === index ? current : { ...current, column: index }));
-      const currentViewState = viewStateRef.current;
-      const selectedColumnId = metadata.schema[index].id;
-      reportViewState({
-        ...currentViewState,
-        selectedColumnId,
-        viewport: {
-          ...currentViewState.viewport,
-          scrollLeft
-        }
-      });
-      return "revealed";
-    };
-
-    function stopWakeSources(): void {
-      if (!wakeSourcesActive) return;
-      wakeSourcesActive = false;
-      if (scheduledFrame !== undefined) {
-        window.cancelAnimationFrame(scheduledFrame);
-        scheduledFrame = undefined;
-      }
-      layoutFramesRemaining = 0;
-      forceRevealOnNextFrame = false;
-      resizeObserver?.disconnect();
-      window.removeEventListener("focus", scheduleAttempt);
-      window.removeEventListener("resize", scheduleAttempt);
-      document.removeEventListener("visibilitychange", scheduleWhenVisible);
-      grid?.removeEventListener("transitionend", scheduleAttempt);
-      grid?.removeEventListener("animationend", scheduleAttempt);
-      if (scheduleColumnRevealAttempt.current === scheduleAttempt) {
-        scheduleColumnRevealAttempt.current = ignoreColumnRevealSignal;
-      }
-      if (stopColumnRevealWakeSources.current === stopWakeSources) {
-        stopColumnRevealWakeSources.current = ignoreColumnRevealSignal;
-      }
-    }
-
-    function runScheduledAttempt(): void {
-      scheduledFrame = undefined;
-      if (!wakeSourcesActive) return;
-      if (!requestIsCurrent()) {
-        stopWakeSources();
-        return;
-      }
-      const geometry = revealGeometry();
-      const shouldReveal = forceRevealOnNextFrame || geometry !== lastRevealGeometry;
-      forceRevealOnNextFrame = false;
-      const outcome = shouldReveal ? reveal() : "pending";
-      lastRevealGeometry = revealGeometry();
-      if (outcome !== "pending") {
-        positionRevealed = outcome === "revealed";
-        stopWakeSources();
-        return;
-      }
-      layoutFramesRemaining = Math.max(0, layoutFramesRemaining - 1);
-      if (layoutFramesRemaining > 0) {
-        scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
-      }
-    }
-
-    function scheduleAttempt(): void {
-      // Concrete layout, projection, or visibility signals force one attempt
-      // and, after a dormant exhaustion, start a fresh bounded geometry watch.
-      if (!wakeSourcesActive) return;
-      forceRevealOnNextFrame = true;
-      if (layoutFramesRemaining === 0) layoutFramesRemaining = maximumColumnRevealLayoutFrames;
-      if (scheduledFrame !== undefined) return;
-      scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
-    }
-
-    function monitorPostLayoutGeometry(): void {
-      if (!wakeSourcesActive || scheduledFrame !== undefined || layoutFramesRemaining === 0) return;
-      scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
-    }
-
-    function scheduleWhenVisible(): void {
-      if (document.visibilityState === "visible") scheduleAttempt();
-    }
-
-    scheduleColumnRevealAttempt.current = scheduleAttempt;
-    stopColumnRevealWakeSources.current = stopWakeSources;
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(scheduleAttempt);
-      resizeObserver.observe(scroller);
-      if (grid) resizeObserver.observe(grid);
-      if (table) resizeObserver.observe(table);
-    }
-    window.addEventListener("focus", scheduleAttempt);
-    window.addEventListener("resize", scheduleAttempt);
-    document.addEventListener("visibilitychange", scheduleWhenVisible);
-    grid?.addEventListener("transitionend", scheduleAttempt);
-    grid?.addEventListener("animationend", scheduleAttempt);
-    const initialOutcome = reveal();
-    lastRevealGeometry = revealGeometry();
-    if (initialOutcome !== "pending") {
-      positionRevealed = initialOutcome === "revealed";
-      stopWakeSources();
-    } else {
-      layoutFramesRemaining = maximumColumnRevealLayoutFrames;
-      monitorPostLayoutGeometry();
-    }
-
-    return () => {
-      stopWakeSources();
-      if (
-        !positionRevealed &&
-        requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion &&
-        (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
-          handledGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion)
-      ) {
-        requestedGoToColumnRequest.current = undefined;
-      }
-    };
-  }, [
-    defaultColumnWidth,
-    goToColumnId,
-    goToColumnRequestId,
-    metadata.schema,
-    reportViewState,
-    rowHeaderWidth,
-    viewStateRestoreVersion,
-    widths
-  ]);
-
-  useLayoutEffect(() => {
-    scheduleColumnRevealAttempt.current();
-  }, [busy, loadedColumnSignature, logicalViewContext, page.offset, projecting]);
-
-  useLayoutEffect(() => {
-    if (!goToColumnId || goToColumnRequestId === undefined) return;
-    if (
-      requestedGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
-      requestedGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion ||
-      (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
-    ) {
-      return;
-    }
-    const index = metadata.schema.findIndex((column) => column.id === goToColumnId);
-    if (index < 0 || !pageColumnPositionById.has(goToColumnId)) return;
-    if (index < visibleColumnRange.start || index >= visibleColumnRange.end) return;
-    const scroller = scrollerRef.current;
-    const target = scroller?.querySelector<HTMLElement>(`th[data-grid-column="${index}"]`);
-    if (!scroller || !target) return;
-
-    const targetWidth = widths[index] ?? defaultColumnWidth;
-    const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
-    const columnEnd = columnStart + targetWidth;
-    const visibleStart = scroller.scrollLeft + rowHeaderWidth;
-    const visibleEnd = scroller.scrollLeft + scroller.clientWidth;
-    const requiredVisibleWidth = Math.min(targetWidth, Math.max(0, scroller.clientWidth - rowHeaderWidth));
-    const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
-    if (requiredVisibleWidth <= 0 || actualVisibleWidth + scrollQuantizationTolerance < requiredVisibleWidth) return;
-
-    handledGoToColumnRequest.current = {
-      requestId: goToColumnRequestId,
-      restoreVersion: viewStateRestoreVersion
-    };
-    onGoToColumnHandled(goToColumnRequestId, "revealed");
-  }, [
-    goToColumnId,
-    goToColumnRequestId,
-    loadedColumnSignature,
-    metadata.schema,
-    onGoToColumnHandled,
-    pageColumnPositionById,
-    defaultColumnWidth,
-    rowHeaderWidth,
-    viewStateRestoreVersion,
-    viewport.scrollLeft,
-    viewport.width,
-    visibleColumnRange.end,
-    visibleColumnRange.start,
-    widths
-  ]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
@@ -2261,19 +2021,6 @@ function columnRange(
     start: Math.max(0, start - overscanColumns),
     end: Math.min(widths.length, end + overscanColumns)
   };
-}
-
-function centeredColumnScrollLeft(
-  widths: readonly number[],
-  column: number,
-  viewportWidth: number,
-  rowHeaderWidth: number,
-  defaultColumnWidth: number
-): number {
-  const columnStart = rowHeaderWidth + sum(widths.slice(0, column));
-  const targetWidth = widths[column] ?? defaultColumnWidth;
-  const centeredOffset = Math.max(rowHeaderWidth, (viewportWidth - targetWidth) / 2);
-  return Math.max(0, columnStart - centeredOffset);
 }
 
 function selectedColumnPosition(schema: ColumnSchema[], selectedColumnId: string | undefined): number {
