@@ -5,6 +5,7 @@ import os
 from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import MAX_EMAX, MIN_EMIN, Decimal, DecimalException, localcontext
 from functools import lru_cache
@@ -127,6 +128,110 @@ def _pandas_fill_strategy(
     if kind == "linearInterpolation":
         return "linear"
     return "value"
+
+
+@dataclass(frozen=True, slots=True)
+class _PandasFilterCondition:
+    method: str
+    column_type: str | None
+    values: tuple[Any, ...] = ()
+    coerce_values: bool = True
+    negated: bool = False
+    excludes_missing: bool = False
+    include_nulls: bool = False
+    include_nan: bool = False
+
+
+def _pandas_filter_conditions(
+    column_filter: Mapping[str, Any], column_type: str | None
+) -> tuple[_PandasFilterCondition, ...]:
+    conditions: list[_PandasFilterCondition] = []
+    value_filter = column_filter.get("valueFilter")
+    if value_filter and (
+        value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
+    ):
+        conditions.append(
+            _PandasFilterCondition(
+                "isin",
+                column_type,
+                tuple(value_filter.get("selectedValues", [])),
+                include_nulls=bool(value_filter.get("includeNulls")),
+                include_nan=bool(value_filter.get("includeNaN")),
+            )
+        )
+    for predicate in column_filter.get("predicates", []):
+        operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
+        missing = operator in {"isNull", "isNotNull", "isNaN", "isNotNaN"}
+        values: tuple[Any, ...] = () if missing else (predicate.get("value"),)
+        if operator == "between":
+            values += (predicate.get("secondValue"),)
+        method = {
+            "equals": "eq",
+            "notEquals": "ne",
+            "startsWith": "startswith",
+            "endsWith": "endswith",
+            "gte": "ge",
+            "lte": "le",
+        }.get(operator, operator)
+        if missing:
+            method = "null" if operator.endswith("Null") else "nan"
+        conditions.append(
+            _PandasFilterCondition(
+                method,
+                column_type,
+                values,
+                coerce_values=not missing and method not in {"contains", "startswith", "endswith"},
+                negated=operator in {"isNotNull", "isNotNaN"},
+                excludes_missing=not missing,
+            )
+        )
+    return tuple(conditions)
+
+
+def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition) -> Any:
+    method = condition.method
+    values = (
+        tuple(coerce_typed_view_value(value, condition.column_type) for value in condition.values)
+        if condition.coerce_values
+        else condition.values
+    )
+    if method == "isin":
+        result = series.isin(list(values))
+        if condition.include_nulls:
+            result = result | _null_mask(series)
+        if condition.include_nan:
+            result = result | _nan_mask(series)
+    elif method == "null":
+        result = _null_mask(series)
+    elif method == "nan":
+        result = _nan_mask(series)
+    elif method == "contains":
+        folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
+        result = folded.str.contains(str(values[0]).translate(_ASCII_TO_LOWER), na=False, regex=False)
+    elif method in {"startswith", "endswith"}:
+        result = getattr(series.astype(str).str, method)(str(values[0]), na=False)
+    elif method == "between":
+        result = (series >= values[0]) & (series <= values[1])
+    else:
+        result = getattr(series, method)(values[0])
+    if condition.negated:
+        result = ~result
+    if condition.excludes_missing:
+        result = result & ~_null_mask(series) & ~_nan_mask(series)
+    return result
+
+
+def _pandas_live_column_filter_mask(series: Any, column_filter: Mapping[str, Any], column_type: str) -> Any | None:
+    conditions = [
+        _pandas_live_filter_condition(series, condition)
+        for condition in _pandas_filter_conditions(column_filter, column_type)
+    ]
+    if not conditions:
+        return None
+    mask = conditions[0]
+    for condition in conditions[1:]:
+        mask = mask | condition if column_filter.get("logic") == "or" else mask & condition
+    return mask
 
 
 @lru_cache(maxsize=1)
@@ -345,28 +450,8 @@ class PandasEngine(DataFrameEngine):
                     f"Pandas view filter for {column_filter.get('column')!r} declares {declared_type!r}, "
                     f"but the dataframe column is {column_type!r}."
                 )
-            conditions = []
-            value_filter = column_filter.get("valueFilter")
-            if value_filter and (
-                value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
-            ):
-                selected = [
-                    coerce_typed_view_value(value, column_type) for value in value_filter.get("selectedValues", [])
-                ]
-                current = series.isin(selected)
-                if value_filter.get("includeNulls"):
-                    current = current | _null_mask(series)
-                if value_filter.get("includeNaN"):
-                    current = current | _nan_mask(series)
-                conditions.append(current)
-
-            for predicate in column_filter.get("predicates", []):
-                conditions.append(self._predicate_mask(series, predicate, column_type))
-
-            if conditions:
-                mask = conditions[0]
-                for condition in conditions[1:]:
-                    mask = mask | condition if column_filter.get("logic") == "or" else mask & condition
+            mask = _pandas_live_column_filter_mask(series, column_filter, column_type)
+            if mask is not None:
                 column_masks.append(mask)
 
         filtered = df
@@ -568,45 +653,6 @@ class PandasEngine(DataFrameEngine):
                 item["selectionValue"] = selection
             values.append(item)
         return values, len(counts) > limit
-
-    def _predicate_mask(self, series: Any, predicate: Mapping[str, Any], column_type: str) -> Any:
-        operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
-        value = (
-            coerce_typed_view_value(predicate.get("value"), column_type)
-            if operator not in {"contains", "startsWith", "endsWith", "isNull", "isNotNull", "isNaN", "isNotNaN"}
-            else predicate.get("value")
-        )
-        if operator == "isNull":
-            return _null_mask(series)
-        if operator == "isNotNull":
-            return ~_null_mask(series)
-        if operator == "isNaN":
-            return _nan_mask(series)
-        if operator == "isNotNaN":
-            return ~_nan_mask(series)
-        if operator == "equals":
-            result = series == value
-        elif operator == "notEquals":
-            result = series != value
-        elif operator == "contains":
-            folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
-            result = folded.str.contains(str(value).translate(_ASCII_TO_LOWER), na=False, regex=False)
-        elif operator == "startsWith":
-            result = series.astype(str).str.startswith(str(value), na=False)
-        elif operator == "endsWith":
-            result = series.astype(str).str.endswith(str(value), na=False)
-        elif operator == "gt":
-            result = series > value
-        elif operator == "gte":
-            result = series >= value
-        elif operator == "lt":
-            result = series < value
-        elif operator == "lte":
-            result = series <= value
-        else:
-            second = coerce_typed_view_value(predicate.get("secondValue"), column_type)
-            result = (series >= value) & (series <= second)
-        return result & ~_null_mask(series) & ~_nan_mask(series)
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         import numpy as np
@@ -1051,27 +1097,8 @@ class PandasEngine(DataFrameEngine):
                     f"Pandas filterRows declares {column_filter.get('type')!r}, "
                     f"but the bound column is {column_type!r}."
                 )
-            conditions = []
-            value_filter = column_filter.get("valueFilter")
-            if value_filter and (
-                value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
-            ):
-                selected = [
-                    coerce_typed_view_value(value, column_type) for value in value_filter.get("selectedValues", [])
-                ]
-                current = series.isin(selected)
-                if value_filter.get("includeNulls"):
-                    current = current | _null_mask(series)
-                if value_filter.get("includeNaN"):
-                    current = current | _nan_mask(series)
-                conditions.append(current)
-            conditions.extend(
-                self._predicate_mask(series, predicate, column_type) for predicate in column_filter["predicates"]
-            )
-            if conditions:
-                mask = conditions[0]
-                for condition in conditions[1:]:
-                    mask = mask | condition if column_filter.get("logic") == "or" else mask & condition
+            mask = _pandas_live_column_filter_mask(series, column_filter, column_type)
+            if mask is not None:
                 column_masks.append(mask)
 
         filtered = frame
@@ -3347,24 +3374,10 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
         position = bound_column_position(column_filter["column"], "filterRows")
         series = f"df.iloc[:, {position}]"
         column_type = column_filter.get("type")
-        conditions: list[str] = []
-        value_filter = column_filter.get("valueFilter")
-        if value_filter and (
-            value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
-        ):
-            parts = []
-            if value_filter.get("selectedValues"):
-                selected = ", ".join(
-                    f"_open_wrangler_view_value({value!r}, {column_type!r})" for value in value_filter["selectedValues"]
-                )
-                parts.append(f"{series}.isin([{selected}])")
-            if value_filter.get("includeNulls"):
-                parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
-            if value_filter.get("includeNaN"):
-                parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_nan)")
-            conditions.append("(" + " | ".join(parts) + ")")
-        for predicate in column_filter.get("predicates", []):
-            conditions.append(_pandas_predicate_expression(series, predicate, column_type))
+        conditions = [
+            _pandas_filter_condition_expression(series, condition)
+            for condition in _pandas_filter_conditions(column_filter, column_type)
+        ]
         if conditions:
             operator = " | " if column_filter.get("logic") == "or" else " & "
             column_masks.append("(" + operator.join(conditions) + ")")
@@ -3390,41 +3403,46 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     return lines
 
 
-def _pandas_predicate_expression(series: str, predicate: Mapping[str, Any], column_type: str | None) -> str:
-    operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
-    value = predicate.get("value")
-    typed_value = f"_open_wrangler_view_value({value!r}, {column_type!r})"
-    if operator == "isNull":
-        return f"_open_wrangler_mask({series}, _open_wrangler_is_null)"
-    if operator == "isNotNull":
-        return f"~_open_wrangler_mask({series}, _open_wrangler_is_null)"
-    if operator == "isNaN":
-        return f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
-    if operator == "isNotNaN":
-        return f"~_open_wrangler_mask({series}, _open_wrangler_is_nan)"
-    if operator == "equals":
-        result = f"({series} == {typed_value})"
-    elif operator == "notEquals":
-        result = f"({series} != {typed_value})"
-    elif operator == "contains":
+def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCondition) -> str:
+    method = condition.method
+    typed_values = (
+        [f"_open_wrangler_view_value({value!r}, {condition.column_type!r})" for value in condition.values]
+        if condition.coerce_values
+        else []
+    )
+    if method == "isin":
+        parts = []
+        if typed_values:
+            parts.append(f"{series}.isin([{', '.join(typed_values)}])")
+        if condition.include_nulls:
+            parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
+        if condition.include_nan:
+            parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_nan)")
+        result = "(" + " | ".join(parts) + ")"
+    elif method == "null":
+        result = f"_open_wrangler_mask({series}, _open_wrangler_is_null)"
+    elif method == "nan":
+        result = f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
+    elif method in {"eq", "ne", "gt", "ge", "lt", "le"}:
+        symbol = {"eq": "==", "ne": "!=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}[method]
+        result = f"({series} {symbol} {typed_values[0]})"
+    elif method == "contains":
         result = (
             f"{series}.astype(str).str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r}))"
-            f".str.contains({str(value).translate(_ASCII_TO_LOWER)!r}, na=False, regex=False)"
+            f".str.contains({str(condition.values[0]).translate(_ASCII_TO_LOWER)!r}, na=False, regex=False)"
         )
-    elif operator == "startsWith":
-        result = f"{series}.astype(str).str.startswith({str(value)!r}, na=False)"
-    elif operator == "endsWith":
-        result = f"{series}.astype(str).str.endswith({str(value)!r}, na=False)"
-    elif operator in {"gt", "gte", "lt", "lte"}:
-        symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
-        result = f"({series} {symbol} {typed_value})"
+    elif method in {"startswith", "endswith"}:
+        result = f"{series}.astype(str).str.{method}({str(condition.values[0])!r}, na=False)"
     else:
-        second = f"_open_wrangler_view_value({predicate.get('secondValue')!r}, {column_type!r})"
-        result = f"(({series} >= {typed_value}) & ({series} <= {second}))"
-    return (
-        f"(({result}) & ~_open_wrangler_mask({series}, _open_wrangler_is_null) "
-        f"& ~_open_wrangler_mask({series}, _open_wrangler_is_nan))"
-    )
+        result = f"(({series} >= {typed_values[0]}) & ({series} <= {typed_values[1]}))"
+    if condition.negated:
+        result = f"~{result}"
+    if condition.excludes_missing:
+        result = (
+            f"(({result}) & ~_open_wrangler_mask({series}, _open_wrangler_is_null) "
+            f"& ~_open_wrangler_mask({series}, _open_wrangler_is_nan))"
+        )
+    return result
 
 
 def _pandas_exact_numeric_extrema(minimum: Any, maximum: Any, semantic_type: str) -> dict[str, Any]:
