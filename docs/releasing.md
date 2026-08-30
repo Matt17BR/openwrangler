@@ -84,35 +84,50 @@ tag and GitHub files and never rebuilds or replaces them.
 
 ## Release candidate
 
-Dispatch `.github/workflows/release-candidate.yml` from the protected `main` commit with the reviewed stable tag. The
-workflow validates the tag, metadata, and source; packages once; verifies the VSIX, checksum, and provenance receipt;
-and audits the full Node lock plus published Python dependencies. It does not repeat the pull-request source-test
-graph.
+From protected `main`, dispatch `.github/workflows/release-candidate.yml` with `release_tag` set to the reviewed stable
+tag. Use a new first-attempt run; do not rerun a failed or cancelled candidate.
 
-The candidate job installs the same VSIX in pinned VS Code for the installed-performance check and in pinned Cursor
-for platform smoke. It verifies the files again between consumers and uploads only that artifact triple. Stable
-publication may select only a successful candidate run. If a candidate fails or is cancelled, correct `main` and
-create a new one.
+The workflow verifies the tag, source commit, and stable metadata, then builds the VSIX once. It binds that VSIX to a
+SHA-256 checksum and provenance receipt. It also audits the full Node lock, published Python dependencies, and optional
+runtime packages.
+
+The workflow runs the installed-performance check in pinned VS Code and a bounded platform smoke in pinned Linux
+Cursor against the exact candidate. Cursor does not receive the full VS Code qualification matrix. Both checks use the
+same candidate bytes, and neither rebuilds the extension.
+
+If every check passes, keep the workflow run ID for stable publication. If the run fails or is cancelled, correct
+protected `main` and dispatch a new candidate.
 
 ## Stable publication
 
-Dispatch `.github/workflows/stable-release.yml` with the successful candidate run ID and matching release tag. The
-workflow checks out the candidate's source, verifies its recorded files, and publishes the same VSIX bytes without
-building again.
+From protected `main`, dispatch `.github/workflows/stable-release.yml` with `candidate_run_id` set to the successful
+candidate run and `release_tag` set to its matching stable tag. The workflow accepts only a successful first-attempt
+candidate whose source remains in protected `main`.
 
-Only the protected publication job can write the tag and GitHub Release or publish to Open VSX. The lightweight tag
-starts the protected Azure Marketplace pipeline, which downloads the same GitHub Release artifact. A moved tag,
-changed artifact, metadata mismatch, or registry conflict stops publication instead of overwriting public state.
+The stable workflow is also first-attempt-only: it requires `github.run_attempt == 1`. If it fails before creating the
+exact GitHub Release, start a fresh stable-release dispatch. Once that release exists, use only the registry recovery
+steps below.
 
-Registry publication starts from the files on GitHub Releases. README and gallery media remain ordinary source files
-and do not gate registry publication.
+The workflow downloads the candidate VSIX, checksum, and provenance receipt and verifies their source and tag binding.
+It then publishes or verifies the exact lightweight tag and GitHub Release, and sends the same VSIX to Open VSX. The
+tag starts the Azure Marketplace pipeline, which publishes the same file from the GitHub Release. No publication step
+rebuilds the extension.
+
+A moved tag, changed artifact, metadata mismatch, or conflicting registry version stops publication. Never overwrite a
+different public package.
 
 ## Recovery
 
-Start from an existing tag or GitHub Release. Verify its checksum, provenance receipt, source commit, and VSIX before
-any registry action. Never rebuild historical bytes, move a release tag, replace a public package, or put credentials
-in repository files, workflow text, artifacts, or logs.
+Treat an existing release tag and GitHub Release as immutable. Before retrying a registry publication, verify the tag,
+source commit, VSIX, checksum, and provenance receipt. Never rebuild historical bytes, move a tag, or replace a public
+package.
 
-Use `.github/workflows/open-vsx-promotion.yml` only through its documented release or protected-`main` recovery inputs.
-The Azure Marketplace pipeline remains the Microsoft registry publisher. The workflow files define the current
-permissions and supported recovery cases.
+To recover Open VSX publication, dispatch `.github/workflows/open-vsx-promotion.yml` from protected `main` with
+`release_tag` set to the existing release tag. The workflow downloads the GitHub Release files, verifies them, and
+publishes the same VSIX or accepts an exact existing copy.
+
+To recover Azure Marketplace publication, run the configured Azure Marketplace pipeline defined by
+`azure-pipelines-marketplace.yml` from current protected `main` with `existingReleaseTag` set to the same tag. It
+verifies the existing tag and GitHub Release files and does not rebuild or replace them.
+
+Keep publication credentials out of repository files, workflow text, artifacts, and logs.
