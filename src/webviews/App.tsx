@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { flushSync } from "react-dom";
 import type {
-  ColumnSchema,
   DataDiff,
   LiveGridPage,
-  OperationKind,
   SessionMetadata,
   StepInspectionResponse,
   TransformStep
@@ -74,6 +72,7 @@ import {
   type QueuedStepSelection,
   type ViewSortActionTarget
 } from "./appState";
+import { useOperationDialogLifecycle } from "./operationDialogLifecycle";
 import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 import { useSessionModeChangeLifecycle } from "./sessionModeChangeLifecycle";
@@ -126,10 +125,6 @@ export function App() {
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
-  const [operationOpen, setOperationOpen] = useState(false);
-  const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
-  const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
-  const [editingStepInputSchema, setEditingStepInputSchema] = useState<readonly ColumnSchema[] | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
@@ -165,6 +160,15 @@ export function App() {
     scheduleFocusRestoration: scheduleWebviewFocusRestoration,
     canRestoreFocus: canRestoreFocusTo
   });
+  const {
+    dialog: operationDialog,
+    openDialog: openOperationDialog,
+    closeDialog: closeOperationDialog
+  } = useOperationDialogLifecycle({
+    scheduleFocusRestoration: scheduleWebviewFocusRestoration,
+    canRestoreFocus: canRestoreFocusTo
+  });
+  const operationOpen = operationDialog !== undefined;
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
@@ -189,20 +193,14 @@ export function App() {
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
-  const operationReturnFocus = useRef<HTMLElement | null>(null);
   const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
-  const operationWasOpen = useRef(false);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
     return `view-${viewRequestEpoch}-${lastViewRequestSequence}`;
-  }, []);
-
-  const rememberOperationReturnFocus = useCallback(() => {
-    operationReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }, []);
 
   const scheduleImportOptionsFocusRestoration = useCallback((returnTarget: HTMLButtonElement) => {
@@ -232,30 +230,6 @@ export function App() {
     },
     []
   );
-
-  useEffect(() => {
-    if (operationOpen) {
-      operationWasOpen.current = true;
-      return;
-    }
-    if (!operationWasOpen.current) return;
-    operationWasOpen.current = false;
-    const returnTarget = operationReturnFocus.current;
-    operationReturnFocus.current = null;
-    const frame = scheduleWebviewFocusRestoration(() => {
-      if (canRestoreFocusTo(returnTarget)) {
-        returnTarget.focus();
-        return;
-      }
-      document
-        .querySelector<HTMLElement>(
-          "[data-operation-focus-fallback]:not(:disabled), " +
-            '[data-testid="data-grid-scroller"] [tabindex="0"], main.app'
-        )
-        ?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [operationOpen]);
 
   useEffect(() => {
     if (!sidePanelOpen) return;
@@ -347,10 +321,7 @@ export function App() {
       setImportOptionsPending(pending);
       if (pending) {
         setQueuedOperationIntent(undefined);
-        setOperationOpen(false);
-        setEditingStep(undefined);
-        setEditingStepInputSchema(undefined);
-        setOperationKind(undefined);
+        closeOperationDialog();
         setLoading(true);
       } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
       if (!pending && wasPending) {
@@ -359,7 +330,7 @@ export function App() {
         if (returnTarget) scheduleImportOptionsFocusRestoration(returnTarget);
       }
     },
-    [scheduleImportOptionsFocusRestoration]
+    [closeOperationDialog, scheduleImportOptionsFocusRestoration]
   );
 
   const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
@@ -586,13 +557,14 @@ export function App() {
       if (intent.action === "editStep" && !selectedInputSchema) return;
       if (stepInspectionTargetRef.current) clearStepInspection();
       if (intent.action !== "open" && !selectedStep) return;
-      rememberOperationReturnFocus();
-      setEditingStep(selectedStep);
-      setEditingStepInputSchema(selectedInputSchema);
-      setOperationKind(intent.action === "open" ? intent.operationKind : selectedStep?.kind);
-      setOperationOpen(true);
+      const kind = intent.action === "open" ? intent.operationKind : selectedStep?.kind;
+      openOperationDialog({
+        ...(kind === undefined ? {} : { kind }),
+        ...(selectedStep === undefined ? {} : { editingStep: selectedStep }),
+        ...(selectedInputSchema === undefined ? {} : { editingStepInputSchema: selectedInputSchema })
+      });
     },
-    [clearStepInspection, rememberOperationReturnFocus]
+    [clearStepInspection, openOperationDialog]
   );
 
   const requestStepInspection = useCallback(
@@ -1114,10 +1086,7 @@ export function App() {
         if (!preservesOpenOperation) {
           setQueuedOperationIntent(undefined);
           setQueuedStepSelection(undefined);
-          setOperationOpen(false);
-          setEditingStep(undefined);
-          setEditingStepInputSchema(undefined);
-          setOperationKind(undefined);
+          closeOperationDialog();
         }
         latestPageRequest.current = undefined;
         setFilterBarRequestLifecycle({});
@@ -1307,7 +1276,7 @@ export function App() {
             : undefined
         );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
-        if (response.kind === "stepPreview") setOperationOpen(false);
+        if (response.kind === "stepPreview") closeOperationDialog();
         else clearStepInspection(false, false);
         restartProfilingAfterMutation(nextMetadata);
         if (shouldRestoreUndoFocus) {
@@ -1342,10 +1311,10 @@ export function App() {
     beginMutation,
     clearSynchronization,
     clearStepInspection,
+    closeOperationDialog,
     confirmView,
     deleteStep,
     nextViewRequestId,
-    rememberOperationReturnFocus,
     requestOperationIntent,
     requestImportOptionsChange,
     requestColumnReveal,
@@ -1829,7 +1798,7 @@ export function App() {
     if (event.key === "Escape") {
       if (operationOpen) {
         if (foregroundRequest.current !== "mutation") {
-          setOperationOpen(false);
+          closeOperationDialog();
           handled = true;
         }
       } else if (stepInspectionTargetRef.current) {
@@ -2510,17 +2479,17 @@ export function App() {
           Opening {sessionModeChangeTarget === "viewing" ? "Viewing" : "Editing"} mode…
         </span>
       )}
-      {metadata && operationOpen && (
+      {metadata && operationDialog && (
         <OperationBuilder
-          key={`${operationKind ?? "none"}:${editingStep?.id ?? "new"}`}
+          key={`${operationDialog.kind ?? "none"}:${operationDialog.editingStep?.id ?? "new"}`}
           metadata={metadata}
           filterModel={filterModel}
-          initialKind={operationKind}
-          initialStep={editingStep}
-          editInputSchema={editingStepInputSchema}
+          initialKind={operationDialog.kind}
+          initialStep={operationDialog.editingStep}
+          editInputSchema={operationDialog.editingStepInputSchema}
           busy={loading || mutationPending || projectionLoading || importOptionsPending}
           onClose={() => {
-            if (foregroundRequest.current !== "mutation") setOperationOpen(false);
+            if (foregroundRequest.current !== "mutation") closeOperationDialog();
           }}
           onPreview={previewStep}
         />
