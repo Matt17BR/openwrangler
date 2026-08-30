@@ -314,12 +314,12 @@ installed-performance, editor, and publication consumer revalidates those same b
 or substitute a candidate. Stable publication promotes the accepted bytes, and conflicting tags, registry bytes, or
 metadata fail closed.
 
-Ordinary pull requests run the native-R frame, kernel, and transport contracts against the locked R library. Release
-candidates do not repeat that source-level matrix. They qualify the canonical VSIX through pinned VS Code
-installed-performance and pinned Cursor platform smoke, reverifying the same artifact between consumers. The separate
-released-Jupyter workflow remains an optional product seam rather than a candidate gate. Current source checks,
-installed-editor isolation, failure-artifact privacy, exact R versions, and release gates are maintained in
-[testing](testing.md), [releasing](releasing.md), and the workflows themselves.
+Pull requests validate the native-R frame, kernel, and transport contracts against the locked R library. Release
+candidates do not repeat that source matrix. Pinned VS Code runs installed-performance checks against the
+provenance-bound VSIX. Pinned Cursor runs the smaller compatibility check described in the
+[product roadmap](product-roadmap.md). The released-Jupyter workflow remains optional. Exact source checks, R
+versions, editor isolation, failure-artifact privacy, and release gates live in [testing](testing.md),
+[releasing](releasing.md), and the workflows themselves.
 
 ## Related authorities
 
