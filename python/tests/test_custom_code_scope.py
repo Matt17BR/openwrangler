@@ -17,6 +17,8 @@ from openwrangler_runtime.custom_code_scope import (
     custom_code_generated_utf8_bytes,
     custom_code_prelude_lines,
     custom_code_step_lines,
+    execute_custom_code,
+    validate_custom_code_scope,
 )
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
@@ -65,6 +67,25 @@ REJECTED_SCOPES = [
 
 def custom_step(code: str, step_id: str = "custom") -> dict[str, Any]:
     return {"id": step_id, "kind": "customCode", "params": {"code": code}}
+
+
+@pytest.mark.parametrize("value", [None, 17, b"result = df"])
+def test_custom_code_scope_boundary_rejects_non_text(value: object) -> None:
+    with pytest.raises(CustomCodeScopeError, match="non-empty Python code"):
+        validate_custom_code_scope(value)
+
+
+def test_execute_custom_code_accepts_and_returns_opaque_objects() -> None:
+    dataframe = object()
+    sentinel = object()
+
+    result = execute_custom_code(
+        "result = sentinel if df is expected_dataframe else None",
+        dataframe,
+        {"expected_dataframe": dataframe, "sentinel": sentinel},
+    )
+
+    assert result is sentinel
 
 
 @pytest.fixture(params=["pandas", "polars", "duckdb"])
