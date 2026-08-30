@@ -160,19 +160,20 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
-CSV, TSV, JSONL, and Parquet file sessions have native viewing and the complete 32-operation live/generated catalog,
-but DuckDB remains an experimental, partially qualified backend; Excel and database browsing are not claimed. A live
+CSV, TSV, JSONL, and Parquet file sessions support native viewing and all 32 cleaning operations in both live and
+generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
 
 ### PySpark
 
-Supported local final/stable PySpark 4.2.x Classic and Connect dataframes are live-notebook, viewing-only sources.
-Open Wrangler does not clean them, generate cleaning code for them, or export them. Projection, filtering, sorting,
-counting, and aggregation stay in Spark. The runtime never calls `toPandas()`, `toArrow()`, or an unbounded
-`collect()`/iterator. A page must pass Spark-side transport-byte preflight before values are collected and then remain
-inside the cell, strict-protocol-byte, complex-node, and nesting-depth limits. Only that bounded page/value sample or a
-fixed-size aggregate result crosses into the kernel process.
+Open Wrangler supports local PySpark 4.2.x Classic and Connect dataframes as live-notebook, viewing-only sources.
+Pre-release PySpark builds are not supported. Open Wrangler does not clean PySpark dataframes, generate cleaning code
+for them, or export them. Projection, filtering, sorting, counting, and aggregation stay in Spark. The runtime never
+calls `toPandas()`, `toArrow()`, or an unbounded `collect()`/iterator. A page must pass Spark-side transport-byte
+preflight before values are collected and then remain inside the cell, strict-protocol-byte, complex-node, and
+nesting-depth limits. Only that bounded page/value sample or a fixed-size aggregate result crosses into the kernel
+process.
 
 ### Native R
 
@@ -189,10 +190,9 @@ silently moves the session to another terminal. On macOS and Linux, trusted `.R`
 an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents
 resolve the owning executor before choosing R or Python; the fence label alone is not authority.
 
-The accepted design and language boundary are recorded in
-[ADR 0001: Native R runtime for Open Wrangler 2](decisions/0001-native-r-runtime.md). The generated reference and
-feature-parity matrix, rather than the ADR's operation examples, are authoritative for the current catalog and
-qualification status.
+[ADR 0001: Native R runtime for Open Wrangler 2](decisions/0001-native-r-runtime.md) explains why Native R has its own
+runtime and language boundary. The generated reference lists the current operations, and the feature-parity matrix
+lists the current limitations.
 
 ## Schemas and bounded transport
 
@@ -314,12 +314,8 @@ installed-performance, editor, and publication consumer revalidates those same b
 or substitute a candidate. Stable publication promotes the accepted bytes, and conflicting tags, registry bytes, or
 metadata fail closed.
 
-Pull requests validate the native-R frame, kernel, and transport contracts against the locked R library. Release
-candidates do not repeat that source matrix. Pinned VS Code runs installed-performance checks against the
-provenance-bound VSIX. Pinned Cursor runs the smaller compatibility check described in the
-[product roadmap](product-roadmap.md). The released-Jupyter workflow remains optional. Exact source checks, R
-versions, editor isolation, failure-artifact privacy, and release gates live in [testing](testing.md),
-[releasing](releasing.md), and the workflows themselves.
+The [testing guide](testing.md) covers source and editor checks, the [release guide](releasing.md) covers publication,
+and the [product roadmap](product-roadmap.md) records the bounded Cursor check and optional released-Jupyter workflow.
 
 ## Related authorities
 

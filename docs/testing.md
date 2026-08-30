@@ -1,14 +1,13 @@
 # Testing
 
-Keep a test only when it catches a distinct product, package, runtime, or platform failure that a cheaper direct test
-cannot catch. Test product behavior at the lowest useful boundary. Retain direct security and privacy boundary tests
-for credential redaction, no-follow identity checks, sealed artifacts, and exact output-path handoff. Beyond those
-boundaries, do not retain tests of fixtures, general workflow topology, runner ceremony, diagnostic topology, or test
-selectors.
+Prefer the lowest-cost test that exercises the behavior. Keep a higher-level test only when it can catch a product,
+package, runtime, or platform failure that a direct test cannot. Keep dedicated security and privacy tests for
+credential redaction, no-follow identity checks, sealed artifacts, and exact output-path handoff. Do not keep fixture
+or end-to-end tests merely to verify how another test runner, selector, or diagnostic path is wired.
 
 ## Direct source checks
 
-Run the narrowest owner while iterating:
+While iterating, run the smallest relevant test:
 
 ```bash
 npx --no-install vitest run src/test/configuration.unit.test.ts
@@ -24,8 +23,8 @@ npm run test:ts
 npm run test:python
 ```
 
-`npm run test:scripts` runs the retained Node script contracts directly with `node --test`. Each file owns one
-semantic release, package, license, dependency-lock, or archive boundary; it does not discover tests from a registry.
+`npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
+with `node --test`.
 
 Use these checks for changed static boundaries:
 
@@ -43,11 +42,11 @@ npm run check:r-dependency-lock
 npm run license:check
 ```
 
-`npm run check` runs those static checks sequentially. `npm test` runs the three source suites sequentially.
-`npm run check:pr` runs the two commands in sequence for local and protected-main source qualification. The
-release-candidate workflow consumes that already-checked protected-main source and does not repeat the source suites.
+`npm run check` runs those static checks sequentially, and `npm test` runs the three source suites sequentially.
+`npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
+protected main after these checks pass and does not repeat the source suites.
 
-Native R changes use the source contract or one of its three pull-request selections:
+For Native R changes, run the full contract suite or the relevant group:
 
 ```bash
 npm run test:r-contract
@@ -56,12 +55,12 @@ npm run test:r-contract:catalog-and-process-transport
 node scripts/run-r-contract-tests.mjs --shard kernel-agent
 ```
 
-The selections keep real-R process ownership serial while separating native frame/interactive transport,
-catalog/process transport, and native kernel-agent failures.
+The grouped commands keep real-R process tests serial while separating frame and interactive-transport, catalog and
+process-transport, and kernel-agent failures.
 
 ## Pull-request CI
 
-The pull-request workflow has five direct owners:
+The pull-request workflow requires five jobs:
 
 - Source contracts: formatting, lint, types, generated protocol/reference output, documentation, dependency locks,
   licenses, the retained script contracts, and Vitest.
@@ -71,8 +70,7 @@ The pull-request workflow has five direct owners:
   Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
-There is no path classifier or aggregate workflow test. Branch protection directly requires all five owners to pass.
-See [CI](ci.md) for the job names.
+Branch protection requires all five jobs to pass. See [CI](ci.md) for the job names.
 
 ## Failure-artifact allowlist
 
@@ -127,8 +125,7 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 3. Reverifies the triple and runs pinned Cursor `platform-smoke` against the same VSIX.
 4. Reverifies and uploads only the canonical triple for stable promotion.
 
-This is the complete retained candidate flow. Stable publication consumes those exact bytes and does not rebuild
-them.
+Stable publication uses this verified VSIX and does not rebuild it.
 
 ## Change-focused editor checks
 
