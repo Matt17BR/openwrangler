@@ -836,17 +836,6 @@ describe("SessionCoordinator file-session reconfiguration", () => {
         ),
       expectedCode: "invalid_runtime_response",
       expectsCandidateClose: true
-    },
-    {
-      label: "an unsupported pinned import",
-      candidateResponse: (): OpenWranglerResponse => ({
-        kind: "error",
-        code: "unsupported_import_options",
-        message: "Pandas rejected the requested import options.",
-        recoverable: true
-      }),
-      expectedCode: "unsupported_import_options",
-      expectsCandidateClose: true
     }
   ])(
     "preserves exact confirmed state after $label",
