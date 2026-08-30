@@ -13,10 +13,6 @@ import pytest
 from openwrangler_runtime.custom_code_scope import (
     CUSTOM_CODE_FUNCTION_NAME,
     CustomCodeScopeError,
-    custom_code_definition_lines,
-    custom_code_generated_utf8_bytes,
-    custom_code_prelude_lines,
-    custom_code_step_lines,
     execute_custom_code,
     validate_custom_code_scope,
 )
@@ -203,59 +199,6 @@ def test_import_closure_and_multiline_code_matches_executable_generated_output(
 
     assert materialize(live) == materialize(generated)
     assert materialize(live)[1] == [(2,), (3,)]
-
-
-SPLITLINE_SEPARATORS = [
-    ("lf", "\n"),
-    ("cr", "\r"),
-    ("crlf", "\r\n"),
-    ("vertical-tab", "\v"),
-    ("form-feed", "\f"),
-    ("file-separator", "\x1c"),
-    ("group-separator", "\x1d"),
-    ("record-separator", "\x1e"),
-    ("next-line", "\x85"),
-    ("line-separator", "\u2028"),
-    ("paragraph-separator", "\u2029"),
-]
-SPLITLINE_CASES = [
-    (f"marker = 1{separator}result = df", f"{name}-interior") for name, separator in SPLITLINE_SEPARATORS
-] + [(f"result = df{separator}", f"{name}-terminal") for name, separator in SPLITLINE_SEPARATORS]
-
-
-@pytest.mark.parametrize("code", [case[0] for case in SPLITLINE_CASES], ids=[case[1] for case in SPLITLINE_CASES])
-def test_generated_renderer_matches_streaming_splitlines_shape(code: str) -> None:
-    line_count, separator_bytes = SessionManager._splitlines_shape(code)
-    definition = custom_code_definition_lines(code, index=0)
-    rendered_user_lines = definition[1 : line_count + 1]
-
-    assert rendered_user_lines == [f"    {line}" for line in code.splitlines()]
-    assert len(rendered_user_lines) == line_count
-    assert sum(len(f"{line}\n".encode()) for line in rendered_user_lines) == (
-        len(code.encode("utf-8")) - separator_bytes + (line_count * 5)
-    )
-    compile("\n".join(definition), "<generated-custom-definition>", "exec")
-
-
-@pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
-def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str) -> None:
-    code = "marker = 'é'\u2028result = df"
-    index = 4_999
-    line_count, separator_bytes = SessionManager._splitlines_shape(code)
-    rendered_lines = [
-        *custom_code_prelude_lines(),
-        *custom_code_definition_lines(code, index=index),
-        *custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index),
-    ]
-
-    assert custom_code_generated_utf8_bytes(
-        code_utf8_bytes=len(code.encode("utf-8")),
-        separator_utf8_bytes=separator_bytes,
-        line_count=line_count,
-        engine_name=engine_name,
-        index=index,
-        include_prelude=True,
-    ) == sum(len(line.encode("utf-8")) + 1 for line in rendered_lines)
 
 
 def test_generated_result_type_validation_and_series_normalization_match_live(

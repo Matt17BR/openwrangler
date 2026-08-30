@@ -11,7 +11,7 @@ import pytest
 
 from openwrangler_runtime import kernel_agent, notebook, server
 from openwrangler_runtime import protocol as runtime_protocol
-from openwrangler_runtime import session as session_runtime
+from openwrangler_runtime import session_plan as session_plan_runtime
 from openwrangler_runtime.by_example import evaluate_program
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
 from openwrangler_runtime.live_page_payload import validate_live_page_payload
@@ -94,7 +94,7 @@ def test_standalone_and_kernel_dispatch_share_generated_code_preflight(tmp_path,
         "columnOffset": 0,
         "columnLimit": 64,
     }
-    monkeypatch.setattr(session_runtime, "MAX_GENERATED_PYTHON_CODE_UTF8_BYTES", 256)
+    monkeypatch.setattr(session_plan_runtime, "MAX_GENERATED_PYTHON_CODE_UTF8_BYTES", 256)
 
     with pytest.raises(EngineError, match=r"256 UTF-8 bytes"):
         server.dispatch(manager, request, "standalone-code-preflight")
