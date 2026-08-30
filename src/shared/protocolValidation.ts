@@ -20,7 +20,7 @@ import type {
   TransformStep,
   TypedSelectionToken
 } from "./protocol.generated";
-import { openWranglerResponseShapes } from "./protocol.generated";
+import { openWranglerRequestShapes, openWranglerResponseShapes } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationCatalog, type OperationCatalogItem } from "./operationCatalog.generated";
@@ -82,6 +82,9 @@ const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\
 const OPERATION_DEFINITIONS: ReadonlyMap<string, OperationCatalogItem> = new Map(
   operationCatalog.map((definition) => [definition.kind, definition])
 );
+const REQUEST_SHAPES_BY_KIND: ReadonlyMap<string, (typeof openWranglerRequestShapes)[number]> = new Map(
+  openWranglerRequestShapes.map((definition) => [definition.kind, definition] as const)
+);
 const RESPONSE_SHAPES_BY_KIND: ReadonlyMap<string, (typeof openWranglerResponseShapes)[number]> = new Map(
   openWranglerResponseShapes.map((definition) => [definition.kind, definition] as const)
 );
@@ -129,21 +132,16 @@ export function isRuntimeRequestEnvelope(value: unknown): value is RuntimeReques
 /** Validates every canonical protocol-v2 request variant and its structural payload. */
 export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequest {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
+  const definition = REQUEST_SHAPES_BY_KIND.get(value.kind);
+  if (definition === undefined) return false;
+  const candidate = exactRecord(value, definition.required, definition.optional);
+  if (candidate === undefined) return false;
 
-  switch (value.kind) {
-    case "initialize": {
-      const candidate = exactRecord(value, ["kind"]);
-      return candidate !== undefined && candidate.kind === "initialize";
-    }
-    case "openSession": {
-      const candidate = exactRecord(
-        value,
-        ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
-        ["requestedSessionId", "cloneFrom", "backend", "mode"]
-      );
+  switch (candidate.kind) {
+    case "initialize":
+      return true;
+    case "openSession":
       return (
-        candidate !== undefined &&
-        candidate.kind === "openSession" &&
         isSessionSource(candidate.source) &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
         optional(candidate, "cloneFrom", isSessionCloneSource) &&
@@ -166,21 +164,9 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isNonNegativeInteger(candidate.columnOffset) &&
         isBoundedColumnLimit(candidate.columnLimit)
       );
-    }
-    case "getPage": {
-      const candidate = exactRecord(value, [
-        "kind",
-        "sessionId",
-        "revision",
-        "viewRequestId",
-        "offset",
-        "limit",
-        "columnOffset",
-        "columnLimit",
-        "filterModel"
-      ]);
+    case "getPage":
       return (
-        isSessionRequest(candidate, "getPage") &&
+        isSessionRequest(candidate) &&
         isNonEmptyString(candidate.viewRequestId) &&
         isNonNegativeInteger(candidate.offset) &&
         isBoundedPageSize(candidate.limit) &&
@@ -188,51 +174,29 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isBoundedColumnLimit(candidate.columnLimit) &&
         isFilterModel(candidate.filterModel)
       );
-    }
-    case "getSummary": {
-      const candidate = exactRecord(
-        value,
-        ["kind", "sessionId", "revision", "viewRequestId", "filterModel"],
-        ["columnIds"]
-      );
+    case "getSummary":
       return (
-        isSessionRequest(candidate, "getSummary") &&
+        isSessionRequest(candidate) &&
         isNonEmptyString(candidate.viewRequestId) &&
         isFilterModel(candidate.filterModel) &&
         optional(candidate, "columnIds", (columnIds) => isUniqueNonEmptyStringArray(columnIds) && columnIds.length > 0)
       );
-    }
-    case "getDatasetStats": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "viewRequestId", "filterModel"]);
+    case "getDatasetStats":
       return (
-        isSessionRequest(candidate, "getDatasetStats") &&
-        isNonEmptyString(candidate.viewRequestId) &&
-        isFilterModel(candidate.filterModel)
+        isSessionRequest(candidate) && isNonEmptyString(candidate.viewRequestId) && isFilterModel(candidate.filterModel)
       );
-    }
-    case "getColumnValues": {
-      const candidate = exactRecord(
-        value,
-        ["kind", "sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"],
-        ["search"]
-      );
+    case "getColumnValues":
       return (
-        isSessionRequest(candidate, "getColumnValues") &&
+        isSessionRequest(candidate) &&
         isNonEmptyString(candidate.viewRequestId) &&
         isNonEmptyString(candidate.column) &&
         isFilterModel(candidate.filterModel) &&
         optional(candidate, "search", isString) &&
         isBoundedPageSize(candidate.limit)
       );
-    }
-    case "previewStep": {
-      const candidate = exactRecord(
-        value,
-        ["kind", "sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"],
-        ["replaceStepId"]
-      );
+    case "previewStep":
       return (
-        isSessionRequest(candidate, "previewStep") &&
+        isSessionRequest(candidate) &&
         isTransformStep(candidate.step) &&
         optional(candidate, "replaceStepId", isNonEmptyString) &&
         isNonNegativeInteger(candidate.offset) &&
@@ -240,66 +204,36 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isNonNegativeInteger(candidate.columnOffset) &&
         isBoundedColumnLimit(candidate.columnLimit)
       );
-    }
-    case "inspectStep": {
-      const candidate = exactRecord(value, [
-        "kind",
-        "sessionId",
-        "revision",
-        "stepId",
-        "offset",
-        "limit",
-        "columnOffset",
-        "columnLimit"
-      ]);
+    case "inspectStep":
       return (
-        isSessionRequest(candidate, "inspectStep") &&
+        isSessionRequest(candidate) &&
         isNonEmptyString(candidate.stepId) &&
         isNonNegativeInteger(candidate.offset) &&
         isBoundedPageSize(candidate.limit) &&
         isNonNegativeInteger(candidate.columnOffset) &&
         isBoundedColumnLimit(candidate.columnLimit)
       );
-    }
     case "applyDraft":
     case "discardDraft":
-    case "undoStep": {
-      const candidate = exactRecord(value, [
-        "kind",
-        "sessionId",
-        "revision",
-        "offset",
-        "limit",
-        "columnOffset",
-        "columnLimit"
-      ]);
+    case "undoStep":
       return (
-        isSessionRequest(candidate, value.kind) &&
+        isSessionRequest(candidate) &&
         isNonNegativeInteger(candidate.offset) &&
         isBoundedPageSize(candidate.limit) &&
         isNonNegativeInteger(candidate.columnOffset) &&
         isBoundedColumnLimit(candidate.columnLimit)
       );
-    }
-    case "exportData": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "path", "options"], ["targetIdentity"]);
+    case "exportData":
       return (
-        isSessionRequest(candidate, "exportData") &&
+        isSessionRequest(candidate) &&
         isNonEmptyString(candidate.path) &&
         isExportOptions(candidate.options) &&
         (candidate.targetIdentity === undefined || isExportTargetIdentity(candidate.targetIdentity))
       );
-    }
-    case "closeSession": {
-      const candidate = exactRecord(value, ["kind", "sessionId", "revision"]);
-      return isSessionRequest(candidate, "closeSession");
-    }
-    case "cancelRequest": {
-      const candidate = exactRecord(value, ["kind", "targetRequestId"]);
-      return (
-        candidate !== undefined && candidate.kind === "cancelRequest" && isNonEmptyString(candidate.targetRequestId)
-      );
-    }
+    case "closeSession":
+      return isSessionRequest(candidate);
+    case "cancelRequest":
+      return isNonEmptyString(candidate.targetRequestId);
     default:
       return false;
   }
@@ -2034,13 +1968,8 @@ function exactRecord(
   return value;
 }
 
-function isSessionRequest(candidate: UnknownRecord | undefined, kind: string): candidate is UnknownRecord {
-  return (
-    candidate !== undefined &&
-    candidate.kind === kind &&
-    isString(candidate.sessionId) &&
-    isNonNegativeInteger(candidate.revision)
-  );
+function isSessionRequest(candidate: UnknownRecord): boolean {
+  return isString(candidate.sessionId) && isNonNegativeInteger(candidate.revision);
 }
 
 function optional(record: UnknownRecord, key: string, guard: ValueGuard): boolean {

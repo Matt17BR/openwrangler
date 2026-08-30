@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { openWranglerRequestShapes } from "../shared/protocol";
 import { isOpenWranglerRequest, isOpenWranglerResponse, isRuntimeRequestEnvelope } from "../shared/protocolValidation";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 import { metadata, requests, responses, validateTransportSchema } from "./protocolValidation.fixtures";
+
+const representativeRequests = [...new Map(requests.map((request) => [request.kind, request] as const)).values()];
 
 describe("protocol-v2 request validation", () => {
   it.each(requests.map((request) => [request.kind, request] as const))(
@@ -16,6 +19,38 @@ describe("protocol-v2 request validation", () => {
           request
         })
       ).toBe(true);
+    }
+  );
+
+  it("keeps the generated request-shape catalog complete and deeply frozen", () => {
+    expect(openWranglerRequestShapes).toHaveLength(14);
+    expect(openWranglerRequestShapes.map(({ kind }) => kind)).toEqual(representativeRequests.map(({ kind }) => kind));
+    expect(Object.isFrozen(openWranglerRequestShapes)).toBe(true);
+    for (const definition of openWranglerRequestShapes) {
+      expect(Object.isFrozen(definition)).toBe(true);
+      expect(Object.isFrozen(definition.required)).toBe(true);
+      expect(Object.isFrozen(definition.optional)).toBe(true);
+    }
+
+    const first = openWranglerRequestShapes[0];
+    expect(Reflect.set(openWranglerRequestShapes, 0, first)).toBe(false);
+    expect(Reflect.set(first, "kind", "changed")).toBe(false);
+    expect(Reflect.set(first.required, 0, "changed")).toBe(false);
+  });
+
+  it.each(representativeRequests.map((request) => [request.kind, request] as const))(
+    "rejects missing required and unknown top-level keys for %s",
+    (kind, request) => {
+      const definition = openWranglerRequestShapes.find((candidate) => candidate.kind === kind);
+      expect(definition).toBeDefined();
+      if (definition === undefined) return;
+
+      for (const requiredKey of definition.required) {
+        const missingRequired = { ...request } as Record<string, unknown>;
+        Reflect.deleteProperty(missingRequired, requiredKey);
+        expect(isOpenWranglerRequest(missingRequired)).toBe(false);
+      }
+      expect(isOpenWranglerRequest({ ...request, unknownTopLevelKey: true })).toBe(false);
     }
   );
 

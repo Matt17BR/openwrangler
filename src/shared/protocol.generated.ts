@@ -1478,6 +1478,113 @@ export interface ErrorResponse {
   viewRequestId?: string;
 }
 
+export interface OpenWranglerRequestShape {
+  readonly kind: OpenWranglerRequest["kind"];
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+export const openWranglerRequestShapes = Object.freeze([
+  Object.freeze({
+    kind: "initialize",
+    required: Object.freeze(["kind"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "openSession",
+    required: Object.freeze(["kind", "source", "pageSize", "columnOffset", "columnLimit"]),
+    optional: Object.freeze(["requestedSessionId", "cloneFrom", "backend", "mode"])
+  }),
+  Object.freeze({
+    kind: "getPage",
+    required: Object.freeze([
+      "kind",
+      "sessionId",
+      "revision",
+      "viewRequestId",
+      "offset",
+      "limit",
+      "columnOffset",
+      "columnLimit",
+      "filterModel"
+    ]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "getSummary",
+    required: Object.freeze(["kind", "sessionId", "revision", "viewRequestId", "filterModel"]),
+    optional: Object.freeze(["columnIds"])
+  }),
+  Object.freeze({
+    kind: "getDatasetStats",
+    required: Object.freeze(["kind", "sessionId", "revision", "viewRequestId", "filterModel"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "getColumnValues",
+    required: Object.freeze(["kind", "sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"]),
+    optional: Object.freeze(["search"])
+  }),
+  Object.freeze({
+    kind: "previewStep",
+    required: Object.freeze([
+      "kind",
+      "sessionId",
+      "revision",
+      "step",
+      "offset",
+      "limit",
+      "columnOffset",
+      "columnLimit"
+    ]),
+    optional: Object.freeze(["replaceStepId"])
+  }),
+  Object.freeze({
+    kind: "inspectStep",
+    required: Object.freeze([
+      "kind",
+      "sessionId",
+      "revision",
+      "stepId",
+      "offset",
+      "limit",
+      "columnOffset",
+      "columnLimit"
+    ]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "applyDraft",
+    required: Object.freeze(["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "discardDraft",
+    required: Object.freeze(["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "undoStep",
+    required: Object.freeze(["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "exportData",
+    required: Object.freeze(["kind", "sessionId", "revision", "path", "options"]),
+    optional: Object.freeze(["targetIdentity"])
+  }),
+  Object.freeze({
+    kind: "closeSession",
+    required: Object.freeze(["kind", "sessionId", "revision"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "cancelRequest",
+    required: Object.freeze(["kind", "targetRequestId"]),
+    optional: Object.freeze([])
+  })
+]) satisfies readonly OpenWranglerRequestShape[];
+
 export interface OpenWranglerResponseShape {
   readonly kind: OpenWranglerResponse["kind"];
   readonly required: readonly string[];
