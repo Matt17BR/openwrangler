@@ -396,7 +396,7 @@ describe("DataGrid column search target", () => {
           onViewStateChange={onViewStateChange}
         />
       );
-      const { rerender } = render(renderGrid());
+      const { rerender, unmount } = render(renderGrid());
       const scroller = screen.getByTestId("data-grid-scroller");
       let layoutReady = false;
       let scrollLeft = 0;
@@ -574,6 +574,22 @@ describe("DataGrid column search target", () => {
       for (let frame = 0; frame < 20; frame += 1) advanceFrame();
       expect(frames.size).toBe(0);
       expect(scroller.scrollLeft).toBe(pointerInterruptedScrollLeft);
+
+      rerender(renderGrid());
+      layoutReady = false;
+      scrollLeft = 0;
+      rerender(renderGrid(8));
+      await waitFor(() => expect(frames.size).toBe(1));
+      expect(resizeObservers.size).toBe(1);
+      unmount();
+      expect(frames.size).toBe(0);
+      expect(resizeObservers.size).toBe(0);
+      layoutReady = true;
+      signalResize();
+      fireEvent(window, new Event("resize"));
+      for (let frame = 0; frame < 20; frame += 1) advanceFrame();
+      expect(frames.size).toBe(0);
+      expect(onGoToColumnHandled.mock.calls.some(([requestId]) => requestId === 8)).toBe(false);
     } finally {
       vi.unstubAllGlobals();
       cancelFrame.mockRestore();
