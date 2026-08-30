@@ -23,13 +23,13 @@ from openwrangler_runtime.response_framing import (
     encode_response_frame,
 )
 from openwrangler_runtime.session import (
-    LiveSourceInvalidatedError,
     PySparkConnectStateLostError,
     PySparkConnectUnavailableError,
     ResponsePayloadError,
     SessionCleanupError,
     SessionManager,
 )
+from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 
 EMPTY_FILTER = {"filters": [], "sort": []}
 

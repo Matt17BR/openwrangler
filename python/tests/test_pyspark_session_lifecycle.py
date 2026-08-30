@@ -20,7 +20,8 @@ from python.tests.pyspark_engine_test_support import (
 import __main__
 import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import EngineError, PySparkEngine
-from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionManager
+from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 
 sample_frame = _shared_sample_frame
 spark_session = _shared_spark_session
@@ -165,7 +166,6 @@ def test_replacing_classic_or_connect_variable_invalidates_cached_pages_before_r
     )
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
-    assert session.live_source_value is sample_frame
     assert len(session.page_cache) == 1
 
     replacement = spark_session.range(10, 13).selectExpr("id AS replacement_value")

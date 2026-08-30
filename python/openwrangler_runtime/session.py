@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import threading
 import uuid
 from collections import OrderedDict
@@ -8,7 +7,6 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from ._column_binding import ColumnBindingError, bind_step
@@ -37,7 +35,11 @@ from .protocol_limits_generated import (
 )
 from .response_framing import MAX_STRICT_RESPONSE_PAYLOAD_BYTES, strict_json_byte_length
 from .session_access import SessionRequestAdmission
-from .trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
+from .session_source import (
+    SessionSource,
+    SourceChangedError,
+    resolve_notebook_variable,
+)
 from .version import __version__
 
 PAGE_CACHE_LIMIT = 8
@@ -52,35 +54,12 @@ class _CachedPage:
     size_bytes: int
 
 
-@dataclass(frozen=True, slots=True)
-class _SourceFingerprint:
-    requested_path: str
-    resolved_path: str
-    device: int
-    inode: int
-    size: int
-    modified_ns: int
-    changed_ns: int
-
-
-class _SourceChangedError(EngineError):
-    """Recoverable source invalidation that must also invalidate cached pages."""
-
-
 class UnknownSessionError(EngineError):
     """Raised with the exact public identity when a session no longer exists."""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         super().__init__(f"Unknown session: {session_id}")
-
-
-class LiveSourceInvalidatedError(_SourceChangedError):
-    """Raised when an exact live notebook source can no longer serve reads."""
-
-    def __init__(self, session_id: str, message: str) -> None:
-        self.session_id = session_id
-        super().__init__(message)
 
 
 class PySparkConnectUnavailableError(EngineError):
@@ -126,7 +105,7 @@ class _AppliedViewRestore:
 @dataclass
 class Session:
     session_id: str
-    source: dict[str, Any]
+    source: SessionSource
     backend: str
     engine: DataFrameEngine
     original: Any
@@ -153,8 +132,6 @@ class Session:
     replace_step_id: str | None
     source_shape: SessionDataShape
     source_schema: list[dict[str, Any]]
-    source_fingerprint: _SourceFingerprint | None
-    live_source_value: Any | None
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
@@ -191,7 +168,7 @@ class Session:
         self.disposed = True
         self.view_generation += 1
         self.clear_page_cache()
-        self.live_source_value = None
+        self.source.release()
         try:
             self.engine.close()
         except Exception as error:
@@ -367,7 +344,11 @@ class SessionManager:
                 failure = session.engine.classify_request_failure(error)
             except Exception:
                 failure = None
-            label = session.source.get("label") or session.source.get("variableName") or "PySpark dataframe"
+            label = (
+                session.source.metadata.get("label")
+                or session.source.metadata.get("variableName")
+                or "PySpark dataframe"
+            )
             if failure == "temporarily_unavailable":
                 raise PySparkConnectUnavailableError(
                     session.session_id,
@@ -410,6 +391,7 @@ class SessionManager:
 
         engine: DataFrameEngine | None = None
         session: Session | None = None
+        session_source: SessionSource | None = None
         cloned_row_id: Any | None = None
         try:
             source_kind = str(source.get("kind", ""))
@@ -418,12 +400,9 @@ class SessionManager:
                 engine.validate_runtime()
                 if source_kind not in engine.capabilities.source_kinds:
                     raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
-                source_fingerprint = self._source_fingerprint(source, engine)
-                load_source = dict(source)
-                if source_fingerprint is not None:
-                    load_source["path"] = source_fingerprint.resolved_path
-                frame = self._load_source(load_source, engine)
-                live_source_value = frame if engine.name == "pyspark" and source_kind == "notebookVariable" else None
+                session_source = SessionSource.capture(session_id, source, engine)
+                frame = self._load_source(session_source.resolved_metadata, engine)
+                session_source.bind_loaded_value(engine, frame)
                 if source.get("kind") != "file":
                     notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
                     frame = (
@@ -441,7 +420,7 @@ class SessionManager:
                 source_session = self._session(clone_session_id)
                 with self._exclusive_session_read(source_session):
                     self._assert_revision(source_session, clone_revision)
-                    if dict(source) != source_session.source:
+                    if not source_session.source.matches_public_source(source):
                         raise EngineError("The clone source no longer matches the confirmed runtime source.")
                     if backend not in {None, source_session.backend}:
                         raise EngineError("The clone backend no longer matches the confirmed runtime backend.")
@@ -450,8 +429,7 @@ class SessionManager:
                         raise EngineError("The clone mode no longer matches the confirmed runtime mode.")
                     engine = self.registry.create(source_session.backend)
                     engine.validate_runtime()
-                    source_fingerprint = source_session.source_fingerprint
-                    live_source_value = source_session.live_source_value
+                    session_source = source_session.source.clone_for(session_id)
                     frame = engine.clone_session_source(source_session.original)
                     cloned_row_id = engine.internal_row_id_column(frame)
             engine.validate_internal_row_id_namespace(frame, cloned_row_id)
@@ -461,9 +439,11 @@ class SessionManager:
             source_shape = engine.shape(frame)
             source_schema = engine.schema(frame)
             initial_lineage = source_lineage(source_schema)
+            if session_source is None:
+                raise EngineError("The runtime did not bind an exact session source.")
             session = Session(
                 session_id=session_id,
-                source=dict(source),
+                source=session_source,
                 backend=engine.name,
                 engine=engine,
                 original=frame,
@@ -490,8 +470,6 @@ class SessionManager:
                 replace_step_id=None,
                 source_shape=source_shape,
                 source_schema=source_schema,
-                source_fingerprint=source_fingerprint,
-                live_source_value=live_source_value,
                 page_cache=OrderedDict(),
                 page_cache_bytes=0,
                 view_generation=0,
@@ -1118,16 +1096,11 @@ class SessionManager:
             normalized_options = session.engine.validate_export_options(options)
             format_name = normalized_options["format"]
 
-            source_path = session.source.get("path")
-            if source_path and Path(path).absolute() == Path(str(source_path)).absolute():
+            if session.source.is_same_path(path):
                 raise EngineError("The host-owned export target cannot be the active source file.")
             try:
                 target = ExportTarget.from_request(path, target_identity)
-                source_fingerprint = session.source_fingerprint
-                if source_fingerprint and (target.device, target.inode) == (
-                    source_fingerprint.device,
-                    source_fingerprint.inode,
-                ):
+                if session.source.matches_file_identity(target.device, target.inode):
                     raise ExportTargetError("The host-owned export target cannot be the active source file.")
                 with target.pinned_writer_path() as writer_path:
                     session.engine.export_data(
@@ -1498,7 +1471,7 @@ class SessionManager:
             "revision": session.revision,
             "backend": session.backend,
             "mode": session.mode,
-            "source": session.source,
+            "source": session.source.metadata,
             "capabilities": self._capabilities(session),
             "shape": dict(session.display_shape),
             "filteredShape": dict(session.filtered_shape),
@@ -1918,13 +1891,13 @@ class SessionManager:
             return session
 
     def _capabilities(self, session: Session) -> dict[str, bool]:
-        source_kind = session.source.get("kind")
+        source_kind = session.source.kind
         engine_capabilities = session.engine.capabilities
         source_supports_editing = not (session.backend == "duckdb" and source_kind == "notebookVariable")
         editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,
-            "lazy": session.engine.is_lazy(session.display_frame, session.source),
+            "lazy": session.engine.is_lazy(session.display_frame, session.source.metadata),
             "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
@@ -1972,7 +1945,7 @@ class SessionManager:
                 snapshot.restore(session)
                 # Roll back the edit state, but never resurrect blocks read from a
                 # source version that the operation proved is no longer current.
-                if isinstance(error, _SourceChangedError):
+                if isinstance(error, SourceChangedError):
                     session.clear_page_cache()
                 raise
 
@@ -1990,114 +1963,35 @@ class SessionManager:
 
     @contextmanager
     def _validated_source_read(self, session: Session) -> Iterator[None]:
-        self._assert_source_unchanged(session)
         try:
-            yield
-        except BaseException as error:
-            # A concurrent replacement can make the lazy scan itself fail. In
-            # that case the source-version diagnostic must take precedence over
-            # a backend-specific read error and cached blocks must be cleared.
-            try:
-                self._assert_source_unchanged(session)
-            except EngineError as source_error:
-                raise source_error from error
+            with session.source.validated_read(session.engine):
+                yield
+        except SourceChangedError:
+            session.clear_page_cache()
             raise
-        else:
-            self._assert_source_unchanged(session)
-
-    def _assert_source_unchanged(self, session: Session) -> None:
-        self._assert_live_source_unchanged(session)
-        expected = session.source_fingerprint
-        if expected is None:
-            return
-        try:
-            current = self._fingerprint_path(expected.requested_path)
-        except (OSError, ValueError) as error:
-            session.clear_page_cache()
-            raise self._source_changed_error(session) from error
-        if current != expected:
-            session.clear_page_cache()
-            raise self._source_changed_error(session)
-
-    def _assert_live_source_unchanged(self, session: Session) -> None:
-        expected = session.live_source_value
-        if session.backend != "pyspark" or expected is None:
-            return
-
-        try:
-            current = self._resolve_notebook_variable(session.source)
-        except EngineError as error:
-            session.clear_page_cache()
-            raise self._live_source_invalidated_error(
-                session,
-                "is no longer available in the notebook kernel",
-            ) from error
-        if current is not expected:
-            session.clear_page_cache()
-            raise self._live_source_invalidated_error(session, "was replaced in the notebook kernel")
-
-        stopped_probe = getattr(session.engine, "live_source_is_stopped", None)
-        if callable(stopped_probe) and stopped_probe(expected) is True:
-            session.clear_page_cache()
-            raise self._live_source_invalidated_error(session, "belongs to a Spark session that has stopped")
 
     @staticmethod
-    def _live_source_invalidated_error(session: Session, reason: str) -> LiveSourceInvalidatedError:
-        label = session.source.get("label") or session.source.get("variableName") or "PySpark dataframe"
-        return LiveSourceInvalidatedError(
-            session.session_id,
-            f"The live PySpark dataframe {label!r} {reason}. "
-            "Recreate it or run the cell that defines it, then retry in Open Wrangler. "
-            "If its columns or types changed, reopen the variable instead.",
-        )
-
-    @staticmethod
-    def _source_changed_error(session: Session) -> _SourceChangedError:
-        label = session.source.get("label") or session.source.get("path") or "source file"
-        return _SourceChangedError(
-            f"The source file for {label} changed or is no longer available. Reopen the file to refresh this session."
-        )
-
-    @classmethod
-    def _source_fingerprint(
-        cls,
-        source: Mapping[str, Any],
-        engine: DataFrameEngine,
-    ) -> _SourceFingerprint | None:
-        if source.get("kind") != "file":
-            return None
-        path = source.get("path")
-        if not path:
-            return None
-        if Path(str(path)).suffix.lower() not in engine.capabilities.lazy_file_extensions:
-            return None
+    def _assert_source_unchanged(session: Session) -> None:
         try:
-            return cls._fingerprint_path(str(path))
-        except (OSError, ValueError) as error:
-            label = source.get("label") or path
-            raise EngineError(f"Could not read {label}: {error}") from error
+            session.source.validate(session.engine)
+        except SourceChangedError:
+            session.clear_page_cache()
+            raise
 
     @staticmethod
-    def _fingerprint_path(path: str) -> _SourceFingerprint:
-        requested = Path(path).expanduser().absolute()
-        resolved = requested.resolve(strict=True)
-        fingerprint = _confirmed_source_path_fingerprint(resolved)
-        return _SourceFingerprint(
-            requested_path=str(requested),
-            resolved_path=str(resolved),
-            device=fingerprint.device,
-            inode=fingerprint.inode,
-            size=fingerprint.size,
-            modified_ns=fingerprint.modified_time_ns,
-            changed_ns=fingerprint.changed_time_ns,
-        )
+    def _assert_live_source_unchanged(session: Session) -> None:
+        try:
+            session.source.validate_live(session.engine)
+        except SourceChangedError:
+            session.clear_page_cache()
+            raise
 
     def _engine_for_source(self, source: Mapping[str, Any], backend: str | None) -> DataFrameEngine:
         if backend:
             return self.registry.create(backend)
         if source.get("kind") == "file":
             return self.registry.create("polars")
-        value = self._resolve_notebook_variable(source)
+        value = resolve_notebook_variable(source)
         return self.registry.detect(value)
 
     @staticmethod
@@ -2123,25 +2017,5 @@ class SessionManager:
                 label = source.get("label") or path
                 raise EngineError(f"Could not read {label}: {error}") from error
         if kind in {"notebookVariable", "notebookOutput"}:
-            return self._resolve_notebook_variable(source)
+            return resolve_notebook_variable(source)
         raise EngineError(f"Unsupported source kind: {kind}")
-
-    def _resolve_notebook_variable(self, source: Mapping[str, Any]) -> Any:
-        variable_name = source.get("variableName")
-        if not variable_name:
-            raise EngineError("Notebook source is missing a variable name.")
-
-        from . import notebook as notebook_runtime
-
-        if notebook_runtime.is_live_result_handle(variable_name):
-            return notebook_runtime.resolve_live_result(variable_name)
-        if notebook_runtime.is_reserved_live_result_name(variable_name):
-            raise EngineError("The notebook source contains an invalid Open Wrangler live-result handle.")
-
-        main = importlib.import_module("__main__")
-        if hasattr(main, variable_name):
-            return getattr(main, variable_name)
-        raise EngineError(
-            f"Live dataframe '{variable_name}' is not available in the selected notebook kernel. "
-            "Run the cell that defines it, then choose Open in Open Wrangler again."
-        )

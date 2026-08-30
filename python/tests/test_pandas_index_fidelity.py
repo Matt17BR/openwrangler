@@ -6,6 +6,7 @@ from typing import Any, Literal
 import pandas as pd
 import pytest
 
+import openwrangler_runtime.session as session_runtime
 from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.base import RowAxisExportPolicy
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
@@ -27,7 +28,7 @@ def open_frame(
     monkeypatch: pytest.MonkeyPatch,
     frame: pd.DataFrame,
 ) -> dict[str, Any]:
-    monkeypatch.setattr(manager, "_resolve_notebook_variable", lambda _source: frame)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _source: frame)
     return manager.open_session(notebook_source(), backend="pandas", page_size=20, mode="editing")
 
 

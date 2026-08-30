@@ -414,13 +414,13 @@ def response_for_error(
     # defines these operation-specific error types.
     from .engines import AmbiguousViewColumnError, EngineError
     from .session import (
-        LiveSourceInvalidatedError,
         PySparkConnectStateLostError,
         PySparkConnectUnavailableError,
         ResponsePayloadError,
         SessionCleanupError,
         UnknownSessionError,
     )
+    from .session_source import LiveSourceInvalidatedError
 
     message = bounded_diagnostic(str(error), maximum_message_bytes)
     if isinstance(error, ProtocolError):
