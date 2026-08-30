@@ -34,6 +34,7 @@ import { useGridHeaderProfiles } from "./GridHeaderProfileValues";
 import { useColumnResizeLifecycle, type BeginColumnResize } from "./useColumnResizeLifecycle";
 import { useCellActionMenuLifecycle } from "./useCellActionMenuLifecycle";
 import { useGridPointerDragLifecycle } from "./useGridPointerDragLifecycle";
+import { useGridRowHeaderLayout } from "./useGridRowHeaderLayout";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -97,10 +98,6 @@ interface ScrollInputs {
   totalRows: number;
 }
 
-const numericRowHeaderWidth = 58;
-const maximumLabeledRowHeaderWidth = 180;
-const rowLabelCharacterWidth = 8;
-const rowLabelHorizontalPadding = 20;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
@@ -169,12 +166,11 @@ export function DataGrid({
 }: DataGridProps) {
   const logicalRowExtent = liveGridLogicalRowExtent(page);
   const hasMoreRows = liveGridPageHasMore(page);
-  const pageHasRowLabels = page.rows.some((row) => row.rowLabel !== undefined);
-  const rowAxisHeader = rowAxisHeaderLabel(metadata);
-  const rowAxisSignature = metadata.rowAxis
-    ? `${metadata.rowAxis.kind}:${metadata.rowAxis.levelNames.map((name) => name ?? "").join("\u0000")}`
-    : "legacy";
-  const currentHasRowLabels = pageHasRowLabels || rowAxisHeader !== undefined;
+  const { rowAxisHeader, hasRowLabels, rowHeaderWidth } = useGridRowHeaderLayout(
+    metadata.sessionId,
+    metadata.rowAxis,
+    page.rows
+  );
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata.schema), [metadata.schema]);
   const diffPresentation = useMemo(
     () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
@@ -189,30 +185,6 @@ export function DataGrid({
   } = useGridPointerDragLifecycle(scrollerRef);
   const beginColumnResize = useColumnResizeLifecycle();
   const gridSelectionInstructionsId = useId();
-  const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows, rowAxisHeader);
-  const [rowHeaderState, setRowHeaderState] = useState({
-    sessionId: metadata.sessionId,
-    axisSignature: rowAxisSignature,
-    hasLabels: currentHasRowLabels,
-    width: nextRowHeaderWidth
-  });
-  let resolvedRowHeaderState = rowHeaderState;
-  if (rowHeaderState.sessionId !== metadata.sessionId || rowHeaderState.axisSignature !== rowAxisSignature) {
-    resolvedRowHeaderState = {
-      sessionId: metadata.sessionId,
-      axisSignature: rowAxisSignature,
-      hasLabels: currentHasRowLabels,
-      width: nextRowHeaderWidth
-    };
-  } else if (currentHasRowLabels) {
-    const width = Math.max(rowHeaderState.width, nextRowHeaderWidth);
-    if (!rowHeaderState.hasLabels || width !== rowHeaderState.width) {
-      resolvedRowHeaderState = { ...rowHeaderState, hasLabels: true, width };
-    }
-  }
-  if (resolvedRowHeaderState !== rowHeaderState) setRowHeaderState(resolvedRowHeaderState);
-  const hasRowLabels = resolvedRowHeaderState.hasLabels;
-  const rowHeaderWidth = resolvedRowHeaderState.width;
   const requestedGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
   const handledGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
   const scheduleColumnRevealAttempt = useRef<() => void>(ignoreColumnRevealSignal);
@@ -2289,26 +2261,6 @@ function columnRange(
     start: Math.max(0, start - overscanColumns),
     end: Math.min(widths.length, end + overscanColumns)
   };
-}
-
-function rowHeaderWidthForRows(rows: readonly { readonly rowLabel?: string }[], header?: string): number {
-  const longestLabel = rows.reduce(
-    (longest, row) => Math.max(longest, row.rowLabel === undefined ? 0 : Array.from(row.rowLabel).length),
-    header === undefined ? 0 : Array.from(header).length
-  );
-  if (longestLabel === 0) return numericRowHeaderWidth;
-  return Math.min(
-    maximumLabeledRowHeaderWidth,
-    Math.max(numericRowHeaderWidth, longestLabel * rowLabelCharacterWidth + rowLabelHorizontalPadding)
-  );
-}
-
-function rowAxisHeaderLabel(metadata: SessionMetadata): string | undefined {
-  const rowAxis = metadata.rowAxis;
-  if (!rowAxis || rowAxis.kind === "positional") return undefined;
-  const names = rowAxis.levelNames.filter((name): name is string => name !== null && name.length > 0);
-  if (rowAxis.kind === "index") return names[0] ?? "Index";
-  return names.length > 0 ? names.join(" / ") : "Index";
 }
 
 function centeredColumnScrollLeft(

@@ -656,6 +656,25 @@ describe("DataGrid", () => {
 
     rerender(<DataGrid {...props} page={labeledPage(["3", "4"])} />);
     expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" });
+
+    const replacementMetadata: SessionMetadata = { ...metadata, sessionId: "replacement-session" };
+    rerender(<DataGrid {...props} metadata={replacementMetadata} page={labeledPage(["3", "4"])} />);
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
+
+    rerender(
+      <DataGrid {...props} metadata={replacementMetadata} page={labeledPage(["Mazda RX4", "Hornet Sportabout"])} />
+    );
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" });
+
+    rerender(
+      <DataGrid
+        {...props}
+        metadata={{ ...replacementMetadata, rowAxis: { kind: "index", levelNames: ["i"] } }}
+        page={labeledPage(["3", "4"])}
+      />
+    );
+    expect(screen.getByRole("columnheader", { name: "i row labels" })).toHaveTextContent("i");
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
   });
 
   it("hides floating-point noise in grid text while preserving the exact value on hover", () => {
