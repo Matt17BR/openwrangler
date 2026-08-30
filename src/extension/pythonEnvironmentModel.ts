@@ -21,7 +21,7 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
     polars: Object.freeze({
       importModule: "polars",
       distribution: "polars",
-      installSpec: "polars>=1.35.2,<2",
+      installSpec: "polars>=1.35.2,!=1.44.0,<2",
       minimumVersion: "1.35.2",
       maximumVersionExclusive: "2"
     }),

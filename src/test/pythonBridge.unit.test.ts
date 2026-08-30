@@ -2125,7 +2125,7 @@ describe("PythonBridge dependency installation", () => {
     const firstPreparation = internals.prepareRequest(request);
     const overlappingPreparation = internals.prepareRequest(request);
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    sharedProbe.resolve({ missing: ["polars>=1.35.2,<2"], available: [] });
+    sharedProbe.resolve({ missing: ["polars>=1.35.2,!=1.44.0,<2"], available: [] });
     await expect(firstPreparation).resolves.toMatchObject({ kind: "error", code: "missing_dependencies" });
     await expect(overlappingPreparation).resolves.toMatchObject({
       kind: "error",

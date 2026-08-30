@@ -27,6 +27,7 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "cross-platform.yml"
 MAX_AUTHORITY_BYTES = 65_536
 MAX_DEPENDENCIES = 64
 MAX_QUALIFIED_VERSIONS = 16
+MAX_EXCLUDED_VERSIONS = 16
 MAX_CONSUMER_BYTES = 2_097_152
 MAX_TEXT = 256
 VERSION_FIELD_MAX_LENGTH = 64
@@ -90,6 +91,7 @@ class Dependency:
     cohort_kind: str
     minimum_status: str
     primary_qualification_cases: tuple[QualificationCase, ...]
+    excluded_versions: tuple[str, ...] = ()
     python_compatibility: PythonCompatibilityBranch | None = None
 
     @property
@@ -109,7 +111,10 @@ class Dependency:
     def specifier(self) -> str:
         if self.exact_version is not None:
             return f"=={self.exact_version}"
-        return f">={self.minimum_version},<{self.maximum_version_exclusive}"
+        constraints = [f">={self.minimum_version}"]
+        constraints.extend(f"!={version}" for version in self.excluded_versions)
+        constraints.append(f"<{self.maximum_version_exclusive}")
+        return ",".join(constraints)
 
     @property
     def install_spec(self) -> str:
@@ -295,10 +300,10 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         if not isinstance(entry, dict):
             _fail("invalid_authority_shape")
         entry_keys = set(entry)
-        if entry_keys != required_keys and entry_keys != {
-            *required_keys,
-            "pythonCompatibility",
-        }:
+        optional_keys = {"excludedVersions", "pythonCompatibility"}
+        if not required_keys.issubset(entry_keys) or not (
+            entry_keys - required_keys
+        ).issubset(optional_keys):
             _fail("invalid_authority_shape")
 
         identifier = _text(entry["id"], pattern=_IDENTIFIER)
@@ -319,10 +324,12 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
         minimum_text: str | None = None
         maximum_text: str | None = None
         exact_version: Version | None = None
+        excluded_texts: list[str] = []
         if entry["exactVersion"] is not None:
             if (
                 entry["minimumVersion"] is not None
                 or entry["maximumVersionExclusive"] is not None
+                or "excludedVersions" in entry
             ):
                 _fail("invalid_authority_range")
             exact_text, exact_version = _version(entry["exactVersion"])
@@ -338,7 +345,34 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
             maximum_text, upper = _version(entry["maximumVersionExclusive"])
             if lower >= upper:
                 _fail("invalid_authority_range")
-            specifier = SpecifierSet(f">={minimum_text},<{maximum_text}")
+            raw_exclusions = entry.get("excludedVersions")
+            if raw_exclusions is not None:
+                if (
+                    not isinstance(raw_exclusions, list)
+                    or not 1 <= len(raw_exclusions) <= MAX_EXCLUDED_VERSIONS
+                ):
+                    _fail("invalid_authority_range")
+                excluded_versions: list[Version] = []
+                for raw_exclusion in raw_exclusions:
+                    excluded_text, excluded_version = _version(raw_exclusion)
+                    if (
+                        str(excluded_version) != excluded_text
+                        or excluded_version.is_prerelease
+                        or excluded_version.is_devrelease
+                        or excluded_version.local is not None
+                        or not lower < excluded_version < upper
+                        or (
+                            excluded_versions
+                            and excluded_versions[-1] >= excluded_version
+                        )
+                    ):
+                        _fail("invalid_authority_range")
+                    excluded_texts.append(excluded_text)
+                    excluded_versions.append(excluded_version)
+            constraints = [f">={minimum_text}"]
+            constraints.extend(f"!={version}" for version in excluded_texts)
+            constraints.append(f"<{maximum_text}")
+            specifier = SpecifierSet(",".join(constraints))
         if (
             lower.is_prerelease
             or lower.is_devrelease
@@ -480,6 +514,7 @@ def load_authority(path: Path | None = None) -> tuple[Dependency, ...]:
                 cohort_kind=cohort_kind,
                 minimum_status=minimum_status,
                 primary_qualification_cases=tuple(primary_cases),
+                excluded_versions=tuple(excluded_texts),
                 python_compatibility=compatibility,
             )
         )

@@ -9,7 +9,7 @@ description = "Runtime backend for the Open Wrangler VS Code extension."
 requires-python = ">=3.10,<3.15"
 dependencies = [
   # BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES
-  "polars>=1.35.2,<2",
+  "polars>=1.35.2,!=1.44.0,<2",
   "duckdb>=1.5.4,<1.6",
   "fsspec==2026.7.0",
   "pytz>=2026.3.post1,<2027",
