@@ -533,8 +533,14 @@ def _render_pyproject(dependencies: tuple[Dependency, ...], group: str) -> str:
 
 
 def _render_host(dependencies: tuple[Dependency, ...]) -> str:
+    # Host descriptors cannot express Python markers, so conditional dependencies remain package/workflow-only.
+    host_dependencies = tuple(
+        dependency
+        for dependency in dependencies
+        if dependency.python_compatibility is None
+    )
     identifiers = " | ".join(
-        json.dumps(dependency.identifier) for dependency in dependencies
+        json.dumps(dependency.identifier) for dependency in host_dependencies
     )
     lines = [
         f"type PythonRuntimeDependencyId =\n  {identifiers};",
@@ -542,7 +548,7 @@ def _render_host(dependencies: tuple[Dependency, ...]) -> str:
         "const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Readonly<PythonDependency>>> =",
         "  Object.freeze({",
     ]
-    for dependency in dependencies:
+    for dependency in host_dependencies:
         lines.append(f"    {dependency.identifier}: Object.freeze({{")
         for key, value in dependency.descriptor().items():
             lines.append(f"      {key}: {json.dumps(value)},")
