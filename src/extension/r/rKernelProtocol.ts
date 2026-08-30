@@ -1476,7 +1476,7 @@ function validateTransformStep(value: unknown): void {
       ["prefixSeparator", "dropOriginal"],
       "R kernel one-hot parameters"
     );
-    validateRowReductionColumnReferences(params.columns, "one-hot", false);
+    validateRowReductionColumnReferences(params.columns, "one-hot");
     if (params.prefixSeparator !== undefined) {
       boundedText(
         params.prefixSeparator,
@@ -1540,7 +1540,7 @@ function validateTransformStep(value: unknown): void {
   if (step.kind === "dropDuplicates") {
     const params = exactRecord(step.params, [], ["columns", "keep"], "R kernel drop-duplicates parameters");
     if (params.columns !== undefined) {
-      validateRowReductionColumnReferences(params.columns, "drop duplicates", false);
+      validateRowReductionColumnReferences(params.columns, "drop duplicates");
     }
     if (params.keep !== undefined && params.keep !== "first" && params.keep !== "last" && params.keep !== "none") {
       fail("R kernel drop-duplicates parameters contain an invalid keep mode.");
@@ -1757,12 +1757,12 @@ function validateTransformStep(value: unknown): void {
   }
   if (step.kind === "dropColumns") {
     const params = exactRecord(step.params, ["columns"], "R kernel drop parameters");
-    validateTransformColumnReferences(params.columns, "drop");
+    validateRowReductionColumnReferences(params.columns, "drop");
     return;
   }
   if (step.kind === "selectColumns") {
     const params = exactRecord(step.params, ["columns"], "R kernel select parameters");
-    validateTransformColumnReferences(params.columns, "select");
+    validateRowReductionColumnReferences(params.columns, "select");
     return;
   }
   fail("R kernel transform step has an unsupported operation.");
@@ -2009,21 +2009,9 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
   }
 }
 
-function validateRowReductionColumnReferences(value: unknown, operation: string, allowEmpty: boolean): void {
+function validateRowReductionColumnReferences(value: unknown, operation: string, allowEmpty = false): void {
   if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > R_FRAME_CONTRACT_LIMITS.columns) {
     fail(`R kernel ${operation} columns must be a bounded${allowEmpty ? "" : " non-empty"} array.`);
-  }
-  const seen = new Set<string>();
-  for (const [index, candidate] of value.entries()) {
-    const reference = validateColumnReference(candidate, `request.payload.step.params.columns[${index}]`);
-    if (seen.has(reference.id)) fail(`R kernel ${operation} columns contain a repeated identity.`);
-    seen.add(reference.id);
-  }
-}
-
-function validateTransformColumnReferences(value: unknown, operation: "drop" | "select"): void {
-  if (!Array.isArray(value) || value.length === 0 || value.length > R_FRAME_CONTRACT_LIMITS.columns) {
-    fail(`R kernel ${operation} columns must be a bounded non-empty array.`);
   }
   const seen = new Set<string>();
   for (const [index, candidate] of value.entries()) {
