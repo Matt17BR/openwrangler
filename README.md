@@ -71,9 +71,9 @@ Mode.
 
 | User action                      | File sessions                                                                          | Notebook and interactive sessions                                                                            |
 | -------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel; Open Wrangler selects a compatible backend | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and Preview R frames                       |
+| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel; Open Wrangler selects a compatible backend | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                               |
 | Filter, sort, profile, and copy  | Available                                                                              | Available                                                                                                    |
-| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                                    | Pandas and Polars; partial R support. DuckDB relations and PySpark remain view-only                          |
+| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                                    | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                       |
 | Copy, save, or insert code       | Copy or save generated Python code                                                     | Copy or save generated Python or R code; insert it only into the notebook or managed document that opened it |
 | Export cleaned data              | Write CSV or Parquet to a separate destination                                         | Available from supported editing sessions; view-only sessions cannot export                                  |
 
@@ -82,14 +82,14 @@ setting, operation, and supported parameter.
 
 ## Compatibility and limits
 
-Open Wrangler requires VS Code 1.106 or newer. VS Code is the primary target. On Linux, Cursor is checked for
-installation and activation, a basic grid and cleaning lifecycle, responsive layout, and focus restoration. It does
-not receive the full VS Code feature matrix. Support for other VS Code-based desktop editors is experimental.
+Open Wrangler requires VS Code 1.106 or newer. VS Code is the primary target. On Linux, Cursor is one tested
+compatibility example for installation, activation, and representative grid, cleaning, export, and recovery flows.
+It is not tested across every VS Code feature. Support for other VS Code-based desktop editors is experimental.
 Browser-hosted editors are unsupported, and Remote SSH is outside the current compatibility coverage. Python file
 and notebook workflows use Python 3.10 through 3.14. If a required package is missing, Open Wrangler names it and
 asks before installing anything.
 
-Preview R workflows open `data.frame`, tibble, and `data.table` values. IRkernel works in VS Code on Linux, macOS,
+R workflows open `data.frame`, tibble, and `data.table` values. IRkernel works in VS Code on Linux, macOS,
 and Windows, and in Cursor on Linux. Selected R terminal workflows are available on Linux. Direct `.R`, `.Rmd`, and
 `.qmd` execution is available on macOS and Linux, not Windows; R Markdown and Quarto run selected code chunks rather
 than rendering the document. Install `jsonlite` and `rlang` in the owning R environment. Parquet export also requires
