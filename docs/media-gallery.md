@@ -215,11 +215,11 @@ Decimal, time-zone-aware timestamp, list, and struct values remain typed through
     <td width="50%"><a href="images/readme/v1.2/gallery/high-contrast-explore.png"><img alt="Open Wrangler in a high-contrast theme with the operations sidebar, orders grid, and revenue profile outlined in cyan" src="images/readme/v1.2/gallery/high-contrast-explore.png" width="960"></a></td>
   </tr>
   <tr>
-    <td>The same VSIX is qualified in VS Code. Bounded Linux Cursor platform smoke covers representative grid, cleaning, export, and recovery flows, but not the full VS Code qualification matrix.</td>
+    <td>Open Wrangler is built for VS Code. Cursor is one tested Linux compatibility example that covers representative grid, cleaning, export, and recovery flows, not exhaustive editor parity.</td>
     <td>The grid, sidebars, profiles, and controls use the editor's high-contrast theme tokens.</td>
   </tr>
 </table>
 
-Broader compatibility with VS Code-based editors remains experimental. The automated visual and accessibility suite
-also covers light and dark themes, 80% to 200% zoom, keyboard-only operation, loading and error states, empty frames,
-long Unicode content, and narrow and wide layouts. See [Testing](testing.md) for the acceptance process.
+Support for other VS Code-based editors is currently experimental. The interface supports light, dark, and
+high-contrast themes, 80% to 200% zoom, keyboard-only operation, loading and error states, empty frames, long Unicode
+content, and narrow and wide layouts. The [Testing guide](testing.md) explains how these behaviors are checked.
