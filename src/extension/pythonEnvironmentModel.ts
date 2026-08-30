@@ -14,7 +14,7 @@ export interface PythonDependency {
 
 // BEGIN GENERATED PYTHON RUNTIME DEPENDENCIES
 type PythonRuntimeDependencyId =
-  "polars" | "duckdb" | "fsspec" | "pytz" | "pandas" | "pyarrow" | "openpyxl" | "xlrd" | "ipython" | "fastexcel";
+  "polars" | "duckdb" | "fsspec" | "pytz" | "pandas" | "pyarrow" | "openpyxl" | "xlrd" | "fastexcel";
 
 const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Readonly<PythonDependency>>> =
   Object.freeze({
@@ -72,13 +72,6 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
       installSpec: "xlrd>=2.0.2,<3",
       minimumVersion: "2.0.2",
       maximumVersionExclusive: "3"
-    }),
-    ipython: Object.freeze({
-      importModule: "IPython",
-      distribution: "ipython",
-      installSpec: "ipython>=9.15.0,<10",
-      minimumVersion: "9.15.0",
-      maximumVersionExclusive: "10"
     }),
     fastexcel: Object.freeze({
       importModule: "fastexcel",

@@ -195,14 +195,22 @@ def test_python_package_metadata_matches_the_supported_range() -> None:
     )
 
 
-def test_python_310_uses_the_qualified_ipython_branch() -> None:
-    dependency = next(item for item in authority.load_authority() if item.identifier == "ipython")
+def test_python_310_ipython_branch_remains_package_and_workflow_only() -> None:
+    dependencies = authority.load_authority()
+    dependency = next(item for item in dependencies if item.identifier == "ipython")
     branch = dependency.python_compatibility
     assert branch is not None
     assert branch.python_maximum_version_exclusive == "3.11"
     assert branch.qualified_version == "8.39.0"
 
     requirements = tuple(Requirement(spec) for spec in dependency.pyproject_install_specs)
+    metadata = tomllib.loads(authority.PYPROJECT_PATH.read_text(encoding="utf-8"))
+    pyproject_ipython_specs = tuple(
+        spec
+        for spec in metadata["project"]["dependencies"]
+        if canonicalize_name(Requirement(spec).name) == canonicalize_name(dependency.distribution)
+    )
+    assert pyproject_ipython_specs == dependency.pyproject_install_specs
     selected_310 = tuple(
         requirement
         for requirement in requirements
@@ -218,6 +226,22 @@ def test_python_310_uses_the_qualified_ipython_branch() -> None:
     assert selected_311[0].specifier.contains(Version("9.15.0"))
     assert not selected_310[0].specifier.contains(Version("9.15.0"))
     assert not selected_311[0].specifier.contains(Version("8.39.0"))
+
+    host = authority.HOST_PATH.read_text(encoding="utf-8")
+    host_block = host.split(f"{authority.HOST_START}\n", 1)[1].split(f"\n{authority.HOST_END}", 1)[0]
+    assert json.dumps(dependency.identifier) not in host_block
+    assert f"    {dependency.identifier}:" not in host_block
+
+    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow_block = workflow.split(f"{authority.WORKFLOW_START}\n", 1)[1].split(f"\n{authority.WORKFLOW_END}", 1)[0]
+    for case in dependency.executable_qualification_cases:
+        row = (
+            f"          - id: {json.dumps(dependency.identifier)}\n"
+            f"            python: {json.dumps(case.python_version)}\n"
+            f"            version: {json.dumps(case.version)}\n"
+            f"            requirement: {json.dumps(f'{dependency.distribution}=={case.version}')}"
+        )
+        assert workflow_block.count(row) == 1
 
 
 def test_every_descriptor_uses_the_runtime_guard_pep440_rules() -> None:
