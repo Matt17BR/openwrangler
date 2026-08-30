@@ -1,12 +1,13 @@
+# pyright: strict
 from __future__ import annotations
 
 import os
 import re
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, TextIO
+from typing import BinaryIO, TextIO
 
 MAX_CUSTOM_DIAGNOSTIC_BYTES = 8 * 1024
 _TRUNCATED_MARKER = "\n<output truncated>"
@@ -51,7 +52,7 @@ class CapturedCustomCodeOutput:
         return self._state.stderr.value()
 
     def diagnostic_suffix(self) -> str:
-        parts = []
+        parts: list[str] = []
         if self.stdout:
             parts.append(f"stdout:\n{redact_diagnostic(self.stdout)}")
         if self.stderr:
@@ -66,7 +67,7 @@ class _BoundedTextBuffer:
         self._retained_bytes = 0
         self._truncated = False
 
-    def write(self, value: Any) -> int:
+    def write(self, value: object) -> int:
         if not isinstance(value, str):
             raise TypeError(f"write() argument must be str, not {type(value).__name__}")
         original_length = len(value)
@@ -98,7 +99,7 @@ class _BoundedTextBuffer:
         retained = "".join(self._parts)
         return f"{retained}{_TRUNCATED_MARKER}" if self._truncated else retained
 
-    def write_bytes(self, value: bytes | bytearray | memoryview) -> int:
+    def write_bytes(self, value: bytes | bytearray | memoryview[int]) -> int:
         byte_view = memoryview(value).cast("B")
         original_length = byte_view.nbytes
         remaining = self._byte_limit - self._retained_bytes
@@ -118,31 +119,44 @@ class _CaptureState:
         self.stdout = _BoundedTextBuffer()
         self.stderr = _BoundedTextBuffer()
 
-    def write(self, channel: str, value: Any) -> int:
+    def write(self, channel: str, value: str) -> int:
         return (self.stdout if channel == "stdout" else self.stderr).write(value)
 
-    def write_bytes(self, channel: str, value: bytes | bytearray | memoryview) -> int:
+    def write_bytes(self, channel: str, value: bytes | bytearray | memoryview[int]) -> int:
         return (self.stdout if channel == "stdout" else self.stderr).write_bytes(value)
+
+
+class _CaptureLocal(threading.local):
+    def __init__(self) -> None:
+        self.stack: list[_CaptureState] = []
+
+
+def _binary_buffer(stream: TextIO) -> BinaryIO | None:
+    return getattr(stream, "buffer", None)
 
 
 class _BinaryCaptureRouter:
     def __init__(self, owner: _TextCaptureRouter) -> None:
         self._owner = owner
 
-    def write(self, value: Any) -> int:
-        if not isinstance(value, (bytes, bytearray, memoryview)):
+    def write(self, value: object) -> int:
+        if isinstance(value, memoryview):
+            byte_view = value.cast("B")
+        elif isinstance(value, (bytes, bytearray)):
+            byte_view = memoryview(value).cast("B")
+        else:
             raise TypeError(f"a bytes-like object is required, not {type(value).__name__}")
         state = _current_capture()
         if state is None:
-            fallback = getattr(self._owner.fallback, "buffer", None)
+            fallback = _binary_buffer(self._owner.fallback)
             if fallback is None:
-                return self._owner.fallback.write(bytes(value).decode("utf-8", errors="replace"))
-            return fallback.write(value)
-        return state.write_bytes(self._owner.channel, value)
+                return self._owner.fallback.write(bytes(byte_view).decode("utf-8", errors="replace"))
+            return fallback.write(byte_view)
+        return state.write_bytes(self._owner.channel, byte_view)
 
     def flush(self) -> None:
         if _current_capture() is None:
-            fallback = getattr(self._owner.fallback, "buffer", None)
+            fallback = _binary_buffer(self._owner.fallback)
             if fallback is not None:
                 fallback.flush()
             else:
@@ -176,7 +190,7 @@ class _TextCaptureRouter:
     def writable(self) -> bool:
         return True
 
-    def write(self, value: Any) -> int:
+    def write(self, value: str) -> int:
         state = _current_capture()
         return self.fallback.write(value) if state is None else state.write(self.channel, value)
 
@@ -186,7 +200,7 @@ class _TextCaptureRouter:
 
 
 _router_lock = threading.RLock()
-_capture_local = threading.local()
+_capture_local = _CaptureLocal()
 _active_scopes = 0
 _persistent_install = False
 _stdout_router: _TextCaptureRouter | None = None
@@ -198,15 +212,11 @@ _saved_dunder_stderr: TextIO | None = None
 
 
 def _capture_stack() -> list[_CaptureState]:
-    stack = getattr(_capture_local, "stack", None)
-    if stack is None:
-        stack = []
-        _capture_local.stack = stack
-    return stack
+    return _capture_local.stack
 
 
 def _current_capture() -> _CaptureState | None:
-    stack = getattr(_capture_local, "stack", None)
+    stack = _capture_local.stack
     return stack[-1] if stack else None
 
 
@@ -295,7 +305,7 @@ def isolate_standalone_protocol_output() -> TextIO:
 
 
 @contextmanager
-def capture_custom_code_output() -> Iterator[CapturedCustomCodeOutput]:
+def capture_custom_code_output() -> Generator[CapturedCustomCodeOutput, None, None]:
     global _active_scopes
 
     state = _CaptureState()

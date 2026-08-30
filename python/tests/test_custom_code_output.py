@@ -129,6 +129,14 @@ def test_large_buffered_output_retains_only_its_bounded_prefix() -> None:
     assert output.stdout == ("z" * MAX_CUSTOM_DIAGNOSTIC_BYTES) + "\n<output truncated>"
 
 
+@pytest.mark.parametrize("payload", [b"bytes-like", bytearray(b"bytes-like"), memoryview(b"bytes-like")])
+def test_buffered_bytes_like_output_is_captured(payload: bytes | bytearray | memoryview[int]) -> None:
+    with capture_custom_code_output() as output:
+        assert sys.stdout.buffer.write(payload) == len(payload)
+
+    assert output.stdout == "bytes-like"
+
+
 def test_custom_failure_diagnostics_are_bounded_and_redacted() -> None:
     with capture_custom_code_output() as output:
         print("Authorization: Bearer stdout-secret")
