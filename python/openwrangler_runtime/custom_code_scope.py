@@ -1,11 +1,11 @@
+# pyright: strict
 from __future__ import annotations
 import __future__
 
 import ast
 import builtins
 from collections.abc import Iterator, Mapping
-from types import CodeType
-from typing import Any
+from types import CodeType, FunctionType
 
 CUSTOM_CODE_FUNCTION_NAME = "_open_wrangler_custom_code"
 _CUSTOM_CODE_FILENAME = "<open-wrangler-custom-code>"
@@ -25,7 +25,7 @@ class CustomCodeScopeError(ValueError):
     """Raised when Custom Code cannot use the shared function-body scope."""
 
 
-def validate_custom_code_scope(code: str) -> None:
+def validate_custom_code_scope(code: object) -> None:
     """Validate the syntax and scope shared by live and generated Custom Code."""
 
     if not isinstance(code, str) or not code.strip():
@@ -64,7 +64,7 @@ def validate_custom_code_scope(code: str) -> None:
         raise CustomCodeScopeError(_COMPLEXITY_ERROR) from error
 
 
-def execute_custom_code(code: str, dataframe: Any, namespace: Mapping[str, Any]) -> Any:
+def execute_custom_code(code: str, dataframe: object, namespace: Mapping[str, object]) -> object:
     """Execute Custom Code in the same function scope emitted by generated scripts."""
 
     validate_custom_code_scope(code)
@@ -72,6 +72,8 @@ def execute_custom_code(code: str, dataframe: Any, namespace: Mapping[str, Any])
     runtime_namespace["__builtins__"] = builtins.__dict__
     exec(_compile_function_source(code), runtime_namespace, runtime_namespace)
     function = runtime_namespace[CUSTOM_CODE_FUNCTION_NAME]
+    if not isinstance(function, FunctionType):
+        raise RuntimeError("Compiled Custom Code did not define its wrapper function.")
     return function(dataframe)
 
 
