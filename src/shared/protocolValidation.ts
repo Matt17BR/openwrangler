@@ -20,6 +20,7 @@ import type {
   TransformStep,
   TypedSelectionToken
 } from "./protocol.generated";
+import { openWranglerResponseShapes } from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationCatalog, type OperationCatalogItem } from "./operationCatalog.generated";
@@ -80,6 +81,9 @@ const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as cons
 const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\-./0-9:;=?@A-Z[\]_a-z~])+$/u;
 const OPERATION_DEFINITIONS: ReadonlyMap<string, OperationCatalogItem> = new Map(
   operationCatalog.map((definition) => [definition.kind, definition])
+);
+const RESPONSE_SHAPES_BY_KIND: ReadonlyMap<string, (typeof openWranglerResponseShapes)[number]> = new Map(
+  openWranglerResponseShapes.map((definition) => [definition.kind, definition] as const)
 );
 const PREDICATE_OPERATORS = new Set([
   "equals",
@@ -358,66 +362,61 @@ export function isRuntimeResponseEnvelope(value: unknown): value is RuntimeRespo
 /** Validates every canonical protocol-v2 response variant and its structural payload. */
 export function isOpenWranglerResponse(value: unknown): value is OpenWranglerResponse {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
+  const definition = RESPONSE_SHAPES_BY_KIND.get(value.kind);
+  if (definition === undefined) return false;
+  const candidate = exactRecord(value, definition.required, definition.optional);
+  if (candidate === undefined) return false;
 
-  switch (value.kind) {
+  switch (candidate.kind) {
     case "initialized":
-      return isInitializedResponse(value);
+      return isInitializedResponse(candidate);
     case "sessionOpened":
-      return isSessionOpenedResponse(value);
+      return isSessionOpenedResponse(candidate);
     case "page":
-      return isPageResponse(value);
+      return isPageResponse(candidate);
     case "summary":
-      return isSummaryResponse(value);
+      return isSummaryResponse(candidate);
     case "datasetStats":
-      return isDatasetStatsResponse(value);
+      return isDatasetStatsResponse(candidate);
     case "columnValues":
-      return isValuesResponse(value);
+      return isValuesResponse(candidate);
     case "stepPreview":
-      return isStepPreviewResponse(value);
+      return isStepPreviewResponse(candidate);
     case "stepInspection":
-      return isStepInspectionResponse(value);
+      return isStepInspectionResponse(candidate);
     case "planUpdated":
-      return isPlanUpdatedResponse(value);
+      return isPlanUpdatedResponse(candidate);
     case "dataExported":
-      return isDataExportedResponse(value);
+      return isDataExportedResponse(candidate);
     case "sessionClosed":
-      return isSessionClosedResponse(value);
+      return isSessionClosedResponse(candidate);
     case "cancelled":
-      return isCancelledResponse(value);
+      return isCancelledResponse(candidate);
     case "error":
-      return isErrorResponse(value);
+      return isErrorResponse(candidate);
     default:
       return false;
   }
 }
 
-function isInitializedResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "protocolVersion", "runtimeVersion", "capabilities"]);
+function isInitializedResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "initialized" &&
     candidate.protocolVersion === PROTOCOL_VERSION &&
     isString(candidate.runtimeVersion) &&
     isSourceCapabilities(candidate.capabilities)
   );
 }
 
-function isSessionOpenedResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "metadata", "page", "summaries"]);
+function isSessionOpenedResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "sessionOpened" &&
     isSessionMetadata(candidate.metadata) &&
     isLiveGridPageForMetadata(candidate.page, candidate.metadata) &&
     isColumnSummaryArray(candidate.summaries, candidate.metadata.schema)
   );
 }
 
-function isPageResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "viewRequestId", "page", "metadata"]);
+function isPageResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "page" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
     isSessionMetadata(candidate.metadata) &&
@@ -425,37 +424,24 @@ function isPageResponse(value: unknown): boolean {
   );
 }
 
-function isSummaryResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "viewRequestId", "summaries"]);
+function isSummaryResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "summary" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
     isColumnSummaryArray(candidate.summaries)
   );
 }
 
-function isDatasetStatsResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "viewRequestId", "stats"]);
+function isDatasetStatsResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "datasetStats" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
     isDatasetStats(candidate.stats)
   );
 }
 
-function isValuesResponse(value: unknown): boolean {
-  const candidate = exactRecord(
-    value,
-    ["kind", "revision", "viewRequestId", "column", "values", "hasMore"],
-    ["sampleSize"]
-  );
+function isValuesResponse(candidate: UnknownRecord): boolean {
   if (
-    candidate === undefined ||
-    candidate.kind !== "columnValues" ||
     !isNonNegativeInteger(candidate.revision) ||
     !isNonEmptyString(candidate.viewRequestId) ||
     !isString(candidate.column) ||
@@ -476,15 +462,8 @@ function isValuesResponse(value: unknown): boolean {
   return true;
 }
 
-function isStepPreviewResponse(value: unknown): boolean {
-  const candidate = exactRecord(
-    value,
-    ["kind", "revision", "metadata", "page", "diff", "code"],
-    ["remainingMissingCells", "warnings"]
-  );
+function isStepPreviewResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "stepPreview" &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
     isGridPageForRowAxis(candidate.page, candidate.metadata.schema, candidate.metadata.rowAxis) &&
@@ -500,24 +479,8 @@ function isStepPreviewResponse(value: unknown): boolean {
   );
 }
 
-function isStepInspectionResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, [
-    "kind",
-    "revision",
-    "stepId",
-    "stepIndex",
-    "inputPage",
-    "outputPage",
-    "inputSchema",
-    "outputSchema",
-    "inputRowAxis",
-    "outputRowAxis",
-    "diff",
-    "code"
-  ]);
+function isStepInspectionResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "stepInspection" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.stepId) &&
     isNonNegativeInteger(candidate.stepIndex) &&
@@ -532,11 +495,8 @@ function isStepInspectionResponse(value: unknown): boolean {
   );
 }
 
-function isPlanUpdatedResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "action", "revision", "metadata", "page", "code"]);
+function isPlanUpdatedResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "planUpdated" &&
     isOneOf(candidate.action, ["apply", "discard", "undo"]) &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
@@ -545,11 +505,8 @@ function isPlanUpdatedResponse(value: unknown): boolean {
   );
 }
 
-function isDataExportedResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "path", "format", "shape"]);
+function isDataExportedResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "dataExported" &&
     isNonNegativeInteger(candidate.revision) &&
     isString(candidate.path) &&
     isOneOf(candidate.format, ["csv", "parquet"]) &&
@@ -557,30 +514,16 @@ function isDataExportedResponse(value: unknown): boolean {
   );
 }
 
-function isSessionClosedResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "sessionId"]);
-  return candidate !== undefined && candidate.kind === "sessionClosed" && isString(candidate.sessionId);
+function isSessionClosedResponse(candidate: UnknownRecord): boolean {
+  return isString(candidate.sessionId);
 }
 
-function isCancelledResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "targetRequestId"], ["viewRequestId"]);
-  return (
-    candidate !== undefined &&
-    candidate.kind === "cancelled" &&
-    isString(candidate.targetRequestId) &&
-    optional(candidate, "viewRequestId", isNonEmptyString)
-  );
+function isCancelledResponse(candidate: UnknownRecord): boolean {
+  return isString(candidate.targetRequestId) && optional(candidate, "viewRequestId", isNonEmptyString);
 }
 
-function isErrorResponse(value: unknown): boolean {
-  const candidate = exactRecord(
-    value,
-    ["kind", "code", "message", "recoverable"],
-    ["detail", "sessionId", "viewRequestId"]
-  );
+function isErrorResponse(candidate: UnknownRecord): boolean {
   return (
-    candidate !== undefined &&
-    candidate.kind === "error" &&
     isString(candidate.code) &&
     isString(candidate.message) &&
     isBoolean(candidate.recoverable) &&

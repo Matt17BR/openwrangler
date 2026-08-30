@@ -1477,3 +1477,90 @@ export interface ErrorResponse {
   sessionId?: string;
   viewRequestId?: string;
 }
+
+export interface OpenWranglerResponseShape {
+  readonly kind: OpenWranglerResponse["kind"];
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+export const openWranglerResponseShapes = Object.freeze([
+  Object.freeze({
+    kind: "initialized",
+    required: Object.freeze(["kind", "protocolVersion", "runtimeVersion", "capabilities"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "sessionOpened",
+    required: Object.freeze(["kind", "metadata", "page", "summaries"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "page",
+    required: Object.freeze(["kind", "revision", "viewRequestId", "page", "metadata"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "summary",
+    required: Object.freeze(["kind", "revision", "viewRequestId", "summaries"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "datasetStats",
+    required: Object.freeze(["kind", "revision", "viewRequestId", "stats"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "columnValues",
+    required: Object.freeze(["kind", "revision", "viewRequestId", "column", "values", "hasMore"]),
+    optional: Object.freeze(["sampleSize"])
+  }),
+  Object.freeze({
+    kind: "stepPreview",
+    required: Object.freeze(["kind", "revision", "metadata", "page", "diff", "code"]),
+    optional: Object.freeze(["remainingMissingCells", "warnings"])
+  }),
+  Object.freeze({
+    kind: "stepInspection",
+    required: Object.freeze([
+      "kind",
+      "revision",
+      "stepId",
+      "stepIndex",
+      "inputPage",
+      "outputPage",
+      "inputSchema",
+      "outputSchema",
+      "inputRowAxis",
+      "outputRowAxis",
+      "diff",
+      "code"
+    ]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "planUpdated",
+    required: Object.freeze(["kind", "action", "revision", "metadata", "page", "code"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "dataExported",
+    required: Object.freeze(["kind", "revision", "path", "format", "shape"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "sessionClosed",
+    required: Object.freeze(["kind", "sessionId"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "cancelled",
+    required: Object.freeze(["kind", "targetRequestId"]),
+    optional: Object.freeze(["viewRequestId"])
+  }),
+  Object.freeze({
+    kind: "error",
+    required: Object.freeze(["kind", "code", "message", "recoverable"]),
+    optional: Object.freeze(["detail", "sessionId", "viewRequestId"])
+  })
+]) satisfies readonly OpenWranglerResponseShape[];
