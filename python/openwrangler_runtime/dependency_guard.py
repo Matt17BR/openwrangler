@@ -33,6 +33,7 @@ MAX_FRAME_BYTES = 65_536
 MAX_MARKER_BYTES = 65_536
 MAX_DEPENDENCIES = 64
 VERSION_FIELD_MAX_LENGTH = 64
+MAX_EXCLUDED_VERSIONS = 16
 INTEGRITY_PROTOCOL = "openwrangler-dependency-integrity-v1"
 INTEGRITY_CHECK_TIMEOUT_SECONDS = 20
 INTEGRITY_HELPER = Path(__file__).with_name("dependency_integrity.py")
@@ -386,9 +387,33 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
         or requirement.marker is not None
         or requirement.url is not None
         or _canonical_distribution_name(requirement.name) != _canonical_distribution_name(distribution)
-        or requirement.specifier != expected_specifier
     ):
         _fail(code)
+    if exact_version is not None:
+        if requirement.specifier != expected_specifier:
+            _fail(code)
+    else:
+        assert minimum_version is not None and maximum_version is not None
+        actual_specifiers = set(requirement.specifier)
+        envelope_specifiers = set(expected_specifier)
+        exclusions = actual_specifiers - envelope_specifiers
+        if not envelope_specifiers.issubset(actual_specifiers) or len(exclusions) > MAX_EXCLUDED_VERSIONS:
+            _fail(code)
+        for exclusion in exclusions:
+            if exclusion.operator != "!=" or "*" in exclusion.version:
+                _fail(code)
+            try:
+                excluded_version = _pep440_version(exclusion.version)
+            except BaseException:
+                _fail(code)
+            if (
+                str(excluded_version) != exclusion.version
+                or excluded_version.is_prerelease
+                or excluded_version.is_devrelease
+                or excluded_version.local is not None
+                or not minimum_version < excluded_version < maximum_version
+            ):
+                _fail(code)
     return {
         "importModule": import_module,
         "distribution": distribution,
@@ -2396,16 +2421,8 @@ def _pep440_version(value: str) -> Any:
 
 def _dependency_version_supported(dependency: dict[str, Any], observed: str) -> bool:
     try:
-        if dependency["exactVersion"] is not None:
-            specifier = f"=={dependency['exactVersion']}"
-        else:
-            constraints = []
-            if dependency["minimumVersion"] is not None:
-                constraints.append(f">={dependency['minimumVersion']}")
-            if dependency["maximumVersionExclusive"] is not None:
-                constraints.append(f"<{dependency['maximumVersionExclusive']}")
-            specifier = ",".join(constraints)
-        parsed = _pep440_specifier(specifier)
+        requirement = _pep440_requirement(dependency["installSpec"])
+        parsed = _pep440_specifier(str(requirement.specifier))
         return bool(parsed.contains(_pep440_version(observed), prereleases=False))
     except BaseException:
         return False

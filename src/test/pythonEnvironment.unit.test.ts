@@ -22,7 +22,9 @@ describe("Python environment requirements", () => {
     const xlsx: SessionSource = { kind: "file", label: "data.xlsx", path: "/tmp/data.xlsx" };
     const xls: SessionSource = { kind: "file", label: "legacy.xls", path: "/tmp/legacy.xls" };
 
-    expect(requiredDependencies("polars", parquet).map((item) => item.installSpec)).toEqual(["polars>=1.35.2,<2"]);
+    expect(requiredDependencies("polars", parquet).map((item) => item.installSpec)).toEqual([
+      "polars>=1.35.2,!=1.44.0,<2"
+    ]);
     expect(requiredDependencies("duckdb", parquet)).toEqual([
       {
         importModule: "duckdb",
@@ -82,11 +84,11 @@ describe("Python environment requirements", () => {
       }
     ]);
     expect(requiredDependencies("polars", xlsx).map((item) => item.installSpec)).toEqual([
-      "polars>=1.35.2,<2",
+      "polars>=1.35.2,!=1.44.0,<2",
       "fastexcel>=0.20.2,<1"
     ]);
     expect(requiredDependencies("polars", xls).map((item) => item.installSpec)).toEqual([
-      "polars>=1.35.2,<2",
+      "polars>=1.35.2,!=1.44.0,<2",
       "fastexcel>=0.20.2,<1"
     ]);
   });

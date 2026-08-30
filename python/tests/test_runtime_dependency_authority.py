@@ -105,6 +105,24 @@ def test_authority_rejects_bad_ranges_qualification_and_duplicate_names(
     prerelease["dependencies"][0]["qualification"]["qualifiedCases"][0]["version"] = "1.35.2rc1"
     invalid.append((prerelease, "invalid_authority_qualification"))
 
+    for exclusions in (
+        [],
+        ["1.35.2"],
+        ["1.44.0", "1.43.2"],
+        ["1.44.0", "1.44.0"],
+        ["1.44.0rc1"],
+        ["1.44.0+local"],
+        [f"1.{minor}.0" for minor in range(36, 53)],
+    ):
+        bad_exclusion = copy.deepcopy(baseline)
+        bad_exclusion["dependencies"][0]["excludedVersions"] = exclusions
+        invalid.append((bad_exclusion, "invalid_authority_range"))
+
+    exact_exclusion = copy.deepcopy(baseline)
+    exact_dependency = next(entry for entry in exact_exclusion["dependencies"] if entry["exactVersion"] is not None)
+    exact_dependency["excludedVersions"] = [exact_dependency["exactVersion"]]
+    invalid.append((exact_exclusion, "invalid_authority_range"))
+
     duplicate = copy.deepcopy(baseline)
     alias = copy.deepcopy(duplicate["dependencies"][0])
     alias["id"] = "polars_alias"
@@ -167,6 +185,7 @@ def test_version_fields_share_the_runtime_guard_boundary(tmp_path: Path) -> None
                 },
             }
         )
+        entry.pop("excludedVersions", None)
         value["dependencies"] = [entry]
         path = _write_authority(tmp_path / f"version-{length}.json", value)
         descriptor = {
@@ -261,11 +280,31 @@ def test_every_descriptor_uses_the_runtime_guard_pep440_rules() -> None:
             unsupported = (
                 f"{dependency.minimum_version}rc1",
                 dependency.maximum_version_exclusive,
+                *dependency.excluded_versions,
             )
         for version in supported:
             assert dependency_guard._dependency_version_supported(descriptor, version)
         for version in unsupported:
             assert not dependency_guard._dependency_version_supported(descriptor, version)
+
+
+def test_runtime_guard_accepts_only_bounded_stable_interior_exclusions() -> None:
+    dependency = next(item for item in authority.load_authority() if item.identifier == "polars")
+    descriptor = _guard_descriptor(dependency)
+    assert dependency_guard._normalize_dependency(descriptor, code="invalid_request") == descriptor
+
+    invalid_specs = (
+        "polars>=1.35.2,!=1.44.*,<2",
+        "polars>=1.35.2,!=1.35.2,<2",
+        "polars>=1.35.2,!=2,<2",
+        "polars>=1.35.2,!=1.44.0rc1,<2",
+        "polars>=1.35.2,!=1.44.0+local,<2",
+        "polars>=1.35.2,>1.40,!=1.44.0,<2",
+        "polars>=1.35.2," + ",".join(f"!=1.{minor}.0" for minor in range(36, 53)) + ",<2",
+    )
+    for install_spec in invalid_specs:
+        with pytest.raises(dependency_guard.GuardError, match="^invalid_request$"):
+            dependency_guard._normalize_dependency({**descriptor, "installSpec": install_spec}, code="invalid_request")
 
 
 def test_generation_markers_are_exact_ordered_lines() -> None:
@@ -310,11 +349,11 @@ def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
     host = tmp_path / "pythonEnvironmentModel.ts"
     workflow = tmp_path / "cross-platform.yml"
     pyproject.write_text(
-        authority.PYPROJECT_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
+        authority.PYPROJECT_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,!=1.44.0,<2", "polars>=0,<1", 1),
         encoding="utf-8",
     )
     host.write_text(
-        authority.HOST_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,<2", "polars>=0,<1", 1),
+        authority.HOST_PATH.read_text(encoding="utf-8").replace("polars>=1.35.2,!=1.44.0,<2", "polars>=0,<1", 1),
         encoding="utf-8",
     )
     workflow.write_text(
@@ -389,6 +428,13 @@ def _exercise_dependency(dependency: authority.Dependency, module: Any, tmp_path
     if dependency.identifier == "polars":
         frame = module.DataFrame({"value": [1, 2]})
         assert frame.select(module.col("value").sum()).item() == 3
+        regression = module.DataFrame({"a": [None, 1.0], "b": [True, True]})
+        nested_when = (
+            module.when(module.col("a") >= 0)
+            .then(module.col("a"))
+            .otherwise(module.when(module.col("b")).then(-2.0).otherwise(-1.0))
+        )
+        assert regression.select(nested_when).to_series().to_list() == [-2.0, 1.0]
         return
     if dependency.identifier == "duckdb":
         connection = module.connect(":memory:")
