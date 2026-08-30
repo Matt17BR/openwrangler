@@ -1228,7 +1228,7 @@ def test_install_spec_distribution_name_uses_normalized_comparison(guard_fixture
     assert _marker_paths(guard_fixture) == []
 
 
-def test_install_publishes_before_ready_waits_for_go_and_suppresses_pip_output(
+def test_successful_install_publishes_before_ready_waits_for_go_and_suppresses_pip_output(
     guard_fixture: GuardFixture,
 ) -> None:
     token = str(uuid.uuid4())
@@ -1257,6 +1257,17 @@ def test_install_publishes_before_ready_waits_for_go_and_suppresses_pip_output(
         guard_fixture.dependency["installSpec"],
     ]
     assert _marker_paths(guard_fixture) == markers
+
+    status_code, status_frames, status_stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert status_code == 0
+    assert status_frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert status_stderr == b""
+
+    code, frames, stderr = _run(guard_fixture, "validate", _validate_request(guard_fixture, token))
+    assert code == 0
+    assert frames == [{"kind": "validated", "protocol": PROTOCOL, "token": token}]
+    assert stderr == b""
+    assert _marker_paths(guard_fixture) == []
 
 
 def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: GuardFixture) -> None:
@@ -1645,25 +1656,6 @@ def test_concurrent_install_is_busy_and_cannot_replace_first_marker(guard_fixtur
     assert stderr == b""
     assert [path.name for path in _marker_paths(guard_fixture)] == [f"mutation-{first_token}.json"]
     assert _finish(first)[0] == 10
-    assert _marker_paths(guard_fixture) == []
-
-
-def test_successful_pip_retains_marker_until_fresh_validation_clears_it(guard_fixture: GuardFixture) -> None:
-    token = str(uuid.uuid4())
-    process = _arm(guard_fixture, token)
-    _write_frame(process, _go_frame(token))
-    assert _finish(process)[0] == 0
-    assert len(_marker_paths(guard_fixture)) == 1
-
-    status_code, status_frames, status_stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    assert status_code == 0
-    assert status_frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
-    assert status_stderr == b""
-
-    code, frames, stderr = _run(guard_fixture, "validate", _validate_request(guard_fixture, token))
-    assert code == 0
-    assert frames == [{"kind": "validated", "protocol": PROTOCOL, "token": token}]
-    assert stderr == b""
     assert _marker_paths(guard_fixture) == []
 
 
