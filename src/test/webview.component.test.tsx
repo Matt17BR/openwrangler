@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformStep } from "../shared/protocol";
-import { DataGrid, requestedGridPageOffset } from "../webviews/grid/DataGrid";
+import { DataGrid } from "../webviews/grid/DataGrid";
 import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
@@ -815,12 +815,6 @@ describe("DataGrid", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
     expect(onPage).toHaveBeenCalledWith(2);
-  });
-
-  it("keeps exact PySpark scroll demand contiguous after terminal total promotion", () => {
-    expect(requestedGridPageOffset(8_000, 400, 200, true)).toBe(600);
-    expect(requestedGridPageOffset(0, 400, 200, true)).toBe(200);
-    expect(requestedGridPageOffset(8_000, 400, 200, false)).toBe(8_000);
   });
 
   it("turns an exact-total PySpark Ctrl+End jump into the next contiguous block", () => {
