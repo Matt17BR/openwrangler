@@ -26,7 +26,20 @@ while their labels and limitations remain accurate.
 
 Fixes for data loss, runtime corruption, and release publication take priority over adding another backend.
 
-## Next priorities
+## Work toward 2.1.0
+
+Before adding more features, current work focuses on:
+
+- separating large UI, session, protocol, and runtime responsibilities so each can be tested directly;
+- removing duplicate live and generated operation rules while keeping generated code standalone and readable; and
+- improving Python type checking and making supported-version rules, dependency checks, test suites, release scripts,
+  and public documentation easier to maintain.
+
+Throughout this work, data safety, trust checks, accessibility, engine-native execution, and verified release artifacts
+must remain intact. Open Wrangler 2.1.0 can ship when a substantial set of high-priority fixes meets the release
+boundary above. Lower-priority cleanup can continue afterward.
+
+## Later product work
 
 ### Deterministic transforms and validation
 
