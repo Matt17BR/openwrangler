@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { LiveGridPage, RuntimeResponseEnvelope, SessionMetadata } from "../shared/protocol";
 import { openWranglerResponseShapes } from "../shared/protocol";
+import { columnTypes, typedCellKinds } from "../shared/protocol.generated";
 import {
+  isColumnSchemaArray,
   isOpenWranglerResponse,
   isRetainedTransformStep,
   isRuntimeResponseEnvelope,
@@ -42,6 +44,13 @@ describe("protocol-v2 response validation", () => {
     expect(Reflect.set(openWranglerResponseShapes, 0, first)).toBe(false);
     expect(Reflect.set(first, "kind", "changed")).toBe(false);
     expect(Reflect.set(first.required, 0, "changed")).toBe(false);
+  });
+
+  it("keeps the generated primitive value domains directly frozen", () => {
+    expect(Object.isFrozen(columnTypes)).toBe(true);
+    expect(Object.isFrozen(typedCellKinds)).toBe(true);
+    expect(Reflect.set(columnTypes, 0, "changed")).toBe(false);
+    expect(Reflect.set(typedCellKinds, 0, "changed")).toBe(false);
   });
 
   it.each(responses.map((response) => [response.kind, response] as const))(
@@ -350,6 +359,34 @@ describe("protocol-v2 response validation", () => {
         outputSchema: [metadata.schema[0], { ...otherColumn, id: metadata.schema[0].id }]
       })
     ).toBe(false);
+  });
+
+  it("accepts every generated column type and typed-cell kind at response boundaries", () => {
+    for (const type of columnTypes) {
+      expect(isColumnSchemaArray([{ ...metadata.schema[0], type }]), type).toBe(true);
+    }
+
+    const pageResponse = responses.find((response) => response.kind === "page");
+    expect(pageResponse?.kind).toBe("page");
+    if (pageResponse?.kind !== "page") return;
+    const row = pageResponse.page.rows[0];
+    const cell = row?.values[0];
+    if (row === undefined || cell === undefined) throw new Error("Expected the canonical page cell fixture.");
+    const responseWithCellKind = (kind: unknown) => ({
+      ...pageResponse,
+      page: {
+        ...pageResponse.page,
+        rows: [{ ...row, values: [{ ...cell, kind }] }]
+      }
+    });
+
+    for (const kind of typedCellKinds) {
+      expect(isOpenWranglerResponse(responseWithCellKind(kind)), kind).toBe(true);
+    }
+
+    const unknownMember = "__unknown_protocol_value__";
+    expect(isColumnSchemaArray([{ ...metadata.schema[0], type: unknownMember }])).toBe(false);
+    expect(isOpenWranglerResponse(responseWithCellKind(unknownMember))).toBe(false);
   });
 
   it("requires a recorded latest-step input schema only when applied steps exist", () => {

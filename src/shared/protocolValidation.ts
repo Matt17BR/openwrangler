@@ -20,7 +20,12 @@ import type {
   TransformStep,
   TypedSelectionToken
 } from "./protocol.generated";
-import { openWranglerRequestShapes, openWranglerResponseShapes } from "./protocol.generated";
+import {
+  columnTypes,
+  openWranglerRequestShapes,
+  openWranglerResponseShapes,
+  typedCellKinds
+} from "./protocol.generated";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationCatalog, type OperationCatalogItem } from "./operationCatalog.generated";
@@ -45,37 +50,8 @@ import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
 
-const COLUMN_TYPES = new Set([
-  "string",
-  "integer",
-  "float",
-  "decimal",
-  "boolean",
-  "datetime",
-  "date",
-  "duration",
-  "binary",
-  "list",
-  "struct",
-  "unknown"
-]);
-const CELL_KINDS = new Set([
-  "null",
-  "nan",
-  "infinity",
-  "boolean",
-  "number",
-  "integer",
-  "string",
-  "decimal",
-  "datetime",
-  "date",
-  "duration",
-  "binary",
-  "list",
-  "struct",
-  "unknown"
-]);
+const COLUMN_TYPES = new Set(columnTypes);
+const CELL_KINDS = new Set(typedCellKinds);
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark", "r"] as const;
 const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as const;
 const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\-./0-9:;=?@A-Z[\]_a-z~])+$/u;
