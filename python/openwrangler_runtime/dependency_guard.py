@@ -1413,37 +1413,6 @@ def _revalidate_actual_environment(expected: dict[str, Any]) -> None:
         _fail("environment_changed")
 
 
-def _create_journal(environment: dict[str, Any]) -> tuple[Path, tuple[int, int]]:
-    root = Path(environment["packageRoot"])
-    journal = root / JOURNAL_NAME
-    created = False
-    if os.name == "nt":
-        result = _windows_create_secure_directory(
-            journal,
-            allow_permission_failure=False,
-            code="malformed_state",
-        )
-        created = result is True
-    else:
-        try:
-            journal.mkdir(mode=0o700)
-            created = True
-        except FileExistsError:
-            pass
-        except OSError:
-            _fail("malformed_state")
-    if created:
-        try:
-            if os.name != "nt":
-                os.chmod(journal, 0o700)
-            _fsync_directory(root)
-        except OSError:
-            _fail("malformed_state")
-    identity = _validate_private_directory(journal)
-    _revalidate_actual_environment(environment)
-    return journal, identity
-
-
 def _existing_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int, int] | None]:
     root = Path(environment["packageRoot"])
     journal = root / JOURNAL_NAME
@@ -1464,7 +1433,11 @@ def _existing_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[i
     return journal, identity
 
 
-def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int, int] | None, bool]:
+def _open_or_create_journal(
+    environment: dict[str, Any],
+    *,
+    allow_unwritable_absence: bool,
+) -> tuple[Path | None, tuple[int, int] | None]:
     root = Path(environment["packageRoot"])
     journal = root / JOURNAL_NAME
     created = False
@@ -1474,7 +1447,7 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
         if os.name == "nt":
             result = _windows_create_secure_directory(
                 journal,
-                allow_permission_failure=True,
+                allow_permission_failure=allow_unwritable_absence,
                 code="malformed_state",
             )
             created = result is True
@@ -1487,7 +1460,7 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
             except FileExistsError:
                 pass
             except OSError as error:
-                if error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+                if not allow_unwritable_absence or error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
                     _fail("malformed_state")
                 permission_failure = True
         if permission_failure:
@@ -1496,7 +1469,7 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
                 journal.lstat()
             except FileNotFoundError:
                 _revalidate_actual_environment(environment)
-                return None, None, False
+                return None, None
             except OSError:
                 _fail("malformed_state")
     except OSError:
@@ -1510,7 +1483,7 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
             _fail("malformed_state")
     identity = _validate_private_directory(journal)
     _revalidate_actual_environment(environment)
-    return journal, identity, created
+    return journal, identity
 
 
 def _prepare_status_lock(journal: Path) -> None:
@@ -2735,7 +2708,9 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
 def _run_install(request: dict[str, Any]) -> int:
     environment = request["environment"]
     token = request["token"]
-    journal, journal_identity = _create_journal(environment)
+    journal, journal_identity = _open_or_create_journal(environment, allow_unwritable_absence=False)
+    if journal is None or journal_identity is None:
+        _fail("malformed_state")
     with _JournalLock(journal, journal_identity, create=True) as lock:
         _revalidate_actual_environment(environment)
         receipt = lock.publish(token, environment, request["dependencies"])
@@ -2784,7 +2759,7 @@ def _run_install(request: dict[str, Any]) -> int:
 
 def _run_status(request: dict[str, Any]) -> int:
     environment = request["environment"]
-    journal, journal_identity, _created = _status_journal(environment)
+    journal, journal_identity = _open_or_create_journal(environment, allow_unwritable_absence=True)
     if journal is None or journal_identity is None:
         _emit({"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None})
         return EXIT_SUCCESS
