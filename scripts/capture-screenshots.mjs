@@ -497,7 +497,7 @@ const byExamplePreviewReadiness = createWebviewSelectorReadiness({
 });
 const filterPanelReadiness = createFilterPanelScreenshotReadiness();
 
-writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
+const gridViewHarness = writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(...createGridColumnClipboardHarness(payloads.opened));
 writeWebviewHarness(
   "operation-dialog.html",
@@ -553,7 +553,7 @@ writeWebviewHarness(
   {},
   { capture: false, zoom: 2 }
 );
-writeWebviewHarness(
+const byExampleDialogHarness = writeWebviewHarness(
   "by-example-dialog.html",
   payloads.exampleOpened,
   {},
@@ -564,7 +564,7 @@ writeWebviewHarness(
     editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" }
   }
 );
-writeWebviewHarness(
+const byExamplePreviewHarness = writeWebviewHarness(
   "by-example-preview.html",
   payloads.exampleDraft,
   {},
@@ -572,28 +572,20 @@ writeWebviewHarness(
   {},
   { readiness: byExamplePreviewReadiness }
 );
-writeWebviewHarness(
-  "public-by-example-dialog.html",
-  payloads.exampleOpened,
-  {},
-  "public-media-source/v1.2/browser/by-example-dialog.png",
-  {},
-  {
-    height: 960,
-    pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO,
-    editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" }
-  }
+screenshot(
+  byExampleDialogHarness,
+  screenshotOutput("public-media-source/v1.2/browser/by-example-dialog.png"),
+  1280,
+  960,
+  PUBLIC_MEDIA_PIXEL_RATIO
 );
-writeWebviewHarness(
-  "public-by-example-preview.html",
-  payloads.exampleDraft,
-  {},
-  "public-media-source/v1.2/browser/by-example-preview.png",
-  {},
-  {
-    pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO,
-    readiness: byExamplePreviewReadiness
-  }
+screenshot(
+  byExamplePreviewHarness,
+  screenshotOutput("public-media-source/v1.2/browser/by-example-preview.png"),
+  1280,
+  760,
+  PUBLIC_MEDIA_PIXEL_RATIO,
+  { readiness: byExamplePreviewReadiness }
 );
 writeWebviewHarness(
   "by-example-preview-dark-zoom-200.html",
@@ -805,7 +797,7 @@ writeWebviewHarness(
     }
   }
 );
-writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
+screenshot(gridViewHarness, screenshotOutput("acceptance/grid-dark-1920.png"), 1920, 760);
 writeWebviewHarness(
   "grid-light-1280.html",
   payloads.opened,
@@ -1091,6 +1083,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   if (appearance.capture !== false) {
     screenshot(htmlPath, outputPath, width, height, pixelRatio, { readiness: appearance.readiness });
   }
+  return htmlPath;
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {
