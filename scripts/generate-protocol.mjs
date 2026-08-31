@@ -14,6 +14,8 @@ const pythonProtocolLimitsOutputPath = resolve(root, "python", "openwrangler_run
 const schema = JSON.parse(await readFile(schemaPath, "utf8"));
 const operationCatalog = canonicalOperationCatalog(schema);
 const protocolLimits = canonicalProtocolLimits(schema);
+const columnTypes = canonicalStringEnum(schema, "ColumnType");
+const typedCellKinds = canonicalStringEnum(schema, "TypedCellKind");
 const requestShapes = canonicalTaggedUnionShapes(schema, {
   unionName: "OpenWranglerRequest",
   variantLabel: "Request",
@@ -37,6 +39,15 @@ const protocolTypesOutput = await compileFromFile(schemaPath, {
   },
   unreachableDefinitions: true
 });
+const primitiveValueDomainsOutput = await prettier.format(
+  `export const columnTypes = Object.freeze(${JSON.stringify(columnTypes)}) satisfies readonly ColumnType[];
+export const typedCellKinds = Object.freeze(${JSON.stringify(typedCellKinds)}) satisfies readonly TypedCellKind[];
+`,
+  {
+    ...prettierConfig,
+    parser: "typescript"
+  }
+);
 const requestShapesOutput = await prettier.format(
   renderTypeScriptTaggedUnionShapes("OpenWranglerRequest", "openWranglerRequestShapes", requestShapes),
   {
@@ -51,7 +62,7 @@ const responseShapesOutput = await prettier.format(
     parser: "typescript"
   }
 );
-const protocolOutput = `${protocolTypesOutput.trimEnd()}\n\n${requestShapesOutput.trimEnd()}\n\n${responseShapesOutput}`;
+const protocolOutput = `${protocolTypesOutput.trimEnd()}\n\n${primitiveValueDomainsOutput.trimEnd()}\n\n${requestShapesOutput.trimEnd()}\n\n${responseShapesOutput}`;
 const catalogOutput = await prettier.format(renderTypeScriptCatalog(operationCatalog), {
   ...prettierConfig,
   parser: "typescript"
@@ -117,6 +128,24 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
 
 export const operationKinds = Object.freeze(operationCatalog.map(({ kind }) => kind)) as readonly OperationKind[];
 `;
+}
+
+function canonicalStringEnum(value, definitionName) {
+  const definition = value?.definitions?.[definitionName];
+  const values = definition?.enum;
+  if (
+    definition === null ||
+    typeof definition !== "object" ||
+    Array.isArray(definition) ||
+    definition.type !== "string" ||
+    !Array.isArray(values) ||
+    values.length === 0 ||
+    values.some((entry) => typeof entry !== "string" || entry.length === 0) ||
+    new Set(values).size !== values.length
+  ) {
+    throw new Error(`Canonical ${definitionName} string enum is missing or invalid.`);
+  }
+  return Object.freeze([...values]);
 }
 
 function canonicalTaggedUnionShapes(value, { unionName, variantLabel, repeatedClosedObjectBases = new Map() }) {

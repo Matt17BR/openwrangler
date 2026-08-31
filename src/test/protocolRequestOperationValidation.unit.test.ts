@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { operationCatalog } from "../shared/operationCatalog.generated";
+import { columnTypes } from "../shared/protocol.generated";
 import { MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES } from "../shared/protocolLimits.generated";
 import { isOpenWranglerRequest, isRuntimeRequestEnvelope, isTransformStep } from "../shared/protocolValidation";
 import {
@@ -35,6 +36,33 @@ describe("protocol-v2 operation request validation", () => {
       expect(validateTransportSchema(envelope(code))).toBe(false);
       expect(isRuntimeRequestEnvelope(envelope(code))).toBe(false);
     }
+  });
+
+  it("accepts every generated column type at viewing and transform filter boundaries", () => {
+    const getPage = requests.find((candidate) => candidate.kind === "getPage");
+    expect(getPage?.kind).toBe("getPage");
+    if (getPage?.kind !== "getPage") return;
+
+    const viewingRequest = (type: unknown) => ({
+      ...getPage,
+      filterModel: { filters: [{ column: "value", type, predicates: [] }], sort: [] }
+    });
+    const transformStep = (type: unknown) => ({
+      id: "generated-column-type",
+      kind: "filterRows",
+      params: {
+        filterModel: { filters: [{ column: valueReference, type, predicates: [] }], sort: [] }
+      }
+    });
+
+    for (const type of columnTypes) {
+      expect(isOpenWranglerRequest(viewingRequest(type)), type).toBe(true);
+      expect(isTransformStep(transformStep(type)), type).toBe(true);
+    }
+
+    const unknownMember = "__unknown_protocol_value__";
+    expect(isOpenWranglerRequest(viewingRequest(unknownMember))).toBe(false);
+    expect(isTransformStep(transformStep(unknownMember))).toBe(false);
   });
 
   it("makes the canonical schema reject terminal CR/LF in public regex fields", () => {

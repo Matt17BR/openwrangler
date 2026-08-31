@@ -1478,6 +1478,38 @@ export interface ErrorResponse {
   viewRequestId?: string;
 }
 
+export const columnTypes = Object.freeze([
+  "string",
+  "integer",
+  "float",
+  "decimal",
+  "boolean",
+  "datetime",
+  "date",
+  "duration",
+  "binary",
+  "list",
+  "struct",
+  "unknown"
+]) satisfies readonly ColumnType[];
+export const typedCellKinds = Object.freeze([
+  "null",
+  "nan",
+  "infinity",
+  "boolean",
+  "number",
+  "integer",
+  "string",
+  "decimal",
+  "datetime",
+  "date",
+  "duration",
+  "binary",
+  "list",
+  "struct",
+  "unknown"
+]) satisfies readonly TypedCellKind[];
+
 export interface OpenWranglerRequestShape {
   readonly kind: OpenWranglerRequest["kind"];
   readonly required: readonly string[];
