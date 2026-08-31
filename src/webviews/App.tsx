@@ -73,6 +73,7 @@ import {
 } from "./appState";
 import { useOperationDialogLifecycle } from "./operationDialogLifecycle";
 import { useImportOptionsLifecycle } from "./importOptionsLifecycle";
+import { useInsightsPanelLifecycle } from "./insightsPanelLifecycle";
 import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 import { useSessionModeChangeLifecycle } from "./sessionModeChangeLifecycle";
@@ -122,8 +123,6 @@ export function App() {
   const goToColumnRequestSequence = useRef(0);
   const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
   const [filterColumn, setFilterColumn] = useState("");
-  const [sidePanelOpen, setSidePanelOpen] = useState(false);
-  const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
@@ -176,6 +175,17 @@ export function App() {
   } = useImportOptionsLifecycle({
     scheduleFocusRestoration: scheduleWebviewFocusRestoration
   });
+  const {
+    open: sidePanelOpen,
+    view: summaryPanelView,
+    openPanel: openSidePanel,
+    selectPanelView: selectSidePanelView,
+    closePanel: closeSidePanelState,
+    reconcileAvailability: reconcileSidePanelAvailability
+  } = useInsightsPanelLifecycle({
+    scheduleFocusRestoration: scheduleWebviewFocusRestoration,
+    canRestoreFocus: canRestoreFocusTo
+  });
   const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
@@ -184,8 +194,6 @@ export function App() {
   const confirmedFilterHistoryRef = useRef<ConfirmedFilterHistory>(emptyConfirmedFilterHistory());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
-  const sidePanelOpenRef = useRef(false);
-  const summaryPanelViewRef = useRef<SummaryPanelView>("column");
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
@@ -196,21 +204,12 @@ export function App() {
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
-  const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
-  const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
-  const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
     return `view-${viewRequestEpoch}-${lastViewRequestSequence}`;
   }, []);
-
-  useEffect(() => {
-    if (!sidePanelOpen) return;
-    const frame = scheduleWebviewFocusRestoration(() => sidePanelCloseRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, [sidePanelOpen]);
 
   const storeMetadata = useCallback((next: SessionMetadata | undefined) => {
     metadataRef.current = next;
@@ -541,8 +540,7 @@ export function App() {
       if (stepInspectionRef.current?.stepId !== stepId) storeStepInspection(undefined);
       setStepInspectionError(undefined);
       suspendProfiling();
-      sidePanelOpenRef.current = false;
-      setSidePanelOpen(false);
+      closeSidePanelState({ restoreFocus: false });
       vscode.postMessage({
         kind: "runtimeRequest",
         request: {
@@ -555,7 +553,7 @@ export function App() {
         }
       });
     },
-    [storePendingStepInspection, storeStepInspection, storeStepInspectionTarget, suspendProfiling]
+    [closeSidePanelState, storePendingStepInspection, storeStepInspection, storeStepInspectionTarget, suspendProfiling]
   );
 
   const beginMutation = useCallback((): boolean => {
@@ -882,10 +880,7 @@ export function App() {
           ) {
             setFilterColumn(response.column);
           }
-          summaryPanelViewRef.current = "filters";
-          setSummaryPanelView("filters");
-          sidePanelOpenRef.current = true;
-          setSidePanelOpen(true);
+          openSidePanel("filters");
         } else if (response.action === "changeViewSort") {
           if (!metadataRef.current || !supportsViewingCapability(metadataRef.current.capabilities, "sort")) {
             return;
@@ -1063,16 +1058,7 @@ export function App() {
         const openedFilterPanelSupported =
           supportsViewingCapability(response.metadata.capabilities, "filter") ||
           supportsViewingCapability(response.metadata.capabilities, "sort");
-        if (!openedProfileSupported && !openedFilterPanelSupported) {
-          sidePanelOpenRef.current = false;
-          setSidePanelOpen(false);
-        } else if (!openedProfileSupported) {
-          summaryPanelViewRef.current = "filters";
-          setSummaryPanelView("filters");
-        } else if (!openedFilterPanelSupported && summaryPanelViewRef.current === "filters") {
-          summaryPanelViewRef.current = "column";
-          setSummaryPanelView("column");
-        }
+        reconcileSidePanelAvailability(openedProfileSupported, openedFilterPanelSupported);
         confirmView(response.metadata, nextViewRequestId());
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
@@ -1259,6 +1245,8 @@ export function App() {
     deleteStep,
     isImportOptionsPending,
     nextViewRequestId,
+    openSidePanel,
+    reconcileSidePanelAvailability,
     requestOperationIntent,
     requestImportOptionsChange,
     requestColumnReveal,
@@ -1705,8 +1693,7 @@ export function App() {
     ) {
       return;
     }
-    summaryPanelViewRef.current = view;
-    setSummaryPanelView(view);
+    selectSidePanelView(view);
     if (view !== "filters") return;
     const selectedColumn = selectedSummaryColumnId ? schemaById.get(selectedSummaryColumnId) : undefined;
     if (!selectedColumn) return;
@@ -1714,16 +1701,10 @@ export function App() {
     requestValues(selectedColumn.name);
   };
 
-  const closeSidePanel = () => {
-    sidePanelOpenRef.current = false;
-    setSidePanelOpen(false);
+  const closeSidePanel = (): boolean => {
+    if (!closeSidePanelState()) return false;
     releaseDrawerProfiling();
-    const returnTarget = sidePanelReturnFocus.current;
-    sidePanelReturnFocus.current = null;
-    scheduleWebviewFocusRestoration(() => {
-      if (canRestoreFocusTo(returnTarget)) returnTarget.focus();
-      else sidePanelToggleRef.current?.focus();
-    });
+    return true;
   };
 
   const handleKeyboardShortcut = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -1741,8 +1722,7 @@ export function App() {
       } else if (stepInspectionTargetRef.current) {
         clearStepInspection();
         handled = true;
-      } else if (sidePanelOpenRef.current) {
-        closeSidePanel();
+      } else if (closeSidePanel()) {
         handled = true;
       } else if (metadata?.draftStep) {
         if (!projectionLoading) {
@@ -1988,7 +1968,6 @@ export function App() {
                 </button>
               )}
               <button
-                ref={sidePanelToggleRef}
                 type="button"
                 className="toolbarButton"
                 aria-label={
@@ -2009,16 +1988,9 @@ export function App() {
                       : undefined
                 }
                 onClick={(event) => {
-                  if (sidePanelOpenRef.current) {
-                    closeSidePanel();
-                    return;
-                  }
-                  sidePanelReturnFocus.current = event.currentTarget;
+                  if (closeSidePanel()) return;
                   const initialView: SummaryPanelView = profileSupported ? "column" : "filters";
-                  summaryPanelViewRef.current = initialView;
-                  setSummaryPanelView(initialView);
-                  sidePanelOpenRef.current = true;
-                  setSidePanelOpen(true);
+                  openSidePanel(initialView, event.currentTarget);
                 }}
               >
                 {inspectionMode
@@ -2294,25 +2266,21 @@ export function App() {
                 }}
                 onApplyProfileFilter={(filter) => {
                   if (inspectionMode || !filterSupported) return;
-                  sidePanelReturnFocus.current =
-                    document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
                   setFilterColumn(filter.column);
-                  summaryPanelViewRef.current = "column";
-                  setSummaryPanelView("column");
-                  sidePanelOpenRef.current = true;
-                  setSidePanelOpen(true);
+                  openSidePanel(
+                    "column",
+                    document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+                  );
                   flushGridViewState();
                   applyFilters(replaceViewColumnFilter(filterModelRef.current, filter));
                 }}
                 onOpenFilter={(column) => {
                   if (inspectionMode || !filterSupported) return;
-                  sidePanelReturnFocus.current =
-                    document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
                   setFilterColumn(column);
-                  summaryPanelViewRef.current = "filters";
-                  setSummaryPanelView("filters");
-                  sidePanelOpenRef.current = true;
-                  setSidePanelOpen(true);
+                  openSidePanel(
+                    "filters",
+                    document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+                  );
                   requestValues(column);
                 }}
                 onVisibleSummaryColumnsChange={
@@ -2350,7 +2318,6 @@ export function App() {
               <div className="drawerHeader">
                 <strong>{profileSupported ? "Column profiles" : filterPanelLabel}</strong>
                 <button
-                  ref={sidePanelCloseRef}
                   type="button"
                   className="iconButton codicon codicon-close"
                   aria-label="Close panel"
@@ -2376,8 +2343,7 @@ export function App() {
                   filterSupported && columnValuesSupported && !mutationPending && !importOptionsPending
                     ? (column) => {
                         setFilterColumn(column);
-                        summaryPanelViewRef.current = "filters";
-                        setSummaryPanelView("filters");
+                        selectSidePanelView("filters");
                         requestValues(column);
                       }
                     : undefined
