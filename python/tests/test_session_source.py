@@ -14,6 +14,7 @@ from openwrangler_runtime.session_source import (
     SourceChangedError,
     resolve_notebook_variable,
 )
+from openwrangler_runtime.trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 
 
 def engine(name: str, *, lazy_extensions: frozenset[str] = frozenset(), stopped: bool = False) -> DataFrameEngine:
@@ -119,11 +120,11 @@ def test_source_owns_export_identity_checks_and_notebook_resolution(
         file_source(path),
         engine("polars", lazy_extensions=frozenset({".csv"})),
     )
-    details = path.stat()
+    fingerprint = _confirmed_source_path_fingerprint(path)
 
     assert source.is_same_path(str(path))
-    assert source.matches_file_identity(details.st_dev, details.st_ino)
-    assert not source.matches_file_identity(details.st_dev, details.st_ino + 1)
+    assert source.matches_file_identity(fingerprint.device, fingerprint.inode)
+    assert not source.matches_file_identity(fingerprint.device, fingerprint.inode + 1)
 
     value: Any = object()
     monkeypatch.setattr(__main__, "orders", value, raising=False)
