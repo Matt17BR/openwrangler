@@ -10,7 +10,6 @@ import {
 } from "./release-readiness.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
-import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
@@ -46,6 +45,7 @@ if (typeof packageJson !== "object" || packageJson === null || Array.isArray(pac
 if (typeof packageLock !== "object" || packageLock === null || Array.isArray(packageLock)) {
   throw new Error("package-lock.json must contain one bounded JSON object.");
 }
+const agentGuide = readFileSync(resolve(root, "AGENTS.md"), "utf8");
 const contributingSource = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8");
 const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
   contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),
@@ -57,12 +57,31 @@ if (repositoryMetadataProblems.length > 0) {
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const mediaGallery = readFileSync(resolve(root, "docs/media-gallery.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
-const publicWritingProblems = inspectPublicWriting({
-  agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
-  contributing: contributingSource,
-  pullRequestTemplate: readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8"),
-  styleGuide: readFileSync(resolve(root, "docs/writing-style.md"), "utf8")
-});
+const pullRequestTemplate = readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8");
+const styleGuide = readFileSync(resolve(root, "docs/writing-style.md"), "utf8");
+const publicWritingProblems = [];
+if (!agentGuide.includes("docs/writing-style.md")) {
+  publicWritingProblems.push("AGENTS.md must route future agents to docs/writing-style.md.");
+}
+if (!contributingSource.includes("docs/writing-style.md")) {
+  publicWritingProblems.push("CONTRIBUTING.md must route contributors to docs/writing-style.md.");
+}
+if (!pullRequestTemplate.includes("docs/writing-style.md")) {
+  publicWritingProblems.push(
+    "The pull request template must include a public-copy review using docs/writing-style.md."
+  );
+}
+if (!styleGuide.includes("Write as a maintainer explaining the product to another developer.")) {
+  publicWritingProblems.push("The writing guide must retain its plain-language maintainer rule.");
+}
+if (!styleGuide.includes("\n## Public copy")) {
+  publicWritingProblems.push("The writing guide must retain its Public copy section.");
+}
+for (const heading of ["## What changed", "## Why", "## Verification", "## User-facing docs or screenshots"]) {
+  if (!pullRequestTemplate.includes(heading)) {
+    publicWritingProblems.push(`The pull request template is missing ${heading}.`);
+  }
+}
 if (publicWritingProblems.length > 0) {
   throw new Error(`Public writing guidance is disconnected:\n- ${publicWritingProblems.join("\n- ")}`);
 }
@@ -182,7 +201,6 @@ for (const limitName of ["MAX_SAVED_PAYLOAD_NODES", "MAX_SAVED_PAYLOAD_DEPTH"]) 
   }
 }
 
-const agentGuide = readFileSync(resolve(root, "AGENTS.md"), "utf8");
 for (const file of required.filter((file) => file.startsWith("docs/"))) {
   if (!agentGuide.includes(file)) {
     throw new Error(`AGENTS.md must route agents to ${file}`);
