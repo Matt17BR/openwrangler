@@ -322,7 +322,6 @@ ${closeSession.code}
     const typedOpenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const typedSummaryId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const typedStatsId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    const typedCloseId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -347,12 +346,6 @@ ${closeSession.code}
       kind: "getDatasetStats",
       payload: { sessionId: typedSessionId, view: emptyView() }
     });
-    const close = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: typedCloseId,
-      kind: "closeSession",
-      payload: { sessionId: typedSessionId }
-    });
     const result = runR(`
 typed <- data.frame(
   amount = c(1, NA_real_, NaN, Inf),
@@ -369,7 +362,6 @@ ${bootstrap}
 ${open.code}
 ${summary.code}
 ${stats.code}
-${close.code}
 `);
 
     const profiled = decodeRKernelResponseJson(marked(result.stdout, summary.marker), typedSummaryId);
@@ -403,10 +395,6 @@ ${close.code}
     expect(datasetStats).toMatchObject({
       kind: "datasetStats",
       stats: { missingCells: 9, missingRows: 2, duplicateRows: 0 }
-    });
-    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), typedCloseId)).toMatchObject({
-      kind: "closed",
-      sessionId: typedSessionId
     });
   });
 
