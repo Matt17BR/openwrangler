@@ -1016,7 +1016,7 @@
     "globals": "^17.11.0",
     "js-yaml": "^5.3.0",
     "jsdom": "^29.1.1",
-    "json-schema-to-typescript": "^15.0.4",
+    "json-schema-to-typescript": "^16.0.0",
     "keytar": "file:scripts/npm-shims/keytar",
     "markdown-it": "^15.0.1",
     "ovsx": "1.1.1",
