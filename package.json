@@ -2,11 +2,11 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Open Wrangler is an open-source visual dataframe editor for VS Code and editors based on it. Explore files or live notebook data, make changes visually, and keep generated Python or R code.",
-  "version": "2.0.0",
+  "version": "2.0.20260903",
   "publisher": "Matt17BR",
   "license": "MIT",
   "packageManager": "npm@11.17.0",
-  "preview": false,
+  "preview": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/Matt17BR/openwrangler.git"
