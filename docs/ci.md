@@ -34,6 +34,14 @@ Drafts and ready pull requests use the same jobs. A new commit cancels the older
 pull-request jobs do not upload build output. The packaged smoke may upload its bounded diagnostics only after that
 job fails.
 
+Dependabot automatic rebasing is disabled for each ecosystem. When selecting an update for integration, a maintainer
+refreshes it onto current `main` and reviews the dependency and lockfile changes. The branch must be up to date and
+pass all five product checks and CodeQL before merging. Update schedules, grouping, and security update creation
+remain unchanged.
+
+Pull requests already open when rebasing is disabled may continue to rebase until 30 days after they were created.
+See GitHub's [rebase strategy documentation](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#rebase-strategy).
+
 ## Local equivalents
 
 Use focused commands while iterating. The complete source boundary is:
