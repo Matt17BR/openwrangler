@@ -1158,6 +1158,12 @@ openwrangler_r_frame_contract <- local({
   }
 
   parse_finite_number <- function(value, label, allow_infinity = FALSE) {
+    if (
+      (is.integer(value) || is.double(value)) && !is.object(value) &&
+        length(value) == 1L && !is.na(value) && is.finite(value)
+    ) {
+      return(as.double(value))
+    }
     text <- if (is.character(value) && length(value) == 1L && !is.na(value)) {
       value
     } else if (is.numeric(value) && length(value) == 1L && !is.na(value)) {

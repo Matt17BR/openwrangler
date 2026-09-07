@@ -1547,6 +1547,154 @@ for (index in seq_along(c("inf", "-inf"))) {
 }
 remove("legacy_infinity_frame", envir = source_environment)
 
+precise_filter_inputs <- list(
+  float = c(
+    1, 1 + .Machine$double.eps, 2^53, 2^53 + 2, 2^100, .Machine$double.xmin,
+    .Machine$double.xmax, 0, -0, NA_real_, NaN, Inf, -Inf
+  ),
+  datetime = as.POSIXct(c(2^30, 2^30 + 2^-20, NA_real_), origin = "1970-01-01", tz = "UTC"),
+  duration = as.difftime(c(1, 1 + .Machine$double.eps, NA_real_), units = "secs")
+)
+for (type in names(precise_filter_inputs)) {
+  input <- data.frame(value = precise_filter_inputs[[type]], row = seq_along(precise_filter_inputs[[type]]))
+  source_environment$precise_filter_frame <- input
+  before <- serialize(input, NULL, version = 3L)
+  current_session <- session_id(3000L + match(type, names(precise_filter_inputs)))
+  opened <- dispatch("openSession", list(
+    sessionId = current_session, variableName = "precise_filter_frame", page = page_window()
+  ))
+  assert_identical(opened$kind, "page", "precise numeric source did not open")
+  current_revision <- 0L
+  preview <- NULL
+  values <- dispatch("getColumnValues", list(
+    sessionId = current_session, column = list(id = "r:c:0", name = "value"),
+    view = list(filters = I(list()), sorts = I(list())), search = NULL, limit = 100L
+  ))
+  assert_identical(values$kind, "columnValues", "precise numeric values did not load")
+  token_values <- vapply(values$values, function(entry) {
+    cell <- entry$selectionValue$cell
+    if (identical(cell$kind, "infinity")) cell$sign * Inf else as.double(cell$raw)
+  }, double(1L))
+  assert_identical(
+    sort(token_values), sort(unique(as.double(input$value[!is.na(input$value)]))),
+    "public numeric picker tokens lost or changed a distinct source value"
+  )
+  for (entry in values$values) {
+    token <- entry$selectionValue
+    selected <- if (identical(token$cell$kind, "infinity")) token$cell$sign * Inf else as.double(token$cell$raw)
+    include_missing <- is.finite(selected) && selected == 1 + .Machine$double.eps
+    expected_rows <- which(
+      (!is.na(input$value) & as.double(input$value) == selected) | (include_missing & is.na(input$value))
+    )
+    filters <- list(list(
+      column = list(id = "r:c:0", name = "value"), type = type, predicates = I(list()),
+      valueFilter = list(
+        kind = "values", selectedValues = I(list(token)), includeNulls = include_missing, includeNaN = include_missing
+      )
+    ))
+    if (identical(type, "float") && is.finite(selected)) {
+      filters[[2L]] <- list(
+        column = list(id = "r:c:0", name = "value"), type = type,
+        predicates = I(list(list(kind = "predicate", operator = "equals", value = selected)))
+      )
+    }
+    for (filter in filters) {
+      expected <- if (is.null(filter$valueFilter)) {
+        which(!is.na(input$value) & as.double(input$value) == selected)
+      } else expected_rows
+      step <- step_with("precise-filter", "filterRows", list(filterModel = list(
+        filters = I(list(filter)), sort = I(list())
+      )))
+      if (!is.null(preview)) {
+        discarded <- dispatch("discardDraft", list(
+          sessionId = current_session, revision = current_revision, page = page_window()
+        ))
+        assert_identical(discarded$action, "discard", "the previous numeric filter draft did not discard")
+        current_revision <- discarded$revision
+      }
+      preview <- dispatch("previewStep", list(
+        sessionId = current_session, revision = current_revision, step = step, page = page_window()
+      ))
+      assert_identical(preview$kind, "stepPreview", paste("a precise numeric filter did not preview:", preview$message))
+      current_revision <- preview$revision
+      live <- snapshot_from_latest_capture("precise numeric filter")
+      assert_identical(live$row, as.integer(expected), "a numeric filter selected a neighboring value")
+      generated <- new.env(parent = baseenv())
+      assign("precise_filter_frame", unserialize(before), envir = generated)
+      eval(parse(text = preview$code, keep.source = FALSE), envir = generated)
+      assert_frame_identical(generated$open_wrangler_result, live, "generated numeric filtering changed its target")
+    }
+  }
+  invalid_step <- step_with("invalid-number", "filterRows", list(filterModel = list(
+    filters = I(list(list(
+      column = list(id = "r:c:0", name = "value"), type = type,
+      predicates = I(list(list(kind = "predicate", operator = "equals", value = "NaN")))
+    ))), sort = I(list())
+  )))
+  applied <- dispatch("applyDraft", list(sessionId = current_session, revision = preview$revision, page = page_window()))
+  assert_identical(applied$action, "apply", "the precise numeric filter did not apply")
+  confirmed <- dispatch("getPage", list(sessionId = current_session, page = page_window()))
+  invalid <- dispatch("previewStep", list(
+    sessionId = current_session, revision = applied$revision, step = invalid_step, page = page_window()
+  ))
+  assert_identical(invalid$kind, "error", "a nonfinite numeric predicate was accepted")
+  if (identical(type, "float")) {
+    integer_step <- step_with("invalid-integer-token", "filterRows", list(filterModel = list(
+      filters = I(list(list(
+        column = list(id = "r:c:0", name = "value"), type = type, predicates = I(list()),
+        valueFilter = list(kind = "values", includeNulls = FALSE, includeNaN = FALSE, selectedValues = I(list(list(
+          kind = "typedSelection", version = 1L, columnType = "float",
+          cell = list(kind = "integer", raw = "9007199254740993", display = "9007199254740993", isNull = FALSE, isNaN = FALSE)
+        ))))
+      ))), sort = I(list())
+    )))
+    invalid_integer <- dispatch("previewStep", list(
+      sessionId = current_session, revision = applied$revision, step = integer_step, page = page_window()
+    ))
+    assert_identical(invalid_integer$kind, "error", "the native R float receiver accepted an integer token")
+  }
+  unchanged <- dispatch("getPage", list(sessionId = current_session, page = page_window()))
+  assert_identical(unchanged, confirmed, "failed numeric filtering changed confirmed values or state")
+  assert_identical(
+    serialize(source_environment$precise_filter_frame, NULL, version = 3L), before, "numeric filtering changed its source"
+  )
+  assert_identical(
+    dispatch("closeSession", list(sessionId = current_session))$kind, "closed", "precise numeric session did not close"
+  )
+}
+remove("precise_filter_frame", envir = source_environment)
+
+source_environment$precise_fill_frame <- data.frame(value = c(1, NA_real_, NaN))
+precise_fill_before <- serialize(source_environment$precise_fill_frame, NULL, version = 3L)
+precise_fill_session <- session_id(3010L)
+opened_fill <- dispatch("openSession", list(
+  sessionId = precise_fill_session, variableName = "precise_fill_frame", page = page_window()
+))
+assert_identical(opened_fill$kind, "page", "the precise Fill source did not open")
+fill_step <- step_with("precise-fill", "fillMissingValues", list(
+  column = list(id = "r:c:0", name = "value"), replacement = list(kind = "float", value = 2^100)
+))
+invalid_fill <- dispatch("previewStep", list(
+  sessionId = precise_fill_session, revision = 0L, step = fill_step, page = page_window()
+))
+assert_identical(invalid_fill$kind, "error", "the public Fill contract started accepting numeric replacement payloads")
+fill_step$params$replacement$value <- sprintf("%.17g", 2^100)
+filled <- dispatch("previewStep", list(
+  sessionId = precise_fill_session, revision = 0L, step = fill_step, page = page_window()
+))
+assert_identical(filled$kind, "stepPreview", "exact-text numeric Fill did not preview")
+filled_live <- snapshot_from_latest_capture("precise Fill")
+assert_identical(filled_live$value, c(1, 2^100, 2^100), "exact-text numeric Fill changed its value")
+filled_generated <- new.env(parent = baseenv())
+filled_generated$precise_fill_frame <- unserialize(precise_fill_before)
+eval(parse(text = filled$code, keep.source = FALSE), envir = filled_generated)
+assert_frame_identical(filled_generated$open_wrangler_result, filled_live, "generated exact-text Fill changed its value")
+assert_identical(
+  serialize(source_environment$precise_fill_frame, NULL, version = 3L), precise_fill_before, "Fill changed its source"
+)
+assert_identical(dispatch("closeSession", list(sessionId = precise_fill_session))$kind, "closed", "precise Fill did not close")
+remove("precise_fill_frame", envir = source_environment)
+
 agent$dispose()
 cat(paste0(
   "complete native-R catalog contract passed: 32 live/generated/replayed operations; ",

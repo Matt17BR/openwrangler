@@ -4059,6 +4059,19 @@ for (case in fill_cases) {
 }
 assert_identical(fill_frame, fill_before, "Fill Missing Values mutated its source data.frame")
 
+for (replacement_value in c(1 + .Machine$double.eps, 2^100, .Machine$double.xmin, .Machine$double.xmax, -0)) {
+  source <- data.frame(value = c(1, NA_real_, NaN))
+  before <- source
+  filled <- openwrangler_r_frame_contract$fill_missing_column_at(
+    source, 1L, "value", list(kind = "float", value = replacement_value)
+  )
+  assert_identical(filled$value, c(1, replacement_value, replacement_value), "numeric Fill rounded its native replacement")
+  if (replacement_value == 0) {
+    assert_identical(1 / filled$value[2:3], rep(1 / replacement_value, 2L), "numeric Fill changed zero's sign")
+  }
+  assert_identical(source, before, "numeric Fill changed its source")
+}
+
 most_frequent_frame <- data.frame(
   text = c("ready", NA, "ready", "later"),
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
@@ -6349,6 +6362,66 @@ assert_identical(
   "r:r:0",
   "finite numeric selections did not round-trip through a view filter"
 )
+
+precise_query_frames <- list(
+  float = data.frame(value = c(
+    1, 1 + .Machine$double.eps, 1.2345678901234567, 2^53, 2^53 + 2, 2^100,
+    .Machine$double.xmin, .Machine$double.xmax, 0, -0, NA_real_, NaN, Inf, -Inf
+  )),
+  datetime = data.frame(value = as.POSIXct(c(2^30, 2^30 + 2^-20, NA_real_), origin = "1970-01-01", tz = "UTC")),
+  duration = data.frame(value = as.difftime(c(1, 1 + .Machine$double.eps, NA_real_), units = "secs"))
+)
+for (type in names(precise_query_frames)) {
+  source <- precise_query_frames[[type]]
+  before <- source
+  captured <- openwrangler_r_frame_contract$capture_frame(source)
+  values <- openwrangler_r_frame_contract$materialize_column_values(
+    captured, list(id = "r:c:0", name = "value"), limit = 100L
+  )$values
+  token_values <- vapply(values, function(entry) {
+    cell <- entry$selectionValue$cell
+    if (identical(cell$kind, "infinity")) cell$sign * Inf else as.double(cell$raw)
+  }, double(1L))
+  assert_identical(
+    sort(token_values), sort(unique(as.double(source$value[!is.na(source$value)]))),
+    "numeric picker tokens lost or changed a distinct source value"
+  )
+  for (entry in values) {
+    token <- entry$selectionValue
+    selected <- if (identical(token$cell$kind, "infinity")) token$cell$sign * Inf else as.double(token$cell$raw)
+    expected <- paste0("r:r:", which(!is.na(source$value) & as.double(source$value) == selected) - 1L)
+    page <- openwrangler_r_frame_contract$materialize_view_page(captured, view_query(filters = list(column_filter(
+      "r:c:0", "value", type,
+      value_filter = list(kind = "values", selectedValues = list(token), includeNulls = FALSE, includeNaN = FALSE)
+    ))))
+    assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), expected, "an own numeric token changed its value")
+    if (identical(type, "float") && is.finite(selected)) {
+      page <- openwrangler_r_frame_contract$materialize_view_page(captured, view_query(filters = list(column_filter(
+        "r:c:0", "value", type, predicates = list(predicate("equals", selected))
+      ))))
+      assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), expected, "a native numeric predicate lost precision")
+    }
+  }
+  assert_identical(source, before, "precise numeric queries changed their source")
+}
+
+parse_number <- get("parse_finite_number", contract_environment, inherits = FALSE)
+for (invalid_number in list(TRUE, 1 + 0i, numeric(), c(1, 2), NA_real_, NaN, Inf, -Inf)) {
+  assert_error(parse_number(invalid_number, "number"), "invalid-view-value")
+}
+assert_identical(parse_number(structure(1.25, class = "AsIs"), "number"), 1.25, "classed numeric handling changed")
+assert_identical(parse_number("Infinity", "number", allow_infinity = TRUE), Inf, "explicit Infinity was rejected")
+assert_error(parse_number("Infinity", "number"), "invalid-view-value")
+integer_float_token <- list(
+  kind = "typedSelection", version = 1L, columnType = "float",
+  cell = list(kind = "integer", raw = "9007199254740993", display = "9007199254740993", isNull = FALSE, isNaN = FALSE)
+)
+assert_error(openwrangler_r_frame_contract$materialize_view_page(
+  openwrangler_r_frame_contract$capture_frame(precise_query_frames$float),
+  view_query(filters = list(column_filter("r:c:0", "value", "float", value_filter = list(
+    kind = "values", selectedValues = list(integer_float_token), includeNulls = FALSE, includeNaN = FALSE
+  ))))
+), "invalid-view-value")
 
 amount_values <- openwrangler_r_frame_contract$materialize_column_values(
   filter_capture,
