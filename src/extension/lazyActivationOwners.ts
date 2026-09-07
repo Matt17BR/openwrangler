@@ -938,7 +938,7 @@ class LazyLiveVariables<T extends LiveVariables<S, R>, S, R> implements LiveVari
 
   snapshot(): S {
     if (!this.owner) this.start();
-    return this.owner?.snapshot() ?? this.pendingSnapshot;
+    return this.owner ? this.owner.snapshot() : this.pendingSnapshot;
   }
 
   async refreshFromCommand(): Promise<R> {
