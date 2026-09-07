@@ -169,6 +169,11 @@ Group By, Pivot and Fill owners also check exact Sparse key partitions, restored
 and generated execution. Minimum-version fractional fills have explicit native-construction controls on current
 Pandas. Ordinary integer, nullable, Arrow and object keys retain their output-type policy.
 Mixed-object numeric regressions compare picker values with original source scalars before selecting them.
+The typed-cell, grouped numeric, session-transaction and configurable-export owners cover finite NumPy extended
+floating values that cannot round-trip through binary64. They check precision and range refusal, representable and
+nonfinite controls, generated key preparation, confirmed-state rollback, safe projection, exact CSV and explicit
+conversion. Tests use the platform's actual extended precision and skip unsupported native storage cases.
+
 The existing filter, typed-cell, Group By, Pivot and Fill owners cover hash-colliding NumPy floats and wide integers,
 exact ordering and counts, original representative types, joint Pivot identifier rows, missing values, and standalone
 helper closure. Unhashable containers, custom numeric subclasses and ordinary native columns retain their existing
