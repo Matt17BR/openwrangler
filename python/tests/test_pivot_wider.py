@@ -8,6 +8,7 @@ import duckdb
 import pandas as pd
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
@@ -118,6 +119,55 @@ def test_pivot_wider_polars_live_and_generated_preserve_order_nulls_and_laziness
     assert rows(live) == expected
     assert rows(generated) == expected
     assert rows(source) == [("b", "x", 3), ("a", "x", 1), ("b", "y", 4)]
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("collision", ["identifier", "namesFrom", "output"])
+def test_pivot_wider_polars_accepts_names_used_by_temporary_columns(lazy: bool, collision: str) -> None:
+    frame = pl.DataFrame(
+        {"group": [None, None, "b"], "key": ["x", "y", "x"], "value": pl.Series([3, None, 4], dtype=pl.Int64)}
+    )
+    candidate = public_step()
+    expected = pl.DataFrame(
+        {"group": [None, "b"], "x_value": pl.Series([3, 4], dtype=pl.Int64), "y_value": [None, None]},
+        schema_overrides={"group": pl.String, "y_value": pl.Int64},
+    )
+    if collision == "identifier":
+        frame = frame.rename({"group": "len"})
+        expected = expected.rename({"group": "len"})
+    elif collision == "namesFrom":
+        frame = frame.rename({"key": "len"})
+        candidate["params"]["namesFrom"]["name"] = "len"
+    else:
+        frame = frame.head(2).drop("group")
+        output = "__open_wrangler_pivot_wider_group"
+        candidate = public_step(output_names=(output, "y_value"), names_id="c:source:0", values_id="c:source:1")
+        expected = expected.head(1).drop("group").rename({"x_value": output})
+    source = frame.lazy() if lazy else frame
+    engine = PolarsEngine()
+    step = bind(engine, source, candidate)
+    baseline = frame.clone()
+    engine.validate_transform_preflight(source, step, engine.shape(source))
+
+    for result in [engine.apply_transform(source, step), execute_generated(engine, source, step)]:
+        assert isinstance(result, pl.LazyFrame) is lazy
+        assert_frame_equal(result.collect() if isinstance(result, pl.LazyFrame) else result, expected)
+    assert_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, baseline)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_pivot_wider_polars_rejects_duplicate_null_identifiers_named_len(lazy: bool) -> None:
+    frame = pl.DataFrame({"len": pl.Series([None, None], dtype=pl.String), "key": ["x", "x"], "value": [1, 2]})
+    source = frame.lazy() if lazy else frame
+    engine = PolarsEngine()
+    step = bind(engine, source)
+    baseline = frame.clone()
+
+    with pytest.raises(EngineError, match="duplicate identifier-and-key rows"):
+        engine.apply_transform(source, step)
+    with pytest.raises(ValueError, match="duplicate identifier-and-key rows"):
+        execute_generated(engine, source, step)
+    assert_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, baseline)
 
 
 def test_pivot_wider_pandas_live_and_generated_preserve_order_nulls_and_source() -> None:
