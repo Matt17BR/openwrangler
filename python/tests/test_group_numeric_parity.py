@@ -422,3 +422,128 @@ def test_pandas_sparse_float_group_sum_retains_native_missing_values(fill: float
         assert result["sum"].tolist() == [1.0, 2.0]
         assert result["sum"].dtype == frame["value"].dtype
         pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    ("storage", "fill", "values", "expected"),
+    [
+        ("int8", 0, [1] * 300, 300),
+        ("uint64", 0, [2**64 - 1, 0, 2**53 + 3], 3),
+        ("int64", float("nan"), [2**53 + 1, None, 0], 2),
+        ("float32", 0.0, [1.0, float("nan"), float("inf"), 0.0], 3),
+        ("float64", float("nan"), [None, None], 0),
+        ("bool", False, [False, True] * 150, 300),
+        ("bool", True, [False, True], 2),
+        ("object", float("nan"), ["value", None, ""], 2),
+    ],
+)
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_sparse_count_preserves_presence_and_count_width(
+    storage: str, fill: Any, values: list[Any], expected: int, empty: bool
+) -> None:
+    import numpy as np
+
+    value = pd.Series(np.array(values, dtype=object), dtype=pd.SparseDtype(storage, fill))
+    if empty:
+        value = value.iloc[:0]
+    frame = pd.concat([pd.Series(["group"] * len(value), dtype="string"), value], axis=1)
+    frame.columns = ["same", "same"]
+    frame.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(frame))], names=["outer", "inner"])
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("count",))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["count"].tolist() == ([] if empty else [expected])
+        assert result["count"].dtype == np.dtype("int64")
+        assert result.columns.tolist() == ["same", "count"]
+        pd.testing.assert_frame_equal(frame, original)
+
+
+def test_pandas_sparse_count_preserves_other_aggregates_of_the_same_column() -> None:
+    import numpy as np
+
+    frame = pd.DataFrame(
+        {
+            "group": ["a", "a", "b", "b"],
+            "value": pd.Series(
+                np.array([2**64 - 1, 0, 2**53 + 3, 0], dtype=np.uint64), dtype=pd.SparseDtype("uint64", 0)
+            ),
+        }
+    )
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("sum", "count", "min", "nUnique"))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["group"].tolist() == ["a", "b"]
+        assert result["count"].tolist() == [2, 2]
+        assert result["sum"].tolist() == [2**64 - 1, 2**53 + 3]
+        assert result["min"].tolist() == [0, 0]
+        assert result["nUnique"].tolist() == [2, 2]
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("missing_fill", [False, True])
+def test_pandas_sparse_count_can_share_its_exact_column_with_the_group_key(missing_fill: bool) -> None:
+    import numpy as np
+
+    fill = float("nan") if missing_fill else 0
+    values = [2**64 - 1, None if missing_fill else 0, 2**53 + 3, None if missing_fill else 0]
+    frame = pd.DataFrame({"key": pd.Series(np.array(values, dtype=object), dtype=pd.SparseDtype("uint64", fill))})
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "sparse-key-count",
+                "kind": "groupBy",
+                "params": {
+                    "keys": lineage,
+                    "aggregations": [{"column": lineage[0], "operation": "count", "alias": "count"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["count"].tolist() == [1, 0 if missing_fill else 2, 1]
+        assert result["key"].iloc[0] == 2**64 - 1
+        assert result["key"].iloc[2] == 2**53 + 3
+        assert pd.isna(result["key"].iloc[1]) if missing_fill else result["key"].iloc[1] == 0
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.skipif(int(pd.__version__.split(".")[0]) >= 3, reason="Pandas 3 rejects incompatible Sparse fills")
+@pytest.mark.parametrize("fill", [-1, 2**64, 1.5])
+def test_pandas_sparse_count_retains_legacy_logical_fill_values(fill: int | float) -> None:
+    import numpy as np
+
+    with pytest.warns(FutureWarning, match="arbitrary scalar fill_value"):
+        value = pd.Series(
+            np.array([fill, 2**64 - 1, 2**53 + 3, fill], dtype=object), dtype=pd.SparseDtype("uint64", fill)
+        )
+    frame = pd.DataFrame({"group": ["a"] * 4, "value": value})
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("count",))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["count"].tolist() == [4]
+        assert result["count"].dtype == np.dtype("int64")
+        actual_array = cast(Any, frame["value"].array)
+        original_array = cast(Any, original["value"].array)
+        assert actual_array.dtype == original_array.dtype
+        np.testing.assert_array_equal(actual_array.sp_values, original_array.sp_values)
+        np.testing.assert_array_equal(actual_array.sp_index.indices, original_array.sp_index.indices)
+        pd.testing.assert_series_equal(frame["group"], original["group"])
+        pd.testing.assert_index_equal(frame.index, original.index)
+        pd.testing.assert_index_equal(frame.columns, original.columns)
+        assert frame.attrs == original.attrs

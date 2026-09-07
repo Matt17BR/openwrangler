@@ -2252,6 +2252,16 @@ class PandasEngine(DataFrameEngine):
                     aggregation_index
                 ]
                 value_name = value_names[aggregation_index]
+                if _operation == "count":
+                    lines.extend(
+                        [
+                            f"{prefix}if isinstance({source}[{value_name!r}].dtype, pd.SparseDtype):",
+                            f"{prefix}    {source}.isetitem({value_name!r}, pd.Series(",
+                            f"{prefix}        {source}[{value_name!r}].notna().to_numpy(dtype=bool), "
+                            f"index={source}.index))",
+                            f"{prefix}    {named_name}[{_alias!r}] = ({value_name!r}, 'sum')",
+                        ]
+                    )
                 if _operation == "nUnique":
                     lines.extend(
                         [
@@ -2769,10 +2779,15 @@ def _pandas_group_by_positions(
             source.isetitem(value_name, _pandas_integer_aggregate_input(source[value_name]))
         if decimal_average and semantic_type == "decimal":
             decimal_average_indexes.append(aggregation_index)
-    named: dict[str, tuple[int, str | Callable[[Any], Any]]] = {
-        alias: (value_names[index], aggregation_semantics[index][0])
-        for index, (_position, _operation, alias) in enumerate(aggregations)
-    }
+    named: dict[str, tuple[int, str | Callable[[Any], Any]]] = {}
+    for index, (_position, operation, alias) in enumerate(aggregations):
+        value_name = value_names[index]
+        native_operation = aggregation_semantics[index][0]
+        if operation == "count" and isinstance(source[value_name].dtype, pd.SparseDtype):
+            present = pd.Series(source[value_name].notna().to_numpy(dtype=bool), index=source.index)
+            source.isetitem(value_name, present)
+            native_operation = "sum"
+        named[alias] = (value_name, native_operation)
     for aggregation_index in decimal_sum_indexes:
         _position, _operation, alias = aggregations[aggregation_index]
         named[alias] = (value_names[aggregation_index], _pandas_exact_decimal_sum)
