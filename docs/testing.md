@@ -141,6 +141,30 @@ command test; toast visibility is not the conversion-completion signal.
 The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
 failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
 
+## Focused Python notebook checks
+
+For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
+against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
+discovery. The profile has been verified in VS Code on Linux.
+
+```bash
+OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
+OPEN_WRANGLER_PACKAGED_MODE=full \
+OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
+OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE=python-notebooks \
+OPEN_WRANGLER_TEST_PYTHON=/absolute/path/to/python \
+VSCODE_TEST_VERSION=stable \
+npm run test:packaged-editors:prepare -- openwrangler.vsix
+```
+
+The selected Python needs the supported interpreter, `venv`, and `ensurepip`; dataframe packages are installed at the
+declared compatibility versions in a private environment. Java and Spark are unnecessary for this profile. The
+command rebuilds the test harness and installs the supplied product VSIX without rebuilding it.
+
+This profile excludes PySpark, remote/coexistence, native R, and generic file/seed verification. Incompatible remote
+or coexistence options are rejected. Leave the profile unset to run the complete default Python lane, including
+PySpark and generic verification. Qualification coverage is determined by the selected lane, not by a focused pass.
+
 ## Release-candidate checks
 
 The release-candidate workflow packages the protected-main source once and retains one canonical VSIX, checksum, and
