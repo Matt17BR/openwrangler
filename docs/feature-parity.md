@@ -75,6 +75,10 @@ Min-max Scale preserves ratios for finite extremes and exact numeric ranges in l
 engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
 `r/tests/complete_catalog_contract.R`.
 
+Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
+opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
+completes requires a new open action; discovery and bridge regression tests cover these transitions.
+
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
-import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
+import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type {
   DataBackend,
@@ -18,7 +18,13 @@ import {
   type DetachedBridgeRequestReason,
   type OpenWranglerBridge
 } from "../dataBridge";
-import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
+import {
+  KernelRequestCancelledError,
+  RestartableKernel,
+  withKernelTimeout,
+  invalidatesKernelLifecycle,
+  type KernelGenerationBinding
+} from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
@@ -89,6 +95,7 @@ export class KernelBridge implements OpenWranglerBridge {
   private readonly detachedKernelOperations = new Set<Promise<unknown>>();
   private formatterPreparation: FormatterPreparation | undefined;
   private readonly notebookUri: vscode.Uri;
+  private ownedKernelBinding: KernelGenerationBinding<Kernel> | undefined;
   private readonly kernelInvalidatedEmitter = new vscode.EventEmitter<void>();
   readonly onDidInvalidateKernel = this.kernelInvalidatedEmitter.event;
 
@@ -97,11 +104,21 @@ export class KernelBridge implements OpenWranglerBridge {
     private readonly notebookDocument: vscode.NotebookDocument,
     private readonly registerNotebookFormatters = true,
     private readonly fileOperations: KernelBridgeFileOperations = {},
-    private readonly requiredKernelBinding?: ExecutedNotebookCellResultBinding
+    private requiredKernelBinding?: Pick<KernelGenerationBinding<Kernel>, "kernel" | "isValid">
   ) {
     this.notebookUri = notebookDocument.uri;
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
     this.bootstrapCode = buildKernelBootstrapCode(readRuntimeFiles(path.join(this.context.extensionPath, "python")));
+  }
+
+  static fromDiscoveredVariable(
+    context: vscode.ExtensionContext,
+    notebook: vscode.NotebookDocument,
+    binding: KernelGenerationBinding<Kernel>
+  ): KernelBridge {
+    const bridge = new KernelBridge(context, notebook, shouldRegisterNotebookFormatters(), {}, binding);
+    bridge.ownedKernelBinding = binding;
+    return bridge;
   }
 
   onIdle(): void {
@@ -121,6 +138,15 @@ export class KernelBridge implements OpenWranglerBridge {
     this.sessionSources.clear();
     this.retiredSessionIds.clear();
     this.cleanupAttempts = new WeakMap();
+    this.releaseOwnedKernelBinding();
+  }
+
+  private releaseOwnedKernelBinding(): void {
+    if (!this.ownedKernelBinding) return;
+    // Retiring an unconfirmed open must leave its invalid constraint in place: a late
+    // bootstrap retry may not reacquire a different kernel after this owner becomes idle.
+    this.ownedKernelBinding.dispose();
+    this.ownedKernelBinding = undefined;
   }
 
   async prepareNotebookFormatter(): Promise<void> {
@@ -590,6 +616,9 @@ export class KernelBridge implements OpenWranglerBridge {
           );
         } else {
           this.sessionSources.set(runtimeRequest.requestedSessionId, copySessionSource(runtimeRequest.source));
+          // The confirmed session now owns exact-kernel routing. Discovery only constrains its initial open.
+          if (this.requiredKernelBinding === this.ownedKernelBinding) this.requiredKernelBinding = undefined;
+          this.releaseOwnedKernelBinding();
         }
       }
       return response;
@@ -1204,10 +1233,6 @@ export function shouldRegisterNotebookFormatters(): boolean {
 export function shouldInspectNotebookAutomatically(): boolean {
   const preference = getSetting<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
   return preference === "ask" || preference === "openWrangler";
-}
-
-function invalidatesKernelLifecycle(status: KernelStatus): boolean {
-  return status === "restarting" || status === "autorestarting" || status === "terminating" || status === "dead";
 }
 
 interface FramedKernelRequest {

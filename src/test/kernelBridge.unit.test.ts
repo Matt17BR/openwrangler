@@ -15,6 +15,7 @@ import {
 } from "../extension/notebooks/kernelBridge";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import { KernelGenerationBinding } from "../extension/notebooks/kernelLifecycle";
 import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 import {
   cancellationSource,
@@ -42,6 +43,112 @@ import {
 } from "./kernelBridge.testFixtures";
 
 afterEach(resetKernelBridgeTestState);
+
+describe("discovered Python variable kernel binding", () => {
+  it("retiring an unconfirmed discovery during bootstrap cannot execute a replacement kernel", async () => {
+    const started = deferred<void>();
+    const gate = deferred<void>();
+    const original = controllableKernel((code) => {
+      if (!code.includes("__ow_payload ="))
+        return (async function* () {
+          started.resolve();
+          await gate.promise;
+          yield* [];
+        })();
+      return kernelExecution(code, (request) =>
+        request.kind === "openSession" ? openedResponse(request.requestedSessionId!) : initializedResponse
+      );
+    });
+    const replacement = controlledFakeKernel((request) =>
+      request.kind === "openSession" ? openedResponse(request.requestedSessionId!) : initializedResponse
+    );
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const bridge = KernelBridge.fromDiscoveredVariable(
+      { extensionPath: process.cwd() } as vscode.ExtensionContext,
+      document,
+      new KernelGenerationBinding(original.kernel)
+    );
+    mockKernel(original.kernel);
+    const opening = bridge.request(openRequest());
+    await started.promise;
+    bridge.onIdle();
+    mockKernel(replacement.kernel);
+    gate.resolve();
+    await opening.catch(() => undefined);
+    expect(replacement.executionTokens()).toHaveLength(0);
+    bridge.dispose();
+  });
+
+  it("does not bootstrap or execute a replacement kernel before the initial open", async () => {
+    const original = controlledFakeKernel(() => initializedResponse);
+    const replacement = controlledFakeKernel(() => initializedResponse);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const binding = new KernelGenerationBinding(original.kernel);
+    const bridge = KernelBridge.fromDiscoveredVariable(
+      { extensionPath: process.cwd() } as vscode.ExtensionContext,
+      document,
+      binding
+    );
+    mockKernel(replacement.kernel);
+
+    await expect(bridge.request(openRequest())).rejects.toThrow("kernel changed");
+
+    expect(original.bootstrapExecutionCount()).toBe(0);
+    expect(replacement.executionTokens()).toHaveLength(0);
+    bridge.dispose();
+    expect(original.statusListenerCount()).toBe(0);
+  });
+
+  it("rejects a same-object restart before its initial open", async () => {
+    const original = controlledFakeKernel(() => initializedResponse);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const binding = new KernelGenerationBinding(original.kernel);
+    const bridge = KernelBridge.fromDiscoveredVariable(
+      { extensionPath: process.cwd() } as vscode.ExtensionContext,
+      document,
+      binding
+    );
+    mockKernel(original.kernel);
+    original.setStatus("restarting");
+    original.setStatus("idle");
+
+    await expect(bridge.request(openRequest())).rejects.toThrow("kernel changed");
+
+    expect(original.executionTokens()).toHaveLength(0);
+    bridge.dispose();
+  });
+
+  it("hands a successful open to session ownership and releases its discovery observation", async () => {
+    const original = controlledFakeKernel((request) =>
+      request.kind === "openSession"
+        ? openedResponse(request.requestedSessionId!)
+        : request.kind === "closeSession"
+          ? { kind: "sessionClosed", sessionId: request.sessionId }
+          : initializedResponse
+    );
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const binding = new KernelGenerationBinding(original.kernel);
+    const bridge = KernelBridge.fromDiscoveredVariable(
+      { extensionPath: process.cwd() } as vscode.ExtensionContext,
+      document,
+      binding
+    );
+    mockKernel(original.kernel);
+
+    const opened = await bridge.request(openRequest("discovered-session"));
+
+    expect(opened.kind).toBe("sessionOpened");
+    expect(binding.isValid()).toBe(false);
+    expect(original.statusListenerCount()).toBe(1);
+    await expect(bridge.request(closeRequest("discovered-session"))).resolves.toMatchObject({ kind: "sessionClosed" });
+    bridge.dispose();
+    expect(original.statusListenerCount()).toBe(0);
+  });
+});
 
 const PYSPARK_VERSION_CONTRACT = JSON.parse(
   readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")

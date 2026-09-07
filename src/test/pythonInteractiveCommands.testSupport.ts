@@ -43,7 +43,7 @@ const pythonMocks = vi.hoisted(() => ({
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
   inspectNotebookAutomatically: true,
   discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery | RNotebookVariableDiscovery>>(),
-  openVariable: vi.fn(async () => undefined),
+  openVariable: vi.fn(async () => true),
   openRVariable: vi.fn(async () => undefined),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined)
 }));

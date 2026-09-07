@@ -72,6 +72,9 @@ replacement files unchanged.
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`.
 
+Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
+before a session opens. R command tests cover terminal replacement during previous-transport cleanup.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:

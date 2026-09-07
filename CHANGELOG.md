@@ -17,6 +17,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching
   generated code. Native R scaling also handles finite ranges whose difference overflows.
 
+- Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
+  selected before previous-session cleanup.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security

@@ -357,6 +357,10 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   ): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
+    const activeTerminal = vscode.window.activeTerminal;
+    if (!expectedSession && isExactActiveRTerminal(activeTerminal)) {
+      expectedSession = Object.freeze({ terminal: activeTerminal });
+    }
     if (origin && !isCurrentLiterateDocumentOrigin(origin)) return false;
     if (expectedSession && !isCurrentLiterateRSession(expectedSession)) return false;
     const documentOrigin = evaluationCode === undefined ? undefined : origin;

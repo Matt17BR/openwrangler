@@ -16,6 +16,8 @@ import {
 } from "../r/rNotebookVariableDiscovery";
 import {
   discoverNotebookVariables,
+  bindDiscoveredNotebookVariable,
+  disposeNotebookVariableDiscovery,
   NotebookVariableDiscoveryError,
   notebookVariablePresentation,
   type NotebookVariableDiscovery as PythonNotebookVariableDiscovery,
@@ -86,61 +88,75 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         );
         return;
       }
-      if (discovered.variables.length === 0) {
-        vscode.window.showInformationMessage(
-          "Open Wrangler did not find a Pandas, Polars, PySpark, DuckDB, or R dataframe variable in the active kernel."
-        );
-        return;
-      }
-
-      const items = discovered.variables.map(notebookVariableQuickPickItem);
-      const selected = await vscode.window.showQuickPick(items, {
-        title: "Open Wrangler: Open Notebook Variable",
-        placeHolder: discovered.truncated
-          ? "Open Wrangler: Select a dataframe variable (discovery results truncated)"
-          : "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
-        matchOnDescription: true,
-        matchOnDetail: true,
-        ignoreFocusOut: true
-      });
-      if (!isExactOpenNotebook(notebook)) {
-        vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
-        return;
-      }
-      if (!selected || !items.includes(selected)) {
-        return;
-      }
-      let verifiedRSelection: VerifiedRNotebookVariableSelection | undefined;
-      if ("dataframeFlavor" in selected.variable) {
-        if (!isRNotebookVariableDiscovery(discovered)) {
-          vscode.window.showWarningMessage("Open Wrangler could not confirm the selected R dataframe.");
-          return;
-        }
-        try {
-          verifiedRSelection = await verifyRNotebookVariableSelection(notebook, discovered, selected.variable);
-        } catch (error) {
-          vscode.window.showWarningMessage(
-            error instanceof RNotebookVariableDiscoveryError
-              ? error.message
-              : "Open Wrangler could not confirm the selected R dataframe. Open the picker again."
+      try {
+        if (discovered.variables.length === 0) {
+          vscode.window.showInformationMessage(
+            "Open Wrangler did not find a Pandas, Polars, PySpark, DuckDB, or R dataframe variable in the active kernel."
           );
           return;
         }
+
+        const items = discovered.variables.map(notebookVariableQuickPickItem);
+        const selected = await vscode.window.showQuickPick(items, {
+          title: "Open Wrangler: Open Notebook Variable",
+          placeHolder: discovered.truncated
+            ? "Open Wrangler: Select a dataframe variable (discovery results truncated)"
+            : "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
+          matchOnDescription: true,
+          matchOnDetail: true,
+          ignoreFocusOut: true
+        });
+        if (!isExactOpenNotebook(notebook)) {
+          vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
+          return;
+        }
+        if (!selected || !items.includes(selected)) {
+          return;
+        }
+        let verifiedRSelection: VerifiedRNotebookVariableSelection | undefined;
+        if ("dataframeFlavor" in selected.variable) {
+          if (!isRNotebookVariableDiscovery(discovered)) {
+            vscode.window.showWarningMessage("Open Wrangler could not confirm the selected R dataframe.");
+            return;
+          }
+          try {
+            verifiedRSelection = await verifyRNotebookVariableSelection(notebook, discovered, selected.variable);
+          } catch (error) {
+            vscode.window.showWarningMessage(
+              error instanceof RNotebookVariableDiscoveryError
+                ? error.message
+                : "Open Wrangler could not confirm the selected R dataframe. Open the picker again."
+            );
+            return;
+          }
+        }
+        await restoreEditorGroupAfterQuickPick();
+        if (!isExactOpenNotebook(notebook)) {
+          if (verifiedRSelection) disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
+          vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
+          return;
+        }
+        if ("dataframeFlavor" in selected.variable) {
+          await openLiveNotebookVariable(
+            context,
+            coordinator,
+            selected.variable.name,
+            notebook,
+            selected.variable.backend,
+            verifiedRSelection
+          );
+        } else {
+          await openDiscoveredPythonNotebookVariable(
+            context,
+            coordinator,
+            notebook,
+            discovered as PythonNotebookVariableDiscovery,
+            selected.variable
+          );
+        }
+      } finally {
+        disposeNotebookVariableDiscovery(discovered);
       }
-      await restoreEditorGroupAfterQuickPick();
-      if (!isExactOpenNotebook(notebook)) {
-        if (verifiedRSelection) disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
-        vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
-        return;
-      }
-      await openLiveNotebookVariable(
-        context,
-        coordinator,
-        selected.variable.name,
-        notebook,
-        selected.variable.backend,
-        verifiedRSelection
-      );
     })
   );
 
@@ -209,24 +225,26 @@ async function openLiveNotebookVariable(
   variableName: string,
   notebook: vscode.NotebookDocument,
   backend?: DataBackend,
-  verifiedRSelection?: VerifiedRNotebookVariableSelection
-): Promise<void> {
+  verifiedRSelection?: VerifiedRNotebookVariableSelection,
+  pythonKernelBinding?: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>
+): Promise<boolean> {
   if (!isExactOpenNotebook(notebook)) {
+    pythonKernelBinding?.dispose();
     if (verifiedRSelection) disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
     vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
-    return;
+    return false;
   }
 
   if (backend === "r" && !verifiedRSelection) {
     vscode.window.showWarningMessage(
       "Open this R dataframe from Open Wrangler's notebook variable picker so its kernel can be verified."
     );
-    return;
+    return false;
   }
   if (backend !== "r" && verifiedRSelection) {
     disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
     vscode.window.showWarningMessage("Open Wrangler could not match the verified R dataframe to this notebook action.");
-    return;
+    return false;
   }
 
   const source: SessionSource = {
@@ -238,7 +256,7 @@ async function openLiveNotebookVariable(
   let delegate;
   if (backend === "r") {
     const selection = verifiedRSelection;
-    if (!selection) return;
+    if (!selection) return false;
     try {
       delegate = RKernelBridge.fromVerifiedSelection(context, notebook, selection);
     } catch (error) {
@@ -248,10 +266,17 @@ async function openLiveNotebookVariable(
           ? error.message
           : "Open Wrangler could not bind the selected R dataframe to its notebook kernel. Open the picker again."
       );
-      return;
+      return false;
     }
   } else {
-    delegate = new KernelBridge(context, notebook, shouldRegisterNotebookFormatters());
+    try {
+      delegate = pythonKernelBinding
+        ? KernelBridge.fromDiscoveredVariable(context, notebook, pythonKernelBinding)
+        : new KernelBridge(context, notebook, shouldRegisterNotebookFormatters());
+    } catch (error) {
+      pythonKernelBinding?.dispose();
+      throw error;
+    }
   }
   try {
     const bridge = coordinator.createBridge(delegate, notebook);
@@ -260,6 +285,7 @@ async function openLiveNotebookVariable(
     } else {
       OpenWranglerPanel.create(context, bridge, source);
     }
+    return true;
   } catch (error) {
     try {
       await delegate.dispose();
@@ -281,14 +307,24 @@ export async function openDiscoveredPythonNotebookVariable(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   notebook: vscode.NotebookDocument,
+  discovery: PythonNotebookVariableDiscovery,
   variable: NotebookVariableDescriptor
-): Promise<void> {
+): Promise<boolean> {
   const presentation = notebookVariablePresentation(variable.type);
   if (presentation.backend !== variable.backend) {
     vscode.window.showWarningMessage("Open Wrangler could not confirm the selected dataframe type.");
-    return;
+    return false;
   }
-  await openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend);
+  let binding: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>;
+  try {
+    binding = await bindDiscoveredNotebookVariable(notebook, discovery, variable);
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      error instanceof Error ? error.message : "Open Wrangler could not confirm the selected Python dataframe."
+    );
+    return false;
+  }
+  return openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend, undefined, binding);
 }
 
 /**

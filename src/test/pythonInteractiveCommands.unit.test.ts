@@ -77,7 +77,13 @@ describe("Python Interactive Window coordinator and discovery", () => {
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive");
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
   });
 
@@ -193,7 +199,13 @@ describe("Python Interactive Window coordinator and discovery", () => {
 
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.showQuickPick).toHaveBeenCalledOnce();
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, second);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([second]) }),
+      second
+    );
     expect(pythonMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
     expect(pythonMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
       pythonMocks.openVariable.mock.invocationCallOrder[0]!
@@ -343,7 +355,13 @@ describe("Python Interactive Window coordinator and discovery", () => {
 
       const handle = snapshot?.variables[0]?.handle;
       await command("openWrangler.openCachedNotebookVariable")(handle);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, active.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        active.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
     }
   );
 
@@ -665,7 +683,13 @@ describe("Python Interactive Window coordinator and discovery", () => {
     );
 
     await command("openWrangler.openCachedNotebookVariable")(snapshot?.variables[0]?.handle);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
   });
 
   it("shows a concise empty result", async () => {

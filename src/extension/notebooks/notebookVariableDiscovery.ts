@@ -3,7 +3,7 @@ import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type { DataBackend } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
-import { withKernelTimeout } from "./kernelLifecycle";
+import { KernelGenerationBinding, withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import {
   MAX_PYSPARK_VERSION_CHARACTERS,
@@ -59,6 +59,53 @@ export interface NotebookVariableDiscovery {
   readonly truncated: boolean;
 }
 
+interface NotebookDiscoveryOrigin {
+  readonly notebook: vscode.NotebookDocument;
+  readonly api: Jupyter;
+  readonly binding: KernelGenerationBinding<Kernel>;
+}
+
+const discoveryOrigins = new WeakMap<object, NotebookDiscoveryOrigin>();
+
+export function disposeNotebookVariableDiscovery(discovery: object): void {
+  discoveryOrigins.get(discovery)?.binding.dispose();
+  discoveryOrigins.delete(discovery);
+}
+
+export async function bindDiscoveredNotebookVariable(
+  notebook: vscode.NotebookDocument,
+  discovery: NotebookVariableDiscovery,
+  variable: NotebookVariableDescriptor
+): Promise<KernelGenerationBinding<Kernel>> {
+  const origin = discoveryOrigins.get(discovery);
+  if (!origin || origin.notebook !== notebook || !discovery.variables.includes(variable)) {
+    throw new NotebookVariableDiscoveryError(
+      "The selected dataframe no longer belongs to this variable list. Refresh it and try again."
+    );
+  }
+  await assertDiscoveryKernelCurrent(origin);
+  // The open owns its own subscription, so retiring a picker or cache cannot retire its session.
+  const binding = new KernelGenerationBinding(origin.binding.kernel);
+  if (!origin.binding.isValid() || !binding.isValid()) {
+    binding.dispose();
+    throw changedDiscoveryKernel();
+  }
+  return binding;
+}
+
+async function assertDiscoveryKernelCurrent(origin: NotebookDiscoveryOrigin): Promise<void> {
+  assertNotebookProvenance(origin.notebook);
+  if (!origin.binding.isValid()) throw changedDiscoveryKernel();
+  const selected = await revalidateAfter(origin.api.kernels.getKernel(origin.notebook.uri), origin.notebook);
+  if (!origin.binding.isValid() || selected !== origin.binding.kernel) throw changedDiscoveryKernel();
+}
+
+function changedDiscoveryKernel(): NotebookVariableDiscoveryError {
+  return new NotebookVariableDiscoveryError(
+    "The selected Python notebook kernel changed after its variables were discovered. Refresh the list and try again."
+  );
+}
+
 export interface PySparkNotebookPreflight {
   readonly isPySpark: boolean;
   readonly version: string | null;
@@ -79,10 +126,16 @@ export class PySparkNotebookPreflightError extends Error {
 }
 
 export async function discoverNotebookVariables(notebook: vscode.NotebookDocument): Promise<NotebookVariableDiscovery> {
+  let origin: NotebookDiscoveryOrigin | undefined;
   try {
-    const kernel = await resolvePythonNotebookKernel(notebook);
-    return await revalidateAfter(executeDiscovery(kernel, notebook), notebook);
+    origin = await resolvePythonNotebookDiscoveryOrigin(notebook);
+    await assertDiscoveryKernelCurrent(origin);
+    const discovery = await revalidateAfter(executeDiscovery(origin.binding.kernel, notebook), notebook);
+    await assertDiscoveryKernelCurrent(origin);
+    discoveryOrigins.set(discovery, origin);
+    return discovery;
   } catch (error) {
+    origin?.binding.dispose();
     if (error instanceof NotebookVariableDiscoveryError) throw error;
     throw new NotebookVariableDiscoveryError(
       "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
@@ -528,7 +581,9 @@ export function assertSupportedPySparkNotebookPreflight(
   return true;
 }
 
-async function resolvePythonNotebookKernel(notebook: vscode.NotebookDocument): Promise<Kernel> {
+async function resolvePythonNotebookDiscoveryOrigin(
+  notebook: vscode.NotebookDocument
+): Promise<NotebookDiscoveryOrigin> {
   assertNotebookProvenance(notebook);
   if (!vscode.workspace.isTrusted) {
     throw new NotebookVariableDiscoveryError("Trust this workspace before Open Wrangler inspects a notebook kernel.");
@@ -556,7 +611,7 @@ async function resolvePythonNotebookKernel(notebook: vscode.NotebookDocument): P
       `Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`
     );
   }
-  return kernel;
+  return { notebook, api, binding: new KernelGenerationBinding(kernel) };
 }
 
 function assertNotebookProvenance(notebook: vscode.NotebookDocument): void {
@@ -583,8 +638,18 @@ function isJupyterApi(value: unknown): value is Jupyter {
 
 function isKernel(value: unknown): value is Kernel {
   if (typeof value !== "object" || value === null) return false;
-  const candidate = value as { executeCode?: unknown; language?: unknown };
-  return typeof candidate.executeCode === "function" && typeof candidate.language === "string";
+  const candidate = value as {
+    executeCode?: unknown;
+    language?: unknown;
+    status?: unknown;
+    onDidChangeStatus?: unknown;
+  };
+  return (
+    typeof candidate.executeCode === "function" &&
+    typeof candidate.language === "string" &&
+    typeof candidate.status === "string" &&
+    typeof candidate.onDidChangeStatus === "function"
+  );
 }
 
 function isKernelOutput(value: unknown): value is { items: unknown[] } {
