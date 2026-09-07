@@ -185,6 +185,14 @@ before trusted custom code, preview, rollback, or generated-code execution so ne
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
+Scalar Arrow dictionaries expose their logical value type while retaining the physical dtype in schema metadata.
+Profiles and query keys use logical values, including null dictionary entries and repeated values across chunks.
+String keys share decoded dictionary entries rather than expanding the text payload once per row. Row selection
+retains encoded columns; it may normalize codebooks or widen their index type when native chunk unification requires
+it. Source arrays remain unchanged.
+Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
+Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
+integer values and their fill convention, including columns that did not participate in the query.
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
 

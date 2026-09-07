@@ -332,6 +332,111 @@ def test_pandas_row_order_operations_target_duplicate_and_integer_labels_positio
     assert code.count(".iloc") >= 4
 
 
+@pytest.mark.parametrize("family", ["string", "integer", "decimal", "float"])
+@pytest.mark.parametrize(
+    "kind,options,expected_rows",
+    [
+        ("dropMissingRows", {"how": "any"}, [0, 4, 5, 8, 9]),
+        ("dropMissingRows", {"how": "all"}, [0, 1, 3, 4, 5, 7, 8, 9]),
+        ("dropDuplicates", {"keep": "first"}, [0, 1, 3]),
+        ("dropDuplicates", {"keep": "last"}, [7, 8, 9]),
+        ("dropDuplicates", {"keep": "none"}, []),
+    ],
+)
+def test_pandas_row_removal_uses_dictionary_values_and_preserves_sparse_payload(
+    family: str, kind: str, options: dict[str, str], expected_rows: list[int]
+) -> None:
+    from decimal import Decimal
+
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines.base import normalize_cell
+
+    value_type, first, second = {
+        "string": (pa.string(), "É", "a[."),
+        "integer": (pa.uint64(), 2**64 - 1, 2**53 + 3),
+        "decimal": (pa.decimal128(30, 3), Decimal("9007199254740993.125"), Decimal("-0.125")),
+        "float": (pa.float64(), float("nan"), -0.0),
+    }[family]
+    encoded = pa.chunked_array(
+        [
+            pa.DictionaryArray.from_arrays(
+                pa.array([0, 1, None, 2, 3], type=pa.int8()),
+                pa.array([left, None, right, left], type=value_type),
+            )
+            for left, right in [(first, second), (second, first)]
+        ]
+    )
+    source = pd.DataFrame(
+        {
+            "key": pd.Series(encoded, dtype=pd.ArrowDtype(encoded.type)),
+            "present": pd.Series([1, 1, None, None, 1, 1, None, 1, 1, 1], dtype="Int64"),
+            "payload": pd.Series([0, 2**53 + 3, 2**53 + 4, 2**64 - 1, 0] * 2, dtype=pd.SparseDtype("uint64", 0)),
+        }
+    )
+    source.index = pd.MultiIndex.from_tuples([("row", i % 3) for i in range(10)], names=["group", "number"])
+    source.attrs = {"origin": "row-removal"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step(kind, columns=lineage[:2] if kind == "dropMissingRows" else lineage[:1], **options), schema, lineage
+    )
+    engine.validate_transform_preflight(source, operation, engine.shape(source))
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        assert actual.index.equals(source.index.take(expected_rows))
+        assert actual.columns.equals(source.columns)
+        assert actual.attrs == source.attrs
+        assert list(actual.dtypes) == list(source.dtypes)
+        for position in range(source.shape[1]):
+            assert [normalize_cell(value) for value in actual.iloc[:, position].array] == [
+                normalize_cell(source.iloc[:, position].array[row]) for row in expected_rows
+            ]
+    assert source.iloc[:, 0].array.__arrow_array__().equals(before.iloc[:, 0].array.__arrow_array__())
+    pd.testing.assert_frame_equal(source.iloc[:, 1:], before.iloc[:, 1:])
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("keep,expected_rows", [("first", [0, 1, 2, 3]), ("last", [1, 3, 4, 5]), ("none", [1, 3])])
+def test_pandas_drop_duplicates_keeps_distinct_sparse_integer_neighbors(keep: str, expected_rows: list[int]) -> None:
+    source = pd.DataFrame(
+        {
+            "key": pd.Series([0, 2**53 + 4, 2**53 + 3, 2**64 - 1, 0, 2**53 + 3], dtype=pd.SparseDtype("uint64", 0)),
+            "constant": [1] * 6,
+            "row": range(6),
+        },
+    )
+    source.index = pd.Index([0, 0, 1, 1, 2, 2], name="duplicate")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(step("dropDuplicates", columns=lineage[:2], keep=keep), schema, lineage)
+    engine.validate_transform_preflight(source, operation, engine.shape(source))
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        assert actual["row"].tolist() == expected_rows
+        assert actual["key"].tolist() == [int(source["key"].array[row]) for row in expected_rows]
+        assert actual["key"].dtype == source["key"].dtype
+        assert actual.index.equals(source.index.take(expected_rows))
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_duplicate_keys_preserve_object_missing_kinds() -> None:
+    source = pd.DataFrame(
+        {"key": pd.Series([None, float("nan"), pd.NA, "a", "a", None], dtype=object), "row": range(6)}
+    )
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(step("dropDuplicates", columns=lineage[:1], keep="first"), schema, lineage)
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        assert actual["row"].tolist() == [0, 1, 2, 3]
+        pd.testing.assert_frame_equal(actual, source.iloc[[0, 1, 2, 3]])
+    pd.testing.assert_frame_equal(source, before)
+
+
 def test_pandas_optional_all_column_row_operations_exclude_no_visible_data() -> None:
     engine = PandasEngine()
     frame = pd.DataFrame(

@@ -241,7 +241,7 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     return result
 
 
-def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any:
+def _pandas_row_key(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
@@ -256,7 +256,12 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
         else:
             key = pd.Series(series.to_numpy(dtype=object))
     else:
-        key = series.reset_index(drop=True)
+        key = pd.Series(series.array, dtype=series.dtype, name=series.name, copy=False)
+    return key
+
+
+def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any:
+    key = _pandas_row_key(series)
     return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()
 
 
@@ -749,6 +754,7 @@ class PandasEngine(DataFrameEngine):
         return values, len(counts) > limit
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
+        import numpy as np
         import pandas as pd
 
         df = self.normalize(frame).copy()
@@ -762,11 +768,11 @@ class PandasEngine(DataFrameEngine):
             positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
             if not positions:
                 return df
-            valid = [df.iloc[:, position].notna() for position in positions]
+            valid = [_pandas_dictionary_values(df.iloc[:, position]).notna() for position in positions]
             keep = valid[0]
             for current in valid[1:]:
                 keep = keep | current if params.get("how", "any") == "all" else keep & current
-            return df.iloc[keep.fillna(False).to_numpy(dtype=bool)]
+            return _pandas_take_rows(df, np.flatnonzero(keep.fillna(False).to_numpy(dtype=bool)))
         if kind == "fillMissingValues":
             position = self._bound_frame_position(df, params["column"], kind)
             replacement = params["replacement"]
@@ -829,8 +835,11 @@ class PandasEngine(DataFrameEngine):
             positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
             if not positions:
                 return df
-            duplicated = df.iloc[:, positions].duplicated(keep=False if keep == "none" else keep)
-            return df.iloc[(~duplicated).to_numpy(dtype=bool)]
+            keys = pd.concat(
+                [_pandas_row_key(df.iloc[:, position]) for position in positions], axis=1, ignore_index=True
+            )
+            duplicated = keys.duplicated(keep=False if keep == "none" else keep)
+            return _pandas_take_rows(df, np.flatnonzero((~duplicated).to_numpy(dtype=bool)))
         if kind == "selectColumns":
             selected = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             row_id_position = self._row_id_position(df)
@@ -1263,7 +1272,8 @@ class PandasEngine(DataFrameEngine):
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
         needs_row_queries = (
-            any(step["kind"] in {"filterRows", "sortRows"} for step in plan) or "directional" in fill_strategies
+            any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
+            or "directional" in fill_strategies
         )
         if needs_row_queries:
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=True))
@@ -1690,7 +1700,8 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}if _missing_positions_{index}:",
                 (
                     f"{prefix}    _missing_valid_{index} = "
-                    f"[df.iloc[:, position].notna() for position in _missing_positions_{index}]"
+                    f"[_open_wrangler_dictionary_values(df.iloc[:, position]).notna() "
+                    f"for position in _missing_positions_{index}]"
                 ),
                 f"{prefix}    _missing_keep_{index} = _missing_valid_{index}[0]",
                 f"{prefix}    for _missing_current_{index} in _missing_valid_{index}[1:]:",
@@ -1698,7 +1709,10 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}        _missing_keep_{index} = _missing_keep_{index} "
                     f"{'|' if params.get('how', 'any') == 'all' else '&'} _missing_current_{index}"
                 ),
-                (f"{prefix}    df = df.iloc[_missing_keep_{index}.fillna(False).to_numpy(dtype=bool)]"),
+                (
+                    f"{prefix}    df = _open_wrangler_take_rows(df, "
+                    f"np.flatnonzero(_missing_keep_{index}.fillna(False).to_numpy(dtype=bool)))"
+                ),
             ]
         if kind == "fillMissingValues":
             position = bound_column_position(params["column"], kind)
@@ -1774,10 +1788,19 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}_duplicate_positions_{index} = {positions!r} or list(range(df.shape[1]))",
                 f"{prefix}if _duplicate_positions_{index}:",
                 (
-                    f"{prefix}    _duplicated_{index} = df.iloc[:, _duplicate_positions_{index}].duplicated("
+                    f"{prefix}    _duplicate_keys_{index} = pd.concat("
+                    f"[_open_wrangler_row_key(df.iloc[:, position]) for position in _duplicate_positions_{index}], "
+                    "axis=1, ignore_index=True)"
+                ),
+                (
+                    f"{prefix}    _duplicated_{index} = _duplicate_keys_{index}.duplicated("
                     f"keep={False if keep == 'none' else keep!r})"
                 ),
-                f"{prefix}    df = df.iloc[(~_duplicated_{index}).to_numpy(dtype=bool)]",
+                f"{prefix}    del _duplicate_keys_{index}",
+                (
+                    f"{prefix}    df = _open_wrangler_take_rows(df, "
+                    f"np.flatnonzero((~_duplicated_{index}).to_numpy(dtype=bool)))"
+                ),
             ]
         if kind == "selectColumns":
             positions = [bound_column_position(column, kind) for column in params["columns"]]
@@ -4344,7 +4367,7 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "    return result",
         "",
         "",
-        "def _open_wrangler_sort_order(series, ascending, nulls):",
+        "def _open_wrangler_row_key(series):",
         "    series = _open_wrangler_dictionary_values(series)",
         "",
         "    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):",
@@ -4358,7 +4381,12 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "        else:",
         "            key = pd.Series(series.to_numpy(dtype=object))",
         "    else:",
-        "        key = series.reset_index(drop=True)",
+        "        key = pd.Series(series.array, dtype=series.dtype, name=series.name, copy=False)",
+        "    return key",
+        "",
+        "",
+        "def _open_wrangler_sort_order(series, ascending, nulls):",
+        "    key = _open_wrangler_row_key(series)",
         '    return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()',
         "",
         "",
