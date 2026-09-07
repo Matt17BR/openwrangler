@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import MAX_EMAX, Decimal, localcontext
 from pathlib import Path
 from typing import Any, Literal
@@ -76,6 +76,141 @@ def test_pandas_excel_file_session(tmp_path):
     opened = manager.open_session({"kind": "file", "label": "sample.xlsx", "path": str(path)}, backend="pandas")
 
     assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
+
+
+@pytest.mark.parametrize("date_bits", [32, 64])
+def test_pandas_arrow_date_parquet_profiles_filters_and_generated_sort(tmp_path: Path, date_bits: int) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = pd.ArrowDtype(pa.date32() if date_bits == 32 else pa.date64())
+    source = pd.DataFrame(
+        {
+            "when": pd.Series(
+                [date(9999, 12, 31), date(1960, 2, 29), None, date(2024, 2, 29), date(1960, 2, 29)], dtype=dtype
+            ),
+            "row": range(5),
+        }
+    )
+    source.index = pd.MultiIndex.from_tuples(
+        [("same", 1), ("same", 1), ("missing", 2), ("same", 1), ("same", 1)], names=["group", "id"]
+    )
+    before = source.copy(deep=True)
+    path = tmp_path / f"dates-{date_bits}.parquet"
+    source.to_parquet(path)
+    original_file = path.read_bytes()
+    engine = PandasEngine()
+    frame = engine.read_file(str(path))
+    pd.testing.assert_frame_equal(frame, source)
+    schema = engine.schema(frame)
+    assert schema[0]["type"] == "date"
+    assert schema[0]["rawType"] == str(dtype)
+    assert schema[0]["nullable"] is True
+    page = engine.page(frame, 0, 5)
+    assert [row["values"][0]["kind"] for row in page["rows"]] == ["date", "date", "null", "date", "date"]
+    summary = engine.summaries(frame)[0]
+    assert summary["type"] == "date"
+    assert summary["nullCount"] == 1
+    assert summary["visualization"] == {"kind": "datetime", "min": "1960-02-29", "max": "9999-12-31"}
+    values, truncated = engine.column_values(frame, "when")
+    assert not truncated
+    selected = next(item for item in values if item["value"] == "1960-02-29")
+    assert selected["count"] == 2
+    assert selected["selectionValue"]["columnType"] == "date"
+    assert selected["selectionValue"]["cell"]["raw"] == "1960-02-29"
+    filters_and_rows = [
+        (
+            {
+                "column": "when",
+                "type": "date",
+                "predicates": [],
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": [selected["selectionValue"]],
+                    "includeNulls": True,
+                    "includeNaN": False,
+                },
+            },
+            [2, 1, 4],
+        ),
+        (
+            {
+                "column": "when",
+                "type": "date",
+                "predicates": [{"kind": "predicate", "operator": "gte", "value": "2024-02-29"}],
+            },
+            [3, 0],
+        ),
+    ]
+    lineage = source_lineage(schema)
+    sort = {"column": "when", "direction": "asc", "nulls": "first"}
+    for column_filter, expected_rows in filters_and_rows:
+        model = {"filters": [column_filter], "sort": [sort]}
+        expected = frame.iloc[expected_rows]
+        pd.testing.assert_frame_equal(engine.apply_filter_model(frame, model), expected)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "date-filter",
+                    "kind": "filterRows",
+                    "params": {
+                        "filterModel": {
+                            "filters": [{**column_filter, "column": lineage[0]}],
+                            "sort": [{**sort, "column": lineage[0]}],
+                        }
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        pd.testing.assert_frame_equal(engine.apply_transform(frame, operation), expected)
+        pd.testing.assert_frame_equal(_execute_pandas_generated(engine, frame, operation), expected)
+
+    sort = {"column": "when", "direction": "desc", "nulls": "last"}
+    expected = frame.iloc[[0, 3, 1, 4, 2]]
+    pd.testing.assert_frame_equal(engine.apply_filter_model(frame, {"filters": [], "sort": [sort]}), expected)
+    operation = bind_step(
+        validate_step({"id": "date-sort", "kind": "sortRows", "params": {"rules": [{**sort, "column": lineage[0]}]}}),
+        schema,
+        lineage,
+    )
+    pd.testing.assert_frame_equal(engine.apply_transform(frame, operation), expected)
+    pd.testing.assert_frame_equal(_execute_pandas_generated(engine, frame, operation), expected)
+    pd.testing.assert_frame_equal(frame, before)
+    pd.testing.assert_frame_equal(source, before)
+    assert path.read_bytes() == original_file
+
+
+@pytest.mark.parametrize("date_bits", [32, 64])
+@pytest.mark.parametrize("values", [[], [None, None]], ids=["empty", "all-missing"])
+def test_pandas_arrow_date_parquet_keeps_type_without_present_values(
+    tmp_path: Path, date_bits: int, values: list[None]
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = pd.ArrowDtype(pa.date32() if date_bits == 32 else pa.date64())
+    source = pd.DataFrame({"when": pd.Series(values, dtype=dtype)})
+    path = tmp_path / "empty-dates.parquet"
+    source.to_parquet(path)
+    original_file = path.read_bytes()
+    engine = PandasEngine()
+    frame = engine.read_file(str(path))
+    assert engine.schema(frame)[0]["type"] == "date"
+    summary = engine.summaries(frame)[0]
+    assert summary["type"] == "date"
+    assert summary["nullCount"] == len(values)
+    assert summary["visualization"] == {"kind": "datetime", "min": None, "max": None}
+    assert engine.column_values(frame, "when") == ([], False)
+    filtered = engine.apply_filter_model(
+        frame,
+        {
+            "filters": [
+                {"column": "when", "type": "date", "predicates": [{"kind": "predicate", "operator": "isNull"}]}
+            ],
+            "sort": [{"column": "when", "direction": "asc", "nulls": "first"}],
+        },
+    )
+    pd.testing.assert_frame_equal(filtered, source)
+    pd.testing.assert_frame_equal(frame, source)
+    assert path.read_bytes() == original_file
 
 
 def test_pandas_excel_reader_matches_the_format_dependency(monkeypatch):

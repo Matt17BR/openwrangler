@@ -183,6 +183,8 @@ Pandas executes viewing, all 32 cleaning operations, profiling, generated code, 
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
+including when loaded from Parquet.
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
 
