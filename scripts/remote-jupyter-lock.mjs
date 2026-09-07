@@ -23,6 +23,7 @@ export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";
 export const REMOTE_JUPYTER_LOCK_PLATFORM = "x86_64-manylinux_2_28";
 export const REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER = "2026-07-27T00:00:00Z";
 export const REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER = "fsspec=2026-07-29T00:00:00Z";
+const TORNADO_SECURITY_CUTOFF = "tornado=2026-09-07T00:00:00Z";
 
 const PACKAGE_NAME = /^[a-z][a-z0-9-]*$/u;
 const PACKAGE_VERSION = /^[0-9]+(?:[._+-][0-9A-Za-z]+)*$/u;
@@ -211,6 +212,8 @@ function fixtureCompileArguments(inputPath, outputPath) {
     "fewest",
     "--exclude-newer",
     REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER,
+    "--exclude-newer-package",
+    TORNADO_SECURITY_CUTOFF,
     "--no-cache",
     "--no-config",
     "--no-progress",
