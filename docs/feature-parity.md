@@ -118,7 +118,8 @@ the confirmed plan. Other Arrow arithmetic capacity gaps remain tracked in
 [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
-Polars checks native capacity for these strings on integer columns; DuckDB retains its native arithmetic promotion.
+Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
+whose source changes to Boolean. DuckDB retains its native arithmetic promotion.
 R accepts only literals exactly representable by its existing numeric scalar types. Decimal and exponent input
 retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
 this change cannot recover digits already lost.

@@ -51,7 +51,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Formula preserves newly entered large integer literals across the UI, saved plans and generated code. Native
   engines reject unsupported literal capacity or precision. Previously lost digits require re-entering the literal.
 - Polars Formula rejects integer overflow, conversions that introduce nulls, and inexact mixed-integer results
-  while retaining valid native output types and paired nulls.
+  while retaining valid native output types and paired nulls, including saved steps whose source becomes Boolean.
 - Formula modulo works on Pandas Arrow integer columns, including signed and unsigned extrema. Live and generated
   execution preserve nulls and refuse present zero divisors without changing the confirmed plan.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.

@@ -1426,6 +1426,189 @@ def _polars_formula_literal_operation(
 
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize(
+    ("left", "right", "operator", "value"),
+    [
+        (pl.Series([False, True, None]), pl.Series([2, 127, None], dtype=pl.Int8), "add", None),
+        (pl.Series([2, 255, None], dtype=pl.UInt8), pl.Series([False, True, None]), "add", None),
+        (pl.Series([True, False, None]), pl.Series([1, 2, None], dtype=pl.UInt8), "subtract", None),
+        (pl.Series([2, -128, None], dtype=pl.Int8), pl.Series([False, True, None]), "subtract", None),
+        (pl.Series([False, True, None]), None, "add", str(2**127 - 1)),
+        (pl.Series([False, True, None]), None, "add", str(2**128 - 1)),
+        (pl.Series([False, True, None]), None, "subtract", str(-(2**127))),
+    ],
+)
+def test_polars_formula_boolean_operands_refuse_native_integer_overflow(
+    lazy: bool, left: Any, right: Any, operator: str, value: str | None
+) -> None:
+    source = pl.DataFrame({"left": left, **({"right": right} if right is not None else {})})
+    before = source.serialize()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(frame, operator, value, right_column=right is not None)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for run in (lambda: engine.apply_transform(frame, operation), lambda: namespace["clean_data"](frame)):
+        with pytest.raises((EngineError, ValueError), match="native integer capacity"):
+            run()
+        assert source.serialize() == before
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    ("left", "right", "operator", "value", "expected"),
+    [
+        (
+            pl.Series([False, True, None]),
+            pl.Series([-(2**63)] * 3, dtype=pl.Int64),
+            "multiply",
+            None,
+            [0, -(2**63), None],
+        ),
+        (
+            pl.Series([-(2**63)] * 3, dtype=pl.Int64),
+            pl.Series([False, True, None]),
+            "multiply",
+            None,
+            [0, -(2**63), None],
+        ),
+        (pl.Series([], dtype=pl.Boolean), pl.Series([], dtype=pl.Int8), "multiply", None, []),
+        (pl.Series([None], dtype=pl.Boolean), pl.Series([255], dtype=pl.UInt8), "add", None, [None]),
+        (pl.Series([False]), None, "add", str(2**127 - 1), [2**127 - 1]),
+        (pl.Series([None], dtype=pl.Boolean), None, "add", str(2**128 - 1), [None]),
+        (pl.Series([], dtype=pl.Boolean), None, "subtract", str(-(2**127)), []),
+        (pl.Series([True, False, None]), pl.Series([False, True, None]), "add", None, [1, 1, None]),
+        (pl.Series([True, False, None]), pl.Series([0.5, 1.5, None]), "add", None, [1.5, 1.5, None]),
+        (
+            pl.Series([Decimal("0.50"), Decimal("1.50"), None], dtype=pl.Decimal(10, 2)),
+            None,
+            "add",
+            "2",
+            [Decimal("2.50"), Decimal("3.50"), None],
+        ),
+        (pl.Series([True, False, None]), None, "divide", "2", [0.5, 0.0, None]),
+        (pl.Series([True, False, None]), None, "modulo", "2", [1, 0, None]),
+    ],
+)
+def test_polars_formula_boolean_operands_preserve_native_results(
+    lazy: bool, left: Any, right: Any, operator: str, value: str | None, expected: list[Any]
+) -> None:
+    source = pl.DataFrame({"left": left, **({"right": right} if right is not None else {})})
+    before = source.serialize()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(frame, operator, value, right_column=right is not None)
+    if right is not None:
+        operand = pl.col("right")
+    else:
+        assert value is not None
+        integer = int(value)
+        literal_type = pl.Int64 if -(2**63) <= integer < 2**63 else pl.Int128 if integer < 2**127 else pl.UInt128
+        operand = pl.lit(value).cast(literal_type)
+    native = source.with_columns(polars_engine._polars_formula(pl.col("left"), operand, operator).alias("result"))
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+        assert isinstance(result, pl.LazyFrame) == lazy
+        eager = result.collect() if lazy else result
+        assert eager["result"].to_list() == expected
+        assert eager.schema == native.schema
+        assert eager.equals(native)
+        assert source.serialize() == before
+
+
+@pytest.mark.parametrize("boolean_base", [False, True])
+def test_polars_formula_boolean_power_keeps_native_refusal(boolean_base: bool) -> None:
+    columns = {"boolean": [True, False, None], "integer": [2, 3, None]}
+    source = pl.DataFrame(columns if boolean_base else dict(reversed(list(columns.items()))))
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(source, "power", None, right_column=True)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for run in (lambda: engine.apply_transform(source, operation), lambda: namespace["clean_data"](source)):
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="not supported.*bool"):
+            run()
+
+
+@pytest.mark.parametrize(
+    ("right", "operator", "error", "message"),
+    [
+        (pl.Series([False, True, None]), "multiply", pl.exceptions.InvalidOperationError, "not supported.*bool"),
+        (
+            pl.Series([Decimal("0.50"), Decimal("1.50"), None]),
+            "add",
+            pl.exceptions.SchemaError,
+            "supertype of bool and decimal",
+        ),
+    ],
+)
+def test_polars_formula_boolean_unsupported_types_keep_native_refusal(
+    right: Any, operator: str, error: type[Exception], message: str
+) -> None:
+    source = pl.DataFrame({"left": [True, False, None], "right": right})
+    before = source.serialize()
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(source, operator, None, right_column=True)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for run in (lambda: engine.apply_transform(source, operation), lambda: namespace["clean_data"](source)):
+        with pytest.raises(error, match=message):
+            run()
+        assert source.serialize() == before
+
+
+def test_polars_saved_formula_refuses_boolean_source_replay_without_publishing(tmp_path: Path) -> None:
+    path = tmp_path / "saved-formula.csv"
+    path.write_text("a,b\n-1,-9223372036854775808\n", encoding="utf-8")
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", page_size=1)
+        session_id = opened["metadata"]["sessionId"]
+        left, right = opened["metadata"]["schema"]
+        step = {
+            "id": "saved-formula",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": left["id"], "name": left["name"]},
+                "rightColumn": {"id": right["id"], "name": right["name"]},
+                "operator": "subtract",
+                "newColumn": "result",
+            },
+        }
+        manager.preview_step(session_id, 0, step, 0, 1)
+        confirmed = manager.apply_draft(session_id, 1, 0, 1)
+        assert confirmed["page"]["rows"][0]["values"][-1]["raw"] == str(2**63 - 1)
+        namespace: dict[str, Any] = {}
+        exec(confirmed["code"], namespace)
+        assert namespace["clean_data"](pl.read_csv(path))["result"].to_list() == [2**63 - 1]
+        saved_plan = deepcopy(manager.sessions[session_id].plan)
+        manager.close_session(session_id, 2)
+
+        source_bytes = b"a,b\ntrue,-9223372036854775808\n"
+        path.write_bytes(source_bytes)
+        reopened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", page_size=1)
+        session_id = reopened["metadata"]["sessionId"]
+        assert [column["type"] for column in reopened["metadata"]["schema"]] == ["boolean", "integer"]
+        session = manager.sessions[session_id]
+        committed = session.committed
+        with pytest.raises(EngineError, match="native integer capacity"):
+            manager.preview_step(session_id, 0, saved_plan[0], 0, 1)
+        with pytest.raises(ValueError, match="native integer capacity"):
+            namespace["clean_data"](pl.read_csv(path))
+        assert session.revision == 0
+        assert session.committed is committed
+        assert session.plan == [] and session.bound_plan == []
+        assert session.draft_step is None and session.draft_frame is None
+        current = manager.get_page(session_id, 0, 0, 1, {"filters": [], "sort": []})
+        assert current["metadata"] == reopened["metadata"]
+        assert current["page"] == reopened["page"]
+        assert saved_plan == [step]
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
     ("dtype", "values", "value", "operator", "expected", "result_dtype"),
     [
         (pl.Int64, [0, 7, None], 2**63, "add", [2**63, 2**63 + 7, None], pl.UInt64),
