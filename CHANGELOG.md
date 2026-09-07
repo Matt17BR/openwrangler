@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Column reveal waits for automatic Code Preview focus to finish before treating the grid layout as settled.
 - Native R accepts valid empty `data.table` subsets and cleaning results, including generated code and Custom Code
   that return no rows.
 - Generated R follows native `data.table` column-metadata behavior across cleaning steps, including when later custom
