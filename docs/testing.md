@@ -51,6 +51,10 @@ npm run license:check
 `npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
 protected main after these checks pass and does not repeat the source suites.
 
+`npm run test:extension-host` builds the development extension and runs persistence seed and verification in separate
+editor processes sharing one private profile. Seed checks same-process close/reopen state and cleanup; verification
+checks persistence after editor restart, rendered recovery, and the remaining file and notebook journeys.
+
 For Native R changes, run the full contract suite or the relevant group:
 
 ```bash
