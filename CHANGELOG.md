@@ -20,6 +20,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
   selected before previous-session cleanup.
 
+- Successful activation survives long scheduler or debugger pauses.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security
