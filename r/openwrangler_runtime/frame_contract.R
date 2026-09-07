@@ -5840,6 +5840,42 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  round_coarse_double_values <- function(values, digits) {
+    result <- values * 1.0
+    finite <- is.finite(values)
+    if (digits <= -309) {
+      result[finite] <- values[finite] * 0
+      return(result)
+    }
+
+    # Beyond 22 places the decimal unit is no longer an exact double.
+    # Every affected value is an integer, so compare its exact decimal digits.
+    places <- -digits
+    unit <- 10^places
+    small <- finite & abs(values) < unit / 4
+    result[small] <- values[small] * 0
+    eligible <- which(finite & !small & abs(values) < unit * 2^54)
+    if (!length(eligible)) return(result)
+
+    text <- sprintf("%.0f", abs(values[eligible]))
+    width <- nchar(text)
+    split <- pmax(width - places, 0L)
+    quotient <- ifelse(split > 0, substr(text, 1L, split), "0")
+    remainder <- paste0(strrep("0", pmax(places - width, 0L)), substr(text, split + 1L, width))
+    half <- paste0("5", strrep("0", places - 1L))
+    odd <- as.integer(substr(quotient, nchar(quotient), nchar(quotient))) %% 2L == 1L
+    up <- which(remainder > half | (remainder == half & odd))
+    if (length(up)) {
+      increment <- as.double(quotient[up])
+      safe <- increment < 2^53
+      quotient[up[safe]] <- sprintf("%.0f", increment[safe] + 1)
+      for (index in up[!safe]) quotient[[index]] <- add_unsigned_decimal(quotient[[index]], "1")
+    }
+    rounded <- as.double(paste0(quotient, strrep("0", places)))
+    result[eligible] <- ifelse(values[eligible] < 0, -rounded, rounded)
+    result
+  }
+
   min_max_scale_values <- function(values) {
     if (inherits(values, "integer64")) {
       present <- !is.na(values)
@@ -5933,7 +5969,7 @@ openwrangler_r_frame_contract <- local({
     if (!operation %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       abort("internal-error", "the R numeric transform is unsupported")
     }
-    digits <- signed_whole_number(digits, "digits", .Machine$integer.max)
+    digits <- signed_whole_number(digits, "digits", Inf)
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
@@ -5972,7 +6008,11 @@ openwrangler_r_frame_contract <- local({
     } else {
       switch(
         operation,
-        roundNumber = base::round(source_values, digits = digits),
+        roundNumber = if (digits < -22) {
+          round_coarse_double_values(source_values, digits)
+        } else {
+          base::round(source_values, digits = digits)
+        },
         floorNumber = base::floor(source_values),
         ceilNumber = base::ceiling(source_values)
       )
@@ -9439,6 +9479,10 @@ openwrangler_r_frame_contract <- local({
     find_replace_column_at = find_replace_column_at,
     min_max_scale_column_at = min_max_scale_column_at,
     round_number_column_at = round_number_column_at,
+    round_coarse_helpers = list(
+      .ow_round_coarse = round_coarse_double_values,
+      add_unsigned_decimal = add_unsigned_decimal
+    ),
     floor_number_column_at = floor_number_column_at,
     ceil_number_column_at = ceil_number_column_at,
     format_datetime_column_at = format_datetime_column_at,

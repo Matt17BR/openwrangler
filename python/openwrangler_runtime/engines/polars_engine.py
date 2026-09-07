@@ -1412,7 +1412,7 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             expression = pl.col(column).cast(pl.Float64, strict=False)
             if kind == "roundNumber":
-                expression = expression.round(params.get("decimals", 0))
+                expression = _polars_round(expression, int(params.get("decimals", 0)))
             elif kind == "floorNumber":
                 expression = expression.floor()
             else:
@@ -1514,6 +1514,8 @@ class PolarsEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import polars as pl", ""])
+        if any(step["kind"] == "roundNumber" for step in plan):
+            lines.extend(_generated_polars_round_helpers())
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend(_generated_polars_min_max_helpers())
         if needs_filter_helpers:
@@ -2303,19 +2305,12 @@ class PolarsEngine(DataFrameEngine):
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
-            method = (
-                f"round({params.get('decimals', 0)!r})"
-                if kind == "roundNumber"
-                else "floor()"
-                if kind == "floorNumber"
-                else "ceil()"
-            )
-            return [
-                (
-                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.Float64, strict=False)"
-                    f".{method}.alias({target!r}))"
-                )
-            ]
+            expression = f"pl.col({column!r}).cast(pl.Float64, strict=False)"
+            if kind == "roundNumber":
+                expression = f"_open_wrangler_round({expression}, {params.get('decimals', 0)!r})"
+            else:
+                expression += ".floor()" if kind == "floorNumber" else ".ceil()"
+            return [f"{prefix}df = df.with_columns(({expression}).alias({target!r}))"]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
@@ -2583,6 +2578,61 @@ def _polars_min_max_scale(expression: Any, dtype: Any) -> Any:
         .then(1.0)
         .otherwise(scaled)
     )
+
+
+def _polars_round(expression: Any, decimals: int) -> Any:
+    import math
+
+    import polars as pl
+
+    if decimals >= 324:
+        return expression
+    if decimals <= -309:
+        return pl.when(expression.is_finite()).then(expression * 0.0).otherwise(expression)
+    if decimals >= 0:
+        return expression.round(decimals)
+    unit = float(10 ** (-decimals))
+    small = expression.is_finite() & (expression.abs() < unit / 4)
+    eligible = expression.is_finite() & ~small & (expression.abs() < unit * 2**54)
+
+    def rounded(value: Any) -> float:
+        try:
+            return round(float(value), decimals)
+        except OverflowError:
+            return math.copysign(math.inf, value)
+
+    # Polars accepts only nonnegative precision. A masked native-Series callback
+    # also avoids false decimal ties introduced by floating division/modulo.
+    result = pl.when(eligible).then(expression).otherwise(None).map_elements(rounded, return_dtype=pl.Float64)
+    return pl.when(eligible).then(result).when(small).then(expression * 0.0).otherwise(expression)
+
+
+def _generated_polars_round_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_round(expression, decimals):",
+        "    import math",
+        "    import polars as pl",
+        "    if decimals >= 324:",
+        "        return expression",
+        "    if decimals <= -309:",
+        "        return pl.when(expression.is_finite()).then(expression * 0.0).otherwise(expression)",
+        "    if decimals >= 0:",
+        "        return expression.round(decimals)",
+        "    unit = float(10 ** (-decimals))",
+        "    small = expression.is_finite() & (expression.abs() < unit / 4)",
+        "    eligible = expression.is_finite() & ~small & (expression.abs() < unit * 2 ** 54)",
+        "",
+        "    def rounded(value):",
+        "        try:",
+        "            return round(float(value), decimals)",
+        "        except OverflowError:",
+        "            return math.copysign(math.inf, value)",
+        "    result = (pl.when(eligible).then(expression).otherwise(None)",
+        "              .map_elements(rounded, return_dtype=pl.Float64))",
+        "    return pl.when(eligible).then(result).when(small).then(expression * 0.0).otherwise(expression)",
+        "",
+        "",
+    ]
 
 
 def _generated_polars_min_max_helpers() -> list[str]:

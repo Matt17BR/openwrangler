@@ -73,6 +73,10 @@ integers, decimals, missing values, and source identity in each Python editing e
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in
 `python/tests/test_configurable_export.py`, where native writers must leave replacement files unchanged.
 
+`python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
+negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source
+identity. Native R's catalog owns its corresponding numeric cases and executes them under altered display options.
+
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
 component tests own checkbox membership, saved scalar selections, and unnamed-column navigation; the production
