@@ -174,6 +174,11 @@ Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` colum
 outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and
 `-Inf`. Round follows R's ties-to-even rule. A keyed `data.table` column cannot be changed in place, but the result can
 be appended as a new column without changing the key.
+Round accepts any finite integer precision. Coarse rounding beyond 22 decimal places compares exact integer decimal
+digits before the final native conversion to double, avoiding false midpoints from an inexact power of ten. Precision
+at or below -309 turns finite doubles into signed zero. A correctly rounded double beyond its range becomes signed
+infinity; `integer64` retains its existing range-error behavior. Live and generated execution share the coarse helper
+and do not depend on the session's number-display options.
 
 IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
 opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does

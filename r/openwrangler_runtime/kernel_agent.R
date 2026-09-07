@@ -3216,7 +3216,7 @@ openwrangler_r_kernel_agent <- local({
         signed_whole_number(
           params$decimals,
           "request.payload.step.params.decimals",
-          maximum_revision
+          Inf
         )
       } else {
         0
@@ -7581,7 +7581,8 @@ openwrangler_r_kernel_agent <- local({
     maximum_text_bytes,
     maximum_payload_bytes,
     maximum_name_bytes,
-    safe_float_midpoint
+    safe_float_midpoint,
+    round_coarse_helpers
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7866,6 +7867,13 @@ openwrangler_r_kernel_agent <- local({
       logical(1L)
     ))) {
       lines <- c(lines, round_integer64_code_helper_lines())
+    }
+    if (any(vapply(bound_plan, function(step) {
+      identical(step$kind, "roundNumber") && !identical(step$semanticKind, "integer64") && step$decimals < -22
+    }, logical(1L)))) {
+      for (name in names(round_coarse_helpers)) {
+        lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(round_coarse_helpers[[name]], width.cutoff = 500L)))
+      }
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "minMaxScale"), logical(1L)))) {
       lines <- c(lines, min_max_scale_code_helper_lines())
@@ -8863,7 +8871,11 @@ openwrangler_r_kernel_agent <- local({
             ".ow_numeric_source"
           }
         } else if (identical(step$kind, "roundNumber")) {
-          sprintf("base::round(.ow_numeric_source, digits = %.0f)", step$decimals)
+          if (step$decimals < -22) {
+            sprintf(".ow_round_coarse(.ow_numeric_source, %.0f)", step$decimals)
+          } else {
+            sprintf("base::round(.ow_numeric_source, digits = %.0f)", step$decimals)
+          }
         } else if (identical(step$kind, "floorNumber")) {
           "base::floor(.ow_numeric_source)"
         } else {
@@ -9641,7 +9653,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$limits$textBytes,
         frame_contract$limits$payloadBytes,
         frame_contract$limits$nameBytes,
-        frame_contract$safe_float_midpoint
+        frame_contract$safe_float_midpoint,
+        frame_contract$round_coarse_helpers
       )
     )
   }
@@ -9954,7 +9967,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$textBytes,
             frame_contract$limits$payloadBytes,
             frame_contract$limits$nameBytes,
-            frame_contract$safe_float_midpoint
+            frame_contract$safe_float_midpoint,
+            frame_contract$round_coarse_helpers
           )
         } else {
           NULL
@@ -10006,7 +10020,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$textBytes,
             frame_contract$limits$payloadBytes,
             frame_contract$limits$nameBytes,
-            frame_contract$safe_float_midpoint
+            frame_contract$safe_float_midpoint,
+            frame_contract$round_coarse_helpers
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10067,7 +10082,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$limits$textBytes,
               frame_contract$limits$payloadBytes,
               frame_contract$limits$nameBytes,
-              frame_contract$safe_float_midpoint
+              frame_contract$safe_float_midpoint,
+              frame_contract$round_coarse_helpers
             )
           ))
         }

@@ -995,7 +995,7 @@ class DuckDBEngine(DataFrameEngine):
             target = params.get("newColumn", column)
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
             if kind == "roundNumber":
-                expression = f"round_even({value}, {int(params.get('decimals', 0))})"
+                expression = _duckdb_round_expression(value, int(params.get("decimals", 0)))
             elif kind == "floorNumber":
                 expression = f"floor({value})"
             else:
@@ -1348,7 +1348,7 @@ class DuckDBEngine(DataFrameEngine):
             target = params.get("newColumn", column)
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
             expression = (
-                f"round_even({value}, {int(params.get('decimals', 0))})"
+                _duckdb_round_expression(value, int(params.get("decimals", 0)))
                 if kind == "roundNumber"
                 else f"{'floor' if kind == 'floorNumber' else 'ceil'}({value})"
             )
@@ -3125,6 +3125,50 @@ def _regex_extract_expression(column: str, pattern: str, group: int) -> str:
     return (
         f"CASE WHEN {source} IS NULL THEN NULL "
         f"WHEN regexp_matches({source}, {_sql_literal(pattern)}) THEN {extracted} ELSE NULL END"
+    )
+
+
+def _duckdb_round_expression(value: str, decimals: int) -> str:
+    if decimals >= 324:
+        return value
+    if decimals <= -309:
+        return f"CASE WHEN isfinite({value}) THEN {value} * 0.0 ELSE {value} END"
+    if decimals >= 309:
+        limit = 2**54 * float(f"1e{-decimals}")
+        return (
+            f"CASE WHEN isfinite({value}) AND abs({value}) < {limit!r} "
+            f"THEN round_even({value} * 1e308, {decimals - 308}) / 1e308 ELSE {value} END"
+        )
+    if decimals >= 0:
+        return f"round_even({value}, {decimals})"
+    places = -decimals
+    unit = float(10**places)
+    upper = unit * 2**54
+    upper_sql = repr(upper) if isfinite(upper) else "'inf'::DOUBLE"
+    if places <= 22:
+        # These decimal units are exactly representable. Native remainder keeps
+        # finite inputs and half-even ties away from round_even's scaling macro.
+        remainder = f"(abs({value}) % {unit!r})"
+        down = (
+            f"({remainder} < {unit / 2!r} OR ({remainder} = {unit / 2!r} AND abs({value}) % {unit * 2!r} < {unit!r}))"
+        )
+        rounded = f"(abs({value}) + CASE WHEN {down} THEN -{remainder} ELSE {unit!r} - {remainder} END)"
+    else:
+        # Every eligible coarse input is an integral Float64. BIGNUM captures
+        # its exact integer before decimal digit rounding; a binary unit would
+        # move the midpoint. Only the final rounded result converts to DOUBLE.
+        digits = f"CAST(CAST(abs({value}) AS BIGNUM) AS VARCHAR)"
+        quotient = (
+            f"CAST(coalesce(nullif(left({digits}, greatest(length({digits}) - {places}, 0)), ''), '0') AS BIGINT)"
+        )
+        remainder = f"lpad(right({digits}, {places}), {places}, '0')"
+        half = "5" + "0" * (places - 1)
+        up = f"({remainder} > '{half}' OR ({remainder} = '{half}' AND {quotient} % 2 = 1))"
+        rounded = f"CAST(CAST(({quotient} + CAST({up} AS INTEGER)) AS VARCHAR) || repeat('0', {places}) AS DOUBLE)"
+    return (
+        f"CASE WHEN NOT isfinite({value}) OR abs({value}) >= {upper_sql} THEN {value} "
+        f"WHEN abs({value}) < {unit / 4!r} THEN {value} * 0.0 "
+        f"ELSE {rounded} * CASE WHEN {value} < 0 THEN -1.0 ELSE 1.0 END END"
     )
 
 

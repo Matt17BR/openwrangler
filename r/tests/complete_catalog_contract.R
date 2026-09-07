@@ -634,6 +634,80 @@ for (case_name in names(scale_edge_cases)) {
   )
 }
 
+local({
+previous_options <- options(scipen = -9, digits = 3)
+on.exit(options(previous_options), add = TRUE)
+round_special_values <- c(0, -0, 2^-1074, -2^-1074, NA_real_, NaN, Inf, -Inf)
+# Hexadecimal inputs pin midpoint neighbors independently of native decimal parsing.
+round_edge_cases <- list(
+  overflow = list(
+    digits = -308,
+    values = c(0x1.ab36d48e1acefp+1023, 0x1.ab36d48e1acf0p+1023, 0x1.ab36d48e1acf1p+1023,
+      .Machine$double.xmax, -.Machine$double.xmax),
+    expected = c(1e308, Inf, Inf, Inf, -Inf)
+  ),
+  midpoint_neighbors = list(
+    digits = -23,
+    values = c(0x1.52d02c7e14af6p+75, 0x1.52d02c7e14af7p+75,
+      -0x1.52d02c7e14af6p+75, -0x1.52d02c7e14af7p+75),
+    expected = c(0, 1e23, -0, -1e23)
+  ),
+  coarse_midpoint = list(digits = -100,
+    values = c(0x1.249ad2594c37dp+331, -0x1.249ad2594c37dp+331), expected = c(1e100, -1e100)),
+  wide_quotient = list(digits = -23, values = 0x1.52d02c7e14af7p+129, expected = 9.007199254740993e38),
+  coarse_masks = list(digits = -100, values = round_special_values,
+    expected = c(0, -0, 0, -0, NA_real_, NaN, Inf, -Inf)),
+  zero_endpoint = list(digits = -309, values = c(.Machine$double.xmax, -.Machine$double.xmax), expected = c(0, -0)),
+  large_positive = list(digits = 2^32, values = c(2.675, round_special_values), expected = c(2.675, round_special_values)),
+  large_negative = list(digits = -2^32, values = round_special_values,
+    expected = c(0, -0, 0, -0, NA_real_, NaN, Inf, -Inf)),
+  integer_values = list(digits = -23, values = c(-1L, 0L, 1L, NA_integer_), expected = c(-0, 0, 0, NA_real_)),
+  integer_empty = list(digits = -23, values = integer(), expected = numeric()),
+  integer_missing = list(digits = -23, values = c(NA_integer_, NA_integer_), expected = c(NA_real_, NA_real_)),
+  integer64_positive = list(digits = 2^32,
+    values = bit64::as.integer64(c("9223372036854775807", "-9007199254740993", NA)),
+    expected = bit64::as.integer64(c("9223372036854775807", "-9007199254740993", NA))),
+  integer64_negative = list(digits = -2^32,
+    values = bit64::as.integer64(c("9223372036854775807", "-9007199254740993", NA)),
+    expected = bit64::as.integer64(c("0", "0", NA)))
+)
+for (index in seq_along(round_edge_cases)) {
+  case_name <- names(round_edge_cases)[[index]]
+  case <- round_edge_cases[[index]]
+  input <- data.frame(value = case$values, marker = seq_along(case$values))
+  before <- frame_bytes(input)
+  output_name <- if (index %% 2L) "rounded" else "value"
+  source_environment$round_edge_frame <- input
+  current_session <- session_id(2000L + index)
+  assert_identical(dispatch("openSession", list(
+    sessionId = current_session, variableName = "round_edge_frame", page = page_window()
+  ))$kind, "page", paste("Round did not open", case_name))
+  latest_capture <<- NULL
+  preview <- dispatch("previewStep", list(
+    sessionId = current_session, revision = 0L,
+    step = step_with(paste0("round-", case_name), "roundNumber", list(
+      column = column_reference(input, "value"), decimals = case$digits, newColumn = output_name
+    )), page = page_window()
+  ))
+  assert_identical(preview$kind, "stepPreview", paste("Round did not preview", case_name, preview$message))
+  live <- snapshot_from_latest_capture(paste("Round", case_name))
+  assert_identical(unname(live[[output_name]]), case$expected, paste("Round changed", case_name))
+  if (!inherits(case$expected, "integer64")) {
+    zeros <- !is.na(case$expected) & case$expected == 0
+    assert_identical(1 / unname(live[[output_name]])[zeros], 1 / case$expected[zeros], paste("Round lost zero signs for", case_name))
+  }
+  assert_identical(live$marker, input$marker, "Round changed an unrelated column")
+  generated_environment <- new.env(parent = baseenv())
+  generated_environment$round_edge_frame <- unserialize(before)
+  eval(parse(text = preview$code), envir = generated_environment)
+  assert_frame_identical(generated_environment$open_wrangler_result, live, paste("generated Round diverged for", case_name))
+  assert_identical(frame_bytes(source_environment$round_edge_frame), before, "live Round mutated its source")
+  assert_identical(frame_bytes(generated_environment$round_edge_frame), before, "generated Round mutated its source")
+  assert_identical(dispatch("closeSession", list(sessionId = current_session))$kind, "closed", "Round did not close")
+}
+remove("round_edge_frame", envir = source_environment)
+})
+
 assert_true(
   grepl("base::intToUtf8(c(", catalog_generated_code$stripText, fixed = TRUE) &&
     grepl("multiple = FALSE", catalog_generated_code$stripText, fixed = TRUE),

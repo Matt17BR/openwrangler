@@ -913,7 +913,7 @@ class PandasEngine(DataFrameEngine):
             target = params.get("newColumn")
             series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
             if kind == "roundNumber":
-                result = series.round(params.get("decimals", 0))
+                result = _pandas_round(series, int(params.get("decimals", 0)))
             elif kind == "floorNumber":
                 result = np.floor(series)
             else:
@@ -1175,6 +1175,8 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if any(step["kind"] == "roundNumber" for step in plan):
+            lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend(_generated_pandas_min_max_helpers())
         if needs_pivot_longer_helpers:
@@ -1919,7 +1921,10 @@ class PandasEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
             expression = (
-                f"pd.to_numeric(df.iloc[:, {position}], errors='coerce').round({params.get('decimals', 0)!r})"
+                (
+                    f"_open_wrangler_round(pd.to_numeric(df.iloc[:, {position}], errors='coerce'), "
+                    f"{params.get('decimals', 0)!r})"
+                )
                 if kind == "roundNumber"
                 else (
                     f"np.{'floor' if kind == 'floorNumber' else 'ceil'}("
@@ -2516,6 +2521,272 @@ def _pandas_group_by_positions(
             normalized = _pandas_group_nulls(result.iloc[:, output_position], null_mask)
         result.isetitem(output_position, normalized)
     return result
+
+
+def _pandas_round_integer(series: Any, decimals: int) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if decimals >= 0 or not series.notna().any():
+        return series.copy()
+    if decimals <= -20:
+        return series.where(series.isna(), 0)
+    unsigned = pd.api.types.is_unsigned_integer_dtype(series.dtype)
+    nullable = isinstance(series.dtype, pd.api.extensions.ExtensionDtype)
+    dtype = ("UInt64" if nullable else "uint64") if unsigned else ("Int64" if nullable else "int64")
+    wide = series.astype(dtype)
+    unit = 10 ** (-decimals)
+    bounds = np.iinfo("uint64" if unsigned else "int64")
+    result = None
+    if unit <= bounds.max:
+        quotient = wide // unit
+        remainder = wide % unit
+        up = ((remainder > unit // 2) | ((remainder == unit // 2) & (quotient % 2 == 1))).astype(dtype)
+        quotient = quotient + up
+        if int(quotient.min()) * unit >= bounds.min and int(quotient.max()) * unit <= bounds.max:
+            result = quotient * unit
+    # A valid rounded integer can exceed its source storage. Preserve the exact
+    # integer instead of wrapping it or first converting it to a float.
+    if result is None:
+        result = pd.Series(
+            [pd.NA if pd.isna(value) else round(int(value), decimals) for value in series.array],
+            index=series.index,
+            name=series.name,
+            dtype=object,
+        )
+    original = np.iinfo(series.dtype.numpy_dtype if hasattr(series.dtype, "numpy_dtype") else series.dtype)
+    if int(result.min()) >= original.min and int(result.max()) <= original.max:
+        return result.astype(series.dtype)
+    return result
+
+
+def _pandas_round_wide(series: Any, decimals: int, info: Any, finite: Any) -> Any:
+    import numpy as np
+
+    # The caller has bounded precision by this dtype's useful range. Preserve
+    # working native rounding; its scaling factor is limited to Float64.
+    if 0 <= decimals <= 308:
+        safe = finite & (series.abs() <= (info.max / 2) / float(10**decimals))
+        return series.where(safe, 0).round(decimals).where(safe, series)
+    if -22 <= decimals < 0:
+        safe = finite & (series.abs() < np.longdouble(10 ** (-decimals)) * 2 ** (info.nmant + 2))
+        return series.where(safe, 0).round(decimals).where(safe, series)
+    unit = np.fromstring(f"1e{-decimals}", dtype=series.dtype, sep=" ")[0]
+    small = finite & (series.abs() < unit / 4)
+    eligible = finite & ~small
+    if unit < info.max / 2 ** (info.nmant + 2):
+        eligible &= series.abs() < unit * 2 ** (info.nmant + 2)
+    # Extended scalars expose their exact ratio without a Float64 conversion.
+    # Integer rounding keeps true decimal midpoint neighbors distinct.
+    integer_unit = 10 ** abs(decimals)
+
+    def rounded(value):
+        numerator, denominator = value.as_integer_ratio()
+        if decimals > 0:
+            numerator *= integer_unit
+        else:
+            denominator *= integer_unit
+        quotient, remainder = divmod(abs(numerator), denominator)
+        quotient += 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2 == 1)
+        text = f"{quotient}e{-decimals}"
+        return np.copysign(np.fromstring(text, dtype=series.dtype, sep=" ")[0], value)
+
+    result = series.where(~small, series.where(small, 0) * 0)
+    # Series.map would infer Float64 from the returned extended scalars.
+    positions = np.flatnonzero(eligible.to_numpy())
+    if len(positions):
+        result.iloc[positions] = np.array([rounded(value) for value in series.array[positions]], dtype=series.dtype)
+    return result
+
+
+def _pandas_round(series: Any, decimals: int) -> Any:
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    if pd.api.types.is_integer_dtype(series.dtype):
+        return _pandas_round_integer(series, decimals)
+    if pd.api.types.is_bool_dtype(series.dtype):
+        return series.copy()
+    dtype = series.dtype.numpy_dtype if hasattr(series.dtype, "numpy_dtype") else series.dtype
+    info = np.finfo(dtype)
+    positive_limit = math.ceil(-float(np.log10(info.smallest_subnormal)) + math.log10(2))
+    negative_limit = math.floor(float(np.log10(info.max)) + math.log10(2)) + 1
+    if decimals >= positive_limit:
+        return series.copy()
+    finite = np.isfinite(series).fillna(False)
+    max_exponent = math.floor(float(np.log10(info.max)))
+    if decimals <= -negative_limit:
+        return (series.where(finite, 0) * 0).where(finite, series)
+    if info.nmant > 52 or info.maxexp > 1024:
+        return _pandas_round_wide(series, decimals, info, finite)
+    # Arrow's decimal scaling table uses Float32 constants even for Double.
+    # Keep finer arithmetic in Pandas while retaining the Arrow storage/mask.
+    if isinstance(series.dtype, pd.ArrowDtype) and abs(decimals) > 10:
+        with np.errstate(over="ignore"):
+            result = _pandas_round(series.astype("Float64"), decimals).astype(series.dtype)
+        return result.where(finite, series)
+    if decimals < 0:
+        unit = float(10 ** (-decimals))
+        if decimals >= -min(22, max_exponent):
+            upper = unit * 2 ** (info.nmant + 2)
+            safe = finite & (series.abs() < upper) if upper <= float(info.max) else finite
+            with np.errstate(over="ignore"):
+                return series.where(safe, 0).round(decimals).where(safe, series)
+        # Only coarse precision needs scalar rounding. Binary scaling can invent
+        # a tie because its power of ten is itself an inexact float.
+        small = finite & (series.abs() < unit / 4)
+        eligible = finite & ~small
+        upper = unit * 2**54
+        if upper <= float(info.max):
+            eligible &= series.abs() < upper
+
+        def rounded(value: Any) -> float:
+            try:
+                return round(float(value), decimals)
+            except OverflowError:
+                return math.copysign(math.inf, value)
+
+        result = series.where(eligible).map(rounded, na_action="ignore")
+        # A correctly rounded result can exceed the source floating dtype's range.
+        with np.errstate(over="ignore"):
+            result = result.astype(series.dtype)
+        return result.where(eligible, series.where(~small, series.where(small, 0) * 0))
+    if decimals <= max_exponent:
+        safe = finite & (series.abs() <= (float(info.max) / 2) / float(10**decimals))
+        return series.where(safe, 0).round(decimals).where(safe, series)
+    # Rescale only values fine enough to change; all intermediates then fit
+    # Float64 even when the requested quantum is subnormal.
+    affected = finite & (series.abs() < 2 ** (info.nmant + 2) * float(f"1e{-decimals}"))
+    scale = float(10**max_exponent)
+    scaled = series.where(affected, 0).astype("float64") * scale
+    result = (scaled.round(decimals - max_exponent) / scale).astype(series.dtype)
+    return result.where(affected, series)
+
+
+def _generated_pandas_round_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_round_wide(series, decimals, info, finite):",
+        "    import numpy as np",
+        "    if 0 <= decimals <= 308:",
+        "        safe = finite & (series.abs() <= info.max / 2 / float(10 ** decimals))",
+        "        return series.where(safe, 0).round(decimals).where(safe, series)",
+        "    if -22 <= decimals < 0:",
+        "        safe = finite & (series.abs() < np.longdouble(10 ** (-decimals)) * 2 ** (info.nmant + 2))",
+        "        return series.where(safe, 0).round(decimals).where(safe, series)",
+        "    unit = np.fromstring(f'1e{-decimals}', dtype=series.dtype, sep=' ')[0]",
+        "    small = finite & (series.abs() < unit / 4)",
+        "    eligible = finite & ~small",
+        "    if unit < info.max / 2 ** (info.nmant + 2):",
+        "        eligible &= series.abs() < unit * 2 ** (info.nmant + 2)",
+        "    integer_unit = 10 ** abs(decimals)",
+        "",
+        "    def rounded(value):",
+        "        numerator, denominator = value.as_integer_ratio()",
+        "        if decimals > 0:",
+        "            numerator *= integer_unit",
+        "        else:",
+        "            denominator *= integer_unit",
+        "        quotient, remainder = divmod(abs(numerator), denominator)",
+        "        quotient += 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2 == 1)",
+        "        text = f'{quotient}e{-decimals}'",
+        "        return np.copysign(np.fromstring(text, dtype=series.dtype, sep=' ')[0], value)",
+        "    result = series.where(~small, series.where(small, 0) * 0)",
+        "    positions = np.flatnonzero(eligible.to_numpy())",
+        "    if len(positions):",
+        "        result.iloc[positions] = np.array(",
+        "            [rounded(value) for value in series.array[positions]], dtype=series.dtype)",
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_round_integer(series, decimals):",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "    if decimals >= 0 or not series.notna().any():",
+        "        return series.copy()",
+        "    if decimals <= -20:",
+        "        return series.where(series.isna(), 0)",
+        "    unsigned = pd.api.types.is_unsigned_integer_dtype(series.dtype)",
+        "    nullable = isinstance(series.dtype, pd.api.extensions.ExtensionDtype)",
+        "    dtype = ('UInt64' if nullable else 'uint64') if unsigned else 'Int64' if nullable else 'int64'",
+        "    wide = series.astype(dtype)",
+        "    unit = 10 ** (-decimals)",
+        "    bounds = np.iinfo('uint64' if unsigned else 'int64')",
+        "    result = None",
+        "    if unit <= bounds.max:",
+        "        quotient = wide // unit",
+        "        remainder = wide % unit",
+        "        up = ((remainder > unit // 2) | (remainder == unit // 2) & (quotient % 2 == 1)).astype(dtype)",
+        "        quotient = quotient + up",
+        "        if int(quotient.min()) * unit >= bounds.min and int(quotient.max()) * unit <= bounds.max:",
+        "            result = quotient * unit",
+        "    if result is None:",
+        "        result = pd.Series(",
+        "            [pd.NA if pd.isna(value) else round(int(value), decimals) for value in series.array],",
+        "            index=series.index, name=series.name, dtype=object)",
+        "    original = np.iinfo(series.dtype.numpy_dtype if hasattr(series.dtype, 'numpy_dtype') else series.dtype)",
+        "    if int(result.min()) >= original.min and int(result.max()) <= original.max:",
+        "        return result.astype(series.dtype)",
+        "    return result",
+        "",
+        "def _open_wrangler_round(series, decimals):",
+        "    import math",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "    if pd.api.types.is_integer_dtype(series.dtype):",
+        "        return _open_wrangler_round_integer(series, decimals)",
+        "    if pd.api.types.is_bool_dtype(series.dtype):",
+        "        return series.copy()",
+        "    dtype = series.dtype.numpy_dtype if hasattr(series.dtype, 'numpy_dtype') else series.dtype",
+        "    info = np.finfo(dtype)",
+        "    positive_limit = math.ceil(-float(np.log10(info.smallest_subnormal)) + math.log10(2))",
+        "    negative_limit = math.floor(float(np.log10(info.max)) + math.log10(2)) + 1",
+        "    if decimals >= positive_limit:",
+        "        return series.copy()",
+        "    finite = np.isfinite(series).fillna(False)",
+        "    max_exponent = math.floor(float(np.log10(info.max)))",
+        "    if decimals <= -negative_limit:",
+        "        return (series.where(finite, 0) * 0).where(finite, series)",
+        "    if info.nmant > 52 or info.maxexp > 1024:",
+        "        return _open_wrangler_round_wide(series, decimals, info, finite)",
+        "    if isinstance(series.dtype, pd.ArrowDtype) and abs(decimals) > 10:",
+        "        with np.errstate(over='ignore'):",
+        "            result = _open_wrangler_round(series.astype('Float64'), decimals).astype(series.dtype)",
+        "        return result.where(finite, series)",
+        "    if decimals < 0:",
+        "        unit = float(10 ** (-decimals))",
+        "        if decimals >= -min(22, max_exponent):",
+        "            upper = unit * 2 ** (info.nmant + 2)",
+        "            safe = finite & (series.abs() < upper) if upper <= float(info.max) else finite",
+        "            with np.errstate(over='ignore'):",
+        "                return series.where(safe, 0).round(decimals).where(safe, series)",
+        "        small = finite & (series.abs() < unit / 4)",
+        "        eligible = finite & ~small",
+        "        upper = unit * 2 ** 54",
+        "        if upper <= float(info.max):",
+        "            eligible &= series.abs() < upper",
+        "",
+        "        def rounded(value):",
+        "            try:",
+        "                return round(float(value), decimals)",
+        "            except OverflowError:",
+        "                return math.copysign(math.inf, value)",
+        "        result = series.where(eligible).map(rounded, na_action='ignore')",
+        "        with np.errstate(over='ignore'):",
+        "            result = result.astype(series.dtype)",
+        "        return result.where(eligible, series.where(~small, series.where(small, 0) * 0))",
+        "    if decimals <= max_exponent:",
+        "        safe = finite & (series.abs() <= float(info.max) / 2 / float(10 ** decimals))",
+        "        return series.where(safe, 0).round(decimals).where(safe, series)",
+        "    affected = finite & (series.abs() < 2 ** (info.nmant + 2) * float(f'1e{-decimals}'))",
+        "    scale = float(10 ** max_exponent)",
+        "    scaled = series.where(affected, 0).astype('float64') * scale",
+        "    result = (scaled.round(decimals - max_exponent) / scale).astype(series.dtype)",
+        "    return result.where(affected, series)",
+        "",
+        "",
+    ]
 
 
 def _pandas_min_max_scale(series: Any) -> Any:

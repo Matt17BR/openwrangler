@@ -153,6 +153,12 @@ Float32 and float64 ranges that overflow on subtraction use wider or scaled oper
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
 the owning engine.
 
+Round accepts finite integer decimal precision, including negative values for rounding to tens and larger units.
+Each engine keeps its ordinary rounding convention and numeric coercion. Precision outside a storage type's useful
+range produces the corresponding unchanged value or signed zero without constructing an unbounded scale. Intermediate
+scaling must not overflow a representable result or wrap an integer. Live and generated code preserve missing and
+non-finite values; a floating result that exceeds its output type becomes signed infinity.
+
 ### Pandas
 
 Pandas executes viewing, all 32 cleaning operations, profiling, generated code, and supported exports in Pandas.
