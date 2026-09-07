@@ -21,6 +21,8 @@ interface OperationBuilderProps {
   initialStep?: TransformStep;
   editInputSchema?: readonly ColumnSchema[];
   busy?: boolean;
+  previewError?: { kind: OperationKind; message: string };
+  onOperationChange?(): void;
   onClose(): void;
   onPreview(step: TransformStep, replaceStepId?: string): void;
 }
@@ -67,6 +69,8 @@ export function OperationBuilder({
   initialStep,
   editInputSchema,
   busy = false,
+  previewError,
+  onOperationChange,
   onClose,
   onPreview
 }: OperationBuilderProps) {
@@ -78,6 +82,8 @@ export function OperationBuilder({
   );
   const [search, setSearch] = useState("");
   const [formError, setFormError] = useState<string>();
+  const visibleFormError =
+    formError ?? (previewError && previewError.kind === selectedKind ? previewError.message : undefined);
   const dialogRef = useRef<HTMLElement | null>(null);
   const previewButtonRef = useRef<HTMLButtonElement | null>(null);
   const availableCatalog = useMemo(() => supportedOperationCatalog(metadata.capabilities), [metadata.capabilities]);
@@ -225,7 +231,10 @@ export function OperationBuilder({
                       key={operation.kind}
                       className={`operationChoice${selectedKind === operation.kind ? " selected" : ""}`}
                       aria-pressed={selectedKind === operation.kind}
-                      onClick={() => setSelectedKind(operation.kind)}
+                      onClick={() => {
+                        if (operation.kind !== selectedKind) onOperationChange?.();
+                        setSelectedKind(operation.kind);
+                      }}
                     >
                       <span className={`codicon codicon-${operation.icon}`} aria-hidden="true" />
                       <span>
@@ -262,9 +271,9 @@ export function OperationBuilder({
                       filterModel={filterModel}
                       initialStep={activeInitial}
                     />
-                    {formError && (
+                    {visibleFormError && (
                       <p className="operationFormError" role="alert">
-                        {formError}
+                        {visibleFormError}
                       </p>
                     )}
                   </>

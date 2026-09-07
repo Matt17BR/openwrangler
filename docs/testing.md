@@ -96,6 +96,9 @@ ready PTY. Portable R tests check one-expression parsing, exact long escaped val
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
 changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
 receipt after layout settles and retain its session, revision, and DOM marker checks.
+App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
+accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
+cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
 
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
