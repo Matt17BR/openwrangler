@@ -251,6 +251,8 @@ Run a manual editor scenario only when the change crosses that UI or integration
 The released-Jupyter first-result journey enables Open Wrangler but leaves kernel consent unanswered until the first
 raw dataframe result appears. It then checks that the result gains its action without another execution. Disabled
 previews must not request automatic inspection; the notebook owner unit tests cover that separate behavior.
+Native R notebook journeys keep discovery disabled during kernel probing and enable it before the setup cell whose
+completion requests consent.
 
 Do not retain a second end-to-end journey for behavior already covered by the exact-artifact smoke or a direct source
 test. Do not retry deterministic failures; fix the product or remove a check that cannot identify a distinct failure.

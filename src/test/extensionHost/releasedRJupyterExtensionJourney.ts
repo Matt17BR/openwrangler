@@ -259,6 +259,7 @@ export function createReleasedRJupyterExtensionJourney({
         `${phase}:kernel-probe`,
         notebookEditor
       );
+      await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
       await executeReleasedNotebookCell(
         notebook,
         RELEASED_JUPYTER_R_SETUP_CELL,

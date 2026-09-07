@@ -192,6 +192,7 @@ export function createReleasedRNativeFramesJourney({
       );
       recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "kernel-probe:complete");
       recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "setup:start");
+      await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
       await executeReleasedNotebookCell(
         notebook,
         RELEASED_JUPYTER_R_SETUP_CELL,
