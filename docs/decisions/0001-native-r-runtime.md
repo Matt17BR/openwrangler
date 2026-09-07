@@ -156,6 +156,7 @@ Active data-table key columns are rejected because changing a key value could in
 
 Standalone generated Fill code includes only the helper families used by the cleaning plan. Mixed steps retain
 their dependencies, including datetime handling for scalar replacements and the shared numeric midpoint.
+Directional Fill emits its native live function, keeping missing-run and donor selection in one implementation.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
 chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The

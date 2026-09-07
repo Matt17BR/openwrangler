@@ -6617,6 +6617,40 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  fill_directional_values <- function(values, row_positions, direction, max_gap = NULL) {
+    if (!direction %in% c("forward", "backward")) {
+      stop("Open Wrangler received an invalid directional fill", call. = FALSE)
+    }
+    if (
+      !is.null(max_gap) && (
+        length(max_gap) != 1L || !is.numeric(max_gap) || is.na(max_gap) ||
+          !is.finite(max_gap) || max_gap < 1 || max_gap > 1000000 || max_gap != floor(max_gap)
+      )
+    ) {
+      stop("Open Wrangler received an invalid maximum gap", call. = FALSE)
+    }
+    result_values <- values
+    ordered_missing <- is.na(result_values[row_positions])
+    if (length(ordered_missing) > 0L && any(ordered_missing)) {
+      runs <- rle(ordered_missing)
+      run_ends <- cumsum(runs$lengths)
+      run_starts <- run_ends - runs$lengths + 1L
+      missing_runs <- which(runs$values)
+      for (run_index in missing_runs) {
+        run_length <- runs$lengths[[run_index]]
+        if (!is.null(max_gap) && run_length > max_gap) next
+        start <- run_starts[[run_index]]
+        end <- run_ends[[run_index]]
+        donor <- if (identical(direction, "forward")) start - 1L else end + 1L
+        if (donor < 1L || donor > length(row_positions)) next
+        donor_position <- row_positions[[donor]]
+        if (is.na(result_values[donor_position])) next
+        result_values[row_positions[start:end]] <- result_values[donor_position]
+      }
+    }
+    result_values
+  }
+
   fill_missing_directional_at <- function(
     value,
     position,
@@ -6714,25 +6748,7 @@ openwrangler_r_frame_contract <- local({
       }
     }
 
-    result_values <- value[[position]]
-    ordered_missing <- is.na(result_values[row_positions])
-    if (length(ordered_missing) > 0L && any(ordered_missing)) {
-      runs <- rle(ordered_missing)
-      run_ends <- cumsum(runs$lengths)
-      run_starts <- run_ends - runs$lengths + 1L
-      missing_runs <- which(runs$values)
-      for (run_index in missing_runs) {
-        run_length <- runs$lengths[[run_index]]
-        if (!is.null(max_gap) && run_length > max_gap) next
-        start <- run_starts[[run_index]]
-        end <- run_ends[[run_index]]
-        donor <- if (identical(direction, "forward")) start - 1L else end + 1L
-        if (donor < 1L || donor > length(row_positions)) next
-        donor_position <- row_positions[[donor]]
-        if (is.na(result_values[donor_position])) next
-        result_values[row_positions[start:end]] <- result_values[donor_position]
-      }
-    }
+    result_values <- fill_directional_values(value[[position]], row_positions, direction, max_gap)
 
     result <- isolated_snapshot(value, inspected$flavor)
     if (identical(inspected$flavor, "r.data.table")) {
@@ -9489,6 +9505,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,
+    fill_directional_values = fill_directional_values,
     fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
     fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column_at = cast_column_at,
