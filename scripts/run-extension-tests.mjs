@@ -70,8 +70,6 @@ try {
   };
   const editorVersion = await readEditorVersion(editorLaunch, editorEnvironment);
   const harness = resolve(profile, "harness");
-  const singleUserData = resolve(profile, "u1");
-  const singleExtensions = resolve(profile, "single-extensions");
   const userData = resolve(profile, "u2");
   const extensions = resolve(profile, "reload-extensions");
   const workspace = resolve(profile, "Open Wrangler Demo");
@@ -84,7 +82,6 @@ try {
     "window.menuStyle": "custom",
     "files.simpleDialog.enable": true
   };
-  writeEditorSettings(singleUserData, workbenchSettings);
   writeEditorSettings(userData, workbenchSettings);
   const editor = {
     name: "VS Code",
@@ -94,18 +91,6 @@ try {
     cli: vscodeCliPath,
     sharedDataDir: true
   };
-
-  await runEditorAcceptancePhase({
-    editor,
-    workspace,
-    userData: singleUserData,
-    extensions: singleExtensions,
-    developmentPaths: [root, harness, fakeJupyter],
-    testModule,
-    python: process.env.OPEN_WRANGLER_TEST_PYTHON,
-    phase: "single",
-    resultPath: resolve(profile, "single-result.json")
-  });
 
   for (const phase of ["seed", "verify"]) {
     await runEditorAcceptancePhase({

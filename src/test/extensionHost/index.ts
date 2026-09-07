@@ -1107,7 +1107,6 @@ export async function run(): Promise<void> {
   if (phaseDispatched) return;
 
   const persistedRecoveryFixture = ensurePersistedRecoveryFixture(workspace);
-  if (phase === "single") await seedPersistedPlan(testing, fixture, persistedRecoveryFixture);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
     recordAcceptanceProgress("verify:visible-replay-recovery");
     await verifyVisiblePersistedReplayAndRecovery(testing, persistedRecoveryFixture);
