@@ -1032,7 +1032,7 @@ describe("protocol-v2 response validation", () => {
     expect(
       isOpenWranglerResponse({
         ...response,
-        values: [{ value: "1", count: 4, selectionValue: { ...token, columnType: "float" } }]
+        values: [{ value: "1", count: 4, selectionValue: { ...token, columnType: "boolean" } }]
       })
     ).toBe(false);
     expect(
@@ -1059,6 +1059,45 @@ describe("protocol-v2 response validation", () => {
         ]
       })
     ).toBe(false);
+  });
+
+  it.each([
+    { kind: "integer", raw: 1, accepted: true },
+    { kind: "integer", raw: "9007199254740993", accepted: true },
+    { kind: "integer", raw: "-9007199254740993", accepted: true },
+    { kind: "integer", raw: 9007199254740992, accepted: false },
+    { kind: "integer", raw: 1.5, accepted: false },
+    { kind: "integer", raw: "1e3", accepted: false },
+    { kind: "integer", raw: "0x10", accepted: false },
+    { kind: "integer", raw: true, accepted: false },
+    { kind: "number", raw: 0.1, accepted: true },
+    { kind: "number", raw: -0, accepted: true },
+    { kind: "number", raw: Number.NaN, accepted: false },
+    { kind: "number", raw: Number.POSITIVE_INFINITY, accepted: false },
+    { kind: "boolean", raw: true, accepted: false },
+    { kind: "string", raw: "9007199254740993", accepted: false },
+    { kind: "nan", raw: null, accepted: false }
+  ])("validates $kind raw $raw under a float selection schema", ({ kind, raw, accepted }) => {
+    const response = {
+      kind: "columnValues",
+      revision: 0,
+      viewRequestId: "float-selection",
+      column: "value",
+      hasMore: false,
+      values: [
+        {
+          value: String(raw),
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "float",
+            cell: { kind, raw, display: String(raw), isNull: false, isNaN: false }
+          }
+        }
+      ]
+    };
+    expect(isOpenWranglerResponse(response)).toBe(accepted);
   });
 
   it("does not accept a response as an envelope", () => {

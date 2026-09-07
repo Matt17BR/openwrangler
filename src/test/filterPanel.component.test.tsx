@@ -7,7 +7,7 @@ import { viewCellSelectionFilter } from "../shared/filterModel";
 import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
-import { matchesLegacySelection } from "../webviews/filters/filterPresentation";
+import { matchesLegacySelection, selectionValueKey } from "../webviews/filters/filterPresentation";
 import { metadata } from "./filterSummary.testFixtures";
 
 const values = new Map<string, ValuesResponse>([
@@ -162,6 +162,13 @@ describe("FilterPanel", () => {
     { type: "integer", kind: "integer", legacy: "9007199254740993", raw: "9007199254740993" },
     { type: "decimal", kind: "decimal", legacy: "9007199254740993.01", raw: "9007199254740993.01" },
     { type: "float", kind: "number", legacy: "1.0", raw: 1 },
+    { type: "float", kind: "number", legacy: "1e3", raw: 1000 },
+    { type: "float", kind: "number", legacy: "-0.0", raw: -0 },
+    { type: "float", kind: "integer", legacy: "9007199254740993", raw: "9007199254740993" },
+    { type: "float", kind: "integer", legacy: "+1", raw: 1 },
+    { type: "float", kind: "integer", legacy: "01", raw: 1 },
+    { type: "float", kind: "integer", legacy: "1.0", raw: 1 },
+    { type: "float", kind: "integer", legacy: "1e0", raw: 1 },
     { type: "float", kind: "infinity", legacy: "inf", raw: null },
     { type: "float", kind: "infinity", legacy: "-inf", raw: null },
     { type: "boolean", kind: "boolean", legacy: "True", raw: true },
@@ -224,6 +231,74 @@ describe("FilterPanel", () => {
       expect(screen.getByRole("checkbox")).toBeChecked();
       fireEvent.click(screen.getByRole("checkbox"));
       expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+    }
+  );
+
+  it.each(["legacy integer", "typed number"])(
+    "matches a saved %s without selecting its numeric neighbor",
+    (savedKind) => {
+      const onApply = vi.fn();
+      const oldNumber: TypedSelectionToken = {
+        kind: "typedSelection",
+        version: 1,
+        columnType: "float",
+        cell: { kind: "number", raw: 9007199254740992, display: "9007199254740992.0", isNull: false, isNaN: false }
+      };
+      const valueFilter = {
+        kind: "values" as const,
+        selectedValues: [savedKind === "legacy integer" ? "9007199254740993" : oldNumber],
+        includeNulls: true,
+        includeNaN: true
+      };
+      const columnFilter = { column: "sales", type: "float" as const, predicates: [], valueFilter };
+      render(
+        <FilterPanel
+          metadata={metadata}
+          activeColumn="sales"
+          model={{ filters: [columnFilter], sort: [] }}
+          values={
+            new Map([
+              [
+                "sales",
+                {
+                  kind: "columnValues",
+                  revision: 0,
+                  viewRequestId: "exact-values",
+                  column: "sales",
+                  hasMore: false,
+                  values: [
+                    savedKind === "legacy integer"
+                      ? oldNumber.cell
+                      : { kind: "integer" as const, raw: "9007199254740992", display: "9007199254740992" },
+                    { kind: "integer" as const, raw: "9007199254740993", display: "9007199254740993" }
+                  ].map((cell) => ({
+                    value: cell.display,
+                    count: 1,
+                    selectionValue: {
+                      kind: "typedSelection",
+                      version: 1,
+                      columnType: "float",
+                      cell: { ...cell, isNull: false, isNaN: false }
+                    }
+                  }))
+                }
+              ]
+            ])
+          }
+          onApply={onApply}
+          onRequestValues={() => undefined}
+        />
+      );
+      const [neighbor, exact] = screen.getAllByRole("checkbox");
+      const selected = savedKind === "legacy integer" ? exact : neighbor;
+      const unselected = savedKind === "legacy integer" ? neighbor : exact;
+      expect(unselected).not.toBeChecked();
+      expect(selected).toBeChecked();
+      fireEvent.click(selected);
+      expect(onApply).toHaveBeenLastCalledWith({
+        filters: [{ ...columnFilter, logic: "and", valueFilter: { ...valueFilter, selectedValues: [], search: "" } }],
+        sort: []
+      });
     }
   );
 
@@ -300,6 +375,37 @@ describe("FilterPanel", () => {
       columnType,
       cell
     });
+    const floating = (kind: "integer" | "number", raw: string | number) =>
+      selection("float", {
+        kind,
+        raw,
+        display: String(raw),
+        isNull: false,
+        isNaN: false
+      });
+    const actualBinaryInteger = floating("integer", "1000000000000000019884624838656");
+    const decimalSpelling = floating("integer", "1000000000000000000000000000000");
+    expect(selectionValueKey(floating("number", 1e30))).toBe(selectionValueKey(actualBinaryInteger));
+    expect(selectionValueKey(floating("number", 1e30))).not.toBe(selectionValueKey(decimalSpelling));
+    expect(matchesLegacySelection("1e30", actualBinaryInteger)).toBe(true);
+    expect(matchesLegacySelection("1e30", decimalSpelling)).toBe(false);
+    expect(selectionValueKey(floating("number", -0))).toBe(selectionValueKey(floating("integer", "0")));
+    expect(selectionValueKey(floating("integer", "1"))).not.toBe(
+      selectionValueKey(
+        selection("string", {
+          kind: "integer",
+          raw: "1",
+          display: "1",
+          isNull: false,
+          isNaN: false
+        })
+      )
+    );
+    for (const raw of [true, null, "1e3", "0x10", Number.NaN, Number.POSITIVE_INFINITY, 9007199254740992]) {
+      const malformed = { ...floating("integer", "1"), cell: { ...floating("integer", "1").cell, raw } };
+      expect(() => selectionValueKey(malformed)).not.toThrow();
+      expect(selectionValueKey(malformed)).not.toBe(selectionValueKey(floating("number", 9007199254740992)));
+    }
     expect(
       matchesLegacySelection(
         "9007199254740993",
@@ -503,7 +609,7 @@ describe("FilterPanel", () => {
         filters: expect.arrayContaining([
           expect.objectContaining({
             predicates: expect.arrayContaining([
-              expect.objectContaining({ operator: "between", value: 10, secondValue: 20 })
+              expect.objectContaining({ operator: "between", value: "10", secondValue: "20" })
             ])
           })
         ])
@@ -977,7 +1083,69 @@ describe("FilterPanel", () => {
     expect((onApply.mock.calls.at(-1)?.[0] as FilterModel).sort).toEqual(model.sort);
   });
 
-  it("coerces predicate inputs according to the selected column type", () => {
+  it.each(["equals", "between"])("preserves exact numeric input for a float %s predicate", (operator) => {
+    const onApply = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        activeColumn="sales"
+        defaultAdvanced={true}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: operator } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "9007199254740993" } });
+    if (operator === "between") {
+      fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "9007199254740995" } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          logic: "and",
+          predicates: [
+            {
+              kind: "predicate",
+              operator,
+              value: "9007199254740993",
+              ...(operator === "between" ? { secondValue: "9007199254740995" } : {})
+            }
+          ]
+        }
+      ],
+      sort: []
+    });
+  });
+
+  it.each(["-1.25e3", "-0.0", "+1", " 1 ", "0x10"])("leaves float spelling %s for runtime validation", (value) => {
+    const onApply = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        activeColumn="sales"
+        defaultAdvanced={true}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "equals" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value }] })]
+      })
+    );
+  });
+
+  it("preserves predicate text and coerces only Boolean inputs", () => {
     const onApply = vi.fn();
     const typedMetadata: SessionMetadata = {
       ...metadata,
@@ -1024,7 +1192,7 @@ describe("FilterPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     expect(onApply).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: 12.5 }] })]
+        filters: [expect.objectContaining({ predicates: [{ kind: "predicate", operator: "equals", value: "12.5" }] })]
       })
     );
 
