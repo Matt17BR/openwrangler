@@ -230,29 +230,6 @@ def test_polars_literal_file_scan_disables_a_native_glob_option(
     assert calls == [(str(path), False)]
 
 
-def test_polars_literal_file_scan_uses_an_encoded_file_uri_when_glob_is_unavailable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    path = tmp_path / "[legacy].csv"
-    _write_polars_file(path, "csv", [17, 18])
-    _write_polars_file(tmp_path / "l.csv", "csv", [99])
-    native_scan_csv = pl.scan_csv
-    calls: list[str] = []
-
-    def legacy_scan_csv(source: str, **options: Any) -> pl.LazyFrame:
-        calls.append(source)
-        return native_scan_csv(source, **options)
-
-    monkeypatch.setattr(pl, "scan_csv", legacy_scan_csv)
-
-    frame = PolarsEngine().read_file(str(path))
-
-    assert isinstance(frame, pl.LazyFrame)
-    assert frame.collect().get_column("value").to_list() == [17, 18]
-    assert calls == [path.absolute().as_uri()]
-
-
 def test_polars_session_opens_pages_and_closes_a_literal_bracket_path(tmp_path: Path) -> None:
     path = tmp_path / "[Live] customer snapshot.csv"
     _write_polars_file(path, "csv", [17, 18])

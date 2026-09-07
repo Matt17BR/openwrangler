@@ -580,6 +580,32 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     assert_records_equal(empty_result, execute_generated(engine, empty_labels_frame, labels))
 
 
+@pytest.mark.parametrize("values", [[], [None, None], ["", "|", "||"], ["red||blue", "red|red", None]])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_multi_label_empty_and_repeated_labels_match_generated_code(values, lazy) -> None:
+    runtime = PolarsEngine()
+    original = pl.DataFrame({"tags": pl.Series(values, dtype=pl.String), "value": range(len(values))})
+    source = original.lazy() if lazy else original
+    operation = bound_step(
+        "multiLabelBinarize",
+        column=bound_ref("c:source:0", "tags", 0),
+        delimiter="|",
+        prefix="tag_",
+        dropOriginal=True,
+    )
+    labels = sorted({label for value in values if value is not None for label in value.split("|") if label})
+    for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+        assert isinstance(result, pl.DataFrame)
+        assert result.columns == ["value", *[f"tag_{label}" for label in labels]]
+        assert result["value"].to_list() == list(range(len(values)))
+        for label in labels:
+            assert result[f"tag_{label}"].dtype == pl.Int8
+            assert result[f"tag_{label}"].to_list() == [
+                int(value is not None and label in value.split("|")) for value in values
+            ]
+    assert (source.collect() if isinstance(source, pl.LazyFrame) else source).equals(original)
+
+
 @pytest.mark.parametrize(
     ("operation", "data", "message"),
     [
