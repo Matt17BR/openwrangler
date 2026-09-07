@@ -83,6 +83,8 @@ historical infinity selections through live and generated code.
 
 The production browser suite owns rendered summary-tab hover contrast.
 
+Release-script tests distinguish interrupted fetches and response bodies from fatal package validation errors.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:

@@ -137,3 +137,7 @@ To recover Azure Marketplace publication, run the configured Azure Marketplace p
 verifies the existing tag and GitHub Release files and does not rebuild or replace them.
 
 Keep publication credentials out of repository files, workflow text, artifacts, and logs.
+
+Public release downloads and registry verification give each request, including its response body, a 15-second
+deadline. Interrupted transports retry within the existing polling budget and report fixed messages without raw
+transport details. Metadata, size, checksum, and source-identity conflicts remain fatal.
