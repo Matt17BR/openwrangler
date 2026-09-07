@@ -173,6 +173,9 @@ isolation. The existing DuckDB and Fill Missing Values tests execute the selecte
 coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
 Grouped median cases check native integer widths and Decimal precision on current and minimum Polars, including
 empty and null-key groups, exact refusals, and streaming execution. Plan construction must not collect lazy input.
+Integer-adapter tests synthesize public By Example programs with UInt128 operands, empty/null batches and multiple
+chunks. Live and generated results retain Int128 and existing overflow refusals. Encoder edge tests cover native
+explode behavior on both dependency endpoints, including empty and repeated labels.
 
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
