@@ -14,6 +14,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas and Polars exports validate the destination file before truncation. Replacing the temporary path cannot
   redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
 
+- Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching
+  generated code. Native R scaling also handles finite ranges whose difference overflows.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security

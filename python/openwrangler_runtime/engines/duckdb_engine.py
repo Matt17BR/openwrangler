@@ -2256,13 +2256,32 @@ class DuckDBEngine(DataFrameEngine):
         value_name = _unique_internal(self._columns(frame), "__ow_scale_value")
         value = _quote_ident(value_name)
         source = _quote_ident(column)
-        minimum = f"min({value}) FILTER (WHERE isfinite({value})) OVER ()"
-        maximum = f"max({value}) FILTER (WHERE isfinite({value})) OVER ()"
-        expression = (
-            f"CASE WHEN {value} IS NULL OR NOT isfinite({value}) THEN NULL "
-            f"WHEN {minimum} = {maximum} THEN 0.0 "
-            f"ELSE ({value} - {minimum}) / ({maximum} - {minimum}) END"
-        )
+        raw_type = str(frame.types[self._columns(frame).index(column)])
+        if _is_integer_type(raw_type) or raw_type.upper().startswith("DECIMAL"):
+            # Widen before subtracting. Only full-width integer and Decimal
+            # spans need BIGNUM; every <=64-bit span fits native HUGEINT.
+            unscaled = (
+                f"replace(CAST({source} AS VARCHAR), '.', '')" if raw_type.upper().startswith("DECIMAL") else source
+            )
+            widened_type = (
+                "BIGNUM" if "HUGEINT" in raw_type.upper() or raw_type.upper().startswith("DECIMAL") else "HUGEINT"
+            )
+            prepared = f"CAST({unscaled} AS {widened_type})"
+            minimum = f"min({value}) OVER ()"
+            maximum = f"max({value}) OVER ()"
+            ratio = f"CAST(({value} - {minimum}) AS DOUBLE) / CAST(({maximum} - {minimum}) AS DOUBLE)"
+            missing = f"{value} IS NULL"
+        else:
+            prepared = f"try_cast({source} AS DOUBLE)"
+            minimum = f"min({value}) FILTER (WHERE isfinite({value})) OVER ()"
+            maximum = f"max({value}) FILTER (WHERE isfinite({value})) OVER ()"
+            span = f"({maximum} - {minimum})"
+            ratio = (
+                f"CASE WHEN isfinite({span}) THEN ({value} - {minimum}) / {span} "
+                f"ELSE ({value} / 2 - {minimum} / 2) / ({maximum} / 2 - {minimum} / 2) END"
+            )
+            missing = f"{value} IS NULL OR NOT isfinite({value})"
+        expression = f"CASE WHEN {missing} THEN NULL WHEN {minimum} = {maximum} THEN 0.0 ELSE {ratio} END"
         modifier = (
             f"* EXCLUDE ({value}) REPLACE ({expression} AS {_quote_ident(target)})"
             if target in self._columns(frame)
@@ -2270,7 +2289,7 @@ class DuckDBEngine(DataFrameEngine):
         )
         return self._relation(
             frame,
-            f"SELECT {modifier} FROM (SELECT *, try_cast({source} AS DOUBLE) AS {value} FROM ow)",
+            f"SELECT {modifier} FROM (SELECT *, {prepared} AS {value} FROM ow)",
         )
 
     def _group_by(self, frame: Any, params: Mapping[str, Any]) -> Any:
@@ -4483,12 +4502,36 @@ def _ow_pivot_wider(df, params):
 def _ow_min_max(df, column, target):
     value_name = _ow_unique(_ow_columns(df), "__ow_scale_value")
     value = _ow_ident(value_name)
-    minimum = "min(" + value + ") FILTER (WHERE isfinite(" + value + ")) OVER ()"
-    maximum = "max(" + value + ") FILTER (WHERE isfinite(" + value + ")) OVER ()"
+    source = _ow_ident(column)
+    raw_type = str(df.types[_ow_columns(df).index(column)])
+    if _ow_is_integer(raw_type) or raw_type.upper().startswith("DECIMAL"):
+        unscaled = (
+            "replace(CAST(" + source + " AS VARCHAR), '.', '')"
+            if raw_type.upper().startswith("DECIMAL") else source
+        )
+        widened_type = (
+            "BIGNUM" if "HUGEINT" in raw_type.upper() or raw_type.upper().startswith("DECIMAL") else "HUGEINT"
+        )
+        prepared = "CAST(" + unscaled + " AS " + widened_type + ")"
+        minimum = "min(" + value + ") OVER ()"
+        maximum = "max(" + value + ") OVER ()"
+        ratio = (
+            "CAST((" + value + " - " + minimum + ") AS DOUBLE) / CAST(("
+            + maximum + " - " + minimum + ") AS DOUBLE)"
+        )
+        missing = value + " IS NULL"
+    else:
+        prepared = "try_cast(" + source + " AS DOUBLE)"
+        minimum = "min(" + value + ") FILTER (WHERE isfinite(" + value + ")) OVER ()"
+        maximum = "max(" + value + ") FILTER (WHERE isfinite(" + value + ")) OVER ()"
+        span = "(" + maximum + " - " + minimum + ")"
+        ratio = (
+            "CASE WHEN isfinite(" + span + ") THEN (" + value + " - " + minimum + ") / " + span
+            + " ELSE (" + value + " / 2 - " + minimum + " / 2) / (" + maximum + " / 2 - " + minimum + " / 2) END"
+        )
+        missing = value + " IS NULL OR NOT isfinite(" + value + ")"
     expression = (
-        "CASE WHEN " + value + " IS NULL OR NOT isfinite(" + value + ") THEN NULL WHEN "
-        + minimum + " = " + maximum + " THEN 0.0 ELSE (" + value + " - " + minimum
-        + ") / (" + maximum + " - " + minimum + ") END"
+        "CASE WHEN " + missing + " THEN NULL WHEN " + minimum + " = " + maximum + " THEN 0.0 ELSE " + ratio + " END"
     )
     modifier = (
         "* EXCLUDE (" + value + ") REPLACE (" + expression + " AS " + _ow_ident(target) + ")"
@@ -4497,8 +4540,7 @@ def _ow_min_max(df, column, target):
     )
     return _ow_query(
         df,
-        "SELECT " + modifier + " FROM (SELECT *, try_cast(" + _ow_ident(column)
-        + " AS DOUBLE) AS " + value + " FROM ow)",
+        "SELECT " + modifier + " FROM (SELECT *, " + prepared + " AS " + value + " FROM ow)",
     )
 
 

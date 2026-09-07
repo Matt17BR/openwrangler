@@ -71,6 +71,10 @@ file destination through the shared publication boundary.
 Pandas and Polars CSV/Parquet writers use identity-checked handles before truncation, with replacement-race
 coverage in `python/tests/test_configurable_export.py`.
 
+Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
+engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
+`r/tests/complete_catalog_contract.R`.
+
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 
