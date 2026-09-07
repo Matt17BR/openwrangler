@@ -3849,6 +3849,8 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool) -> Any:
         levels = list(index.levels) if isinstance(index, pd.MultiIndex) else [index]
         changed: dict[int, Any] = {}
         for position, level in enumerate(levels):
+            if isinstance(level, pd.RangeIndex):
+                continue
             series = pd.Series(level.array, copy=False)
             logical = _pandas_scalar_values(series)
             if logical is not series:

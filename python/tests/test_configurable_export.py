@@ -21,6 +21,34 @@ from openwrangler_runtime.export_target import ExportTarget, ExportTargetError
 from openwrangler_runtime.session import SessionManager
 
 
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+def test_pandas_scalar_export_does_not_materialize_range_axis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, format_name: str
+) -> None:
+    import io
+
+    source = pd.DataFrame({"value": [1, 2, 3]}, index=pd.RangeIndex(7, 13, 2, name="row"))
+    expected = source.to_csv().encode() if format_name == "csv" else source.to_parquet(index=True)
+
+    def materialized_array(_index: Any) -> Any:
+        raise AssertionError("Scalar export preparation materialized a RangeIndex array")
+
+    monkeypatch.setattr(pd.RangeIndex, "array", property(materialized_array))
+    destination = tmp_path / f"range.{format_name}"
+    destination.touch()
+    identity = destination.stat()
+    options: Any = {"format": format_name, "rowAxisPolicy": "preserve"}
+    if format_name == "csv":
+        options.update(delimiter=",", quoteChar='"', encoding="utf-8", header=True)
+    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        PandasEngine().export_data(source, writer, options)
+    if format_name == "csv":
+        assert destination.read_bytes() == expected
+    else:
+        pd.testing.assert_frame_equal(pd.read_parquet(destination), pd.read_parquet(io.BytesIO(expected)))
+    assert source.index.equals(pd.RangeIndex(7, 13, 2, name="row"))
+
+
 @pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 @pytest.mark.parametrize("index_policy", ["preserve", "omit"])
