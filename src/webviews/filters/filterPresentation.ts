@@ -71,16 +71,33 @@ export const filterValueLabel = (value: unknown): string => {
   }
 };
 
+const floatIntegerSelectionValue = ({ columnType, cell }: TypedSelectionToken): bigint | undefined => {
+  if (columnType !== "float") return undefined;
+  if (cell.kind === "integer") {
+    if (typeof cell.raw === "string" && /^[+-]?\d+$/u.test(cell.raw)) return BigInt(cell.raw);
+    if (typeof cell.raw === "number" && Number.isSafeInteger(cell.raw)) return BigInt(cell.raw);
+  }
+  // Recover the actual integral Number value; converting an integer token to
+  // Number instead would merge adjacent values beyond its exact range.
+  if (cell.kind === "number" && typeof cell.raw === "number" && Number.isInteger(cell.raw)) return BigInt(cell.raw);
+  return undefined;
+};
+
 export const selectionValueKey = (value: unknown): string => {
   if (isTypedSelectionToken(value)) {
     const cell = value.cell;
+    const integer = floatIntegerSelectionValue(value);
     return JSON.stringify([
       value.kind,
       value.version,
       value.columnType,
-      cell.kind,
+      integer === undefined ? cell.kind : "integer",
       cell.sign ?? null,
-      Object.prototype.hasOwnProperty.call(cell, "raw") ? cell.raw : ["display", cell.display]
+      integer !== undefined
+        ? integer.toString()
+        : Object.prototype.hasOwnProperty.call(cell, "raw")
+          ? cell.raw
+          : ["display", cell.display]
     ]);
   }
   // Persisted filters can retain scalar selections from older runtimes.
@@ -93,21 +110,30 @@ export const matchesLegacySelection = (selected: unknown, candidate: unknown): b
   // Mixed Pandas object columns are described as strings. Their numeric and
   // Boolean representatives must not inherit a legacy string's selection.
   if (columnType === "string") return cell.kind === "string" && selected === cell.raw;
-  if (typeof selected !== "string") return selected === cell.raw && selected !== null;
+  const integer = floatIntegerSelectionValue(candidate);
+  if (typeof selected !== "string") {
+    if (integer !== undefined && typeof selected === "number" && Number.isInteger(selected)) {
+      return BigInt(selected) === integer;
+    }
+    return selected === cell.raw && selected !== null;
+  }
   switch (columnType) {
     case "integer":
       return selected === String(cell.raw);
-    case "float":
+    case "float": {
       if (cell.kind === "infinity") {
         return cell.sign === -1
           ? selected === "-Infinity" || selected === "-inf"
           : selected === "Infinity" || selected === "inf";
       }
+      if (integer !== undefined && /^[+-]?\d+$/u.test(selected)) return BigInt(selected) === integer;
+      if (!/^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/u.test(selected)) return false;
+      const numeric = Number(selected);
       return (
-        /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/u.test(selected) &&
-        Number.isFinite(Number(selected)) &&
-        Number(selected) === cell.raw
+        Number.isFinite(numeric) &&
+        (integer === undefined ? numeric === cell.raw : Number.isInteger(numeric) && BigInt(numeric) === integer)
       );
+    }
     case "boolean":
       return selected.toLowerCase() === String(cell.raw);
     case "datetime":

@@ -1829,7 +1829,7 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
   const compatibleKinds: Readonly<Record<string, readonly string[]>> = {
     string: ["string", "integer", "number", "infinity", "boolean", "decimal", "datetime", "date", "duration"],
     integer: ["integer"],
-    float: ["number", "infinity"],
+    float: ["integer", "number", "infinity"],
     decimal: ["decimal"],
     boolean: ["boolean"],
     date: ["date"],

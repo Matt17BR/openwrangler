@@ -873,18 +873,16 @@ const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyM
       ? `${name} (column ${position + 1})`
       : name;
 
-const coercePredicateValue = (value: string, columnType: ColumnType): string | number | boolean => {
+const coercePredicateValue = (value: string, columnType: ColumnType): string | boolean => {
   if (columnType === "boolean") {
     const normalized = value.trim().toLowerCase();
     if (normalized === "true") return true;
     if (normalized === "false") return false;
     return value;
   }
-  // Preserve integer and decimal text exactly; the runtime binds it against
-  // the native dtype without routing through JavaScript's 53-bit number.
-  if (columnType !== "float") return value;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && value.trim() !== "" ? numeric : value;
+  // The runtime owns numeric syntax and binds against the native dtype.
+  // A semantic float column may still contain exact integers in object storage.
+  return value;
 };
 
 const operatorRequiresValue = (operator: PredicateOperator): boolean =>
