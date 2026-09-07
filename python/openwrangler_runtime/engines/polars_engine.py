@@ -1261,7 +1261,12 @@ class PolarsEngine(DataFrameEngine):
                 )
             expression = _polars_formula(left, right, params["operator"])
             if params["operator"] != "divide" and (
-                params.get("rightColumn") or not isinstance(params.get("value"), str)
+                params.get("rightColumn")
+                or not isinstance(params.get("value"), str)
+                or (
+                    params["operator"] in {"add", "subtract", "multiply"}
+                    and (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[left_column] == pl.Boolean
+                )
             ):
                 _polars_check_formula(df, left, right, params["operator"], expression)
             return df.with_columns(expression.alias(params["newColumn"]))
@@ -1554,7 +1559,11 @@ class PolarsEngine(DataFrameEngine):
         if any(
             step["kind"] == "formula"
             and step["params"]["operator"] != "divide"
-            and (step["params"].get("rightColumn") or not isinstance(step["params"].get("value"), str))
+            and (
+                step["params"].get("rightColumn")
+                or not isinstance(step["params"].get("value"), str)
+                or step["params"]["operator"] in {"add", "subtract", "multiply"}
+            )
             for step in plan
         ):
             lines.extend(_generated_polars_formula_check_helpers())
@@ -2060,16 +2069,29 @@ class PolarsEngine(DataFrameEngine):
             if not params.get("rightColumn") and isinstance(params.get("value"), str):
                 value = formula_scalar_value(params["value"])
                 left_name, right_name = f"_formula_left_{index}", f"_formula_right_{index}"
-                return [
+                lines = [
                     (
                         f"{prefix}{left_name}, {right_name} = _ow_polars_formula_integer_operands("
                         f"df, {left_column!r}, {value!r}, {params['operator']!r})"
-                    ),
-                    (
-                        f"{prefix}df = df.with_columns(({left_name} {symbol} {right_name})"
-                        f".alias({params['newColumn']!r}))"
-                    ),
+                    )
                 ]
+                if params["operator"] in {"add", "subtract", "multiply"}:
+                    lines.extend(
+                        [
+                            (
+                                f"{prefix}if (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)"
+                                f"[{left_column!r}] == pl.Boolean:"
+                            ),
+                            (
+                                f"{prefix}    _ow_polars_check_formula(df, {left_name}, {right_name}, "
+                                f"{params['operator']!r}, ({left_name} {symbol} {right_name}))"
+                            ),
+                        ]
+                    )
+                lines.append(
+                    f"{prefix}df = df.with_columns(({left_name} {symbol} {right_name}).alias({params['newColumn']!r}))"
+                )
+                return lines
             expression = f"(pl.col({left_column!r}) {symbol} {right})"
             if params["operator"] == "divide":
                 return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
@@ -4234,7 +4256,14 @@ def _polars_check_formula(frame: Any, left: Any, right: Any, operator: str, resu
         )
         if not supported_release:
             raise EngineError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
-    if not (left_type.is_integer() and right_type.is_integer()):
+    if not (
+        (left_type.is_integer() and right_type.is_integer())
+        or (
+            dtype.is_integer()
+            and operator in {"add", "subtract", "multiply"}
+            and all(value_type.is_integer() or value_type == pl.Boolean for value_type in (left_type, right_type))
+        )
+    ):
         return
 
     def unsigned_literal(value: int) -> Any:
@@ -4370,7 +4399,14 @@ def _ow_polars_check_formula(frame, left, right, operator, result):
         )
         if not supported_release:
             raise ValueError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
-    if not (left_type.is_integer() and right_type.is_integer()):
+    if not (
+        (left_type.is_integer() and right_type.is_integer())
+        or (
+            dtype.is_integer()
+            and operator in {"add", "subtract", "multiply"}
+            and all(value_type.is_integer() or value_type == pl.Boolean for value_type in (left_type, right_type))
+        )
+    ):
         return
 
     def unsigned_literal(value):

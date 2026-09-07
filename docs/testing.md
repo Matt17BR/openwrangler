@@ -155,7 +155,9 @@ Native R kernel and host transport owners check exact string retention, scalar p
 R under changed display options, including the finite 309-digit endpoint. Existing scalar API controls remain separate.
 
 `python/tests/test_polars_engine.py` also owns ordinary integer Formula checks for paired operands, conversion loss,
-power limits and retained native output types. Live and generated cases preserve paired nulls and mixed-integer
+power limits and retained native output types. Boolean/integer cases cover native capacity and saved CSV plans
+replayed after a source column changes to Boolean, including unchanged confirmed state on refusal.
+Live and generated cases preserve paired nulls and mixed-integer
 floating results; a failed preview beyond the requested page preserves the confirmed session. Mixed plans exercise
 Custom Code helper isolation, while structural controls limit guard output to one Boolean and leave floating and
 Decimal paths free of row scans.

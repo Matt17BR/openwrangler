@@ -278,7 +278,10 @@ Ordinary integer Formula keeps its inferred native output dtype and refuses over
 nulls for present operand pairs. Polars scans the selected operands using each row's actual pair; integer powers use
 bounded exact limits. When UInt64 and signed integers of at most 64 bits promote to Float64, an exact native Int128
 reference detects result precision loss. Correct native floating results and modulo-zero NaN remain unchanged.
-Only one guard Boolean crosses into Python. Floating and Decimal operands, and division, retain native arithmetic.
+Only one guard Boolean crosses into Python. Integer-result addition, subtraction and multiplication also check
+Boolean operands as zero or one, including saved steps replayed after a source type change and integer-string
+operands on Boolean columns. The existing integer-string bounds avoid a second scan on ordinary integer columns.
+Floating and Decimal operands, and division, retain native arithmetic.
 Two-column addition, subtraction or multiplication producing UInt128 requires a recognized stable Polars release
 from 1.36 onward. Earlier native kernels can panic depending on collection shape, so the Formula preflight refuses
 this combination before returning a result, including lazy plans. Scalar operands and other operations retain their
