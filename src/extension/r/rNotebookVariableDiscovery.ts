@@ -6,6 +6,8 @@ import { withKernelTimeout } from "../notebooks/kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "../notebooks/notebookProvenance";
 import { buildRDependencyPreflightCode, R_DEPENDENCY_DIAGNOSTIC_PREFIX } from "./rDependencyRequirements";
 import type { RDataframeFlavor } from "./rFrameContract";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 
 const R_DISCOVERY_PROTOCOL_VERSION = 1;
 const MAX_DISCOVERY_VARIABLES = 256;
@@ -18,6 +20,7 @@ const MAX_DISCOVERY_OUTPUTS = 128;
 const MAX_DISCOVERY_OUTPUT_ITEMS = 256;
 
 interface RNotebookVariableDiscoveryReceipt {
+  readonly sourceProtection: SessionSourceProtection;
   readonly notebook: vscode.NotebookDocument;
   readonly jupyter: Jupyter;
   readonly kernel: Kernel;
@@ -63,13 +66,20 @@ export class RNotebookVariableDiscoveryError extends Error {
  * Discovery never cancels an execution because Jupyter implements token
  * cancellation as a whole-kernel interrupt.
  */
+export function rNotebookDiscoverySourceProtection(discovery: RNotebookVariableDiscovery): SessionSourceProtection {
+  return discoveryReceipts.get(discovery)?.sourceProtection ?? Object.freeze({ available: false });
+}
+
 export async function discoverRNotebookVariables(
-  notebook: vscode.NotebookDocument
+  notebook: vscode.NotebookDocument,
+  sourceProtection?: Promise<SessionSourceProtection>
 ): Promise<RNotebookVariableDiscovery> {
   try {
+    const retained = await (sourceProtection ??
+      captureSessionSourceFiles({ kind: "notebookVariable", label: "notebook", uri: notebook.uri.toString() }));
     const { jupyter, kernel } = await revalidateAfter(resolveRNotebookKernel(notebook), notebook);
     const discovery = await revalidateAfter(executeDiscovery(jupyter, kernel, notebook), notebook);
-    discoveryReceipts.set(discovery, Object.freeze({ notebook, jupyter, kernel }));
+    discoveryReceipts.set(discovery, Object.freeze({ notebook, jupyter, kernel, sourceProtection: retained }));
     return discovery;
   } catch (error) {
     if (error instanceof RNotebookVariableDiscoveryError) throw error;

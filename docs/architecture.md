@@ -334,14 +334,27 @@ require a trusted workspace. Restricted Mode does not expose a hidden affirmativ
 Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may run pip.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
-Open Wrangler never overwrites user data. Readers validate supported schemes, regular-file identity, and format
+Open Wrangler never overwrites source data. Readers validate supported schemes, regular-file identity, and format
 options before runtime startup. Lazy readers revalidate the source around each read. Transformations operate on
 session-owned state, not the source variable or source file.
 
-Data export and generated-script export require a new destination. The public script command always uses VS Code's
+Data export and generated-script export require a separate destination. The public script command always uses VS Code's
 Save dialog and chooses a Python or R suffix from the active session. Only the extension host chooses or commits the
-user destination. It protects every retained source and the destination through normalized path, authority, canonical
-identity, and file-type checks, then reserves and identity-pins an exclusive host-owned sibling temporary. The runtime
+user destination.
+
+The host captures concrete source-file identities before opening a file or acquiring a live value and confirms them
+before publishing the session. Explicit Python Interactive document entry retains its originating document even when
+the interactive notebook is untitled. Reopening a file captures a fresh identity alongside the replacement runtime; reopening a live variable
+retains its original source identities. Replacement publication and rollback move the runtime and its identities
+together. These identities stay in host memory and never enter protocol messages or persisted state.
+
+Each export also captures the current source-path mappings before code synchronization, option prompts or the Save
+dialog. It refuses a destination that identifies a retained source, including a source renamed since opening, and
+rejects mappings that change during the action. If a concrete source cannot be identified, the dataframe can still be
+viewed, but export requires reopening it successfully. An in-memory source needs no file identity.
+
+The host protects the destination through normalized path, authority, canonical identity and file-type checks, then
+reserves and identity-pins an exclusive host-owned sibling temporary. The runtime
 never receives the authority to choose or commit the final destination. For Python data export, it receives the
 temporary path and pinned identity only after the host syncs and closes its descriptor. Python then opens, truncates,
 writes, flushes, and closes its writer for that exact temporary. Native R streams chunks through the host writer, and

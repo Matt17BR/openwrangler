@@ -352,6 +352,7 @@ export class KernelBridge implements OpenWranglerBridge {
     return exportPythonDataSafely({
       request,
       source,
+      sourceProtection: options.sourceProtection,
       beginTransaction: this.fileOperations.beginTransaction,
       dispatch: async (runtimeRequest) => {
         if (this.sessionSources.get(request.sessionId) !== source) {

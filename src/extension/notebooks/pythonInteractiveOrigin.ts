@@ -6,12 +6,15 @@ import {
 } from "../literateDocumentOrigin";
 import { findLiterateCodeChunkAtLine } from "../literateDocumentChunks";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 
 const PYTHON_CELL_MARKER = /^\s*#\s*(?:%%|<codecell>|In\[\d*?\]|In\[ \])/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*(?:%%\s*\[markdown\]|<markdowncell>)/iu;
 const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
 
 export interface PythonCellOrigin {
+  readonly sourceProtection?: Promise<SessionSourceProtection>;
   readonly editor: vscode.TextEditor;
   readonly document: vscode.TextDocument;
   readonly version: number;
@@ -61,6 +64,11 @@ export function capturePythonCellOrigin(): PythonCellOrigin | undefined {
       document,
       version: document.version,
       sourceUri: document.uri.toString(),
+      sourceProtection: captureSessionSourceFiles({
+        kind: "documentVariable",
+        label: "document",
+        uri: document.uri.toString()
+      }),
       executionKind: "file",
       command: "jupyter.runFileInteractive",
       commandArguments: [document.uri],
@@ -86,6 +94,11 @@ export function capturePythonCellOrigin(): PythonCellOrigin | undefined {
     document,
     version: document.version,
     sourceUri: document.uri.toString(),
+    sourceProtection: captureSessionSourceFiles({
+      kind: "documentVariable",
+      label: "document",
+      uri: document.uri.toString()
+    }),
     executionKind: "cell",
     command: "jupyter.runcurrentcell",
     commandArguments: [],
@@ -114,6 +127,9 @@ export function pythonOriginFromLiterateDocument(
     document: origin.document,
     version: origin.version,
     sourceUri: origin.uri,
+    sourceProtection:
+      origin.sourceProtection ??
+      captureSessionSourceFiles({ kind: "documentVariable", label: "document", uri: origin.uri }),
     executionKind: "chunk",
     command: "jupyter.execSelectionInteractive",
     commandArguments: Object.freeze([chunk?.code ?? ""]),

@@ -477,6 +477,7 @@ describe("SessionCoordinator", () => {
     coordinator.onDidChangeActiveSession(activeChanges);
 
     const pendingOpen = bridge.request(openRequest);
+    await vi.waitFor(() => expect(delegateRequest).toHaveBeenCalledOnce());
     let shutdownSettled = false;
     const shutdown = coordinator.shutdown(10_000).then(() => {
       shutdownSettled = true;

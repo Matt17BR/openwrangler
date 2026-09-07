@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Floor and Ceiling preserve exact integer and Decimal values in Python engines, including generated code.
 - Pandas Convert Type rejects out-of-range signed-integer conversions instead of wrapping positive values or
   converting infinities into ordinary integers.
+- Script and data exports protect source files renamed after the dataframe opens and reject source-path changes
+  during export dialogs or code synchronization.
 - Column reveal waits for automatic Code Preview focus to finish before treating the grid layout as settled.
 - Native R accepts valid empty `data.table` subsets and cleaning results, including generated code and Custom Code
   that return no rows.

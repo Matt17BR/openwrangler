@@ -10,7 +10,8 @@ import type {
 } from "../shared/protocol";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
-import { sessionOriginMismatch } from "./sessionOrigin";
+import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
+import { confirmSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
 import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import { protocolError, type SessionResponseState } from "./sessionResponseCommitter";
@@ -57,11 +58,26 @@ export class SessionRuntimeEstablisher {
     request: OpenSessionRequest,
     options: BridgeRequestOptions | undefined,
     origin: CoordinatedSessionOrigin | undefined,
-    hooks: RuntimeEstablishmentHooks
+    hooks: RuntimeEstablishmentHooks,
+    sourceProtection?: SessionSourceProtection
   ): Promise<RuntimeEstablishmentResult> {
     const invalidOrigin = sessionOriginMismatch(request, origin);
     if (invalidOrigin) {
       return { established: false, response: protocolError("invalid_source_origin", invalidOrigin, true) };
+    }
+    sourceProtection ??= await captureSessionSourceFiles(request.source);
+    if (!hooks.isCoordinatorAvailable()) {
+      return {
+        established: false,
+        response: protocolError(
+          "coordinator_disposed",
+          "The Open Wrangler session coordinator was disposed before the dataframe opened.",
+          false
+        )
+      };
+    }
+    if (options?.cancellation?.isCancellationRequested) {
+      return { established: false, response: { kind: "cancelled", targetRequestId: "not-started" } };
     }
     const response = await delegate.request(request, options);
     if (response.kind === "error" || response.kind === "cancelled") {
@@ -88,6 +104,7 @@ export class SessionRuntimeEstablisher {
       return hooks.executeSessionRequest(current, scheduledRequest, scheduledOptions);
     });
     const session: RuntimeEstablishedSession = {
+      sourceProtection,
       publicId,
       runtimeId: response.metadata.sessionId,
       publicRevision: response.metadata.revision,
@@ -126,8 +143,11 @@ export class SessionRuntimeEstablisher {
       };
     }
 
-    const restored = await this.restorePersistedSession(session, request, response, options);
+    const restored = await this.restorePersistedSession(session, request, response, hooks, options);
     if (!restored.established) return restored;
+    if (session.sourceProtection) {
+      session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
+    }
     if (!hooks.isCoordinatorAvailable()) {
       await this.runtimeCleanup.close(session, "late-open runtime");
       return {
@@ -155,6 +175,7 @@ export class SessionRuntimeEstablisher {
     session: RuntimeEstablishedSession,
     request: OpenSessionRequest,
     response: SessionOpenedResponse,
+    hooks: RuntimeEstablishmentHooks,
     options?: BridgeRequestOptions
   ): Promise<RuntimeEstablishmentResult> {
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
@@ -173,6 +194,24 @@ export class SessionRuntimeEstablisher {
       cleaningRestored = true;
     } catch {
       await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
+      if (session.openRequest.source.kind === "file")
+        session.sourceProtection = await captureSessionSourceFiles(session.openRequest.source);
+      if (!hooks.isCoordinatorAvailable()) {
+        return {
+          established: false,
+          response: protocolError(
+            "coordinator_disposed",
+            "The Open Wrangler session coordinator was disposed before original data reopened.",
+            false
+          )
+        };
+      }
+      if (options?.cancellation?.isCancellationRequested) {
+        return { established: false, response: { kind: "cancelled", targetRequestId: "not-started" } };
+      }
+      const staleOrigin = sessionOriginMismatch(session.openRequest, session.origin);
+      if (staleOrigin)
+        return { established: false, response: protocolError("invalid_source_origin", staleOrigin, true) };
       const clean = await session.delegate.request(session.openRequest, options);
       if (clean.kind === "error" || clean.kind === "cancelled") return { established: false, response: clean };
       if (clean.kind !== "sessionOpened") {

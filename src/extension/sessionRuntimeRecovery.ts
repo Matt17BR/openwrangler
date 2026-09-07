@@ -6,6 +6,8 @@ import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import { protocolError, publicMetadata, type SessionResponseState } from "./sessionResponseCommitter";
 import type { SessionRequestScheduler } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
+import { captureSessionSourceFiles } from "./sessionOrigin";
+import { confirmSessionSourceProtection } from "./files/safeFileExport";
 import { automaticRecoveryOptions, recoveryFollowupOptions } from "./sessionRuntimeRequestExecutor";
 import {
   gridState,
@@ -142,6 +144,7 @@ export class SessionRuntimeRecovery {
       session.draftBaseFilterModel
     );
     const previous: RuntimeSessionState = {
+      sourceProtection: session.sourceProtection,
       publicId: session.publicId,
       runtimeId: session.runtimeId,
       runtimeRevision: session.runtimeRevision,
@@ -155,6 +158,11 @@ export class SessionRuntimeRecovery {
     let replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined;
     let restoredPage: PageResponse | undefined;
     try {
+      const sourceProtection =
+        session.openRequest.source.kind === "file"
+          ? await captureSessionSourceFiles(session.openRequest.source)
+          : session.sourceProtection;
+      if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) return false;
       if (session.metadata.backend === "r") {
         const delegateFactory = runtimeRecoveryDelegateFactory(session.delegate);
         if (delegateFactory) {
@@ -175,6 +183,7 @@ export class SessionRuntimeRecovery {
       const response = await candidateDelegate.request(session.openRequest, options);
       if (response.kind !== "sessionOpened") throw new Error("The replacement runtime did not open a session.");
       candidate = {
+        sourceProtection,
         publicId: session.publicId,
         runtimeId: response.metadata.sessionId,
         runtimeRevision: response.metadata.revision,
@@ -198,6 +207,8 @@ export class SessionRuntimeRecovery {
         recoveryFollowupOptions(options),
         requiredSchema !== undefined
       );
+      if (session.openRequest.source.kind === "file" && sourceProtection)
+        candidate.sourceProtection = await confirmSessionSourceProtection(sourceProtection);
       if (requiredSchema && !isDeepStrictEqual(candidate.metadata.schema, requiredSchema)) {
         throw new Error("The replayed live dataframe schema no longer matches the confirmed Open Wrangler view.");
       }
@@ -230,6 +241,7 @@ export class SessionRuntimeRecovery {
     session.delegate = candidate.delegate;
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
+    session.sourceProtection = candidate.sourceProtection;
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;

@@ -68,7 +68,7 @@ describe("Python Interactive Window cell dispatch", () => {
     await opening;
 
     expect(pythonMocks.discover.mock.calls.length).toBeGreaterThan(discoveryCallsBeforeCompletion);
-    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(
       context,
       coordinator,
@@ -1005,7 +1005,7 @@ describe("Python Interactive Window cell dispatch", () => {
 
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runFileInteractive", source.uri);
     expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runcurrentcell");
-    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(
       context,
       coordinator,

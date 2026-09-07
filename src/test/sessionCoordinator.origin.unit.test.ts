@@ -1,7 +1,16 @@
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import {
+  captureSessionSourceProtection,
+  captureExportSourceProtection,
+  beginAtomicFileTransaction
+} from "../extension/files/safeFileExport";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
 import type { BridgeRequestOptions } from "../extension/dataBridge";
+import { captureSessionSourceFiles } from "../extension/sessionOrigin";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import {
   persistedSessionState,
@@ -33,6 +42,258 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator", () => {
+  it.each(["unchanged", "replaced", "absent"])(
+    "confirms the concrete opening source before publishing a %s file",
+    async (state) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-source-owner-"));
+      const sourcePath = path.join(directory, "source.csv");
+      const source = { ...openRequest.source, path: sourcePath, uri: vscode.Uri.file(sourcePath).toString() };
+      const coordinator = new SessionCoordinator();
+      try {
+        if (state !== "absent") await writeFile(sourcePath, "value\n1\n");
+        const delegate = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          if (request.kind !== "openSession") throw new Error(`Unexpected ${request.kind}`);
+          if (state === "replaced") {
+            await rename(sourcePath, path.join(directory, "original.csv"));
+            await writeFile(sourcePath, "value\n2\n");
+          }
+          const opened = openedResponse();
+          return { ...opened, metadata: { ...opened.metadata, source } };
+        });
+        const response = await coordinator.createBridge({ request: delegate }).request({ ...openRequest, source });
+        expect(response.kind).toBe("sessionOpened");
+        expect(coordinator.activeSession()?.sourceProtection?.available).toBe(state === "unchanged");
+        expect(JSON.stringify(response)).not.toContain("sourceProtection");
+        expect(JSON.stringify(delegate.mock.calls)).not.toContain("sourceProtection");
+        if (state !== "unchanged")
+          await expect(
+            captureExportSourceProtection([vscode.Uri.file(sourcePath)], coordinator.activeSession()?.sourceProtection)
+          ).rejects.toThrow(/Reopen/u);
+      } finally {
+        await coordinator.shutdown();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(["mode", "recovery"])(
+    "retains a concrete Python origin when an untitled live notebook undergoes %s",
+    async (transition) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-source-owner-"));
+      const sourcePath = path.join(directory, "analysis.py");
+      const original = path.join(directory, "original.py");
+      const notebook = { uri: vscode.Uri.parse("untitled:Interactive-1"), isClosed: false } as NotebookDocument;
+      const source = {
+        kind: "notebookVariable" as const,
+        uri: notebook.uri.toString(),
+        label: "frame",
+        variableName: "frame"
+      };
+      setOpenNotebookDocuments(notebook);
+      const coordinator = new SessionCoordinator();
+      try {
+        await writeFile(sourcePath, "frame = source\n");
+        const receipt = await captureSessionSourceProtection([vscode.Uri.file(sourcePath)]);
+        let opens = 0;
+        const runtimeMetadata = new Map<string, SessionMetadata>();
+        const delegate = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") {
+            const opened = openedResponse(request.requestedSessionId ?? `runtime-${++opens}`);
+            opened.metadata = {
+              ...opened.metadata,
+              source,
+              mode: request.mode ?? "viewing",
+              capabilities: { ...opened.metadata.capabilities, editable: true, notebookInsert: true }
+            };
+            runtimeMetadata.set(opened.metadata.sessionId, opened.metadata);
+            return opened;
+          }
+          if (request.kind === "getPage") {
+            if (transition === "recovery" && request.sessionId === "runtime-1")
+              return {
+                kind: "error",
+                code: "unknown_session",
+                message: "Unknown session: runtime-1",
+                recoverable: true,
+                sessionId: request.sessionId,
+                viewRequestId: request.viewRequestId
+              };
+            return pageResponseForMetadata(request, runtimeMetadata.get(request.sessionId)!);
+          }
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          throw new Error(`Unexpected ${request.kind}`);
+        });
+        const bridge = coordinator.createBridge({ request: delegate }, notebook, Promise.resolve(receipt));
+        const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
+        if (opened.kind !== "sessionOpened") throw new Error("Expected live notebook to open.");
+        expect(coordinator.activeSession()?.sourceProtection).toBe(receipt);
+        await rename(sourcePath, original);
+        await writeFile(sourcePath, "ordinary saved document\n");
+        const response =
+          transition === "mode"
+            ? await bridge.reconfigureLiveSessionMode?.(
+                opened.metadata.sessionId,
+                opened.metadata.revision,
+                "editing",
+                coordinator.activeSession()!.viewState
+              )
+            : await bridge.request({
+                kind: "getPage",
+                sessionId: opened.metadata.sessionId,
+                revision: opened.metadata.revision,
+                viewRequestId: "recover-origin",
+                offset: 0,
+                limit: 100,
+                ...columnWindow,
+                filterModel: opened.metadata.filterModel
+              });
+        expect(response).toMatchObject({ kind: transition === "mode" ? "sessionOpened" : "page" });
+        expect(delegate.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(2);
+        expect(coordinator.activeSession()?.sourceProtection).toBe(receipt);
+        const action = await captureExportSourceProtection([], coordinator.activeSession()?.sourceProtection);
+        await expect(
+          beginAtomicFileTransaction({ destination: vscode.Uri.file(original), sourceProtection: action })
+        ).rejects.toThrow(/never overwrites/u);
+      } finally {
+        await coordinator.shutdown();
+        setOpenNotebookDocuments();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("retains the concrete Interactive origin across a failed saved-plan reopen", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-source-fallback-"));
+    const sourcePath = path.join(directory, "analysis.qmd");
+    const original = path.join(directory, "original.qmd");
+    const notebook = { uri: vscode.Uri.parse("untitled:Interactive-fallback"), isClosed: false } as NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      uri: notebook.uri.toString(),
+      label: "frame",
+      variableName: "frame"
+    };
+    const stored = { [persistenceKey(source, "polars")]: { backend: "polars", cleaning: { steps: [inspectionStep] } } };
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async () => undefined),
+      keys: () => [SESSION_STORAGE_KEY]
+    } as unknown as Memento;
+    const coordinator = new SessionCoordinator(workspaceState);
+    setOpenNotebookDocuments(notebook);
+    try {
+      await writeFile(sourcePath, "```{python}\nframe = source\n```\n");
+      const receipt = await captureSessionSourceProtection([vscode.Uri.file(sourcePath)]);
+      let opens = 0;
+      const request = vi.fn(async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (message.kind === "openSession") {
+          const opened = openedResponse(`runtime-${++opens}`);
+          return { ...opened, metadata: { ...opened.metadata, source } };
+        }
+        if (message.kind === "previewStep")
+          return {
+            kind: "error",
+            code: "engine_error",
+            message: "Saved column no longer exists",
+            recoverable: true,
+            sessionId: message.sessionId
+          };
+        if (message.kind === "closeSession") return { kind: "sessionClosed", sessionId: message.sessionId };
+        if (message.kind === "getPage")
+          return pageResponseForMetadata(message, { ...openedResponse(message.sessionId).metadata, source });
+        throw new Error(`Unexpected ${message.kind}`);
+      });
+      const response = await coordinator
+        .createBridge({ request }, notebook, Promise.resolve(receipt))
+        .request({ ...openRequest, source });
+      expect(response.kind).toBe("sessionOpened");
+      expect(opens).toBe(2);
+      expect(request.mock.calls.filter(([message]) => message.kind === "previewStep")).toHaveLength(1);
+      expect(coordinator.activeSession()?.sourceProtection).toBe(receipt);
+      expect(JSON.stringify(vi.mocked(workspaceState.update).mock.calls)).not.toContain("sourceProtection");
+      await rename(sourcePath, original);
+      await writeFile(sourcePath, "ordinary saved document\n");
+      const action = await captureExportSourceProtection([], coordinator.activeSession()?.sourceProtection);
+      await expect(
+        beginAtomicFileTransaction({ destination: vscode.Uri.file(original), sourceProtection: action })
+      ).rejects.toThrow(/never overwrites/u);
+    } finally {
+      await coordinator.shutdown();
+      setOpenNotebookDocuments();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("marks a live notebook source unavailable when its disk identity changes before the value is acquired", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-notebook-source-"));
+    const sourcePath = path.join(directory, "analysis.ipynb");
+    const notebook = { uri: vscode.Uri.file(sourcePath), isClosed: false } as NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      uri: notebook.uri.toString(),
+      label: "frame",
+      variableName: "frame"
+    };
+    const coordinator = new SessionCoordinator();
+    setOpenNotebookDocuments(notebook);
+    try {
+      await writeFile(sourcePath, "original notebook");
+      const sourceProtection = captureSessionSourceFiles(source);
+      await sourceProtection;
+      const request = vi.fn(async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (message.kind === "closeSession") return { kind: "sessionClosed", sessionId: message.sessionId };
+        if (message.kind !== "openSession") throw new Error(`Unexpected ${message.kind}`);
+        await rename(sourcePath, path.join(directory, "original.ipynb"));
+        await writeFile(sourcePath, "replacement notebook");
+        const opened = openedResponse();
+        return { ...opened, metadata: { ...opened.metadata, source } };
+      });
+      const opened = await coordinator
+        .createBridge({ request }, notebook, sourceProtection)
+        .request({ ...openRequest, source });
+      expect(opened.kind).toBe("sessionOpened");
+      expect(coordinator.activeSession()?.sourceProtection).toEqual({ available: false });
+      await expect(
+        captureExportSourceProtection([notebook.uri], coordinator.activeSession()?.sourceProtection)
+      ).rejects.toThrow(/Reopen/u);
+    } finally {
+      await coordinator.shutdown();
+      setOpenNotebookDocuments();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes virtual notebook origins and live terminals from unavailable concrete files", async () => {
+    await expect(
+      captureSessionSourceFiles({
+        kind: "notebookVariable",
+        label: "frame",
+        uri: "untitled:Interactive-1",
+        variableName: "frame"
+      })
+    ).resolves.toEqual({ available: true, anchors: [] });
+    await expect(
+      captureSessionSourceFiles({
+        kind: "notebookVariable",
+        label: "frame",
+        uri: "vscode-interactive:Interactive-1",
+        variableName: "frame"
+      })
+    ).resolves.toEqual({ available: true, anchors: [] });
+    await expect(
+      captureSessionSourceFiles({ kind: "rInteractiveVariable", label: "frame", variableName: "frame" })
+    ).resolves.toEqual({ available: true, anchors: [] });
+    await expect(
+      captureSessionSourceFiles({
+        kind: "file",
+        label: "missing.csv",
+        uri: "untitled:missing",
+        path: "/missing-openwrangler-test-source.csv"
+      })
+    ).resolves.toEqual({ available: false });
+  });
+
   it("retains notebook provenance only in host session state", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),

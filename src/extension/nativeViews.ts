@@ -22,10 +22,11 @@ import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../
 import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
+import { sessionSourceFileUris } from "./sessionOrigin";
 import { createNativeViewsDataExport } from "./nativeViewsDataExport";
 import { createSecureNonce } from "./secureNonce";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
-import { exportFileSafely } from "./files/safeFileExport";
+import { captureExportSourceProtection, exportFileSafely, type ExportSourceProtection } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 import type { NotebookLiveVariableProvider, NotebookLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
@@ -1029,15 +1030,32 @@ function registerNativeViewsTransactional(
       return acquired.code;
     }),
     registerCommand("openWrangler.exportCode", async () => {
-      if (!(await requireTrustedWorkspace("export code"))) return;
-      const acquired = await codePreview.acquireCodeForAction();
-      if (acquired.kind !== "available") return reportCodePreviewActionFailure(acquired, "exporting");
-      const { snapshot, code } = acquired;
-      const destination = await vscode.window.showSaveDialog(generatedScriptSaveOptions(snapshot));
-      if (!destination) return false;
-      if (!(await requireTrustedWorkspace("export code"))) return false;
+      if (!vscode.workspace.isTrusted) {
+        await requireTrustedWorkspace("export code");
+        return false;
+      }
+      const origin = coordinator.activeSession();
+      if (!origin) return reportCodePreviewActionFailure({ kind: "missing" }, "exporting");
       try {
-        await exportGeneratedCode(snapshot, code, destination);
+        const sourceProtection = await captureExportSourceProtection(
+          sessionSourceFileUris(origin.metadata.source),
+          origin.sourceProtection
+        );
+        if (!(await requireTrustedWorkspace("export code"))) return false;
+        const acquired = await codePreview.acquireCodeForAction();
+        if (acquired.kind !== "available") return reportCodePreviewActionFailure(acquired, "exporting");
+        const { snapshot, code } = acquired;
+        if (
+          snapshot.sessionId !== origin.sessionId ||
+          snapshot.sourceProtection !== origin.sourceProtection ||
+          snapshot.metadata.source.uri !== origin.metadata.source.uri ||
+          snapshot.metadata.source.path !== origin.metadata.source.path
+        )
+          return false;
+        const destination = await vscode.window.showSaveDialog(generatedScriptSaveOptions(snapshot));
+        if (!destination) return false;
+        if (!(await requireTrustedWorkspace("export code"))) return false;
+        await exportGeneratedCode(snapshot, code, destination, sourceProtection);
         const destinationLabel = destination.scheme === "file" ? destination.fsPath : destination.toString();
         void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destinationLabel}.`);
         return true;
@@ -1222,9 +1240,20 @@ function registerNativeViewsTransactional(
     codePreviewProvider: () => codePreview,
     exportCodeTo: async (destination) => {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
+      const origin = coordinator.activeSession();
+      if (!origin) throw new Error("Open a dataframe before exporting code.");
+      const sourceProtection = await captureExportSourceProtection(
+        sessionSourceFileUris(origin.metadata.source),
+        origin.sourceProtection
+      );
       const acquired = await codePreview.acquireCodeForAction();
       if (acquired.kind !== "available") throw new Error(codePreviewActionFailureMessage(acquired, "exporting"));
-      await exportGeneratedCode(acquired.snapshot, acquired.code, destination);
+      if (
+        acquired.snapshot.sessionId !== origin.sessionId ||
+        acquired.snapshot.sourceProtection !== origin.sourceProtection
+      )
+        throw new Error("The source changed before code could be exported.");
+      await exportGeneratedCode(acquired.snapshot, acquired.code, destination, sourceProtection);
     }
   };
   return owner;
@@ -1617,9 +1646,10 @@ function generatedScriptSaveOptions(snapshot: ActiveSessionSnapshot): vscode.Sav
 async function exportGeneratedCode(
   snapshot: ActiveSessionSnapshot,
   code: string,
-  destination: vscode.Uri
+  destination: vscode.Uri,
+  sourceProtection?: ExportSourceProtection
 ): Promise<void> {
-  const protectedSources = sourceUris(snapshot);
+  const protectedSources = sessionSourceFileUris(snapshot.metadata.source);
   const remoteSource = protectedSources.find((source) => source.scheme === "vscode-remote");
   const remoteWorkspace = vscode.workspace.workspaceFolders?.find(
     (folder) => folder.uri.scheme === "vscode-remote"
@@ -1630,32 +1660,10 @@ async function exportGeneratedCode(
   await exportFileSafely({
     destination,
     protectedSources,
+    sourceProtection,
     contents: Buffer.from(code, "utf8"),
     remoteAuthority: remoteWorkspace?.authority ?? remoteSource?.authority
   });
-}
-
-function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
-  const source = snapshot.metadata.source;
-  const candidates: vscode.Uri[] = [];
-  if (source.uri) {
-    try {
-      candidates.push(vscode.Uri.parse(source.uri, true));
-    } catch {
-      // The concrete path below still protects a file source with malformed URI metadata.
-    }
-  }
-  if (source.path) candidates.push(vscode.Uri.file(source.path));
-  const concreteCandidates = candidates.filter((candidate) => Boolean(candidate.fsPath));
-  return concreteCandidates.filter(
-    (candidate, index) =>
-      concreteCandidates.findIndex(
-        (other) =>
-          other.scheme === candidate.scheme &&
-          other.authority === candidate.authority &&
-          other.fsPath === candidate.fsPath
-      ) === index
-  );
 }
 
 function selectedCleaningStepHandle(value: unknown): CleaningStepHandle | undefined {

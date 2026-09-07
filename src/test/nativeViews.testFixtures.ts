@@ -31,6 +31,9 @@ const uncancelledViewToken: CancellationToken = {
 };
 
 const nativeMocks = vi.hoisted(() => ({
+  exportSourceProtection: { current: [], retained: [] },
+  captureExportSourceProtection:
+    vi.fn<typeof import("../extension/files/safeFileExport").captureExportSourceProtection>(),
   commands: new Map<string, CommandHandler>(),
   activeRegistrations: new Set<string>(),
   registrationDisposals: [] as string[],
@@ -56,6 +59,11 @@ const nativeMocks = vi.hoisted(() => ({
     | undefined,
   insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" })),
   insertGeneratedRDocumentCode: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
+}));
+
+vi.mock("../extension/files/safeFileExport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../extension/files/safeFileExport")>()),
+  captureExportSourceProtection: nativeMocks.captureExportSourceProtection
 }));
 
 vi.mock("vscode", () => {
@@ -205,6 +213,7 @@ const appliedStep: TransformStep = {
 };
 
 function resetNativeViewMocks(): void {
+  nativeMocks.captureExportSourceProtection.mockReset().mockResolvedValue(nativeMocks.exportSourceProtection);
   nativeMocks.commands.clear();
   nativeMocks.activeRegistrations.clear();
   nativeMocks.registrationDisposals.length = 0;

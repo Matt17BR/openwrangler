@@ -20,6 +20,8 @@ import {
 } from "./kernelBridge";
 import { type InlineNotebookCellResultBinding, NotebookCellResultTracker } from "./notebookCellResult";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 
 interface OpenInOpenWranglerMessage {
   kind: "openInOpenWrangler";
@@ -246,6 +248,14 @@ async function completeOwnedInlineUpgradeAction(
 ): Promise<void> {
   const operation = action.operation;
   try {
+    const sourceProtection = operation.editor
+      ? captureSessionSourceFiles({
+          kind: "notebookVariable",
+          label: "notebook",
+          uri: operation.editor.notebook.uri.toString()
+        })
+      : Promise.resolve({ available: false } as const);
+    await sourceProtection;
     if (!(await hasCurrentInlineUpgradeOwner(state, operation)) || !isInlineUpgradeActionCurrent(state, action)) {
       terminateInlineUpgradeOperation(state, operation);
       return;
@@ -256,7 +266,7 @@ async function completeOwnedInlineUpgradeAction(
       terminateInlineUpgradeOperation(state, operation);
       return;
     }
-    openLinkedNotebookSource(context, coordinator, editor, source, binding.kernelBinding);
+    openLinkedNotebookSource(context, coordinator, editor, source, binding.kernelBinding, sourceProtection);
   } finally {
     settleInlineUpgradeAction(state, action);
   }
@@ -296,7 +306,8 @@ function openLinkedNotebookSource(
   coordinator: SessionCoordinator,
   editor: vscode.NotebookEditor,
   source: Readonly<{ label: string; variableName?: string }>,
-  requiredKernelBinding?: ExecutedNotebookCellResultBinding
+  requiredKernelBinding?: ExecutedNotebookCellResultBinding,
+  sourceProtection?: Promise<SessionSourceProtection>
 ): void {
   const notebook = originatingNotebook(editor);
   if (!notebook) {
@@ -326,7 +337,9 @@ function openLinkedNotebookSource(
       context,
       coordinator.createBridge(
         new KernelBridge(context, notebook, shouldRegisterNotebookFormatters(), {}, requiredKernelBinding),
-        notebook
+        notebook,
+        sourceProtection ??
+          captureSessionSourceFiles({ kind: "notebookVariable", label: "notebook", uri: notebook.uri.toString() })
       ),
       {
         kind: "notebookVariable",

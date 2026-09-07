@@ -1,9 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { link, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { ExportDataRequest, OpenWranglerResponse, SessionSource } from "../shared/protocol";
-import { beginAtomicFileTransaction, createNodeAtomicExportFileSystem } from "../extension/files/safeFileExport";
+import {
+  beginAtomicFileTransaction,
+  captureSessionSourceProtection,
+  captureExportSourceProtection,
+  createNodeAtomicExportFileSystem
+} from "../extension/files/safeFileExport";
 import { exportPythonDataSafely } from "../extension/files/safePythonDataExport";
 
 const SOURCE_BYTES = "group,value\na,1\nb,2\n";
@@ -27,6 +32,27 @@ describe("host-owned Python data export", () => {
 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each(["before action", "after action"])("refuses a renamed source %s before runtime dispatch", async (timing) => {
+    const uri = { scheme: "file", authority: "", fsPath: sourcePath } as import("vscode").Uri;
+    const retained = await captureSessionSourceProtection([uri]);
+    const original = path.join(directory, "original.csv");
+    const replaceSource = async () => {
+      await rename(sourcePath, original);
+      await writeFile(sourcePath, "replacement");
+    };
+    if (timing === "before action") await replaceSource();
+    const sourceProtection = await captureExportSourceProtection([uri], retained);
+    if (timing === "after action") await replaceSource();
+    const dispatch = vi.fn(async (request: ExportDataRequest) => exportedResponse(request));
+    await expect(
+      exportPythonDataSafely({ request: exportRequest(original), source, sourceProtection, dispatch })
+    ).rejects.toThrow();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(await readFile(original, "utf8")).toBe(SOURCE_BYTES);
+    expect(await readFile(sourcePath, "utf8")).toBe("replacement");
+    expect((await readdir(directory)).filter((name) => name.startsWith(".openwrangler-"))).toEqual([]);
   });
 
   it("publishes only the reserved sibling target and reports the user's final destination", async () => {

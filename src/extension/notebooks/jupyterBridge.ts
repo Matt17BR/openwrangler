@@ -4,9 +4,12 @@ import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewP
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 import { RKernelBridge } from "../r/rKernelBridge";
 import {
   discoverRNotebookVariables,
+  rNotebookDiscoverySourceProtection,
   disposeVerifiedRNotebookVariableSelection,
   RNotebookVariableDiscoveryError,
   verifyRNotebookVariableSelection,
@@ -16,6 +19,7 @@ import {
 } from "../r/rNotebookVariableDiscovery";
 import {
   discoverNotebookVariables,
+  notebookDiscoverySourceProtection,
   bindDiscoveredNotebookVariable,
   disposeNotebookVariableDiscovery,
   NotebookVariableDiscoveryError,
@@ -143,7 +147,9 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
             selected.variable.name,
             notebook,
             selected.variable.backend,
-            verifiedRSelection
+            verifiedRSelection,
+            undefined,
+            Promise.resolve(rNotebookDiscoverySourceProtection(discovered as RNotebookVariableDiscovery))
           );
         } else {
           await openDiscoveredPythonNotebookVariable(
@@ -226,7 +232,8 @@ async function openLiveNotebookVariable(
   notebook: vscode.NotebookDocument,
   backend?: DataBackend,
   verifiedRSelection?: VerifiedRNotebookVariableSelection,
-  pythonKernelBinding?: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>
+  pythonKernelBinding?: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>,
+  sourceProtection?: Promise<SessionSourceProtection>
 ): Promise<boolean> {
   if (!isExactOpenNotebook(notebook)) {
     pythonKernelBinding?.dispose();
@@ -279,7 +286,7 @@ async function openLiveNotebookVariable(
     }
   }
   try {
-    const bridge = coordinator.createBridge(delegate, notebook);
+    const bridge = coordinator.createBridge(delegate, notebook, sourceProtection ?? captureSessionSourceFiles(source));
     if (backend) {
       OpenWranglerPanel.create(context, bridge, source, backend);
     } else {
@@ -315,6 +322,7 @@ export async function openDiscoveredPythonNotebookVariable(
     vscode.window.showWarningMessage("Open Wrangler could not confirm the selected dataframe type.");
     return false;
   }
+  const sourceProtection = Promise.resolve(notebookDiscoverySourceProtection(discovery));
   let binding: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>;
   try {
     binding = await bindDiscoveredNotebookVariable(notebook, discovery, variable);
@@ -324,7 +332,16 @@ export async function openDiscoveredPythonNotebookVariable(
     );
     return false;
   }
-  return openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend, undefined, binding);
+  return openLiveNotebookVariable(
+    context,
+    coordinator,
+    variable.name,
+    notebook,
+    variable.backend,
+    undefined,
+    binding,
+    sourceProtection
+  );
 }
 
 /**
@@ -340,6 +357,7 @@ export async function openDiscoveredRNotebookVariable(
   discovery: RNotebookVariableDiscovery,
   variable: RNotebookVariableDescriptor
 ): Promise<void> {
+  const sourceProtection = Promise.resolve(rNotebookDiscoverySourceProtection(discovery));
   let verified: VerifiedRNotebookVariableSelection;
   try {
     verified = await verifyRNotebookVariableSelection(notebook, discovery, variable);
@@ -351,14 +369,31 @@ export async function openDiscoveredRNotebookVariable(
     );
     return;
   }
-  await openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend, verified);
+  await openLiveNotebookVariable(
+    context,
+    coordinator,
+    variable.name,
+    notebook,
+    variable.backend,
+    verified,
+    undefined,
+    sourceProtection
+  );
 }
 
 export async function discoverVariablesForSelectedKernel(
   notebook: vscode.NotebookDocument
 ): Promise<NotebookVariableDiscovery> {
+  const sourceProtection = captureSessionSourceFiles({
+    kind: "notebookVariable",
+    label: "notebook",
+    uri: notebook.uri.toString()
+  });
+  await sourceProtection;
   const language = await selectedNotebookKernelLanguage(notebook);
-  return language === "r" ? discoverRNotebookVariables(notebook) : discoverNotebookVariables(notebook);
+  return language === "r"
+    ? discoverRNotebookVariables(notebook, sourceProtection)
+    : discoverNotebookVariables(notebook, sourceProtection);
 }
 
 export function isRNotebookVariableDiscovery(

@@ -8,8 +8,10 @@ import type {
 import type { PersistedViewingState } from "../shared/viewState";
 import { publicMetadata } from "./sessionResponseCommitter";
 import type { SessionRequestExecutionLane, SessionRequestScheduler } from "./sessionRequestScheduler";
+import type { SessionSourceProtection } from "./files/safeFileExport";
 
 export interface ActiveSessionSnapshot {
+  sourceProtection?: SessionSourceProtection;
   sessionId: string;
   metadata: SessionMetadata;
   code: string;
@@ -49,6 +51,7 @@ export interface SessionSchedulerState {
 }
 
 export interface ActiveSessionState {
+  sourceProtection?: SessionSourceProtection;
   publicId: string;
   publicRevision: number;
   metadata: SessionMetadata;
@@ -76,6 +79,7 @@ export function activeSessionSnapshot(session: ActiveSessionState): ActiveSessio
   const stepInspection = session.stepInspection;
   return {
     sessionId: session.publicId,
+    sourceProtection: session.sourceProtection,
     metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source),
     code: stepInspection?.code ?? session.code,
     viewState: session.viewState,

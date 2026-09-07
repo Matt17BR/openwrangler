@@ -67,6 +67,9 @@ rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph
 100 rows. Its full-view action opens only the exact current live value in the originating notebook and kernel.
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
+Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
+replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
+available and export requires reopening the dataframe.
 
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open

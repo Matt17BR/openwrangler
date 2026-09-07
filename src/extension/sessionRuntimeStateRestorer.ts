@@ -4,12 +4,14 @@ import { emptyGridViewState, type GridViewState, type PersistedViewingState } fr
 import type { BridgeRequestOptions, OpenWranglerBridge, SessionPresentation } from "./dataBridge";
 import type { DecodedPersistedSessionState, PersistedCleaningState } from "./sessionPersistence";
 import { responseMismatch } from "./sessionResponseValidation";
+import type { SessionSourceProtection } from "./files/safeFileExport";
 
 const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
 
 export class RuntimeStateRestoreError extends Error {}
 
 export interface RuntimeSessionState {
+  sourceProtection?: SessionSourceProtection;
   publicId: string;
   runtimeId: string;
   runtimeRevision: number;

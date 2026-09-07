@@ -125,16 +125,30 @@ describe("SessionRuntimeEstablisher", () => {
     expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
   });
 
+  it("does not dispatch an opening after its coordinator has already shut down", async () => {
+    const request = vi.fn(async () => openedResponse());
+    const result = await establisher().establish({ request }, openRequest, undefined, undefined, hooks(false));
+    expect(result).toMatchObject({ established: false, response: { kind: "error", code: "coordinator_disposed" } });
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("closes an established runtime that cannot be published", async () => {
+    let available = true;
     const requestKinds: OpenWranglerRequest["kind"][] = [];
     const delegate = bridge(async (request): Promise<OpenWranglerResponse> => {
       requestKinds.push(request.kind);
-      if (request.kind === "openSession") return openedResponse("late-runtime");
+      if (request.kind === "openSession") {
+        available = false;
+        return openedResponse("late-runtime");
+      }
       if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
       throw new Error(`Unexpected late establishment request: ${request.kind}`);
     });
 
-    const result = await establisher().establish(delegate, openRequest, undefined, undefined, hooks(false));
+    const result = await establisher().establish(delegate, openRequest, undefined, undefined, {
+      ...hooks(),
+      isCoordinatorAvailable: () => available
+    });
 
     expect(result).toMatchObject({ established: false, response: { kind: "error", code: "coordinator_disposed" } });
     expect(requestKinds).toEqual(["openSession", "closeSession"]);

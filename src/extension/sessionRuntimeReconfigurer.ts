@@ -25,6 +25,8 @@ import {
 } from "./sessionResponseCommitter";
 import { SessionRuntimeCleanup, runtimeCleanupOptions } from "./sessionRuntimeCleanup";
 import { recoveryFollowupOptions } from "./sessionRuntimeRequestExecutor";
+import { captureSessionSourceFiles } from "./sessionOrigin";
+import { confirmSessionSourceProtection } from "./files/safeFileExport";
 import {
   gridState,
   initialViewingState,
@@ -430,6 +432,7 @@ export class SessionRuntimeReconfigurer {
           session.runtimeRevision = previous.runtimeRevision;
           session.publicRevision = previousPublicRevision;
           session.openRequest = previousOpenRequest;
+          session.sourceProtection = previous.sourceProtection;
           session.metadata = previous.metadata;
           session.code = previous.code;
           session.draftPresentation = previous.draftPresentation;
@@ -522,8 +525,12 @@ export class SessionRuntimeReconfigurer {
       session.recoveryRequired = !recovered;
     };
 
+    let candidateSourceProtection = session.sourceProtection;
     let response: OpenWranglerResponse;
     try {
+      if (candidateRequest.source.kind === "file")
+        candidateSourceProtection = await captureSessionSourceFiles(candidateRequest.source);
+      if (!hooks.isCurrent()) throw new ReconfigurationSupersededError();
       response = await session.delegate.request(candidateRequest, options);
     } catch (error) {
       await cleanupCandidate();
@@ -563,6 +570,7 @@ export class SessionRuntimeReconfigurer {
     }
 
     candidate = runtimeCandidate(session, candidateSessionId, response.metadata);
+    candidate.sourceProtection = candidateSourceProtection;
     const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
     if (openedMismatch) {
       await cleanupCandidate();
@@ -655,6 +663,8 @@ export class SessionRuntimeReconfigurer {
       );
     }
 
+    if (candidate.sourceProtection)
+      candidate.sourceProtection = await confirmSessionSourceProtection(candidate.sourceProtection);
     const publicRevision = session.publicRevision + 1;
     const publishableCandidate = candidate;
     const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
@@ -707,6 +717,7 @@ function modeName(mode: SessionMode): "Editing" | "Viewing" {
 
 function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionState {
   return {
+    sourceProtection: session.sourceProtection,
     publicId: session.publicId,
     runtimeId: session.runtimeId,
     runtimeRevision: session.runtimeRevision,
@@ -768,6 +779,7 @@ function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: Ru
   session.runtimeRevision = snapshot.runtime.runtimeRevision;
   session.publicRevision = snapshot.publicRevision;
   session.openRequest = snapshot.openRequest;
+  session.sourceProtection = snapshot.runtime.sourceProtection;
   session.metadata = snapshot.runtime.metadata;
   session.code = snapshot.runtime.code;
   session.draftPresentation = snapshot.runtime.draftPresentation;
@@ -801,6 +813,7 @@ function runtimeCandidate(
   metadata: SessionMetadata
 ): RuntimeSessionState {
   return {
+    sourceProtection: session.sourceProtection,
     publicId: session.publicId,
     runtimeId,
     runtimeRevision: metadata.revision,
@@ -821,6 +834,7 @@ function publishCandidate(
   session.runtimeRevision = candidate.runtimeRevision;
   session.publicRevision = publicRevision;
   session.openRequest = confirmedReplayOpenRequest(request, candidate.metadata);
+  session.sourceProtection = candidate.sourceProtection;
   session.metadata = candidate.metadata;
   session.code = candidate.code;
   session.draftPresentation = candidate.draftPresentation;

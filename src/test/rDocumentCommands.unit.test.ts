@@ -199,7 +199,8 @@ describe("R document command", () => {
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
       kind: "textDocument",
       document,
-      version: 1
+      version: 1,
+      sourceProtection: expect.any(Promise)
     });
     expect(mocks.panelCreate).toHaveBeenCalledWith(
       expect.objectContaining({ extensionPath: "/extension" }),
@@ -318,7 +319,8 @@ describe("R document command", () => {
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
       kind: "textDocument",
       document,
-      version: 1
+      version: 1,
+      sourceProtection: expect.any(Promise)
     });
     expect(mocks.panelCreate).toHaveBeenCalledWith(
       expect.anything(),

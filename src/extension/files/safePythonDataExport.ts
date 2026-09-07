@@ -1,11 +1,12 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ExportDataRequest, OpenWranglerResponse, SessionSource } from "../../shared/protocol";
-import { beginAtomicFileTransaction, type AtomicFileTransaction } from "./safeFileExport";
+import { beginAtomicFileTransaction, type AtomicFileTransaction, type ExportSourceProtection } from "./safeFileExport";
 
 export interface SafePythonDataExportOptions {
   readonly request: ExportDataRequest;
   readonly source: SessionSource;
+  readonly sourceProtection?: ExportSourceProtection;
   readonly dispatch: (request: ExportDataRequest) => Promise<OpenWranglerResponse>;
   readonly beginTransaction?: typeof beginAtomicFileTransaction;
 }
@@ -13,6 +14,7 @@ export interface SafePythonDataExportOptions {
 export async function exportPythonDataSafely({
   request,
   source,
+  sourceProtection,
   dispatch,
   beginTransaction = beginAtomicFileTransaction
 }: SafePythonDataExportOptions): Promise<OpenWranglerResponse> {
@@ -24,7 +26,8 @@ export async function exportPythonDataSafely({
   try {
     transaction = await beginTransaction({
       destination: vscode.Uri.file(request.path),
-      protectedSources: pythonExportProtectedSourceUris(source)
+      protectedSources: pythonExportProtectedSourceUris(source),
+      sourceProtection
     });
     const target = await transaction.prepareExternalWriter();
     const response = await dispatch({

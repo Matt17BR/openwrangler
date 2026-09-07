@@ -344,6 +344,7 @@ describe("active R session commands", () => {
       session,
       "orders <- data.frame(id = 1:3)\n"
     );
+    await vi.waitFor(() => expect(runProgress).toBeTypeOf("function"));
     (source as { version: number }).version = 2;
     try {
       await runProgress?.();

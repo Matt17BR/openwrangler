@@ -3,11 +3,48 @@ import * as vscode from "vscode";
 import type { OpenSessionRequest, SessionMetadata, SessionMode, SessionSource } from "../shared/protocol";
 import { canRequestLiveSessionMode } from "../shared/sessionMode";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
+import { captureSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
+
+export function sessionSourceFileUris(source: SessionSource): readonly vscode.Uri[] {
+  if (source.kind === "rInteractiveVariable") return [];
+  const candidates: vscode.Uri[] = [];
+  let inMemoryOrigin = false;
+  if (source.uri) {
+    try {
+      const uri = vscode.Uri.parse(source.uri, true);
+      inMemoryOrigin = source.kind !== "file" && uri.scheme !== "file" && uri.scheme !== "vscode-remote";
+      if ((uri.scheme === "file" || uri.scheme === "vscode-remote") && uri.fsPath) candidates.push(uri);
+    } catch {
+      // A file source's separately retained path still identifies its source.
+    }
+  }
+  if (source.path) candidates.push(vscode.Uri.file(source.path));
+  if (candidates.length === 0 && !inMemoryOrigin && (source.kind === "file" || source.uri))
+    throw new Error("The source has no identifiable filesystem location.");
+  return candidates.filter(
+    (candidate, index) =>
+      candidates.findIndex(
+        (other) =>
+          other.scheme === candidate.scheme &&
+          other.authority === candidate.authority &&
+          other.fsPath === candidate.fsPath
+      ) === index
+  );
+}
+
+export async function captureSessionSourceFiles(source: SessionSource): Promise<SessionSourceProtection> {
+  try {
+    return await captureSessionSourceProtection(sessionSourceFileUris(source));
+  } catch {
+    return Object.freeze({ available: false });
+  }
+}
 
 export interface TextDocumentSessionOrigin {
   readonly kind: "textDocument";
   readonly document: vscode.TextDocument;
   readonly version: number;
+  readonly sourceProtection?: Promise<SessionSourceProtection>;
 }
 
 export type CoordinatedSessionOrigin =
@@ -34,7 +71,12 @@ export function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined):
     if (!Number.isSafeInteger(origin.version) || origin.version < 0) {
       throw new TypeError("A source-document origin requires a valid captured document version.");
     }
-    return Object.freeze({ kind: "textDocument", document: origin.document, version: origin.version });
+    return Object.freeze({
+      kind: "textDocument",
+      document: origin.document,
+      version: origin.version,
+      sourceProtection: origin.sourceProtection
+    });
   }
   return Object.freeze({ kind: "notebook", document: origin });
 }

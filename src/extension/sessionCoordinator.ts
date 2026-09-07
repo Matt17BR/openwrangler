@@ -21,9 +21,11 @@ import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresent
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import {
   canReopenLiveSessionInMode,
+  captureSessionSourceFiles,
   normalizeSessionOrigin,
   sameFileSourceIdentity,
   sessionOriginMismatch,
+  sessionSourceFileUris,
   type BridgeSessionOrigin,
   type CoordinatedSessionOrigin,
   type TextDocumentSessionOrigin
@@ -62,6 +64,11 @@ import {
   type SessionRequestExecutionCheckpoint,
   type SessionSchedulerState
 } from "./sessionCoordinatorState";
+import {
+  captureExportSourceProtection,
+  type ExportSourceProtection,
+  type SessionSourceProtection
+} from "./files/safeFileExport";
 
 export type { SessionRequestExecutionLane } from "./sessionRequestScheduler";
 export type {
@@ -123,10 +130,15 @@ export class SessionCoordinator implements vscode.Disposable {
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
-  createBridge(delegate: OpenWranglerBridge, origin?: BridgeSessionOrigin): OpenWranglerBridge {
+  createBridge(
+    delegate: OpenWranglerBridge,
+    origin?: BridgeSessionOrigin,
+    sourceProtection?: Promise<SessionSourceProtection>
+  ): OpenWranglerBridge {
     const confirmedOrigin = normalizeSessionOrigin(origin);
+    sourceProtection ??= confirmedOrigin?.kind === "textDocument" ? confirmedOrigin.sourceProtection : undefined;
     return {
-      request: (request, options) => this.request(delegate, request, options, confirmedOrigin),
+      request: (request, options) => this.request(delegate, request, options, confirmedOrigin, sourceProtection),
       listExcelSheets: (sessionId, source, backend, options) =>
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
@@ -360,7 +372,8 @@ export class SessionCoordinator implements vscode.Disposable {
     sessionId: string,
     revision: number,
     path: string,
-    options: ExportOptions
+    options: ExportOptions,
+    sourceProtection?: ExportSourceProtection
   ): Promise<DataExportedResponse> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("The dataframe that started this export is no longer open.");
@@ -370,13 +383,17 @@ export class SessionCoordinator implements vscode.Disposable {
     if (session.metadata.backend !== "pandas" && options.rowAxisPolicy !== undefined) {
       throw new Error(`The ${session.metadata.backend} backend does not accept a Pandas row-axis policy.`);
     }
-    const response = await this.request(session.delegate, {
-      kind: "exportData",
-      sessionId: session.publicId,
-      revision,
-      path,
-      options
-    });
+    const response = await this.request(
+      session.delegate,
+      {
+        kind: "exportData",
+        sessionId: session.publicId,
+        revision,
+        path,
+        options
+      },
+      sourceProtection ? { sourceProtection } : undefined
+    );
     if (response.kind === "error") throw new Error(response.message);
     if (response.kind !== "dataExported") throw new Error("The runtime returned an unexpected export response.");
     return response;
@@ -395,7 +412,8 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenWranglerRequest,
     options?: BridgeRequestOptions,
-    origin?: CoordinatedSessionOrigin
+    origin?: CoordinatedSessionOrigin,
+    sourceProtection?: Promise<SessionSourceProtection>
   ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
       return protocolError(
@@ -407,7 +425,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     if (request.kind === "openSession") {
-      return this.open(delegate, request, options, origin);
+      return this.open(delegate, request, options, origin, sourceProtection);
     }
     if (!isSessionBoundRequest(request)) {
       return delegate.request(request, options);
@@ -486,6 +504,31 @@ export class SessionCoordinator implements vscode.Disposable {
       session.latestRequestedPageRequestId = request.viewRequestId;
       session.latestRequestedViewContextId = options?.viewContextId;
     }
+    if (request.kind === "exportData" && !options?.sourceProtection) {
+      try {
+        options = {
+          ...options,
+          sourceProtection: await captureExportSourceProtection(
+            sessionSourceFileUris(session.openRequest.source),
+            session.sourceProtection
+          )
+        };
+      } catch (error) {
+        return protocolError(
+          "source_protection_unavailable",
+          error instanceof Error ? error.message : String(error),
+          true,
+          session.publicId
+        );
+      }
+      if (!this.isLiveSession(session) || session.closing)
+        return protocolError(
+          "unknown_session",
+          "The dataframe that started this export is no longer open.",
+          true,
+          session.publicId
+        );
+    }
     return session.scheduler.enqueue(request, options);
   }
 
@@ -493,7 +536,8 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
-    origin?: CoordinatedSessionOrigin
+    origin?: CoordinatedSessionOrigin,
+    sourceProtection?: Promise<SessionSourceProtection>
   ): Promise<OpenWranglerResponse> {
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
@@ -512,8 +556,9 @@ export class SessionCoordinator implements vscode.Disposable {
       if (invalidOrigin) {
         return protocolError("invalid_source_origin", invalidOrigin, true);
       }
+      const retainedSource = await (sourceProtection ?? captureSessionSourceFiles(request.source));
       return await this.serializeSessionEstablishment(delegate, () =>
-        this.openTracked(delegate, request, options, origin)
+        this.openTracked(delegate, request, options, origin, retainedSource)
       );
     } finally {
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
@@ -528,16 +573,24 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
-    origin?: CoordinatedSessionOrigin
+    origin?: CoordinatedSessionOrigin,
+    sourceProtection?: SessionSourceProtection
   ): Promise<OpenWranglerResponse> {
     const provisionalOwner = `opening:${++this.persistenceOwnerOrdinal}`;
     try {
       const attempt = await this.persistence.withOpeningOwner(provisionalOwner, request.source, request.backend, () =>
-        this.runtimeEstablisher.establish(delegate, request, options, origin, {
-          isCoordinatorAvailable: () => !this.disposed,
-          executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
-            this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
-        })
+        this.runtimeEstablisher.establish(
+          delegate,
+          request,
+          options,
+          origin,
+          {
+            isCoordinatorAvailable: () => !this.disposed,
+            executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
+              this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
+          },
+          sourceProtection
+        )
       );
       const result = attempt.value;
       if (attempt.readFailure) {
