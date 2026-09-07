@@ -436,14 +436,11 @@ export class LazyActivationOwners implements vscode.Disposable {
   private installNativeViewGates(): void {
     this.nativeViewRegistrations = this.registerDisposablesTransactional("lazy native view providers", (retain) => {
       for (const id of NATIVE_TREE_VIEW_IDS) {
-        retain(
-          vscode.window.registerTreeDataProvider(
-            id,
-            new LazyTreeProvider(() =>
-              this.ensureNativeOwner().then(({ owner }) => owner.treeProvider(id as NativeTreeViewId))
-            )
-          )
+        const provider = new LazyTreeProvider(() =>
+          this.ensureNativeOwner().then(({ owner }) => owner.treeProvider(id as NativeTreeViewId))
         );
+        retain(provider);
+        retain(vscode.window.registerTreeDataProvider(id, provider));
       }
       retain(
         vscode.window.registerWebviewViewProvider(
@@ -712,10 +709,6 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.assertActive();
     this.replaceCommandGroup("native");
     this.replaceCommandGroup("utility");
-    const providerDisposalFailures = disposeDisposables(this.nativeViewRegistrations.splice(0));
-    if (providerDisposalFailures.length > 0) {
-      throw cleanupAggregate("Could not replace the lazy native view providers.", providerDisposalFailures);
-    }
     const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
       RLiveVariableProvider,
       RLiveVariableSnapshot,
@@ -1014,8 +1007,13 @@ class LazyCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   }
 }
 
-class LazyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+class LazyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
   private delegate: vscode.TreeDataProvider<vscode.TreeItem> | undefined;
+  private loading: Promise<vscode.TreeDataProvider<vscode.TreeItem>> | undefined;
+  private readonly changes = new vscode.EventEmitter<vscode.TreeItem | vscode.TreeItem[] | undefined | null | void>();
+  readonly onDidChangeTreeData = this.changes.event;
+  private changeSubscription: vscode.Disposable | undefined;
+  private disposed = false;
 
   constructor(private readonly load: () => Promise<vscode.TreeDataProvider<vscode.TreeItem>>) {}
 
@@ -1024,8 +1022,21 @@ class LazyTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   }
 
   async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-    const provider = (this.delegate ??= await this.load());
+    const provider = await (this.loading ??= this.load().then((delegate) => {
+      this.delegate = delegate;
+      if (!this.disposed) {
+        this.changeSubscription = delegate.onDidChangeTreeData?.((event) => this.changes.fire(event));
+      }
+      return delegate;
+    }));
+    if (this.disposed) return [];
     return (await provider.getChildren(element)) ?? [];
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.changeSubscription?.dispose();
+    this.changes.dispose();
   }
 }
 

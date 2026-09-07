@@ -150,6 +150,7 @@ const owners = vi.hoisted(() => ({
 }));
 
 const nativeVariables = vi.hoisted(() => ({
+  treeListeners: new Map<string, Set<(value: unknown) => void>>(),
   notebook: undefined as
     | {
         snapshot(): unknown;
@@ -301,11 +302,16 @@ vi.mock("../extension/nativeViews", () => ({
       const treeProviders = new Map(
         ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"].map(
           (id) => {
+            const listeners = new Set<(value: unknown) => void>();
+            nativeVariables.treeListeners.set(id, listeners);
             const provider = {
+              onDidChangeTreeData: (listener: (value: unknown) => void) => {
+                listeners.add(listener);
+                return host.disposable(() => listeners.delete(listener));
+              },
               getTreeItem: (item: unknown) => item,
               getChildren: vi.fn(async () => [{ label: `realized:${id}` }])
             };
-            context.subscriptions.push(host.registerTreeDataProvider(id, provider));
             return [id, provider] as const;
           }
         )
@@ -315,7 +321,6 @@ vi.mock("../extension/nativeViews", () => ({
           owners.nativeWebviewResolved(view, resolveContext, token);
         })
       };
-      context.subscriptions.push(host.registerWebviewViewProvider("openWrangler.codePreview", webviewProvider));
       registerMockCommands(context, [
         "openWrangler.clearViewFilterColumn",
         "openWrangler.openViewSort",
@@ -475,10 +480,26 @@ describe("lazy activation owners", () => {
 
     await expect(provider.getChildren()).resolves.toEqual([{ label: "realized:openWrangler.summary" }]);
 
+    expect(host.treeProviders.get("openWrangler.summary")).toBe(provider);
+    expect(host.treeProviders.size).toBe(4);
+    const changes = vi.fn();
+    const forwarding = provider as typeof provider & {
+      onDidChangeTreeData(listener: (value: unknown) => void): MockDisposable;
+    };
+    forwarding.onDidChangeTreeData(changes);
+    await Promise.all([provider.getChildren(), provider.getChildren()]);
+    const listeners = nativeVariables.treeListeners.get("openWrangler.summary")!;
+    expect(listeners.size).toBe(1);
+    for (const listener of listeners) listener(undefined);
+    expect(changes).toHaveBeenCalledOnce();
     expect(owners.nativeRegistered).toHaveBeenCalledOnce();
     expect(owners.notebookRegistered).not.toHaveBeenCalled();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
+    await active.shutdown();
+    expect(listeners.size).toBe(0);
+    expect(host.treeProviders.size).toBe(0);
+    expect(host.webviewProviders.size).toBe(0);
   });
 
   it("delegates the first Code Preview reveal with its exact VS Code arguments", async () => {
@@ -493,6 +514,7 @@ describe("lazy activation owners", () => {
 
     await provider.resolveWebviewView(view, resolveContext, token);
 
+    expect(host.webviewProviders.get("openWrangler.codePreview")).toBe(provider);
     expect(owners.nativeWebviewResolved).toHaveBeenCalledOnce();
     expect(owners.nativeWebviewResolved).toHaveBeenCalledWith(view, resolveContext, token);
     expect(owners.notebookRegistered).not.toHaveBeenCalled();

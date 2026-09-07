@@ -143,26 +143,6 @@ vi.mock("vscode", () => {
       get activeNotebookEditor() {
         return nativeMocks.activeNotebookEditor;
       },
-      registerTreeDataProvider: (id: string, provider: TestTreeProvider) => {
-        return registration(
-          `tree:${id}`,
-          () => nativeMocks.treeDataProviders.set(id, provider),
-          () => {
-            if (nativeMocks.treeDataProviders.get(id) === provider) nativeMocks.treeDataProviders.delete(id);
-          }
-        );
-      },
-      registerWebviewViewProvider: (id: string, provider: { resolveWebviewView(view: unknown): void }) => {
-        return registration(
-          `webview:${id}`,
-          () => nativeMocks.webviewViewProviders.set(id, provider),
-          () => {
-            if (nativeMocks.webviewViewProviders.get(id) === provider) {
-              nativeMocks.webviewViewProviders.delete(id);
-            }
-          }
-        );
-      },
       showInformationMessage: nativeMocks.showInformationMessage,
       showWarningMessage: nativeMocks.showWarningMessage,
       showErrorMessage: nativeMocks.showErrorMessage,
@@ -257,6 +237,8 @@ function register(
   rVariables?: RLiveVariableProvider
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
+  setNotebookDocument(document: typeof notebookDocument): void;
+  setTextDocumentOrigin(origin: unknown): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
   exportData: ReturnType<typeof vi.fn>;
   clearActiveStepInspection: ReturnType<typeof vi.fn>;
@@ -318,7 +300,25 @@ function register(
     subscriptions: []
   } as unknown as ExtensionContext;
   const nativeViews = registerNativeViews(context, coordinator, pythonVariables, rVariables);
+  for (const id of [
+    "openWrangler.operations",
+    "openWrangler.summary",
+    "openWrangler.filters",
+    "openWrangler.cleaningSteps"
+  ] as const) {
+    nativeMocks.treeDataProviders.set(id, nativeViews.treeProvider(id) as unknown as TestTreeProvider);
+  }
+  nativeMocks.webviewViewProviders.set(
+    "openWrangler.codePreview",
+    nativeViews.codePreviewProvider() as unknown as { resolveWebviewView(view: unknown): void }
+  );
   return {
+    setNotebookDocument(document) {
+      notebookDocument = document;
+    },
+    setTextDocumentOrigin(origin) {
+      textDocumentOrigin = origin;
+    },
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;
       if (nextSnapshot) sessions.set(nextSnapshot.sessionId, nextSnapshot);
