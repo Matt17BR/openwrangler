@@ -36,6 +36,9 @@ The exact-artifact installed smoke and its environment are documented once in [T
 
 The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:
 
+- A small check compares protected `main` with the last successful scheduled run before any checkout, dependency
+  installation, build, or editor test. An unchanged commit skips packaging and publication with a job-summary reason.
+  Failed runs remain eligible on the next schedule, and manual dispatches always reach the existing preview flow.
 - Each scheduled run derives its date from that workflow run's immutable UTC creation timestamp and its series from
   the latest canonical stable release tag reachable from the exact protected-main source commit in the full checkout.
   A pre-v2 stable tag retains the `1.99.YYYYMMDD` compatibility series. For v2 and later, the tag's `major.minor`

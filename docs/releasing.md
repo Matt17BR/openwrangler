@@ -60,6 +60,12 @@ project. The installed smoke described in [Testing](testing.md) uses this same v
 
 ## Daily preview
 
+The schedule checks for new commits before checking out source or installing dependencies. If protected `main` has
+the same commit as the last successful scheduled run of `preview-release.yml`, it skips packaging and publication.
+The first run, or any new commit, builds a preview. Failed and cancelled runs do not advance this baseline; a skipped
+run preserves it. If the run history cannot be read, the check fails instead of assuming nothing changed. Manual
+dispatches bypass this comparison.
+
 On schedule, `.github/workflows/preview-release.yml` reads the run's UTC `created_at` timestamp and finds the latest
 stable tag reachable from that protected `main` commit. It creates a deterministic single-parent child bound to the
 stable tag and changes only `package.json`, `package-lock.json`, and
