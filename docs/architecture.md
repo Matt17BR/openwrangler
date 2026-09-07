@@ -185,6 +185,9 @@ before trusted custom code, preview, rollback, or generated-code execution so ne
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
+Parquet reads repair nullable integer index levels from their exact physical fields while retaining ordinary Pandas
+data-column decoding. The supplemental read uses the same open file and checks its fingerprint across both reads
+before publishing the repaired index. A changed source is refused; this guard does not persist beyond the read.
 Scalar Arrow dictionaries expose their logical value type while retaining the physical dtype in schema metadata.
 Profiles and query keys use logical values, including null dictionary entries and repeated values across chunks.
 String keys share decoded dictionary entries rather than expanding the text payload once per row. Row selection
