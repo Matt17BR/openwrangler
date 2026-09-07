@@ -916,8 +916,7 @@ class PandasEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
             if kind == "roundNumber":
-                series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
-                result = _pandas_round(series, int(params.get("decimals", 0)))
+                result = _pandas_round(df.iloc[:, position], int(params.get("decimals", 0)))
             else:
                 result = _pandas_floor_ceil(df.iloc[:, position], kind == "ceilNumber")
             if target is None or target == column:
@@ -1947,10 +1946,7 @@ class PandasEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
             expression = (
-                (
-                    f"_open_wrangler_round(pd.to_numeric(df.iloc[:, {position}], errors='coerce'), "
-                    f"{params.get('decimals', 0)!r})"
-                )
+                (f"_open_wrangler_round(df.iloc[:, {position}], {params.get('decimals', 0)!r})")
                 if kind == "roundNumber"
                 else (f"_open_wrangler_floor_ceil(df.iloc[:, {position}], {kind == 'ceilNumber'!r})")
             )
@@ -2705,12 +2701,101 @@ def _pandas_round_wide(series: Any, decimals: int, info: Any, finite: Any) -> An
     return result
 
 
+def _pandas_round_decimal(series: Any, decimals: int) -> Any:
+    from decimal import MAX_EMAX, MIN_EMIN, ROUND_HALF_EVEN, Context, Decimal
+
+    import pandas as pd
+
+    def rounded(value):
+        if not isinstance(value, Decimal) or not value.is_finite():
+            return value
+        if decimals >= -int(value.as_tuple().exponent):
+            return value
+        if value == 0 or decimals < -value.adjusted() - 1:
+            return Decimal(0).copy_sign(value)
+        context = Context(prec=len(value.as_tuple().digits) + 1, rounding=ROUND_HALF_EVEN, Emax=MAX_EMAX, Emin=MIN_EMIN)
+        return value.quantize(Decimal((0, (1,), -decimals)), context=context)
+
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    if arrow_type is None:
+        return pd.Series([rounded(value) for value in series], index=series.index, name=series.name, dtype=object)
+    if decimals >= arrow_type.scale:
+        return series.copy()
+    if decimals < -(arrow_type.precision - arrow_type.scale):
+        return series.where(series.isna(), Decimal(0))
+    import pyarrow as pa
+
+    values = [rounded(value) if isinstance(value, Decimal) else None for value in series]
+
+    def required_precision(scale):
+        return max(
+            (
+                len(value.as_tuple().digits) + int(value.as_tuple().exponent) + scale
+                for value in values
+                if value is not None and value != 0
+            ),
+            default=1,
+        )
+
+    if required_precision(arrow_type.scale) <= arrow_type.precision:
+        target = arrow_type
+    else:
+        target = None
+        for bits, capacity in ((32, 9), (64, 18), (128, 38), (256, 76)):
+            if bits < arrow_type.bit_width:
+                continue
+            scale = min(arrow_type.scale, max(decimals, 0))
+            precision = max(arrow_type.precision, required_precision(scale))
+            if scale < 0 and precision > capacity:
+                scale -= precision - capacity
+                precision = capacity
+            # Preserve Parquet-compatible scales. Already-negative scales must
+            # also remain readable by Arrow's native Decimal-to-Python binding.
+            if scale >= max(decimals, -capacity) and precision <= capacity:
+                target = getattr(pa, f"decimal{bits}")(precision, scale)
+                break
+        if target is None:
+            raise EngineError("Round result exceeds native Arrow Decimal output capacity.")
+    # Construct bounded unscaled coefficients before assigning native scale.
+    # Arrow's Decimal scalar constructor rejects otherwise-valid large values
+    # at negative scale, even when their stored coefficient fits exactly.
+    coefficients = [
+        None
+        if value is None
+        else Decimal(0)
+        if value == 0
+        else Decimal((value.as_tuple().sign, value.as_tuple().digits, int(value.as_tuple().exponent) + target.scale))
+        for value in values
+    ]
+    storage = getattr(pa, f"decimal{target.bit_width}")(target.precision, 0)
+    array = pa.array(coefficients, type=storage).view(target)
+    return pd.Series(pd.arrays.ArrowExtensionArray(array), index=series.index, name=series.name)
+
+
 def _pandas_round(series: Any, decimals: int) -> Any:
     import math
 
     import numpy as np
     import pandas as pd
 
+    inferred = pd.api.types.infer_dtype(series) if pd.api.types.is_object_dtype(series.dtype) else None
+    if inferred == "integer":
+
+        def rounded_integer(value):
+            if pd.isna(value):
+                return value
+            value = int(value)
+            if decimals >= 0:
+                return value
+            return 0 if -decimals > abs(value).bit_length() else round(value, decimals)
+
+        return pd.Series(
+            [rounded_integer(value) for value in series], index=series.index, name=series.name, dtype=object
+        )
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    if inferred == "decimal" or (arrow_type is not None and str(arrow_type).startswith("decimal")):
+        return _pandas_round_decimal(series, decimals)
+    series = pd.to_numeric(series, errors="coerce")
     if pd.api.types.is_integer_dtype(series.dtype):
         return _pandas_round_integer(series, decimals)
     if pd.api.types.is_bool_dtype(series.dtype):
@@ -2773,6 +2858,73 @@ def _pandas_round(series: Any, decimals: int) -> Any:
 
 def _generated_pandas_round_helpers() -> list[str]:
     return [
+        "def _open_wrangler_round_decimal(series, decimals):",
+        "    from decimal import MAX_EMAX, MIN_EMIN, ROUND_HALF_EVEN, Context, Decimal",
+        "",
+        "    import pandas as pd",
+        "",
+        "    def rounded(value):",
+        "        if not isinstance(value, Decimal) or not value.is_finite():",
+        "            return value",
+        "        if decimals >= -int(value.as_tuple().exponent):",
+        "            return value",
+        "        if value == 0 or decimals < -value.adjusted() - 1:",
+        "            return Decimal(0).copy_sign(value)",
+        "        context = Context(prec=len(value.as_tuple().digits) + 1,",
+        "                          rounding=ROUND_HALF_EVEN, Emax=MAX_EMAX, Emin=MIN_EMIN)",
+        "        return value.quantize(Decimal((0, (1,), -decimals)), context=context)",
+        "",
+        '    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)',
+        "    if arrow_type is None:",
+        "        return pd.Series([rounded(value) for value in series],",
+        "                         index=series.index, name=series.name, dtype=object)",
+        "    if decimals >= arrow_type.scale:",
+        "        return series.copy()",
+        "    if decimals < -(arrow_type.precision - arrow_type.scale):",
+        "        return series.where(series.isna(), Decimal(0))",
+        "    import pyarrow as pa",
+        "",
+        "    values = [rounded(value) if isinstance(value, Decimal) else None for value in series]",
+        "",
+        "    def required_precision(scale):",
+        "        return max(",
+        "            (len(value.as_tuple().digits) + int(value.as_tuple().exponent) + scale",
+        "             for value in values if value is not None and value != 0), default=1",
+        "        )",
+        "",
+        "    if required_precision(arrow_type.scale) <= arrow_type.precision:",
+        "        target = arrow_type",
+        "    else:",
+        "        target = None",
+        "        for bits, capacity in ((32, 9), (64, 18), (128, 38), (256, 76)):",
+        "            if bits < arrow_type.bit_width:",
+        "                continue",
+        "            scale = min(arrow_type.scale, max(decimals, 0))",
+        "            precision = max(arrow_type.precision, required_precision(scale))",
+        "            if scale < 0 and precision > capacity:",
+        "                scale -= precision - capacity",
+        "                precision = capacity",
+        "            # Preserve Parquet-compatible scales. Already-negative scales must",
+        "            # also remain readable by Arrow's native Decimal-to-Python binding.",
+        "            if scale >= max(decimals, -capacity) and precision <= capacity:",
+        '                target = getattr(pa, f"decimal{bits}")(precision, scale)',
+        "                break",
+        "        if target is None:",
+        '            raise ValueError("Round result exceeds native Arrow Decimal output capacity.")',
+        "    # Construct bounded unscaled coefficients before assigning native scale.",
+        "    # Arrow's Decimal scalar constructor rejects otherwise-valid large values",
+        "    # at negative scale, even when their stored coefficient fits exactly.",
+        "    coefficients = [",
+        "        None if value is None else Decimal(0) if value == 0 else",
+        "        Decimal((value.as_tuple().sign, value.as_tuple().digits,",
+        "                 int(value.as_tuple().exponent) + target.scale))",
+        "        for value in values",
+        "    ]",
+        '    storage = getattr(pa, f"decimal{target.bit_width}")(target.precision, 0)',
+        "    array = pa.array(coefficients, type=storage).view(target)",
+        "    return pd.Series(pd.arrays.ArrowExtensionArray(array), index=series.index, name=series.name)",
+        "",
+        "",
         "def _open_wrangler_round_wide(series, decimals, info, finite):",
         "    import numpy as np",
         "    if 0 <= decimals <= 308:",
@@ -2840,6 +2992,22 @@ def _generated_pandas_round_helpers() -> list[str]:
         "    import math",
         "    import numpy as np",
         "    import pandas as pd",
+        "    inferred = pd.api.types.infer_dtype(series) if pd.api.types.is_object_dtype(series.dtype) else None",
+        '    if inferred == "integer":',
+        "        def rounded_integer(value):",
+        "            if pd.isna(value):",
+        "                return value",
+        "            value = int(value)",
+        "            if decimals >= 0:",
+        "                return value",
+        "            return 0 if -decimals > abs(value).bit_length() else round(value, decimals)",
+        "",
+        "        return pd.Series([rounded_integer(value) for value in series],",
+        "                         index=series.index, name=series.name, dtype=object)",
+        '    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)',
+        '    if inferred == "decimal" or (arrow_type is not None and str(arrow_type).startswith("decimal")):',
+        "        return _open_wrangler_round_decimal(series, decimals)",
+        '    series = pd.to_numeric(series, errors="coerce")',
         "    if pd.api.types.is_integer_dtype(series.dtype):",
         "        return _open_wrangler_round_integer(series, decimals)",
         "    if pd.api.types.is_bool_dtype(series.dtype):",

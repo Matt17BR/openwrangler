@@ -119,8 +119,10 @@ owned process root when the session closes.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
 
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
-negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source
-identity. Native R's catalog owns its corresponding numeric cases and executes them under altered display options.
+negative and extreme precision, midpoint neighbors, exact integer and Decimal carries, output capacity, storage types,
+masks, signed zero, and source identity. Arrow Decimal cases validate native readback and CSV/Parquet export; object
+Decimal cases change the caller's context before execution. Native R's catalog owns its corresponding numeric cases
+and executes them under altered display options.
 
 Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
 exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.
