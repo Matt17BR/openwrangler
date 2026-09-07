@@ -13,10 +13,10 @@ import type {
 import { liveGridLogicalRowExtent, liveGridPageHasMore } from "../../shared/protocol";
 import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
-  ambiguousViewColumnMessage,
   countViewColumnNames,
   supportsTypedViewComparison,
-  viewCellSelectionFilter
+  viewCellSelectionFilter,
+  viewColumnNameUnavailableReason
 } from "../../shared/filterModel";
 import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
 import { createRowScrollModel, gridRowHeight, logicalRowForScrollTop, scrollTopForLogicalRow } from "./rowScrollModel";
@@ -998,16 +998,16 @@ export function DataGrid({
                   const accessibleLabel =
                     diffCell?.accessibilityLabel ??
                     (cellUnavailable ? `Loading ${column.name}, row ${row.rowNumber + 1}` : undefined);
-                  const ambiguityReason =
-                    (viewColumnNameCounts.get(column.name) ?? 0) > 1
-                      ? ambiguousViewColumnMessage(column.name, viewColumnNameCounts.get(column.name) ?? 0)
-                      : undefined;
+                  const columnNameUnavailableReason = viewColumnNameUnavailableReason(
+                    column.name,
+                    viewColumnNameCounts.get(column.name) ?? 0
+                  );
                   const cellFilterUnavailableReason = viewControlsDisabled
                     ? viewControlsDisabledReason
                     : filterControlsDisabled
                       ? filterControlsDisabledReason
-                      : ambiguityReason
-                        ? ambiguityReason
+                      : columnNameUnavailableReason
+                        ? columnNameUnavailableReason
                         : projecting || cellUnavailable
                           ? "Wait for this cell to finish loading before filtering by value."
                           : !cell || !supportsTypedViewComparison(column.type)

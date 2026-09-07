@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
+import { decodeWebviewMessage } from "../extension/webviewMessage";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -74,6 +75,102 @@ describe("App confirmed viewing-filter history", () => {
 
   beforeEach(() => webviewPostMessage.mockClear());
   afterEach(() => cleanup());
+
+  it.each(["", "sales"])("keeps name-based actions unavailable for the column named %j", async (columnName) => {
+    const sourceMetadata = {
+      ...metadata,
+      filterModel: { filters: [], sort: [] },
+      schema: metadata.schema.map((column, index) => (index === 0 ? { ...column, name: columnName } : column))
+    } satisfies SessionMetadata;
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: sourceMetadata,
+      page,
+      summaries: [
+        {
+          columnId: "c:0",
+          column: columnName,
+          type: "string",
+          rawType: "String",
+          totalCount: 2,
+          nullCount: 0,
+          nanCount: 0,
+          distinctCount: 2,
+          topValues: [{ value: "Milan", count: 1 }],
+          visualization: { kind: "categorical", categories: [{ value: "Milan", count: 1 }], otherCount: 1 }
+        }
+      ]
+    });
+    const cell = screen.getByRole("cell", { name: "Milan" });
+    fireEvent.contextMenu(cell);
+    const menu = await screen.findByRole("menu");
+    const keep = within(menu).getByRole("menuitem", { name: "Keep only this value" });
+    expect(keep).toBeDisabled();
+    fireEvent.click(keep);
+    fireEvent.keyDown(menu, { key: "Escape" });
+
+    const header = document.querySelector<HTMLElement>('th[data-grid-column="0"]')!;
+    header.querySelector("details")!.open = true;
+    for (const name of ["Filter…", "Sort ascending", "Sort descending"]) {
+      const action = within(header).getByRole("button", { name });
+      expect(action).toBeDisabled();
+      fireEvent.click(action);
+    }
+    expect(within(header).queryByRole("button", { name: /to Milan;/u })).not.toBeInTheDocument();
+    expect(within(header).getByText("Milan")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    const profile = screen.getByRole("tabpanel", { name: "Column" });
+    expect(within(profile).getByText("Milan")).toBeVisible();
+    expect(within(profile).queryByRole("button", { name: /Filter to Milan/u })).not.toBeInTheDocument();
+    expect(within(profile).queryByRole("button", { name: "More values…" })).not.toBeInTheDocument();
+
+    const requests = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.kind === "runtimeRequest");
+    expect(requests.some((message) => message.request.kind === "getPage")).toBe(false);
+    for (const message of requests) {
+      expect(
+        decodeWebviewMessage(message, {
+          sessionId: sourceMetadata.sessionId,
+          sessionRevision: sourceMetadata.revision,
+          snapshot: { metadata: sourceMetadata }
+        })
+      ).toBeDefined();
+    }
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Copy cell" })).toBeEnabled();
+    fireEvent.keyDown(cell, { key: "ArrowDown", shiftKey: true });
+    expect(screen.getByRole("status", { name: "Grid selection" })).toHaveTextContent("2 rows by 1 column selected");
+    expect(screen.getByRole("button", { name: "Copy range" })).toBeEnabled();
+  });
+
+  it.each(["city", " "])("keeps the column named %j filterable through the host boundary", async (columnName) => {
+    const sourceMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column, index) => (index === 0 ? { ...column, name: columnName } : column))
+    } satisfies SessionMetadata;
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sourceMetadata, page, summaries: [] });
+    fireEvent.contextMenu(screen.getByRole("cell", { name: "Milan" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Keep only this value" }));
+    const message = webviewPostMessage.mock.calls
+      .map(([item]) => item)
+      .filter((item) => item.kind === "runtimeRequest" && item.request.kind === "getPage")
+      .at(-1);
+    expect(message.request.filterModel.filters[0].column).toBe(columnName);
+    expect(
+      decodeWebviewMessage(message, {
+        sessionId: sourceMetadata.sessionId,
+        sessionRevision: sourceMetadata.revision,
+        snapshot: { metadata: sourceMetadata }
+      })
+    ).toBeDefined();
+    confirmPage(message.request, sourceMetadata);
+    await waitFor(() => expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false"));
+  });
 
   it("records only correlated successful filters and retains history through failed undo", async () => {
     render(<App />);
