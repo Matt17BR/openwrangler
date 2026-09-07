@@ -9,6 +9,7 @@ import {
   type RFramePageContract
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
+import { isFormulaLiteral } from "../../shared/formulaLiteral";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, hasAtMostViewValueTextCodePoints } from "../../shared/viewValueLimits";
 import type {
   ByExampleProgram,
@@ -18,6 +19,7 @@ import type {
   DatasetStats,
   ExportOptions,
   FillMissingReplacement,
+  FormulaLiteral,
   PredicateFilter,
   TypedSelectionToken,
   ValueCount
@@ -150,7 +152,7 @@ export interface RKernelFormulaStep {
     operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power";
     newColumn: string;
     rightColumn?: RKernelColumnReference;
-    value?: number;
+    value?: FormulaLiteral;
   }>;
 }
 
@@ -1463,8 +1465,8 @@ function validateTransformStep(value: unknown): void {
     }
     if (hasRightColumn) {
       validateColumnReference(params.rightColumn, "request.payload.step.params.rightColumn");
-    } else if (typeof params.value !== "number" || !Number.isFinite(params.value)) {
-      fail("R kernel formula value must be finite.");
+    } else if (!isFormulaLiteral(params.value)) {
+      fail("R kernel formula value must be finite or canonical integer text.");
     }
     boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;

@@ -138,6 +138,13 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
 `python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
 
+`python/tests/test_formula_literals.py` owns the shared Python Formula scalar boundary, actual file-session
+preview/apply/replay and standalone generated execution across the editing engines. The Polars owner covers native
+capacity, signedness changes, nulls, eager/lazy frames and ordinary numeric controls. Existing operation-form,
+protocol-validation and state-restoration tests own text entry, canonical bounds and retained public plans.
+Native R kernel and host transport owners check exact string retention, scalar precision refusal and actual generated
+R under changed display options, including the finite 309-digit endpoint. Existing scalar API controls remain separate.
+
 Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
 refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned

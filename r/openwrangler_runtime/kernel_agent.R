@@ -13,6 +13,7 @@ openwrangler_r_kernel_agent <- local({
   metadata_base_bytes <- 1024L
   column_fixed_bytes <- 512L
   maximum_fill_directional_gap <- 1000000L
+  maximum_formula_integer_digits <- 309L
   maximum_by_example_sources <- 16L
   maximum_by_example_examples <- 64L
   maximum_by_example_program_nodes <- 256L
@@ -2762,7 +2763,16 @@ openwrangler_r_kernel_agent <- local({
         )
       } else {
         value_operand <- params$value
-        if (
+        if (is.character(value_operand)) {
+          if (
+            is.object(value_operand) || length(value_operand) != 1L || is.na(value_operand) ||
+              nchar(value_operand, type = "bytes") - as.integer(startsWith(value_operand, "-")) > maximum_formula_integer_digits ||
+              !grepl("\\A(?:0|-?[1-9][0-9]*)\\z", value_operand, perl = TRUE) ||
+              !is.finite(as.double(value_operand))
+          ) {
+            abort("invalid_request", "request.payload.step.params.value must be finite canonical integer text")
+          }
+        } else if (
           length(value_operand) != 1L ||
             !is.numeric(value_operand) ||
             is.na(value_operand) ||
@@ -3508,12 +3518,20 @@ openwrangler_r_kernel_agent <- local({
     if (step$params$newColumn %in% names || step$outputId %in% ids) {
       abort("invalid_request", "The Formula output column already exists", TRUE)
     }
+    value <- step$params$value
+    if (is.character(value)) {
+      parsed <- as.double(value)
+      if (!identical(sprintf("%.0f", parsed), value)) {
+        abort("invalid_request", "The Formula integer literal cannot be represented exactly as an R numeric scalar", TRUE)
+      }
+      value <- if (parsed >= -.Machine$integer.max && parsed <= .Machine$integer.max) as.integer(parsed) else parsed
+    }
     list(
       id = step$id,
       kind = step$kind,
       left = left,
       right = right,
-      value = step$params$value,
+      value = value,
       operator = step$params$operator,
       newName = step$params$newColumn,
       outputId = step$outputId

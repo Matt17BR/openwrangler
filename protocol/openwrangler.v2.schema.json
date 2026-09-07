@@ -6,7 +6,9 @@
   "x-openwrangler-limits": {
     "pythonCustomCodeUtf8Bytes": 65536,
     "pythonRetainedPlanUtf8Bytes": 4194304,
-    "pythonGeneratedCodeUtf8Bytes": 4194304
+    "pythonGeneratedCodeUtf8Bytes": 4194304,
+    "formulaIntegerDigits": 309,
+    "formulaInputCharacters": 4096
   },
   "x-openwrangler-operationCatalog": [
     {
@@ -1211,6 +1213,13 @@
         "dtype": { "type": "string", "enum": ["string", "integer", "float", "boolean", "date", "datetime"] }
       }
     },
+    "FormulaLiteral": {
+      "description": "A finite legacy number or a canonical exact integer string with at most 309 digits whose numeric conversion remains finite. Native engine capacity limits still apply.",
+      "anyOf": [
+        { "type": "number" },
+        { "type": "string", "maxLength": 310, "pattern": "^(?:0|-?[1-9][0-9]{0,308})(?![\\s\\S])" }
+      ]
+    },
     "FormulaParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1220,7 +1229,7 @@
         "operator": { "type": "string", "enum": ["add", "subtract", "multiply", "divide", "modulo", "power"] },
         "newColumn": { "type": "string", "minLength": 1 },
         "rightColumn": { "$ref": "#/definitions/ColumnReference" },
-        "value": { "type": "number" }
+        "value": { "$ref": "#/definitions/FormulaLiteral" }
       },
       "oneOf": [{ "required": ["rightColumn"] }, { "required": ["value"] }]
     },

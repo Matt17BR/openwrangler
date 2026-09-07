@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { isTransformStep } from "../shared/protocolValidation";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSchema, OperationKind, TransformFilterModel } from "../shared/protocol";
 import { buildParams, columnReferenceId, type OperationParamsFor } from "../webviews/operations/operationParams";
@@ -435,6 +436,71 @@ describe("buildParams", () => {
     expect(() => buildParams("selectColumns", form([]), emptyFilterModel, schema)).toThrow(
       "Select columns requires at least one compatible column."
     );
+  });
+
+  it.each([
+    ["9007199254740993", "9007199254740993"],
+    ["-9007199254740993", "-9007199254740993"],
+    ["+009007199254740993", "9007199254740993"],
+    ["1152921504606846976", "1152921504606846976"],
+    ["1152921504606846976.0", "1152921504606846976"],
+    ["9007199254740993.0", "9007199254740992"],
+    ["9007199254740991", 9007199254740991],
+    ["-0", 0],
+    ["2.5", 2.5],
+    ["0.1", 0.1],
+    ["1e3", 1000],
+    ["1e20", "100000000000000000000"],
+    ["1e21", 1e21],
+    ["1e30", 1e30],
+    ["1e-3", 0.001],
+    ["1.0000000000000001", 1],
+    [`1${"0".repeat(308)}`, `1${"0".repeat(308)}`]
+  ])("preserves Formula literal %s through the actual JSON request", (scalar, expected) => {
+    const params = buildParams(
+      "formula",
+      form([
+        ["leftColumn", "c:sales"],
+        ["operator", "modulo"],
+        ["operandMode", "value"],
+        ["value", String(scalar)],
+        ["newColumn", "remainder"]
+      ]),
+      emptyFilterModel,
+      schema
+    );
+    const wire: unknown = JSON.parse(JSON.stringify({ id: "literal", kind: "formula", params }));
+    expect(wire).toEqual({
+      id: "literal",
+      kind: "formula",
+      params: { leftColumn: sales, operator: "modulo", newColumn: "remainder", value: expected }
+    });
+    expect(isTransformStep(wire)).toBe(true);
+  });
+
+  it("bounds raw Formula text before interpreting its numeric value", () => {
+    const fields = (value: string) =>
+      form([
+        ["leftColumn", "c:sales"],
+        ["operator", "add"],
+        ["value", value],
+        ["newColumn", "result"]
+      ]);
+    expect(buildParams("formula", fields(`${"0".repeat(4095)}1`), emptyFilterModel, schema).value).toBe(1);
+    const conversion = vi.spyOn(globalThis, "Number");
+    let rejected: unknown;
+    let conversionCount: number;
+    try {
+      buildParams("formula", fields(`${"0".repeat(4096)}1`), emptyFilterModel, schema);
+    } catch (error) {
+      rejected = error;
+    } finally {
+      conversionCount = conversion.mock.calls.length;
+      conversion.mockRestore();
+    }
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toContain("4096");
+    expect(conversionCount).toBe(0);
   });
 
   it.each(["", "Infinity", "NaN"])("rejects Formula scalar %j", (scalar) => {

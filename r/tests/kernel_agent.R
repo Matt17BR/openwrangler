@@ -4974,6 +4974,100 @@ formula_open <- dispatch(
 )
 assert_identical(formula_open$kind, "page", "the R Formula session did not open")
 
+# Canonical integer text stays public text and binds only to an exact native scalar.
+formula_literal_session <- "f9980000-0000-4000-8000-000000000001"
+formula_literal_cases <- list(
+  list(value = "0", scalar = 0L),
+  list(value = "2", scalar = 2L),
+  list(value = "-2147483647", scalar = -2147483647L),
+  list(value = "2147483647", scalar = 2147483647L, operator = "subtract"),
+  list(value = "-2147483648", scalar = -2147483648),
+  list(value = "2147483648", scalar = 2147483648),
+  list(value = "1152921504606846976", scalar = 2^60),
+  list(value = "-1152921504606846976", scalar = -2^60),
+  list(value = "1267650600228229401496703205376", scalar = 2^100),
+  list(value = "2", scalar = 2L, wide = TRUE),
+  list(value = "1152921504606846976", scalar = 2^60, wide = TRUE),
+  list(value = 2, scalar = 2L),
+  list(value = 0.5, scalar = 0.5),
+  list(value = 2^60, scalar = 2^60)
+)
+for (literal in formula_literal_cases) {
+  source_environment$formula_literal_frame <- data.frame(
+    left = if (isTRUE(literal$wide)) bit64::as.integer64(c("0", "7", NA_character_)) else c(0L, 7L, NA_integer_),
+    row.names = c("zero", "seven", "missing")
+  )
+  formula_literal_before <- serialize(source_environment$formula_literal_frame, NULL, version = 3L)
+  literal_open <- dispatch("openSession", list(
+    sessionId = formula_literal_session, variableName = "formula_literal_frame", page = page_window()
+  ))
+  assert_identical(literal_open$kind, "page", "the R Formula integer-text source did not open")
+  literal_operator <- if (is.null(literal$operator)) "add" else literal$operator
+  literal_step <- formula_step("formula-literal", literal_operator, "result", value = literal$value)
+  literal_preview <- dispatch("previewStep", list(
+    sessionId = formula_literal_session, revision = 0L, step = literal_step, page = page_window()
+  ))
+  assert_identical(
+    literal_preview$kind, "stepPreview",
+    sprintf("R Formula literal %s did not preview: %s", literal$value, literal_preview$message)
+  )
+  expected_left <- source_environment$formula_literal_frame$left
+  if (isTRUE(literal$wide) && is.double(literal$scalar)) expected_left <- as.double(expected_left)
+  expected <- if (identical(literal_operator, "subtract")) {
+    expected_left - literal$scalar
+  } else {
+    expected_left + literal$scalar
+  }
+  assert_identical(numeric_page_values(literal_preview, "result"), as.double(expected), "R Formula changed exact literal values")
+  assert_identical(
+    literal_preview$page$schema[[2L]]$rawType,
+    if (inherits(expected, "integer64")) "integer64" else typeof(expected),
+    "R Formula changed its native scalar type"
+  )
+  generated_environment <- new.env(parent = baseenv())
+  generated_environment$formula_literal_frame <- source_environment$formula_literal_frame
+  eval(parse(text = literal_preview$code), envir = generated_environment)
+  assert_identical(generated_environment$open_wrangler_result$result, expected, "generated R Formula changed an exact literal")
+  assert_identical(
+    serialize(generated_environment$formula_literal_frame, NULL, version = 3L),
+    formula_literal_before, "generated R Formula mutated its source"
+  )
+  literal_applied <- dispatch("applyDraft", list(sessionId = formula_literal_session, revision = 1L, page = page_window()))
+  assert_identical(literal_applied$action, "apply", "the exact R Formula draft did not apply")
+  assert_identical(numeric_page_values(literal_applied, "result"), as.double(expected), "applying R Formula changed the exact literal")
+  if (identical(literal$value, "1152921504606846976")) {
+    for (invalid_literal in list(
+      "-0", "+2", "02", "2\n", " 2", "2.5", "1e2", "Infinity",
+      paste(rep("9", 309L), collapse = ""), paste(rep("1", 310L), collapse = ""),
+      "9007199254740993", "1152921504606847000", "1267650600228229401496703205377",
+      TRUE, Inf, NaN, list(2)
+    )) {
+      rejected <- dispatch("previewStep", list(
+        sessionId = formula_literal_session, revision = 2L,
+        step = formula_step("formula-rejected", "add", "rejected", value = invalid_literal), page = page_window()
+      ))
+      assert_identical(rejected$kind, "error", "R Formula accepted invalid or inexact integer text")
+      assert_identical(rejected$code, "invalid_request", "R Formula integer text returned the wrong refusal")
+      if (is.character(invalid_literal) && invalid_literal %in% c("9007199254740993", "1152921504606847000", "1267650600228229401496703205377")) {
+        assert_identical(
+          grepl("represented exactly", rejected$message, fixed = TRUE), TRUE,
+          "R Formula omitted its precision diagnostic"
+        )
+      }
+    }
+  }
+  literal_inspection <- inspect_step(formula_literal_session, 2L, "formula-literal", page_window())
+  assert_identical(literal_inspection$kind, "stepInspection", "the retained R Formula literal did not replay")
+  eval(parse(text = literal_inspection$code), envir = generated_environment)
+  assert_identical(generated_environment$open_wrangler_result$result, expected, "replayed R Formula literal code changed")
+  assert_identical(
+    serialize(source_environment$formula_literal_frame, NULL, version = 3L),
+    formula_literal_before,
+    "R Formula literal requests mutated their source"
+  )
+  dispatch("closeSession", list(sessionId = formula_literal_session))
+}
+
 formula_extra_step <- formula_step("formula-extra", "add", "extra", right_position = 2L, right_name = "right")
 formula_extra_step$params$extra <- TRUE
 formula_extra <- dispatch(
@@ -5045,7 +5139,7 @@ formula_bad_scalar <- dispatch(
   list(
     sessionId = formula_session_id,
     revision = 0L,
-    step = formula_step("formula-bad-scalar", "add", "bad scalar", value = "2"),
+    step = formula_step("formula-bad-scalar", "add", "bad scalar", value = "2.5"),
     page = page_window()
   )
 )

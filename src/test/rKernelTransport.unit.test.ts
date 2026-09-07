@@ -2231,7 +2231,20 @@ describe("native R kernel protocol", () => {
       }
     } as const;
 
-    for (const step of [formulaWithScalar, formulaWithColumn, formatInPlace, formatAppended]) {
+    const formulaIntegerLiterals = [
+      "0",
+      "-2",
+      "9007199254740993",
+      "1152921504606846976",
+      "1267650600228229401496703205376"
+    ].map((value) => ({ ...formulaWithScalar, params: { ...formulaWithScalar.params, value } }));
+    for (const step of [
+      formulaWithScalar,
+      ...formulaIntegerLiterals,
+      formulaWithColumn,
+      formatInPlace,
+      formatAppended
+    ]) {
       const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
         transportVersion: R_KERNEL_TRANSPORT_VERSION,
         requestId: previewRequestId,
@@ -2272,11 +2285,18 @@ describe("native R kernel protocol", () => {
     };
     delete formulaWithoutOperand.params.value;
     expectRejected(formulaWithoutOperand, "exactly one right column or numeric value");
-    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, "2"]) {
-      expectRejected(
-        { ...formulaWithScalar, params: { ...formulaWithScalar.params, value } },
-        "formula value must be finite"
-      );
+    for (const value of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "2.5",
+      "+2",
+      "02",
+      "-0",
+      "2\n",
+      "1e2",
+      "9".repeat(310)
+    ]) {
+      expectRejected({ ...formulaWithScalar, params: { ...formulaWithScalar.params, value } }, "formula value must be");
     }
     expectRejected(
       { ...formulaWithScalar, params: { ...formulaWithScalar.params, newColumn: "" } },

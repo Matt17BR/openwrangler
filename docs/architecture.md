@@ -154,6 +154,18 @@ Float filter values accept explicit `Infinity` and `-Infinity`, plus the histori
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.
 
+Formula retains large bare decimal integer input as canonical text through the webview, public plan, persistence
+and replay. Its additive v2 scalar representation accepts existing finite numbers or canonical integer strings with
+at most 309 digits whose Number conversion remains finite. Form input is bounded to 4,096 characters before parsing.
+Leading signs and zeros are normalized on entry; stored strings reject redundant signs, zeros and whitespace.
+Decimal and exponent input retain binary64 interpretation. Unsafe integral binary64 values that JSON would spell as
+plain integers use their actual integer text, avoiding a second rounding at the runtime boundary.
+Execution and generated code decode the retained text in the owning engine. Polars and DuckDB refuse text outside
+native signed/unsigned 128-bit literal capacity. R requires an exactly representable ordinary numeric scalar; it
+does not add an integer64 scalar type. Native arithmetic promotion and output limits still apply.
+Legacy numeric plans retain their replay behavior. If an earlier numeric representation lost digits, the original
+literal must be entered again; its original spelling cannot be reconstructed from the saved number.
+
 Min-max Scale computes exact integer and decimal offsets before converting them to double-precision ratios.
 Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
@@ -224,7 +236,7 @@ conversion rules, arithmetic limits and output validation apply to those logical
 their encoded storage.
 Formula modulo supports Arrow integer operands using native unsigned magnitudes and the divisor's sign, with no
 floating conversion. The result uses the widest operand width and the divisor's signedness. Integer literals must
-fit within 64-bit capacity at the runtime boundary; the Formula webview still uses JSON numbers. Null operands
+fit within 64-bit capacity at the runtime boundary. Null operands
 produce nulls, and a zero divisor is rejected only where both operands are present. Other Formula arithmetic retains
 its native coercion and capacity checks. Generated modulo code uses the same calculation.
 
@@ -248,6 +260,14 @@ grouped Fill uses the same temporary identities while retaining source keys. Spa
 numeric equality and first representative, including fractional fills accepted by the minimum Pandas version.
 
 ### Polars
+
+For a new Formula integer string and an integer source, Polars checks the selected column's native minimum and
+maximum before add, subtract, multiply or integer power. It uses the smallest common native integer capacity at
+least as wide as the source, checking operands and result bounds; unsupported capacity is refused. Only the two
+aggregate values cross into Python. Division retains native floating output, and modulo retains native null and
+sign behavior. Existing numeric and right-column formulas retain their native arithmetic rules.
+Generated code performs the same checks. A caller-owned LazyFrame must keep its external inputs stable between
+this check and later collection; the check does not materialize or snapshot the frame.
 
 Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
 collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit

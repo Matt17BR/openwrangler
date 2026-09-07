@@ -20,7 +20,7 @@ from .pivot_longer import (
 )
 from .pivot_wider import PivotWiderContractError, validate_pivot_wider_outputs
 from .portable_regex import PortableRegexError, portable_regex_contract, validate_portable_regex_output_name
-from .protocol_limits_generated import MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
+from .protocol_limits_generated import MAX_FORMULA_INTEGER_DIGITS, MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
 
 
 class OperationError(ValueError):
@@ -29,6 +29,7 @@ class OperationError(ValueError):
 
 OPERATION_BY_KIND = {definition.kind: definition for definition in OPERATION_DEFINITIONS}
 FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide", "modulo", "power"}
+_FORMULA_INTEGER_TEXT = re.compile(r"(?:0|-?[1-9][0-9]*)")
 AGGREGATIONS = {"sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"}
 CAST_DTYPES = {"string", "integer", "float", "boolean", "date", "datetime"}
 FILTER_OPERATORS = {
@@ -112,6 +113,23 @@ def operation_catalog() -> list[dict[str, Any]]:
         }
         for definition in OPERATION_DEFINITIONS
     ]
+
+
+def formula_scalar_value(value: Any) -> int | float:
+    """Decode an execution operand while public plans retain their exact text."""
+    if isinstance(value, str):
+        if (
+            len(value.removeprefix("-")) <= MAX_FORMULA_INTEGER_DIGITS
+            and _FORMULA_INTEGER_TEXT.fullmatch(value)
+            and isfinite(float(value))
+        ):
+            return int(value)
+        raise OperationError("Formula integer text must be canonical, bounded, and within the finite numeric range.")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and isfinite(value):
+        return value
+    raise OperationError("Formula requires a finite numeric value or canonical integer text.")
 
 
 def validate_step(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -208,13 +226,11 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         if params["operator"] not in FORMULA_OPERATORS:
             raise OperationError("formula.operator is not supported.")
         has_column = "rightColumn" in params
-        has_value = (
-            "value" in params
-            and isinstance(params.get("value"), int | float)
-            and not isinstance(params.get("value"), bool)
-        )
+        has_value = "value" in params
         if has_column == has_value:
             raise OperationError("formula requires exactly one of rightColumn or numeric value.")
+        if has_value:
+            formula_scalar_value(params["value"])
     elif kind == "oneHotEncode" and not isinstance(params.get("prefixSeparator", "_"), str):
         raise OperationError("oneHotEncode.prefixSeparator must be a string.")
     elif kind == "multiLabelBinarize":

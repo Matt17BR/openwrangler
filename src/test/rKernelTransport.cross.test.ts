@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAX_FORMULA_INTEGER_DIGITS } from "../shared/protocolLimits.generated";
 import {
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
@@ -1328,6 +1329,68 @@ cat("generated-ok\\n")
 `);
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
+
+  it.each([
+    ["2", "2L", "integer"],
+    ["1152921504606846976", "2^60", "double"],
+    ["1267650600228229401496703205376", "2^100", "double"],
+    [BigInt(Number.MAX_VALUE).toString(), ".Machine$double.xmax", "double"]
+  ] as const)(
+    "round-trips exact Formula integer text %s through native R and emitted code",
+    (value, expected, rawType) => {
+      if (expected === ".Machine$double.xmax") expect(value.length).toBe(MAX_FORMULA_INTEGER_DIGITS);
+      const open = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: openRequestId,
+        kind: "openSession",
+        payload: { sessionId, variableName: "frame", page: pageWindow() }
+      });
+      const preview = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: pageRequestId,
+        kind: "previewStep",
+        payload: {
+          sessionId,
+          revision: 0,
+          step: {
+            id: "literal",
+            kind: "formula",
+            params: {
+              leftColumn: { id: "r:c:0", name: "value" },
+              operator: "add",
+              newColumn: "result",
+              value
+            }
+          },
+          page: pageWindow()
+        }
+      });
+      const frame = 'frame <- data.frame(value = c(0L, NA_integer_), row.names = c("present", "missing"))';
+      const result = runR(
+        `${frame}\n${buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")))}\n${open.code}\n${preview.code}`
+      );
+      const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId, {
+        expectExportFormats: true
+      });
+      if (opened.kind !== "page") throw new Error("Expected an opened native R Formula frame.");
+      const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), pageRequestId, {
+        inputSchema: opened.page.schema
+      });
+      if (previewed.kind !== "stepPreview") throw new Error("Expected an exact native R Formula preview.");
+      expect(previewed.page.schema.at(-1)?.rawType).toBe(rawType);
+      expect(Number(previewed.page.page.rows[0]?.values.at(-1)?.raw)).toBe(Number(value));
+      expect(previewed.page.page.rows[1]?.values.at(-1)?.kind).toBe("null");
+      const generated = runR(`${frame}
+before <- serialize(frame, NULL, version = 3L)
+${previewed.code}
+stopifnot(identical(open_wrangler_result$result, c(${expected}, ${rawType === "integer" ? "NA_integer_" : "NA_real_"})))
+stopifnot(identical(serialize(frame, NULL, version = 3L), before))
+stopifnot(identical(row.names(open_wrangler_result), row.names(frame)))
+cat("literal-ok\\n")
+`);
+      expect(generated.stdout.trim()).toBe("literal-ok");
+    }
+  );
 
   it("round-trips appended Date and in-place POSIXct formatting through the real R transport", () => {
     const editingSessionId = "19100000-0000-4000-8000-000000000001";

@@ -182,6 +182,12 @@ Factors convert through their labels, failed parses become `NA`, and conversions
 precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
 same checks and conversion rules.
 
+Formula retains canonical integer strings in public steps and decodes only its bound execution operand. A string
+must fit the shared finite, 309-digit limit and round-trip exactly through an ordinary R numeric scalar. Values in
+R's non-missing integer range use integer storage; other exactly representable values use double storage. A literal
+such as `9007199254740993` is refused before mutation. This does not add integer64 scalar arithmetic: existing
+integer64-column and double-scalar promotion remains unchanged. Live and generated Formula use the same bound value.
+
 Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
 range becomes zero. Missing and non-finite input values become missing output. The `integer64` calculation keeps its
 offsets exact until its final conversion to double, avoiding the precision loss caused by converting the source values

@@ -7,6 +7,7 @@ import type {
   SessionMetadata,
   TransformStep
 } from "../shared/protocol";
+import { decodePersistedSession } from "../extension/sessionPersistence";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import {
   RuntimeStateRestoreError,
@@ -133,6 +134,46 @@ describe("SessionRuntimeStateRestorer", () => {
       draftBaseFilterModel: draftBaseFilter,
       draftPresentation: { warnings: [], beforeSchema: schema }
     });
+  });
+
+  it("replays persisted Formula strings verbatim while leaving legacy numeric replay unchanged", async () => {
+    const formula = (id: string, value: number | string): TransformStep => ({
+      id,
+      kind: "formula",
+      params: { leftColumn: { id: "c:value", name: "value" }, operator: "add", newColumn: id, value }
+    });
+    const committed = [formula("exact", "9007199254740993"), formula("legacy", 2 ** 60)];
+    const draft = formula("draft", "1152921504606846976");
+    const persisted: unknown = JSON.parse(
+      JSON.stringify({ backend: "pandas", cleaning: { steps: committed, draftStep: draft } })
+    );
+    const decoded = decodePersistedSession(persisted);
+    expect(decoded).toBeDefined();
+    if (!decoded) return;
+    const wireSteps: unknown[] = [];
+    let steps: TransformStep[] = [];
+    let pending: TransformStep | undefined;
+    const delegate = bridge(async (request) => {
+      if (request.kind === "previewStep") {
+        wireSteps.push(JSON.parse(JSON.stringify(request.step)));
+        pending = request.step;
+        return previewResponse(request, metadata({ revision: request.revision + 1, steps, draftStep: pending }));
+      }
+      if (request.kind === "applyDraft") {
+        if (!pending) throw new Error("Expected the pending Formula step.");
+        steps = [...steps, pending];
+        pending = undefined;
+        return planResponse(request, metadata({ revision: request.revision + 1, steps }));
+      }
+      throw new Error(`Unexpected Formula replay request: ${request.kind}`);
+    });
+    const session = runtimeSession(delegate);
+    await new SessionRuntimeStateRestorer().restoreCleaningState(session, decoded.cleaning, 0, 1);
+    expect(wireSteps).toEqual([...committed, draft]);
+    expect(session.metadata.steps).toEqual(committed);
+    expect(session.metadata.draftStep).toEqual(draft);
+    expect(typeof session.metadata.steps[0].params.value).toBe("string");
+    expect(typeof session.metadata.steps[1].params.value).toBe("number");
   });
 
   it("falls back from an invalid saved view to one empty confirmed view", async () => {
