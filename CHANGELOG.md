@@ -19,6 +19,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   converting infinities into ordinary integers.
 - Script and data exports protect source files renamed after the dataframe opens and reject source-path changes
   during export dialogs or code synchronization.
+- The Operations view restores **Start R and show dataframes…** after the R terminal closes with no notebook open.
 - Column reveal waits for automatic Code Preview focus to finish before treating the grid layout as settled.
 - Native R accepts valid empty `data.table` subsets and cleaning results, including generated code and Custom Code
   that return no rows.

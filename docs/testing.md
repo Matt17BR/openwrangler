@@ -81,7 +81,9 @@ remains unresolved. Parent SIGKILL or a runner crash is also outside this shutdo
 tracked in [#955](https://github.com/Matt17BR/openwrangler/issues/955).
 
 The native-view source tests cover lifetime provider registrations, forwarded tree updates, and session-pinned code
-insertion. The existing App component tests retain DOM-before-acknowledgement and mismatched-marker integration
+insertion. Lazy-owner tests distinguish pending, loaded and absent notebook snapshots; the installed R terminal
+journey checks that closing the terminal restores the idle R action. The existing App component tests retain
+DOM-before-acknowledgement and mismatched-marker integration
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution.
 

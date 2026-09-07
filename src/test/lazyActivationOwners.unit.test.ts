@@ -593,7 +593,14 @@ describe("lazy activation owners", () => {
     expect(owners.rDiscovery).not.toHaveBeenCalled();
   });
 
-  it("routes live-variable snapshots to their exact lazy notebook and R owners", async () => {
+  it("forwards pending, live, and empty snapshots from the exact lazy variable owners", async () => {
+    const notebookSnapshot = {
+      state: "ready",
+      notebookLabel: "analysis.ipynb",
+      message: "One dataframe",
+      variables: [{ handle: "frame", label: "orders", description: "Pandas DataFrame" }]
+    };
+    owners.notebookSnapshot.mockReturnValue(notebookSnapshot);
     active = createOwners();
     active.startBeforeFirstYield();
     await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
@@ -604,6 +611,11 @@ describe("lazy activation owners", () => {
       expect(owners.notebookRegistered).toHaveBeenCalledOnce();
       expect(owners.rDiscovery).toHaveBeenCalledOnce();
     });
+    expect(nativeVariables.notebook?.snapshot()).toBe(notebookSnapshot);
+    expect(nativeVariables.r?.snapshot()).toBe(rVariables.snapshot());
+    owners.notebookSnapshot.mockReturnValue(undefined);
+    expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
+    expect(owners.notebookRegistered).toHaveBeenCalledOnce();
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
   });
 
