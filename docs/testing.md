@@ -173,6 +173,9 @@ Configurable-export and index-fidelity owners exercise native `bool8` and UUID C
 omitted axes, equivalent Boolean labels, and external extension Parquet files. Ordinary conversion settings and
 invalid metadata retain native behavior. Rewrites around schema and data reads must refuse publication and close
 the source stream, including equal-size changes with restored modification times.
+Object-UUID controls use actual file writers and public session preview/apply/undo. They check canonical picker
+counts, null/NaN selections, stable physical rows, standalone sort/deduplication, direct-copy identity and unchanged
+unrelated objects. The existing export owner checks canonical CSV/Parquet values and preserved or omitted axes.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
