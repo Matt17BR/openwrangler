@@ -112,6 +112,8 @@ checks also cover encoded unsigned values.
 Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.
 Generated Fill code treats native Arrow dates as dates, including empty and all-null columns.
 CSV and Parquet writers support scalar dictionary columns and preserved index levels, including null codebook entries.
+Group By, Pivot and grouped Fill share missing-value and signed-zero key equality for Arrow float32/float64 columns.
+Group By preserves computed NaN separately from an empty group's null result.
 
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.

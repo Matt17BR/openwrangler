@@ -204,6 +204,10 @@ and timezone checks still apply to replacement literals when the target has no m
 CSV and Parquet export prepare logical scalar dictionary columns in a temporary frame. When the user preserves the
 index, eligible dictionary index levels are prepared there as well. Source arrays, index levels and codes remain
 unchanged; native writers determine the exported string representation.
+Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Arrow float32 and
+float64 grouping keys use the same missing-value and signed-zero equality as other numeric keys. Group By retains
+its native representative key; Pivot retains each first identifier row. Grouped Fill shares this key equality without
+changing the stored keys.
 
 ### Polars
 

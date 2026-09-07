@@ -152,6 +152,9 @@ and complete-column literal validation. Mixed plans retain source arrays and exe
 Configurable-export tests use real pinned writers for scalar dictionary columns and indexes, compare physical CSV
 and Parquet values with logical controls, reopen exported columns, and check unchanged source storage. Wide integer
 index assertions inspect physical Parquet values separately from Pandas index reconstruction.
+Group By, Pivot and Fill owners compare Arrow/nullable floating keys and aggregates with native controls, including
+NaN, nulls, signed zero, infinities, chunks and unrelated missing groups. Half-float Count and Sparse Sum controls
+protect existing finite-value paths. Standalone grouped Fill includes only the floating key helper it needs.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
