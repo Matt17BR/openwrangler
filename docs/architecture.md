@@ -193,6 +193,9 @@ it. Source arrays remain unchanged.
 Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
 Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
 integer values and their fill convention, including columns that did not participate in the query.
+Numeric, text, Convert Type and pivot operations prepare only their selected dictionary operands. Existing native
+conversion rules, arithmetic limits and output validation apply to those logical values; unrelated columns retain
+their encoded storage.
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
 

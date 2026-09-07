@@ -107,6 +107,8 @@ Pandas scalar Arrow dictionaries use logical values for profiles, value selectio
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
 dictionary values do not gain scalar operations. Integer filtering, sorting, directional Fill and Drop Duplicates
 preserve exact large values in Sparse columns, including returned columns that were not used as keys.
+Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
+checks also cover encoded unsigned values.
 
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.
