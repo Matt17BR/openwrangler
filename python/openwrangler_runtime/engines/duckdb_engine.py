@@ -3204,7 +3204,15 @@ def _duckdb_round_exact_expression(value: str, raw_type: str, decimals: int) -> 
     if decimals > 0:
         padded = f"lpad({coefficient}, CAST(greatest(length({coefficient}), {decimals + 1}) AS INTEGER), '0')"
         coefficient = f"(left({padded}, length({padded}) - {decimals}) || '.' || right({padded}, {decimals}))"
-    return f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+    result = f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+    if target == "UHUGEINT":
+        # Windows DuckDB can wrap an overflowing VARCHAR-to-UHUGEINT cast.
+        return (
+            f"CASE WHEN {value} IS NULL THEN NULL::{target} "
+            f"WHEN CAST({coefficient} AS BIGNUM) > CAST('{2**128 - 1}' AS BIGNUM) "
+            f"THEN error('Round result exceeds DuckDB UHUGEINT capacity.') ELSE {result} END"
+        )
+    return result
 
 
 def _duckdb_round_expression(value: str, decimals: int) -> str:
@@ -3458,7 +3466,15 @@ def _ow_round_exact_expression(value, raw_type, decimals):
     if decimals > 0:
         padded = f"lpad({coefficient}, CAST(greatest(length({coefficient}), {decimals + 1}) AS INTEGER), '0')"
         coefficient = f"(left({padded}, length({padded}) - {decimals}) || '.' || right({padded}, {decimals}))"
-    return f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+    result = f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+    if target == "UHUGEINT":
+        # Windows DuckDB can wrap an overflowing VARCHAR-to-UHUGEINT cast.
+        return (
+            f"CASE WHEN {value} IS NULL THEN NULL::{target} "
+            f"WHEN CAST({coefficient} AS BIGNUM) > CAST('{2**128 - 1}' AS BIGNUM) "
+            f"THEN error('Round result exceeds DuckDB UHUGEINT capacity.') ELSE {result} END"
+        )
+    return result
 
 
 def _ow_round(df, column, target, decimals, floating_expression):

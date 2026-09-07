@@ -14,7 +14,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Fixed
 
 - Failed operation previews show their error inside the open form and retain the input for correction.
-
+- DuckDB Round refuses unsigned 128-bit overflow on Windows instead of returning a wrapped value.
 - Native R value selections and numeric predicates preserve floating precision instead of selecting a neighboring
   value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
 - Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
