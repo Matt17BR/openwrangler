@@ -49,6 +49,45 @@ def test_pandas_scalar_export_does_not_materialize_range_axis(
     assert source.index.equals(pd.RangeIndex(7, 13, 2, name="row"))
 
 
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+@pytest.mark.parametrize("index_policy", ["preserve", "omit"])
+def test_pandas_object_uuid_exports_write_canonical_text_without_changing_source(
+    tmp_path: Path, format_name: str, index_policy: str
+) -> None:
+    import io
+
+    identifier = UUID("98765432-1234-4567-89ab-fedcba987654")
+    values = [identifier, str(identifier), None, UUID(int=0), str(identifier).upper()]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "row": range(len(values))})
+    source.index = pd.MultiIndex.from_arrays([values, [0] * len(values)], names=["uuid row", "order"])
+    source.attrs = {"origin": "retained"}
+    original_index = source.index
+    logical_values = [str(value) if isinstance(value, UUID) else value for value in values]
+    logical = pd.DataFrame({"value": pd.Series(logical_values, dtype=object), "row": range(len(values))})
+    logical.index = pd.MultiIndex.from_arrays([logical_values, [0] * len(values)], names=source.index.names)
+    logical.attrs = source.attrs
+    options: Any = {"format": format_name, "rowAxisPolicy": index_policy}
+    if format_name == "csv":
+        options.update(delimiter=";", quoteChar='"', encoding="utf-8", header=True)
+    destination = tmp_path / f"object-uuid.{format_name}"
+    destination.touch()
+    identity = destination.stat()
+    engine = PandasEngine()
+    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        engine.export_data(source, writer, options)
+    preserve_index = index_policy == "preserve"
+    if format_name == "csv":
+        assert destination.read_bytes() == logical.to_csv(index=preserve_index, sep=";").encode()
+        assert destination.read_bytes() == source.to_csv(index=preserve_index, sep=";").encode()
+    else:
+        expected = pd.read_parquet(io.BytesIO(logical.to_parquet(index=preserve_index)))
+        pd.testing.assert_frame_equal(engine.read_file(str(destination)), expected)
+    assert source.index is original_index and source.attrs == {"origin": "retained"}
+    assert source["value"].dtype == object
+    assert all(value is expected for value, expected in zip(source["value"].array, values, strict=True))
+    assert source["row"].tolist() == list(range(len(values)))
+
+
 @pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 @pytest.mark.parametrize("index_policy", ["preserve", "omit"])
