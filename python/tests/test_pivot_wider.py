@@ -498,3 +498,58 @@ def test_pandas_pivot_wider_dictionary_columns_use_logical_values(family: str, r
     for actual in _pandas_pivot_results(frame):
         pd.testing.assert_frame_equal(actual, expected)
     assert frame[column].array.__arrow_array__().equals(before)
+
+
+@pytest.mark.parametrize("bits", [32, 64])
+@pytest.mark.parametrize("dictionary", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+def test_pivot_wider_pandas_float_equality_preserves_first_identifier_rows(
+    bits: int, dictionary: bool, missing: bool
+) -> None:
+    import numpy as np
+
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.float32() if bits == 32 else pa.float64()
+    chunks = [
+        pa.array([-0.0, 0.0, None], type=dtype, from_pandas=False),
+        pa.array([float("nan"), 0.0, -0.0, 1.0, 1.0], type=dtype, from_pandas=False),
+    ]
+    if dictionary:
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    frame = pd.DataFrame(
+        {
+            "partition": ["a", "a", "missing", "missing", "b", "b", "finite", "finite"],
+            "zero": pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks))),
+            "key": ["x", "y"] * 4,
+            "value": range(8),
+        }
+    )
+    if not missing:
+        frame = frame.iloc[[0, 1, 4, 5, 6, 7]]
+    frame.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(frame))])
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    engine = PandasEngine()
+    step = bind(engine, frame, public_step(names_id="c:source:2", values_id="c:source:3"))
+    engine.validate_transform_preflight(frame, step, engine.shape(frame))
+    outputs = [engine.apply_transform(frame, step), execute_generated(engine, frame, step)]
+    for result in outputs:
+        assert result["partition"].tolist() == (["a", "missing", "b", "finite"] if missing else ["a", "b", "finite"])
+        assert result["zero"].isna().tolist() == ([False, True, False, False] if missing else [False] * 3)
+        assert [bool(np.signbit(result["zero"].iloc[i])) for i in ([0, 2] if missing else [0, 1])] == [True, False]
+        assert result["zero"].dtype == (pd.Float64Dtype() if missing else pd.ArrowDtype(dtype))
+        assert result["x_value"].tolist() == ([0, 2, 4, 6] if missing else [0, 4, 6])
+        assert result["y_value"].tolist() == ([1, 3, 5, 7] if missing else [1, 5, 7])
+        pd.testing.assert_frame_equal(frame, original)
+    pd.testing.assert_frame_equal(*outputs)
+
+    duplicate = frame.copy()
+    duplicate["key"] = "x"
+    duplicate_original = duplicate.copy(deep=True)
+    with pytest.raises(EngineError, match="duplicate identifier-and-key rows"):
+        engine.validate_transform_preflight(duplicate, step, engine.shape(duplicate))
+    with pytest.raises(EngineError, match="duplicate identifier-and-key rows"):
+        engine.apply_transform(duplicate, step)
+    with pytest.raises(ValueError, match="duplicate identifier-and-key rows"):
+        execute_generated(engine, duplicate, step)
+    pd.testing.assert_frame_equal(duplicate, duplicate_original)

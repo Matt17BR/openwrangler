@@ -3360,3 +3360,55 @@ def test_pandas_dictionary_fill_treats_valid_nan_and_null_entries_as_missing() -
         pd.testing.assert_series_equal(actual["value"], expected)
         assert cast(Any, actual["value"].array).__arrow_array__().null_count == 0
     assert dumps(cast(Any, source["value"].array).__arrow_array__()) == before
+
+
+@pytest.mark.parametrize("storage", ["arrow", "dictionary", "nullable"])
+@pytest.mark.parametrize("bits", [32, 64])
+@pytest.mark.parametrize("statistic", ["median", "mostFrequent"])
+def test_pandas_grouped_fill_uses_floating_key_equality_without_changing_stored_keys(
+    storage: str, bits: int, statistic: str
+) -> None:
+    import numpy as np
+
+    values = [-0.0, 0.0, 0.0, -0.0, float("nan"), None, 1.0, 2.0, float("inf"), -float("inf")]
+    dtype = pa.float32() if bits == 32 else pa.float64()
+    if storage == "nullable":
+        key = pd.Series(
+            pd.arrays.FloatingArray(
+                np.array([np.nan if value is None else value for value in values], dtype=f"float{bits}"),
+                np.array([value is None for value in values]),
+            )
+        )
+    else:
+        chunks = [pa.array(part, type=dtype, from_pandas=False) for part in (values[:3], values[3:])]
+        if storage == "dictionary":
+            chunks = [chunk.dictionary_encode() for chunk in chunks]
+        key = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    source = pd.DataFrame(
+        {
+            "value": pd.Series([3.0, None, 7.0, None, 11.0, None, 13.0, None, 17.0, None], dtype="Float64"),
+            "partition": ["a", "a", "b", "b", "missing", "missing", "distinct", "distinct", "infinite", "infinite"],
+            "key": key,
+        }
+    )
+    if statistic == "mostFrequent":
+        source["value"] = source["value"].astype("string")
+    source.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(source))])
+    source.attrs["annotation"] = "source"
+    expected = pd.Series(
+        [3.0, 3.0, 7.0, 7.0, 11.0, 11.0, 13.0, None, 17.0, None],
+        index=source.index,
+        name="value",
+        dtype="Float64",
+    )
+    if statistic == "mostFrequent":
+        expected = expected.astype("string")
+    replacement = {
+        "kind": "groupedStatistic",
+        "statistic": statistic,
+        "keys": [{"id": "c:source:1", "name": "partition"}, {"id": "c:source:2", "name": "key"}],
+    }
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+        assert np.signbit(result["key"].iloc[:4].to_numpy(dtype=float)).tolist() == [True, False, False, True]
+        assert result.attrs == source.attrs
