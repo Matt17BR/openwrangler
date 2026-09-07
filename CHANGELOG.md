@@ -15,7 +15,6 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Native R value selections and numeric predicates preserve floating precision instead of selecting a neighboring
   value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
-
 - Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
 - Polars By Example accepts exact unsigned cancellation and multiplication by zero on the minimum runtime.
 - Multi-label binarization works across supported Polars versions without changing empty-label behavior.
@@ -41,6 +40,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas Group By Count handles Sparse columns without breaking other aggregates on the same input.
 - Pandas Group By and Pivot keep distinct Sparse integer keys. Grouped Fill uses the correct donors for large and
   missing keys.
+- Pandas mixed object columns preserve distinct large numeric values in filters, counts, sorting, duplicates,
+  grouping and Pivot. Exact integer filter text reaches the runtime unchanged, and grouped Fill uses the correct donors.
+- Formula modulo works on Pandas Arrow integer columns, including signed and unsigned extrema. Live and generated
+  execution preserve nulls and refuse present zero divisors without changing the confirmed plan.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
 - Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
   DuckDB arrays remain containers in schema and generated-code checks.

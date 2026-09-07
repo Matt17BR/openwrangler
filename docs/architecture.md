@@ -208,9 +208,21 @@ select the original physical rows, while derived logical values and exported UUI
 Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
 Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
 integer values and their fill convention, including columns that did not participate in the query.
+Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,
+duplicates, grouping and Pivot share those keys while retaining original source scalars and representative labels.
+Group By retains the first key representative; Pivot retains the first complete identifier row for each group.
+Integer filter text remains exact through the webview. Pandas object columns accept exact integer selection tokens
+for integral values; physically floating columns retain their existing floating-token contract. Null and NaN
+selections remain separate. Ordinary native numeric arrays keep their native comparison path.
 Numeric, text, Convert Type and pivot operations prepare only their selected dictionary operands. Existing native
 conversion rules, arithmetic limits and output validation apply to those logical values; unrelated columns retain
 their encoded storage.
+Formula modulo supports Arrow integer operands using native unsigned magnitudes and the divisor's sign, with no
+floating conversion. The result uses the widest operand width and the divisor's signedness. Integer literals must
+fit within 64-bit capacity at the runtime boundary; the Formula webview still uses JSON numbers. Null operands
+produce nulls, and a zero divisor is rejected only where both operands are present. Other Formula arithmetic retains
+its native coercion and capacity checks. Generated modulo code uses the same calculation.
+
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
 Fill reads selected dictionary targets, donors and keys as logical values. Filled targets use native logical storage;

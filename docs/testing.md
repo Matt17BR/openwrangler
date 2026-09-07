@@ -138,6 +138,11 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
 `python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
 
+Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
+standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
+refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned
+Parquet export, and verifies the complete confirmed state after a rejected zero-divisor preview.
+
 Pandas engine tests load native Arrow dates from Parquet and check profiles, value selections, viewing and
 standalone Filter Rows/Sort Rows. Empty, missing and distant dates retain native storage, indices and source bytes.
 
@@ -163,6 +168,11 @@ columns also used as keys. Assertions retain native source values, Sparse positi
 Group By, Pivot and Fill owners also check exact Sparse key partitions, restored labels, multi-key missing groups
 and generated execution. Minimum-version fractional fills have explicit native-construction controls on current
 Pandas. Ordinary integer, nullable, Arrow and object keys retain their output-type policy.
+Mixed-object numeric regressions compare picker values with original source scalars before selecting them.
+The existing filter, typed-cell, Group By, Pivot and Fill owners cover hash-colliding NumPy floats and wide integers,
+exact ordering and counts, original representative types, joint Pivot identifier rows, missing values, and standalone
+helper closure. Unhashable containers, custom numeric subclasses and ordinary native columns retain their existing
+behavior. Filter UI and shared-protocol tests check exact typed text, restored selections and null/NaN choices.
 Typed-cell tests also compare native Arrow `bool8` and UUID pages, profiles, selections and compatible cleaning
 operations with logical native controls. Executed generated code must preserve source arrays and agree with live
 results, including no-op Fill and direct copies. A one-row page with a large dictionary codebook verifies that
