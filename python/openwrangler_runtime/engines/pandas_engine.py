@@ -882,7 +882,7 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "textLength":
             position = self._bound_frame_position(df, params["column"], kind)
-            result = df.iloc[:, position].astype("string").str.len()
+            result = _pandas_dictionary_values(df.iloc[:, position]).astype("string").str.len()
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
@@ -890,7 +890,7 @@ class PandasEngine(DataFrameEngine):
             separator = params.get("prefixSeparator", "_")
             encoded_parts = []
             for position, name in zip(positions, names, strict=True):
-                series = df.iloc[:, position]
+                series = _pandas_dictionary_values(df.iloc[:, position])
                 values = sorted(pd.unique(series[series.notna()]), key=str)
                 encoded_parts.extend(
                     series.eq(value).fillna(False).astype("int8").rename(f"{name}{separator}{value}")
@@ -911,7 +911,12 @@ class PandasEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
-            encoded = df.iloc[:, position].astype("string").fillna("").str.get_dummies(sep=params["delimiter"])
+            encoded = (
+                _pandas_dictionary_values(df.iloc[:, position])
+                .astype("string")
+                .fillna("")
+                .str.get_dummies(sep=params["delimiter"])
+            )
             encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
             encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
@@ -926,7 +931,11 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             output_names = list(params["newColumns"])
             ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
-            parts = df.iloc[:, position].astype("string").str.split(params["delimiter"], regex=False)
+            parts = (
+                _pandas_dictionary_values(df.iloc[:, position])
+                .astype("string")
+                .str.split(params["delimiter"], regex=False)
+            )
             generated = pd.concat(
                 [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
                 axis=1,
@@ -972,7 +981,7 @@ class PandasEngine(DataFrameEngine):
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
             ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
-            source = df.iloc[:, position].astype("string")
+            source = _pandas_dictionary_values(df.iloc[:, position]).astype("string")
             oversized = (
                 source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
                 | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
@@ -985,7 +994,7 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            series = df.iloc[:, position].astype("string")
+            series = _pandas_dictionary_values(df.iloc[:, position]).astype("string")
             if kind == "findReplace":
                 result = series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
             elif kind == "stripText":
@@ -1028,7 +1037,9 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            result = pd.to_datetime(df.iloc[:, position], errors="coerce").dt.strftime(params["format"])
+            result = pd.to_datetime(_pandas_dictionary_values(df.iloc[:, position]), errors="coerce").dt.strftime(
+                params["format"]
+            )
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
@@ -1078,17 +1089,12 @@ class PandasEngine(DataFrameEngine):
         input_shape: SessionDataShape,
     ) -> None:
         if step.get("kind") == "pivotWider":
-            import pandas as pd
-
             df = self.normalize(frame)
             params = step["params"]
             names_position = self._bound_frame_position(df, params["namesFrom"], "pivotWider")
             values_position = self._bound_frame_position(df, params["valuesFrom"], "pivotWider")
             _pandas_validate_pivot_wider(df, names_position, values_position, params["outputs"])
-            if not (
-                isinstance(df.dtypes.iloc[names_position], (pd.StringDtype, pd.CategoricalDtype))
-                or pd.api.types.is_object_dtype(df.dtypes.iloc[names_position])
-            ):
+            if _pandas_semantic_type(df.iloc[:, names_position]) != "string":
                 raise EngineError("Pivot-wider namesFrom must be a Pandas text or categorical column.")
             return
         if step.get("kind") != "pivotLonger":
@@ -1276,11 +1282,33 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        if needs_row_queries or any(
+        needs_dictionary_values = any(
             step["kind"]
-            in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "byExample", "groupBy"}
+            in {
+                "roundNumber",
+                "floorNumber",
+                "ceilNumber",
+                "minMaxScale",
+                "formula",
+                "groupBy",
+                "textLength",
+                "oneHotEncode",
+                "multiLabelBinarize",
+                "splitTextColumns",
+                "extractRegexGroup",
+                "findReplace",
+                "stripText",
+                "splitText",
+                "capitalizeText",
+                "lowerText",
+                "upperText",
+                "formatDatetime",
+                "pivotWider",
+            }
+            or (step["kind"] == "byExample" and step["params"]["program"]["kind"] not in {"literal", "column"})
             for step in plan
-        ):
+        )
+        if needs_row_queries or needs_dictionary_values:
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_integer_filter_helpers())
@@ -1867,7 +1895,8 @@ class PandasEngine(DataFrameEngine):
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
             return [
-                f"{prefix}df = pd.concat([df, df.iloc[:, {position}].astype('string').str.len()"
+                f"{prefix}df = pd.concat([df, _open_wrangler_dictionary_values(df.iloc[:, {position}])"
+                ".astype('string').str.len()"
                 f".rename({params['newColumn']!r})], axis=1)"
             ]
         if kind == "oneHotEncode":
@@ -1886,7 +1915,7 @@ class PandasEngine(DataFrameEngine):
             return [
                 f"{prefix}{parts} = []",
                 f"{prefix}for _position_{index}, _column_{index} in {pairs!r}:",
-                f"{prefix}    {series} = df.iloc[:, _position_{index}]",
+                f"{prefix}    {series} = _open_wrangler_dictionary_values(df.iloc[:, _position_{index}])",
                 f"{prefix}    {values} = sorted(pd.unique({series}[{series}.notna()]), key=str)",
                 f"{prefix}    {parts}.extend(",
                 f"{prefix}        {series}.eq(value).fillna(False).astype('int8')",
@@ -1935,7 +1964,8 @@ class PandasEngine(DataFrameEngine):
             order = f"_encoded_order_{index}"
             return [
                 (
-                    f"{prefix}{name} = df.iloc[:, {position}].astype('string').fillna('')"
+                    f"{prefix}{name} = _open_wrangler_dictionary_values(df.iloc[:, {position}])"
+                    ".astype('string').fillna('')"
                     f".str.get_dummies(sep={params['delimiter']!r})"
                 ),
                 f"{prefix}{name} = {name}.loc[:, [str(column) != '' for column in {name}.columns]]",
@@ -1996,7 +2026,7 @@ class PandasEngine(DataFrameEngine):
                     f"+ ', '.join({collisions}))"
                 ),
                 (
-                    f"{prefix}{parts} = df.iloc[:, {position}].astype('string')"
+                    f"{prefix}{parts} = _open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"
                     f".str.split({params['delimiter']!r}, regex=False)"
                 ),
                 (
@@ -2010,6 +2040,7 @@ class PandasEngine(DataFrameEngine):
             output = params["newColumn"]
             collisions = f"_regex_collisions_{index}"
             reserved = f"_regex_reserved_{index}"
+            source = f"_regex_source_{index}"
             wrapped_pattern = f"({params['pattern']})"
             return [
                 (
@@ -2033,24 +2064,26 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}    raise ValueError('Regex extraction would create a duplicate column name: ' "
                     f"+ ', '.join({collisions}))"
                 ),
+                (f"{prefix}{source} = _open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"),
                 (
-                    f"{prefix}if ((df.iloc[:, {position}].astype('string').str.len() > "
+                    f"{prefix}if (({source}.str.len() > "
                     f"{MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
-                    f"(df.iloc[:, {position}].astype('string').str.encode('utf-8').str.len() > "
+                    f"({source}.str.encode('utf-8').str.len() > "
                     f"{MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES})).fillna(False).any():"
                 ),
                 f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
                 (
-                    f"{prefix}df = pd.concat([df, df.iloc[:, {position}].astype('string')"
+                    f"{prefix}df = pd.concat([df, {source}"
                     f".str.extract({wrapped_pattern!r}, expand=True).iloc[:, {params['group']}]"
                     f".rename({output!r})], axis=1)"
                 ),
+                f"{prefix}del {source}",
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            base = f"df.iloc[:, {position}].astype('string').str"
+            base = f"_open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string').str"
             if kind == "findReplace":
                 expression = (
                     f"{base}.replace({params['find']!r}, {params['replacement']!r}, "
@@ -2062,7 +2095,10 @@ class PandasEngine(DataFrameEngine):
                 expression = f"{base}.split({params['delimiter']!r}, regex=False).str.get({params['index']!r})"
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
-                expression = f"df.iloc[:, {position}].astype('string').map(str.{method}, na_action='ignore')"
+                expression = (
+                    f"_open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"
+                    f".map(str.{method}, na_action='ignore')"
+                )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
             return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
@@ -2115,7 +2151,10 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce').dt.strftime({params['format']!r})"
+            expression = (
+                f"pd.to_datetime(_open_wrangler_dictionary_values(df.iloc[:, {position}]), errors='coerce')"
+                f".dt.strftime({params['format']!r})"
+            )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
             return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
@@ -2358,7 +2397,7 @@ def _pandas_validate_pivot_wider(
     if any(is_internal_row_id_label(name) for name in output_names):
         raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
 
-    names = df.iloc[:, names_position]
+    names = _pandas_dictionary_values(df.iloc[:, names_position])
     invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)
     invalid = names.isna() | invalid_type | ~names.isin(output_values)
     if bool(invalid.any()):
@@ -2380,7 +2419,7 @@ def _pandas_pivot_wider_identifier_frame(
     states: list[tuple[object | None, bool]] = []
     allowed = {"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"}
     for position in identifiers:
-        source = df.iloc[:, position].reset_index(drop=True)
+        source = _pandas_dictionary_values(df.iloc[:, position]).reset_index(drop=True)
         semantic_type = _pandas_semantic_type(source)
         if semantic_type not in allowed:
             raise EngineError(
@@ -2411,7 +2450,7 @@ def _pandas_nullable_pivot_series(values: Any, size: int, name: str) -> Any:
         return pd.Series(pd.array([pd.NA] * size, dtype=nullable), name=name)
     if pd.api.types.is_bool_dtype(dtype):
         return pd.Series(pd.array([pd.NA] * size, dtype=pd.BooleanDtype()), name=name)
-    if pd.api.types.is_float_dtype(dtype):
+    if isinstance(dtype, np.dtype) and pd.api.types.is_float_dtype(dtype):
         return pd.Series(np.full(size, np.nan, dtype=dtype), name=name)
     try:
         return pd.Series(pd.array([pd.NA] * size, dtype=dtype), name=name)
@@ -2430,8 +2469,8 @@ def _pandas_pivot_wider(
     identifiers, output_values, output_names = _pandas_validate_pivot_wider(
         df, names_position, values_position, outputs
     )
-    names = df.iloc[:, names_position].reset_index(drop=True)
-    values = df.iloc[:, values_position].reset_index(drop=True)
+    names = _pandas_dictionary_values(df.iloc[:, names_position]).reset_index(drop=True)
+    values = _pandas_dictionary_values(df.iloc[:, values_position]).reset_index(drop=True)
     if identifiers:
         identifier_frame, key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
         group_codes = identifier_frame.groupby(
@@ -2479,8 +2518,8 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "        raise ValueError('Pivot wider would create duplicate column names.')",
         f"    if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) for name in output_names):",
         '        raise ValueError("Pivot wider would create Open Wrangler\'s reserved private row-identity column.")',
-        "    names = df.iloc[:, names_position].reset_index(drop=True)",
-        "    values = df.iloc[:, values_position].reset_index(drop=True)",
+        "    names = _open_wrangler_dictionary_values(df.iloc[:, names_position]).reset_index(drop=True)",
+        "    values = _open_wrangler_dictionary_values(df.iloc[:, values_position]).reset_index(drop=True)",
         "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)",
         "    invalid = names.isna() | invalid_type | ~names.isin(output_values)",
         "    if bool(invalid.any()):",
@@ -2493,18 +2532,26 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "'timedelta', 'timedelta64', 'bytes', 'date'}"
         ),
         "    for position in identifiers:",
-        "        source = df.iloc[:, position].reset_index(drop=True)",
+        "        source = _open_wrangler_dictionary_values(df.iloc[:, position]).reset_index(drop=True)",
         (
             "        if pd.api.types.is_object_dtype(source.dtype) and "
             "pd.api.types.infer_dtype(source, skipna=True) not in allowed_object_kinds:"
         ),
         "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
+        "        arrow_scalar = False",
+        "        if isinstance(source.dtype, pd.ArrowDtype):",
+        "            import pyarrow as pa",
+        "            arrow_type = source.dtype.pyarrow_dtype",
+        "            arrow_scalar = (pa.types.is_duration(arrow_type) or pa.types.is_binary(arrow_type)",
+        "                            or pa.types.is_large_binary(arrow_type)",
+        "                            or pa.types.is_fixed_size_binary(arrow_type))",
         (
             "        if not (pd.api.types.is_object_dtype(source.dtype) or isinstance(source.dtype, "
             "(pd.StringDtype, pd.CategoricalDtype)) or pd.api.types.is_numeric_dtype(source.dtype) "
             "or pd.api.types.is_bool_dtype(source.dtype) or "
             "pd.api.types.is_datetime64_any_dtype(source.dtype) or "
-            "pd.api.types.is_timedelta64_dtype(source.dtype)):"
+            "pd.api.types.is_timedelta64_dtype(source.dtype) or pd.api.types.is_string_dtype(source.dtype) "
+            "or arrow_scalar):"
         ),
         "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
         "        prepared, sentinel, integer_key = _open_wrangler_prepare_group_key(source)",
@@ -2560,7 +2607,7 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=nullable), name=output_name)",
         "        elif pd.api.types.is_bool_dtype(dtype):",
         "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=pd.BooleanDtype()), name=output_name)",
-        "        elif pd.api.types.is_float_dtype(dtype):",
+        "        elif isinstance(dtype, np.dtype) and pd.api.types.is_float_dtype(dtype):",
         "            output = pd.Series(np.full(group_count, np.nan, dtype=dtype), name=output_name)",
         "        else:",
         "            try:",
@@ -4197,8 +4244,7 @@ def _pandas_by_example_expression(
     if kind == "concat":
         result: Any = pd.Series("", index=df.index, dtype="string")
         for part in program["parts"]:
-            value = _pandas_by_example_expression(df, part, resolve_position)
-            result = result + (value.astype("string") if hasattr(value, "astype") else str(value))
+            result = result + _pandas_string_expression(df, part, resolve_position)
         return result
     if kind == "regexExtract":
         value = _pandas_string_expression(df, program["input"], resolve_position)
@@ -4216,6 +4262,8 @@ def _pandas_by_example_expression(
         return value.str.slice(0, 1).str.translate(_ASCII_TO_UPPER) + value.str.slice(1).str.translate(_ASCII_TO_LOWER)
     if kind == "datetimeFormat":
         value = _pandas_by_example_expression(df, program["input"], resolve_position)
+        if isinstance(value, pd.Series):
+            value = _pandas_dictionary_values(value)
         return (
             pd.to_datetime(value, format=program["inputFormat"], errors="coerce")
             .dt.strftime(program["outputFormat"])
@@ -4250,6 +4298,8 @@ def _pandas_string_expression(
     import pandas as pd
 
     value = _pandas_by_example_expression(df, program, resolve_position)
+    if isinstance(value, pd.Series):
+        value = _pandas_dictionary_values(value)
     return value.astype("string") if hasattr(value, "astype") else pd.Series(value, index=df.index, dtype="string")
 
 
@@ -4288,8 +4338,11 @@ def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
             f"{value}.str.slice(1).str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r})))"
         )
     if kind == "datetimeFormat":
+        value = _compile_pandas_by_example(program["input"])
+        if program["input"]["kind"] != "literal":
+            value = f"_open_wrangler_dictionary_values({value})"
         return (
-            f"pd.to_datetime({_compile_pandas_by_example(program['input'])}, "
+            f"pd.to_datetime({value}, "
             f"format={program['inputFormat']!r}, errors='coerce').dt.strftime({program['outputFormat']!r})"
             ".astype('string')"
         )
@@ -4316,7 +4369,7 @@ def _compile_pandas_string(program: Mapping[str, Any]) -> str:
     return (
         f"pd.Series({expression!s}, index=df.index, dtype='string')"
         if program["kind"] == "literal"
-        else f"{expression}.astype('string')"
+        else f"_open_wrangler_dictionary_values({expression}).astype('string')"
     )
 
 
