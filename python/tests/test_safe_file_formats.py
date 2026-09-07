@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import Mock
 
 import pandas as pd
@@ -10,11 +11,19 @@ from openwrangler_runtime.session import SessionManager
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
-def test_ndjson_is_the_exact_jsonl_input_alias(backend: str, tmp_path) -> None:
-    source_path = tmp_path / "events [literal].ndjson"
+@pytest.mark.parametrize("name", ["events [literal].ndjson", "events %20.ndjson"])
+def test_ndjson_is_the_exact_jsonl_input_alias(backend: str, name: str, tmp_path) -> None:
+    source_path = tmp_path / name
     source_bytes = b'{"city":"Milan","value":1}\n{"city":"Berlin","value":2}\n'
     source_path.write_bytes(source_bytes)
     manager = SessionManager()
+
+    if backend == "polars" and os.name == "nt" and "[" in str(source_path):
+        with pytest.raises(EngineError, match="Windows.*glob"):
+            manager.open_session({"kind": "file", "label": source_path.name, "path": str(source_path)}, backend=backend)
+        assert manager.sessions == {}
+        assert source_path.read_bytes() == source_bytes
+        return
 
     opened = manager.open_session(
         {"kind": "file", "label": source_path.name, "path": str(source_path)},

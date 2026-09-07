@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import glob
+import io
+import os
+import subprocess
+import sys
 from decimal import Decimal
 from math import nextafter
 from pathlib import Path
+from textwrap import dedent
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import polars as pl
@@ -17,6 +24,7 @@ from openwrangler_runtime.export_target import ExportWriterPath, _regular_file_i
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session_source import SourceChangedError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -202,10 +210,206 @@ def test_polars_file_scans_treat_glob_metacharacters_as_literal_path_characters(
     _write_polars_file(tmp_path / f"p source.{extension}", extension, [99])
 
     options = {"delimiter": "\t"} if extension == "tsv" else None
+    if extension == "jsonl" and os.name == "nt":
+        with pytest.raises(EngineError, match="Windows.*glob"):
+            PolarsEngine().read_file(str(path), options)
+        return
     frame = PolarsEngine().read_file(str(path), options)
 
     assert isinstance(frame, pl.LazyFrame)
     assert frame.collect().get_column("value").to_list() == [17, 18]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot scan literal NDJSON glob characters.")
+@pytest.mark.parametrize(
+    "name",
+    [
+        "[selected].jsonl",
+        "question?.ndjson",
+        "star*.ndjson",
+        "space %20 {x}].ndjson",
+        "[nested]/source.ndjson",
+        "back\\slash.ndjson",
+    ],
+)
+def test_polars_ndjson_session_reads_only_the_selected_file_and_invalidates_replacement(
+    name: str, tmp_path: Path
+) -> None:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'{"value":17}\n{"value":18}\n')
+    before = path.read_bytes()
+    escaped = Path(glob.escape(str(path)))
+    if escaped != path:
+        escaped.mkdir(parents=True)
+        (escaped / "other.ndjson").write_bytes(b'{"value":99}\n')
+    encoded = tmp_path / path.as_uri().rsplit("/", 1)[1]
+    if encoded != path:
+        encoded.write_bytes(b'{"value":99}\n')
+    manager = SessionManager()
+    opened = manager.open_session({"kind": "file", "label": name, "path": str(path)}, backend="polars", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    try:
+        assert opened["page"]["rows"][0]["values"][0]["display"] == "17"
+        assert opened["metadata"]["shape"] == {"rows": 2, "columns": 1}
+        page = manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+        assert page["page"]["rows"][0]["values"][0]["display"] == "18"
+        frame = manager.sessions[session_id].original
+        engine = PolarsEngine()
+        schema = engine.schema(frame)
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "sort",
+                    "kind": "sortRows",
+                    "params": {"rules": [{"column": lineage[0], "direction": "desc", "nulls": "last"}]},
+                }
+            ),
+            schema,
+            lineage,
+        )
+        engine.validate_transform_preflight(frame, operation, engine.shape(frame))
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            assert isinstance(result, pl.LazyFrame)
+            assert result.collect().get_column("value").to_list() == [18, 17]
+        assert path.read_bytes() == before
+        path.rename(tmp_path / "original.ndjson")
+        path.write_bytes(b'{"value":99}\n')
+        with pytest.raises(SourceChangedError):
+            manager.get_page(session_id, 0, 0, 1, {"filters": [], "sort": []})
+    finally:
+        manager.close_session(session_id, 0)
+    assert not manager.sessions
+
+
+@pytest.mark.skipif(os.name == "nt", reason="The native descriptor bridge is Unix-only.")
+def test_polars_ndjson_native_plan_outlives_the_closed_builtin_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "lifetime.ndjson"
+    path.write_bytes(b'{"value":17}\n{"value":18}\n')
+    native_scan = pl.scan_ndjson
+    streams: list[io.BufferedReader] = []
+
+    def scan(source: Any) -> pl.LazyFrame:
+        assert type(source) is io.BufferedReader
+        assert not source.closed
+        streams.append(source)
+        return native_scan(source)
+
+    monkeypatch.setattr(pl, "scan_ndjson", scan)
+    frame = PolarsEngine().read_file(str(path))
+    assert streams[0].closed
+    clone = frame.clone()
+    del frame
+    assert clone.select("value").limit(1).collect().to_dicts() == [{"value": 17}]
+    assert clone.collect().get_column("value").to_list() == [17, 18]
+
+
+@pytest.mark.parametrize(
+    "name", ["plain.ndjson", "space %20 {x}].jsonl", "[selected].jsonl", "question?.jsonl", "star*.jsonl"]
+)
+def test_polars_ndjson_windows_branch_uses_direct_paths_or_refuses_glob_syntax(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This checks dispatch on every platform; native Windows qualification is separate.
+    path = tmp_path / name
+    calls: list[str] = []
+    monkeypatch.setattr(polars_engine, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(pl, "scan_ndjson", lambda source: calls.append(source))
+    if any(symbol in str(path) for symbol in "*?["):
+        with pytest.raises(EngineError, match="Windows.*glob"):
+            PolarsEngine().read_file(str(path))
+        assert not calls
+    else:
+        PolarsEngine().read_file(str(path))
+        assert calls == [str(path.absolute())]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Resource limits and native file duplication are Unix-only.")
+@pytest.mark.parametrize("exhaust", [False, True])
+@pytest.mark.parametrize("constructor_failure", [False, True])
+def test_polars_ndjson_native_handle_failure_refuses_buffering_in_an_isolated_process(
+    exhaust: bool, constructor_failure: bool, tmp_path: Path
+) -> None:
+    path = tmp_path / "source.ndjson"
+    path.write_bytes(b'{"value":17}\n' * 100_000)
+    script = dedent("""
+        import gc, os, resource, sys, tracemalloc
+        from pathlib import Path
+        import polars as pl
+        from openwrangler_runtime.engines.polars_engine import PolarsEngine
+        from openwrangler_runtime.engines.base import EngineError
+
+        path, exhaust, constructor_failure = sys.argv[1], sys.argv[2] == 'True', sys.argv[3] == 'True'
+        engine = PolarsEngine()
+        engine.read_file(path).limit(1).collect()
+        gc.collect()
+        native_scan = pl.scan_ndjson
+        if constructor_failure:
+            def fail_after_source(*args, **kwargs):
+                native_scan(*args, **kwargs)
+                raise ValueError('owned constructor failure')
+            pl.scan_ndjson = fail_after_source
+        limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        fillers = []
+        frame = None
+        outcome = 'returned'
+        try:
+            if exhaust:
+                soft = 64 if limit[0] == resource.RLIM_INFINITY else min(64, limit[0])
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, limit[1]))
+                while True:
+                    try:
+                        fillers.append(os.open(os.devnull, os.O_RDONLY))
+                    except OSError:
+                        break
+                os.close(fillers.pop())  # Builtin open succeeds, but native duplication cannot.
+            tracemalloc.start()
+            try:
+                frame = engine.read_file(path)
+            except EngineError as error:
+                assert 'native file handle' in str(error), str(error)
+                outcome = 'refused'
+            except ValueError as error:
+                assert str(error) == 'owned constructor failure'
+                outcome = 'constructor failure'
+            finally:
+                peak = tracemalloc.get_traced_memory()[1]
+                tracemalloc.stop()
+        finally:
+            for descriptor in fillers:
+                os.close(descriptor)
+            resource.setrlimit(resource.RLIMIT_NOFILE, limit)
+        expected = 'refused' if exhaust else 'constructor failure' if constructor_failure else 'returned'
+        assert outcome == expected, (outcome, expected)
+        assert peak < Path(path).stat().st_size // 2, peak
+        if frame is not None:
+            assert frame.limit(1).collect().to_dicts() == [{'value': 17}]
+        del frame
+        gc.collect()
+        if sys.platform.startswith('linux'):
+            selected = Path(path).stat()
+            for entry in Path('/proc/self/fd').iterdir():
+                try:
+                    metadata = os.fstat(int(entry.name))
+                except OSError:
+                    continue
+                assert (metadata.st_dev, metadata.st_ino) != (selected.st_dev, selected.st_ino)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path), str(exhaust), str(constructor_failure)],
+        env={**os.environ, "PYTHONPATH": str(ROOT / "python")},
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
 
 
 def test_polars_literal_file_scan_disables_a_native_glob_option(
@@ -292,7 +496,7 @@ def test_lazy_polars_page_projects_before_the_terminal_collect(monkeypatch: pyte
     assert [row["values"][0]["display"] for row in page["rows"]] == ["30", "40"]
 
 
-@pytest.mark.parametrize("extension", ["csv", "parquet"])
+@pytest.mark.parametrize("extension", ["csv", "parquet", "jsonl"])
 def test_real_polars_scan_selects_only_the_page_projection_before_collect(
     extension: str,
     tmp_path: Path,
@@ -302,8 +506,10 @@ def test_real_polars_scan_selects_only_the_page_projection_before_collect(
     source = pl.DataFrame({"omitted": [10, 20], "selected": [30, 40], "also_omitted": [50, 60]})
     if extension == "csv":
         source.write_csv(path)
-    else:
+    elif extension == "parquet":
         source.write_parquet(path)
+    else:
+        source.write_ndjson(path)
 
     engine = PolarsEngine()
     frame = engine.ensure_row_ids(engine.read_file(str(path)), f"real-{extension}-projection")
