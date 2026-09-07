@@ -263,3 +263,162 @@ def test_pandas_missing_arrow_decimal_groups_keep_declared_scale_and_generated_t
         assert actual["mean"].isna().all() and actual["median"].isna().all()
         assert [str(value) for value in actual["sum"]] == ([] if empty else ["0.000"])
         assert cast(Any, frame["value"].array).__arrow_array__().equals(pa.chunked_array([values]))
+
+
+def _native_floating_series(values: list[float | None], storage: str, bits: int) -> pd.Series:
+    import numpy as np
+
+    if storage == "nullable":
+        return pd.Series(
+            pd.arrays.FloatingArray(
+                np.array([np.nan if value is None else value for value in values], dtype=f"float{bits}"),
+                np.array([value is None for value in values]),
+            )
+        )
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.float32() if bits == 32 else pa.float64()
+    chunks = [pa.array(part, type=dtype, from_pandas=False) for part in (values[:3], values[3:])]
+    if storage == "dictionary":
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    return pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+
+
+@pytest.mark.parametrize("storage", ["arrow", "dictionary", "nullable"])
+@pytest.mark.parametrize("bits", [32, 64])
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_floating_group_keys_use_numeric_equality_and_preserve_repeated_operands(
+    storage: str, bits: int, empty: bool
+) -> None:
+    import numpy as np
+
+    values = [-0.0, 0.0, 0.0, -0.0, float("nan"), None, 1.0, 1.0]
+    frame = pd.DataFrame(
+        {
+            "partition": ["a", "a", "b", "b", "missing", "missing", "finite", "finite"],
+            "value": _native_floating_series(values, storage, bits),
+        }
+    )
+    if empty:
+        frame = frame.iloc[:0]
+    frame.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(frame))], names=["outer", "inner"])
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operations = ("count", "nUnique", "sum", "mean", "median", "min", "max", "first", "last")
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "floating-keys",
+                "kind": "groupBy",
+                "params": {
+                    "keys": lineage,
+                    "aggregations": [{"column": lineage[1], "operation": name, "alias": name} for name in operations],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    control = frame.copy()
+    control.isetitem(1, pd.Series(values[: len(frame)], index=frame.index, dtype=f"float{bits}"))
+    expected = _typed_rows(runtime, runtime.apply_transform(control, operation))
+    results = [runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)]
+    for result in results:
+        assert _typed_rows(runtime, result) == expected
+        if storage == "nullable":
+            assert result["value"].dtype == frame["value"].dtype
+        else:
+            pa = pytest.importorskip("pyarrow")
+            assert result["value"].dtype == pd.ArrowDtype(pa.float32() if bits == 32 else pa.float64())
+        if not empty:
+            assert result["partition"].tolist() == ["a", "b", "missing", "finite"]
+            assert result["count"].tolist() == [2, 2, 0, 2]
+            assert result["nUnique"].tolist() == [1, 1, 0, 1]
+            assert np.signbit(result["value"].iloc[:2].to_numpy(dtype=float)).tolist() == [True, True]
+            assert np.signbit(result["first"].iloc[:2].to_numpy(dtype=float)).tolist() == [True, False]
+            assert np.signbit(result["last"].iloc[:2].to_numpy(dtype=float)).tolist() == [False, True]
+        pd.testing.assert_frame_equal(frame, original)
+    pd.testing.assert_frame_equal(results[0], results[1])
+
+
+@pytest.mark.parametrize("storage", ["arrow", "dictionary", "nullable"])
+@pytest.mark.parametrize("bits", [32, 64])
+@pytest.mark.parametrize("unrelated_empty_group", [False, True])
+def test_pandas_floating_aggregates_exclude_input_nan_and_preserve_computed_nan(
+    storage: str, bits: int, unrelated_empty_group: bool
+) -> None:
+    values = [float("nan"), None, 1.0, float("inf"), -float("inf"), None]
+    groups = ["input"] * 3 + ["computed"] * 3
+    if unrelated_empty_group:
+        values += [float("nan"), None]
+        groups += ["empty", "empty"]
+    frame = pd.DataFrame({"group": groups, "value": _native_floating_series(values, storage, bits)})
+    frame.attrs["annotation"] = "source"
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(
+        runtime, frame, ("count", "nUnique", "sum", "mean", "median", "min", "max", "first", "last")
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        typed = _typed_rows(runtime, result)
+        for name in ("sum", "mean", "median", "min", "max", "first", "last"):
+            assert typed[0][name]["kind"] == "number"
+            assert typed[0][name]["raw"] == 1.0
+        assert result["count"].tolist() == ([1, 2, 0] if unrelated_empty_group else [1, 2])
+        assert result["nUnique"].tolist() == ([1, 2, 0] if unrelated_empty_group else [1, 2])
+        for name in ("sum", "mean", "median"):
+            assert typed[1][name]["kind"] == "nan"
+        if unrelated_empty_group:
+            assert typed[2]["sum"]["raw"] == 0.0
+            for name in ("mean", "median", "min", "max", "first", "last"):
+                assert typed[2][name]["kind"] == "null"
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([], []),
+        ([None, None], [0]),
+        ([1.0, 2.0, 3.0], [2, 1]),
+        ([1.0, float("nan"), 2.0, None], [1, 1]),
+        ([-0.0, 0.0, float("inf"), -float("inf")], [2, 2]),
+    ],
+)
+def test_pandas_arrow_half_float_count_keeps_finite_values(values: list[float | None], expected: list[int]) -> None:
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series(["a" if i < 2 else "b" for i in range(len(values))], dtype="string"),
+            "value": pd.Series(pd.arrays.ArrowExtensionArray(pa.array(values, type=pa.float16(), from_pandas=False))),
+        }
+    )
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("count",))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["count"].tolist() == expected
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("fill", [0.0, float("nan")])
+def test_pandas_sparse_float_group_sum_retains_native_missing_values(fill: float) -> None:
+    frame = pd.DataFrame(
+        {
+            "group": ["a", "a", "b"],
+            "value": pd.Series([1.0, float("nan"), 2.0], dtype=pd.SparseDtype("float32", fill)),
+        }
+    )
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("sum",))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert result["sum"].tolist() == [1.0, 2.0]
+        assert result["sum"].dtype == frame["value"].dtype
+        pd.testing.assert_frame_equal(frame, original)
