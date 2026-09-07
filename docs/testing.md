@@ -84,6 +84,10 @@ double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export re
 negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source
 identity. Native R's catalog owns its corresponding numeric cases and executes them under altered display options.
 
+`python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
+isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
+coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
+
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
 component tests own checkbox membership, saved scalar selections, and unnamed-column navigation; the production

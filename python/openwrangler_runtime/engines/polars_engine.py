@@ -19,6 +19,7 @@ from ..custom_code_scope import (
     execute_custom_code,
 )
 from ..export_target import ExportWriterPath
+from ..generated_helpers import select_generated_helpers
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -1497,6 +1498,11 @@ class PolarsEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
+        clean_data_lines = ["def clean_data(df):"]
+        for index, step in enumerate(plan):
+            clean_data_lines.extend(self._compile_step(step, index))
+        clean_data_lines.append("    return df")
+        clean_data = "\n".join(clean_data_lines)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
@@ -1521,8 +1527,10 @@ class PolarsEngine(DataFrameEngine):
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
         if needs_fill_helpers:
-            lines.extend(_generated_polars_fill_helpers())
-            lines.extend(_generated_polars_linear_interpolation_helpers())
+            fill_helpers = "\n".join(
+                [*_generated_polars_fill_helpers(), *_generated_polars_linear_interpolation_helpers()]
+            )
+            lines.extend([select_generated_helpers(fill_helpers, clean_data), ""])
         if any(step["kind"] == "pivotLonger" for step in plan):
             lines.extend(
                 [
@@ -1752,10 +1760,7 @@ class PolarsEngine(DataFrameEngine):
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
                 lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
-        lines.extend(["", "", "def clean_data(df):"])
-        for index, step in enumerate(plan):
-            lines.extend(self._compile_step(step, index))
-        lines.append("    return df")
+        lines.extend(["", "", clean_data])
         return "\n".join(lines) + "\n"
 
     def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
