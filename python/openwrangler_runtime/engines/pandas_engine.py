@@ -440,7 +440,7 @@ class PandasEngine(DataFrameEngine):
         format_name = normalized["format"]
         df = self._visible_frame(self.normalize(frame))
         preserve_index = normalized["rowAxisPolicy"] == "preserve"
-        df = _pandas_dictionary_export_frame(df, preserve_index)
+        df = _pandas_scalar_export_frame(df, preserve_index)
         with path.open_binary_writer() if isinstance(path, ExportWriterPath) else nullcontext(path) as destination:
             if format_name == "csv":
                 df.to_csv(
@@ -453,7 +453,7 @@ class PandasEngine(DataFrameEngine):
                 )
                 return
             if format_name == "parquet":
-                _pandas_parquet_frame(df).to_parquet(destination, index=preserve_index)
+                _pandas_parquet_frame(df, preserve_index).to_parquet(destination, index=preserve_index)
                 return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
 
@@ -3832,13 +3832,13 @@ def _pandas_preserve_integer_result(value: Any) -> Any:
     return _pandas_normalize_integer_series(value, enforce_envelope=False)
 
 
-def _pandas_dictionary_export_frame(df: Any, preserve_index: bool) -> Any:
+def _pandas_scalar_export_frame(df: Any, preserve_index: bool) -> Any:
     import pandas as pd
 
     result = df
     for position in range(df.shape[1]):
         series = df.iloc[:, position]
-        logical = _pandas_dictionary_values(series)
+        logical = _pandas_scalar_values(series)
         if logical is series:
             continue
         if result is df:
@@ -3847,25 +3847,33 @@ def _pandas_dictionary_export_frame(df: Any, preserve_index: bool) -> Any:
     if preserve_index:
         index = df.index
         levels = list(index.levels) if isinstance(index, pd.MultiIndex) else [index]
-        changed = False
+        changed: dict[int, Any] = {}
         for position, level in enumerate(levels):
-            if _pandas_dictionary_value_type(level) is None:
-                continue
-            logical = _pandas_dictionary_values(pd.Series(level.array, copy=False))
-            levels[position] = pd.Index(logical.array, name=level.name)
-            changed = True
+            series = pd.Series(level.array, copy=False)
+            logical = _pandas_scalar_values(series)
+            if logical is not series:
+                changed[position] = logical.array
         if changed:
             if result is df:
                 result = df.copy(deep=False)
-            result.index = (
-                pd.MultiIndex(levels=levels, codes=index.codes, names=index.names)
-                if isinstance(index, pd.MultiIndex)
-                else levels[0]
-            )
+            if isinstance(index, pd.MultiIndex):
+                # Distinct storage entries can have the same logical value.
+                # Rebuild native levels/codes from the actual row labels.
+                arrays = [
+                    changed[position].take(index.codes[position], allow_fill=True)
+                    if position in changed
+                    else index.get_level_values(position).array
+                    for position in range(index.nlevels)
+                ]
+                result.index = pd.MultiIndex.from_arrays(arrays, names=index.names)
+            else:
+                result.index = pd.Index(changed[0], name=index.name)
     return result
 
 
 def _pandas_read_parquet(path: str) -> Any:
+    import json
+
     import pandas as pd
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -3873,25 +3881,49 @@ def _pandas_read_parquet(path: str) -> Any:
     with open(path, "rb") as source:
         descriptor = source.fileno()
         before = _source_fingerprint(os.fstat(descriptor), descriptor)
-        frame = pd.read_parquet(source)
+        schema = pq.ParquetFile(source).schema_arrow
+        scalar_types = (pa.Bool8Type, pa.UuidType)
+        has_scalar_fields = any(isinstance(field.type, scalar_types) for field in schema)
+        pandas_metadata = schema.pandas_metadata or {}
+        if has_scalar_fields:
+            metadata = dict(schema.metadata or {})
+            if pandas_metadata:
+                for column in pandas_metadata["columns"]:
+                    name = column.get("field_name", column.get("name"))
+                    position = schema.get_field_index(name) if isinstance(name, str) else -1
+                    if (
+                        position >= 0
+                        and isinstance(schema.field(position).type, scalar_types)
+                        and column.get("numpy_type") == str(pd.ArrowDtype(schema.field(position).type))
+                    ):
+                        # Pandas cannot parse these extension dtype names. Its
+                        # ordinary decoder preserves exact int8/16-byte storage.
+                        column["numpy_type"] = "object"
+                metadata[b"pandas"] = json.dumps(pandas_metadata).encode()
+            frame = pd.read_parquet(source, schema=schema.with_metadata(metadata))
+        else:
+            frame = pd.read_parquet(source)
         levels = [frame.index.get_level_values(level) for level in range(frame.index.nlevels)]
-        if not any(pd.api.types.is_float_dtype(level.dtype) for level in levels):
+        if not has_scalar_fields and not any(pd.api.types.is_float_dtype(level.dtype) for level in levels):
             return frame
 
-        schema = pq.ParquetFile(source).schema_arrow
         effective_fields: list[Any | None] = []
-        for item in (schema.pandas_metadata or {}).get("index_columns", []):
+        index_positions: set[int] = set()
+        for item in pandas_metadata.get("index_columns", []):
             if isinstance(item, str):
                 position = schema.get_field_index(item)
                 if position >= 0:
                     effective_fields.append(schema.field(position))
+                    index_positions.add(position)
             elif item["kind"] == "range":
                 index = pd.RangeIndex(item["start"], item["stop"], step=item["step"], name=item["name"])
                 if len(index) == len(frame):
                     effective_fields.append(None)
-        if not any(field is not None and pa.types.is_integer(field.type) for field in effective_fields):
+        if not has_scalar_fields and not any(
+            field is not None and pa.types.is_integer(field.type) for field in effective_fields
+        ):
             return frame
-        if len(effective_fields) != len(levels):
+        if effective_fields and len(effective_fields) != len(levels):
             raise EngineError("Could not match Parquet index metadata to the loaded frame.")
         selected = [
             (level, field)
@@ -3900,31 +3932,53 @@ def _pandas_read_parquet(path: str) -> Any:
             and pa.types.is_integer(field.type)
             and pd.api.types.is_float_dtype(levels[level].dtype)
         ]
-        if not selected:
-            return frame
-
+        changed_index = bool(selected)
         # Ordinary Pandas decoding loses nullable integer index precision. Read
         # only those physical fields, keeping normal data-column conversion.
-        table = pq.read_table(source, columns=[field.name for _, field in selected], use_pandas_metadata=False)
-        if _source_fingerprint(os.fstat(descriptor), descriptor) != before:
+        table = (
+            pq.read_table(source, columns=[field.name for _, field in selected], use_pandas_metadata=False)
+            if selected
+            else None
+        )
+        if (selected or has_scalar_fields) and _source_fingerprint(os.fstat(descriptor), descriptor) != before:
             raise EngineError("The Parquet source changed while it was being read. Open it again.")
-        if len(table) != len(frame):
-            raise EngineError("Could not match Parquet index values to the loaded frame.")
-        for level, field in selected:
-            levels[level] = pd.Index(
-                table.column(field.name), dtype=pd.ArrowDtype(field.type), name=frame.index.names[level]
-            )
-        frame.index = levels[0] if len(levels) == 1 else pd.MultiIndex.from_arrays(levels, names=frame.index.names)
+        if table is not None:
+            if len(table) != len(frame):
+                raise EngineError("Could not match Parquet index values to the loaded frame.")
+            for level, field in selected:
+                levels[level] = pd.Index(
+                    table.column(field.name), dtype=pd.ArrowDtype(field.type), name=frame.index.names[level]
+                )
+
+        if has_scalar_fields:
+            data_fields = [field for position, field in enumerate(schema) if position not in index_positions]
+            if len(data_fields) != len(frame.columns):
+                raise EngineError("Could not match Parquet column metadata to the loaded frame.")
+            for position, field in enumerate(data_fields):
+                if isinstance(field.type, scalar_types):
+                    array = pa.array(frame.iloc[:, position], type=field.type, from_pandas=True)
+                    logical = _pandas_scalar_values(pd.Series(pd.arrays.ArrowExtensionArray(array)))
+                    frame.isetitem(position, logical.array)
+            for level, field in enumerate(effective_fields):
+                if field is not None and isinstance(field.type, scalar_types):
+                    array = pa.array(levels[level], type=field.type, from_pandas=True)
+                    logical = _pandas_scalar_values(pd.Series(pd.arrays.ArrowExtensionArray(array)))
+                    levels[level] = pd.Index(logical.array, name=frame.index.names[level])
+                    changed_index = True
+        if changed_index:
+            frame.index = levels[0] if len(levels) == 1 else pd.MultiIndex.from_arrays(levels, names=frame.index.names)
         return frame
 
 
-def _pandas_parquet_frame(df: Any) -> Any:
+def _pandas_parquet_frame(df: Any, preserve_index: bool) -> Any:
     import pandas as pd
 
     result = df.copy()
+    if not preserve_index:
+        result.index = pd.RangeIndex(len(result))
     for position in range(result.shape[1]):
         series = result.iloc[:, position]
-        if not pd.api.types.is_object_dtype(series.dtype) or _pandas_semantic_type(series) != "integer":
+        if series.dtype != object or _pandas_semantic_type(series) != "integer":
             continue
         integer_values = _pandas_integer_values(series)
         if not integer_values or all(_INT64_MIN <= number <= _INT64_MAX for number in integer_values):

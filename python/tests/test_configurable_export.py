@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import duckdb
 import pandas as pd
@@ -18,6 +19,129 @@ from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.export_target import ExportTarget, ExportTargetError
 from openwrangler_runtime.session import SessionManager
+
+
+@pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+@pytest.mark.parametrize("index_policy", ["preserve", "omit"])
+def test_pandas_arrow_scalar_exports_write_logical_values(
+    tmp_path: Path, shape: str, format_name: str, index_policy: str
+) -> None:
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    first = UUID("00112233-4455-6677-8899-aabbccddeeff")
+    second = UUID("ffeeddcc-bbaa-9988-7766-554433221100")
+    boolean_values = [1, 0, -1, 2, None] if shape == "chunked" else ([] if shape == "empty" else [None, None])
+    uuid_values = [first, second, None, first, second] if shape == "chunked" else [None] * len(boolean_values)
+    source_columns = {}
+    for name, dtype, values in [("boolean", pa.bool8(), boolean_values), ("uuid", pa.uuid(), uuid_values)]:
+        array = pa.chunked_array([pa.array(values[:2], type=dtype), pa.array(values[2:], type=dtype)])
+        source_columns[name] = pd.Series(pd.arrays.ArrowExtensionArray(array))
+    source = pd.DataFrame(source_columns)
+    source["text"] = pd.Series(["É;quoted'" if position % 2 else None for position in range(len(source))], dtype=object)
+    source.index = pd.MultiIndex.from_arrays([["same"] * len(source), list(range(len(source)))], names=["group", "row"])
+    source.attrs = {"owner": {"unchanged": True}}
+    original_index = source.index
+    original_arrays = [source.iloc[:, position].array.__arrow_array__() for position in range(2)]
+    logical = pd.DataFrame(
+        {
+            "boolean": pd.Series(
+                pd.array([None if value is None else value != 0 for value in boolean_values], dtype="bool[pyarrow]")
+            ),
+            "uuid": pd.Series(
+                pd.array([None if value is None else str(value) for value in uuid_values], dtype="string[python]")
+            ),
+            "text": source["text"].reset_index(drop=True),
+        }
+    )
+    logical.index = source.index
+    logical.attrs = source.attrs
+    options: Any = {"format": format_name, "rowAxisPolicy": index_policy}
+    if format_name == "csv":
+        options.update(delimiter=";", quoteChar="'", encoding="utf-16", header=True)
+    destination = tmp_path / f"logical.{format_name}"
+    destination.touch()
+    identity = destination.stat()
+    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        PandasEngine().export_data(source, writer, options)
+    preserve_index = index_policy == "preserve"
+    if format_name == "csv":
+        expected = logical.to_csv(index=preserve_index, sep=";", quotechar="'", header=True).encode("utf-16")
+        assert destination.read_bytes() == expected
+    else:
+        actual_table = pq.read_table(destination)
+        assert pa.types.is_boolean(actual_table.schema.field("boolean").type)
+        assert pa.types.is_string(actual_table.schema.field("uuid").type)
+        expected = pd.read_parquet(io.BytesIO(logical.to_parquet(index=preserve_index)))
+        pd.testing.assert_frame_equal(PandasEngine().read_file(str(destination)), expected)
+    assert source.index is original_index
+    assert source.attrs == {"owner": {"unchanged": True}}
+    for position, original in enumerate(original_arrays):
+        array: Any = source.iloc[:, position].array
+        assert array.__arrow_array__().equals(original)
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid", "bool8-multi"])
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+@pytest.mark.parametrize("index_policy", ["preserve", "omit"])
+def test_pandas_arrow_scalar_index_exports_preserve_logical_labels(
+    tmp_path: Path, family: str, format_name: str, index_policy: str
+) -> None:
+    import io
+
+    import pyarrow as pa
+
+    is_boolean = family.startswith("bool8")
+    dtype = pa.bool8() if is_boolean else pa.uuid()
+    values = [1, -1, 2, 0, None] if is_boolean else [UUID(int=1), UUID(int=2), UUID(int=1), UUID(int=0), None]
+    array = pa.array(values, type=dtype)
+    level = pd.Index(pd.arrays.ArrowExtensionArray(array), name="label")
+    logical_values = [None if value is None else (value != 0 if is_boolean else str(value)) for value in values]
+    logical_level = pd.Index(
+        pd.array(logical_values, dtype="bool[pyarrow]" if is_boolean else "string[python]"), name="label"
+    )
+    if family == "bool8-multi":
+        # Bool8 lacks a native dictionary_encode kernel for level validation.
+        # These distinct physical entries deliberately collapse to logical True.
+        index = pd.MultiIndex(
+            levels=[level, pd.Index([0])],
+            codes=[[0, 1, 2, 3, 4, -1], [0] * 6],
+            names=["label", "order"],
+            verify_integrity=False,
+        )
+        logical_index = pd.MultiIndex.from_arrays(
+            [pd.array([*logical_values, None], dtype="bool[pyarrow]"), [0] * 6], names=index.names
+        )
+    else:
+        index, logical_index = level, logical_level
+    source = pd.DataFrame({"value": range(len(index))}, index=index)
+    source.attrs = {"kept": True}
+    logical = pd.DataFrame({"value": range(len(index))}, index=logical_index)
+    logical.attrs = source.attrs
+    options: Any = {"format": format_name, "rowAxisPolicy": index_policy}
+    if format_name == "csv":
+        options.update(delimiter=",", quoteChar='"', encoding="utf-8", header=True)
+    destination = tmp_path / f"indexed.{format_name}"
+    destination.touch()
+    identity = destination.stat()
+    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        PandasEngine().export_data(source, writer, options)
+    preserve_index = index_policy == "preserve"
+    if format_name == "csv":
+        assert destination.read_bytes() == logical.to_csv(index=preserve_index).encode()
+    else:
+        expected = pd.read_parquet(io.BytesIO(logical.to_parquet(index=preserve_index)))
+        pd.testing.assert_frame_equal(PandasEngine().read_file(str(destination)), expected)
+    assert source.index is index
+    assert source.attrs == {"kept": True}
+    current_level: Any = source.index.levels[0] if isinstance(source.index, pd.MultiIndex) else source.index
+    current_array: Any = current_level.array
+    assert current_array.__arrow_array__().equals(pa.chunked_array([array]))
+    if isinstance(source.index, pd.MultiIndex):
+        assert list(source.index.codes[0]) == [0, 1, 2, 3, 4, -1]
 
 
 @pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
