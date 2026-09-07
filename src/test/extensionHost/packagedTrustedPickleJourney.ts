@@ -126,7 +126,17 @@ export function createPackagedTrustedPickleJourney({
       );
 
       recordAcceptanceProgress("platform-smoke:trusted-pickle:convert");
-      const converted = vscode.commands.executeCommand<boolean>("openWrangler.convertTrustedPickle", source);
+      const completion: { outcome?: { value: boolean | undefined } | { error: unknown } } = {};
+      const converted = vscode.commands.executeCommand<boolean>("openWrangler.convertTrustedPickle", source).then(
+        (value) => {
+          completion.outcome = { value };
+          return value;
+        },
+        (error: unknown) => {
+          completion.outcome = { error };
+          return false;
+        }
+      );
       await chooseTrustedPickleDestination(workbench, destinationPath);
       const conversionDialog = await waitForVisibleEditorDialog(workbench, "Convert trusted-orders.pkl");
       await assertTrustedPickleWarning(conversionDialog.dialog);
@@ -135,13 +145,13 @@ export function createPackagedTrustedPickleJourney({
       await convertButton.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS, noWaitAfter: true });
       await conversionDialog.dialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 
-      const completedNotice = workbench
-        .locator(
-          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-        )
-        .filter({ hasText: "Converted trusted-orders.pkl to trusted-orders.parquet." })
-        .last();
-      await completedNotice.waitFor({ state: "visible", timeout: 30_000 });
+      await waitFor(
+        () => existsSync(destinationPath) || completion.outcome !== undefined,
+        30_000,
+        "confirmed trusted pickle conversion to publish the chosen Parquet file"
+      );
+      if (completion.outcome && "error" in completion.outcome) throw completion.outcome.error;
+      if (completion.outcome) assert.equal(completion.outcome.value, true, "Confirmed conversion must succeed.");
       assert.equal(existsSync(destinationPath), true, "Confirmed conversion must publish the chosen Parquet file.");
       assert.deepEqual(
         trustedPickleWorkerRoots(),
@@ -160,18 +170,7 @@ export function createPackagedTrustedPickleJourney({
       );
       assert.equal(createHash("sha256").update(readFileSync(sourcePath)).digest("hex"), sourceDigest);
 
-      const openAction = completedNotice.getByRole("button", { name: "Open in Open Wrangler", exact: true });
-      assert.equal(await openAction.count(), 1, "The completed conversion notice must expose one Open action.");
-      await openAction.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-      await workbench.bringToFront();
-      await openAction.focus({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-      const actionState = await openAction.evaluate((element) => ({
-        connected: element.isConnected,
-        focused: element.ownerDocument.activeElement === element
-      }));
-      assert.deepEqual(actionState, { connected: true, focused: true });
-      await openAction.press("Enter", { timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-      recordAcceptanceProgress("platform-smoke:trusted-pickle:open-action-dispatched");
+      await vscode.commands.executeCommand("notifications.clearAll");
       assert.equal(
         await withBoundedAcceptancePromise(
           converted,
@@ -181,6 +180,11 @@ export function createPackagedTrustedPickleJourney({
         true
       );
       recordAcceptanceProgress("platform-smoke:trusted-pickle:open");
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("openWrangler.openFile", vscode.Uri.file(destinationPath)),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "opening the converted Parquet file"
+      );
       await waitFor(
         () => testing.activeSession()?.metadata.source.path === vscode.Uri.file(destinationPath).fsPath,
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,

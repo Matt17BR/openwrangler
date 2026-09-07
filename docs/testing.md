@@ -117,6 +117,10 @@ VSCODE_TEST_VERSION=stable \
 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
 ```
 
+The broader platform smoke checks trusted-pickle publication, unchanged source bytes, worker cleanup, and opening
+the converted Parquet file through the public command. The optional completion-notification action has a direct
+command test; toast visibility is not the conversion-completion signal.
+
 The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
 failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
 
