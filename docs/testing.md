@@ -112,6 +112,8 @@ Export owner tests use actual files to cover source renames and replacements bef
 Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
 including Python Interactive's originating document. The existing atomic-file tests retain destination and temporary
 identity checks; runtime writers retain their separate output-handle contracts.
+The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
+owned process root when the session closes.
 
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
 negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source

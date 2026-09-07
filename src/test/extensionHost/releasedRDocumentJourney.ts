@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -277,11 +277,20 @@ export function createReleasedRDocumentJourney({
           [path.basename(exportPath), path.basename(parquetExportPath)].sort(),
           "R document exports must not retain sibling temporary files."
         );
-        assert.deepEqual(
-          readdirSync(path.join(processRoot, "exports")),
-          [],
-          "The R process must remove its private export artifacts after the host has copied them."
-        );
+        const privateExportRoot = path.join(processRoot, "exports");
+        const cleanedExports = readdirSync(privateExportRoot, { withFileTypes: true });
+        assert.equal(cleanedExports.length, 2, "Each R export must leave only its scrubbed private artifact.");
+        for (const entry of cleanedExports) {
+          assert.match(entry.name, /^\.openwrangler-cleanup-[A-Za-z0-9]+$/u);
+          assert.equal(entry.isDirectory(), true, "Private export cleanup must use an owned directory.");
+          const cleanupDirectory = path.join(privateExportRoot, entry.name);
+          assert.deepEqual(readdirSync(cleanupDirectory), ["artifact"]);
+          const artifactPath = path.join(cleanupDirectory, "artifact");
+          const artifact = lstatSync(artifactPath);
+          assert.equal(artifact.isFile(), true, "The scrubbed export artifact must be a regular file.");
+          assert.equal(artifact.nlink, 1, "The scrubbed export artifact must not have another link.");
+          assertExactBytes(readFileSync(artifactPath), Buffer.alloc(0), "Private R export bytes must be scrubbed.");
+        }
         assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
         assert.equal(
           sourceDocument.version,
