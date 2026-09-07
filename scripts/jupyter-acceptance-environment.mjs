@@ -446,13 +446,6 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   collapse: "2.1.7",
   nanoparquet: "0.5.1"
 });
-const R_ACCEPTANCE_PACKAGES = Object.freeze(Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS));
-const R_ACCEPTANCE_PACKAGE_RECORD = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
-  .map(([packageName, version]) => `${packageName}=${version}`)
-  .join("\n");
-const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
-  .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
-  .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
 const QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID = "python3";
@@ -632,7 +625,6 @@ const R_ACCEPTANCE_EXECUTABLE_PROBE = [
   'cat(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), sep = "")'
 ].join("\n");
 const R_ACCEPTANCE_PROBE = [
-  `.ow_expected <- c(${R_ACCEPTANCE_EXPECTED_VERSIONS})`,
   ".ow_packages <- names(.ow_expected)",
   '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
   ".ow_locations <- vapply(.ow_packages, function(.ow_package) {",
@@ -719,7 +711,7 @@ export function rAcceptanceRepositories(platform = process.platform) {
   throw new Error(`Released-Jupyter R acceptance does not support ${JSON.stringify(platform)}.`);
 }
 
-function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
+function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages) {
   const nativeCollapseInstall =
     platform === "darwin"
       ? [
@@ -735,7 +727,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
       : [];
   return [
     'Sys.setenv(MAKEFLAGS = "-s")',
-    `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
+    `.ow_packages <- c(${packages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
     platform === "darwin"
       ? '.ow_binary_supplemental_packages <- "nanoparquet"'
@@ -1931,9 +1923,13 @@ export async function prepareJupyterAcceptanceREnvironment(
     containedBy,
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
+    nativeEditorTooling = true,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
+  if (typeof nativeEditorTooling !== "boolean") {
+    throw new Error("Released-Jupyter R acceptance requires an explicit native editor tooling decision.");
+  }
   if (
     typeof directory !== "string" ||
     !isAbsolute(directory) ||
@@ -1956,6 +1952,15 @@ export async function prepareJupyterAcceptanceREnvironment(
     );
   }
 
+  const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(
+    ([packageName]) => nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName)
+  );
+  const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
+  const packageVersions = Object.freeze(Object.fromEntries(packageEntries));
+  const packageRecord = packageEntries.map(([packageName, version]) => `${packageName}=${version}`).join("\n");
+  const expectedVersions = packageEntries
+    .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
+    .join(", ");
   const repositories = rAcceptanceRepositories(platform);
   const canonicalRscript = validateRExecutable(rscript, "Rscript");
   const root = validateNewContainedRDirectory(directory, containedBy);
@@ -2034,7 +2039,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyProbe = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", R_ACCEPTANCE_PROBE],
+      args: ["--vanilla", "-e", `.ow_expected <- c(${expectedVersions})\n${R_ACCEPTANCE_PROBE}`],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency probe"
     },
@@ -2043,7 +2048,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyInstall = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform)],
+      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform, packages)],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
@@ -2060,9 +2065,9 @@ export async function prepareJupyterAcceptanceREnvironment(
     kernelBootstrapPath,
     kernelBootstrapStagePath,
     kernelSpecPath,
-    packages: R_ACCEPTANCE_PACKAGES,
-    packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
-    packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
+    packages,
+    packageVersions,
+    packageRecord,
     repository: repositories.repository,
     supplementalRepository: repositories.supplementalRepository,
     jupyterEnvironment: Object.freeze({

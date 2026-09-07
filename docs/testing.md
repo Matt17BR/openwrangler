@@ -241,6 +241,19 @@ This profile excludes PySpark, remote/coexistence, native R, and generic file/se
 or coexistence options are rejected. Leave the profile unset to run the complete default Python lane, including
 PySpark and generic verification. Qualification coverage is determined by the selected lane, not by a focused pass.
 
+## Native R editor dependencies
+
+The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
+`languageserver`, `rmarkdown`, and `knitr`; interactive-terminal and literate-documents journeys retain all three.
+Shared IRkernel, native-frame and Parquet fixtures keep their dependencies, including collapse and Rcpp.
+Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
+library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
+
+`scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
+ownership and rejected inputs through the command seam without starting R. Changes to this selection also require a
+fresh notebook core run and a full tooling/literate run against the same supplied VSIX; graph size alone does not
+establish setup-time savings.
+
 ## Release-candidate checks
 
 The release-candidate workflow packages the protected-main source once and retains one canonical VSIX, checksum, and
