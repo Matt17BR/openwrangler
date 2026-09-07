@@ -289,7 +289,7 @@ export function createReleasedRDocumentJourney({
           const artifact = lstatSync(artifactPath);
           assert.equal(artifact.isFile(), true, "The scrubbed export artifact must be a regular file.");
           assert.equal(artifact.nlink, 1, "The scrubbed export artifact must not have another link.");
-          assertExactBytes(readFileSync(artifactPath), Buffer.alloc(0), "Private R export bytes must be scrubbed.");
+          assert.equal(artifact.size, 0, "Private R export bytes must be scrubbed.");
         }
         assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
         assert.equal(
