@@ -36,6 +36,7 @@ from ..portable_regex import (
     PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
     portable_regex_contract,
 )
+from ..trusted_pickle_to_parquet import _source_fingerprint
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -411,7 +412,7 @@ class PandasEngine(DataFrameEngine):
                 engine=parser_engine,
             )
         if extension == ".parquet":
-            return pd.read_parquet(path)
+            return _pandas_read_parquet(path)
         if extension in {".jsonl", ".ndjson"}:
             return pd.read_json(path, lines=True)
         if extension in {".xlsx", ".xls"}:
@@ -3812,6 +3813,59 @@ def _pandas_dictionary_export_frame(df: Any, preserve_index: bool) -> Any:
                 else levels[0]
             )
     return result
+
+
+def _pandas_read_parquet(path: str) -> Any:
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    with open(path, "rb") as source:
+        descriptor = source.fileno()
+        before = _source_fingerprint(os.fstat(descriptor), descriptor)
+        frame = pd.read_parquet(source)
+        levels = [frame.index.get_level_values(level) for level in range(frame.index.nlevels)]
+        if not any(pd.api.types.is_float_dtype(level.dtype) for level in levels):
+            return frame
+
+        schema = pq.ParquetFile(source).schema_arrow
+        effective_fields: list[Any | None] = []
+        for item in (schema.pandas_metadata or {}).get("index_columns", []):
+            if isinstance(item, str):
+                position = schema.get_field_index(item)
+                if position >= 0:
+                    effective_fields.append(schema.field(position))
+            elif item["kind"] == "range":
+                index = pd.RangeIndex(item["start"], item["stop"], step=item["step"], name=item["name"])
+                if len(index) == len(frame):
+                    effective_fields.append(None)
+        if not any(field is not None and pa.types.is_integer(field.type) for field in effective_fields):
+            return frame
+        if len(effective_fields) != len(levels):
+            raise EngineError("Could not match Parquet index metadata to the loaded frame.")
+        selected = [
+            (level, field)
+            for level, field in enumerate(effective_fields)
+            if field is not None
+            and pa.types.is_integer(field.type)
+            and pd.api.types.is_float_dtype(levels[level].dtype)
+        ]
+        if not selected:
+            return frame
+
+        # Ordinary Pandas decoding loses nullable integer index precision. Read
+        # only those physical fields, keeping normal data-column conversion.
+        table = pq.read_table(source, columns=[field.name for _, field in selected], use_pandas_metadata=False)
+        if _source_fingerprint(os.fstat(descriptor), descriptor) != before:
+            raise EngineError("The Parquet source changed while it was being read. Open it again.")
+        if len(table) != len(frame):
+            raise EngineError("Could not match Parquet index values to the loaded frame.")
+        for level, field in selected:
+            levels[level] = pd.Index(
+                table.column(field.name), dtype=pd.ArrowDtype(field.type), name=frame.index.names[level]
+            )
+        frame.index = levels[0] if len(levels) == 1 else pd.MultiIndex.from_arrays(levels, names=frame.index.names)
+        return frame
 
 
 def _pandas_parquet_frame(df: Any) -> Any:
