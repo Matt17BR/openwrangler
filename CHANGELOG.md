@@ -12,6 +12,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated R follows native `data.table` column-metadata behavior across cleaning steps, including when later custom
+  code reads those attributes.
 - Pandas and Polars exports validate the destination file before truncation. Replacing the temporary path cannot
   redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
 - Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching

@@ -207,6 +207,10 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
+Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
+on its already-isolated `data.table` result without making another full data copy; Clone and Custom Code retain their
+explicit named-input behavior. This keeps later attribute-sensitive custom code consistent with the preview.
+
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
 sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal

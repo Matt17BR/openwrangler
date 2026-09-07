@@ -7936,7 +7936,18 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_integer64_force_missing <- function(.ow_values, .ow_missing) { .ow_storage <- base::unclass(.ow_values); .ow_storage[.ow_missing] <- base::unclass(.ow_integer64_missing)[[1L]]; .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_storage) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_storage }"
       )
     }
+    data_table_copy_metadata_lines <- c(
+      "  if (base::inherits(.ow_result, \"data.table\")) {",
+      "    for (.ow_column_position in base::seq_len(base::ncol(.ow_result))) data.table::setattr(base::.subset2(.ow_result, .ow_column_position), \"names\", NULL)",
+      "  }"
+    )
     for (step in bound_plan) {
+      # Match native copy metadata without copying the already-owned values.
+      # Clone and Custom Code preserve names. By Example validates named
+      # intermediates before its public result capture removes them.
+      if (!step$kind %in% c("cloneColumn", "customCode", "byExample")) {
+        lines <- c(lines, data_table_copy_metadata_lines)
+      }
       if (identical(step$kind, "sortRows")) {
         lines <- c(lines, row_step_code_lines(step))
       } else if (identical(step$kind, "filterRows")) {
@@ -9218,6 +9229,7 @@ openwrangler_r_kernel_agent <- local({
       } else {
         abort("runtime_error", "The R cleaning plan contains an unsupported operation")
       }
+      if (identical(step$kind, "byExample")) lines <- c(lines, data_table_copy_metadata_lines)
     }
     code <- paste(c(
       lines,
