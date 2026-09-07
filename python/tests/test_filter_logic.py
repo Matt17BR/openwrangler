@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import operator
+import sys
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -20,6 +21,7 @@ from openwrangler_runtime.engines.base import (
     EngineError,
     coerce_typed_view_value,
     generated_view_value_helper_lines,
+    normalize_cell,
     typed_selection_value,
 )
 from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
@@ -254,7 +256,7 @@ def test_pandas_predicate_operators_match_view_bound_and_generated(operator, cas
     assert [result["label"].tolist() for result in results] == [expected, expected, expected]
 
 
-def _assert_pandas_integer_query(frame, model, expected_rows, *, sort_only=False):
+def _assert_pandas_row_query(frame, model, expected_rows, *, sort_only=False):
     engine = PandasEngine()
     before = frame.copy(deep=True)
     schema = engine.schema(frame)
@@ -336,7 +338,7 @@ def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
             typed_selection_value(value, "integer") for value in selected
         ]
         expected = [i for i, value in enumerate(values) if not selected or (value is not None and value in selected)]
-        _assert_pandas_integer_query(frame, model, expected)
+        _assert_pandas_row_query(frame, model, expected)
     for include_nulls, include_nan in [(True, False), (False, True), (True, True)]:
         model = _value_selection_model("integer", typed_selection_value(0, "integer"))
         model["filters"][0]["valueFilter"].update(includeNulls=include_nulls, includeNaN=include_nan)
@@ -345,7 +347,7 @@ def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
             for i, value in enumerate(values)
             if value == 0 or (value is None and (include_nan if missing else include_nulls))
         ]
-        _assert_pandas_integer_query(frame, model, expected)
+        _assert_pandas_row_query(frame, model, expected)
     for spelling, compare in [
         ("equals", operator.eq),
         ("notEquals", operator.ne),
@@ -366,7 +368,7 @@ def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
                 "sort": [],
             }
             expected = [i for i, item in enumerate(values) if item is not None and compare(item, value)]
-            _assert_pandas_integer_query(frame, model, expected)
+            _assert_pandas_row_query(frame, model, expected)
     for low_value, high_value in [(low - 1, high + 1), (needle, needle), (high + 1, high + 2), (high, low)]:
         model = {
             "filters": [
@@ -385,7 +387,7 @@ def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
             ],
             "sort": [],
         }
-        _assert_pandas_integer_query(
+        _assert_pandas_row_query(
             frame,
             model,
             [i for i, value in enumerate(values) if value is not None and low_value <= value <= high_value],
@@ -397,9 +399,9 @@ def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
 def test_pandas_integer_filters_keep_empty_and_missing_storage(dtype, values):
     frame = _integer_query_frame(values, dtype)
     model = _value_selection_model("integer", typed_selection_value(2**64 - 1, "integer"))
-    _assert_pandas_integer_query(frame, model, [])
+    _assert_pandas_row_query(frame, model, [])
     model["filters"][0]["valueFilter"].update(includeNulls=True, includeNaN=True)
-    _assert_pandas_integer_query(frame, model, list(range(len(values))))
+    _assert_pandas_row_query(frame, model, list(range(len(values))))
 
 
 def test_pandas_integer_filters_keep_arbitrary_object_integers():
@@ -407,7 +409,7 @@ def test_pandas_integer_filters_keep_arbitrary_object_integers():
     frame = _integer_query_frame(values, object)
     for selected in [2**1000, -(2**1000), 2**1000 + 1]:
         model = _value_selection_model("integer", typed_selection_value(selected, "integer"))
-        _assert_pandas_integer_query(frame, model, [i for i, value in enumerate(values) if value == selected])
+        _assert_pandas_row_query(frame, model, [i for i, value in enumerate(values) if value == selected])
     model = {
         "filters": [
             {
@@ -418,7 +420,7 @@ def test_pandas_integer_filters_keep_arbitrary_object_integers():
         ],
         "sort": [],
     }
-    _assert_pandas_integer_query(frame, model, [2])
+    _assert_pandas_row_query(frame, model, [2])
 
 
 @pytest.mark.parametrize("fill", [0, np.nan, 1.0, -1, 2**64, 1.5])
@@ -440,7 +442,7 @@ def test_pandas_sparse_integer_filters_and_sorting_preserve_returned_values(fill
         selectedValues=[typed_selection_value(value, "integer") for value in selected], includeNaN=True
     )
     included = [i for i, value in enumerate(values) if pd.isna(value) or value in selected]
-    _assert_pandas_integer_query(frame, model, included)
+    _assert_pandas_row_query(frame, model, included)
     for ascending in [True, False]:
         for nulls in ["first", "last"]:
             rules = [
@@ -456,7 +458,7 @@ def test_pandas_sparse_integer_filters_and_sorting_preserve_returned_values(fill
                     [i for i in rows if not pd.isna(values[i])], key=lambda i: values[i], reverse=not ascending
                 )
                 expected = missing_rows + rows if nulls == "first" else rows + missing_rows
-                _assert_pandas_integer_query(frame, query, expected, sort_only=sort_only)
+                _assert_pandas_row_query(frame, query, expected, sort_only=sort_only)
 
 
 def _value_selection_model(column_type: str, value: Any) -> dict[str, Any]:
@@ -792,6 +794,352 @@ def test_mixed_pandas_object_value_selection_preserves_pandas_equality_groups():
         model = _value_selection_model("string", selection)
         assert _filtered_labels(engine.apply_filter_model(frame, model), "pandas") == expected
         assert _filtered_labels(_execute_generated_filter(engine, frame, model), "pandas") == expected
+
+
+_MIXED_NUMERIC_QUERIES = {
+    "picker": [1],
+    "include": [1],
+    "exclude": [0, 2],
+    "equals": [1],
+    "notEquals": [0, 2],
+    "gt": [2],
+    "gte": [1, 2],
+    "lt": [0],
+    "lte": [0, 1],
+    "between": [1],
+}
+
+
+def _mixed_numeric_query_model(frame, target, query):
+    token = {"kind": "typedSelection", "version": 1, "columnType": "float", "cell": normalize_cell(target)}
+    if query == "picker":
+        values, has_more = PandasEngine().column_values(frame, "value")
+        assert has_more is False
+        item = next(item for item in values if item["value"] == str(target))
+        assert item["selectionValue"] == token
+        return _value_selection_model("float", item["selectionValue"])
+    if query == "include":
+        return _value_selection_model("float", token)
+    predicate = {
+        "kind": "predicate",
+        "operator": "notEquals" if query == "exclude" else query,
+        "value": token if query == "exclude" else str(target),
+    }
+    if query == "between":
+        predicate["secondValue"] = str(target + 1)
+    return {"filters": [{"column": "value", "type": "float", "predicates": [predicate]}], "sort": []}
+
+
+@pytest.mark.parametrize("query, expected_rows", _MIXED_NUMERIC_QUERIES.items())
+@pytest.mark.parametrize(
+    "neighbor, target",
+    [
+        (float(2**53), 2**53 + 1),
+        (np.float16(2**11), 2**11 + 1),
+        (np.float32(2**24), 2**24 + 1),
+        (np.float64(2**53), 2**53 + 1),
+        (np.longdouble(2**64), 2**64 + 1),
+        (float(2**64), 2**64 + 1),
+        (float(-(2**53) - 4), -(2**53) - 1),
+    ],
+    ids=[
+        "python-float",
+        "numpy-float16",
+        "numpy-float32",
+        "numpy-float64",
+        "numpy-longdouble",
+        "wide-python-int",
+        "negative",
+    ],
+)
+def test_mixed_pandas_numeric_queries_preserve_exact_integer_rows(neighbor, target, query, expected_rows):
+    values = np.array([neighbor, target, target + 2, None, float("nan"), pd.NA, Decimal("NaN"), pd.NaT], dtype=object)
+    frame = pd.DataFrame({"value": pd.Series(values, copy=False), "row": range(len(values))})
+    frame.index = pd.MultiIndex.from_tuples([("duplicate", 7)] * len(frame), names=["group", "index"])
+    frame.attrs = {"source": "unchanged"}
+    assert PandasEngine().schema(frame)[0]["type"] == "float"
+    before_scalars = list(frame["value"].array)
+    model = _mixed_numeric_query_model(frame, target, query)
+
+    _assert_pandas_row_query(frame, model, expected_rows)
+
+    assert all(actual is original for actual, original in zip(frame["value"].array, before_scalars, strict=True))
+
+
+@pytest.mark.parametrize(
+    "neighbor", [np.float32(2**90), np.float64(2**120), np.longdouble(2**126)], ids=["float32", "float64", "longdouble"]
+)
+def test_mixed_pandas_integer_selection_survives_numpy_float_hash_collisions(neighbor):
+    target = int(neighbor) + sys.hash_info.modulus
+    assert hash(neighbor) == hash(target)
+    frame = pd.DataFrame(
+        {"value": pd.Series([neighbor, target, 0.5, None, float("nan")], dtype=object), "row": range(5)}
+    )
+    frame.index = pd.Index([f"row-{index}" for index in range(len(frame))], name="source_row")
+    exact = {"kind": "typedSelection", "version": 1, "columnType": "float", "cell": normalize_cell(target)}
+    model = _value_selection_model("float", exact)
+    _assert_pandas_row_query(frame, model, [1])
+    model["filters"][0]["valueFilter"].update(
+        selectedValues=[exact, typed_selection_value(0.5, "float")], includeNulls=True, includeNaN=True
+    )
+    _assert_pandas_row_query(frame, model, [1, 2, 3, 4])
+
+
+@pytest.mark.parametrize("query, expected_rows", [("include", [1]), ("exclude", [0, 2])])
+def test_heterogeneous_pandas_integer_tokens_keep_exact_comparison_groups(query, expected_rows):
+    target = 2**120 + sys.hash_info.modulus
+    frame = pd.DataFrame(
+        {"value": pd.Series([np.float64(2**120), target, "other", None, Decimal("NaN")], dtype=object), "row": range(5)}
+    )
+    frame.index = pd.Index([f"row-{index}" for index in range(len(frame))], name="source_row")
+    assert PandasEngine().schema(frame)[0]["type"] == "string"
+    token = typed_selection_value(target, "string")
+    model = (
+        _value_selection_model("string", token)
+        if query == "include"
+        else {
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "string",
+                    "predicates": [{"kind": "predicate", "operator": "notEquals", "value": token}],
+                }
+            ],
+            "sort": [],
+        }
+    )
+    _assert_pandas_row_query(frame, model, expected_rows)
+    _assert_pandas_row_query(frame, _value_selection_model("string", str(target)), [])
+
+
+@pytest.mark.parametrize(
+    "resident", [[], {}, [1], {"a": 1}, np.array([1])], ids=["empty-list", "empty-dict", "list", "dict", "array"]
+)
+def test_heterogeneous_pandas_integer_selection_preserves_unhashable_residents(resident):
+    target = 2**120 + sys.hash_info.modulus
+    frame = pd.DataFrame(
+        {"value": pd.Series([np.float64(2**120), target, resident, "word", None], dtype=object), "row": range(5)}
+    )
+    frame.index = pd.Index([f"row-{index}" for index in range(len(frame))], name="source_row")
+    resident_before = deepcopy(resident)
+    model = _value_selection_model("string", typed_selection_value(target, "string"))
+    _assert_pandas_row_query(frame, model, [1])
+    assert frame["value"].iloc[2] is resident
+    if isinstance(resident, np.ndarray):
+        np.testing.assert_array_equal(resident, resident_before)
+    else:
+        assert resident == resident_before
+
+
+@pytest.mark.parametrize(
+    "value, expected_rows",
+    [
+        ("0.5", [0]),
+        ("5e-1", [0]),
+        ("1e30", [1]),
+        ("9007199254740993.0", [2]),
+        ("9007199254740993e0", [2]),
+        ("-0", [4, 5]),
+        ("Infinity", [6]),
+        ("-Infinity", [7]),
+    ],
+)
+def test_mixed_pandas_numeric_queries_retain_fractional_exponent_zero_and_infinity_behavior(value, expected_rows):
+    frame = pd.DataFrame(
+        {
+            "value": pd.Series(
+                [
+                    0.5,
+                    1e30,
+                    float(2**53),
+                    2**53 + 1,
+                    -0.0,
+                    np.float32(0),
+                    float("inf"),
+                    np.float64(-float("inf")),
+                    None,
+                    float("nan"),
+                ],
+                dtype=object,
+            ),
+            "row": range(10),
+        }
+    )
+    frame.index = pd.Index([f"row-{index}" for index in range(len(frame))], name="source_row")
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "float",
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": value}],
+            }
+        ],
+        "sort": [],
+    }
+    _assert_pandas_row_query(frame, model, expected_rows)
+
+
+@pytest.mark.parametrize("value", [2**24 + 1, 2**53 + 1, 2**100])
+def test_float_integer_tokens_require_the_exact_object_numeric_owner(value):
+    token = {"kind": "typedSelection", "version": 1, "columnType": "float", "cell": normalize_cell(value)}
+    assert typed_selection_value(value, "float") == token
+    namespace = {"Decimal": Decimal, "date": date, "datetime": datetime, "timedelta": timedelta}
+    exec("\n".join(generated_view_value_helper_lines()), namespace, namespace)
+    with pytest.raises(EngineError, match="exact object-numeric"):
+        coerce_typed_view_value(token, "float")
+    with pytest.raises(ValueError, match="exact object-numeric"):
+        namespace["_open_wrangler_view_value"](token, "float")
+    assert coerce_typed_view_value(token, "float", preserve_float_integers=True) == value
+    assert namespace["_open_wrangler_view_value"](token, "float", preserve_float_integers=True) == value
+    frame = pd.DataFrame({"value": pd.Series([float(value), None], dtype="float64"), "row": [0, 1]})
+    model = _value_selection_model("float", token)
+    with pytest.raises(EngineError, match="exact object-numeric"):
+        PandasEngine().apply_filter_model(frame, model)
+    with pytest.raises(ValueError, match="exact object-numeric"):
+        _execute_generated_filter(PandasEngine(), frame, model)
+
+
+@pytest.mark.parametrize("column_type", ["integer", "string", "float"])
+@pytest.mark.parametrize("value", [-(2**53), 2**53, 2**53 + 1])
+def test_typed_integer_raw_numbers_require_safe_json_range(column_type, value):
+    token = {"kind": "typedSelection", "version": 1, "columnType": column_type, "cell": normalize_cell(value)}
+    namespace = {"Decimal": Decimal, "date": date, "datetime": datetime, "timedelta": timedelta}
+    exec("\n".join(generated_view_value_helper_lines()), namespace, namespace)
+    assert isinstance(token["cell"]["raw"], str)
+    assert coerce_typed_view_value(token, column_type, preserve_float_integers=True) == value
+    assert namespace["_open_wrangler_view_value"](token, column_type, preserve_float_integers=True) == value
+    malformed = {**token, "cell": {**token["cell"], "raw": value}}
+    with pytest.raises(EngineError, match="safe JSON integers"):
+        coerce_typed_view_value(malformed, column_type, preserve_float_integers=True)
+    with pytest.raises(ValueError, match="safe JSON integers"):
+        namespace["_open_wrangler_view_value"](malformed, column_type, preserve_float_integers=True)
+
+
+@pytest.mark.parametrize("raw", [1, 1.0, -0.0, 2**53 - 1, -(2**53 - 1)])
+def test_typed_integer_safe_numeric_encodings_match_the_shared_boundary(raw):
+    token = {
+        "kind": "typedSelection",
+        "version": 1,
+        "columnType": "float",
+        "cell": {**normalize_cell(int(raw)), "raw": raw},
+    }
+    namespace = {"Decimal": Decimal, "date": date, "datetime": datetime, "timedelta": timedelta}
+    exec("\n".join(generated_view_value_helper_lines()), namespace, namespace)
+    assert coerce_typed_view_value(token, "float", preserve_float_integers=True) == int(raw)
+    assert namespace["_open_wrangler_view_value"](token, "float", preserve_float_integers=True) == int(raw)
+
+
+def test_exact_object_numeric_opt_in_retains_typed_shape_and_literal_limits():
+    token = {"kind": "typedSelection", "version": 1, "columnType": "float", "cell": normalize_cell(2**53 + 1)}
+    namespace = {"Decimal": Decimal, "date": date, "datetime": datetime, "timedelta": timedelta}
+    exec("\n".join(generated_view_value_helper_lines()), namespace, namespace)
+    for value in [
+        {**token, "cell": {**token["cell"], "raw": "9" * 65537}},
+        {**token, "cell": {**token["cell"], "display": "9" * 65537}},
+        {**token, "cell": {**token["cell"], "raw": "1e3"}},
+        {**token, "cell": {**token["cell"], "raw": 1.5}},
+        {**token, "cell": {**token["cell"], "raw": True}},
+        {**token, "cell": {**token["cell"], "raw": float("nan")}},
+        {**token, "cell": {**token["cell"], "isNaN": True}},
+        {**token, "unexpected": True},
+        "NaN",
+        "1e9999",
+        "0x20000000000001",
+        True,
+    ]:
+        with pytest.raises(EngineError):
+            coerce_typed_view_value(value, "float", preserve_float_integers=True)
+        with pytest.raises((ValueError, TypeError, ArithmeticError)):
+            namespace["_open_wrangler_view_value"](value, "float", preserve_float_integers=True)
+
+
+@pytest.mark.parametrize("kind", ["groupBy", "pivotWider"])
+@pytest.mark.parametrize("fill", [1.0, -0.0])
+def test_sparse_group_outputs_keep_exact_numeric_queries_in_sessions_and_generated_code(monkeypatch, kind, fill):
+    target = 2**53 + 1
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(
+                np.array([fill, target - 1, target, target + 2], dtype=object), dtype=pd.SparseDtype("uint64", fill)
+            ),
+            "amount": pd.Series([5, 10, 20, 30], dtype="Int64"),
+            "name": pd.Series(["x"] * 4, dtype="string"),
+        }
+    )
+    before = source.copy(deep=True)
+    monkeypatch.setattr("openwrangler_runtime.session.resolve_notebook_variable", lambda _: source)
+    engine = PandasEngine()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "label": "mixed-numeric",
+                "variableName": "mixed_numeric",
+                "uri": "file:///mixed-numeric.ipynb",
+            },
+            backend="pandas",
+            mode="editing",
+        )
+        session_id = opened["metadata"]["sessionId"]
+        refs = {column["name"]: {"id": column["id"], "name": column["name"]} for column in opened["metadata"]["schema"]}
+        params = (
+            {
+                "keys": [refs["value"]],
+                "aggregations": [{"column": refs["amount"], "operation": "sum", "alias": "total"}],
+            }
+            if kind == "groupBy"
+            else {
+                "namesFrom": refs["name"],
+                "valuesFrom": refs["amount"],
+                "outputs": [
+                    {"key": typed_selection_value("x", "string"), "name": "total"},
+                    {"key": typed_selection_value("y", "string"), "name": "absent"},
+                ],
+            }
+        )
+        preview = manager.preview_step(session_id, 0, {"id": "group", "kind": kind, "params": params}, 0, 20)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 20)
+        frame = engine._visible_frame(manager.sessions[session_id].committed)
+        assert applied["metadata"]["schema"][0]["type"] == "float"
+        assert frame["value"].tolist() == [fill, target - 1, target, target + 2]
+        frame_before = frame.copy(deep=True)
+        expected = {
+            "picker": [2],
+            "include": [2],
+            "exclude": [0, 1, 3],
+            "equals": [2],
+            "notEquals": [0, 1, 3],
+            "gt": [3],
+            "gte": [2, 3],
+            "lt": [0, 1],
+            "lte": [0, 1, 2],
+            "between": [2],
+        }
+        for query, positions in expected.items():
+            model = _mixed_numeric_query_model(frame, target, query)
+            page = manager.get_page(session_id, applied["revision"], 0, 20, model)["page"]
+            assert [row["values"][0]["display"] for row in page["rows"]] == [
+                str(frame["value"].iloc[position]) for position in positions
+            ]
+            generated = _execute_generated_filter(engine, frame, model)
+            pd.testing.assert_frame_equal(generated, frame.iloc[positions])
+            schema = engine.schema(frame)
+            lineage = source_lineage(schema)
+            public_model = deepcopy(model)
+            public_model["filters"][0]["column"] = lineage[0]
+            bound = bind_step(
+                validate_step({"id": "filter", "kind": "filterRows", "params": {"filterModel": public_model}}),
+                schema,
+                lineage,
+            )
+            namespace = {}
+            exec(engine.compile_plan([*manager.sessions[session_id].bound_plan, bound]), namespace, namespace)
+            pd.testing.assert_frame_equal(namespace["clean_data"](source), frame.iloc[positions])
+        pd.testing.assert_frame_equal(frame, frame_before)
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

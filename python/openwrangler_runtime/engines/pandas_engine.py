@@ -198,7 +198,7 @@ def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> A
     if method == "between":
         return _pandas_integer_filter(series, "ge", values[:1]) & _pandas_integer_filter(series, "le", values[1:])
     if not pd.api.types.is_integer_dtype(series.dtype):
-        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])
+        return _pandas_numeric_filter(series, method, values)
     dtype = getattr(series.dtype, "numpy_dtype", getattr(series.dtype, "subtype", series.dtype))
     bounds = np.iinfo(dtype)
     low, high = int(bounds.min), int(bounds.max)
@@ -220,6 +220,47 @@ def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> A
         result = {"eq": False, "ne": True, "gt": below, "ge": below, "lt": not below, "le": not below}[method]
         return pd.Series(result, index=series.index, name=series.name, dtype=bool)
     return getattr(series, method)(np.dtype(dtype).type(value))
+
+
+def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any]) -> Any:
+    import operator
+
+    import numpy as np
+    import pandas as pd
+
+    if method == "between":
+        return _pandas_numeric_filter(series, "ge", values[:1]) & _pandas_numeric_filter(series, "le", values[1:])
+    integers = {value for value in values if type(value) is int}
+    if not pd.api.types.is_object_dtype(series.dtype) or not integers:
+        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])
+
+    def matches(item: Any) -> bool:
+        if _is_null_value(item) or isinstance(item, Decimal) and item.is_nan():
+            return False
+        denominator = 1
+        if isinstance(item, np.floating):
+            try:
+                item, denominator = item.as_integer_ratio()
+            except (OverflowError, ValueError):
+                item = float(item)
+        if method == "isin":
+            return denominator == 1 and item in integers
+        return getattr(operator, method)(item, values[0] * denominator)
+
+    # NumPy scalar comparisons (including isin hash collisions) can round a
+    # Python integer operand. Compare their exact ratios without changing data.
+    if method == "isin":
+        native = series.isin(list(integers))
+        mask = [
+            matches(item) if isinstance(item, np.floating) else keep
+            for item, keep in zip(series.array, native.array, strict=True)
+        ]
+    else:
+        mask = [matches(item) for item in series.array]
+    result = pd.Series(mask, index=series.index, name=series.name, dtype=bool)
+    if method == "isin":
+        result = result | series.isin([value for value in values if type(value) is not int])
+    return result
 
 
 def _pandas_take_rows(frame: Any, positions: Any) -> Any:
@@ -267,9 +308,18 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
 
 
 def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition) -> Any:
+    import pandas as pd
+
     method = condition.method
     values = (
-        tuple(coerce_typed_view_value(value, condition.column_type) for value in condition.values)
+        tuple(
+            coerce_typed_view_value(
+                value,
+                condition.column_type,
+                preserve_float_integers=condition.column_type == "float" and pd.api.types.is_object_dtype(series.dtype),
+            )
+            for value in condition.values
+        )
         if condition.coerce_values
         else condition.values
     )
@@ -277,7 +327,7 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         result = (
             _pandas_integer_filter(series, method, values)
             if condition.column_type == "integer"
-            else series.isin(list(values))
+            else _pandas_numeric_filter(series, method, values)
         )
         if condition.include_nulls:
             result = result | _null_mask(series)
@@ -294,10 +344,8 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         result = getattr(series.astype(str).str, method)(str(values[0]), na=False)
     elif condition.column_type == "integer":
         result = _pandas_integer_filter(series, method, values)
-    elif method == "between":
-        result = (series >= values[0]) & (series <= values[1])
     else:
-        result = getattr(series, method)(values[0])
+        result = _pandas_numeric_filter(series, method, values)
     if condition.negated:
         result = ~result
     if condition.excludes_missing:
@@ -1346,7 +1394,7 @@ class PandasEngine(DataFrameEngine):
         if needs_row_queries or needs_scalar_values:
             lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
-            lines.extend(_generated_pandas_integer_filter_helpers())
+            lines.extend(_generated_pandas_numeric_filter_helpers())
         if needs_row_queries:
             lines.extend(_generated_pandas_row_query_helpers())
         if any(step["kind"] == "roundNumber" for step in plan):
@@ -4703,8 +4751,47 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
     raise EngineError(f"Unsupported formula operator: {operator}")
 
 
-def _generated_pandas_integer_filter_helpers() -> list[str]:
+def _generated_pandas_numeric_filter_helpers() -> list[str]:
     return [
+        "def _open_wrangler_numeric_filter(series, method, values):",
+        "    import operator",
+        "",
+        '    if method == "between":',
+        '        return (_open_wrangler_numeric_filter(series, "ge", values[:1])',
+        '                & _open_wrangler_numeric_filter(series, "le", values[1:]))',
+        "    integers = {value for value in values if type(value) is int}",
+        "    if not pd.api.types.is_object_dtype(series.dtype) or not integers:",
+        '        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])',
+        "",
+        "    def matches(item):",
+        "        if _open_wrangler_is_null(item) or isinstance(item, Decimal) and item.is_nan():",
+        "            return False",
+        "        denominator = 1",
+        "        if isinstance(item, np.floating):",
+        "            try:",
+        "                item, denominator = item.as_integer_ratio()",
+        "            except (OverflowError, ValueError):",
+        "                item = float(item)",
+        '        if method == "isin":',
+        "            return denominator == 1 and item in integers",
+        "        return getattr(operator, method)(item, values[0] * denominator)",
+        "",
+        "    # NumPy scalar comparisons (including isin hash collisions) can round a",
+        "    # Python integer operand. Compare their exact ratios without changing data.",
+        '    if method == "isin":',
+        "        native = series.isin(list(integers))",
+        "        mask = [",
+        "            matches(item) if isinstance(item, np.floating) else keep",
+        "            for item, keep in zip(series.array, native.array, strict=True)",
+        "        ]",
+        "    else:",
+        "        mask = [matches(item) for item in series.array]",
+        "    result = pd.Series(mask, index=series.index, name=series.name, dtype=bool)",
+        '    if method == "isin":',
+        "        result = result | series.isin([value for value in values if type(value) is not int])",
+        "    return result",
+        "",
+        "",
         "def _open_wrangler_integer_filter(series, method, values):",
         "",
         '    if method == "between":',
@@ -4713,7 +4800,7 @@ def _generated_pandas_integer_filter_helpers() -> list[str]:
         '            & _open_wrangler_integer_filter(series, "le", values[1:])',
         "        )",
         "    if not pd.api.types.is_integer_dtype(series.dtype):",
-        '        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])',
+        "        return _open_wrangler_numeric_filter(series, method, values)",
         '    dtype = getattr(series.dtype, "numpy_dtype", getattr(series.dtype, "subtype", series.dtype))',
         "    bounds = np.iinfo(dtype)",
         "    low, high = int(bounds.min), int(bounds.max)",
@@ -4838,7 +4925,16 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
 def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCondition) -> str:
     method = condition.method
     typed_values = (
-        [f"_open_wrangler_view_value({value!r}, {condition.column_type!r})" for value in condition.values]
+        [
+            f"_open_wrangler_view_value({value!r}, {condition.column_type!r}"
+            + (
+                f", preserve_float_integers=pd.api.types.is_object_dtype({series}.dtype)"
+                if condition.column_type == "float"
+                else ""
+            )
+            + ")"
+            for value in condition.values
+        ]
         if condition.coerce_values
         else []
     )
@@ -4848,7 +4944,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
             parts.append(
                 f"_open_wrangler_integer_filter({series}, 'isin', [{', '.join(typed_values)}])"
                 if condition.column_type == "integer"
-                else f"{series}.isin([{', '.join(typed_values)}])"
+                else f"_open_wrangler_numeric_filter({series}, 'isin', [{', '.join(typed_values)}])"
             )
         if condition.include_nulls:
             parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
@@ -4862,8 +4958,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
     elif condition.column_type == "integer" and method in {"eq", "ne", "gt", "ge", "lt", "le", "between"}:
         result = f"_open_wrangler_integer_filter({series}, {method!r}, [{', '.join(typed_values)}])"
     elif method in {"eq", "ne", "gt", "ge", "lt", "le"}:
-        symbol = {"eq": "==", "ne": "!=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}[method]
-        result = f"({series} {symbol} {typed_values[0]})"
+        result = f"_open_wrangler_numeric_filter({series}, {method!r}, [{', '.join(typed_values)}])"
     elif method == "contains":
         result = (
             f"{series}.astype(str).str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r}))"
@@ -4872,7 +4967,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
     elif method in {"startswith", "endswith"}:
         result = f"{series}.astype(str).str.{method}({str(condition.values[0])!r}, na=False)"
     else:
-        result = f"(({series} >= {typed_values[0]}) & ({series} <= {typed_values[1]}))"
+        result = f"_open_wrangler_numeric_filter({series}, 'between', [{', '.join(typed_values)}])"
     if condition.negated:
         result = f"~{result}"
     if condition.excludes_missing:
