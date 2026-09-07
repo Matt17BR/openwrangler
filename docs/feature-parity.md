@@ -118,6 +118,8 @@ Group By, Pivot and grouped Fill share missing-value and signed-zero key equalit
 Group By preserves computed NaN separately from an empty group's null result.
 Group By Count accepts Sparse columns, including missing and empty inputs, while preserving other aggregates on
 the same column.
+Group By, Pivot and grouped Fill preserve distinct Sparse integer keys, including adjacent large values and native
+fill values. Current Pandas still rejects fractional fills that only the supported minimum accepts.
 
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.

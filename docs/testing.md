@@ -160,6 +160,9 @@ NaN, nulls, signed zero, infinities, chunks and unrelated missing groups. Half-f
 protect existing finite-value paths. Standalone grouped Fill includes only the floating key helper it needs.
 Sparse Count regressions cover missing values, counts beyond narrow integer storage, shared exact aggregates and
 columns also used as keys. Assertions retain native source values, Sparse positions, axes and attributes.
+Group By, Pivot and Fill owners also check exact Sparse key partitions, restored labels, multi-key missing groups
+and generated execution. Minimum-version fractional fills have explicit native-construction controls on current
+Pandas. Ordinary integer, nullable, Arrow and object keys retain their output-type policy.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

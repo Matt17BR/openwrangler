@@ -213,6 +213,9 @@ its native representative key; Pivot retains each first identifier row. Grouped 
 changing the stored keys.
 Sparse Count uses a temporary presence mask for that aggregation alone. Keys, source storage and other aggregates
 on the same column retain their own numeric behavior.
+Integer group keys use native factorization codes and exact scalar labels. Group By and Pivot restore those labels;
+grouped Fill uses the same temporary identities while retaining source keys. Sparse fill values retain their native
+numeric equality and first representative, including fractional fills accepted by the minimum Pandas version.
 
 ### Polars
 
