@@ -1808,8 +1808,26 @@ describe("OpenWranglerPanel retained view state", () => {
       layoutTransitionPending: true
     });
 
-    codePreviewFocus.resolve(undefined);
+    const synchronizationDuringFocus = OpenWranglerPanel.synchronizePanelForSession(metadata.sessionId);
     await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2));
+    const markerDuringFocus = latestRendererSynchronization(harness.posted);
+    expect(markerDuringFocus.syncId).not.toBe(draftMarker.syncId);
+    expect(markerDuringFocus.layoutTransitionPending).toBe(true);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: markerDuringFocus.syncId,
+      sessionId: markerDuringFocus.sessionId,
+      revision: markerDuringFocus.revision
+    });
+    await expect(synchronizationDuringFocus).resolves.toBe(true);
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(metadata.sessionId)?.layoutTransitionPending).toBe(
+      true
+    );
+
+    codePreviewFocus.resolve(undefined);
+    await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(3));
     const settledMarker = latestRendererSynchronization(harness.posted);
     expect(settledMarker).not.toEqual(draftMarker);
     expect(settledMarker.layoutTransitionPending).toBe(false);
@@ -1825,7 +1843,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
     expect(executeCommand).toHaveBeenCalledTimes(1);
     expect(harness.htmlAssignmentCount).toBe(1);
-    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(3);
 
     await harness.receive({
       kind: "rendererSynchronized",
@@ -1841,7 +1859,7 @@ describe("OpenWranglerPanel retained view state", () => {
       layoutTransitionPending: false
     });
     expect(executeCommand).toHaveBeenCalledTimes(1);
-    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(3);
 
     harness.posted.length = 0;
     await harness.receive({
@@ -1890,6 +1908,88 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
+
+  it.each(["discard", "disable", "deactivate", "dispose"] as const)(
+    "retains an in-flight Code Preview layout when the panel changes: %s",
+    async (change) => {
+      const focus = deferred<unknown>();
+      const draft = {
+        id: "pending-focus",
+        kind: "upperText",
+        params: { column: { id: "c:0", name: "city" } }
+      } as const;
+      const opened: SessionOpenedResponse = {
+        ...openedResponse,
+        metadata: { ...metadata, revision: 1, draftStep: draft }
+      };
+      const discarded: OpenWranglerResponse = {
+        kind: "planUpdated",
+        action: "discard",
+        revision: 2,
+        metadata: { ...metadata, revision: 2 },
+        page,
+        code: "def clean_data(df):\n    return df\n"
+      };
+      const harness = createPanelHarness({ request: vi.fn(async () => discarded) }, { openResponse: opened });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const executeCommand = vi
+        .spyOn(commands, "executeCommand")
+        .mockImplementation((command: string) =>
+          command === "openWrangler.codePreview.focus" ? focus.promise : Promise.resolve(undefined)
+        );
+      await acknowledgeLatestRendererSynchronization(harness);
+      expect(
+        executeCommand.mock.calls.filter(([command]) => command === "openWrangler.codePreview.focus")
+      ).toHaveLength(1);
+
+      if (change === "discard") {
+        await harness.receive({
+          kind: "runtimeRequest",
+          request: { kind: "discardDraft", offset: 0, limit: 20, columnOffset: 0, columnLimit: 16 }
+        });
+      } else if (change === "disable") {
+        vi.spyOn(workspace, "getConfiguration").mockImplementation(
+          () =>
+            ({
+              get: (key: string, fallback?: unknown) => (key === "panelRevealBehavior" ? "never" : fallback)
+            }) as vscode.WorkspaceConfiguration
+        );
+      } else if (change === "deactivate") {
+        harness.deactivate();
+      }
+
+      const previousMarker = latestRendererSynchronization(harness.posted);
+      const synchronization = OpenWranglerPanel.synchronizePanelForSession(metadata.sessionId);
+      await vi.waitFor(() =>
+        expect(latestRendererSynchronization(harness.posted).syncId).not.toBe(previousMarker.syncId)
+      );
+      const pendingMarker = await acknowledgeLatestRendererSynchronization(harness);
+      await expect(synchronization).resolves.toBe(true);
+      expect(pendingMarker.layoutTransitionPending).toBe(true);
+      expect(
+        executeCommand.mock.calls.filter(([command]) => command === "openWrangler.codePreview.focus")
+      ).toHaveLength(1);
+
+      if (change === "dispose") harness.dispose();
+      focus.resolve(undefined);
+      await focus.promise;
+      if (change === "dispose") {
+        await expect(OpenWranglerPanel.synchronizePanelForSession(metadata.sessionId)).resolves.toBe(false);
+        expect(latestRendererSynchronization(harness.posted)).toEqual(pendingMarker);
+      } else {
+        await vi.waitFor(() =>
+          expect(latestRendererSynchronization(harness.posted).syncId).not.toBe(pendingMarker.syncId)
+        );
+        const settledMarker = await acknowledgeLatestRendererSynchronization(harness);
+        expect(settledMarker.layoutTransitionPending).toBe(false);
+        expect(settledMarker.revision).toBe(change === "discard" ? 2 : 1);
+        expect(
+          executeCommand.mock.calls.filter(([command]) => command === "openWrangler.codePreview.focus")
+        ).toHaveLength(1);
+      }
+    }
+  );
 
   it("publishes a settled renderer barrier when Code Preview cannot be revealed", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");

@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import type { Frame, Locator, Page } from "playwright-core";
 import {
+  consumeLayoutCommittedRendererValue,
   exactSessionApp,
   reacquireAcknowledgedSessionApp as reacquireAcknowledgedSessionAppOwner,
   sameRendererSynchronizationReceipt,
@@ -18,6 +19,7 @@ interface OpenWranglerGridTarget {
 }
 
 export interface ReleasedROperationPickerDependencies {
+  readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
   readonly requireFreshExactSessionPanelHydration: (
     testing: TestApi,
     sessionId: string,
@@ -32,7 +34,7 @@ export interface ReleasedROperationPickerDependencies {
 }
 
 export function createReleasedROperationPicker(dependencies: ReleasedROperationPickerDependencies) {
-  const { requireFreshExactSessionPanelHydration, waitForOpenWranglerGridTarget } = dependencies;
+  const { requireFreshExactSessionPanelHydration, waitFor, waitForOpenWranglerGridTarget } = dependencies;
 
   async function openReleasedROperationPicker(
     testing: TestApi,
@@ -195,15 +197,12 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
     await requireFreshExactSessionPanelHydration(testing, sessionId, expectation);
     const receipt = testing.panelSynchronizationReceipt(sessionId);
     assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
-    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
-    const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
-    assert.ok(app, `${expectation} The acknowledged renderer must expose the exact Open Wrangler session.`);
-    assert.equal(
-      sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
-      true,
-      `${expectation} The renderer receipt must remain unchanged through acquisition.`
-    );
-    return app;
+    return consumeLayoutCommittedRendererValue(testing, sessionId, receipt.revision, waitFor, async (committed) => {
+      const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, committed);
+      const app = await exactSessionApp(target.frame, sessionId, committed.syncId);
+      assert.ok(app, `${expectation} The acknowledged renderer must expose the exact Open Wrangler session.`);
+      return app;
+    });
   }
 
   async function reacquireAcknowledgedSessionApp(

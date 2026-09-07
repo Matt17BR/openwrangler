@@ -424,6 +424,7 @@ const exerciseDependencyInstallShutdownLifecycle = createDependencyInstallShutdo
 const { openReleasedROperationPicker, reacquireAcknowledgedSessionApp, releasedRSessionApp, synchronizedSessionApp } =
   createReleasedROperationPicker({
     requireFreshExactSessionPanelHydration,
+    waitFor,
     waitForOpenWranglerGridTarget
   });
 

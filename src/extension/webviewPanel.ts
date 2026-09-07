@@ -63,7 +63,7 @@ export class OpenWranglerPanel {
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private readonly rendererSync: RendererSynchronizationCoordinator;
-  private codePreviewRevealedSessionId: string | undefined;
+  private codePreviewReveal: { sessionId: string; pending: boolean } | undefined;
   private unpublishedAuthoritativeSnapshot = false;
   private openAttemptGeneration = 0;
   private activeSessionOpenProgressGeneration: number | undefined;
@@ -1462,18 +1462,19 @@ export class OpenWranglerPanel {
   }
 
   private codePreviewLayoutTransitionPending(): boolean {
+    if (this.codePreviewReveal?.pending) return true;
     const snapshot = this.snapshot;
     if (!snapshot || !this.panel.active || OpenWranglerPanel.activePanel !== this) return false;
     const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
     const draftStepId = snapshot.metadata.draftStep?.id;
-    const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
+    const changedSession = this.codePreviewReveal?.sessionId !== snapshot.metadata.sessionId;
     if (behavior === "never") return false;
 
     return changedSession && (behavior === "always" || draftStepId !== undefined);
   }
 
   private revealCodePreviewAfterRendererSynchronization(synchronization: RendererSynchronizationIdentity): void {
-    if (!synchronization.layoutTransitionPending) return;
+    if (!synchronization.layoutTransitionPending || this.codePreviewReveal?.pending) return;
     const snapshot = this.snapshot;
     const canReveal =
       snapshot !== undefined &&
@@ -1486,18 +1487,20 @@ export class OpenWranglerPanel {
       return;
     }
 
-    this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
-    void vscode.commands.executeCommand("openWrangler.codePreview.focus", { preserveFocus: true }).then(
-      () => {
-        if (!this.disposed) this.scheduleRendererSynchronization(false);
-      },
-      (error: unknown) => {
+    const reveal = { sessionId: snapshot.metadata.sessionId, pending: true };
+    this.codePreviewReveal = reveal;
+    const settleLayout = (): void => {
+      reveal.pending = false;
+      if (!this.disposed && this.codePreviewReveal === reveal) this.scheduleRendererSynchronization(false);
+    };
+    void vscode.commands
+      .executeCommand("openWrangler.codePreview.focus", { preserveFocus: true })
+      .then(settleLayout, (error: unknown) => {
         this.bridge.reportDiagnostic?.(
           `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
         );
-        if (!this.disposed) this.scheduleRendererSynchronization(false);
-      }
-    );
+        settleLayout();
+      });
   }
 
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {

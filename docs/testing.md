@@ -68,6 +68,10 @@ insertion. The existing App component tests retain DOM-before-acknowledgement an
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution.
 
+Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
+changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
+receipt after layout settles and retain its session, revision, and DOM marker checks.
+
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
 
