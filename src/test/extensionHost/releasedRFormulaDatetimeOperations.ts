@@ -58,6 +58,12 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     const score = base.metadata.schema.find((column) => column.name === "score");
     assert.ok(score, "The packaged R Formula journey requires the score column.");
 
+    const confirmed = structuredClone({
+      revision: base.metadata.revision,
+      steps: base.metadata.steps,
+      schema: base.metadata.schema,
+      code: base.code ?? ""
+    });
     const picker = await openReleasedROperationPicker(testing, workbench, sessionId);
     const dialog = picker.dialog;
     const catalog = dialog.getByRole("navigation", { name: "Operation catalog" });
@@ -81,8 +87,37 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     await dialog.getByRole("button", { name: /^Formula column\b/u }).click();
     await dialog.getByLabel("Left column", { exact: true }).selectOption(score.id);
     await dialog.getByLabel("Operator", { exact: true }).selectOption("add");
-    await dialog.getByLabel("Numeric value", { exact: true }).fill("2");
+    const numericValue = dialog.getByLabel("Numeric value", { exact: true });
+    await numericValue.fill("9007199254740993");
     await dialog.getByLabel("New column", { exact: true }).fill("score_plus_two");
+    await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    const refusal = dialog.getByRole("alert");
+    await waitForLocatorText(
+      refusal,
+      (text) => text.includes("Formula integer literal cannot be represented exactly as an R numeric scalar"),
+      30_000,
+      "the visible R Formula precision refusal"
+    );
+    assert.equal(await refusal.isVisible(), true);
+    assert.equal(await numericValue.inputValue(), "9007199254740993");
+    assert.equal(await dialog.getByLabel("New column", { exact: true }).inputValue(), "score_plus_two");
+    assert.equal(await dialog.getAttribute("aria-busy"), "false");
+    assert.equal(await numericValue.isEnabled(), true);
+    assert.equal(await dialog.getByRole("button", { name: "Preview changes", exact: true }).isEnabled(), true);
+    const refused = testing.activeSession();
+    assert.equal(refused?.sessionId, sessionId);
+    assert.ok(refused);
+    assert.equal(refused.metadata.draftStep, undefined);
+    assert.deepEqual(
+      {
+        revision: refused.metadata.revision,
+        steps: refused.metadata.steps,
+        schema: refused.metadata.schema,
+        code: refused.code ?? ""
+      },
+      confirmed
+    );
+    await numericValue.fill("2");
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
     await waitFor(
       () => {
