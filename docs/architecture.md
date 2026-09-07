@@ -214,6 +214,11 @@ Group By retains the first key representative; Pivot retains the first complete 
 Integer filter text remains exact through the webview. Pandas object columns accept exact integer selection tokens
 for integral values; physically floating columns retain their existing floating-token contract. Null and NaN
 selections remain separate. Ordinary native numeric arrays keep their native comparison path.
+Finite native NumPy extended floating values must round-trip through binary64 before scalar transport or selected
+query-key preparation. Values that would lose precision or range are refused before display, grouping or ordered
+aggregation can collapse them. Representable values and genuine NaN or infinity retain their existing behavior.
+The guard does not rewrite source values or scan unrelated projected columns. Exact native CSV export and explicit
+Floor or Convert Type operations retain their own conversion rules.
 Numeric, text, Convert Type and pivot operations prepare only their selected dictionary operands. Existing native
 conversion rules, arithmetic limits and output validation apply to those logical values; unrelated columns retain
 their encoded storage.

@@ -104,6 +104,9 @@ Its live and generated paths preserve exact values and retain fractional-median 
 Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
 Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
 its representative labels. Filter text and selected integer tokens keep exact integer values through the UI.
+Extended NumPy floating values that would lose precision or range at the display or selected query boundary are
+refused with an explicit conversion message. Representable values remain supported; exact native CSV export and
+explicit conversion operations keep their existing behavior.
 
 Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
 generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing

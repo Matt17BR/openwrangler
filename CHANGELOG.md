@@ -42,6 +42,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   missing keys.
 - Pandas mixed object columns preserve distinct large numeric values in filters, counts, sorting, duplicates,
   grouping and Pivot. Exact integer filter text reaches the runtime unchanged, and grouped Fill uses the correct donors.
+- Pandas refuses extended NumPy floating values that would silently lose precision or range during display or
+  selected queries. Exact native CSV export and explicit conversions retain their existing behavior.
 - Formula modulo works on Pandas Arrow integer columns, including signed and unsigned extrema. Live and generated
   execution preserve nulls and refuse present zero divisors without changing the confirmed plan.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
