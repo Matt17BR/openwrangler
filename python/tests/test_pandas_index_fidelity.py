@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
+import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
@@ -36,6 +40,294 @@ def reserve_export_target(path: Path) -> dict[str, str]:
     path.touch(exist_ok=False)
     device, inode = _regular_file_identity(path)
     return {"device": str(device), "inode": str(inode)}
+
+
+@pytest.mark.parametrize("dtype", ["Int64", "UInt64", "int64[pyarrow]", "uint64[pyarrow]", "Int8", "uint8[pyarrow]"])
+@pytest.mark.parametrize("shape", ["present", "empty", "missing"])
+def test_parquet_file_session_preserves_nullable_integer_index_values(tmp_path: Path, dtype: str, shape: str) -> None:
+    if "8" in dtype:
+        values = [0, None, 254, 255] if "u" in dtype.lower() else [-128, None, 126, 127]
+    else:
+        values = [2**64 - 1 if "u" in dtype.lower() else -(2**63), None, 2**53 + 1, 2**53]
+    if shape == "empty":
+        values = []
+    elif shape == "missing":
+        values = [None] * 4
+    index = pd.Index(pd.array(values, dtype=dtype), name="account")
+    source = pd.DataFrame({"value": range(len(index))}, index=index)
+    path = tmp_path / "indexed.parquet"
+    source.to_parquet(path)
+    before = path.read_bytes()
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=20
+    )
+    session_id = str(opened["metadata"]["sessionId"])
+    try:
+        assert opened["metadata"]["rowAxis"] == {"kind": "index", "levelNames": ["account"]}
+        assert [column["name"] for column in opened["metadata"]["schema"]] == ["value"]
+        assert [row["rowLabel"] for row in opened["page"]["rows"]] == [
+            "null" if value is None else str(value) for value in values
+        ]
+        loaded = manager.sessions[session_id].original
+        assert [None if pd.isna(value) else int(value) for value in loaded.index] == values
+        assert pd.api.types.is_integer_dtype(loaded.index.dtype)
+        assert loaded["value"].tolist() == source["value"].tolist()
+        filtered = manager.get_page(
+            session_id,
+            0,
+            0,
+            20,
+            {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": 0}],
+                    }
+                ],
+                "sort": [{"column": "value", "direction": "desc", "nulls": "last"}],
+            },
+        )
+        assert [row["rowLabel"] for row in filtered["page"]["rows"]] == [
+            "null" if values[position] is None else str(values[position])
+            for position in reversed(range(1, len(values)))
+        ]
+    finally:
+        manager.close_session(session_id, 0)
+    assert path.read_bytes() == before
+    assert [None if pd.isna(value) else int(value) for value in source.index] == values
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-before",
+        "missing-after",
+        "range",
+        "ignored-range",
+        "negative-range",
+        "legacy",
+        "duplicate-names",
+        "data-collision",
+        "dotted",
+        "category",
+        "timezone",
+        "float-sign",
+    ],
+)
+def test_parquet_index_repair_preserves_native_metadata_and_other_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    wide = pd.Index(pd.array([2**64 - 1, None, 2**53 + 1, 2**53], dtype="UInt64"), name="wide")
+    source = pd.DataFrame(
+        {"value": pd.array([1.5, 2.5, 3.5, 4.5], dtype="float32"), "text": ["a", None, "c", "d"]}, index=wide
+    )
+    if case == "duplicate-names":
+        source.index = pd.MultiIndex.from_arrays([wide, wide], names=["same", "same"])
+    elif case == "data-collision":
+        source.index = wide.rename("value")
+    elif case == "dotted":
+        source["nested"] = [{"child": "unrelated data"}] * 4
+        source.index = wide.rename("nested.child")
+    elif case == "category":
+        category = pd.CategoricalIndex(
+            ["a", "b", None, "a"], categories=["unused", "b", "a"], ordered=True, name="category"
+        )
+        source.index = pd.MultiIndex.from_arrays([wide, category])
+    elif case == "timezone":
+        source.index = pd.MultiIndex.from_arrays(
+            [wide, pd.date_range("2020-01-01", periods=4, tz="Europe/Berlin", name="when")]
+        )
+    elif case == "float-sign":
+        source.index = pd.MultiIndex.from_arrays([wide, pd.Index([-0.0, 1.5, None, -2.5], name="float")])
+    source.attrs = {"purpose": "preserved metadata"}
+    table = pa.Table.from_pandas(source)
+    metadata = deepcopy(table.schema.pandas_metadata)
+    if case.startswith("missing-"):
+        absent = deepcopy(metadata["columns"][-1])
+        absent.update(name="old_index", field_name="old_index")
+        metadata["columns"].append(absent)
+        metadata["index_columns"].insert(0 if case == "missing-before" else 1, "old_index")
+    elif case in {"range", "ignored-range", "negative-range"}:
+        start, stop, step = (7, -1, -2) if case == "negative-range" else (7, 15 if case == "range" else 9, 2)
+        metadata["index_columns"].insert(
+            0, {"kind": "range", "name": "range", "start": start, "stop": stop, "step": step}
+        )
+    elif case == "legacy":
+        for column in metadata["columns"]:
+            column.pop("field_name")
+    table = table.replace_schema_metadata({**table.schema.metadata, b"pandas": json.dumps(metadata).encode()})
+    path = tmp_path / "metadata.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    ordinary = pd.read_parquet(path)
+    exact_index = table.to_pandas(
+        types_mapper=lambda dtype: pd.ArrowDtype(dtype) if pa.types.is_integer(dtype) else None
+    ).index
+    projected: list[list[str]] = []
+    streams: list[Any] = []
+    read_table = pq.read_table
+
+    def observe_read(stream: Any, **kwargs: Any) -> Any:
+        result = read_table(stream, **kwargs)
+        if kwargs.get("columns") is not None:
+            projected.append(result.column_names)
+        if hasattr(stream, "closed"):
+            streams.append(stream)
+        return result
+
+    monkeypatch.setattr(pq, "read_table", observe_read)
+    loaded = PandasEngine().read_file(str(path))
+    pd.testing.assert_index_equal(loaded.index, exact_index)
+    pd.testing.assert_frame_equal(loaded.reset_index(drop=True), ordinary.reset_index(drop=True))
+    assert loaded.attrs == ordinary.attrs == source.attrs
+    expected_fields = [
+        name
+        for name in metadata["index_columns"]
+        if isinstance(name, str)
+        and table.schema.get_field_index(name) >= 0
+        and pa.types.is_integer(table.schema.field(name).type)
+    ]
+    assert projected == [expected_fields]
+    assert streams and all(stream.closed for stream in streams)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pd.RangeIndex(7, 15, 2, name="range"),
+        pd.Index([1, 2, 3, 4], name="integer"),
+        pd.Index([1.5, None, -0.0, 4.5], name="float"),
+    ],
+)
+def test_parquet_reader_keeps_ordinary_index_storage_without_supplemental_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, index: pd.Index
+) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
+    source = pd.DataFrame({"value": pd.array([1, None, 3, 4], dtype="Int64")}, index=index)
+    source.attrs = {"unchanged": True}
+    path = tmp_path / "ordinary.parquet"
+    source.to_parquet(path)
+    expected = pd.read_parquet(path)
+    read_table = pq.read_table
+
+    def forbid_supplemental_read(*args: Any, **kwargs: Any) -> Any:
+        assert kwargs.get("columns") is None
+        return read_table(*args, **kwargs)
+
+    monkeypatch.setattr(pq, "read_table", forbid_supplemental_read)
+    pd.testing.assert_frame_equal(PandasEngine().read_file(str(path)), expected)
+
+
+@pytest.mark.parametrize(
+    "descriptor", [{"kind": "unknown"}, {"kind": "range", "name": None, "start": 0, "stop": 2, "step": 0}]
+)
+def test_parquet_reader_retains_native_invalid_index_metadata_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descriptor: dict[str, Any]
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pa.Table.from_pandas(
+        pd.DataFrame({"value": [1, 2]}, index=pd.Index(pd.array([2**64 - 1, None], dtype="UInt64"), name="wide"))
+    )
+    metadata = table.schema.pandas_metadata
+    metadata["index_columns"].insert(0, descriptor)
+    table = table.replace_schema_metadata({**table.schema.metadata, b"pandas": json.dumps(metadata).encode()})
+    path = tmp_path / "invalid.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    streams: list[Any] = []
+    read_parquet = pd.read_parquet
+
+    def observe_read(stream: Any, **kwargs: Any) -> Any:
+        streams.append(stream)
+        return read_parquet(stream, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", observe_read)
+    with pytest.raises(ValueError):
+        PandasEngine().read_file(str(path))
+    assert streams and all(stream.closed for stream in streams)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("phase", ["after-main", "after-index"])
+@pytest.mark.parametrize("change", ["rewrite", "replace"])
+def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, change: str
+) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    def payload(offset: int) -> bytes:
+        index = pd.Index(pd.array([2**53 + 1 + offset, None, 2**53 + 3 + offset], dtype="UInt64"), name="index")
+        frame = pd.DataFrame(
+            {"value": [11 + offset, 12 + offset, 13 + offset], "padding": ["A" * 65536] * 3}, index=index
+        )
+        output = io.BytesIO()
+        frame.to_parquet(output, compression=None, use_dictionary=False, write_statistics=False)
+        return output.getvalue()
+
+    first, second = payload(0), payload(4)
+    assert len(first) == len(second)
+    path = tmp_path / "source.parquet"
+    path.write_bytes(first)
+    before = path.stat()
+    replacement = tmp_path / "replacement.parquet"
+    replacement.write_bytes(second)
+    streams: list[Any] = []
+    mutation_attempted = False
+    mutation_denied = False
+
+    def change_source() -> None:
+        nonlocal mutation_attempted, mutation_denied
+        mutation_attempted = True
+        try:
+            if change == "replace":
+                os.replace(replacement, path)
+            else:
+                with path.open("r+b", buffering=0) as writer:
+                    writer.write(second)
+                    writer.truncate()
+                    os.fsync(writer.fileno())
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            mutation_denied = True
+
+    read_parquet = pd.read_parquet
+    read_table = pq.read_table
+
+    def after_main(stream: Any, **kwargs: Any) -> Any:
+        frame = read_parquet(stream, **kwargs)
+        streams.append(stream)
+        if phase == "after-main":
+            change_source()
+        return frame
+
+    def after_index(stream: Any, **kwargs: Any) -> Any:
+        table = read_table(stream, **kwargs)
+        if phase == "after-index" and kwargs.get("columns") is not None:
+            change_source()
+        return table
+
+    monkeypatch.setattr(pd, "read_parquet", after_main)
+    monkeypatch.setattr(pq, "read_table", after_index)
+    manager = SessionManager()
+    try:
+        result = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend="pandas")
+    except EngineError as error:
+        assert "Parquet source changed" in str(error)
+        assert manager.sessions == {}
+    else:
+        assert mutation_denied
+        assert [row["rowLabel"] for row in result["page"]["rows"]] == [str(2**53 + 1), "null", str(2**53 + 3)]
+        manager.close_session(str(result["metadata"]["sessionId"]), 0)
+    assert mutation_attempted
+    assert streams and all(stream.closed for stream in streams)
 
 
 def test_named_index_metadata_and_labels_follow_the_exact_filtered_sorted_slice(
