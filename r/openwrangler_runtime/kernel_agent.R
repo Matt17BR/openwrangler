@@ -6371,11 +6371,7 @@ openwrangler_r_kernel_agent <- local({
       "          .ow_fill <- if (.ow_present_count %% 2L == 1L) {",
       "            .ow_lower",
       "          } else if (.ow_semantic_kind == \"double\") {",
-      "            if (.ow_lower == .ow_upper) .ow_lower else if (is.finite(.ow_lower) && is.finite(.ow_upper)) {",
-      "              if ((.ow_lower < 0) == (.ow_upper < 0)) .ow_lower + ((.ow_upper - .ow_lower) / 2) else (.ow_lower / 2) + (.ow_upper / 2)",
-      "            } else {",
-      "              (.ow_lower + .ow_upper) / 2",
-      "            }",
+      "            .ow_safe_float_midpoint(.ow_lower, .ow_upper)",
       "          } else {",
       "            .ow_lower / 2 + .ow_upper / 2",
       "          }",
@@ -6467,7 +6463,7 @@ openwrangler_r_kernel_agent <- local({
       "      } else {",
       "        .ow_ordered <- sort(.ow_present); .ow_count <- length(.ow_ordered)",
       "        .ow_lower <- .ow_ordered[[(.ow_count + 1L) %/% 2L]]; .ow_upper <- .ow_ordered[[(.ow_count + 2L) %/% 2L]]",
-      "        .ow_fill <- .ow_lower / 2 + .ow_upper / 2",
+      "        .ow_fill <- .ow_safe_float_midpoint(as.double(.ow_lower), as.double(.ow_upper))",
       "        if (is.nan(.ow_fill)) stop(\"Open Wrangler could not calculate a usable numeric median\", call. = FALSE)",
       "        if (.ow_semantic_kind == \"integer\") {",
       "          if (!is.finite(.ow_fill) || .ow_fill != floor(.ow_fill)) stop(\"Open Wrangler integer median is not an integer\", call. = FALSE)",
@@ -7241,8 +7237,7 @@ openwrangler_r_kernel_agent <- local({
           return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_middle))) / 2)
         }
         .ow_upper <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 2L) %/% 2L]]))
-        if (is.infinite(.ow_lower) && identical(.ow_lower, .ow_upper)) return(.ow_lower)
-        return(.ow_lower / 2 + .ow_upper / 2)
+        return(.ow_safe_float_midpoint(.ow_lower, .ow_upper))
       }
       if (.ow_operation %in% c("min", "max")) {
         if (identical(.ow_kind, "factor") && !isTRUE(.ow_spec$ordered)) {
@@ -7580,7 +7575,8 @@ openwrangler_r_kernel_agent <- local({
     maximum_factor_levels,
     maximum_text_bytes,
     maximum_payload_bytes,
-    maximum_name_bytes
+    maximum_name_bytes,
+    safe_float_midpoint
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7826,6 +7822,13 @@ openwrangler_r_kernel_agent <- local({
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
       lines <- c(lines, cast_code_helper_lines())
+    }
+    if (any(vapply(bound_plan, function(step) step$kind %in% c("fillMissingValues", "groupBy"), logical(1L)))) {
+      lines <- c(
+        lines,
+        "  .ow_safe_float_midpoint <-",
+        paste0("  ", deparse(safe_float_midpoint, width.cutoff = 500L))
+      )
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "fillMissingValues"), logical(1L)))) {
       lines <- c(lines, fill_missing_code_helper_lines())
@@ -9632,7 +9635,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$limits$factorLevels,
         frame_contract$limits$textBytes,
         frame_contract$limits$payloadBytes,
-        frame_contract$limits$nameBytes
+        frame_contract$limits$nameBytes,
+        frame_contract$safe_float_midpoint
       )
     )
   }
@@ -9944,7 +9948,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$factorLevels,
             frame_contract$limits$textBytes,
             frame_contract$limits$payloadBytes,
-            frame_contract$limits$nameBytes
+            frame_contract$limits$nameBytes,
+            frame_contract$safe_float_midpoint
           )
         } else {
           NULL
@@ -9995,7 +10000,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$factorLevels,
             frame_contract$limits$textBytes,
             frame_contract$limits$payloadBytes,
-            frame_contract$limits$nameBytes
+            frame_contract$limits$nameBytes,
+            frame_contract$safe_float_midpoint
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10055,7 +10061,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$limits$factorLevels,
               frame_contract$limits$textBytes,
               frame_contract$limits$payloadBytes,
-              frame_contract$limits$nameBytes
+              frame_contract$limits$nameBytes,
+              frame_contract$safe_float_midpoint
             )
           ))
         }
