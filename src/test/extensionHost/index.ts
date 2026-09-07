@@ -2316,11 +2316,11 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(
         initialKernelBeforeFormatter.pid,
         warmKernel.pid,
-        "The formatter-disabled setup must retain the exact warmed kernel."
+        "Setup before formatter consent must retain the exact warmed kernel."
       );
       assert.equal(initialKernelBeforeFormatter.setup, setupMarker);
       assert.equal(initialKernelBeforeFormatter.duckdbConversionGuards, true);
-      await exerciseFormatterDisabledFirstNotebookResult(
+      await exerciseFirstNotebookResultBeforeFormatterConsent(
         workbench,
         testing,
         notebook,
@@ -2386,7 +2386,7 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(
         await visibleReleasedJupyterConsentCount(workbench),
         0,
-        "The formatter-disabled result action must settle kernel consent before proactive preparation begins."
+        "The first-result action must settle kernel consent before the later formatter checks."
       );
     }
     assert.equal(
@@ -4123,17 +4123,16 @@ async function visibleReleasedJupyterQuickInput(workbench: Page): Promise<Locato
 
 async function releasedJupyterQuickPickRow(quickInput: Locator, label: string): Promise<Locator | undefined> {
   const labels = quickInput.locator(".quick-input-list [role='option'] .label-name:visible");
-  const count = await labels.count();
-  assert.ok(count <= 256, "The released-Jupyter kernel picker exceeded its bounded visible option count.");
-  const matches: Locator[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const candidate = labels.nth(index);
-    if ((await candidate.innerText()).trim() === label) {
-      matches.push(candidate.locator("xpath=ancestor::*[@role='option'][1]"));
-    }
-  }
-  assert.ok(matches.length < 2, `The released-Jupyter kernel picker exposed duplicate ${JSON.stringify(label)} rows.`);
-  return matches[0];
+  const visibleLabels = await labels.allInnerTexts();
+  assert.ok(
+    visibleLabels.length <= 256,
+    "The released-Jupyter kernel picker exceeded its bounded visible option count."
+  );
+  const matches = visibleLabels.filter((text) => text.trim() === label).length;
+  assert.ok(matches < 2, `The released-Jupyter kernel picker exposed duplicate ${JSON.stringify(label)} rows.`);
+  if (matches === 0) return undefined;
+  const exactLabel = new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\s*$`, "u");
+  return labels.filter({ hasText: exactLabel }).locator("xpath=ancestor::*[@role='option'][1]");
 }
 
 async function releasedJupyterQuickInputDiagnostics(workbench: Page): Promise<string[]> {
@@ -4167,7 +4166,7 @@ async function boundedReleasedJupyterQuickInputDiagnostics(workbench: Page): Pro
   }
 }
 
-async function exerciseFormatterDisabledFirstNotebookResult(
+async function exerciseFirstNotebookResultBeforeFormatterConsent(
   workbench: Page,
   testing: TestApi,
   notebook: vscode.NotebookDocument,
@@ -4180,7 +4179,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   assert.equal(
     configuration.get("notebookPreviewProvider"),
     "disabled",
-    "The first-result fallback must run before proactive notebook formatters are enabled."
+    "The first-result fixture must begin before automatic notebook work is enabled."
   );
   const cell = notebook.cellAt(RELEASED_JUPYTER_FIRST_RESULT_CELL);
   const initialExecutionOrder = cell.executionSummary?.executionOrder;
@@ -4204,8 +4203,16 @@ async function exerciseFormatterDisabledFirstNotebookResult(
           visible.start <= RELEASED_JUPYTER_FIRST_RESULT_CELL && visible.end > RELEASED_JUPYTER_FIRST_RESULT_CELL
       ),
     WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-    "the formatter-disabled Pandas result cell to become visible before its first execution"
+    "the first Pandas result cell to become visible before formatter consent"
   );
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "before enabling notebook previews");
+  await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
+  assert.equal(
+    vscode.workspace.getConfiguration("openWrangler").get("notebookPreviewProvider"),
+    "openWrangler",
+    "Open Wrangler must own automatic previews before the first-result execution."
+  );
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "before executing the first result");
   recordAcceptanceProgress(`${checkpoint}:execute`);
   await executeReleasedNotebookCell(
     notebook,
@@ -4217,13 +4224,13 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   const executionOrder = cell.executionSummary?.executionOrder;
   assert.ok(
     Number.isSafeInteger(executionOrder) && Number(executionOrder) > 0,
-    "The formatter-disabled Pandas result must publish one positive execution order."
+    "The first Pandas result must publish one positive execution order before formatter consent."
   );
   const outputMimes = cell.outputs.flatMap((output) => output.items.map((item) => item.mime));
   assert.equal(
     outputMimes.includes(OPEN_WRANGLER_MIME_V2),
     false,
-    "The formatter-disabled first result must not contain Open Wrangler MIME."
+    "The first result must not contain Open Wrangler MIME before kernel consent."
   );
   assert.ok(
     cell.outputs.some((output) => output.metadata?.outputType === "execute_result"),
@@ -4233,7 +4240,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   assert.equal(
     outputText.includes(removedRerunHint),
     false,
-    "The formatter-disabled cell output must not restore the removed rerun instruction."
+    "The first cell output must not restore the removed rerun instruction."
   );
   assert.equal(testing.diagnostics().sessionCount, 0, "Executing the first result must not open a session by itself.");
 
@@ -4243,9 +4250,9 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   await consent.allow.click();
   await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
-    configuration.get("notebookPreviewProvider"),
-    "disabled",
-    "Kernel consent must not enable proactive formatters before the first-result action is used."
+    vscode.workspace.getConfiguration("openWrangler").get("notebookPreviewProvider"),
+    "openWrangler",
+    "The first-result action must keep Open Wrangler as the automatic preview owner."
   );
 
   notebookEditor.selection = range;
@@ -4258,7 +4265,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
           visible.start <= RELEASED_JUPYTER_FIRST_RESULT_CELL && visible.end > RELEASED_JUPYTER_FIRST_RESULT_CELL
       ),
     WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-    "the formatter-disabled Pandas result cell to become visible again after kernel consent"
+    "the first Pandas result cell to become visible again after kernel consent"
   );
   const action = await waitForReleasedNotebookCellResultAction(
     workbench,
@@ -4290,16 +4297,16 @@ async function exerciseFormatterDisabledFirstNotebookResult(
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the formatter-disabled first Pandas result to open from its cell status action",
+      "the first Pandas result to open from its cell status action",
       () => JSON.stringify(testing.diagnostics())
     );
     const active = testing.activeSession();
-    assert.ok(active, "The formatter-disabled cell status action must publish an active session.");
+    assert.ok(active, "The first-result cell status action must publish an active session.");
     return active;
   };
   recordAcceptanceProgress(`${checkpoint}:action-ready`);
   const session = await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
-    description: "the formatter-disabled first-result cell status action",
+    description: "the first-result cell status action",
     activate: () => action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     receipt,
     authoritativeReceiptAfterActivationFailure: receipt
@@ -4325,7 +4332,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
       filterModel: session.metadata.filterModel
     });
     assert.equal(page.kind, "page");
-    if (page.kind !== "page") throw new Error("The formatter-disabled first-result page did not resolve.");
+    if (page.kind !== "page") throw new Error("The first-result page did not resolve.");
     assert.equal(page.page.totalRows, 3);
     assert.equal(page.page.rows[0]?.values[0]?.display, "2499998");
     assert.equal(page.page.rows[2]?.values[0]?.display, "2500000");
@@ -4350,7 +4357,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
       "Opening the first result must not rewrite it as Open Wrangler MIME."
     );
   } finally {
-    await disposePackagedSessionPanel(testing, session.sessionId, "the formatter-disabled first-result session");
+    await disposePackagedSessionPanel(testing, session.sessionId, "the first-result session");
     recordAcceptanceProgress(`${checkpoint}:session-closed`);
   }
 }
@@ -17753,6 +17760,12 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     path: path.join(directory, "legacy.xls"),
     importOptions: { sheetIndex: 0 }
   } as const;
+  const polarsRequirementList = requiredDependencies("polars", csvSource(fixture))
+    .map((dependency) => dependency.installSpec)
+    .join(", ");
+  const duckdbRequirementList = requiredDependencies("duckdb", csvSource(fixture))
+    .map((dependency) => dependency.installSpec)
+    .join(", ");
   const lossyRequirement = requiredDependencies("pandas", lossySource)[0].installSpec;
   const legacyRequirements = requiredDependencies("pandas", legacySource).map((dependency) => dependency.installSpec);
   const legacyRequirementList = legacyRequirements.join(", ");
@@ -17772,7 +17785,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejected.kind, "error");
     if (rejected.kind === "error") {
       assert.equal(rejected.code, "missing_dependencies");
-      assert.match(rejected.message, /Missing: polars>=1\.35\.2,<2\.$/u);
+      assert.equal(rejected.message.endsWith(`Missing: ${polarsRequirementList}.`), true);
       assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedDuckDB = await testing.request({
@@ -17786,10 +17799,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedDuckDB.kind, "error");
     if (rejectedDuckDB.kind === "error") {
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
-      assert.match(
-        rejectedDuckDB.message,
-        /Missing: duckdb>=1\.5\.4,<1\.6, fsspec==2026\.7\.0, pytz>=2026\.3\.post1,<2027\.$/u
-      );
+      assert.equal(rejectedDuckDB.message.endsWith(`Missing: ${duckdbRequirementList}.`), true);
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLossyUtf8 = await testing.request({
