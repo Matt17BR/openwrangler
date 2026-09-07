@@ -149,6 +149,9 @@ The operation owner checks native output dtypes and existing refusals for dictio
 live execution and standalone code, including empty/all-null inputs and unsigned values beyond the signed target.
 Fill tests cover dictionary targets, ordered donors and grouping keys, native Arrow dates, unchanged no-op storage
 and complete-column literal validation. Mixed plans retain source arrays and exercise helper-name collisions.
+Configurable-export tests use real pinned writers for scalar dictionary columns and indexes, compare physical CSV
+and Parquet values with logical controls, reopen exported columns, and check unchanged source storage. Wide integer
+index assertions inspect physical Parquet values separately from Pandas index reconstruction.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

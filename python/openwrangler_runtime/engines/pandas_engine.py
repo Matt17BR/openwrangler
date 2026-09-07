@@ -439,6 +439,7 @@ class PandasEngine(DataFrameEngine):
         format_name = normalized["format"]
         df = self._visible_frame(self.normalize(frame))
         preserve_index = normalized["rowAxisPolicy"] == "preserve"
+        df = _pandas_dictionary_export_frame(df, preserve_index)
         with path.open_binary_writer() if isinstance(path, ExportWriterPath) else nullcontext(path) as destination:
             if format_name == "csv":
                 df.to_csv(
@@ -3701,6 +3702,39 @@ def _pandas_normalize_integer_result(value: Any) -> Any:
 
 def _pandas_preserve_integer_result(value: Any) -> Any:
     return _pandas_normalize_integer_series(value, enforce_envelope=False)
+
+
+def _pandas_dictionary_export_frame(df: Any, preserve_index: bool) -> Any:
+    import pandas as pd
+
+    result = df
+    for position in range(df.shape[1]):
+        series = df.iloc[:, position]
+        logical = _pandas_dictionary_values(series)
+        if logical is series:
+            continue
+        if result is df:
+            result = df.copy(deep=False)
+        result.isetitem(position, logical)
+    if preserve_index:
+        index = df.index
+        levels = list(index.levels) if isinstance(index, pd.MultiIndex) else [index]
+        changed = False
+        for position, level in enumerate(levels):
+            if _pandas_dictionary_value_type(level) is None:
+                continue
+            logical = _pandas_dictionary_values(pd.Series(level.array, copy=False))
+            levels[position] = pd.Index(logical.array, name=level.name)
+            changed = True
+        if changed:
+            if result is df:
+                result = df.copy(deep=False)
+            result.index = (
+                pd.MultiIndex(levels=levels, codes=index.codes, names=index.names)
+                if isinstance(index, pd.MultiIndex)
+                else levels[0]
+            )
+    return result
 
 
 def _pandas_parquet_frame(df: Any) -> Any:
