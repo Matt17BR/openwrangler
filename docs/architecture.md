@@ -307,6 +307,8 @@ indeterminate: Open Wrangler does not retry, roll it back, or claim success agai
 
 R terminal sessions apply the equivalent rule to the exact terminal object and process ID. Direct active-R opens
 capture that terminal before cleaning up a previous transport; changing terminals requires a new open action.
+Terminal dispatch is one correlated R expression with short physical lines, so a new terminal can accept it before
+R changes its input mode. Long path literals remain escaped and are split into bounded string expressions.
 R and Quarto document commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved
 executor across every activation, discovery, picker, execution, and focus-restoration await.
 

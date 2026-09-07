@@ -34,8 +34,9 @@ export function rInteractiveRuntimeBundleId(runtimeRoot: string): string {
 }
 
 /**
- * Builds the one-line command sent to the exact R terminal. The first command
- * installs a private dispatcher. Every command resolves that dispatcher first,
+ * Builds one R expression with short physical lines for the exact terminal,
+ * including terminals whose canonical input is still active during startup.
+ * The first command installs a private dispatcher. Every command resolves it first,
  * arms every attached transport against task-callback feedback, and only then
  * resolves the request binding.
  */
@@ -50,7 +51,7 @@ export function buildRInteractiveDispatchCode(context: RInteractiveDispatchConte
     .slice(0, 16)}`;
   const dispatcherSetup = context.bootstrapDispatcher
     ? [
-        `base::eval(base::parse(text = ${rString(buildRDependencyPreflightCode("active R session"))}, keep.source = FALSE), envir = base::environment());`,
+        buildRDependencyPreflightCode("active R session"),
         "if (base::is.null(.__ow_dispatcher)) {",
         ".__ow_dispatcher <- base::new.env(hash = TRUE, parent = base::baseenv());",
         `base::sys.source(${rString(agentPath)}, envir = .__ow_dispatcher, keep.source = FALSE);`,
@@ -86,7 +87,7 @@ export function buildRInteractiveDispatchCode(context: RInteractiveDispatchConte
     ".__ow_dispatcher$openwrangler_r_interactive_agent$begin_dispatch_cycle();",
     `base::get(${rString(ownerBinding)}, envir = base::globalenv(), inherits = FALSE)(${rString(requestId)});`,
     "})"
-  ].join("");
+  ].join("\n");
   return wrapWithCorrelatedFailure(operation, requestId, context.responsePath);
 }
 
@@ -158,10 +159,20 @@ function wrapWithCorrelatedFailure(operation: string, requestId: string, respons
     "}));",
     "base::invisible(.__ow_last_value)",
     "})"
-  ].join("");
+  ].join("\n");
 }
 
 function rString(value: string): string {
   if (value.includes("\0")) throw new TypeError("R code cannot contain a NUL path component.");
-  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  const quote = (text: string): string =>
+    JSON.stringify(text).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  const literal = quote(value);
+  // Leave room for surrounding R syntax below macOS's 1024-byte canonical line limit.
+  if (Buffer.byteLength(literal, "utf8") <= 768) return literal;
+  const characters = Array.from(value);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < characters.length; offset += 128) {
+    chunks.push(quote(characters.slice(offset, offset + 128).join("")));
+  }
+  return `base::paste0(\n${chunks.join(",\n")}\n)`;
 }

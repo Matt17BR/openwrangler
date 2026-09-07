@@ -86,6 +86,8 @@ journey checks that closing the terminal restores the idle R action. The existin
 DOM-before-acknowledgement and mismatched-marker integration
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution.
+R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
+ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
 
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
 changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
