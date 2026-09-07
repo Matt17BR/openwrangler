@@ -78,7 +78,7 @@ _TYPED_SELECTION_KINDS_BY_COLUMN: Mapping[str, frozenset[str]] = {
     # round-trip without collapsing integer 1 into the literal string "1".
     "string": _TYPED_SELECTION_CELL_KINDS,
     "integer": frozenset({"integer"}),
-    "float": frozenset({"number", "infinity"}),
+    "float": frozenset({"integer", "number", "infinity"}),
     "decimal": frozenset({"decimal"}),
     "boolean": frozenset({"boolean"}),
     "datetime": frozenset({"datetime"}),
@@ -214,12 +214,15 @@ def reconcile_view_filter_model(
     }
 
 
-def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:
+def coerce_typed_view_value(value: Any, column_type: str | None, *, preserve_float_integers: bool = False) -> Any:
     """Bind public filter text to a portable native scalar without losing precision."""
 
     try:
         if isinstance(value, Mapping):
-            return _decode_typed_selection(value, column_type)
+            decoded = _decode_typed_selection(value, column_type)
+            if column_type == "float" and type(decoded) is int and not preserve_float_integers:
+                raise ValueError("integer selections require an exact object-numeric column")
+            return decoded
         if column_type == "string":
             return str(value)
         if column_type == "integer":
@@ -237,6 +240,8 @@ def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:
                 raise ValueError("NaN must use the explicit includeNaN option")
             if not (_NUMBER_VIEW_TEXT.fullmatch(text) or _INFINITY_VIEW_TEXT.fullmatch(text)):
                 raise ValueError("expected a decimal number or explicit Infinity")
+            if preserve_float_integers and _INTEGER_VIEW_TEXT.fullmatch(text):
+                return int(text)
             result = float(text)
             if isnan(result):
                 raise ValueError("NaN must use the explicit includeNaN option")
@@ -406,11 +411,6 @@ def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None
     """Return the portable selection token for one non-missing scalar value."""
 
     cell = normalize_cell(value)
-    if column_type == "float" and cell["kind"] == "integer":
-        try:
-            cell = normalize_cell(float(value))
-        except (TypeError, ValueError, OverflowError):
-            return None
     if cell["isNull"] or cell["isNaN"] or cell["kind"] not in _TYPED_SELECTION_CELL_KINDS:
         return None
     token = {
@@ -471,6 +471,12 @@ def _decode_typed_selection(value: Mapping[str, Any], column_type: str | None) -
         if type(raw) is not bool or cell["display"] != str(raw):
             raise ValueError("typed boolean selections require a boolean raw value")
         return raw
+    if cell_kind == "integer" and not isinstance(raw, str):
+        if (type(raw) is not int and type(raw) is not float) or abs(raw) > 2**53 - 1 or raw != raw or int(raw) != raw:
+            raise ValueError(
+                "typed integer numeric raw values must be safe JSON integers; use decimal text for wider values"
+            )
+        raw = int(raw)
     semantic_type = {
         "integer": "integer",
         "number": "float",
@@ -508,7 +514,7 @@ def generated_view_value_helper_lines() -> list[str]:
             "'datetime', 'date', 'duration', 'infinity'},"
         ),
         "        'integer': {'integer'},",
-        "        'float': {'number', 'infinity'},",
+        "        'float': {'integer', 'number', 'infinity'},",
         "        'decimal': {'decimal'},",
         "        'boolean': {'boolean'},",
         "        'datetime': {'datetime'},",
@@ -545,6 +551,12 @@ def generated_view_value_helper_lines() -> list[str]:
         "        if type(raw) is not bool or cell['display'] != str(raw):",
         "            raise ValueError('Typed boolean selections require a boolean raw value.')",
         "        return raw",
+        "    if cell_kind == 'integer' and not isinstance(raw, str):",
+        "        if ((type(raw) is not int and type(raw) is not float) or abs(raw) > 2**53 - 1",
+        "                or raw != raw or int(raw) != raw):",
+        "            raise ValueError('Typed integer numeric raw values must be safe JSON integers; '",
+        "                             'use decimal text for wider values.')",
+        "        raw = int(raw)",
         (
             "    semantic_type = {'integer': 'integer', 'number': 'float', 'decimal': 'decimal', "
             "'datetime': 'datetime', 'date': 'date', 'duration': 'duration'}[cell_kind]"
@@ -552,10 +564,13 @@ def generated_view_value_helper_lines() -> list[str]:
         "    return _open_wrangler_view_value(raw, semantic_type)",
         "",
         "",
-        "def _open_wrangler_view_value(value, column_type):",
+        "def _open_wrangler_view_value(value, column_type, *, preserve_float_integers=False):",
         "    import re",
         "    if isinstance(value, dict):",
-        "        return _open_wrangler_typed_selection(value, column_type)",
+        "        decoded = _open_wrangler_typed_selection(value, column_type)",
+        "        if column_type == 'float' and type(decoded) is int and not preserve_float_integers:",
+        "            raise ValueError('Integer selections require an exact object-numeric column.')",
+        "        return decoded",
         "    if column_type == 'string':",
         "        return str(value)",
         "    if column_type == 'integer':",
@@ -575,6 +590,8 @@ def generated_view_value_helper_lines() -> list[str]:
         "        infinity = re.fullmatch(r'[+-]?Infinity|-?inf', text)",
         "        if not (number or infinity):",
         "            raise ValueError('Float view-filter values require a decimal number or explicit Infinity.')",
+        "        if preserve_float_integers and re.fullmatch(r'[+-]?\\d+', text):",
+        "            return int(text)",
         "        result = float(text)",
         "        if result != result:",
         "            raise ValueError('NaN must use the explicit includeNaN option.')",
