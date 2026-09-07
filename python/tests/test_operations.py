@@ -1400,3 +1400,55 @@ def assert_semantically_equal(left, right):
                 continue
             else:
                 assert left_value == right_value
+
+
+@pytest.mark.parametrize(
+    "dtype,value",
+    [
+        ("UInt64", 2**63),
+        ("UInt64", 2**64 - 1),
+        ("Float32", float(2**63)),
+        ("Float64", float(2**63)),
+        ("Float64", float("inf")),
+        ("Float64", float("-inf")),
+    ],
+)
+def test_pandas_integer_cast_refuses_nullable_overflow(dtype: str, value: Any) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": pd.Series([value, None], dtype=dtype), "kept": [1, 2]})
+    before = source.copy(deep=True)
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(step("cast", "castColumn", column=lineage[0], dtype="integer"), schema, lineage)
+    with pytest.raises((EngineError, ValueError), match="signed 64-bit integer"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="signed 64-bit integer"):
+        execute_generated(engine, source, [operation])
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize(
+    "dtype,values,expected",
+    [
+        ("UInt64", [0, 2**63 - 1, None], [0, 2**63 - 1, pd.NA]),
+        ("uint64[pyarrow]", [0, 2**63 - 1, None], [0, 2**63 - 1, pd.NA]),
+        ("float16", [0.0, 1.0], [0, 1]),
+        ("Float64", [-float(2**63), float(2**63 - 1024), 1.25, None], [-(2**63), 2**63 - 1024, 1, pd.NA]),
+        ("Float32", [-float(2**63), 1.25, None], [-(2**63), 1, pd.NA]),
+        ("UInt64", [None, None], [pd.NA, pd.NA]),
+        ("Float64", [], []),
+    ],
+)
+def test_pandas_integer_cast_keeps_valid_nullable_values(dtype: str, values: list[Any], expected: list[Any]) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": pd.Series(values, dtype=dtype)})
+    source.index = pd.Index(["same"] * len(source), name="source index")
+    before = source.copy(deep=True)
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(step("cast", "castColumn", column=lineage[0], dtype="integer"), schema, lineage)
+    wanted = pd.Series(expected, index=source.index, dtype="Int64", name="value")
+    for result in [engine.apply_transform(source, operation), execute_generated(engine, source, [operation])]:
+        pd.testing.assert_series_equal(result["value"], wanted)
+        assert source_lineage(engine.schema(result)) == lineage
+    pd.testing.assert_frame_equal(source, before)

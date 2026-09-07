@@ -761,7 +761,12 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             series = df.iloc[:, position]
             conversion, target = _pandas_cast_strategy(params["dtype"])
-            result = pd.to_datetime(series, errors="coerce") if conversion == "to_datetime" else series.astype(target)
+            if target == "Int64":
+                result = _pandas_cast_integer(series)
+            else:
+                result = (
+                    pd.to_datetime(series, errors="coerce") if conversion == "to_datetime" else series.astype(target)
+                )
             if target == "date":
                 result = result.dt.date
             df.isetitem(position, result)
@@ -1176,6 +1181,26 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
             lines.extend(_generated_pandas_floor_ceil_helpers())
+        if any(step["kind"] == "castColumn" and step["params"]["dtype"] == "integer" for step in plan):
+            lines.extend(
+                [
+                    "def _open_wrangler_cast_integer(series):",
+                    "    invalid = False",
+                    "    if pd.api.types.is_unsigned_integer_dtype(series.dtype):",
+                    "        invalid = series.notna().any() and int(series.max()) >= 2 ** 63",
+                    "    elif pd.api.types.is_float_dtype(series.dtype):",
+                    "        present = series.dropna()",
+                    "        invalid = not np.isfinite(present).all() or (not present.empty and (",
+                    "            present.min() < np.longdouble(-(2 ** 63))",
+                    "            or present.max() >= np.longdouble(2 ** 63)))",
+                    "    if invalid:",
+                    "        raise ValueError(",
+                    "            'Convert type cannot represent a present value as a signed 64-bit integer.')",
+                    "    return series.astype('Int64')",
+                    "",
+                    "",
+                ]
+            )
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend(_generated_pandas_min_max_helpers())
         if needs_pivot_longer_helpers:
@@ -1687,6 +1712,8 @@ class PandasEngine(DataFrameEngine):
             if conversion == "to_datetime":
                 accessor = ".dt.date" if target == "date" else ""
                 expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce'){accessor}"
+            elif target == "Int64":
+                expression = f"_open_wrangler_cast_integer(df.iloc[:, {position}])"
             else:
                 expression = f"df.iloc[:, {position}].astype({target!r})"
             return [f"{prefix}df.isetitem({position}, {expression})"]
@@ -2517,6 +2544,23 @@ def _pandas_group_by_positions(
             normalized = _pandas_group_nulls(result.iloc[:, output_position], null_mask)
         result.isetitem(output_position, normalized)
     return result
+
+
+def _pandas_cast_integer(series: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    invalid = False
+    if pd.api.types.is_unsigned_integer_dtype(series.dtype):
+        invalid = series.notna().any() and int(series.max()) >= 2**63
+    elif pd.api.types.is_float_dtype(series.dtype):
+        present = series.dropna()
+        invalid = not np.isfinite(present).all() or (
+            not present.empty and (present.min() < np.longdouble(-(2**63)) or present.max() >= np.longdouble(2**63))
+        )
+    if invalid:
+        raise EngineError("Convert type cannot represent a present value as a signed 64-bit integer.")
+    return series.astype("Int64")
 
 
 def _pandas_floor_ceil(series: Any, ceiling: bool) -> Any:
