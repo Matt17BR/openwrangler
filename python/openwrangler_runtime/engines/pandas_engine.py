@@ -294,9 +294,10 @@ def _pandas_row_key(series: Any) -> Any:
     if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):
         fill = series.dtype.fill_value
         bounds = np.iinfo(series.dtype.subtype)
-        if pd.isna(fill) or isinstance(fill, (int, np.integer)) and int(bounds.min) <= int(fill) <= int(bounds.max):
+        missing_fill = bool(pd.isna(fill))
+        if missing_fill or isinstance(fill, (int, np.integer)) and int(bounds.min) <= int(fill) <= int(bounds.max):
             key = series.fillna(0).sparse.to_dense().reset_index(drop=True)
-            if pd.isna(fill):
+            if missing_fill:
                 key = pd.Series(pd.arrays.IntegerArray(key.to_numpy(), series.isna().to_numpy(dtype=bool)))
         else:
             key = pd.Series(series.to_numpy(dtype=object))
