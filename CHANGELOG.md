@@ -25,6 +25,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   profiles, selections and compatible cleaning operations.
 - CSV and Parquet exports preserve logical Arrow Boolean and UUID values and selected row labels. Parquet files
   containing these native extensions reopen without failing on their Pandas dtype metadata.
+- Pandas object UUIDs agree with their canonical text in value selections, counts, sorting and exports. Selecting
+  rows preserves the original UUID objects and other stored values.
 - Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead
   of rounding them together or rejecting valid unsigned selections.
 - Convert Type accepts supported Arrow dictionary values across chunks and retains the native target's range checks.

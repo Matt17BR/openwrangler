@@ -109,6 +109,9 @@ Native Pandas Arrow `bool8` and UUID columns support logical cell values, profil
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
 Selected rows retain their original native arrays. CSV and Parquet exports preserve the logical values, including
 selected index levels. Native extension Parquet files reopen with the same logical Boolean and string values.
+Pandas object-dtype UUIDs also share their canonical text value with profiles, selections, sorting, duplicates and
+exports. UUID objects and matching canonical strings count as one value; other spellings remain distinct. Selected
+rows retain the original UUID objects, and unrelated object values are not converted to strings.
 
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
