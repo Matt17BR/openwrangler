@@ -4,6 +4,13 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-07
+
+### Security
+
+- Updated browserslist, fast-uri, and qs to address dependency advisories. The remote-Jupyter test environment uses
+  patched Tornado locks.
+
 ### Changed
 
 - Daily previews keep the `x.y.YYYYMMDD` format and take `x.y` from the latest reachable stable tag. Intended manual
@@ -11,13 +18,16 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Release candidates now audit the full Node lock, including development dependencies, before publication.
 - Source builds now support Node.js 22.17 and newer 22.x releases, plus Node.js 24. Node.js 23 remains unsupported.
 
+- Generated DuckDB scripts omit unused helper functions. Pandas fill scripts omit helpers for unused fill methods.
+- Polars 1.44.0 is excluded from supported runtimes.
+- Cancelled or invalid step inspection explains how to show confirmed data and retry.
+
 ### Fixed
 
 - Code insertion stays bound to the notebook or R document that started the command when the active session changes.
 - Native views keep their registrations while loading, preserving the first tree or Code Preview request.
 - Polars Pivot Wider accepts valid column names that previously collided with internal helper columns.
 - Native R live and generated medians agree for tiny and extreme values in Group By and Fill Missing Values.
-
 - The file picker now ignores unsupported values inserted manually into `openWrangler.enabledFileTypes`. A non-array
   value restores the defaults, while an empty array still disables every file type.
 - Code Preview now sends bounded incremental edits instead of retransmitting the full document after every change.
