@@ -224,6 +224,7 @@ def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> A
 def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     import pandas as pd
 
+    frame = _pandas_prepare_dictionary_rows(frame)
     # These are positions, not a fill-aware reindexing operation.
     sparse = {
         position: frame.iloc[:, position].array
@@ -244,6 +245,7 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
     import numpy as np
     import pandas as pd
 
+    series = _pandas_dictionary_values(series)
     if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):
         fill = series.dtype.fill_value
         bounds = np.iinfo(series.dtype.subtype)
@@ -298,6 +300,7 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
 
 
 def _pandas_live_column_filter_mask(series: Any, column_filter: Mapping[str, Any], column_type: str) -> Any | None:
+    series = _pandas_dictionary_values(series)
     conditions = [
         _pandas_live_filter_condition(series, condition)
         for condition in _pandas_filter_conditions(column_filter, column_type)
@@ -505,7 +508,7 @@ class PandasEngine(DataFrameEngine):
                 "position": position,
                 "rawType": str(dtype),
                 "type": _pandas_semantic_type(df.iloc[:, frame_position]),
-                "nullable": bool(df.iloc[:, frame_position].isna().any()),
+                "nullable": bool(_pandas_dictionary_values(df.iloc[:, frame_position]).isna().any()),
             }
             for position, frame_position in enumerate(self._visible_positions(df))
             for column, dtype in [(df.columns[frame_position], df.dtypes.iloc[frame_position])]
@@ -630,7 +633,8 @@ class PandasEngine(DataFrameEngine):
             series = df.iloc[:, frame_position]
             raw_type = str(series.dtype)
             semantic_type = _pandas_semantic_type(series)
-            null_count, nan_count = _missing_value_counts(series, raw_type)
+            series = _pandas_dictionary_values(series)
+            null_count, nan_count = _missing_value_counts(series)
             value_counts = series.value_counts(dropna=True)
             top_values = [{"value": str(index), "count": int(value)} for index, value in value_counts.head(10).items()]
             summary: dict[str, Any] = {
@@ -692,11 +696,20 @@ class PandasEngine(DataFrameEngine):
         ):
             raise EngineError("The selected column is unavailable for missing-value counting.")
         series = df.iloc[:, visible_positions[column_position]]
-        null_count, nan_count = _missing_value_counts(series, str(series.dtype))
+        null_count, nan_count = _missing_value_counts(series)
         return null_count + nan_count
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
         df = self._visible_frame(self.normalize(frame))
+        logical = df
+        for position in range(df.shape[1]):
+            series = df.iloc[:, position]
+            values = _pandas_dictionary_values(series)
+            if values is not series:
+                if logical is df:
+                    logical = df.copy(deep=False)
+                logical.isetitem(position, values)
+        df = logical
         missing_by_column = []
         for position, column in enumerate(df.columns):
             missing_by_column.append({"column": str(column), "count": int(df.iloc[:, position].isna().sum())})
@@ -716,11 +729,16 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
-        series = series.dropna()
-        if search:
+        dictionary_string = _pandas_dictionary_value_type(series) is not None and column_type == "string"
+        series = _pandas_dictionary_values(series).dropna()
+        if search and not dictionary_string:
             folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
             series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
-        counts = sorted(series.value_counts(sort=False).items(), key=lambda item: (-int(item[1]), str(item[0])))
+        counts = series.value_counts(sort=False).items()
+        if search and dictionary_string:
+            needle = str(search).translate(_ASCII_TO_LOWER)
+            counts = [(value, count) for value, count in counts if needle in str(value).translate(_ASCII_TO_LOWER)]
+        counts = sorted(counts, key=lambda item: (-int(item[1]), str(item[0])))
         values = []
         for index, count in counts[:limit]:
             item: dict[str, Any] = {"value": str(index), "count": int(count)}
@@ -1244,9 +1262,14 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        needs_row_queries = (
+            any(step["kind"] in {"filterRows", "sortRows"} for step in plan) or "directional" in fill_strategies
+        )
+        if needs_row_queries:
+            lines.extend(_generated_pandas_dictionary_helpers(include_rows=True))
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_integer_filter_helpers())
-        if any(step["kind"] in {"filterRows", "sortRows"} for step in plan):
+        if needs_row_queries:
             lines.extend(_generated_pandas_row_query_helpers())
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend(_generated_pandas_round_helpers())
@@ -3350,7 +3373,8 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
         isinstance(value, str) for value in series.cat.categories
     )
     if isinstance(series.dtype, pd.StringDtype) or categorical_strings or inferred in {"string", "unicode", "empty"}:
-        lengths = series.astype("string").str.len().dropna()
+        text = series if isinstance(series.dtype, pd.StringDtype) else series.astype("string")
+        lengths = text.str.len().dropna()
         if lengths.empty:
             return {"emptyCount": 0}
         return {
@@ -3393,15 +3417,116 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
     }
 
 
+def _pandas_dictionary_value_type(series: Any) -> Any:
+    import pandas as pd
+
+    if not isinstance(series.dtype, pd.ArrowDtype):
+        return None
+    import pyarrow as pa
+
+    dtype = series.dtype.pyarrow_dtype
+    if not pa.types.is_dictionary(dtype):
+        return None
+    value_type = dtype.value_type
+    if (
+        pa.types.is_string(value_type)
+        or pa.types.is_large_string(value_type)
+        or pa.types.is_integer(value_type)
+        or pa.types.is_floating(value_type)
+        or pa.types.is_decimal(value_type)
+        or pa.types.is_boolean(value_type)
+        or pa.types.is_date(value_type)
+        or pa.types.is_timestamp(value_type)
+        or pa.types.is_duration(value_type)
+    ):
+        return value_type
+    return None
+
+
+def _pandas_dictionary_values(series: Any) -> Any:
+    import pandas as pd
+
+    value_type = _pandas_dictionary_value_type(series)
+    if value_type is None:
+        return series
+    import pyarrow as pa
+
+    if not (pa.types.is_string(value_type) or pa.types.is_large_string(value_type)):
+        return series.astype(pd.ArrowDtype(value_type))
+    # Keep one Python string per dictionary entry, not a copied payload per row.
+    chunks = []
+    dtype = pd.StringDtype(storage="python")
+    for chunk in series.array.__arrow_array__().chunks:
+        dictionary = pd.array(chunk.dictionary.to_pylist(), dtype=dtype)
+        indices = chunk.indices.cast(pa.int64()).fill_null(-1).to_numpy(zero_copy_only=False)
+        chunks.append(pd.Series(dictionary.take(indices, allow_fill=True)))
+    result = pd.concat(chunks, ignore_index=True) if chunks else pd.Series([], dtype=dtype)
+    result.index = series.index
+    result.name = series.name
+    return result
+
+
+def _pandas_prepare_dictionary_rows(frame: Any) -> Any:
+    import pandas as pd
+
+    result = frame
+    for position in range(frame.shape[1]):
+        series = frame.iloc[:, position]
+        if _pandas_dictionary_value_type(series) is None:
+            continue
+        array = series.array.__arrow_array__()
+        if array.num_chunks <= 1:
+            continue
+        chunks = array.chunks
+        dtype = array.type
+        cardinality_bound = sum(len(chunk.dictionary) for chunk in chunks)
+        has_null_entries = any(chunk.dictionary.null_count for chunk in chunks)
+        if not has_null_entries and cardinality_bound <= 2 ** (dtype.index_type.bit_width - 1):
+            continue
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        # Arrow cannot unify null codebook entries or an undersized index type.
+        normalized = []
+        for chunk in chunks:
+            if chunk.dictionary.null_count:
+                canonical = chunk.dictionary.dictionary_encode()
+                indices = pc.take(canonical.indices, chunk.indices)
+                dictionary = canonical.dictionary
+            else:
+                indices, dictionary = chunk.indices, chunk.dictionary
+            normalized.append((indices, dictionary))
+        cardinality_bound = sum(len(dictionary) for _, dictionary in normalized)
+        width = next(
+            bits
+            for bits in (8, 16, 32, 64)
+            if bits >= dtype.index_type.bit_width and cardinality_bound <= 2 ** (bits - 1)
+        )
+        index_type = getattr(pa, f"int{width}")()
+        normalized_array = pa.chunked_array(
+            [
+                pa.DictionaryArray.from_arrays(indices.cast(index_type), dictionary, ordered=dtype.ordered)
+                for indices, dictionary in normalized
+            ],
+            type=pa.dictionary(index_type, dtype.value_type, ordered=dtype.ordered),
+        )
+        if result is frame:
+            result = frame.copy(deep=False)
+        result.isetitem(position, pd.Series(pd.arrays.ArrowExtensionArray(normalized_array), index=frame.index))
+    return result
+
+
 def _pandas_semantic_type(series: Any) -> str:
     import pandas as pd
 
-    if isinstance(series.dtype, pd.ArrowDtype):
+    value_type = _pandas_dictionary_value_type(series)
+    dtype = pd.ArrowDtype(value_type) if value_type is not None else series.dtype
+    if isinstance(dtype, pd.ArrowDtype):
         import pyarrow as pa
 
-        if pa.types.is_date(series.dtype.pyarrow_dtype):
+        if pa.types.is_date(dtype.pyarrow_dtype):
             return "date"
-    semantic_type = infer_semantic_type(str(series.dtype))
+    semantic_type = infer_semantic_type(str(dtype))
     if semantic_type == "string" and pd.api.types.is_object_dtype(series.dtype):
         # Pandas' native classifier is exhaustive but runs in its optimized C
         # path.  It avoids the prior Python materialization without making UI
@@ -4200,6 +4325,7 @@ def _generated_pandas_integer_filter_helpers() -> list[str]:
 def _generated_pandas_row_query_helpers() -> list[str]:
     return [
         "def _open_wrangler_take_rows(frame, positions):",
+        "    frame = _open_wrangler_prepare_dictionary_rows(frame)",
         "",
         "    # These are positions, not a fill-aware reindexing operation.",
         "    sparse = {",
@@ -4219,6 +4345,7 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "",
         "",
         "def _open_wrangler_sort_order(series, ascending, nulls):",
+        "    series = _open_wrangler_dictionary_values(series)",
         "",
         "    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):",
         "        fill = series.dtype.fill_value",
@@ -4239,10 +4366,11 @@ def _generated_pandas_row_query_helpers() -> list[str]:
 
 
 def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
+    lines: list[str] = []
     column_masks: list[str] = []
-    for column_filter in model.get("filters", []):
+    for column_index, column_filter in enumerate(model.get("filters", [])):
         position = bound_column_position(column_filter["column"], "filterRows")
-        series = f"df.iloc[:, {position}]"
+        series = f"_filter_series_{index}"
         column_type = column_filter.get("type")
         conditions = [
             _pandas_filter_condition_expression(series, condition)
@@ -4250,12 +4378,20 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
         ]
         if conditions:
             operator = " | " if column_filter.get("logic") == "or" else " & "
-            column_masks.append("(" + operator.join(conditions) + ")")
+            mask = f"_filter_column_mask_{index}_{column_index}"
+            lines.extend(
+                [
+                    f"    {series} = _open_wrangler_dictionary_values(df.iloc[:, {position}])",
+                    f"    {mask} = (" + operator.join(conditions) + ")",
+                    f"    del {series}",
+                ]
+            )
+            column_masks.append(mask)
 
-    lines: list[str] = []
     if column_masks:
         operator = " | " if model.get("logic") == "or" else " & "
         lines.append(f"    _filter_mask_{index} = " + operator.join(column_masks))
+        lines.append(f"    del {', '.join(column_masks)}")
         lines.append(
             f"    df = _open_wrangler_take_rows(df, "
             f"np.flatnonzero(_filter_mask_{index}.fillna(False).to_numpy(dtype=bool)))"
@@ -4436,8 +4572,7 @@ def _pandas_numeric_visualization(series: Any, max_bins: int = 20) -> dict[str, 
     return numeric_visualization_from_bin_counts(minimum, maximum, counts)
 
 
-def _missing_value_counts(series: Any, raw_type: str) -> tuple[int, int]:
-    del raw_type
+def _missing_value_counts(series: Any) -> tuple[int, int]:
     # NumPy-backed Pandas dtypes have unambiguous missing-value storage. Avoid
     # boxing every scalar twice for the common numeric and temporal cases;
     # extension and object dtypes still need the exact scalar fallback below.
@@ -4544,7 +4679,7 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
 def _pandas_fill_missing_directional(
     frame: Any,
     target_position: int,
-    order_rules: Sequence[tuple[int, bool, str]],
+    order_rules: Sequence[tuple[int, bool, Literal["first", "last"]]],
     direction: str,
     max_gap: int | None,
 ) -> Any:
@@ -4559,11 +4694,8 @@ def _pandas_fill_missing_directional(
 
     order = np.arange(len(frame), dtype=np.int64)
     for position, ascending, nulls in reversed(order_rules):
-        relative_order = (
-            frame.iloc[order, position]
-            .reset_index(drop=True)
-            .sort_values(ascending=ascending, na_position=nulls, kind="stable")
-            .index.to_numpy(dtype=np.int64)
+        relative_order = _pandas_sort_order(
+            _pandas_take_rows(frame.iloc[:, [position]], order).iloc[:, 0], ascending, nulls
         )
         order = order[relative_order]
 
@@ -4996,6 +5128,118 @@ def _pandas_datetime_awareness(series: Any) -> bool:
     return awareness.pop()
 
 
+def _generated_pandas_dictionary_helpers(*, include_rows: bool) -> list[str]:
+    lines = [
+        "def _open_wrangler_dictionary_value_type(series):",
+        "    import pandas as pd",
+        "",
+        "    if not isinstance(series.dtype, pd.ArrowDtype):",
+        "        return None",
+        "    import pyarrow as pa",
+        "",
+        "    dtype = series.dtype.pyarrow_dtype",
+        "    if not pa.types.is_dictionary(dtype):",
+        "        return None",
+        "    value_type = dtype.value_type",
+        "    if (",
+        "        pa.types.is_string(value_type)",
+        "        or pa.types.is_large_string(value_type)",
+        "        or pa.types.is_integer(value_type)",
+        "        or pa.types.is_floating(value_type)",
+        "        or pa.types.is_decimal(value_type)",
+        "        or pa.types.is_boolean(value_type)",
+        "        or pa.types.is_date(value_type)",
+        "        or pa.types.is_timestamp(value_type)",
+        "        or pa.types.is_duration(value_type)",
+        "    ):",
+        "        return value_type",
+        "    return None",
+        "",
+        "",
+        "def _open_wrangler_dictionary_values(series):",
+        "    import pandas as pd",
+        "",
+        "    value_type = _open_wrangler_dictionary_value_type(series)",
+        "    if value_type is None:",
+        "        return series",
+        "    import pyarrow as pa",
+        "",
+        "    if not (pa.types.is_string(value_type) or pa.types.is_large_string(value_type)):",
+        "        return series.astype(pd.ArrowDtype(value_type))",
+        "    # Keep one Python string per dictionary entry, not a copied payload per row.",
+        "    chunks = []",
+        '    dtype = pd.StringDtype(storage="python")',
+        "    for chunk in series.array.__arrow_array__().chunks:",
+        "        dictionary = pd.array(chunk.dictionary.to_pylist(), dtype=dtype)",
+        "        indices = chunk.indices.cast(pa.int64()).fill_null(-1).to_numpy(zero_copy_only=False)",
+        "        chunks.append(pd.Series(dictionary.take(indices, allow_fill=True)))",
+        "    result = pd.concat(chunks, ignore_index=True) if chunks else pd.Series([], dtype=dtype)",
+        "    result.index = series.index",
+        "    result.name = series.name",
+        "    return result",
+        "",
+        "",
+    ]
+    if include_rows:
+        lines.extend(
+            [
+                "def _open_wrangler_prepare_dictionary_rows(frame):",
+                "    import pandas as pd",
+                "",
+                "    result = frame",
+                "    for position in range(frame.shape[1]):",
+                "        series = frame.iloc[:, position]",
+                "        if _open_wrangler_dictionary_value_type(series) is None:",
+                "            continue",
+                "        array = series.array.__arrow_array__()",
+                "        if array.num_chunks <= 1:",
+                "            continue",
+                "        chunks = array.chunks",
+                "        dtype = array.type",
+                "        cardinality_bound = sum(len(chunk.dictionary) for chunk in chunks)",
+                "        has_null_entries = any(chunk.dictionary.null_count for chunk in chunks)",
+                "        if not has_null_entries and cardinality_bound <= 2 ** (dtype.index_type.bit_width - 1):",
+                "            continue",
+                "        import pyarrow as pa",
+                "        import pyarrow.compute as pc",
+                "",
+                "        # Arrow cannot unify null codebook entries or an undersized index type.",
+                "        normalized = []",
+                "        for chunk in chunks:",
+                "            if chunk.dictionary.null_count:",
+                "                canonical = chunk.dictionary.dictionary_encode()",
+                "                indices = pc.take(canonical.indices, chunk.indices)",
+                "                dictionary = canonical.dictionary",
+                "            else:",
+                "                indices, dictionary = chunk.indices, chunk.dictionary",
+                "            normalized.append((indices, dictionary))",
+                "        cardinality_bound = sum(len(dictionary) for _, dictionary in normalized)",
+                "        width = next(",
+                "            bits",
+                "            for bits in (8, 16, 32, 64)",
+                "            if bits >= dtype.index_type.bit_width and cardinality_bound <= 2 ** (bits - 1)",
+                "        )",
+                '        index_type = getattr(pa, f"int{width}")()',
+                "        normalized_array = pa.chunked_array(",
+                "            [",
+                "                pa.DictionaryArray.from_arrays(",
+                "                    indices.cast(index_type), dictionary, ordered=dtype.ordered)",
+                "                for indices, dictionary in normalized",
+                "            ],",
+                "            type=pa.dictionary(index_type, dtype.value_type, ordered=dtype.ordered),",
+                "        )",
+                "        if result is frame:",
+                "            result = frame.copy(deep=False)",
+                "        result.isetitem(position, pd.Series(",
+                "            pd.arrays.ArrowExtensionArray(normalized_array), index=frame.index))",
+                "    return result",
+                "",
+                "",
+            ]
+        )
+    return lines
+
+
 def _generated_pandas_fill_type_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_semantic_type(series):",
@@ -5327,11 +5571,8 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        return series.copy()",
         "    order = np.arange(len(df), dtype=np.int64)",
         "    for position, ascending, nulls in reversed(order_rules):",
-        "        relative_order = (",
-        "            df.iloc[order, position]",
-        "            .reset_index(drop=True)",
-        "            .sort_values(ascending=ascending, na_position=nulls, kind='stable')",
-        "            .index.to_numpy(dtype=np.int64)",
+        "        relative_order = _open_wrangler_sort_order(",
+        "            _open_wrangler_take_rows(df.iloc[:, [position]], order).iloc[:, 0], ascending, nulls",
         "        )",
         "        order = order[relative_order]",
         "    ordered = series.iloc[order].reset_index(drop=True)",

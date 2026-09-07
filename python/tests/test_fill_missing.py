@@ -6,7 +6,7 @@ from decimal import Decimal
 from math import isnan
 from numbers import Integral
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import pandas as pd
@@ -2764,3 +2764,115 @@ def test_polars_grouped_median_rejects_unrepresentable_native_midpoints(
     with pytest.raises((EngineError, ValueError), match="fractional|represented exactly|scale"):
         normalized_rows(execute_generated(engine, frame, [operation]))
     assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("direction", ["forward", "backward"])
+def test_pandas_directional_fill_preserves_exact_sparse_order(direction: str) -> None:
+    source = pd.DataFrame(
+        {
+            "order": pd.Series([0, 2**53 + 4, 2**53 + 3], dtype=object).astype(pd.SparseDtype("uint64", 0)),
+            "value": pd.Series([10, None, 20], dtype="Int64"),
+        }
+    )
+    source.index = pd.Index(["same"] * 3, name="source")
+    before = source.copy(deep=True)
+    operation = fill_step(
+        bound_ref("c:source:1", "value", 1),
+        {
+            "kind": "directional",
+            "direction": direction,
+            "orderBy": [{"column": bound_ref("c:source:0", "order", 0), "direction": "asc", "nulls": "last"}],
+        },
+    )
+    expected = pd.Series(
+        [10, 20 if direction == "forward" else None, 20], index=source.index, name="value", dtype="Int64"
+    )
+    engine = PandasEngine()
+    for result in [engine.apply_transform(source, operation), execute_generated(engine, source, [operation])]:
+        pd.testing.assert_series_equal(result["value"], expected)
+        pd.testing.assert_series_equal(result["order"], source["order"])
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("direction", ["forward", "backward"])
+def test_pandas_directional_fill_uses_logical_dictionary_order_through_custom_code(direction: str) -> None:
+    from openwrangler_runtime._column_binding import bind_step
+    from openwrangler_runtime.lineage import source_lineage
+    from openwrangler_runtime.operations import validate_step
+
+    first = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 2, 3, None], type=pa.int8()), pa.array(["b", None, "a", "b"])
+    )
+    second = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 2, 3, None], type=pa.int8()), pa.array(["b", "a", None, "b"])
+    )
+    source = pd.DataFrame(
+        {
+            "order": pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([first, second]))),
+            "value": [1.0, None, 3.0, None, 5.0, None, 7.0, None, 9.0, None],
+            "tie": [0, 1] * 5,
+        }
+    )
+    source.index = pd.Index(["same"] * 10, name="source")
+    before = source.copy(deep=True)
+    expected = source.copy()
+    expected["order"] = source["order"].astype(pd.ArrowDtype(pa.string()))
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    fill = bind_step(
+        validate_step(
+            {
+                "id": "dictionary-order",
+                "kind": "fillMissingValues",
+                "params": {
+                    "column": lineage[1],
+                    "replacement": {
+                        "kind": "directional",
+                        "direction": direction,
+                        "orderBy": [
+                            {"column": lineage[0], "direction": "asc", "nulls": "first"},
+                            {"column": lineage[2], "direction": "desc", "nulls": "last"},
+                        ],
+                    },
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    custom = {
+        "id": "private-names",
+        "kind": "customCode",
+        "params": {
+            "code": (
+                "if '_open_wrangler_dictionary_values' in globals():\n"
+                "    raise RuntimeError('private helper leaked')\n"
+                "_open_wrangler_prepare_dictionary_rows = 99\nresult = df\n"
+            )
+        },
+    }
+    operations = [fill, custom, {**fill, "id": "second-fill"}]
+    live = source
+    for operation in operations:
+        live = engine.apply_transform(live, operation)
+        expected = engine.apply_transform(expected, operation)
+    namespace: dict[str, Any] = {
+        "_open_wrangler_dictionary_values": "caller collision",
+        "_filter_series_0": "caller collision",
+    }
+    exec(engine.compile_plan(operations), namespace)
+    for actual in [live, namespace["clean_data"](source)]:
+        pd.testing.assert_series_equal(actual["value"], expected["value"])
+        assert actual.index.equals(source.index)
+        assert (
+            cast(pd.arrays.ArrowExtensionArray, actual["order"].array)
+            .__arrow_array__()
+            .equals(cast(pd.arrays.ArrowExtensionArray, source["order"].array).__arrow_array__())
+        )
+    assert (
+        cast(pd.arrays.ArrowExtensionArray, source["order"].array)
+        .__arrow_array__()
+        .equals(cast(pd.arrays.ArrowExtensionArray, before["order"].array).__arrow_array__())
+    )
+    pd.testing.assert_series_equal(source["value"], before["value"])
