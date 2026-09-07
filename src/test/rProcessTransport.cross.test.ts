@@ -22,8 +22,10 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     const emptyLibrary = resolve(temporaryParent, "empty-library");
     const documentMarker = resolve(temporaryParent, "document-ran.txt");
     await mkdir(emptyLibrary, { mode: 0o700 });
+    const previousLibrary = process.env.R_LIBS;
     const previousSiteLibrary = process.env.R_LIBS_SITE;
     const previousUserLibrary = process.env.R_LIBS_USER;
+    process.env.R_LIBS = emptyLibrary;
     process.env.R_LIBS_SITE = emptyLibrary;
     process.env.R_LIBS_USER = emptyLibrary;
     const transport = new RProcessSessionTransport({
@@ -39,6 +41,8 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       );
       await expect(readFile(documentMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
+      if (previousLibrary === undefined) delete process.env.R_LIBS;
+      else process.env.R_LIBS = previousLibrary;
       if (previousSiteLibrary === undefined) delete process.env.R_LIBS_SITE;
       else process.env.R_LIBS_SITE = previousSiteLibrary;
       if (previousUserLibrary === undefined) delete process.env.R_LIBS_USER;
