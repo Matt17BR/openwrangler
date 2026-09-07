@@ -71,6 +71,10 @@ contracts execute generated code for midpoint edge cases alongside live executio
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
 
+Native R frame and catalog owners cover constructor and subset forms of empty tables, operations and Custom Code
+that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
+the same structural assertions.
+
 `python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in

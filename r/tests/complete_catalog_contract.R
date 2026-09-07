@@ -1114,49 +1114,90 @@ for (steps in list(
 
 # Zero-row frames are editing inputs as long as one column remains. The
 # generated program must preserve the complete empty schema.
-source_environment$complete_zero <- data.frame(
-  text = character(), value = integer(), check.names = FALSE, row.names = character()
-)
-zero_before <- serialize(source_environment$complete_zero, NULL, version = 3L)
-zero_session <- "00002001-2001-4201-8201-000000002001"
-invisible(dispatch("openSession", list(
-  sessionId = zero_session,
-  variableName = "complete_zero",
-  page = page_window()
-)))
-latest_capture <- NULL
-zero_preview <- dispatch("previewStep", list(
-  sessionId = zero_session,
-  revision = 0L,
-  step = step_with("complete-zero-lower", "lowerText", list(
-    column = list(id = "r:c:0", name = "text"), newColumn = "lower text"
-  )),
-  page = page_window()
+zero_lower_step <- step_with("complete-zero-lower", "lowerText", list(
+  column = list(id = "r:c:0", name = "text"), newColumn = "lower text"
 ))
-assert_identical(zero_preview$kind, "stepPreview", "the zero-row operation did not preview")
-zero_live <- snapshot_from_latest_capture("zero-row operation")
-assert_identical(c(nrow(zero_live), ncol(zero_live)), c(0L, 3L), "the zero-row operation changed shape")
-zero_apply <- dispatch("applyDraft", list(
-  sessionId = zero_session,
-  revision = zero_preview$revision,
-  page = page_window()
-))
-zero_generated_environment <- new.env(parent = baseenv())
-zero_generated_environment$complete_zero <- unserialize(zero_before)
-zero_generated_before <- serialize(zero_generated_environment$complete_zero, NULL, version = 3L)
-eval(parse(text = zero_apply$code, keep.source = FALSE), envir = zero_generated_environment)
-assert_frame_identical(
-  zero_generated_environment$open_wrangler_result,
-  zero_live,
-  "generated zero-row output diverged from live"
+zero_cases <- list(
+  list(
+    label = "base empty input",
+    input = data.frame(text = character(), value = integer(), check.names = FALSE, row.names = character()),
+    step = zero_lower_step, columns = 3L
+  ),
+  list(
+    label = "native empty subset input",
+    input = data.table::data.table(text = "Text", value = 1L)[0L],
+    step = zero_lower_step, columns = 3L
+  ),
+  list(
+    label = "Drop Missing Rows empty output",
+    input = data.table::data.table(text = c("a", "b"), value = c(NA_integer_, NA_integer_)),
+    step = step_with("empty-reduction", "dropMissingRows", list(
+      columns = I(list(list(id = "r:c:1", name = "value"))), how = "any"
+    )), columns = 2L
+  ),
+  list(
+    label = "Custom Code native empty output",
+    input = data.table::data.table(text = c("a", "b"), value = 1:2),
+    step = step_with("empty-custom", "customCode", list(code = "result <- df[0L]")), columns = 2L
+  ),
+  list(
+    label = "Custom Code compact zero count",
+    input = data.table::data.table(text = character(), value = integer()),
+    step = step_with("compact-custom", "customCode", list(
+      code = "result <- df; data.table::setattr(result, 'row.names', c(NA_integer_, 0L))"
+    )), columns = 2L
+  )
 )
-assert_identical(serialize(source_environment$complete_zero, NULL, version = 3L), zero_before, "live zero-row execution mutated source")
-assert_identical(
-  serialize(zero_generated_environment$complete_zero, NULL, version = 3L),
-  zero_generated_before,
-  "generated zero-row execution mutated source"
-)
-assert_identical(dispatch("closeSession", list(sessionId = zero_session))$kind, "closed", "the zero-row session did not close")
+for (zero_index in seq_along(zero_cases)) {
+  case <- zero_cases[[zero_index]]
+  source_environment$complete_zero <- case$input
+  zero_before <- serialize(case$input, NULL, version = 3L)
+  zero_session <- session_id(2100L + zero_index)
+  opened <- dispatch("openSession", list(
+    sessionId = zero_session, variableName = "complete_zero", page = page_window()
+  ))
+  assert_identical(opened$kind, "page", paste(case$label, "did not open", opened$message))
+  latest_capture <- NULL
+  zero_preview <- dispatch("previewStep", list(
+    sessionId = zero_session, revision = 0L, step = case$step, page = page_window()
+  ))
+  assert_identical(zero_preview$kind, "stepPreview", paste(case$label, "did not preview", zero_preview$message))
+  zero_live <- snapshot_from_latest_capture(case$label)
+  assert_identical(c(nrow(zero_live), ncol(zero_live)), c(0L, case$columns), paste(case$label, "changed shape"))
+  zero_apply <- dispatch("applyDraft", list(
+    sessionId = zero_session, revision = zero_preview$revision, page = page_window()
+  ))
+  assert_identical(zero_apply$action, "apply", paste(case$label, "did not apply"))
+  zero_generated_environment <- new.env(parent = baseenv())
+  zero_generated_environment$complete_zero <- unserialize(zero_before)
+  eval(parse(text = zero_apply$code, keep.source = FALSE), envir = zero_generated_environment)
+  assert_frame_identical(zero_generated_environment$open_wrangler_result, zero_live, paste(case$label, "generated output diverged from live"))
+  assert_identical(serialize(source_environment$complete_zero, NULL, version = 3L), zero_before, paste(case$label, "live execution mutated source"))
+  assert_identical(serialize(zero_generated_environment$complete_zero, NULL, version = 3L), zero_before, paste(case$label, "generated execution mutated source"))
+  assert_identical(dispatch("closeSession", list(sessionId = zero_session))$kind, "closed", paste(case$label, "did not close"))
+}
+
+# A compact zero count does not excuse nonempty column storage, at either
+# generated boundary. The same program is valid above for an empty table.
+for (invalid_source in c(FALSE, TRUE)) {
+  malformed_environment <- new.env(parent = baseenv())
+  malformed_environment$complete_zero <- data.table::data.table(text = c("a", "b"), value = 1:2)
+  if (invalid_source) data.table::setattr(malformed_environment$complete_zero, "row.names", c(NA_integer_, 0L))
+  malformed_before <- serialize(malformed_environment$complete_zero, NULL, version = 3L)
+  malformed_error <- tryCatch({
+    eval(parse(text = zero_apply$code, keep.source = FALSE), envir = malformed_environment)
+    NULL
+  }, error = identity)
+  expected_message <- if (invalid_source) {
+    "Open Wrangler generated R received a source column whose length does not match its row count: source column 1"
+  } else {
+    "Open Wrangler Custom Code returned a column with the wrong row count"
+  }
+  assert_true(inherits(malformed_error, "error"), "generated code accepted a false compact zero count")
+  assert_identical(conditionMessage(malformed_error), expected_message, "generated code rejected a false zero count at the wrong boundary")
+  assert_identical(exists("open_wrangler_result", envir = malformed_environment, inherits = FALSE), FALSE, "invalid row counts published a generated result")
+  assert_identical(serialize(malformed_environment$complete_zero, NULL, version = 3L), malformed_before, "invalid row counts changed the source")
+}
 remove("complete_zero", envir = source_environment)
 
 # A 1,025-row direct by-example program crosses the production 1,024-row

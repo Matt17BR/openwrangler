@@ -928,7 +928,7 @@ openwrangler_r_frame_contract <- local({
     }
     compact <- is.integer(row_names) && length(row_names) == 2L && is.na(row_names[[1L]])
     if (compact) {
-      if (is.na(row_names[[2L]]) || row_names[[2L]] == 0L) {
+      if (is.na(row_names[[2L]])) {
         abort("unsupported-frame", "the dataframe has malformed row names")
       }
       row_count <- abs(as.double(row_names[[2L]]))
@@ -8154,7 +8154,7 @@ openwrangler_r_frame_contract <- local({
       is.na(.subset2(row_names, 1L))
     if (compact) {
       terminal <- .subset2(row_names, 2L)
-      if (is.na(terminal) || terminal == 0L) {
+      if (is.na(terminal)) {
         abort("unsupported-frame", "the dataframe has malformed row names")
       }
       row_count <- abs(as.double(terminal))

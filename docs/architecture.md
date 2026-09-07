@@ -207,6 +207,9 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
+R frame validation accepts native compact zero-row metadata while independently checking column lengths. Live and
+generated input/output validation apply the same rule, so native empty subsets do not become malformed frames.
+
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone and Custom Code retain their
 explicit named-input behavior. This keeps later attribute-sensitive custom code consistent with the preview.
