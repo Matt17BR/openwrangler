@@ -2087,3 +2087,85 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
     finally:
         manager.close_all()
         connection.close()
+
+
+@pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("dtype,value", [("BIGINT", 2**53 + 1), ("UBIGINT", 2**64 - 1), ("HUGEINT", 2**100 + 1)])
+def test_duckdb_floor_ceil_preserve_exact_integers(kind: str, replace: bool, dtype: str, value: int) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(f"SELECT * FROM (VALUES ({value}::{dtype}, 1), (NULL::{dtype}, 2)) source(value, kept)")
+    try:
+        native = engine.normalize_notebook_relation(source)
+        schema = engine.schema(native)
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            step(kind, column=lineage[0], **({} if replace else {"newColumn": "integral"})), schema, lineage
+        )
+        live = engine.apply_transform(native, operation)
+        generated = execute_generated(engine, source, [operation])
+        expected = [(value, 1), (None, 2)] if replace else [(value, 1, value), (None, 2, None)]
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == expected
+        assert generated.fetchall() == expected
+        assert str(live.types[0 if replace else -1]) == dtype
+        assert str(generated.types[0 if replace else -1]) == dtype
+        assert source.fetchall() == [(value, 1), (None, 2)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("kind,expected", [("floorNumber", [1, 0, -2, -1, None]), ("ceilNumber", [2, 1, -1, 0, None])])
+def test_duckdb_floor_ceil_keep_decimal_offsets(kind: str, expected: list[int | None]) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        "SELECT v::DECIMAL(38,28) AS value FROM (VALUES ('1.0000000000000000000000000001'), "
+        "('0.9999999999999999999999999999'), ('-1.0000000000000000000000000001'), "
+        "('-0.9999999999999999999999999999'), (NULL)) source(v)"
+    )
+    before = source.fetchall()
+    try:
+        native = engine.normalize_notebook_relation(source)
+        schema = engine.schema(native)
+        lineage = source_lineage(schema)
+        operation = bind_step(step(kind, column=lineage[0], newColumn="integral"), schema, lineage)
+        live = engine.apply_transform(native, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert [row[-1] for row in engine._terminal_rows(live, "SELECT * FROM ow")] == expected
+        assert [row[-1] for row in generated.fetchall()] == expected
+        assert str(live.types[-1]) == "DECIMAL(38,0)"
+        assert str(generated.types[-1]) == "DECIMAL(38,0)"
+        assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "[1,2]::INTEGER[]",
+        "[1,2]::INTEGER[2]",
+        "{'a': 1}::STRUCT(a INTEGER)",
+        "[1.1]::DECIMAL(4,1)[]",
+        "'integer'::ENUM('integer','other')",
+        "'decimal'::ENUM('decimal','other')",
+    ],
+)
+def test_duckdb_floor_ceil_keep_nonnumeric_coercion(kind: str, value: str) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(f"SELECT {value} AS value")
+    before = source.fetchall()
+    try:
+        native = engine.normalize_notebook_relation(source)
+        schema = engine.schema(native)
+        lineage = source_lineage(schema)
+        operation = bind_step(step(kind, column=lineage[0], newColumn="integral"), schema, lineage)
+        live = engine.apply_transform(native, operation)
+        generated = execute_generated(engine, source, [operation])
+        expected = [(*before[0], None)]
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == expected
+        assert generated.fetchall() == expected
+        assert str(live.types[-1]) == str(generated.types[-1]) == "DOUBLE"
+        assert source.fetchall() == before
+    finally:
+        engine.close()

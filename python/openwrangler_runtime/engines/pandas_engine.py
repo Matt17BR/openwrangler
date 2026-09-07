@@ -658,7 +658,6 @@ class PandasEngine(DataFrameEngine):
         return values, len(counts) > limit
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
-        import numpy as np
         import pandas as pd
 
         df = self.normalize(frame).copy()
@@ -911,13 +910,11 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
             if kind == "roundNumber":
+                series: Any = pd.to_numeric(df.iloc[:, position], errors="coerce")
                 result = _pandas_round(series, int(params.get("decimals", 0)))
-            elif kind == "floorNumber":
-                result = np.floor(series)
             else:
-                result = np.ceil(series)
+                result = _pandas_floor_ceil(df.iloc[:, position], kind == "ceilNumber")
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
@@ -1177,6 +1174,8 @@ class PandasEngine(DataFrameEngine):
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend(_generated_pandas_round_helpers())
+        if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
+            lines.extend(_generated_pandas_floor_ceil_helpers())
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend(_generated_pandas_min_max_helpers())
         if needs_pivot_longer_helpers:
@@ -1926,10 +1925,7 @@ class PandasEngine(DataFrameEngine):
                     f"{params.get('decimals', 0)!r})"
                 )
                 if kind == "roundNumber"
-                else (
-                    f"np.{'floor' if kind == 'floorNumber' else 'ceil'}("
-                    f"pd.to_numeric(df.iloc[:, {position}], errors='coerce'))"
-                )
+                else (f"_open_wrangler_floor_ceil(df.iloc[:, {position}], {kind == 'ceilNumber'!r})")
             )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
@@ -2521,6 +2517,72 @@ def _pandas_group_by_positions(
             normalized = _pandas_group_nulls(result.iloc[:, output_position], null_mask)
         result.isetitem(output_position, normalized)
     return result
+
+
+def _pandas_floor_ceil(series: Any, ceiling: bool) -> Any:
+    from decimal import Decimal
+
+    import numpy as np
+    import pandas as pd
+
+    if pd.api.types.is_integer_dtype(series.dtype):
+        return series.copy()
+    inferred = pd.api.types.infer_dtype(series.dropna()) if pd.api.types.is_object_dtype(series.dtype) else None
+    if inferred == "integer":
+        return series.copy()
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    arrow_decimal = arrow_type is not None and str(arrow_type).startswith("decimal")
+    if inferred == "decimal" or arrow_decimal:
+        if arrow_type is not None and arrow_decimal and arrow_type.scale <= 0:
+            return series.copy()
+        rounding = "ROUND_CEILING" if ceiling else "ROUND_FLOOR"
+        values = [
+            value.to_integral_value(rounding=rounding) if isinstance(value, Decimal) else value for value in series
+        ]
+        dtype = series.dtype
+        if arrow_type is not None and arrow_decimal:
+            import pyarrow as pa
+
+            # An integral result may need the digit occupied by the source's
+            # fraction. Zero scale preserves that value within its precision.
+            dtype = pd.ArrowDtype(getattr(pa, f"decimal{arrow_type.bit_width}")(arrow_type.precision, 0))
+        return pd.Series(values, index=series.index, name=series.name, dtype=dtype)
+    numeric: Any = pd.to_numeric(series, errors="coerce")
+    result = np.ceil(numeric) if ceiling else np.floor(numeric)
+    return result.where(np.isfinite(numeric), numeric)
+
+
+def _generated_pandas_floor_ceil_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_floor_ceil(series, ceiling):",
+        "    from decimal import Decimal",
+        "    if pd.api.types.is_integer_dtype(series.dtype):",
+        "        return series.copy()",
+        "    inferred = (pd.api.types.infer_dtype(series.dropna())",
+        "                if pd.api.types.is_object_dtype(series.dtype) else None)",
+        "    if inferred == 'integer':",
+        "        return series.copy()",
+        "    arrow_type = getattr(series.dtype, 'pyarrow_dtype', None)",
+        "    arrow_decimal = arrow_type is not None and str(arrow_type).startswith('decimal')",
+        "    if inferred == 'decimal' or arrow_decimal:",
+        "        if arrow_decimal and arrow_type.scale <= 0:",
+        "            return series.copy()",
+        "        rounding = 'ROUND_CEILING' if ceiling else 'ROUND_FLOOR'",
+        "        values = [",
+        "            value.to_integral_value(rounding=rounding) if isinstance(value, Decimal) else value",
+        "            for value in series",
+        "        ]",
+        "        dtype = series.dtype",
+        "        if arrow_decimal:",
+        "            import pyarrow as pa",
+        "            dtype = pd.ArrowDtype(getattr(pa, f'decimal{arrow_type.bit_width}')(arrow_type.precision, 0))",
+        "        return pd.Series(values, index=series.index, name=series.name, dtype=dtype)",
+        "    numeric = pd.to_numeric(series, errors='coerce')",
+        "    result = np.ceil(numeric) if ceiling else np.floor(numeric)",
+        "    return result.where(np.isfinite(numeric), numeric)",
+        "",
+        "",
+    ]
 
 
 def _pandas_round_integer(series: Any, decimals: int) -> Any:

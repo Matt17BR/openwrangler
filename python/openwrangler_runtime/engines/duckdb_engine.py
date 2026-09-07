@@ -991,13 +991,28 @@ class DuckDBEngine(DataFrameEngine):
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
-            value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
+            value = _quote_ident(column)
             if kind == "roundNumber":
-                expression = _duckdb_round_expression(value, int(params.get("decimals", 0)))
-            elif kind == "floorNumber":
-                expression = f"floor({value})"
+                expression = _duckdb_round_expression(f"try_cast({value} AS DOUBLE)", int(params.get("decimals", 0)))
             else:
-                expression = f"ceil({value})"
+                raw_type = str(frame.types[self._columns(frame).index(column)]).upper()
+                if raw_type in {
+                    "TINYINT",
+                    "SMALLINT",
+                    "INTEGER",
+                    "BIGINT",
+                    "HUGEINT",
+                    "UTINYINT",
+                    "USMALLINT",
+                    "UINTEGER",
+                    "UBIGINT",
+                    "UHUGEINT",
+                }:
+                    expression = value
+                else:
+                    if re.fullmatch(r"DECIMAL\(\d+,\s*\d+\)", raw_type) is None:
+                        value = f"try_cast({value} AS DOUBLE)"
+                    expression = f"{'floor' if kind == 'floorNumber' else 'ceil'}({value})"
             return self._assign(frame, target, expression)
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
@@ -1344,12 +1359,10 @@ class DuckDBEngine(DataFrameEngine):
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
+            if kind != "roundNumber":
+                return [f"{prefix}df = _ow_floor_ceil(df, {column!r}, {target!r}, {kind == 'ceilNumber'!r})"]
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
-            expression = (
-                _duckdb_round_expression(value, int(params.get("decimals", 0)))
-                if kind == "roundNumber"
-                else f"{'floor' if kind == 'floorNumber' else 'ceil'}({value})"
-            )
+            expression = _duckdb_round_expression(value, int(params.get("decimals", 0)))
             return [f"{prefix}df = _ow_assign(df, {target!r}, {expression!r})"]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
@@ -3329,6 +3342,19 @@ def _ow_is_integer(raw_type):
             "utinyint", "usmallint", "uinteger", "ubigint",
         )
     )
+
+
+def _ow_floor_ceil(df, column, target, ceiling):
+    raw_type = str(df.types[_ow_columns(df).index(column)]).upper()
+    value = _ow_ident(column)
+    if raw_type not in {
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+        "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+    }:
+        if re.fullmatch(r"DECIMAL\(\d+,\s*\d+\)", raw_type) is None:
+            value = "try_cast(" + value + " AS DOUBLE)"
+        value = ("ceil(" if ceiling else "floor(") + value + ")"
+    return _ow_assign(df, target, value)
 
 
 def _ow_interpolation_coordinate_projection(identifier, raw_type, minimum):
