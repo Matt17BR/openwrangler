@@ -122,3 +122,5 @@ Contributions are welcome. See
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.
 
 Open Wrangler is licensed under the [MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
+
+This temporary pull request verifies CI for an existing Markdown edit. It will be closed after the check.
