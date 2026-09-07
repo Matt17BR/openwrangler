@@ -23,13 +23,22 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     };
   }
 
-  async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
-    if (!(await validateFileTarget(document.uri, false))) {
+  async resolveCustomEditor(
+    document: vscode.CustomDocument,
+    webviewPanel: vscode.WebviewPanel,
+    token: vscode.CancellationToken
+  ): Promise<void> {
+    if (token.isCancellationRequested) return;
+    const valid = await validateFileTarget(document.uri, false, token);
+    if (token.isCancellationRequested) return;
+    if (!valid) {
       webviewPanel.dispose();
       return;
     }
     const confirmed = confirmedFileConfiguration(this.context.workspaceState, document.uri);
-    const source = fileSource(document.uri, confirmed?.importOptions ?? (await detectImportOptions(document.uri)));
+    const importOptions = confirmed?.importOptions ?? (await detectImportOptions(document.uri));
+    if (token.isCancellationRequested) return;
+    const source = fileSource(document.uri, importOptions);
     const configuredBackend = getConfiguredBackend();
     new OpenWranglerPanel(
       webviewPanel,
@@ -161,7 +170,11 @@ const resolveFileTarget = (resource: unknown): vscode.Uri | undefined => {
   return vscode.window.activeTextEditor?.document.uri;
 };
 
-const validateFileTarget = async (uri: vscode.Uri, requireEnabledType = true): Promise<boolean> => {
+const validateFileTarget = async (
+  uri: vscode.Uri,
+  requireEnabledType = true,
+  cancellation?: vscode.CancellationToken
+): Promise<boolean> => {
   if (uri.scheme === "untitled") {
     await vscode.window.showWarningMessage("Save this data file before opening it in Open Wrangler.");
     return false;
@@ -187,6 +200,7 @@ const validateFileTarget = async (uri: vscode.Uri, requireEnabledType = true): P
 
   try {
     const stat = await vscode.workspace.fs.stat(uri);
+    if (cancellation?.isCancellationRequested) return false;
     if ((stat.type & vscode.FileType.Directory) !== 0) {
       await vscode.window.showWarningMessage("Choose a data file, not a folder.");
       return false;
@@ -196,6 +210,7 @@ const validateFileTarget = async (uri: vscode.Uri, requireEnabledType = true): P
       return false;
     }
   } catch {
+    if (cancellation?.isCancellationRequested) return false;
     await vscode.window.showErrorMessage(`Open Wrangler could not access ${uri.toString()}.`);
     return false;
   }

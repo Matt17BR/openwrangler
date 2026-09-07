@@ -199,8 +199,8 @@ vi.mock("../extension/runtimeCommands", () => ({
 
 vi.mock("../extension/files/fileOpen", () => ({
   OpenWranglerCustomEditorProvider: class {
-    async resolveCustomEditor(): Promise<void> {
-      owners.customEditorResolved();
+    async resolveCustomEditor(...args: unknown[]): Promise<void> {
+      owners.customEditorResolved(...args);
     }
   },
   registerFileCommands: vi.fn((context: MockExtensionContext) => {
@@ -460,18 +460,65 @@ describe("lazy activation owners", () => {
     active.startBeforeFirstYield();
     const provider = host.customEditorProviders[0] as {
       openCustomDocument(uri: unknown): unknown;
-      resolveCustomEditor(document: unknown, panel: unknown): Promise<void>;
+      resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
     };
     const document = provider.openCustomDocument({ scheme: "file", path: "/data.csv" });
 
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
-    await provider.resolveCustomEditor(document, {});
+    const panel = {};
+    const token = resolutionToken();
+    await provider.resolveCustomEditor(document, panel, token);
 
     expect(owners.customEditorResolved).toHaveBeenCalledOnce();
+    expect(owners.customEditorResolved).toHaveBeenCalledWith(document, panel, token);
     expect(owners.pythonConstructed).toHaveBeenCalledOnce();
     expect(owners.sessionConstructed).toHaveBeenCalledOnce();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["custom editor", true],
+    ["custom editor", false],
+    ["Code Preview", true],
+    ["Code Preview", false]
+  ] as const)(
+    "abandons cancelled %s resolution (cancelled before loading: %s) while keeping the shared owner usable",
+    async (kind, alreadyCancelled) => {
+      active = createOwners();
+      active.startBeforeFirstYield();
+      const token = resolutionToken(alreadyCancelled);
+      const document = { uri: { scheme: "file", path: "/data.csv" } };
+      const view = {};
+      const context = {};
+      const custom = host.customEditorProviders[0] as {
+        resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
+      };
+      const codePreview = host.webviewProviders.get("openWrangler.codePreview") as {
+        resolveWebviewView(view: unknown, context: unknown, token: vscode.CancellationToken): Promise<void>;
+      };
+      const resolve = (currentToken: vscode.CancellationToken): Promise<void> =>
+        kind === "custom editor"
+          ? custom.resolveCustomEditor(document, view, currentToken)
+          : codePreview.resolveWebviewView(view, context, currentToken);
+
+      const pending = resolve(token);
+      token.isCancellationRequested = true;
+      await pending;
+
+      expect(owners.customEditorResolved).not.toHaveBeenCalled();
+      expect(owners.nativeWebviewResolved).not.toHaveBeenCalled();
+      if (alreadyCancelled) expect(active.diagnosticsForTesting().constructedOwners).toEqual([]);
+      const nextToken = resolutionToken();
+      await resolve(nextToken);
+      if (kind === "custom editor") {
+        expect(owners.customEditorResolved).toHaveBeenCalledExactlyOnceWith(document, view, nextToken);
+        expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+      } else {
+        expect(owners.nativeWebviewResolved).toHaveBeenCalledExactlyOnceWith(view, context, nextToken);
+        expect(owners.nativeRegistered).toHaveBeenCalledOnce();
+      }
+    }
+  );
 
   it("constructs native views on first non-live view demand without constructing notebook, R, or Python", async () => {
     active = createOwners();
@@ -510,7 +557,7 @@ describe("lazy activation owners", () => {
     };
     const view = { id: "first-reveal-view" };
     const resolveContext = { state: { receipt: "first-reveal" } };
-    const token = { isCancellationRequested: false };
+    const token = resolutionToken();
 
     await provider.resolveWebviewView(view, resolveContext, token);
 
@@ -533,7 +580,11 @@ describe("lazy activation owners", () => {
     if (kind === "tree") {
       await (host.treeProviders.get(id) as { getChildren(): Promise<unknown[]> }).getChildren();
     } else {
-      await (host.webviewProviders.get(id) as { resolveWebviewView(): Promise<void> }).resolveWebviewView();
+      await (
+        host.webviewProviders.get(id) as {
+          resolveWebviewView(view: unknown, context: unknown, token: vscode.CancellationToken): Promise<void>;
+        }
+      ).resolveWebviewView({}, {}, resolutionToken());
     }
     await host.executeCommand("openWrangler.startOperation", { kind: "dropColumns" });
 
@@ -734,11 +785,11 @@ describe("lazy activation owners", () => {
     active.startBeforeFirstYield();
     const customEditor = host.customEditorProviders[0] as {
       openCustomDocument(uri: unknown): unknown;
-      resolveCustomEditor(document: unknown, panel: unknown): Promise<void>;
+      resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
     };
     const document = customEditor.openCustomDocument({ scheme: "file", path: "/data.csv" });
 
-    await customEditor.resolveCustomEditor(document, {});
+    await customEditor.resolveCustomEditor(document, {}, resolutionToken());
     await host.executeCommand("openWrangler.changeRuntime");
     await (host.treeProviders.get("openWrangler.operations") as { getChildren(): Promise<unknown[]> }).getChildren();
     nativeVariables.notebook?.snapshot();
@@ -795,6 +846,10 @@ describe("lazy activation owners", () => {
     expect(host.commands.size).toBe(0);
   });
 });
+
+function resolutionToken(cancelled = false) {
+  return { isCancellationRequested: cancelled, onCancellationRequested: () => host.disposable() };
+}
 
 function createOwners(
   previewConstructed = vi.fn(),

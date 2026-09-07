@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { ExtensionContext } from "vscode";
+import type { CancellationToken, ExtensionContext, WebviewViewResolveContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { ExportOptions, SessionMetadata, TransformStep } from "../shared/protocol";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
@@ -21,6 +21,14 @@ interface TestTreeProvider {
   getChildren(): TestTreeNode[];
   onDidChangeTreeData?(listener: (node: TestTreeNode | undefined) => unknown): { dispose(): void };
 }
+interface TestWebviewViewProvider {
+  resolveWebviewView(view: unknown, context: WebviewViewResolveContext, token: CancellationToken): void;
+}
+
+const uncancelledViewToken: CancellationToken = {
+  isCancellationRequested: false,
+  onCancellationRequested: () => ({ dispose: () => undefined })
+};
 
 const nativeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
@@ -30,7 +38,7 @@ const nativeMocks = vi.hoisted(() => ({
   coordinatorListeners: new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>(),
   executeCommand: vi.fn(async () => undefined),
   treeDataProviders: new Map<string, TestTreeProvider>(),
-  webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
+  webviewViewProviders: new Map<string, TestWebviewViewProvider>(),
   sendEditorAction: vi.fn(() => true),
   sendEditorActionForSession: vi.fn(async () => true),
   showInformationMessage: vi.fn(async () => undefined),
@@ -310,7 +318,7 @@ function register(
   }
   nativeMocks.webviewViewProviders.set(
     "openWrangler.codePreview",
-    nativeViews.codePreviewProvider() as unknown as { resolveWebviewView(view: unknown): void }
+    nativeViews.codePreviewProvider() as unknown as TestWebviewViewProvider
   );
   return {
     setNotebookDocument(document) {
@@ -558,5 +566,6 @@ export {
   snapshot,
   snapshotWithDraft,
   treeChildren,
+  uncancelledViewToken,
   vscodeUri
 };

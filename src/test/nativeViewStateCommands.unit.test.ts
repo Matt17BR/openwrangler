@@ -13,7 +13,8 @@ import {
   rNotebookSnapshot,
   snapshot,
   snapshotWithDraft,
-  treeChildren
+  treeChildren,
+  uncancelledViewToken
 } from "./nativeViews.testFixtures";
 
 describe("native state and presentation commands", () => {
@@ -180,12 +181,39 @@ describe("native state and presentation commands", () => {
       onDidReceiveMessage: () => ({ dispose: () => undefined })
     };
 
-    provider.resolveWebviewView({ description: undefined, webview });
+    provider.resolveWebviewView({ description: undefined, webview }, { state: undefined }, uncancelledViewToken);
 
     const script = webview.html.match(/<script type="module" nonce="([0-9a-f]{32})" src="([^"]+)"><\/script>/u);
     expect(script).not.toBeNull();
     expect(webview.html).toContain(`font-src test-csp; script-src 'nonce-${script?.[1]}' test-csp`);
     expect(script?.[2]).toBe("file:///tmp/openwrangler/media/codePreview.js");
+  });
+
+  it("keeps generated-code actions available when Code Preview resolution is cancelled", async () => {
+    const active = noDraftSnapshot();
+    register(active);
+    await expect(command("openWrangler.copyCode")()).resolves.toBe(active.code);
+    const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
+    if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
+    const abandoned = {
+      webview: {
+        set options(_value: unknown) {
+          throw new Error("Webview is disposed");
+        }
+      },
+      onDidDispose: vi.fn(() => ({ dispose: () => undefined }))
+    };
+
+    expect(() =>
+      provider.resolveWebviewView(
+        abandoned,
+        { state: undefined },
+        { ...uncancelledViewToken, isCancellationRequested: true }
+      )
+    ).not.toThrow();
+
+    expect(abandoned.onDidDispose).not.toHaveBeenCalled();
+    await expect(command("openWrangler.copyCode")()).resolves.toBe(active.code);
   });
 
   it("offers a file entry point before a dataframe is open", () => {
@@ -981,7 +1009,7 @@ describe("native state and presentation commands", () => {
         }
       }
     };
-    provider.resolveWebviewView(codePreviewView);
+    provider.resolveWebviewView(codePreviewView, { state: undefined }, uncancelledViewToken);
 
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({

@@ -299,8 +299,12 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     });
   }
 
-  resolveWebviewView(view: vscode.WebviewView): void {
-    if (this.disposed) return;
+  resolveWebviewView(
+    view: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    token: vscode.CancellationToken
+  ): void {
+    if (this.disposed || token.isCancellationRequested) return;
     this.retireView();
     this.view = view;
     this.hadLiveView = true;
