@@ -903,6 +903,51 @@ def test_pandas_arrow_dictionary_float_profiles_preserve_valid_nan_and_signed_ze
         ]
 
 
+@pytest.mark.parametrize(
+    ("books", "indices", "expected"),
+    [
+        ([["present"]], [[0]], False),
+        ([["present", None]], [[0]], False),
+        ([["present", None]], [[1]], True),
+        ([["present"]], [[None]], True),
+        ([[None]], [[]], False),
+        ([[]], [[None]], True),
+        ([["present", None], [None, "present"]], [[0], [1]], False),
+        ([["present"], [None, "present"]], [[0], [0]], True),
+    ],
+)
+@pytest.mark.parametrize("index_type", ["int8", "uint64"])
+def test_dictionary_schema_nullability_does_not_decode_payloads(
+    books: list[list[str | None]],
+    indices: list[list[int | None]],
+    expected: bool,
+    index_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    chunks = [
+        pa.DictionaryArray.from_arrays(
+            pa.array(codes, type=getattr(pa, index_type)()), pa.array(book, type=pa.string())
+        )
+        for book, codes in zip(books, indices, strict=True)
+    ]
+    array = pa.chunked_array(chunks)
+    frame = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(array))})
+
+    def reject_payload_decode(_series: Any) -> Any:
+        raise AssertionError("Schema nullability must inspect validity without decoding string payloads.")
+
+    monkeypatch.setattr(pandas_engine, "_pandas_dictionary_values", reject_payload_decode)
+    schema = PandasEngine().schema(frame)
+    assert schema[0]["nullable"] is expected
+    assert schema[0]["type"] == "string"
+    assert schema[0]["rawType"] == str(frame["value"].dtype)
+    assert cast(Any, frame["value"].array).__arrow_array__().equals(array)
+
+
 @pytest.mark.parametrize("value_type", ["string", "int64"])
 def test_pandas_arrow_dictionary_empty_codebooks_and_null_indices(value_type: str) -> None:
     import pyarrow as pa

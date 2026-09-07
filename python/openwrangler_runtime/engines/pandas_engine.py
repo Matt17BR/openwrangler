@@ -515,7 +515,7 @@ class PandasEngine(DataFrameEngine):
                 "position": position,
                 "rawType": str(dtype),
                 "type": _pandas_semantic_type(df.iloc[:, frame_position]),
-                "nullable": bool(_pandas_dictionary_values(df.iloc[:, frame_position]).isna().any()),
+                "nullable": _pandas_has_missing(df.iloc[:, frame_position]),
             }
             for position, frame_position in enumerate(self._visible_positions(df))
             for column, dtype in [(df.columns[frame_position], df.dtypes.iloc[frame_position])]
@@ -3637,6 +3637,24 @@ def _pandas_dictionary_value_type(series: Any) -> Any:
     ):
         return value_type
     return None
+
+
+def _pandas_has_missing(series: Any) -> bool:
+    if _pandas_dictionary_value_type(series) is None:
+        return bool(series.isna().any())
+    import pyarrow.compute as pc
+
+    for chunk in series.array.__arrow_array__().chunks:
+        if chunk.null_count > 0:
+            return True
+        # Unused null dictionary entries do not make any row missing.
+        if (
+            len(chunk) > 0
+            and chunk.dictionary.null_count > 0
+            and bool(pc.call_function("any", [pc.take(chunk.dictionary.is_null(), chunk.indices)]).as_py())
+        ):
+            return True
+    return False
 
 
 def _pandas_dictionary_values(series: Any) -> Any:

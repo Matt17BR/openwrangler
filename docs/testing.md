@@ -167,6 +167,8 @@ Typed-cell tests also compare native Arrow `bool8` and UUID pages, profiles, sel
 operations with logical native controls. Executed generated code must preserve source arrays and agree with live
 results, including no-op Fill and direct copies. A one-row page with a large dictionary codebook verifies that
 adding known scalar conversion does not decode unused string payloads.
+Schema nullability controls distinguish null indices, referenced and unused null codebook entries, empty chunks
+and different codebooks while forbidding payload decoding.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
