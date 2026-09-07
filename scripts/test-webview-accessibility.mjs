@@ -770,6 +770,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
     if ((await filtersTab.getAttribute("aria-selected")) !== "true" || !(await filtersTab.evaluate(isActiveTab))) {
       throw new Error(`${harness} did not keyboard-select and focus the Filters / Sorts tab.`);
     }
+    await filtersTab.hover();
+    await scanPageAccessibility(page, `${harness} (hovered Filters / Sorts tab)`);
     await filtersPanel.getByRole("heading", { name: "Filters / Sorts" }).waitFor();
     await filtersPanel.getByRole("status").filter({ hasText: '2 columns share the displayed name "value"' }).waitFor();
     for (const optionName of ["value (column 1)", "value (column 2)"]) {
@@ -982,6 +984,8 @@ async function verifySessionModeDisclosure(browser) {
       ...payload.metadata,
       backend: "pandas",
       mode: "editing",
+      rowAxis: { kind: "positional", levelNames: [] },
+      latestStepInputSchema: payload.metadata.schema,
       source: {
         kind: "notebookVariable",
         label: "live_orders",
