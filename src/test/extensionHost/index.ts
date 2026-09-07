@@ -14165,7 +14165,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         /\.eq\(value\)\.fillna\(False\)\.astype\('int8'\)/u
       ],
       [/df\.isetitem\(2, df\.iloc\[:, 2\]\.astype\('string'\)\.map\(str\.upper, na_action='ignore'\)\)/u],
-      [/df\.isetitem\(1, pd\.to_numeric\(df\.iloc\[:, 1\], errors='coerce'\)\.round\(1\)\)/u],
+      [/df\.isetitem\(1, _open_wrangler_round\(pd\.to_numeric\(df\.iloc\[:, 1\], errors='coerce'\), 1\)\)/u],
       [/df\.isetitem\(6, pd\.to_datetime\(df\.iloc\[:, 6\], errors='coerce'\)\.dt\.strftime\('%Y'\)\)/u]
     ];
 
