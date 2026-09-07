@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
 import { assertExactBytes } from "./acceptanceSourceFixture";
+import { dismissStaleWorkbenchHover } from "./cleanedDataExport";
 import { captureWorkbenchScreenshot } from "./evidenceSceneCapture";
 import type { TestApi } from "./extensionHostTestApi";
 import { withAcceptanceOperationDeadline } from "./playwrightLifecycle";
@@ -393,6 +394,7 @@ export function createPackagedFileLaunchSurfaces(
     );
     const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
     recordAcceptanceProgress("verify:file-launch:title-action:histogram-modes");
+    await dismissStaleWorkbenchHover(page);
     const insightsToggle = gridTarget.frame.getByRole("button", { name: "Column profiles and filters" });
     if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
     const insights = gridTarget.frame.getByRole("complementary", { name: "Column profiles and filters" });
