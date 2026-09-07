@@ -91,6 +91,10 @@ NaN selections. Supported scalar selections remain
 checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
 without dropping the cleaning plan during replay.
 
+Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates,
+One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;
+operation-builder tests verify the exact submitted references, saved selections, and optional full-schema defaults.
+
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 

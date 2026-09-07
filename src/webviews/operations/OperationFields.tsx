@@ -173,6 +173,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         <ColumnReferencesSelect
           name="columns"
           label="Columns (none means all)"
+          searchLabel="Search columns"
           columns={columns}
           defaultValue={initialColumnReferences("columns")}
           required={false}
@@ -198,6 +199,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         <ColumnReferencesSelect
           name="columns"
           label="Compare columns (none means all)"
+          searchLabel="Search compared columns"
           columns={columns}
           defaultValue={initialColumnReferences("columns")}
           required={false}
@@ -220,6 +222,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       <ColumnReferencesSelect
         name="columns"
         label={kind === "selectColumns" ? "Columns to keep" : "Columns to drop"}
+        searchLabel={kind === "selectColumns" ? "Search columns to keep" : "Search columns to drop"}
         columns={columns}
         defaultValue={initialColumnReferences("columns")}
         preserveSelectionOrder={kind === "selectColumns"}
@@ -233,6 +236,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         <ColumnReferencesSelect
           name="columns"
           label="Categorical columns"
+          searchLabel="Search categorical columns"
           columns={categoricalColumns}
           defaultValue={initialColumnReferences("columns")}
         />
@@ -737,6 +741,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         <ColumnReferencesSelect
           name="keys"
           label="Group keys"
+          searchLabel="Search group keys"
           columns={groupColumns}
           defaultValue={initialColumnReferences("keys")}
           preserveSelectionOrder
@@ -786,6 +791,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         <ColumnReferencesSelect
           name="sourceColumns"
           label="Source columns"
+          searchLabel="Search source columns"
           columns={sourceColumns}
           defaultValue={
             initialColumnReferences("sourceColumns").length
