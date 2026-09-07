@@ -351,7 +351,7 @@ def _pandas_numeric_key_value(value: Any) -> Any:
         return int(value)
     if isinstance(value, np.floating):
         if value.dtype.itemsize <= 8:
-            native = value.item()
+            native = float(value)
             if isfinite(native):
                 return native
         else:
@@ -5094,7 +5094,7 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "        return int(value)",
         "    if isinstance(value, np.floating):",
         "        if value.dtype.itemsize <= 8:",
-        "            native = value.item()",
+        "            native = float(value)",
         "            if isfinite(native):",
         "                return native",
         "        else:",
