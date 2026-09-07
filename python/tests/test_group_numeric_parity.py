@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import pandas as pd
@@ -180,3 +180,86 @@ def test_decimal_group_sum_preserves_exact_value_and_declared_scale(engine: Any)
     assert populated_group["sum"]["raw"] == "3.30"
     assert null_group["sum"]["kind"] == "decimal"
     assert null_group["sum"]["raw"] == "0.00"
+
+
+@pytest.mark.parametrize("family", ["integer", "decimal", "text", "boolean", "date"])
+def test_pandas_dictionary_group_inputs_are_logical_and_repeated_positions_remain_independent(family: str) -> None:
+    from datetime import date
+
+    pa = pytest.importorskip("pyarrow")
+    dtype, values = {
+        "integer": (pa.uint64(), [2**64 - 1, None, 2**53 + 3, 2**64 - 1]),
+        "decimal": (pa.decimal128(20, 3), [Decimal("2.125"), None, Decimal("3.500"), Decimal("2.125")]),
+        "text": (pa.string(), ["é", None, "a", "é"]),
+        "boolean": (pa.bool_(), [True, None, False, True]),
+        "date": (pa.date32(), [date(2024, 2, 1), None, date(2023, 3, 2), date(2024, 2, 1)]),
+    }[family]
+    indices = pa.array([0, 1, 2, 3, None], type=pa.int8())
+    chunks = [
+        pa.DictionaryArray.from_arrays(indices, pa.array(book, type=dtype)) for book in (values, list(reversed(values)))
+    ]
+    series = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    frame = pd.concat([series, series], axis=1)
+    frame.columns = ["same", "same"]
+    frame.index = pd.MultiIndex.from_tuples([("same", i % 2) for i in range(len(frame))], names=["outer", "inner"])
+    frame.attrs["annotation"] = "retained source"
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "dictionary-group",
+                "kind": "groupBy",
+                "params": {
+                    "keys": [lineage[0]],
+                    "aggregations": [
+                        {"column": lineage[0], "operation": name, "alias": name}
+                        for name in ("count", "nUnique", "first")
+                    ]
+                    + [{"column": lineage[1], "operation": "last", "alias": "last"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    logical = frame.copy()
+    for position in range(2):
+        # Text dictionary decoding retains shared string payloads in Pandas StringArray storage.
+        logical_dtype = pd.StringDtype(storage="python") if family == "text" else pd.ArrowDtype(dtype)
+        logical.isetitem(position, frame.iloc[:, position].astype(pd.ArrowDtype(dtype)).astype(logical_dtype))
+    expected = runtime.apply_transform(logical, operation)
+    original = frame.iloc[:, 0].array.__arrow_array__()
+    for actual in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        pd.testing.assert_frame_equal(actual, expected)
+        assert sorted(actual["count"].tolist()) == [0, 2, 4]
+        assert sorted(actual["nUnique"].tolist()) == [0, 1, 1]
+        assert all(frame.iloc[:, position].array.__arrow_array__().equals(original) for position in range(2))
+        assert frame.attrs == {"annotation": "retained source"}
+        pd.testing.assert_index_equal(frame.index, logical.index)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("encoded", [False, True])
+def test_pandas_missing_arrow_decimal_groups_keep_declared_scale_and_generated_types(
+    empty: bool, encoded: bool
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.decimal128(10, 3)
+    values = pa.array([] if empty else [None, None], type=dtype)
+    if encoded:
+        values = pa.DictionaryArray.from_arrays(
+            pa.array([] if empty else [0, None], type=pa.int8()), pa.array([None], type=dtype)
+        )
+    frame = pd.DataFrame({"group": ["a"] * len(values), "value": pd.arrays.ArrowExtensionArray(values)})
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("sum", "mean", "median"))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for actual in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        assert actual["sum"].dtype == object
+        assert actual["mean"].dtype == actual["median"].dtype == pd.Float64Dtype()
+        assert actual["mean"].isna().all() and actual["median"].isna().all()
+        assert [str(value) for value in actual["sum"]] == ([] if empty else ["0.000"])
+        assert cast(Any, frame["value"].array).__arrow_array__().equals(pa.chunked_array([values]))
