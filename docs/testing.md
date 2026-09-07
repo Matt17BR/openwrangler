@@ -159,6 +159,8 @@ power limits and retained native output types. Live and generated cases preserve
 floating results; a failed preview beyond the requested page preserves the confirmed session. Mixed plans exercise
 Custom Code helper isolation, while structural controls limit guard output to one Boolean and leave floating and
 Decimal paths free of row scans.
+The same owner checks minimum-version UInt128 column-kernel refusal before eager or lazy publication, including
+correlated notebook errors, confirmed-state recovery and working scalar and current-runtime controls.
 
 Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
