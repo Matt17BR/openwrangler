@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from math import isnan
 from numbers import Integral
@@ -2876,3 +2876,487 @@ def test_pandas_directional_fill_uses_logical_dictionary_order_through_custom_co
         .equals(cast(pd.arrays.ArrowExtensionArray, before["order"].array).__arrow_array__())
     )
     pd.testing.assert_series_equal(source["value"], before["value"])
+
+
+def _pandas_dictionary_fill_series(values: list[Any], arrow_type: Any) -> pd.Series:
+    chunks = []
+    for part in [values[: len(values) // 2], values[len(values) // 2 :]]:
+        dictionary = []
+        for value in part:
+            if value is not None and value not in dictionary:
+                dictionary.append(value)
+        dictionary = [*dictionary, None, *(dictionary[:1])]
+        if chunks:
+            dictionary.reverse()
+        codes = [
+            (dictionary.index(None) if index % 2 else None) if value is None else dictionary.index(value)
+            for index, value in enumerate(part)
+        ]
+        chunks.append(
+            pa.DictionaryArray.from_arrays(pa.array(codes, type=pa.uint8()), pa.array(dictionary, type=arrow_type))
+        )
+    return pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+
+
+def _pandas_dictionary_fill_case(family: str) -> tuple[Any, Any, Any, dict[str, Any]]:
+    return {
+        "string": (pa.string(), "a", "b", {"kind": "string", "value": "filled"}),
+        "large_string": (pa.large_string(), "a", "b", {"kind": "string", "value": "filled"}),
+        "integer": (pa.int64(), 2**53 + 1, 7, {"kind": "integer", "value": "11"}),
+        "unsigned": (pa.uint64(), 2**64 - 1, 7, {"kind": "integer", "value": "11"}),
+        "float": (pa.float64(), 2.5, 0.5, {"kind": "float", "value": "7.25"}),
+        "decimal": (
+            pa.decimal128(30, 6),
+            Decimal("2.000001"),
+            Decimal("1.000001"),
+            {"kind": "decimal", "value": "7.250000"},
+        ),
+        "boolean": (pa.bool_(), True, False, {"kind": "boolean", "value": False}),
+        "date": (pa.date32(), date(2024, 1, 1), date(2024, 2, 1), {"kind": "date", "value": "2026-09-07"}),
+        "timestamp": (
+            pa.timestamp("us", "UTC"),
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            datetime(2024, 2, 1, tzinfo=timezone.utc),
+            {"kind": "datetime", "value": "2026-09-07T12:00:00Z"},
+        ),
+        "duration": (pa.duration("us"), timedelta(days=2), timedelta(seconds=1), {}),
+    }[family]
+
+
+def _pandas_fill_public_outputs(source: pd.DataFrame, replacement: dict[str, Any]) -> list[pd.DataFrame]:
+    from pickle import dumps
+    from types import SimpleNamespace
+
+    from openwrangler_runtime._column_binding import bind_step
+    from openwrangler_runtime.lineage import source_lineage
+    from openwrangler_runtime.operations import validate_step
+
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    operation = bind_step(
+        validate_step(fill_step({"id": "c:source:0", "name": str(source.columns[0])}, replacement)),
+        schema,
+        source_lineage(schema),
+    )
+    before = source.copy(deep=True)
+    session = cast(Any, SimpleNamespace(engine=engine, session_id="dictionary-fill"))
+    results = [
+        engine.apply_transform(source, operation),
+        engine._visible_frame(
+            SessionManager._apply_transform_with_row_ids(
+                session, source, operation, {"rows": len(source), "columns": source.shape[1]}
+            )
+        ),
+        execute_generated(engine, source, [operation]),
+    ]
+    for frame in [source, *results]:
+        assert frame.index.equals(before.index)
+        assert frame.columns.equals(before.columns)
+        for position in range(source.shape[1]):
+            if frame is not source and position == 0:
+                continue
+            original = before.iloc[:, position]
+            actual = frame.iloc[:, position]
+            if isinstance(original.dtype, pd.ArrowDtype):
+                assert actual.dtype == original.dtype
+                actual_array = cast(Any, actual.array).__arrow_array__()
+                original_array = cast(Any, original.array).__arrow_array__()
+                # Arrow equality treats valid NaN as unequal, including in unchanged codebooks.
+                assert actual_array.equals(original_array) or dumps(actual_array) == dumps(original_array)
+            else:
+                pd.testing.assert_series_equal(actual, original)
+    return results
+
+
+@pytest.mark.parametrize(
+    "family", ["string", "large_string", "integer", "unsigned", "float", "decimal", "boolean", "date", "timestamp"]
+)
+@pytest.mark.parametrize("shape", ["missing", "all-null", "empty", "present"])
+def test_pandas_dictionary_typed_fill_preserves_logical_values_and_noop_storage(family: str, shape: str) -> None:
+    arrow_type, first, second, replacement = _pandas_dictionary_fill_case(family)
+    values = {
+        "missing": [first, None, second, None],
+        "all-null": [None] * 4,
+        "empty": [],
+        "present": [first, second] * 2,
+    }[shape]
+    source = pd.DataFrame({"value": _pandas_dictionary_fill_series(values, arrow_type)})
+    source["untouched"] = source["value"].array
+    source.index = pd.Index(["same"] * len(source), name="source")
+    logical_dtype = (
+        pd.StringDtype(storage="python") if family in {"string", "large_string"} else pd.ArrowDtype(arrow_type)
+    )
+    control = pd.Series(values, index=source.index, name="value", dtype=logical_dtype)
+    operation = fill_step(bound_ref("c:source:0", "value", 0), replacement)
+    expected = PandasEngine().apply_transform(control.to_frame(), operation)["value"]
+    for result in _pandas_fill_public_outputs(source, replacement):
+        if shape in {"empty", "present"}:
+            assert result["value"].dtype == source["value"].dtype
+            assert (
+                cast(Any, result["value"].array)
+                .__arrow_array__()
+                .equals(cast(Any, source["value"].array).__arrow_array__())
+            )
+        else:
+            pd.testing.assert_series_equal(result["value"], expected)
+
+
+@pytest.mark.parametrize(
+    "family", ["string", "large_string", "integer", "unsigned", "float", "decimal", "boolean", "date", "timestamp"]
+)
+@pytest.mark.parametrize("encoded_role", ["target", "donors", "both"])
+def test_pandas_dictionary_fallback_fills_only_selected_values_in_priority_order(
+    family: str, encoded_role: str
+) -> None:
+    arrow_type, first, second, _ = _pandas_dictionary_fill_case(family)
+    columns = {
+        "value": [first, None, None, None] * 2,
+        "first": [second, second, None, None] * 2,
+        "second": [first, first, first, None] * 2,
+    }
+    source = pd.DataFrame(
+        {
+            name: _pandas_dictionary_fill_series(values, arrow_type)
+            if (name == "value" and encoded_role != "donors") or (name != "value" and encoded_role != "target")
+            else pd.Series(values, dtype=pd.ArrowDtype(arrow_type))
+            for name, values in columns.items()
+        }
+    )
+    source.index = pd.MultiIndex.from_tuples([("same", index % 2) for index in range(8)], names=["outer", "inner"])
+    replacement = {
+        "kind": "fallbackColumns",
+        "columns": [{"id": "c:source:1", "name": "first"}, {"id": "c:source:2", "name": "second"}],
+    }
+    expected_dtype = (
+        pd.StringDtype(storage="python")
+        if family in {"string", "large_string"} and encoded_role != "donors"
+        else pd.ArrowDtype(arrow_type)
+    )
+    expected = pd.Series([first, second, first, None] * 2, index=source.index, name="value", dtype=expected_dtype)
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+
+
+@pytest.mark.parametrize(
+    "family",
+    ["string", "large_string", "integer", "unsigned", "float", "decimal", "boolean", "date", "timestamp", "duration"],
+)
+def test_pandas_grouped_fill_uses_dictionary_keys_without_changing_them(family: str) -> None:
+    arrow_type, first, second, _ = _pandas_dictionary_fill_case(family)
+    source = pd.DataFrame(
+        {
+            "value": pd.Series([1.0, None, 5.0, None, None, 9.0, None, 3.0], dtype="Float64"),
+            "key": _pandas_dictionary_fill_series([first, None, None, second, first, second, first, None], arrow_type),
+        }
+    )
+    source.index = pd.Index(["same"] * 8, name="source")
+    expected = pd.Series([1.0, 4.0, 5.0, 9.0, 1.0, 9.0, 1.0, 3.0], index=source.index, name="value", dtype="Float64")
+    replacement = {"kind": "groupedStatistic", "keys": [{"id": "c:source:1", "name": "key"}], "statistic": "mean"}
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+
+
+@pytest.mark.parametrize(
+    "family,statistic",
+    [
+        ("string", "mostFrequent"),
+        ("boolean", "mostFrequent"),
+        ("integer", "median"),
+        ("decimal", "median"),
+        ("float", "mean"),
+    ],
+)
+@pytest.mark.parametrize("grouped", [False, True])
+def test_pandas_dictionary_statistical_fill_uses_logical_target(family: str, statistic: str, grouped: bool) -> None:
+    arrow_type, first, _, _ = _pandas_dictionary_fill_case(family)
+    source = pd.DataFrame(
+        {"value": _pandas_dictionary_fill_series([first, None, first, None], arrow_type), "key": [0] * 4}
+    )
+    replacement = (
+        {"kind": "groupedStatistic", "keys": [{"id": "c:source:1", "name": "key"}], "statistic": statistic}
+        if grouped
+        else {"kind": statistic}
+    )
+    expected_dtype = pd.StringDtype(storage="python") if family == "string" else pd.ArrowDtype(arrow_type)
+    expected = pd.Series([first] * 4, name="value", dtype=expected_dtype)
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+
+
+@pytest.mark.parametrize("family", ["string", "integer", "decimal", "date", "timestamp", "duration"])
+@pytest.mark.parametrize("fills", [False, True])
+def test_pandas_dictionary_directional_fill_retains_unfilled_target(family: str, fills: bool) -> None:
+    arrow_type, first, second, _ = _pandas_dictionary_fill_case(family)
+    source = pd.DataFrame(
+        {"value": _pandas_dictionary_fill_series([first, None, None, second] * 2, arrow_type), "order": range(8)}
+    )
+    replacement = {
+        "kind": "directional",
+        "direction": "forward",
+        "orderBy": [{"column": {"id": "c:source:1", "name": "order"}, "direction": "asc", "nulls": "last"}],
+        "maxGap": 2 if fills else 1,
+    }
+    expected_dtype = pd.StringDtype(storage="python") if family == "string" else pd.ArrowDtype(arrow_type)
+    expected = pd.Series([first, first, first, second] * 2, name="value", dtype=expected_dtype)
+    for result in _pandas_fill_public_outputs(source, replacement):
+        if fills:
+            pd.testing.assert_series_equal(result["value"], expected)
+        else:
+            assert result["value"].dtype == source["value"].dtype
+            assert (
+                cast(Any, result["value"].array)
+                .__arrow_array__()
+                .equals(cast(Any, source["value"].array).__arrow_array__())
+            )
+
+
+@pytest.mark.parametrize("strategy", ["fallback", "grouped", "linear"])
+@pytest.mark.parametrize("fills", [False, True])
+def test_pandas_dictionary_fill_retains_storage_when_no_donor_can_fill(strategy: str, fills: bool) -> None:
+    values = [1.0, None, None, 4.0] * 2 if strategy == "linear" else [None] * 8
+    source = pd.DataFrame(
+        {
+            "value": _pandas_dictionary_fill_series(values, pa.float64()),
+            "other": range(8),
+            "fallback": pd.Series([2.0 if fills else None] * 8, dtype="Float64"),
+        }
+    )
+    if strategy == "grouped" and fills:
+        source.isetitem(0, _pandas_dictionary_fill_series([2.0, None] * 4, pa.float64()))
+    replacement = {
+        "fallback": {"kind": "fallbackColumns", "columns": [{"id": "c:source:2", "name": "fallback"}]},
+        "grouped": {
+            "kind": "groupedStatistic",
+            "keys": [{"id": "c:source:2", "name": "fallback"}],
+            "statistic": "mean",
+        },
+        "linear": {
+            "kind": "linearInterpolation",
+            "coordinate": {"id": "c:source:1", "name": "other"},
+            "maxGap": 2 if fills else 1,
+        },
+    }[strategy]
+    expected = pd.Series(
+        [1.0, 2.0, 3.0, 4.0] * 2 if strategy == "linear" else [2.0] * 8, name="value", dtype=pd.ArrowDtype(pa.float64())
+    )
+    for result in _pandas_fill_public_outputs(source, replacement):
+        if fills:
+            pd.testing.assert_series_equal(result["value"], expected)
+        else:
+            assert result["value"].dtype == source["value"].dtype
+            assert (
+                cast(Any, result["value"].array)
+                .__arrow_array__()
+                .equals(cast(Any, source["value"].array).__arrow_array__())
+            )
+
+
+@pytest.mark.parametrize("arrow_type", [pa.date32(), pa.date64()])
+@pytest.mark.parametrize("strategy", ["literal", "fallback"])
+@pytest.mark.parametrize("values", [[], [None, None], [date(2024, 1, 1), None]])
+def test_pandas_arrow_date_fill_matches_native_type_in_generated_code(
+    arrow_type: Any, strategy: str, values: list[Any]
+) -> None:
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(values, dtype=pd.ArrowDtype(arrow_type)),
+            "fallback": pd.Series([date(2026, 9, 7)] * len(values), dtype=pd.ArrowDtype(arrow_type)),
+        }
+    )
+    replacement = (
+        {"kind": "date", "value": "2026-09-07"}
+        if strategy == "literal"
+        else {"kind": "fallbackColumns", "columns": [{"id": "c:source:1", "name": "fallback"}]}
+    )
+    expected = pd.Series(
+        [date(2026, 9, 7) if value is None else value for value in values],
+        name="value",
+        dtype=pd.ArrowDtype(arrow_type),
+    )
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("case", ["decimal-scale", "decimal-capacity", "timestamp"])
+def test_pandas_dictionary_fill_checks_typed_literals_before_noop(case: str, missing: bool) -> None:
+    from types import SimpleNamespace
+
+    arrow_type, value, replacement, diagnostic = {
+        "decimal-scale": (
+            pa.decimal128(6, 2),
+            Decimal("1.00"),
+            {"kind": "decimal", "value": "2.345"},
+            "decimal scale 2",
+        ),
+        "decimal-capacity": (
+            pa.decimal128(6, 2),
+            Decimal("1.00"),
+            {"kind": "decimal", "value": "123456.00"},
+            r"DECIMAL\(6, 2\)",
+        ),
+        "timestamp": (
+            pa.timestamp("us", "UTC"),
+            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            {"kind": "datetime", "value": "2026-01-01T00:00:00"},
+            "timezone-aware",
+        ),
+    }[case]
+    source = pd.DataFrame(
+        {"value": _pandas_dictionary_fill_series([value, None if missing else value] * 2, arrow_type)}
+    )
+    before = cast(Any, source["value"].array).__arrow_array__()
+    engine = PandasEngine()
+    operation = fill_step(bound_ref("c:source:0", "value", 0), replacement)
+    with pytest.raises(EngineError, match=diagnostic):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match=diagnostic):
+        execute_generated(engine, source, [operation])
+    session = cast(Any, SimpleNamespace(engine=engine, session_id="dictionary-fill-refusal"))
+    with pytest.raises(EngineError, match=diagnostic):
+        SessionManager._apply_transform_with_row_ids(session, source, operation, {"rows": 4, "columns": 1})
+    assert cast(Any, source["value"].array).__arrow_array__().equals(before)
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_pandas_dictionary_fallback_validates_only_selected_decimal_values(selected: bool) -> None:
+    source = pd.DataFrame(
+        {
+            "value": _pandas_dictionary_fill_series(
+                [Decimal("1.00"), None if selected else Decimal("1.00")] * 2, pa.decimal128(6, 2)
+            ),
+            "fallback": _pandas_dictionary_fill_series([Decimal("2.345")] * 4, pa.decimal128(7, 3)),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "fallbackColumns", "columns": [bound_ref("c:source:1", "fallback", 1)]},
+    )
+    engine = PandasEngine()
+    if selected:
+        with pytest.raises(EngineError, match="decimal scale 2"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="decimal scale 2"):
+            execute_generated(engine, source, [operation])
+    else:
+        for result in [engine.apply_transform(source, operation), execute_generated(engine, source, [operation])]:
+            assert result["value"].dtype == source["value"].dtype
+            assert (
+                cast(Any, result["value"].array)
+                .__arrow_array__()
+                .equals(cast(Any, source["value"].array).__arrow_array__())
+            )
+
+
+def test_pandas_dictionary_linear_fill_validates_coordinates_before_noop() -> None:
+    source = pd.DataFrame(
+        {"value": _pandas_dictionary_fill_series([1.0, 2.0] * 2, pa.float64()), "coordinate": [0] * 4}
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "linearInterpolation", "coordinate": bound_ref("c:source:1", "coordinate", 1)},
+    )
+    with pytest.raises(EngineError, match="unique coordinate"):
+        PandasEngine().apply_transform(source, operation)
+    with pytest.raises(ValueError, match="unique coordinate"):
+        execute_generated(PandasEngine(), source, [operation])
+
+
+def test_pandas_dictionary_fill_mixed_plan_preserves_private_helpers_and_source() -> None:
+    source = pd.DataFrame(
+        {
+            "value": _pandas_dictionary_fill_series([1.0, None, None, 4.0] * 2, pa.float64()),
+            "fallback": _pandas_dictionary_fill_series([None, 2.0, None, None] * 2, pa.float64()),
+            "order": range(8),
+        }
+    )
+    source.index = pd.Index(["same"] * 8, name="source")
+    before = source.copy(deep=True)
+    operations = [
+        fill_step(
+            bound_ref("c:source:0", "value", 0),
+            {"kind": "fallbackColumns", "columns": [bound_ref("c:source:1", "fallback", 1)]},
+        ),
+        {
+            "id": "isolated",
+            "kind": "customCode",
+            "params": {
+                "code": (
+                    "if '_open_wrangler_dictionary_values' in globals():\n"
+                    "    raise RuntimeError('private helper leaked')\n"
+                    "_open_wrangler_fill_missing_directional = 99\nresult = df\n"
+                )
+            },
+        },
+        fill_step(
+            bound_ref("c:source:0", "value", 0),
+            {
+                "kind": "directional",
+                "direction": "forward",
+                "orderBy": [{"column": bound_ref("c:source:2", "order", 2), "direction": "asc", "nulls": "last"}],
+            },
+            step_id="directional",
+        ),
+    ]
+    engine = PandasEngine()
+    live = source
+    for operation in operations:
+        live = engine.apply_transform(live, operation)
+    namespace: dict[str, Any] = {"_open_wrangler_dictionary_values": "caller collision"}
+    code = engine.compile_plan(operations)
+    assert "openwrangler_runtime" not in code
+    exec(code, namespace)
+    expected = pd.Series([1.0, 2.0, 2.0, 4.0] * 2, index=source.index, name="value", dtype=pd.ArrowDtype(pa.float64()))
+    for actual in [live, namespace["clean_data"](source)]:
+        pd.testing.assert_series_equal(actual["value"], expected)
+        pd.testing.assert_series_equal(actual["order"], source["order"])
+        assert actual["fallback"].dtype == source["fallback"].dtype
+        assert (
+            cast(Any, actual["fallback"].array)
+            .__arrow_array__()
+            .equals(cast(Any, before["fallback"].array).__arrow_array__())
+        )
+    for name in ["value", "fallback"]:
+        assert cast(Any, source[name].array).__arrow_array__().equals(cast(Any, before[name].array).__arrow_array__())
+
+
+@pytest.mark.parametrize("family", ["decimal", "timestamp"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_dictionary_fallback_uses_declared_type_without_present_target_values(family: str, empty: bool) -> None:
+    arrow_type, value, _, _ = _pandas_dictionary_fill_case(family)
+    size = 0 if empty else 4
+    source = pd.DataFrame(
+        {
+            "value": _pandas_dictionary_fill_series([None] * size, arrow_type),
+            "fallback": _pandas_dictionary_fill_series([value] * size, arrow_type),
+        }
+    )
+    replacement = {"kind": "fallbackColumns", "columns": [{"id": "c:source:1", "name": "fallback"}]}
+    expected = pd.Series([value] * size, name="value", dtype=pd.ArrowDtype(arrow_type))
+    for actual in _pandas_fill_public_outputs(source, replacement):
+        if empty:
+            assert actual["value"].dtype == source["value"].dtype
+            assert (
+                cast(Any, actual["value"].array)
+                .__arrow_array__()
+                .equals(cast(Any, source["value"].array).__arrow_array__())
+            )
+        else:
+            pd.testing.assert_series_equal(actual["value"], expected)
+
+
+def test_pandas_dictionary_fill_treats_valid_nan_and_null_entries_as_missing() -> None:
+    from pickle import dumps
+
+    array = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 2, None], type=pa.uint8()),
+        pa.array([float("nan"), None, -0.0], type=pa.float64(), from_pandas=False),
+    )
+    source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([array, array])))})
+    source["untouched"] = source["value"].array
+    before = dumps(cast(Any, source["value"].array).__arrow_array__())
+    expected = pd.Series([7.0, 7.0, -0.0, 7.0] * 2, name="value", dtype=pd.ArrowDtype(pa.float64()))
+    for actual in _pandas_fill_public_outputs(source, {"kind": "float", "value": "7"}):
+        pd.testing.assert_series_equal(actual["value"], expected)
+        assert cast(Any, actual["value"].array).__arrow_array__().null_count == 0
+    assert dumps(cast(Any, source["value"].array).__arrow_array__()) == before
