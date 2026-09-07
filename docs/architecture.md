@@ -190,6 +190,7 @@ data-column decoding. The supplemental read uses the same open file and checks i
 before publishing the repaired index. A changed source is refused; this guard does not persist beyond the read.
 Scalar Arrow dictionaries expose their logical value type while retaining the physical dtype in schema metadata.
 Profiles and query keys use logical values, including null dictionary entries and repeated values across chunks.
+Schema nullability checks native validity masks and referenced codebook entries without decoding value payloads.
 String keys share decoded dictionary entries rather than expanding the text payload once per row. Row selection
 retains encoded columns; it may normalize codebooks or widen their index type when native chunk unification requires
 it. Source arrays remain unchanged.
