@@ -35,7 +35,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Group and aggregate                                 |    Yes |    Yes | Done   | Ordered groups and normalized numeric aggregation; test:python/tests/test_group_numeric_parity.py; record:docs/testing.md                                                                      |
 | Custom engine-native code                           |    Yes |    Yes | Done   | Trusted isolated input, output validation, and executable native code; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py                                        |
 | String/datetime/new-column by example               |    Yes |    Yes | Done   | Bounded deterministic synthesis and native execution; test:python/tests/test_by_example.py; record:docs/testing.md                                                                             |
-| Copy/script/notebook code export                    |    Yes |    Yes | Done   | Editable-buffer copy, source-safe script save, and exact notebook insertion; test:src/test/safeFileExport.unit.test.ts; test:src/test/notebookInsertion.unit.test.ts                           |
+| Copy/script/notebook code export                    |    Yes |    Yes | Done   | Editable-buffer copy, source-safe script save, and session-pinned notebook insertion; test:src/test/safeFileExport.unit.test.ts; test:src/test/notebookInsertion.unit.test.ts                  |
 | CSV and Parquet data export                         |    Yes |    Yes | Done   | Configurable native serialization and host-owned publication; test:src/test/safePythonDataExport.unit.test.ts; record:docs/testing.md                                                          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Done   | Resource-scoped selection, dependency confirmation, engine change, and cleanup; test:src/test/runtimeCommands.unit.test.ts; record:docs/testing.md                                             |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Done   | Theme-token UI, keyboard semantics, and editor views; test:src/test/webview.component.test.tsx; record:docs/testing.md                                                                         |
@@ -83,7 +83,14 @@ and one exact candidate to pass the [qualification flow](releasing.md#release-ca
 experimental, Partial, Planned, and Out-of-scope rows do not block stable publication when their public labels and
 limits remain accurate.
 
+Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
+columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
+`python/tests/test_pivot_wider.py`.
+
 ## Native R preview
+
+Native R live and generated medians use the same midpoint calculation for Group By and Fill Missing Values,
+including subnormal and extreme doubles. This correction does not expand the supported frame or transport scope.
 
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
 limits; none is a stable-release gate.

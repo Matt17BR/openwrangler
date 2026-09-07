@@ -58,6 +58,11 @@ node scripts/run-r-contract-tests.mjs --shard kernel-agent
 The grouped commands keep real-R process tests serial while separating frame and interactive-transport, catalog and
 process-transport, and kernel-agent failures.
 
+The native-view source tests cover lifetime provider registrations, forwarded tree updates, and session-pinned code
+insertion. The existing App component tests retain DOM-before-acknowledgement and mismatched-marker integration
+coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
+contracts execute generated code for midpoint edge cases alongside live execution.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:
