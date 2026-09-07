@@ -9,7 +9,7 @@ from importlib.util import find_spec
 from inspect import signature
 from math import isfinite
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
@@ -3424,7 +3424,7 @@ def _polars_fill_missing_grouped_statistic(
             if target_dtype.is_integer():
                 return exact_integer_median(lower, upper)
             if isinstance(target_dtype, pl.Decimal):
-                return exact_decimal_median(lower, upper, target_dtype.precision, target_dtype.scale)
+                return exact_decimal_median(lower, upper, cast(int, target_dtype.precision), target_dtype.scale)
             raise EngineError("Grouped median requires an integer or decimal Polars column.")
 
         fill = (

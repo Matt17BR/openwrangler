@@ -317,6 +317,7 @@ def _integer_query_frame(values, dtype):
 def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
     resolved = pd.api.types.pandas_dtype(dtype)
     native = getattr(resolved, "numpy_dtype", getattr(resolved, "subtype", resolved))
+    assert isinstance(native, np.dtype)
     bounds = np.iinfo(native)
     low, high = int(bounds.min), int(bounds.max)
     needle = 2**53 + 1 if bounds.bits == 64 else 1
@@ -435,7 +436,7 @@ def test_pandas_sparse_integer_filters_and_sorting_preserve_returned_values(fill
     frame.insert(
         1, "other sparse", pd.Series([0, 2**53 + 3, 0, 0, 1, 0], dtype=object).astype(pd.SparseDtype("uint64", 0)).array
     )
-    frame.insert(2, "tie", [1, 0, 0, 0, 1, 1])
+    frame.insert(2, "tie", np.array([1, 0, 0, 0, 1, 1], dtype=np.int64))
     selected = [2**53 + 3, 2**64 - 1, 0, -1, 2**64]
     model = _value_selection_model("integer", typed_selection_value(selected[0], "integer"))
     model["filters"][0]["valueFilter"].update(
