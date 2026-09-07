@@ -154,6 +154,9 @@ R types. Live and generated median calculations share the same floating-point mi
 subnormal values and extreme finite values.
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
+Standalone generated Fill code includes only the helper families used by the cleaning plan. Mixed steps retain
+their dependencies, including datetime handling for scalar replacements and the shared numeric midpoint.
+
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
 chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
 Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
