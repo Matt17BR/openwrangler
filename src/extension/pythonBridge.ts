@@ -410,6 +410,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return exportPythonDataSafely({
       request,
       source: session.source,
+      sourceProtection: options.sourceProtection,
       beginTransaction: this.fileOperations.beginTransaction,
       dispatch: async (runtimeRequest) => {
         if (this.sessionOwnership.confirmedSession(request.sessionId) !== session) {

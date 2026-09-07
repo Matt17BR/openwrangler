@@ -361,6 +361,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     if (!expectedSession && isExactActiveRTerminal(activeTerminal)) {
       expectedSession = Object.freeze({ terminal: activeTerminal });
     }
+    if (origin) await origin.sourceProtection;
+    if (this.disposed) return false;
     if (origin && !isCurrentLiterateDocumentOrigin(origin)) return false;
     if (expectedSession && !isCurrentLiterateRSession(expectedSession)) return false;
     const documentOrigin = evaluationCode === undefined ? undefined : origin;
@@ -788,7 +790,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
         ? this.coordinator.createBridge(delegate, {
             kind: "textDocument",
             document: origin.document,
-            version: origin.version
+            version: origin.version,
+            sourceProtection: origin.sourceProtection
           })
         : this.coordinator.createBridge(delegate);
       OpenWranglerPanel.create(this.context, bridge, source, "r");

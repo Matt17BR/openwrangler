@@ -401,9 +401,13 @@ describe("SessionRuntimeRecovery", () => {
         throw new Error(`Unexpected old-runtime request: ${request.kind}`);
       });
       const candidateOpened = openedResponse("runtime-candidate", "r");
+      let candidateHasOpened = false;
       const candidateDelegate = bridge(async (request) => {
         candidateRequests.push(request);
-        if (request.kind === "openSession") return candidateOpened;
+        if (request.kind === "openSession") {
+          candidateHasOpened = true;
+          return candidateOpened;
+        }
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected candidate request: ${request.kind}`);
       });
@@ -429,12 +433,10 @@ describe("SessionRuntimeRecovery", () => {
         code: session.code,
         viewState: session.viewState
       };
-      let originChecks = 0;
       const recoveryHooks: RuntimeRecoveryHooks = hooks();
-      recoveryHooks.originMismatch = vi.fn(() => {
-        originChecks += 1;
-        return failure === "origin" && originChecks > 2 ? "The source changed." : undefined;
-      });
+      recoveryHooks.originMismatch = vi.fn(() =>
+        failure === "origin" && candidateHasOpened ? "The source changed." : undefined
+      );
       const restoreRuntimeState = vi.fn<SessionRuntimeStateRestorer["restoreRuntimeState"]>(async (candidateState) => {
         if (failure === "replay" || failure === "cleanup") throw new Error("Replay failed.");
         if (failure === "schema") {
@@ -464,11 +466,7 @@ describe("SessionRuntimeRecovery", () => {
       const recovery = new SessionRuntimeRecovery(cleanup, {
         restoreRuntimeState
       } as unknown as SessionRuntimeStateRestorer);
-      let currentChecks = 0;
-      const isStillCurrent = (): boolean => {
-        currentChecks += 1;
-        return failure !== "currentness" || currentChecks <= 2;
-      };
+      const isStillCurrent = (): boolean => failure !== "currentness" || !candidateHasOpened;
 
       await expect(
         recovery.replay(session, undefined, recoveryHooks, true, session.metadata.schema, isStillCurrent)

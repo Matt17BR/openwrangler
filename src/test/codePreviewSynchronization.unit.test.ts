@@ -12,12 +12,12 @@ import {
   uncancelledViewToken
 } from "./nativeViews.testFixtures";
 
-const exportFileSafely = vi.hoisted(() => vi.fn(async (_options: { contents: Buffer }) => undefined));
-vi.mock("../extension/files/safeFileExport", () => ({ exportFileSafely }));
+import * as safeFileExport from "../extension/files/safeFileExport";
 
 it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across recreation", async () => {
   vi.useRealTimers();
   resetNativeViewMocks();
+  const exportFileSafely = vi.spyOn(safeFileExport, "exportFileSafely").mockResolvedValue(undefined);
   const initialSnapshot = noDraftSnapshot();
   initialSnapshot.code = "def clean_data(df):\r\n    return df\r\n";
   const initialCanonicalCode = "def clean_data(df):\n    return df\n";
@@ -319,6 +319,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     expect(writeText).not.toHaveBeenCalled();
     expect(webviewMessages.filter(isSnapshotRequest)).toHaveLength(requestCount);
   } finally {
+    exportFileSafely.mockRestore();
     vi.useRealTimers();
     if (activePage) teardownPage(activePage);
     Reflect.deleteProperty(globalThis, "acquireVsCodeApi");

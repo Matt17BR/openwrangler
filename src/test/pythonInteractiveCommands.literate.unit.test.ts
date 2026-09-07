@@ -71,7 +71,7 @@ describe("Python Interactive Window literate dispatch", () => {
       "jupyter.execSelectionInteractive",
       "#| label: load-orders\nframe = make_frame()\n"
     );
-    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(
       context,
       coordinator,
@@ -105,7 +105,7 @@ describe("Python Interactive Window literate dispatch", () => {
     await expect(literateProvider(provider).openAssociatedLiterateSession(origin)).resolves.toBe(true);
 
     expect(pythonMocks.discover).toHaveBeenCalledTimes(1);
-    expect(pythonMocks.discover).toHaveBeenCalledWith(exact.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(exact.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(
       context,
       coordinator,
@@ -219,7 +219,7 @@ describe("Python Interactive Window literate dispatch", () => {
 
     await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(true);
 
-    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledOnce();
     expect(pythonMocks.showWarningMessage).not.toHaveBeenCalled();
   });

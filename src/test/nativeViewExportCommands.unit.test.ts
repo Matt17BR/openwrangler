@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { link, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import * as vscode from "vscode";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { link, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -15,7 +16,8 @@ import {
   rDocumentSnapshot,
   rNotebookSnapshot,
   snapshot,
-  vscodeUri
+  vscodeUri,
+  uncancelledViewToken
 } from "./nativeViews.testFixtures";
 
 describe("native export commands", () => {
@@ -64,13 +66,19 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.internal.exportSessionData")("origin-session", 3)).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ",",
-      quoteChar: '"',
-      encoding: "utf-8",
-      header: true
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "origin-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true
+      },
+      nativeMocks.exportSourceProtection
+    );
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith(
       expect.objectContaining({
         defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" })
@@ -90,9 +98,15 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.parquet", {
-      format: "parquet"
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "origin-session",
+      3,
+      "/workspace/orders.cleaned.parquet",
+      {
+        format: "parquet"
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it.each([
@@ -126,14 +140,20 @@ describe("native export commands", () => {
         title: "Export Pandas Index",
         placeHolder: "Choose whether to preserve the dataframe index"
       });
-      expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
-        format: "csv",
-        delimiter: ",",
-        quoteChar: '"',
-        encoding: "utf-8",
-        header: true,
-        rowAxisPolicy: expectedPolicy
-      });
+      expect(registered.exportData).toHaveBeenCalledWith(
+        "pandas-session",
+        3,
+        "/workspace/orders.cleaned.csv",
+        {
+          format: "csv",
+          delimiter: ",",
+          quoteChar: '"',
+          encoding: "utf-8",
+          header: true,
+          rowAxisPolicy: expectedPolicy
+        },
+        nativeMocks.exportSourceProtection
+      );
     }
   );
 
@@ -152,14 +172,20 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ",",
-      quoteChar: '"',
-      encoding: "utf-8",
-      header: true,
-      rowAxisPolicy: "omit"
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "pandas-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: "omit"
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("offers the confirmed import dialect as the CSV export default", async () => {
@@ -190,14 +216,20 @@ describe("native export commands", () => {
       label: "Use confirmed source settings",
       description: `";" delimiter · windows-1252 · no header · "'" quote`
     });
-    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ";",
-      quoteChar: "'",
-      encoding: "windows-1252",
-      header: false,
-      rowAxisPolicy: "preserve"
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "pandas-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ";",
+        quoteChar: "'",
+        encoding: "windows-1252",
+        header: false,
+        rowAxisPolicy: "preserve"
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("does not reuse the import-only lossy UTF-8 sentinel as an export encoding", async () => {
@@ -215,14 +247,20 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
-    expect(registered.exportData).toHaveBeenCalledWith("pandas-session", 3, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ",",
-      quoteChar: '"',
-      encoding: "utf-8",
-      header: true,
-      rowAxisPolicy: "omit"
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "pandas-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true,
+        rowAxisPolicy: "omit"
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("dispatches an explicitly configured engine-native CSV dialect", async () => {
@@ -247,13 +285,19 @@ describe("native export commands", () => {
         value: '"'
       })
     );
-    expect(registered.exportData).toHaveBeenCalledWith("polars-session", 3, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ";",
-      quoteChar: "'",
-      encoding: "utf-8",
-      header: false
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "polars-session",
+      3,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ";",
+        quoteChar: "'",
+        encoding: "utf-8",
+        header: false
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("rejects an unsupported multibyte Polars delimiter before Save", async () => {
@@ -369,13 +413,19 @@ describe("native export commands", () => {
       filters: { CSV: ["csv"] },
       saveLabel: "Export data"
     });
-    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: ",",
-      quoteChar: '"',
-      encoding: "utf-8",
-      header: true
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "session",
+      0,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: ",",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: true
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("offers only R-native configurable CSV settings", async () => {
@@ -412,13 +462,19 @@ describe("native export commands", () => {
         prompt: "Enter exactly one character."
       })
     );
-    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", {
-      format: "csv",
-      delimiter: "§",
-      quoteChar: '"',
-      encoding: "utf-8",
-      header: false
-    });
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "session",
+      0,
+      "/workspace/orders.cleaned.csv",
+      {
+        format: "csv",
+        delimiter: "§",
+        quoteChar: '"',
+        encoding: "utf-8",
+        header: false
+      },
+      nativeMocks.exportSourceProtection
+    );
   });
 
   it("rejects a session-bound export when its originating revision advances during the Save dialog", async () => {
@@ -497,18 +553,17 @@ describe("native export commands", () => {
     try {
       await writeFile(source, contents);
       await link(source, alias);
-      register(
-        snapshot({
-          mode: "editing",
-          steps: [appliedStep],
-          source: {
-            kind: "file",
-            label: "source.csv",
-            path: source,
-            uri: "file://malformed-source-metadata"
-          }
-        })
+      const actual = await vi.importActual<typeof import("../extension/files/safeFileExport")>(
+        "../extension/files/safeFileExport"
       );
+      nativeMocks.captureExportSourceProtection.mockImplementation(actual.captureExportSourceProtection);
+      const session = snapshot({
+        mode: "editing",
+        steps: [appliedStep],
+        source: { kind: "file", label: "source.csv", path: source, uri: "file://malformed-source-metadata" }
+      });
+      session.sourceProtection = await actual.captureSessionSourceProtection([vscode.Uri.file(source)]);
+      register(session);
       nativeMocks.showSaveDialog.mockResolvedValueOnce(resourceUri("file", alias));
 
       await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
@@ -519,6 +574,163 @@ describe("native export commands", () => {
       expect(nativeMocks.showErrorMessage).toHaveBeenCalledWith(
         expect.stringContaining("never overwrites the active source")
       );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["before action", "during Save"])("preserves a renamed original source %s", async (timing) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-native-export-"));
+    const source = path.join(directory, "orders.R");
+    const original = path.join(directory, "orders-original.R");
+    const contents = "orders <- data.frame(value = 1)\n";
+    try {
+      const actual = await vi.importActual<typeof import("../extension/files/safeFileExport")>(
+        "../extension/files/safeFileExport"
+      );
+      nativeMocks.captureExportSourceProtection.mockImplementation(actual.captureExportSourceProtection);
+      await writeFile(source, contents);
+      const session = rDocumentSnapshot();
+      session.metadata.source = {
+        kind: "documentVariable",
+        label: "orders",
+        uri: vscode.Uri.file(source).toString(),
+        variableName: "orders"
+      };
+      session.sourceProtection = await actual.captureSessionSourceProtection([vscode.Uri.file(source)]);
+      register(session);
+      const replaceSource = async () => {
+        await rename(source, original);
+        await writeFile(source, "replacement source\n");
+      };
+      if (timing === "before action") await replaceSource();
+      nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+        if (timing === "during Save") await replaceSource();
+        return resourceUri("file", original);
+      });
+
+      await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+      expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+      expect(await readFile(original, "utf8")).toBe(contents);
+      expect(await readFile(source, "utf8")).toBe("replacement source\n");
+      expect((await readdir(directory)).filter((name) => name.startsWith(".openwrangler-"))).toEqual([]);
+      expect(nativeMocks.showErrorMessage).toHaveBeenCalledOnce();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("protects the source before awaiting the exact Code Preview reply", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-native-export-"));
+    const source = path.join(directory, "orders.R");
+    const original = path.join(directory, "orders-original.R");
+    let dispose: (() => void) | undefined;
+    try {
+      const actual = await vi.importActual<typeof import("../extension/files/safeFileExport")>(
+        "../extension/files/safeFileExport"
+      );
+      nativeMocks.captureExportSourceProtection.mockImplementation(actual.captureExportSourceProtection);
+      await writeFile(source, "orders <- data.frame(value = 1)\n");
+      const session = rDocumentSnapshot();
+      session.metadata.source = { ...session.metadata.source, uri: vscode.Uri.file(source).toString() };
+      session.sourceProtection = await actual.captureSessionSourceProtection([vscode.Uri.file(source)]);
+      register(session);
+      let receive: ((message: unknown) => void) | undefined;
+      let replied = false;
+      nativeMocks.webviewViewProviders.get("openWrangler.codePreview")!.resolveWebviewView(
+        {
+          webview: {
+            html: "",
+            options: {},
+            cspSource: "test-csp",
+            asWebviewUri: (uri: unknown) => uri,
+            onDidReceiveMessage: (listener: (message: unknown) => void) => {
+              receive = listener;
+              return { dispose() {} };
+            },
+            postMessage: async (message: {
+              kind: string;
+              requestId?: string;
+              bufferId?: string;
+              bufferVersion?: number;
+            }) => {
+              if (message.kind === "codeSnapshotRequest") {
+                await rename(source, original);
+                await writeFile(source, "replacement source\n");
+                replied = true;
+                receive?.({
+                  kind: "codeSnapshot",
+                  requestId: message.requestId,
+                  bufferId: message.bufferId,
+                  baseVersion: message.bufferVersion,
+                  bufferVersion: message.bufferVersion,
+                  code: session.code
+                });
+              }
+              return true;
+            }
+          },
+          onDidDispose: (listener: () => void) => {
+            dispose = listener;
+            return { dispose() {} };
+          }
+        },
+        { state: undefined },
+        uncancelledViewToken
+      );
+      receive?.({ kind: "ready" });
+      nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+        expect(replied).toBe(true);
+        return resourceUri("file", original);
+      });
+      await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+      expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+      expect(await readFile(original, "utf8")).toBe("orders <- data.frame(value = 1)\n");
+      expect(await readFile(source, "utf8")).toBe("replacement source\n");
+    } finally {
+      dispose?.();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains an ordinary replacement at action start while the original runtime source remains protected", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-native-export-"));
+    const source = path.join(directory, "orders.R");
+    const runtimeOriginal = path.join(directory, "runtime-original.R");
+    const actionOriginal = path.join(directory, "action-original.R");
+    const destination = path.join(directory, "clean.R");
+    try {
+      const actual = await vi.importActual<typeof import("../extension/files/safeFileExport")>(
+        "../extension/files/safeFileExport"
+      );
+      nativeMocks.captureExportSourceProtection.mockImplementation(actual.captureExportSourceProtection);
+      await writeFile(source, "runtime source\n");
+      const session = rDocumentSnapshot();
+      session.metadata.source = {
+        kind: "documentVariable",
+        label: "orders",
+        uri: vscode.Uri.file(source).toString(),
+        variableName: "orders"
+      };
+      session.sourceProtection = await actual.captureSessionSourceProtection([vscode.Uri.file(source)]);
+      register(session);
+      await rename(source, runtimeOriginal);
+      await writeFile(source, "ordinary saved source\n");
+      nativeMocks.showSaveDialog.mockResolvedValueOnce(resourceUri("file", destination));
+      await expect(command("openWrangler.exportCode")()).resolves.toBe(true);
+      expect(await readFile(destination, "utf8")).toBe(session.code);
+      nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+        await rename(source, actionOriginal);
+        await writeFile(source, "new replacement\n");
+        return resourceUri("file", actionOriginal);
+      });
+      await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+      expect(nativeMocks.showSaveDialog).toHaveBeenCalledTimes(2);
+      expect(await readFile(runtimeOriginal, "utf8")).toBe("runtime source\n");
+      expect(await readFile(actionOriginal, "utf8")).toBe("ordinary saved source\n");
+      expect(await readFile(source, "utf8")).toBe("new replacement\n");
+      expect((await readdir(directory)).filter((name) => name.startsWith(".openwrangler-"))).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

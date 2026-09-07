@@ -20,6 +20,9 @@ import * as path from "node:path";
 import type { Uri } from "vscode";
 import {
   beginAtomicFileTransaction,
+  captureSessionSourceProtection,
+  captureExportSourceProtection,
+  confirmSessionSourceProtection,
   createNodeAtomicExportFileSystem,
   exportFileSafely,
   type AtomicExportFileSystem,
@@ -54,6 +57,58 @@ describe("safe file export transactions", () => {
     expect(await readFile(destination, "utf8")).toBe(DESTINATION_CONTENTS);
     expect(await readFile(source, "utf8")).toBe(SOURCE_CONTENTS);
     expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("rejects a source replacement after action capture before reserving any output", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const retained = await captureSessionSourceProtection([fileUri(fixture.source)]);
+    const sourceProtection = await captureExportSourceProtection([fileUri(fixture.source)], retained);
+    const original = path.join(directory, "original.csv");
+    await rename(fixture.source, original);
+    await writeFile(fixture.source, "replacement");
+    await expect(
+      beginAtomicFileTransaction({
+        destination: fileUri(original),
+        protectedSources: [fileUri(fixture.source)],
+        sourceProtection
+      })
+    ).rejects.toThrow(/source changed/u);
+    expect(await readFile(original, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await readFile(fixture.source, "utf8")).toBe("replacement");
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("protects retained source identity aliases after an ordinary save while permitting a separate destination", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const retained = await captureSessionSourceProtection([fileUri(fixture.source)]);
+    const original = path.join(directory, "original.csv");
+    const alias = path.join(directory, "original-alias.csv");
+    await rename(fixture.source, original);
+    await link(original, alias);
+    await writeFile(fixture.source, "ordinary save");
+    const sourceProtection = await captureExportSourceProtection([fileUri(fixture.source)], retained);
+    await expect(beginAtomicFileTransaction({ destination: fileUri(alias), sourceProtection })).rejects.toThrow(
+      /never overwrites/u
+    );
+    await exportFileSafely({
+      destination: fileUri(fixture.destination),
+      sourceProtection,
+      contents: Buffer.from(DESTINATION_CONTENTS)
+    });
+    expect(await readFile(original, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await readFile(fixture.source, "utf8")).toBe("ordinary save");
+    expect(await readFile(fixture.destination, "utf8")).toBe(DESTINATION_CONTENTS);
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("keeps an unavailable opening identity unavailable even when that path later appears", async () => {
+    const source = fileUri(path.join(directory, "late-source.csv"));
+    const retained = await captureSessionSourceProtection([source]);
+    expect(retained).toEqual({ available: false });
+    await writeFile(source.fsPath, SOURCE_CONTENTS);
+    expect(await confirmSessionSourceProtection(retained)).toBe(retained);
+    await expect(captureExportSourceProtection([source], retained)).rejects.toThrow(/Reopen the dataframe/u);
+    expect(await captureSessionSourceProtection([])).toEqual({ available: true, anchors: [] });
   });
 
   it("commits a worker-written transaction without routing its payload through the caller", async () => {

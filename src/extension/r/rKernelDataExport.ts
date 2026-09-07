@@ -118,7 +118,8 @@ export class RKernelDataExport {
     try {
       transaction = await this.beginFileTransaction({
         destination: vscode.Uri.file(request.path),
-        protectedSources: rExportProtectedSourceUris(session.source)
+        protectedSources: rExportProtectedSourceUris(session.source),
+        ...(options.sourceProtection ? { sourceProtection: options.sourceProtection } : {})
       });
       const output = transaction;
       if (this.disposed || this.sessions.get(request.sessionId) !== session) {

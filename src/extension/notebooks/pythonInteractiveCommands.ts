@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import { SessionCoordinator } from "../sessionCoordinator";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 import {
   discoverNotebookVariables,
   disposeNotebookVariableDiscovery,
@@ -297,6 +299,8 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       return false;
     }
 
+    await origin.sourceProtection;
+    if (!isUnchangedPythonOrigin(origin) || this.disposed) return false;
     const existingCells = allExactSourceCells(origin.sourceUri).flatMap(({ cells }) => cells);
     const beforeCells: PreviousInteractiveCells = {
       cells: new Set(existingCells.map(({ cell }) => cell)),
@@ -776,7 +780,16 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     let discovery: NotebookVariableDiscovery;
     try {
       this.setDiagnosticStage("discovering-variables");
-      discovery = await discoverNotebookVariables(notebook);
+      const sourceProtection = Promise.all([
+        origin.sourceProtection ??
+          captureSessionSourceFiles({ kind: "documentVariable", label: "document", uri: origin.sourceUri }),
+        captureSessionSourceFiles({ kind: "notebookVariable", label: "notebook", uri: notebook.uri.toString() })
+      ]).then(([document, notebook]): SessionSourceProtection =>
+        document.available && notebook.available
+          ? Object.freeze({ available: true, anchors: Object.freeze([...document.anchors, ...notebook.anchors]) })
+          : Object.freeze({ available: false })
+      );
+      discovery = await discoverNotebookVariables(notebook, sourceProtection);
     } catch (error) {
       void vscode.window.showWarningMessage(
         error instanceof NotebookVariableDiscoveryError

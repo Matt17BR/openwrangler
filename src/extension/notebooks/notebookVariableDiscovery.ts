@@ -5,6 +5,8 @@ import type { DataBackend } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { KernelGenerationBinding, withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { captureSessionSourceFiles } from "../sessionOrigin";
+import type { SessionSourceProtection } from "../files/safeFileExport";
 import {
   MAX_PYSPARK_VERSION_CHARACTERS,
   PYSPARK_VERSION_POLICY_PYTHON_SOURCE,
@@ -60,12 +62,17 @@ export interface NotebookVariableDiscovery {
 }
 
 interface NotebookDiscoveryOrigin {
+  readonly sourceProtection: SessionSourceProtection;
   readonly notebook: vscode.NotebookDocument;
   readonly api: Jupyter;
   readonly binding: KernelGenerationBinding<Kernel>;
 }
 
 const discoveryOrigins = new WeakMap<object, NotebookDiscoveryOrigin>();
+
+export function notebookDiscoverySourceProtection(discovery: object): SessionSourceProtection {
+  return discoveryOrigins.get(discovery)?.sourceProtection ?? Object.freeze({ available: false });
+}
 
 export function disposeNotebookVariableDiscovery(discovery: object): void {
   discoveryOrigins.get(discovery)?.binding.dispose();
@@ -125,10 +132,15 @@ export class PySparkNotebookPreflightError extends Error {
   }
 }
 
-export async function discoverNotebookVariables(notebook: vscode.NotebookDocument): Promise<NotebookVariableDiscovery> {
+export async function discoverNotebookVariables(
+  notebook: vscode.NotebookDocument,
+  sourceProtection?: Promise<SessionSourceProtection>
+): Promise<NotebookVariableDiscovery> {
   let origin: NotebookDiscoveryOrigin | undefined;
   try {
-    origin = await resolvePythonNotebookDiscoveryOrigin(notebook);
+    const retained = await (sourceProtection ??
+      captureSessionSourceFiles({ kind: "notebookVariable", label: "notebook", uri: notebook.uri.toString() }));
+    origin = await resolvePythonNotebookDiscoveryOrigin(notebook, retained);
     await assertDiscoveryKernelCurrent(origin);
     const discovery = await revalidateAfter(executeDiscovery(origin.binding.kernel, notebook), notebook);
     await assertDiscoveryKernelCurrent(origin);
@@ -582,7 +594,8 @@ export function assertSupportedPySparkNotebookPreflight(
 }
 
 async function resolvePythonNotebookDiscoveryOrigin(
-  notebook: vscode.NotebookDocument
+  notebook: vscode.NotebookDocument,
+  sourceProtection: SessionSourceProtection
 ): Promise<NotebookDiscoveryOrigin> {
   assertNotebookProvenance(notebook);
   if (!vscode.workspace.isTrusted) {
@@ -611,7 +624,7 @@ async function resolvePythonNotebookDiscoveryOrigin(
       `Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`
     );
   }
-  return { notebook, api, binding: new KernelGenerationBinding(kernel) };
+  return { notebook, api, binding: new KernelGenerationBinding(kernel), sourceProtection };
 }
 
 function assertNotebookProvenance(notebook: vscode.NotebookDocument): void {

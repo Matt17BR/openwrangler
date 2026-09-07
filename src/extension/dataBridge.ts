@@ -9,6 +9,7 @@ import type {
 } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
+import type { ExportSourceProtection } from "./files/safeFileExport";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
@@ -41,6 +42,8 @@ export class DetachedBridgeRequestError extends Error {
 }
 
 export interface BridgeRequestOptions {
+  /** Host-owned source identities retained before an export's user interaction. */
+  sourceProtection?: ExportSourceProtection;
   cancellation?: CancellationTokenLike;
   priority?: "interactive" | "background";
   timeoutMs?: number;

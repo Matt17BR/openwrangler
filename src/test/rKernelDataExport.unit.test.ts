@@ -1,3 +1,8 @@
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import * as vscode from "vscode";
+import { captureSessionSourceProtection, captureExportSourceProtection } from "../extension/files/safeFileExport";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenSessionRequest } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
@@ -18,6 +23,44 @@ import {
 import { rCsvExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
 describe("R kernel data export", () => {
+  it.each(["before action", "after action"])(
+    "refuses a renamed source %s before native R export dispatch",
+    async (timing) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-r-export-owner-"));
+      const sourcePath = path.join(directory, "orders.R");
+      const original = path.join(directory, "original.R");
+      try {
+        await writeFile(sourcePath, "orders <- data.frame(value = 1)\n");
+        const retained = await captureSessionSourceProtection([vscode.Uri.file(sourcePath)]);
+        const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
+        const bridge = createBridge({ ...fakeTransport(frameContract()), exportData });
+        const opening = documentOpenRequest("editing");
+        await expect(
+          bridge.request({ ...opening, source: { ...opening.source, uri: vscode.Uri.file(sourcePath).toString() } })
+        ).resolves.toMatchObject({ kind: "sessionOpened" });
+        const replaceSource = async () => {
+          await rename(sourcePath, original);
+          await writeFile(sourcePath, "replacement");
+        };
+        if (timing === "before action") await replaceSource();
+        const sourceProtection = await captureExportSourceProtection([vscode.Uri.file(sourcePath)], retained);
+        if (timing === "after action") await replaceSource();
+        await expect(
+          bridge.request(
+            { kind: "exportData", sessionId, revision: 0, path: original, options: rCsvExportOptions },
+            { sourceProtection }
+          )
+        ).rejects.toThrow(timing === "before action" ? /never overwrites/u : /source changed/u);
+        expect(exportData).not.toHaveBeenCalled();
+        expect(await readFile(original, "utf8")).toBe("orders <- data.frame(value = 1)\n");
+        expect(await readFile(sourcePath, "utf8")).toBe("replacement");
+        bridge.dispose();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("exports the committed result of an editing R document through an extension-owned atomic CSV transaction", async () => {
     const contract = frameContract();
     const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {

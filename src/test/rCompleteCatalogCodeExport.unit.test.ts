@@ -137,6 +137,7 @@ vi.mock("../extension/configuration", () => ({
 import * as vscode from "vscode";
 import { registerNativeViews } from "../extension/nativeViews";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
+import { captureSessionSourceProtection } from "../extension/files/safeFileExport";
 
 const temporaryDirectories: string[] = [];
 
@@ -174,7 +175,10 @@ describe("complete native R generated-code export catalog", () => {
     temporaryDirectories.push(directory);
     const sourcePath = path.join(directory, "catalog.R");
     await writeFile(sourcePath, "catalog <- base::data.frame(value = 1L)\n", "utf8");
-    const snapshot = rSnapshot(sourcePath, operations);
+    const snapshot = {
+      ...rSnapshot(sourcePath, operations),
+      sourceProtection: await captureSessionSourceProtection([vscode.Uri.file(sourcePath)])
+    };
     const controller = registerNativeViews(extensionContext(), coordinatorFor(snapshot));
     const copyCode = command("openWrangler.copyCode");
     const exportCode = command("openWrangler.exportCode");

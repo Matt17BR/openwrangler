@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import type { RowAxisExportPolicy } from "../shared/protocol";
 import type { ActiveSessionSnapshot, SessionCoordinator } from "./sessionCoordinator";
 import { selectNativeExportOptions } from "./nativeViewsExportOptions";
+import { captureExportSourceProtection } from "./files/safeFileExport";
+import { sessionSourceFileUris } from "./sessionOrigin";
 
 interface NativeViewsDataExportDependencies {
   readonly defaultExportUri: (snapshot: ActiveSessionSnapshot, suffix: string) => vscode.Uri;
@@ -28,7 +30,10 @@ async function exportSessionData(
   defaultExportUri: NativeViewsDataExportDependencies["defaultExportUri"],
   requireTrustedWorkspace: NativeViewsDataExportDependencies["requireTrustedWorkspace"]
 ): Promise<boolean> {
-  if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
+  if (!vscode.workspace.isTrusted) {
+    await requireTrustedWorkspace("export cleaned data");
+    return false;
+  }
   const initial = pinnedExportSnapshot(coordinator, pin);
   if (!initial) return false;
   const backend = initial.metadata.backend;
@@ -48,6 +53,17 @@ async function exportSessionData(
     void vscode.window.showWarningMessage("This dataframe does not support cleaned-data export.");
     return false;
   }
+  let sourceProtection;
+  try {
+    sourceProtection = await captureExportSourceProtection(
+      sessionSourceFileUris(initial.metadata.source),
+      initial.sourceProtection
+    );
+  } catch (error) {
+    void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+  if (!(await requireTrustedWorkspace("export cleaned data")) || !pinnedExportSnapshot(coordinator, pin)) return false;
   const selected = await vscode.window.showQuickPick(choices, {
     title: "Export Cleaned Data",
     placeHolder: "Choose a file format"
@@ -117,11 +133,15 @@ async function exportSessionData(
     void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
     return false;
   }
-  if (!hasSameExportBackend(confirmedBeforeDispatch, backend)) return false;
+  if (
+    !hasSameExportBackend(confirmedBeforeDispatch, backend) ||
+    confirmedBeforeDispatch.sourceProtection !== initial.sourceProtection
+  )
+    return false;
   try {
     const exported = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
-      () => coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, exportOptions)
+      () => coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, exportOptions, sourceProtection)
     );
     void vscode.window.showInformationMessage(
       `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`

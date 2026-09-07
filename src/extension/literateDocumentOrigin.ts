@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { captureSessionSourceFiles } from "./sessionOrigin";
+import type { SessionSourceProtection } from "./files/safeFileExport";
 import {
   findLiterateCodeChunkAtLine,
   literateDocumentKind,
@@ -19,6 +21,7 @@ interface SelectionSnapshot {
 }
 
 export interface LiterateDocumentOrigin {
+  readonly sourceProtection?: Promise<SessionSourceProtection>;
   readonly editor: vscode.TextEditor;
   readonly document: vscode.TextDocument;
   readonly version: number;
@@ -47,6 +50,11 @@ export function captureLiterateDocumentOrigin(expectedUri?: vscode.Uri): Literat
   const chunk = findLiterateCodeChunkAtLine(document.uri.fsPath, source, active.line);
   const pythonExecutionOwner = literatePythonExecutionOwner(document.uri.fsPath, source);
   return Object.freeze({
+    sourceProtection: captureSessionSourceFiles({
+      kind: "documentVariable",
+      label: "document",
+      uri: document.uri.toString()
+    }),
     editor,
     document,
     version: document.version,

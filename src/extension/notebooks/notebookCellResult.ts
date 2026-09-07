@@ -18,6 +18,7 @@ import {
 } from "./kernelBridge";
 import { withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { captureSessionSourceFiles } from "../sessionOrigin";
 
 const OPEN_NOTEBOOK_CELL_RESULT_COMMAND = "openWrangler.openNotebookCellResult";
 const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
@@ -147,6 +148,12 @@ async function openNotebookCellResult(
     );
     return;
   }
+  const sourceProtection = captureSessionSourceFiles({
+    kind: "notebookVariable",
+    label: "notebook",
+    uri: origin.notebook.uri.toString()
+  });
+  await sourceProtection;
   if (
     !(await tracker.hasCurrentKernel(origin.cell, origin.eligibility)) ||
     !matchesExecutedCellOrigin(origin, tracker)
@@ -180,7 +187,7 @@ async function openNotebookCellResult(
       variableName: captured.variableName,
       uri: origin.notebook.uri.toString()
     };
-    const bridge = coordinator.createBridge(delegate, origin.notebook);
+    const bridge = coordinator.createBridge(delegate, origin.notebook, sourceProtection);
     OpenWranglerPanel.create(context, bridge, source, captured.backend);
   } catch (error) {
     delegate.dispose();

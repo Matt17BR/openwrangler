@@ -609,7 +609,9 @@ describe("SessionCoordinator recovery boundaries", () => {
       const opened = await open(bridge);
       const request = mutationOrExportRequest(kind, opened.metadata);
 
-      await expect(bridge.request(request)).rejects.toThrow(`${kind} transport failed after dispatch`);
+      await expect(
+        bridge.request(request, kind === "exportData" ? { sourceProtection: { current: [], retained: [] } } : undefined)
+      ).rejects.toThrow(`${kind} transport failed after dispatch`);
 
       expect(delegateRequest.mock.calls.map(([call]) => call.kind)).toEqual(["openSession", kind]);
       expect(coordinator.diagnostics()).toMatchObject({

@@ -10,9 +10,20 @@ type FileIdentity = { dev: bigint; ino: bigint };
 type FileStat = FileIdentity & { nlink: bigint };
 
 interface ProtectedSourceAnchor {
-  path: string;
-  canonicalPath: string;
-  identity: FileIdentity;
+  readonly uri: vscode.Uri;
+  readonly path: string;
+  readonly canonicalPath: string;
+  readonly identity: FileIdentity;
+}
+
+/** The source files bound to one runtime, retained independently of later saves. */
+export type SessionSourceProtection =
+  Readonly<{ available: true; anchors: readonly ProtectedSourceAnchor[] }> | Readonly<{ available: false }>;
+
+/** The current source mapping retained before one export's dialogs or code synchronization. */
+export interface ExportSourceProtection {
+  readonly current: readonly ProtectedSourceAnchor[];
+  readonly retained: readonly ProtectedSourceAnchor[];
 }
 
 interface DestinationAnchor {
@@ -43,6 +54,7 @@ export interface AtomicExportFileSystem {
 export interface AtomicFileTransactionOptions {
   destination: vscode.Uri;
   protectedSources?: readonly vscode.Uri[];
+  sourceProtection?: ExportSourceProtection;
   remoteAuthority?: string;
   fileSystem?: AtomicExportFileSystem;
   createTemporaryId?: () => string;
@@ -64,6 +76,54 @@ export interface AtomicExternalWriterTarget {
 
 export interface SafeFileExportOptions extends AtomicFileTransactionOptions {
   contents: Uint8Array;
+}
+
+export async function captureSessionSourceProtection(
+  sources: readonly vscode.Uri[],
+  fileSystem: AtomicExportFileSystem = nodeFileSystem
+): Promise<SessionSourceProtection> {
+  try {
+    const anchors = await captureProtectedSourceAnchors(fileSystem, sources);
+    await assertProtectedSourcesUnchanged(fileSystem, anchors);
+    return Object.freeze({ available: true, anchors: Object.freeze(anchors) });
+  } catch {
+    // A live in-memory frame can still be viewed when its source file cannot be identified.
+    return Object.freeze({ available: false });
+  }
+}
+
+export async function confirmSessionSourceProtection(
+  protection: SessionSourceProtection,
+  fileSystem: AtomicExportFileSystem = nodeFileSystem
+): Promise<SessionSourceProtection> {
+  if (!protection.available) return protection;
+  try {
+    await assertProtectedSourcesUnchanged(fileSystem, protection.anchors);
+    return protection;
+  } catch {
+    return Object.freeze({ available: false });
+  }
+}
+
+export async function captureExportSourceProtection(
+  sources: readonly vscode.Uri[],
+  retained: SessionSourceProtection | undefined,
+  fileSystem: AtomicExportFileSystem = nodeFileSystem
+): Promise<ExportSourceProtection> {
+  if (!retained?.available) {
+    throw new Error("Open Wrangler could not retain the source file identity. Reopen the dataframe before exporting.");
+  }
+  const allSources = [...sources, ...retained.anchors.map((anchor) => anchor.uri)];
+  const distinctSources = allSources.filter(
+    (source, index) =>
+      allSources.findIndex(
+        (other) =>
+          other.scheme === source.scheme && other.authority === source.authority && other.fsPath === source.fsPath
+      ) === index
+  );
+  const current = await captureProtectedSourceAnchors(fileSystem, distinctSources);
+  await assertProtectedSourcesUnchanged(fileSystem, current);
+  return Object.freeze({ current: Object.freeze(current), retained: retained.anchors });
 }
 
 export function createNodeAtomicExportFileSystem(openFile: typeof open = open): AtomicExportFileSystem {
@@ -120,6 +180,7 @@ export async function exportFileSafely(options: SafeFileExportOptions): Promise<
 async function createAtomicFileTransaction({
   destination,
   protectedSources = [],
+  sourceProtection,
   remoteAuthority,
   fileSystem = nodeFileSystem,
   createTemporaryId = randomUUID
@@ -135,9 +196,17 @@ async function createAtomicFileTransaction({
   }
   if (!destination.fsPath) throw new Error("Choose a concrete file-system destination for the export.");
 
-  const protectedSourceAnchors = await captureProtectedSourceAnchors(fileSystem, protectedSources);
-  const destinationAnchor = await captureDestinationAnchor(fileSystem, destination.fsPath, protectedSourceAnchors);
+  const protectedSourceAnchors =
+    sourceProtection?.current ?? (await captureProtectedSourceAnchors(fileSystem, protectedSources));
   await assertProtectedSourcesUnchanged(fileSystem, protectedSourceAnchors);
+  const destinationAnchor = await captureDestinationAnchor(fileSystem, destination.fsPath, protectedSourceAnchors);
+  if (
+    sourceProtection?.retained.some(
+      (source) => destinationAnchor.identity && sameIdentity(source.identity, destinationAnchor.identity)
+    )
+  ) {
+    throw sourceCollisionError();
+  }
   await assertDestinationUnchanged(fileSystem, destinationAnchor);
   const resolvedDestination = destinationAnchor.canonicalPath;
 
@@ -366,11 +435,14 @@ async function captureProtectedSourceAnchors(
         "Open Wrangler could not establish a stable filesystem identity for the active source; nothing was exported."
       );
     }
-    anchors.push({
-      path: source.fsPath,
-      canonicalPath: await canonicalPath(fileSystem, source.fsPath),
-      identity
-    });
+    anchors.push(
+      Object.freeze({
+        uri: source,
+        path: source.fsPath,
+        canonicalPath: await canonicalPath(fileSystem, source.fsPath),
+        identity: Object.freeze({ dev: identity.dev, ino: identity.ino })
+      })
+    );
   }
   return anchors;
 }

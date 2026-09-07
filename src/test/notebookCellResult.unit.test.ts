@@ -168,7 +168,7 @@ describe("executed notebook cell result action", () => {
 
     expect(mocks.bridgeDocuments).toEqual([document]);
     expect(mocks.capture).toHaveBeenCalledWith(8, "a".repeat(64), mocks.bindings[0]);
-    expect(mocks.createBridge).toHaveBeenCalledWith(expect.anything(), document);
+    expect(mocks.createBridge).toHaveBeenCalledWith(expect.anything(), document, expect.any(Promise));
     expect(mocks.createPanel).toHaveBeenCalledWith(
       context,
       expect.anything(),

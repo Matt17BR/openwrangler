@@ -1,3 +1,8 @@
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import * as vscode from "vscode";
+import { captureExportSourceProtection, beginAtomicFileTransaction } from "../extension/files/safeFileExport";
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
@@ -34,6 +39,48 @@ const third: TransformStep = {
 };
 
 describe("SessionCoordinator earlier-step plan rewrites", () => {
+  it("keeps the cloned runtime source protected when an earlier cleaning step is rewritten", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-source-clone-"));
+    const sourcePath = path.join(directory, "sample.csv");
+    const original = path.join(directory, "original.csv");
+    const source = { ...initialSource, path: sourcePath, uri: vscode.Uri.file(sourcePath).toString() };
+    const coordinator = new SessionCoordinator();
+    try {
+      await writeFile(sourcePath, "value\n1\n");
+      const harness = rewriteHarness({ source, draft: replacement });
+      const bridge = coordinator.createBridge({ request: harness.request });
+      const opened = await open(bridge, source);
+      const retained = coordinator.activeSession()?.sourceProtection;
+      expect(retained?.available).toBe(true);
+      await rename(sourcePath, original);
+      await writeFile(sourcePath, "ordinary saved source\n");
+      const response = await bridge.rewriteCleaningPlan?.(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        first.id,
+        "applyDraft",
+        { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+      );
+      expect(response?.kind).toBe("planUpdated");
+      expect(coordinator.activeSession()?.sourceProtection).toBe(retained);
+      const action = await captureExportSourceProtection(
+        [vscode.Uri.file(sourcePath)],
+        coordinator.activeSession()?.sourceProtection
+      );
+      await expect(
+        beginAtomicFileTransaction({ destination: vscode.Uri.file(original), sourceProtection: action })
+      ).rejects.toThrow(/never overwrites/u);
+      const separate = await beginAtomicFileTransaction({
+        destination: vscode.Uri.file(path.join(directory, "clean.py")),
+        sourceProtection: action
+      });
+      await separate.rollback();
+    } finally {
+      await coordinator.shutdown();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("publishes one stable-ID replacement only after replaying the unchanged suffix", async () => {
     const harness = rewriteHarness({ draft: replacement });
     const coordinator = new SessionCoordinator();
@@ -358,6 +405,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
 
 function rewriteHarness(
   options: {
+    source?: typeof initialSource;
     draft?: TransformStep;
     rejectStepId?: string;
     replayBackend?: "pandas" | "polars";
@@ -372,7 +420,7 @@ function rewriteHarness(
   const initialMetadata: SessionMetadata = {
     ...metadataFor({
       runtimeId: "runtime-old",
-      source: initialSource,
+      source: options.source ?? initialSource,
       revision: 7,
       steps: [first, second, third],
       draftStep: options.draft
@@ -388,7 +436,7 @@ function rewriteHarness(
     if (message.kind === "openSession") {
       candidateId = message.requestedSessionId ?? "";
       candidateSteps = [];
-      return openedFor(message, metadataFor({ runtimeId: candidateId, source: initialSource }));
+      return openedFor(message, metadataFor({ runtimeId: candidateId, source: options.source ?? initialSource }));
     }
     if (message.kind === "getPage" && message.sessionId === "runtime-old") {
       if (options.oldPage) return options.oldPage;
@@ -410,7 +458,7 @@ function rewriteHarness(
         {
           ...metadataFor({
             runtimeId: candidateId,
-            source: initialSource,
+            source: options.source ?? initialSource,
             backend: options.replayBackend,
             revision: message.revision + 1,
             steps: candidateSteps,
@@ -429,7 +477,7 @@ function rewriteHarness(
         message,
         metadataFor({
           runtimeId: candidateId,
-          source: initialSource,
+          source: options.source ?? initialSource,
           backend: options.replayBackend,
           revision: message.revision + 1,
           steps: candidateSteps
@@ -442,7 +490,7 @@ function rewriteHarness(
         message,
         metadataFor({
           runtimeId: candidateId,
-          source: initialSource,
+          source: options.source ?? initialSource,
           backend: options.replayBackend,
           revision: message.revision,
           steps: candidateSteps,

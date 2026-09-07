@@ -17,6 +17,8 @@ type CommandHandler = (...args: unknown[]) => unknown;
 type Listener<T> = (value: T) => unknown;
 
 const pythonMocks = vi.hoisted(() => ({
+  captureSource: vi.fn<typeof import("../extension/sessionOrigin").captureSessionSourceFiles>(),
+  sourceProtection: Object.freeze({ available: true as const, anchors: Object.freeze([]) }),
   commands: new Map<string, CommandHandler>(),
   commandRegistrationAttempt: 0,
   failCommandRegistrationAttempt: undefined as number | undefined,
@@ -42,10 +44,21 @@ const pythonMocks = vi.hoisted(() => ({
   closeNotebookListeners: new Set<Listener<NotebookDocument>>(),
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
   inspectNotebookAutomatically: true,
-  discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery | RNotebookVariableDiscovery>>(),
+  discover:
+    vi.fn<
+      (
+        notebook: NotebookDocument,
+        sourceProtection?: Promise<import("../extension/files/safeFileExport").SessionSourceProtection>
+      ) => Promise<NotebookVariableDiscovery | RNotebookVariableDiscovery>
+    >(),
   openVariable: vi.fn(async () => true),
   openRVariable: vi.fn(async () => undefined),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined)
+}));
+
+vi.mock("../extension/sessionOrigin", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../extension/sessionOrigin")>()),
+  captureSessionSourceFiles: pythonMocks.captureSource
 }));
 
 vi.mock("vscode", () => {
@@ -218,6 +231,7 @@ export function setupPythonInteractiveTest(
   pythonMocks.visibleNotebookEditors.length = 0;
   pythonMocks.isTrusted = true;
   pythonMocks.inspectNotebookAutomatically = true;
+  pythonMocks.captureSource.mockReset().mockResolvedValue(pythonMocks.sourceProtection);
   pythonMocks.executeCommand.mockReset();
   pythonMocks.executeCommand.mockResolvedValue(undefined);
   pythonMocks.showInformationMessage.mockClear();

@@ -1,3 +1,8 @@
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import * as vscode from "vscode";
+import { captureExportSourceProtection, beginAtomicFileTransaction } from "../extension/files/safeFileExport";
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import type { BridgeRequestOptions } from "../extension/dataBridge";
@@ -30,6 +35,64 @@ import {
 } from "./sessionReconfigurationTestFixtures";
 
 describe("SessionCoordinator file-session reconfiguration", () => {
+  it.each(["publish", "rollback"])(
+    "keeps source identity with the runtime selected by file reconfiguration %s",
+    async (outcome) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-source-reconfigure-"));
+      const sourcePath = path.join(directory, "sample.csv");
+      const originalA = path.join(directory, "source-a.csv");
+      const originalB = path.join(directory, "source-b.csv");
+      const source = { ...initialSource, path: sourcePath, uri: vscode.Uri.file(sourcePath).toString() };
+      const coordinator = new SessionCoordinator();
+      try {
+        await writeFile(sourcePath, "value\n1\n");
+        const delegate = simpleReconfiguringDelegate("runtime-original");
+        const request = vi.fn(async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (outcome === "rollback" && message.kind === "getPage" && message.sessionId !== "runtime-original")
+            return {
+              kind: "error",
+              code: "engine_error",
+              message: "Candidate view failed",
+              recoverable: true,
+              sessionId: message.sessionId
+            };
+          return delegate.request(message);
+        });
+        const bridge = coordinator.createBridge({ request });
+        const opened = await open(bridge, source);
+        const receiptA = coordinator.activeSession()?.sourceProtection;
+        expect(receiptA?.available).toBe(true);
+        await rename(sourcePath, originalA);
+        await writeFile(sourcePath, "value\n2\n");
+        const replacement = await bridge.reconfigureFileSession!(opened.metadata.sessionId, opened.metadata.revision, {
+          ...source,
+          importOptions: replacementSource.importOptions
+        });
+        expect(replacement.kind).toBe(outcome === "publish" ? "sessionOpened" : "error");
+        const selected = coordinator.activeSession()?.sourceProtection;
+        if (outcome === "publish") expect(selected).not.toBe(receiptA);
+        else expect(selected).toBe(receiptA);
+        await rename(sourcePath, originalB);
+        await writeFile(sourcePath, "value\n3\n");
+        const action = await captureExportSourceProtection([vscode.Uri.file(sourcePath)], selected);
+        await expect(
+          beginAtomicFileTransaction({
+            destination: vscode.Uri.file(outcome === "publish" ? originalB : originalA),
+            sourceProtection: action
+          })
+        ).rejects.toThrow(/never overwrites/u);
+        const noLongerOwned = await beginAtomicFileTransaction({
+          destination: vscode.Uri.file(outcome === "publish" ? originalA : originalB),
+          sourceProtection: action
+        });
+        await noLongerOwned.rollback();
+      } finally {
+        await coordinator.shutdown();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("releases the reconfiguration barrier before publishing the replacement snapshot", async () => {
     const delegate = simpleReconfiguringDelegate("runtime-old");
     const coordinator = new SessionCoordinator();

@@ -106,6 +106,11 @@ integers, decimals, missing values, and source identity in each Python editing e
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in
 `python/tests/test_configurable_export.py`, where native writers must leave replacement files unchanged.
 
+Export owner tests use actual files to cover source renames and replacements before and during command awaits.
+Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
+including Python Interactive's originating document. The existing atomic-file tests retain destination and temporary
+identity checks; runtime writers retain their separate output-handle contracts.
+
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
 negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source
 identity. Native R's catalog owns its corresponding numeric cases and executes them under altered display options.

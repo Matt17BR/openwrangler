@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import * as vscode from "vscode";
 import type { NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
@@ -192,6 +195,9 @@ describe("SessionCoordinator", () => {
   });
 
   it("exports through an exact public session and revision instead of the later active session", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-coordinator-export-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    await Promise.all(["first.csv", "second.csv"].map((name) => writeFile(path.join(directory, name), "value\n1\n")));
     const makeDelegate = (runtimeId: string) =>
       vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
         if (request.kind === "openSession") {
@@ -217,11 +223,11 @@ describe("SessionCoordinator", () => {
     const secondBridge = coordinator.createBridge({ request: secondDelegate });
     const first = await firstBridge.request({
       ...openRequest,
-      source: { kind: "file", label: "first.csv", path: "/workspace/first.csv" }
+      source: { kind: "file", label: "first.csv", path: path.join(directory, "first.csv") }
     });
     const second = await secondBridge.request({
       ...openRequest,
-      source: { kind: "file", label: "second.csv", path: "/workspace/second.csv" }
+      source: { kind: "file", label: "second.csv", path: path.join(directory, "second.csv") }
     });
     if (first.kind !== "sessionOpened" || second.kind !== "sessionOpened") {
       throw new Error("Expected both exact-export sessions to open.");
@@ -245,7 +251,7 @@ describe("SessionCoordinator", () => {
         path: "/tmp/first.csv",
         options: { format: "csv", delimiter: ",", quoteChar: '"', encoding: "utf-8", header: true }
       },
-      undefined
+      { sourceProtection: expect.objectContaining({ current: expect.any(Array), retained: expect.any(Array) }) }
     );
     expect(secondDelegate).toHaveBeenCalledOnce();
 
@@ -274,6 +280,10 @@ describe("SessionCoordinator", () => {
   });
 
   it("requires and forwards an explicit Pandas row-axis export policy only for Pandas", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-coordinator-export-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    const sourcePath = path.join(directory, "source.csv");
+    await writeFile(sourcePath, "value\n1\n");
     const delegate = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
         const opened = openedResponse("runtime-pandas", "pandas");
@@ -293,7 +303,11 @@ describe("SessionCoordinator", () => {
     });
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: delegate });
-    const opened = await bridge.request({ ...openRequest, backend: "pandas" });
+    const opened = await bridge.request({
+      ...openRequest,
+      source: { ...openRequest.source, path: sourcePath },
+      backend: "pandas"
+    });
     if (opened.kind !== "sessionOpened") throw new Error("Expected the Pandas session to open.");
 
     await expect(
@@ -332,7 +346,7 @@ describe("SessionCoordinator", () => {
           rowAxisPolicy: "preserve"
         }
       },
-      undefined
+      { sourceProtection: expect.objectContaining({ current: expect.any(Array), retained: expect.any(Array) }) }
     );
   });
 

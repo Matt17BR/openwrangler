@@ -72,11 +72,29 @@ describe("Python Interactive Window coordinator and discovery", () => {
     const frame = pandasFrame("frame");
     pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
 
-    await command("openWrangler.runPythonCellAndOpenVariable")();
+    const anchor = {
+      uri: source.uri,
+      path: source.uri.fsPath,
+      canonicalPath: source.uri.fsPath,
+      identity: { dev: 1n, ino: 2n }
+    };
+    let finishCapture!: (receipt: import("../extension/files/safeFileExport").SessionSourceProtection) => void;
+    pythonMocks.captureSource.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishCapture = resolve;
+      })
+    );
+    const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+    await settle();
+    expect(pythonMocks.captureSource).toHaveBeenCalledWith(expect.objectContaining({ uri: source.uri.toString() }));
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
+    finishCapture({ available: true, anchors: [anchor] });
+    await opening;
+    await expect(pythonMocks.discover.mock.calls[0]?.[1]).resolves.toEqual({ available: true, anchors: [anchor] });
 
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive");
-    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document, expect.any(Promise));
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(
       context,
       coordinator,

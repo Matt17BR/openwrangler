@@ -18,6 +18,7 @@ import {
 } from "../literateDocumentOrigin";
 import type { LiteratePythonVariableProvider } from "../notebooks/pythonInteractiveCommands";
 import type { LiterateRVariableProvider } from "./rInteractiveCommands";
+import { captureSessionSourceFiles } from "../sessionOrigin";
 
 export const OPEN_R_DOCUMENT_COMMAND = "openWrangler.runRDocument";
 export const OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND = "openWrangler.internal.openLiterateDataframe";
@@ -64,6 +65,8 @@ export function registerRDocumentCommands(
         }
 
         const documentText = document.getText();
+        await origin.sourceProtection;
+        if (!isCurrentRDocumentOrigin(origin)) return false;
         let prepared;
         try {
           prepared = prepareRDocumentSource(document.uri.fsPath, documentText);
@@ -415,7 +418,16 @@ export function supportsRDocumentExecution(platform: NodeJS.Platform = process.p
 
 export function captureRDocumentOrigin(document: vscode.TextDocument): TextDocumentSessionOrigin | undefined {
   if (!isSupportedRDocument(document) || !isSoleOpenTextDocument(document)) return undefined;
-  return { kind: "textDocument", document, version: document.version };
+  return {
+    kind: "textDocument",
+    document,
+    version: document.version,
+    sourceProtection: captureSessionSourceFiles({
+      kind: "documentVariable",
+      label: "document",
+      uri: document.uri.toString()
+    })
+  };
 }
 
 export function isCurrentRDocumentOrigin(origin: TextDocumentSessionOrigin): boolean {
