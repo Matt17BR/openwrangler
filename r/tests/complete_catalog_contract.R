@@ -599,6 +599,41 @@ assert_true(
   "one or more catalog operations lacked executable generated code"
 )
 
+scale_edge_cases <- list(
+  overflowing = list(values = c(-1e308, 0, 1e308), expected = c(0, 0.5, 1)),
+  asymmetric = list(
+    values = c(-.Machine$double.xmax / 2, 0, .Machine$double.xmax),
+    expected = c(0, 1 / 3, 1)
+  ),
+  same_sign = list(values = c(-1e308, -7.5e307, -5e307), expected = c(0, 0.5, 1)),
+  subnormal = list(values = c(0, 2^-1074, 2^-1073), expected = c(0, 0.5, 1)),
+  constant = list(values = rep(.Machine$double.xmax, 3), expected = c(0, 0, 0))
+)
+for (case_name in names(scale_edge_cases)) {
+  case <- scale_edge_cases[[case_name]]
+  input <- catalog_source()
+  input$number <- c(case$values, NA_real_, NaN, Inf)
+  before <- frame_bytes(input)
+  live <- openwrangler_r_frame_contract$min_max_scale_column_at(input, 4L, "number", "scaled number")
+  expected <- c(case$expected, NA_real_, NA_real_, NA_real_)
+  assert_true(
+    isTRUE(all.equal(live[["scaled number"]], expected, tolerance = .Machine$double.eps)),
+    sprintf("live Min-max Scale lost %s values", case_name)
+  )
+  generated_environment <- new.env(parent = baseenv())
+  generated_environment$catalog_frame <- unserialize(before)
+  eval(parse(text = catalog_generated_code$minMaxScale), envir = generated_environment)
+  assert_frame_identical(
+    generated_environment$open_wrangler_result, live,
+    sprintf("generated Min-max Scale diverged for %s values", case_name)
+  )
+  assert_identical(frame_bytes(input), before, "live Min-max Scale mutated its numeric source")
+  assert_identical(
+    frame_bytes(generated_environment$catalog_frame), before,
+    "generated Min-max Scale mutated its numeric source"
+  )
+}
+
 assert_true(
   grepl("base::intToUtf8(c(", catalog_generated_code$stripText, fixed = TRUE) &&
     grepl("multiple = FALSE", catalog_generated_code$stripText, fixed = TRUE),

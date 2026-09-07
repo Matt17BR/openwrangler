@@ -68,6 +68,10 @@ contracts execute generated code for midpoint edge cases alongside live executio
 Export replacement races belong in `python/tests/test_configurable_export.py`, where native writers must leave
 replacement files unchanged.
 
+`python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
+integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
+double and `integer64` cases in `r/tests/complete_catalog_contract.R`.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:

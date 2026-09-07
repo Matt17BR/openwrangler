@@ -5891,7 +5891,12 @@ openwrangler_r_frame_contract <- local({
     if (maximum == minimum) {
       scaled[finite] <- 0
     } else {
-      scaled[finite] <- (finite_values - minimum) / (maximum - minimum)
+      span <- maximum - minimum
+      scaled[finite] <- if (is.finite(span)) {
+        (finite_values - minimum) / span
+      } else {
+        (finite_values / 2 - minimum / 2) / (maximum / 2 - minimum / 2)
+      }
     }
     scaled[!is.finite(scaled)] <- NA_real_
     scaled

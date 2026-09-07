@@ -165,7 +165,9 @@ same checks and conversion rules.
 Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
 range becomes zero. Missing and non-finite input values become missing output. The `integer64` calculation keeps its
 offsets exact until its final conversion to double, avoiding the precision loss caused by converting the source values
-first. A keyed `data.table` column can only use a new output column.
+first. Finite double ranges that overflow on subtraction use halved operands; ordinary ranges retain direct
+subtraction so subnormal differences remain usable. Both live and generated R follow this rule. A keyed
+`data.table` column can only use a new output column.
 
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and

@@ -140,6 +140,11 @@ Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only qu
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
 
+Min-max Scale computes exact integer and decimal offsets before converting them to double-precision ratios.
+Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
+precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
+the owning engine.
+
 ### Pandas
 
 Pandas executes viewing, all 32 cleaning operations, profiling, generated code, and supported exports in Pandas.
