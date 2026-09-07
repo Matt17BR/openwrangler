@@ -158,6 +158,8 @@ refuse publication and close the descriptor, including equal-size changes with r
 Group By, Pivot and Fill owners compare Arrow/nullable floating keys and aggregates with native controls, including
 NaN, nulls, signed zero, infinities, chunks and unrelated missing groups. Half-float Count and Sparse Sum controls
 protect existing finite-value paths. Standalone grouped Fill includes only the floating key helper it needs.
+Sparse Count regressions cover missing values, counts beyond narrow integer storage, shared exact aggregates and
+columns also used as keys. Assertions retain native source values, Sparse positions, axes and attributes.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
