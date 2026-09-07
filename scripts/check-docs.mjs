@@ -95,15 +95,15 @@ const trackedEvidencePaths = new Set(
     .split("\0")
     .filter(Boolean)
 );
-const readmeProblems = inspectReleaseDocumentationSource({
+const sourceDocumentationProblems = inspectReleaseDocumentationSource({
   featureParity,
   preview: packageJson.preview,
   readme,
   trackedEvidencePaths,
   version: packageJson.version
 });
-if (readmeProblems.length > 0) {
-  throw new Error(`Release documentation is stale:\n- ${readmeProblems.join("\n- ")}`);
+if (sourceDocumentationProblems.length > 0) {
+  throw new Error(`Source documentation is invalid:\n- ${sourceDocumentationProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
 const performanceSummaryProblems = inspectPerformanceSummary(readme);

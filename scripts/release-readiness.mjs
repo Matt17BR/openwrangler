@@ -332,13 +332,10 @@ function inspectReleaseReadiness(
     problems.push(...inspectChangelog(changelog, sourceVersion));
   }
   problems.push(
-    ...inspectPrimaryParityMatrix(
-      featureParity,
-      PRIMARY_PARITY_SCOPE,
-      trackedEvidencePaths,
+    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
       allowedIncompleteRows,
       requiredIncompleteRows
-    )
+    })
   );
   problems.push(...stableRParityProblems(featureParity, sourceVersion));
   problems.push(...inspectReadme(readme, "README.md"));
@@ -471,20 +468,6 @@ export function inspectPreviewReleaseReadiness({
   return [...new Set(problems)];
 }
 
-export function inspectStableSourceReadiness({ featureParity, readme, trackedEvidencePaths = new Set(), version }) {
-  const versionClassification = classifyNumericReleaseVersion(version);
-  const major = numericReleaseMajor(version);
-  return [
-    ...(major === undefined ? ["Stable source version must use major.minor.patch syntax."] : []),
-    ...(versionClassification !== undefined && versionClassification.channel !== "stable"
-      ? [`Stable source version ${version} is reserved for preview releases.`]
-      : []),
-    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths),
-    ...stableRParityProblems(featureParity, version),
-    ...inspectStableReadme(readme, "README.md")
-  ];
-}
-
 export function inspectPreviewRParitySource({ featureParity }) {
   return inspectPreviewRParityMatrix(featureParity, R_PREVIEW_PARITY_SCOPE);
 }
@@ -515,7 +498,13 @@ export function inspectReleaseDocumentationSource({
   }
   return classification.channel === "preview"
     ? [...inspectPreviewReadme(readme), ...inspectPreviewRParitySource({ featureParity })]
-    : inspectStableSourceReadiness({ featureParity, readme, trackedEvidencePaths, version });
+    : [
+        ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
+          requireComplete: false
+        }),
+        ...stableRParityProblems(featureParity, version),
+        ...inspectStableReadme(readme, "README.md")
+      ];
 }
 
 export function inspectPerformanceEvidenceCandidateReadiness(options) {
@@ -537,13 +526,10 @@ export function inspectPerformanceEvidenceSourceReadiness({
     ...(version === PERFORMANCE_EVIDENCE_VERSION
       ? []
       : [`Performance-evidence authoring is limited to version ${PERFORMANCE_EVIDENCE_VERSION}.`]),
-    ...inspectPrimaryParityMatrix(
-      featureParity,
-      PRIMARY_PARITY_SCOPE,
-      trackedEvidencePaths,
-      PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
-      PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS
-    ),
+    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
+      allowedIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
+      requiredIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS
+    }),
     ...inspectPerformanceEvidenceReadme(readme, "README.md")
   ];
 }

@@ -40,6 +40,8 @@ const EVIDENCE_REFERENCE = /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-
 const EVIDENCE_REFERENCE_PREFIX = /\b(?:test|workflow|record):/gu;
 const FUTURE_EVIDENCE =
   /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
+const CAPABILITY_STATUSES = new Set(["Done", "Partial", "Planned", "Out of scope"]);
+const BACKEND_AVAILABILITY = new Set(["Yes", "Partial", "No"]);
 const LEGACY_PREVIEW_VERSION = /(?<![\d.])v?1\.99(?:\.(?:x|\d+))?(?:(?=previews?\b)|(?![\p{L}\p{N}]|\.[\p{L}\p{N}]))/iu;
 
 function containsUnsupportedTextControl(value) {
@@ -407,8 +409,7 @@ export function inspectPrimaryParityMatrix(
   contents,
   expectedScope,
   trackedEvidencePaths,
-  allowedIncompleteRows = new Map(),
-  requiredIncompleteRows = new Map()
+  { requireComplete = true, allowedIncompleteRows = new Map(), requiredIncompleteRows = new Map() } = {}
 ) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
@@ -469,20 +470,34 @@ export function inspectPrimaryParityMatrix(
     const [surface, pandas, polars, status, evidence] = actual;
     const allowedIncompleteStatus = allowedIncompleteRows.get(surface);
     const requiredIncompleteStatus = requiredIncompleteRows.get(surface);
-    if (status !== "Done" && status !== allowedIncompleteStatus) {
+    if (requireComplete && status !== "Done" && status !== allowedIncompleteStatus) {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
     } else if (requiredIncompleteStatus !== undefined && status !== requiredIncompleteStatus) {
       problems.push(
         `Parity row "${surface}" must remain ${requiredIncompleteStatus} while authoring performance evidence; received ${status}.`
       );
-    } else if (!inspectEvidence(evidence, trackedEvidencePaths)) {
+    }
+    if (!requireComplete && !CAPABILITY_STATUSES.has(status)) {
+      problems.push(`Parity row "${surface}" must use Done, Partial, Planned, or Out of scope; received ${status}.`);
+    }
+    if (!inspectEvidence(evidence, trackedEvidencePaths)) {
       problems.push(
         `Parity row "${surface}" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.`
       );
     }
-    if (surface !== expected[0] || pandas !== expected[1] || polars !== expected[2]) {
+    if (surface !== expected[0] || (requireComplete && (pandas !== expected[1] || polars !== expected[2]))) {
       problems.push(
         `Parity row ${index + 1} must be "${expected[0]}" (${expected[1]}/${expected[2]}), received "${surface}" (${pandas}/${polars}).`
+      );
+    }
+    if (
+      !requireComplete &&
+      [pandas, polars].some((availability, backend) =>
+        expected[backend + 1] === "N/A" ? availability !== "N/A" : !BACKEND_AVAILABILITY.has(availability)
+      )
+    ) {
+      problems.push(
+        `Parity row "${surface}" must retain N/A for inapplicable backends and use Yes, Partial, or No for applicable backends.`
       );
     }
   }
