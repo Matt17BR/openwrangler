@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Fill uses logical Arrow dictionary values and preserves encoded targets when no cells change. Generated Fill code
   handles native Arrow dates consistently with live execution.
 - CSV and Parquet export handles scalar Arrow dictionary columns and indexes, including null codebook entries.
+- Pandas Parquet imports retain exact nullable integer row labels instead of rounding large index values together.
 - Pandas Group By, Pivot and grouped Fill handle missing Arrow floating keys and signed zero consistently. Aggregate
   NaN results remain distinct from empty-group nulls.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.

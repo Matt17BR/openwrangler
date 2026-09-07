@@ -102,6 +102,8 @@ Polars grouped median Fill works on the declared minimum runtime, including nati
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
 
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
+Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
+follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
 
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
