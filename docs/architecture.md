@@ -186,8 +186,11 @@ source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normali
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
 Parquet reads repair nullable integer index levels from their exact physical fields while retaining ordinary Pandas
-data-column decoding. The supplemental read uses the same open file and checks its fingerprint across both reads
+data-column decoding. The supplemental read uses the same open file and checks its fingerprint across the reads
 before publishing the repaired index. A changed source is refused; this guard does not persist beyond the read.
+Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. A local schema copy
+repairs only their canonical unsupported Pandas dtype metadata; unrelated invalid metadata retains native refusal.
+The same descriptor and fingerprint guard covers their schema, data and any supplemental index reads.
 Scalar Arrow dictionaries expose their logical value type while retaining the physical dtype in schema metadata.
 Profiles and query keys use logical values, including null dictionary entries and repeated values across chunks.
 Schema nullability checks native validity masks and referenced codebook entries without decoding value payloads.
@@ -209,9 +212,10 @@ present infinities are rejected before conversion; failed previews or applies pr
 Fill reads selected dictionary targets, donors and keys as logical values. Filled targets use native logical storage;
 targets with no filled cells and unrelated encoded columns retain their dictionary representation. Decimal capacity
 and timezone checks still apply to replacement literals when the target has no missing cells.
-CSV and Parquet export prepare logical scalar dictionary columns in a temporary frame. When the user preserves the
-index, eligible dictionary index levels are prepared there as well. Source arrays, index levels and codes remain
-unchanged; native writers determine the exported string representation.
+CSV and Parquet export prepare logical scalar dictionary, `bool8` and UUID columns in a temporary frame. Preserved
+index levels use the same logical values; changed MultiIndex levels are rebuilt from actual row labels so equivalent
+values coalesce. Parquet omits an unrequested index before native dtype inspection. Source arrays, index levels and
+codes remain unchanged. Exported `bool8` and UUID fields use Boolean and string storage respectively.
 Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Arrow float32 and
 float64 grouping keys use the same missing-value and signed-zero equality as other numeric keys. Group By retains
 its native representative key; Pivot retains each first identifier row. Grouped Fill shares this key equality without

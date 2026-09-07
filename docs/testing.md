@@ -169,6 +169,10 @@ results, including no-op Fill and direct copies. A one-row page with a large dic
 adding known scalar conversion does not decode unused string payloads.
 Schema nullability controls distinguish null indices, referenced and unused null codebook entries, empty chunks
 and different codebooks while forbidding payload decoding.
+Configurable-export and index-fidelity owners exercise native `bool8` and UUID CSV/Parquet values, preserved and
+omitted axes, equivalent Boolean labels, and external extension Parquet files. Ordinary conversion settings and
+invalid metadata retain native behavior. Rewrites around schema and data reads must refuse publication and close
+the source stream, including equal-size changes with restored modification times.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

@@ -107,8 +107,8 @@ follow filtered and sorted rows; the index-fidelity owner checks these through a
 
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
-Selected rows retain their original native arrays. CSV and Parquet round trips for these two types remain under
-investigation in [#988](https://github.com/Matt17BR/openwrangler/issues/988).
+Selected rows retain their original native arrays. CSV and Parquet exports preserve the logical values, including
+selected index levels. Native extension Parquet files reopen with the same logical Boolean and string values.
 
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
