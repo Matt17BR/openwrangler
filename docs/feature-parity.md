@@ -136,7 +136,7 @@ limits; none is a stable-release gate.
 | Owned `.R` source process                     | macOS and Linux Preview         | Partial | Owned-process lifecycle contracts                                   |
 | Owned `.Rmd` and `.qmd` cell process          | macOS and Linux Preview         | Partial | Lexical-cell and owned-process contracts                            |
 | Notebook workbench                            | Preview                         | Partial | Installed viewing/editing and verified kernel-restart recovery      |
-| R cleaning operations and generated code      | Generated catalog               | Partial | Exact native live, generated-code, and replay contracts             |
+| R cleaning operations and generated code      | Generated catalog               | Partial | Native live/generated values, metadata, and replay contracts        |
 | Copy or save generated R                      | Generated catalog               | Partial | Editable-buffer copy and atomic script-save contracts               |
 | Insert generated R into its IRkernel notebook | Preview                         | Partial | Exact-document insertion contracts                                  |
 | Insert generated R into its source `.R` file  | macOS and Linux Preview         | Partial | Exact-document insertion and supported-host rerun                   |

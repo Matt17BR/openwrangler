@@ -978,6 +978,140 @@ for (index in seq_along(flavor_cases)) {
   remove(list = variable_name, envir = source_environment)
 }
 
+# Ordinary data.table transformations follow native copy semantics for column
+# element names. Clone and Custom Code explicitly preserve that inert metadata.
+run_metadata_plan <- function(input, steps, label, index) {
+  variable_name <- "metadata_frame"
+  current_session <- session_id(3000L + index)
+  source_before <- frame_bytes(input)
+  assign(variable_name, input, envir = source_environment)
+  opened <- dispatch("openSession", list(
+    sessionId = current_session, variableName = variable_name, page = page_window()
+  ))
+  assert_identical(opened$kind, "page", paste(label, "did not open"))
+  revision <- 0L
+  for (step in steps) {
+    latest_capture <<- NULL
+    preview <- dispatch("previewStep", list(
+      sessionId = current_session, revision = revision, step = step, page = page_window()
+    ))
+    assert_identical(preview$kind, "stepPreview", paste(label, "did not preview", preview$message))
+    live_output <- snapshot_from_latest_capture(label)
+    generated_environment <- new.env(parent = baseenv())
+    assign(variable_name, unserialize(source_before), envir = generated_environment)
+    eval(parse(text = preview$code, keep.source = FALSE), envir = generated_environment)
+    assert_frame_identical(
+      generated_environment$open_wrangler_result, live_output,
+      paste(label, step$kind, "generated metadata diverged from live")
+    )
+    assert_identical(
+      frame_bytes(get(variable_name, envir = source_environment)), source_before,
+      paste(label, "live execution mutated source")
+    )
+    assert_identical(
+      frame_bytes(get(variable_name, envir = generated_environment)), source_before,
+      paste(label, "generated execution mutated source")
+    )
+    applied <- dispatch("applyDraft", list(
+      sessionId = current_session, revision = preview$revision, page = page_window()
+    ))
+    assert_identical(applied$action, "apply", paste(label, "did not apply"))
+    revision <- applied$revision
+  }
+  assert_identical(
+    dispatch("closeSession", list(sessionId = current_session))$kind, "closed", paste(label, "did not close")
+  )
+  remove(list = variable_name, envir = source_environment)
+  live_output
+}
+
+metadata_index <- 0L
+metadata_catalog_input <- data.table::as.data.table(catalog_source())
+for (position in seq_len(ncol(metadata_catalog_input))) {
+  metadata_catalog_input <- set_column_element_names(
+    metadata_catalog_input, position, paste0("element-", seq_len(nrow(metadata_catalog_input))), "catalog metadata"
+  )
+}
+# Valid inert names may exceed By Example's derived-name bound. Ordinary
+# operations must retain their native behavior on this accepted source.
+metadata_catalog_input <- set_column_element_names(
+  metadata_catalog_input, 5L, rep.int(strrep("x", 8193L), nrow(metadata_catalog_input)), "long inert names"
+)
+for (kind in names(catalog_cases)) {
+  metadata_index <- metadata_index + 1L
+  step <- catalog_cases[[kind]]$step(metadata_catalog_input, paste0("metadata-", kind))
+  invisible(run_metadata_plan(metadata_catalog_input, list(step), paste("data.table", kind), metadata_index))
+}
+
+numeric_metadata_kinds <- c("roundNumber", "floorNumber", "ceilNumber", "minMaxScale")
+for (case in flavor_cases[vapply(flavor_cases, function(case) {
+  case$label %in% c("base data.frame", "tibble", "data.table", "collapse qDT")
+}, logical(1L))]) {
+  input <- unserialize(serialize(case$value, NULL, version = 3L))
+  if (inherits(input, "data.table")) {
+    data.table::set(input, j = "value", value = c(2.5, -1.25, NA_real_))
+  } else {
+    input$value <- c(2.5, -1.25, NA_real_)
+  }
+  input <- set_column_element_names(input, 2L, c("first", "second", "missing"), case$label)
+  for (kind in numeric_metadata_kinds) {
+    expected <- switch(kind,
+      roundNumber = c(2, -1, NA_real_),
+      floorNumber = c(2, -2, NA_real_),
+      ceilNumber = c(3, -1, NA_real_),
+      minMaxScale = c(1, 0, NA_real_)
+    )
+    for (in_place in c(FALSE, TRUE)) {
+      metadata_index <- metadata_index + 1L
+      output_name <- if (in_place) "value" else "numeric result"
+      params <- list(column = column_reference(input, "value"))
+      if (identical(kind, "roundNumber")) params$decimals <- 0L
+      if (!in_place) params$newColumn <- output_name
+      label <- paste(case$label, kind, if (in_place) "in place" else "appended")
+      output <- run_metadata_plan(
+        input, list(step_with("metadata-numeric", kind, params)), label, metadata_index
+      )
+      assert_identical(unname(output[[output_name]]), expected, paste(label, "changed numeric values"))
+      assert_identical(class(output), class(input), paste(label, "changed dataframe class"))
+      assert_identical(row.names(output), row.names(input), paste(label, "changed row names"))
+      if (identical(case$flavor, "r.data.table")) {
+        assert_identical(data.table::key(output), "id", paste(label, "changed its key"))
+        assert_true(
+          all(vapply(output, function(column) is.null(attr(column, "names", exact = TRUE)), logical(1L))),
+          paste(label, "did not follow native copy metadata semantics")
+        )
+      } else {
+        assert_identical(output$category, input$category, paste(label, "changed unrelated factor metadata"))
+      }
+    }
+  }
+}
+
+metadata_clone <- step_with("metadata-clone", "cloneColumn", list(
+  column = column_reference(table_flavor_source, "value"), newName = "value copy"
+))
+metadata_round <- step_with("metadata-round", "roundNumber", list(
+  column = column_reference(table_flavor_source, "value"), decimals = 0L, newColumn = "rounded"
+))
+metadata_custom <- step_with("metadata-custom", "customCode", list(code = "result <- df"))
+metadata_count <- step_with("metadata-count", "customCode", list(code = paste(
+  "result <- df",
+  "result$marker_names <- rep.int(length(attr(df$category, 'names', exact = TRUE)), nrow(df))",
+  sep = "\n"
+)))
+for (steps in list(
+  list(metadata_clone, metadata_round),
+  list(metadata_round, metadata_clone),
+  list(metadata_custom, metadata_round),
+  list(metadata_round, metadata_count)
+)) {
+  metadata_index <- metadata_index + 1L
+  output <- run_metadata_plan(table_flavor_source, steps, "mixed metadata plan", metadata_index)
+  if ("marker_names" %in% names(output)) {
+    assert_identical(output$marker_names, rep.int(0L, nrow(output)), "Custom Code observed stale element names after Round")
+  }
+}
+
 # Zero-row frames are editing inputs as long as one column remains. The
 # generated program must preserve the complete empty schema.
 source_environment$complete_zero <- data.frame(

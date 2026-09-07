@@ -50,6 +50,12 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
   identity. Unsupported classes, nested columns, malformed column names metadata, and unrecognized attributes fail
   before a page is published. The contract does not silently flatten them.
 
+Cleaning follows native `data.table` copy semantics for column-element names: ordinary operations drop this inert
+metadata. Clone and Custom Code explicitly retain named inputs for their own execution. Generated code applies the
+same rule at each step, including when a later Custom Code step inspects the resulting attributes. Row labels and
+stable column identity are separate from these element names.
+Transform by Example validates names on its derived values before the final capture removes that metadata.
+
 The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
 metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the
 shared session coordinator. The notebook command and Operations view discover supported R variables and open the
