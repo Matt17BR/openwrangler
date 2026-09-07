@@ -124,7 +124,7 @@ limits; none is a stable-release gate.
 
 | Surface                                       | Availability                    | Status  | Current owner                                                       |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- |
-| Native R frame paging and typed cells         | Preview                         | Partial | Projected native frame contracts and representative installed pages |
+| Native R frame paging and typed cells         | Preview                         | Partial | Projected native frame contracts, empty subsets and installed pages |
 | Native R compound viewing filters             | Preview                         | Partial | Native predicate contracts and installed value paths                |
 | Native R value search and selections          | Preview                         | Partial | Typed selection and bounded search contracts                        |
 | Native R ordered viewing sorts                | Preview                         | Partial | Native stable-sort contracts and editor paths                       |

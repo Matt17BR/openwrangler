@@ -7485,7 +7485,7 @@ openwrangler_r_kernel_agent <- local({
       "    if (!base::is.null(base::attributes(.ow_row_names))) base::stop(\"Open Wrangler Custom Code returned nested row-name attributes\", call. = FALSE)",
       "    .ow_compact <- base::is.integer(.ow_row_names) && base::length(.ow_row_names) == 2L && base::is.na(base::.subset2(.ow_row_names, 1L))",
       "    .ow_row_count <- if (.ow_compact) base::abs(base::as.double(base::.subset2(.ow_row_names, 2L))) else base::as.double(base::length(.ow_row_names))",
-      "    if ((.ow_compact && (base::is.na(base::.subset2(.ow_row_names, 2L)) || base::.subset2(.ow_row_names, 2L) == 0L)) || !base::is.finite(.ow_row_count) || .ow_row_count != base::floor(.ow_row_count) || .ow_row_count > .Machine$integer.max) base::stop(\"Open Wrangler Custom Code returned malformed row names\", call. = FALSE)",
+      "    if ((.ow_compact && base::is.na(base::.subset2(.ow_row_names, 2L))) || !base::is.finite(.ow_row_count) || .ow_row_count != base::floor(.ow_row_count) || .ow_row_count > .Machine$integer.max) base::stop(\"Open Wrangler Custom Code returned malformed row names\", call. = FALSE)",
       "    .ow_columns <- base::unclass(.ow_value); if (!base::is.list(.ow_columns) || base::length(.ow_columns) != .ow_column_count) base::stop(\"Open Wrangler Custom Code returned a malformed dataframe payload\", call. = FALSE)",
       "    .ow_storage_lower_bound <- 1024 + base::as.double(.ow_column_count) * 512",
       sprintf(
@@ -7667,7 +7667,7 @@ openwrangler_r_kernel_agent <- local({
       "  .ow_source_row_names <- if (base::is.character(.ow_source_row_names)) base::vapply(base::seq_len(base::length(base::unclass(.ow_source_row_names))), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), character(1L), USE.NAMES = FALSE) else base::vapply(base::seq_len(base::length(base::unclass(.ow_source_row_names))), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), integer(1L), USE.NAMES = FALSE)",
       "  .ow_compact_row_names <- base::is.integer(.ow_source_row_names) && base::length(.ow_source_row_names) == 2L && base::is.na(base::.subset2(.ow_source_row_names, 1L))",
       "  if (.ow_compact_row_names) {",
-      "    if (base::is.na(base::.subset2(.ow_source_row_names, 2L)) || base::.subset2(.ow_source_row_names, 2L) == 0L) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "    if (base::is.na(base::.subset2(.ow_source_row_names, 2L))) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
       "    .ow_source_row_count <- base::abs(base::as.double(base::.subset2(.ow_source_row_names, 2L)))",
       "    if (!base::is.finite(.ow_source_row_count) || .ow_source_row_count != base::floor(.ow_source_row_count) || .ow_source_row_count > .Machine$integer.max) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
       "  } else {",

@@ -50,6 +50,10 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
   identity. Unsupported classes, nested columns, malformed column names metadata, and unrecognized attributes fail
   before a page is published. The contract does not silently flatten them.
 
+Native compact row names can encode zero rows, provided every column matches that count. Empty `data.table` subsets
+and empty cleaning or Custom Code results remain valid editing frames when their supported schema has at least one
+column. Inconsistent column lengths and malformed row-name counts are still rejected.
+
 Cleaning follows native `data.table` copy semantics for column-element names: ordinary operations drop this inert
 metadata. Clone and Custom Code explicitly retain named inputs for their own execution. Generated code applies the
 same rule at each step, including when a later Custom Code step inspects the resulting attributes. Row labels and

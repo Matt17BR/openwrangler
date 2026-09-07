@@ -246,7 +246,9 @@ base_frame <- data.frame(
 
 for (malformed_row_names in list(
   rep("duplicate", nrow(base_frame)),
-  c(paste0("row-", seq_len(nrow(base_frame) - 1L)), NA_character_)
+  c(paste0("row-", seq_len(nrow(base_frame) - 1L)), NA_character_),
+  c(NA_integer_, NA_integer_),
+  c(NA_integer_, 0L)
 )) {
   malformed <- base_frame
   attr(malformed, "row.names") <- malformed_row_names
@@ -272,6 +274,16 @@ assert_identical(
   unequal_columns_before,
   "rejecting unequal dataframe columns changed the source frame"
 )
+
+compact_zero_frame <- data.table::data.table(value = 1:3)[0L]
+compact_zero_before <- serialize(compact_zero_frame, NULL, version = 3L)
+assert_identical(.row_names_info(compact_zero_frame, 0L), c(NA_integer_, 0L), "the native empty subset lost its compact row count")
+compact_zero_capture <- openwrangler_r_frame_contract$capture_frame(compact_zero_frame)
+compact_zero_page <- openwrangler_r_frame_contract$materialize_page(compact_zero_capture, row_limit = 1L, column_limit = 1L)
+assert_identical(compact_zero_page$page$totalRows, 0L, "compact zero row names changed the empty height")
+assert_identical(compact_zero_page$page$rows, I(list()), "an empty table published row values")
+assert_identical(compact_zero_page$frameSemantics$rowNames, "positional", "compact zero row names became explicit labels")
+assert_identical(serialize(compact_zero_frame, NULL, version = 3L), compact_zero_before, "capturing an empty native subset changed its source")
 
 explicit_integer_rows <- data.frame(value = 1:2, row.names = 1:2)
 explicit_integer_capture <- openwrangler_r_frame_contract$capture_frame(explicit_integer_rows)
@@ -764,6 +776,24 @@ assert_identical(
   0L,
   "Custom Code rejected a zero-row dataframe"
 )
+custom_table_source <- openwrangler_r_frame_contract$capture_frame(data.table::data.table(value = 1:2))
+custom_empty_table <- data.table::data.table(value = 1:2)[0L]
+custom_empty_before <- serialize(custom_empty_table, NULL, version = 3L)
+custom_empty_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
+  custom_empty_table, custom_table_source, "compact-zero"
+)
+assert_identical(custom_empty_capture$descriptor$shape$rows, 0L, "Custom Code rejected a native empty subset")
+assert_identical(serialize(custom_empty_table, NULL, version = 3L), custom_empty_before, "Custom Code capture changed the empty output")
+for (custom_invalid_count in list(c(NA_integer_, NA_integer_), c(NA_integer_, 0L))) {
+  custom_malformed_table <- data.table::data.table(value = 1:2)
+  data.table::setattr(custom_malformed_table, "row.names", custom_invalid_count)
+  custom_malformed_before <- serialize(custom_malformed_table, NULL, version = 3L)
+  assert_error(
+    openwrangler_r_frame_contract$capture_custom_code_result(custom_malformed_table, custom_table_source, "malformed-count"),
+    "unsupported-frame"
+  )
+  assert_identical(serialize(custom_malformed_table, NULL, version = 3L), custom_malformed_before, "rejecting a malformed Custom Code count changed its output")
+}
 assert_error(
   openwrangler_r_frame_contract$capture_custom_code_result(1:2, custom_validation_source, "wrong"),
   "invalid-view-query"
