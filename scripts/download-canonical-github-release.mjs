@@ -25,6 +25,7 @@ export const PREVIEW_RELEASE_FILES = Object.freeze([...CANONICAL_RELEASE_FILES])
 const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const RELEASE_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_RELEASE_POLL_ATTEMPTS = 240;
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 const FILE_LIMITS = new Map([
   ["openwrangler.vsix", MAX_VSIX_BYTES],
   ["openwrangler.vsix.provenance.json", 4096],
@@ -34,7 +35,7 @@ const FILE_LIMITS = new Map([
 export class GithubReleasePendingError extends Error {}
 
 function fetchResponse(fetchImpl, url, init) {
-  const responsePromise = fetchImpl(url, init);
+  const responsePromise = fetchImpl(url, { ...init, signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS) });
   return Promise.resolve(responsePromise).catch(() => {
     throw new GithubReleasePendingError("GitHub release transport failed before a response was received.");
   });
@@ -59,7 +60,9 @@ async function readResponseBytes(response, maximumBytes, label) {
   let length = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch(() => {
+        throw new GithubReleasePendingError("GitHub release response body transport was interrupted.");
+      });
       if (done) {
         break;
       }

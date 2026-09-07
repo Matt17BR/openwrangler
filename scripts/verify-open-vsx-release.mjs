@@ -21,6 +21,15 @@ const POST_PUBLISH_ATTEMPTS = 91;
 const POST_PUBLISH_DELAY_MS = 10_000;
 const OPEN_VSX_REQUEST_TIMEOUT_MS = 15_000;
 
+class OpenVsxTransportError extends Error {}
+
+function fetchResponse(fetchImpl, url, init) {
+  const responsePromise = fetchImpl(url, { ...init, signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS) });
+  return Promise.resolve(responsePromise).catch(() => {
+    throw new OpenVsxTransportError("Open VSX request transport was temporarily unavailable.");
+  });
+}
+
 function isTransientStatus(status) {
   return status === 404 || status === 429 || (status >= 500 && status <= 599);
 }
@@ -49,7 +58,9 @@ async function readBoundedResponse(response, maxBytes, label) {
   let total = 0;
   try {
     while (true) {
-      const result = await reader.read();
+      const result = await reader.read().catch(() => {
+        throw new OpenVsxTransportError("Open VSX response body transport was interrupted.");
+      });
       if (result.done) break;
       total += result.value.byteLength;
       if (total > maxBytes) {
@@ -138,10 +149,9 @@ export async function verifyOpenVsxReleaseOnce({
     throw new Error("Open VSX verification requires one bounded checksum-matched canonical VSIX.");
   }
   const urls = exactPublicUrls(root, version);
-  const response = await fetchImpl(urls.api, {
+  const response = await fetchResponse(fetchImpl, urls.api, {
     headers: { accept: "application/json", "user-agent": "openwrangler-stable-release" },
-    redirect: "error",
-    signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS)
+    redirect: "error"
   });
   if (response.status === 404) {
     await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata response");
@@ -174,10 +184,9 @@ export async function verifyOpenVsxReleaseOnce({
     throw new Error("The canonical VSIX does not expose one bounded gallery icon receipt.");
   }
 
-  const checksumResponse = await fetchImpl(urls.sha256, {
+  const checksumResponse = await fetchResponse(fetchImpl, urls.sha256, {
     headers: { accept: "text/plain", "user-agent": "openwrangler-stable-release" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS)
+    redirect: "follow"
   });
   if (isTransientStatus(checksumResponse.status)) {
     await readBoundedResponse(checksumResponse, METADATA_MAX_BYTES, "Open VSX checksum response");
@@ -192,10 +201,9 @@ export async function verifyOpenVsxReleaseOnce({
     throw new Error("Open VSX checksum conflicts with the accepted canonical VSIX.");
   }
 
-  const downloadResponse = await fetchImpl(urls.download, {
+  const downloadResponse = await fetchResponse(fetchImpl, urls.download, {
     headers: { accept: "application/octet-stream", "user-agent": "openwrangler-stable-release" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS)
+    redirect: "follow"
   });
   if (isTransientStatus(downloadResponse.status)) {
     await readBoundedResponse(downloadResponse, METADATA_MAX_BYTES, "Open VSX VSIX response");
@@ -220,10 +228,9 @@ export async function verifyOpenVsxReleaseOnce({
     throw new Error("Open VSX serves different bytes from the accepted canonical VSIX.");
   }
 
-  const iconResponse = await fetchImpl(urls.icon, {
+  const iconResponse = await fetchResponse(fetchImpl, urls.icon, {
     headers: { accept: "image/png", "user-agent": "openwrangler-stable-release" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS)
+    redirect: "follow"
   });
   if (isTransientStatus(iconResponse.status)) {
     await readBoundedResponse(iconResponse, METADATA_MAX_BYTES, "Open VSX icon response");
@@ -280,7 +287,7 @@ export async function waitForOpenVsxRelease({
         version
       });
     } catch (error) {
-      if (!(error instanceof TypeError) && error?.name !== "TimeoutError") throw error;
+      if (!(error instanceof OpenVsxTransportError)) throw error;
       result = Object.freeze({ status: "transient" });
     }
     if (result.status === "exact") return result;

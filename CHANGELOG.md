@@ -27,6 +27,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
 
+- Release verification retries interrupted downloads within its existing limits, with bounded requests and sanitized
+  transport errors. Invalid packages still fail verification.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security

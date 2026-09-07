@@ -28,6 +28,13 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 
 export class MarketplacePublicationPendingError extends Error {}
 
+function fetchResponse(fetchImpl, url, init) {
+  const responsePromise = fetchImpl(url, { ...init, signal: AbortSignal.timeout(MARKETPLACE_REQUEST_TIMEOUT_MS) });
+  return Promise.resolve(responsePromise).catch(() => {
+    throw new MarketplacePublicationPendingError("Marketplace request transport was temporarily unavailable.");
+  });
+}
+
 async function readResponseBytes(response, maximumBytes, label) {
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^(?:0|[1-9]\d*)$/u.test(declared) || BigInt(declared) > BigInt(maximumBytes))) {
@@ -41,7 +48,9 @@ async function readResponseBytes(response, maximumBytes, label) {
   let length = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch(() => {
+        throw new MarketplacePublicationPendingError("Marketplace response body transport was interrupted.");
+      });
       if (done) {
         break;
       }
@@ -280,25 +289,13 @@ function assertSameVsixSemantics(canonical, published) {
 }
 
 async function readMarketplaceAsset(fetchImpl, url, maximumBytes, label) {
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      headers: {
-        Accept: "image/png",
-        "User-Agent": "OpenWrangler-marketplace-verifier/1"
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(MARKETPLACE_REQUEST_TIMEOUT_MS)
-    });
-  } catch (error) {
-    if (
-      error instanceof TypeError ||
-      (typeof error === "object" && error !== null && (error.name === "AbortError" || error.name === "TimeoutError"))
-    ) {
-      throw new MarketplacePublicationPendingError(`${label} request was temporarily unavailable.`);
-    }
-    throw error;
-  }
+  const response = await fetchResponse(fetchImpl, url, {
+    headers: {
+      Accept: "image/png",
+      "User-Agent": "OpenWrangler-marketplace-verifier/1"
+    },
+    redirect: "follow"
+  });
   if (response.status === 404 || response.status === 429 || response.status >= 500) {
     throw new MarketplacePublicationPendingError(`${label} is not available yet (${response.status}).`);
   }
@@ -320,7 +317,7 @@ async function queryPublicMarketplace({
   prerelease,
   version
 }) {
-  const queryResponse = await fetchImpl(GALLERY_QUERY_URL, {
+  const queryResponse = await fetchResponse(fetchImpl, GALLERY_QUERY_URL, {
     method: "POST",
     headers: {
       Accept: "application/json;api-version=7.2-preview.1",
@@ -410,7 +407,7 @@ async function queryPublicMarketplace({
   }
 
   const packageUrl = `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${MARKETPLACE_PUBLISHER}/vsextensions/${MARKETPLACE_EXTENSION}/${version}/vspackage`;
-  const packageResponse = await fetchImpl(packageUrl, {
+  const packageResponse = await fetchResponse(fetchImpl, packageUrl, {
     headers: {
       Accept: "application/vsix",
       "User-Agent": "OpenWrangler-marketplace-verifier/1"

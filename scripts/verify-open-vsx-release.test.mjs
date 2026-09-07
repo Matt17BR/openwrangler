@@ -284,3 +284,118 @@ test("default post-publish verification covers the reviewed fifteen-minute propa
   assert.equal(result.status, "exact");
   assert.equal(attempts, 91);
 });
+
+test("retries Open VSX transport failures at every response boundary", async () => {
+  for (const target of [api, checksum, download, icon]) {
+    for (const phase of ["request", "body"]) {
+      let interrupted = false;
+      let sleeps = 0;
+      const success = exactFetch();
+      const failingBody = () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("signed-url?token=synthetic-secret"));
+            }
+          })
+        );
+      const result = await waitForOpenVsxRelease({
+        attempts: 2,
+        candidateBytes,
+        candidateSha256,
+        inspectCandidate,
+        root,
+        version,
+        delay: async () => {
+          sleeps += 1;
+        },
+        fetchImpl: async (...args) => {
+          if (args[0] === target && !interrupted) {
+            interrupted = true;
+            if (phase === "request") throw new Error("signed-url?token=synthetic-secret");
+            return failingBody();
+          }
+          return success(...args);
+        }
+      });
+      assert.equal(result.status, "exact");
+      assert.equal(sleeps, 1);
+    }
+  }
+});
+
+test("redacts exhausted Open VSX transport and direct preflight failures", async () => {
+  const failure = new Error("signed-url?token=synthetic-secret");
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(failure);
+        }
+      })
+    );
+  };
+  const redacted = (error) => !String(error.stack).includes("synthetic-secret") && !Object.hasOwn(error, "cause");
+  await assert.rejects(verify(fetchImpl), redacted);
+  assert.equal(calls, 1);
+  await assert.rejects(
+    waitForOpenVsxRelease({
+      attempts: 2,
+      candidateBytes,
+      candidateSha256,
+      inspectCandidate,
+      root,
+      version,
+      delay: async () => {},
+      fetchImpl
+    }),
+    redacted
+  );
+  assert.equal(calls, 3);
+});
+
+test("does not retry Open VSX metadata, size, or checksum corruption", async () => {
+  for (const fetchImpl of [
+    exactFetch({ manifest: metadata({ version: "different" }) }),
+    exactFetch({ shaHeaders: { "content-length": "66" } }),
+    exactFetch({ sha: "a".repeat(64) })
+  ]) {
+    await assert.rejects(
+      waitForOpenVsxRelease({
+        attempts: 2,
+        candidateBytes,
+        candidateSha256,
+        inspectCandidate,
+        root,
+        version,
+        fetchImpl,
+        delay: async () => assert.fail("corrupted public content must not be retried")
+      }),
+      /conflict|response-size bound/u
+    );
+  }
+});
+
+test("does not retry a deterministic archive inspection TypeError", async () => {
+  const failure = new TypeError("invalid archive inspection input");
+  let inspections = 0;
+  await assert.rejects(
+    waitForOpenVsxRelease({
+      attempts: 2,
+      candidateBytes,
+      candidateSha256,
+      root,
+      version,
+      fetchImpl: exactFetch(),
+      inspectCandidate: async () => {
+        inspections += 1;
+        throw failure;
+      },
+      delay: async () => assert.fail("a deterministic inspection failure must not be retried")
+    }),
+    (error) => error === failure
+  );
+  assert.equal(inspections, 1);
+});

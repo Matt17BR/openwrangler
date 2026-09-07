@@ -320,13 +320,13 @@ test("does not retry a direct synchronous metadata or asset fetch failure", asyn
   assert.deepEqual(readdirSync(parent), []);
 });
 
-test("does not retry metadata or asset body failure after an HTTP response is acquired", async (context) => {
+test("retries interrupted metadata and asset bodies before publishing the complete release", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-response-body-failure-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));
   const success = successfulFetch();
 
   for (const stage of ["metadata", "asset"]) {
-    const sentinel = new Error(`accepted ${stage} response body failed`);
+    const sentinel = new Error(`interrupted ${stage} response body with synthetic-secret`);
     let metadataCalls = 0;
     let assetCalls = 0;
     const failingResponse = () =>
@@ -338,28 +338,103 @@ test("does not retry metadata or asset body failure after an HTTP response is ac
         }),
         { status: 200 }
       );
-    await assert.rejects(
-      downloadCanonicalGithubRelease({
-        attempts: 3,
-        fetchImpl: (...args) => {
-          if (args[0].startsWith("https://api.github.com/")) {
-            metadataCalls += 1;
-            return stage === "metadata" ? failingResponse() : success(...args);
-          }
-          assetCalls += 1;
-          return failingResponse();
-        },
-        outputDirectory: join(parent, `canonical-release-${stage}`),
-        prerelease: false,
-        releaseTag,
-        sleep: async () => assert.fail("an acquired response-body failure must not be retried")
-      }),
-      (error) => error === sentinel
-    );
-    assert.equal(metadataCalls, 1);
-    assert.equal(assetCalls, stage === "asset" ? 1 : 0);
+    await downloadCanonicalGithubRelease({
+      attempts: 3,
+      fetchImpl: (...args) => {
+        if (args[0].startsWith("https://api.github.com/")) {
+          metadataCalls += 1;
+          return stage === "metadata" && metadataCalls === 1 ? failingResponse() : success(...args);
+        }
+        assetCalls += 1;
+        return stage === "asset" && assetCalls === 1 ? failingResponse() : success(...args);
+      },
+      outputDirectory: join(parent, `canonical-release-${stage}`),
+      prerelease: false,
+      releaseTag,
+      sleep: async () => assert.equal(readdirSync(parent).includes(`canonical-release-${stage}`), false)
+    });
+    assert.equal(metadataCalls, 2);
+    assert.equal(assetCalls, stage === "asset" ? 4 : 3);
+    for (const [name, bytes] of payloads) {
+      assert.deepEqual(readFileSync(join(parent, `canonical-release-${stage}`, name)), bytes);
+    }
   }
 
+  assert.equal(readdirSync(parent).length, 2);
+});
+
+test("exhausts interrupted bodies with a redacted error and no partial output", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-body-exhausted-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  let calls = 0;
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 2,
+      outputDirectory: join(parent, "release"),
+      prerelease: false,
+      releaseTag,
+      sleep: async () => {},
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("signed-url?token=synthetic-secret"));
+            }
+          })
+        );
+      }
+    }),
+    (error) =>
+      error instanceof GithubReleasePendingError &&
+      !String(error.stack).includes("synthetic-secret") &&
+      !Object.hasOwn(error, "cause")
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(readdirSync(parent), []);
+});
+
+test("aborts a stalled GitHub response body within the request deadline", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-body-timeout-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  context.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    assert.ok(milliseconds > 0 && milliseconds <= 30_000);
+    return timeout(10);
+  });
+  const keepAlive = setTimeout(() => {}, 1_000);
+  let aborted = false;
+  try {
+    await assert.rejects(
+      downloadCanonicalGithubRelease({
+        attempts: 1,
+        outputDirectory: join(parent, "release"),
+        prerelease: false,
+        releaseTag,
+        fetchImpl: async (_url, { signal }) => {
+          assert.ok(signal instanceof AbortSignal);
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                signal.addEventListener(
+                  "abort",
+                  () => {
+                    aborted = true;
+                    controller.error(signal.reason);
+                  },
+                  { once: true }
+                );
+              }
+            })
+          );
+        }
+      }),
+      GithubReleasePendingError
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
+  assert.equal(aborted, true);
   assert.deepEqual(readdirSync(parent), []);
 });
 

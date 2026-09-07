@@ -497,6 +497,131 @@ test("retries a bounded transient Marketplace icon transport failure", async (co
   assert.equal(sleeps, 1);
 });
 
+test("retries transport failures at every Marketplace response boundary", async (context) => {
+  const candidate = await fixture(context);
+  const success = fetchFixture(gallery(candidate.candidateSha256), candidate.candidate);
+  for (const stage of ["query", "default-icon", "small-icon", "vsix"]) {
+    for (const phase of ["request", "body"]) {
+      let interrupted = false;
+      let sleeps = 0;
+      const receipt = await verifyMarketplacePublication({
+        attempts: 2,
+        candidatePath: candidate.candidatePath,
+        candidateSha256: candidate.candidateSha256,
+        prerelease: false,
+        version,
+        sleep: async () => {
+          sleeps += 1;
+        },
+        fetchImpl: async (url, options) => {
+          const current = url.includes("/extensionquery?")
+            ? "query"
+            : url === defaultIconUrl
+              ? "default-icon"
+              : url === smallIconUrl
+                ? "small-icon"
+                : "vsix";
+          if (current === stage && !interrupted) {
+            interrupted = true;
+            const failure = new Error("signed-url?token=synthetic-secret");
+            if (phase === "request") throw failure;
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(failure);
+                }
+              }),
+              {
+                headers: { "content-type": "image/png" }
+              }
+            );
+          }
+          return success(url, options);
+        }
+      });
+      assert.equal(receipt.version, version);
+      assert.equal(sleeps, 1);
+    }
+  }
+});
+
+test("exhausts Marketplace transport failures without exposing their details", async (context) => {
+  const candidate = await fixture(context);
+  let calls = 0;
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 2,
+      ...candidate,
+      prerelease: false,
+      version,
+      sleep: async () => {},
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("signed-url?token=synthetic-secret"));
+            }
+          })
+        );
+      }
+    }),
+    (error) =>
+      error instanceof MarketplacePublicationPendingError &&
+      !String(error.stack).includes("synthetic-secret") &&
+      !Object.hasOwn(error, "cause")
+  );
+  assert.equal(calls, 2);
+});
+
+test("aborts stalled Marketplace gallery and package responses within their request deadlines", async (context) => {
+  const candidate = await fixture(context);
+  const success = fetchFixture(gallery(candidate.candidateSha256), candidate.candidate);
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  context.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    assert.ok(milliseconds > 0 && milliseconds <= 30_000);
+    return timeout(10);
+  });
+  for (const stage of ["query", "vsix"]) {
+    let aborted = false;
+    const keepAlive = setTimeout(() => {}, 1_000);
+    try {
+      await assert.rejects(
+        verifyMarketplacePublication({
+          attempts: 1,
+          ...candidate,
+          prerelease: false,
+          version,
+          fetchImpl: async (url, options) => {
+            if (stage === "query" ? !url.includes("/extensionquery?") : !url.endsWith("/vspackage")) {
+              return success(url, options);
+            }
+            assert.ok(options.signal instanceof AbortSignal);
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  options.signal.addEventListener(
+                    "abort",
+                    () => {
+                      aborted = true;
+                      controller.error(options.signal.reason);
+                    },
+                    { once: true }
+                  );
+                }
+              })
+            );
+          }
+        }),
+        MarketplacePublicationPendingError
+      );
+    } finally {
+      clearTimeout(keepAlive);
+    }
+    assert.equal(aborted, true);
+  }
+});
+
 test("reports an exhausted non-public Marketplace version as pending", async (context) => {
   const candidate = await fixture(context);
   await assert.rejects(
