@@ -364,3 +364,137 @@ def test_pivot_wider_duckdb_rejects_full_casefold_outputs_live_and_generated(out
         engine.apply_transform(frame, step)
     with pytest.raises(ValueError, match="uniquely addressable"):
         execute_generated(engine, frame, step)
+
+
+def _pandas_pivot_results(frame: Any) -> list[Any]:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from openwrangler_runtime.session import Session, SessionManager
+
+    engine = PandasEngine()
+    operation = bind(engine, frame)
+    session = cast(Session, SimpleNamespace(engine=engine, session_id="arrow-pivot"))
+    actual = SessionManager._apply_transform_with_row_ids(
+        session, frame, operation, {"rows": len(frame), "columns": frame.shape[1]}
+    )
+    return [
+        engine._visible_frame(actual),
+        engine.apply_transform(frame, operation),
+        execute_generated(engine, frame, operation),
+    ]
+
+
+@pytest.mark.parametrize("family", ["string", "large_string"])
+@pytest.mark.parametrize("dictionary", [False, True])
+def test_pandas_pivot_wider_arrow_names_pass_actual_session_preflight(family: str, dictionary: bool) -> None:
+    import pyarrow as pa
+
+    native = pa.array(["x", "x", "y"], type=getattr(pa, family)())
+    if dictionary:
+        native = native.dictionary_encode()
+    frame: Any = pd.DataFrame(
+        {"group": ["b", "a", "b"], "key": pd.Series(pd.arrays.ArrowExtensionArray(native)), "value": [3, 1, 4]}
+    )
+    before = frame["key"].array.__arrow_array__()
+    for actual in _pandas_pivot_results(frame):
+        assert rows(actual) == [("b", 3, 4), ("a", 1, None)]
+    assert frame["key"].array.__arrow_array__().equals(before)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64", "Float32", "Float64", "float[pyarrow]", "double[pyarrow]"])
+def test_pandas_pivot_wider_nullable_float_outputs_preserve_storage_and_validity(dtype: str) -> None:
+    import numpy as np
+    import pyarrow as pa
+
+    if "pyarrow" in dtype:
+        native = pa.array(
+            [1.25, None, 2.5, float("nan")],
+            type=pa.float32() if dtype == "float[pyarrow]" else pa.float64(),
+            from_pandas=False,
+        )
+        values = pd.Series(pd.arrays.ArrowExtensionArray(native))
+    else:
+        values = pd.Series([1.25, None, 2.5, float("nan")], dtype=dtype)
+    frame: Any = pd.DataFrame({"group": ["a", "a", "b", "c"], "key": ["x", "y", "x", "x"], "value": values})
+    before = frame.copy(deep=True)
+    for actual in _pandas_pivot_results(frame):
+        assert actual["group"].tolist() == ["a", "b", "c"]
+        assert actual["x_value"].dtype == values.dtype == actual["y_value"].dtype
+        assert actual["x_value"].iloc[:2].tolist() == [1.25, 2.5]
+        assert pd.isna(actual["y_value"]).all()
+        if "pyarrow" in dtype:
+            x = actual["x_value"].array.__arrow_array__()
+            assert x.null_count == 0 and np.isnan(x[2].as_py())
+            assert actual["y_value"].array.__arrow_array__().null_count == 3
+        else:
+            assert pd.isna(actual["x_value"].iloc[2])
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    "family", ["string", "large_string", "duration", "binary", "large_binary", "fixed_size_binary"]
+)
+def test_pandas_pivot_wider_native_arrow_identifiers_match_generated_guard(family: str) -> None:
+    from datetime import timedelta
+
+    import pyarrow as pa
+
+    if family == "duration":
+        dtype, values = pa.duration("us"), [timedelta(days=2), timedelta(days=1), timedelta(days=2)]
+    elif "binary" in family:
+        dtype = pa.binary(1) if family == "fixed_size_binary" else getattr(pa, family)()
+        values = [b"b", b"a", b"b"]
+    else:
+        dtype, values = getattr(pa, family)(), ["b", "a", "b"]
+    frame: Any = pd.DataFrame(
+        {
+            "group": pd.Series(pd.arrays.ArrowExtensionArray(pa.array(values, type=dtype))),
+            "key": ["x", "x", "y"],
+            "value": [3, 1, 4],
+        }
+    )
+    engine = PandasEngine()
+    expected = engine.apply_transform(frame, bind(engine, frame))
+    before = frame["group"].array.__arrow_array__()
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+    assert frame["group"].array.__arrow_array__().equals(before)
+
+
+@pytest.mark.parametrize("family", ["string", "integer", "decimal", "boolean", "date", "timestamp", "duration"])
+@pytest.mark.parametrize("role", ["identifier", "values"])
+def test_pandas_pivot_wider_dictionary_columns_use_logical_values(family: str, role: str) -> None:
+    from datetime import datetime, timedelta
+
+    import pyarrow as pa
+
+    dtype, values = {
+        "string": (pa.string(), ["b", None, "a", "b"]),
+        "integer": (pa.int64(), [2**53 + 1, None, 1, 2**53 + 1]),
+        "decimal": (pa.decimal128(30, 6), [Decimal("2.500001"), None, Decimal("1.000001"), Decimal("2.500001")]),
+        "boolean": (pa.bool_(), [True, None, False, True]),
+        "date": (pa.date32(), [date(2024, 1, 2), None, date(2025, 12, 31), date(2024, 1, 2)]),
+        "timestamp": (pa.timestamp("us"), [datetime(2024, 1, 2), None, datetime(2025, 12, 31), datetime(2024, 1, 2)]),
+        "duration": (pa.duration("us"), [timedelta(days=2), None, timedelta(days=1), timedelta(days=2)]),
+    }[family]
+    chunks = [
+        pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.uint8()), pa.array(codebook, type=dtype))
+        for codebook in [values, list(reversed(values))]
+    ]
+    encoded = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    frame: Any = pd.DataFrame({"group": range(len(encoded)), "key": ["x"] * len(encoded), "value": range(len(encoded))})
+    column = "group" if role == "identifier" else "value"
+    frame[column] = encoded
+    if role == "identifier":
+        frame["unique"] = range(len(encoded))
+    logical = frame.copy(deep=False)
+    logical[column] = encoded.astype(pd.ArrowDtype(dtype))
+    if family == "string":
+        logical[column] = logical[column].astype(pd.StringDtype(storage="python"))
+    engine = PandasEngine()
+    expected = engine.apply_transform(logical, bind(engine, logical))
+    before = frame[column].array.__arrow_array__()
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+    assert frame[column].array.__arrow_array__().equals(before)

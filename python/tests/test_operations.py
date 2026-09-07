@@ -1452,3 +1452,134 @@ def test_pandas_integer_cast_keeps_valid_nullable_values(dtype: str, values: lis
         pd.testing.assert_series_equal(result["value"], wanted)
         assert source_lineage(engine.schema(result)) == lineage
     pd.testing.assert_frame_equal(source, before)
+
+
+def _dictionary_operation_frames(family: str = "string") -> tuple[pd.DataFrame, pd.DataFrame]:
+    import pyarrow as pa
+
+    values, dtype = (
+        (["a.b", None, " É ", "a.b"], pa.large_string())
+        if family == "string"
+        else ([date(2024, 1, 2), None, date(2025, 12, 31), date(2024, 1, 2)], pa.date32())
+    )
+    chunks = [
+        pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, 3, None], type=pa.uint8()), pa.array(dictionary, type=dtype))
+        for dictionary in [values, list(reversed(values))]
+    ]
+    series = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    source = pd.DataFrame({"value": series, "untouched": series, "row": range(len(series))})
+    source.index = pd.Index(["same"] * len(source), name="source")
+    logical = source.copy(deep=False)
+    logical["value"] = source["value"].astype(pd.ArrowDtype(dtype))
+    return source, logical
+
+
+def _assert_dictionary_operation(source: Any, logical: Any, operation: dict[str, Any]) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from openwrangler_runtime.engines.base import normalize_cell
+    from openwrangler_runtime.session import Session, SessionManager
+
+    engine = PandasEngine()
+    before = source.copy(deep=True)
+    expected = engine.apply_transform(logical, operation)
+    session = cast(Session, SimpleNamespace(engine=engine, session_id="dictionary-operations"))
+    through_session = SessionManager._apply_transform_with_row_ids(
+        session, source, operation, {"rows": len(source), "columns": source.shape[1]}
+    )
+    for actual in [
+        engine.apply_transform(source, operation),
+        execute_generated(engine, source, [operation]),
+        engine._visible_frame(through_session),
+    ]:
+        assert list(actual.columns) == list(expected.columns)
+        assert actual.index.equals(expected.index)
+        for position, name in enumerate(actual.columns):
+            assert [normalize_cell(value) for value in actual.iloc[:, position].array] == [
+                normalize_cell(value) for value in expected.iloc[:, position].array
+            ]
+            direct_copy = operation["kind"] == "byExample" and operation["params"]["program"]["kind"] == "column"
+            if name not in {"value", "untouched"} and not direct_copy:
+                assert actual.iloc[:, position].dtype == expected.iloc[:, position].dtype
+            if name == "result" and direct_copy:
+                assert actual[name].array.__arrow_array__().equals(before["value"].array.__arrow_array__())
+        assert actual["untouched"].array.__arrow_array__().equals(before["untouched"].array.__arrow_array__())
+    for column in ["value", "untouched"]:
+        assert source[column].array.__arrow_array__().equals(before[column].array.__arrow_array__())
+        assert source[column].dtype == before[column].dtype
+    pd.testing.assert_series_equal(source["row"], before["row"])
+    assert source.index.equals(before.index)
+
+
+@pytest.mark.parametrize(
+    "kind,params",
+    [
+        ("textLength", {"newColumn": "result"}),
+        ("findReplace", {"find": "a", "replacement": "A", "newColumn": "result"}),
+        ("stripText", {"newColumn": "result"}),
+        ("splitText", {"delimiter": ".", "index": 0, "newColumn": "result"}),
+        ("splitTextColumns", {"delimiter": ".", "newColumns": ["first", "second"]}),
+        ("capitalizeText", {"newColumn": "result"}),
+        ("lowerText", {"newColumn": "result"}),
+        ("upperText", {"newColumn": "result"}),
+        ("multiLabelBinarize", {"delimiter": "."}),
+        ("extractRegexGroup", {"pattern": "(.)", "group": 1, "newColumn": "result"}),
+        ("oneHotEncode", {}),
+        ("findReplace", {"find": "a", "replacement": "A"}),
+    ],
+)
+def test_pandas_dictionary_text_operations_use_logical_values(kind: str, params: dict[str, Any]) -> None:
+    source, logical = _dictionary_operation_frames()
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    inputs = {"columns": [lineage[0]]} if kind == "oneHotEncode" else {"column": lineage[0]}
+    operation = bind_step(step("dictionary-text", kind, **inputs, **params), schema, lineage)
+    _assert_dictionary_operation(source, logical, operation)
+
+
+@pytest.mark.parametrize("mode", ["copy", "case", "concat", "date"])
+def test_pandas_dictionary_by_example_consumes_logical_values(mode: str) -> None:
+    source, logical = _dictionary_operation_frames("date" if mode == "date" else "string")
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    examples = {
+        "copy": [{"inputs": ["a.b"], "output": "a.b"}, {"inputs": ["z"], "output": "z"}],
+        "case": [{"inputs": ["alpha"], "output": "ALPHA"}, {"inputs": ["bravo"], "output": "BRAVO"}],
+        "concat": [{"inputs": ["a.b", 1], "output": "a.b-1"}, {"inputs": ["z", 2], "output": "z-2"}],
+        "date": [
+            {"inputs": ["2024-01-02"], "output": "02/01/2024"},
+            {"inputs": ["2025-12-31"], "output": "31/12/2025"},
+        ],
+    }[mode]
+    operation = bind_step(
+        step(
+            "dictionary-example",
+            "byExample",
+            sourceColumns=[lineage[0], lineage[2]] if mode == "concat" else [lineage[0]],
+            newColumn="result",
+            examples=examples,
+        ),
+        schema,
+        lineage,
+    )
+    assert (
+        operation["params"]["program"]["kind"]
+        == {"copy": "column", "case": "case", "concat": "concat", "date": "datetimeFormat"}[mode]
+    )
+    _assert_dictionary_operation(source, logical, operation)
+
+
+def test_pandas_dictionary_datetime_format_uses_logical_values() -> None:
+    source, logical = _dictionary_operation_frames("date")
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("dictionary-date", "formatDatetime", column=lineage[0], format="%Y/%m", newColumn="result"),
+        schema,
+        lineage,
+    )
+    _assert_dictionary_operation(source, logical, operation)
