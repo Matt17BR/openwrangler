@@ -6,6 +6,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 import pandas as pd
 import pytest
@@ -40,6 +41,126 @@ def reserve_export_target(path: Path) -> dict[str, str]:
     path.touch(exist_ok=False)
     device, inode = _regular_file_identity(path)
     return {"device": str(device), "inode": str(inode)}
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+@pytest.mark.parametrize("shape", ["present", "empty", "all-null"])
+@pytest.mark.parametrize("location", ["column", "index", "multi-index"])
+@pytest.mark.parametrize("infer_string", [False, True])
+def test_parquet_known_scalar_file_sessions_keep_logical_values_and_native_columns(
+    tmp_path: Path, family: str, shape: str, location: str, infer_string: bool
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.bool8() if family == "bool8" else pa.uuid()
+    values = [1, 0, -1, 2, None] if family == "bool8" else [UUID(int=1), UUID(int=2), UUID(int=0), UUID(int=1), None]
+    if shape == "empty":
+        values = []
+    elif shape == "all-null":
+        values = [None, None]
+    logical_values = [None if value is None else (value != 0 if family == "bool8" else str(value)) for value in values]
+    logical_dtype = "bool[pyarrow]" if family == "bool8" else "string[python]"
+    wide_values = [2**64 - 1] * max(0, len(values) - 1) + ([None] if values else [])
+    wide = pd.Index(pd.array(wide_values, dtype="UInt64"), name="wide")
+    ordinary = pd.DataFrame(
+        {
+            "value": range(len(values)),
+            "text": pd.Series(["text"] * max(0, len(values) - 1) + ([None] if values else []), dtype=object),
+            "nullable": pd.Series([1] * len(values), dtype="Int64"),
+            "category": pd.Categorical(["a"] * len(values), categories=["unused", "a"], ordered=True),
+            "when": pd.date_range("2024-01-01", periods=len(values), tz="Europe/Berlin"),
+        }
+    )
+    ordinary.attrs = {"unchanged": {"metadata": True}}
+    if location == "multi-index":
+        ordinary.index = pd.MultiIndex.from_arrays([wide, range(len(values))], names=["wide", "value"])
+    elif location == "index":
+        ordinary.index = pd.Index(range(len(values)), name="value")
+    else:
+        ordinary.index = wide
+    table = pa.Table.from_pandas(ordinary, preserve_index=True)
+    metadata = deepcopy(table.schema.pandas_metadata)
+    field_name = "value" if location == "column" else metadata["index_columns"][-1]
+    field_position = table.schema.get_field_index(field_name)
+    array = pa.chunked_array([pa.array(values[:2], type=dtype), pa.array(values[2:], type=dtype)])
+    table = table.set_column(field_position, pa.field(field_name, dtype), array)
+    descriptor = next(column for column in metadata["columns"] if column["field_name"] == field_name)
+    descriptor.update(numpy_type=str(pd.ArrowDtype(dtype)), pandas_type="object")
+    table = table.replace_schema_metadata({**table.schema.metadata, b"pandas": json.dumps(metadata).encode()})
+    path = tmp_path / "scalars.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    manager = SessionManager()
+    with pd.option_context("future.infer_string", infer_string):
+        # The ordinary native read remains the owner of unrelated dtype/attrs behavior.
+        buffer = io.BytesIO()
+        ordinary.to_parquet(buffer, index=True)
+        expected = pd.read_parquet(io.BytesIO(buffer.getvalue()))
+        if location == "column":
+            expected.isetitem(0, pd.array(logical_values, dtype=logical_dtype))
+            if pd.api.types.is_float_dtype(expected.index.dtype):
+                expected.index = pd.Index(pd.array(wide_values, dtype="uint64[pyarrow]"), name="wide")
+        elif location == "index":
+            expected.index = pd.Index(pd.array(logical_values, dtype=logical_dtype), name="value")
+        else:
+            wide_index = expected.index.get_level_values(0)
+            if pd.api.types.is_float_dtype(wide_index.dtype):
+                wide_index = pd.Index(pd.array(wide_values, dtype="uint64[pyarrow]"))
+            expected.index = pd.MultiIndex.from_arrays(
+                [wide_index, pd.array(logical_values, dtype=logical_dtype)],
+                names=["wide", "value"],
+            )
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=20
+        )
+        session_id = str(opened["metadata"]["sessionId"])
+        try:
+            loaded = manager.sessions[session_id].original
+            pd.testing.assert_frame_equal(PandasEngine()._visible_frame(loaded), expected)
+            expected_page = PandasEngine().page(expected, 0, 20)
+            assert [(row["rowLabel"], row["values"]) for row in opened["page"]["rows"]] == [
+                (row["rowLabel"], row["values"]) for row in expected_page["rows"]
+            ]
+            assert opened["metadata"]["rowAxis"]["levelNames"] == expected.index.names
+        finally:
+            manager.close_session(session_id, 0)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+@pytest.mark.parametrize("invalid_dtype", ["not_a_dtype", "Int999"])
+def test_parquet_known_scalar_reader_retains_unrelated_invalid_dtype_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, invalid_dtype: str
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.bool8() if family == "bool8" else pa.uuid()
+    values = [1, None] if family == "bool8" else [UUID(int=1), None]
+    source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(pa.array(values, type=dtype)))})
+    table = pa.Table.from_pandas(source)
+    metadata = deepcopy(table.schema.pandas_metadata)
+    metadata["columns"][0]["numpy_type"] = invalid_dtype
+    table = table.replace_schema_metadata({**table.schema.metadata, b"pandas": json.dumps(metadata).encode()})
+    path = tmp_path / "invalid.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    with pytest.raises(TypeError) as native_error:
+        pd.read_parquet(path)
+    streams: list[Any] = []
+    read_parquet = pd.read_parquet
+
+    def observe_read(stream: Any, **kwargs: Any) -> Any:
+        streams.append(stream)
+        return read_parquet(stream, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", observe_read)
+    with pytest.raises(type(native_error.value)) as actual_error:
+        PandasEngine().read_file(str(path))
+    assert str(actual_error.value) == str(native_error.value)
+    assert streams and all(stream.closed for stream in streams)
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("dtype", ["Int64", "UInt64", "int64[pyarrow]", "uint64[pyarrow]", "Int8", "uint8[pyarrow]"])
@@ -254,18 +375,43 @@ def test_parquet_reader_retains_native_invalid_index_metadata_refusal(
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("phase", ["after-main", "after-index"])
+@pytest.mark.parametrize(
+    "source_type,phase",
+    [
+        ("integer-index", "after-main"),
+        ("integer-index", "after-index"),
+        ("bool8", "before-main"),
+        ("bool8", "after-main"),
+        ("uuid", "before-main"),
+        ("uuid", "after-main"),
+    ],
+)
 @pytest.mark.parametrize("change", ["rewrite", "replace"])
 def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, change: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_type: str, phase: str, change: str
 ) -> None:
+    pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
 
     def payload(offset: int) -> bytes:
-        index = pd.Index(pd.array([2**53 + 1 + offset, None, 2**53 + 3 + offset], dtype="UInt64"), name="index")
-        frame = pd.DataFrame(
-            {"value": [11 + offset, 12 + offset, 13 + offset], "padding": ["A" * 65536] * 3}, index=index
-        )
+        if source_type == "integer-index":
+            index = pd.Index(pd.array([2**53 + 1 + offset, None, 2**53 + 3 + offset], dtype="UInt64"), name="index")
+            frame = pd.DataFrame(
+                {"value": [11 + offset, 12 + offset, 13 + offset], "padding": ["A" * 65536] * 3}, index=index
+            )
+        else:
+            dtype = pa.bool8() if source_type == "bool8" else pa.uuid()
+            values = (
+                [1 + offset, -1 - offset, None]
+                if source_type == "bool8"
+                else [UUID(int=1 + offset), UUID(int=2 + offset), None]
+            )
+            frame = pd.DataFrame(
+                {
+                    "value": pd.Series(pd.arrays.ArrowExtensionArray(pa.array(values, type=dtype))),
+                    "padding": ["A" * 65536] * 3,
+                }
+            )
         output = io.BytesIO()
         frame.to_parquet(output, compression=None, use_dictionary=False, write_statistics=False)
         return output.getvalue()
@@ -302,6 +448,8 @@ def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
     read_table = pq.read_table
 
     def after_main(stream: Any, **kwargs: Any) -> Any:
+        if phase == "before-main":
+            change_source()
         frame = read_parquet(stream, **kwargs)
         streams.append(stream)
         if phase == "after-main":
@@ -324,7 +472,10 @@ def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
         assert manager.sessions == {}
     else:
         assert mutation_denied
-        assert [row["rowLabel"] for row in result["page"]["rows"]] == [str(2**53 + 1), "null", str(2**53 + 3)]
+        expected_labels = (
+            [str(2**53 + 1), "null", str(2**53 + 3)] if source_type == "integer-index" else ["0", "1", "2"]
+        )
+        assert [row["rowLabel"] for row in result["page"]["rows"]] == expected_labels
         manager.close_session(str(result["metadata"]["sessionId"]), 0)
     assert mutation_attempted
     assert streams and all(stream.closed for stream in streams)
