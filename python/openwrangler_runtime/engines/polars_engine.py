@@ -236,16 +236,16 @@ class PolarsEngine(DataFrameEngine):
                 errors="replace" if encoding == "utf8-lossy" else "strict",
             ):
                 return pl.DataFrame().lazy()
-            return _scan_literal_file(
-                pl.scan_csv,
+            return pl.scan_csv(
                 path,
+                glob=False,
                 separator=options.get("delimiter", "\t" if extension == ".tsv" else ","),
                 encoding=encoding,
                 quote_char=options.get("quoteChar", '"'),
                 has_header=options.get("hasHeader", True),
             )
         if extension == ".parquet":
-            return _scan_literal_file(pl.scan_parquet, path)
+            return pl.scan_parquet(path, glob=False)
         if extension in {".jsonl", ".ndjson"}:
             return _scan_literal_file(pl.scan_ndjson, path)
         if extension in {".xlsx", ".xls"}:
@@ -1281,14 +1281,12 @@ class PolarsEngine(DataFrameEngine):
             eager = df.collect(engine="streaming") if isinstance(df, pl.LazyFrame) else df
             column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]
+            explode_options = (
+                {"empty_as_null": True} if "empty_as_null" in signature(pl.Expr.explode).parameters else {}
+            )
             labels = (
                 eager.select(
-                    pl.col(column)
-                    .cast(pl.String)
-                    .str.split(delimiter)
-                    .explode(empty_as_null=True)
-                    .drop_nulls()
-                    .unique()
+                    pl.col(column).cast(pl.String).str.split(delimiter).explode(**explode_options).drop_nulls().unique()
                 )
                 .get_column(column)
                 .to_list()
@@ -1515,6 +1513,8 @@ class PolarsEngine(DataFrameEngine):
         lines = custom_code_prelude_lines() if has_custom_code else []
         if needs_counter:
             lines.append("from collections import Counter")
+        if any(step["kind"] == "multiLabelBinarize" for step in plan):
+            lines.append("from inspect import signature")
         if needs_filter_helpers or needs_fill_helpers:
             decimal_import = (
                 "from decimal import Decimal, InvalidOperation, localcontext"
@@ -1701,15 +1701,15 @@ class PolarsEngine(DataFrameEngine):
                     "",
                     "",
                     "def _ow_checked_integer_formula_scalar(left, right, operator):",
+                    "    def calculate(operands):",
+                    "        return pl.Series(",
+                    "            [_ow_checked_integer_value(left_value, right_value, operator)",
+                    "             for left_value, right_value in operands.struct.unnest().iter_rows()],",
+                    "            dtype=pl.Int128,",
+                    "        )",
                     "    return pl.struct(",
                     "        left.alias('_ow_left_operand'), right.alias('_ow_right_operand')",
-                    "    ).map_elements(",
-                    "        lambda operands: _ow_checked_integer_value(",
-                    "            operands['_ow_left_operand'], operands['_ow_right_operand'], operator",
-                    "        ),",
-                    "        return_dtype=pl.Int128,",
-                    "        skip_nulls=False,",
-                    "    )",
+                    "    ).map_batches(calculate, return_dtype=pl.Int128, is_elementwise=True)",
                     "",
                     "",
                     "def _ow_checked_integer_formula(left, right, operator):",
@@ -2095,11 +2095,16 @@ class PolarsEngine(DataFrameEngine):
             names = f"_generated_names_{index}"
             collisions = f"_collisions_{index}"
             reserved = f"_reserved_{index}"
+            explode_options = f"_explode_options_{index}"
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
+                (
+                    f"{prefix}{explode_options} = {{'empty_as_null': True}} "
+                    "if 'empty_as_null' in signature(pl.Expr.explode).parameters else {}"
+                ),
                 f"{prefix}{labels} = {eager}.select(",
                 f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})",
-                f"{prefix}    .explode(empty_as_null=True).drop_nulls().unique()",
+                f"{prefix}    .explode(**{explode_options}).drop_nulls().unique()",
                 f"{prefix}).get_column({column!r}).to_list()",
                 f"{prefix}{labels} = sorted(str(label) for label in {labels} if str(label))",
                 f"{prefix}{base} = {eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} else {eager}",
@@ -4199,16 +4204,19 @@ def _polars_checked_integer_formula_scalar(left: Any, right: Any, operator: str)
 
     import polars as pl
 
+    def calculate(operands: Any) -> Any:
+        return pl.Series(
+            [
+                _polars_checked_integer_value(left_value, right_value, operator)
+                for left_value, right_value in operands.struct.unnest().iter_rows()
+            ],
+            dtype=pl.Int128,
+        )
+
     return pl.struct(
         left.alias("_ow_left_operand"),
         right.alias("_ow_right_operand"),
-    ).map_elements(
-        lambda operands: _polars_checked_integer_value(
-            operands["_ow_left_operand"], operands["_ow_right_operand"], operator
-        ),
-        return_dtype=pl.Int128,
-        skip_nulls=False,
-    )
+    ).map_batches(calculate, return_dtype=pl.Int128, is_elementwise=True)
 
 
 def _polars_checked_integer_formula(left: Any, right: Any, operator: str) -> Any:

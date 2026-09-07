@@ -7,6 +7,7 @@ import duckdb
 import pandas as pd
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
@@ -356,6 +357,76 @@ def test_native_unsigned_max_subtraction_cancels_live_and_generated(unsigned_eng
         generated(unsigned_engine, source, operation),
     ):
         assert column_values(result, "result") == [0, None]
+
+
+@pytest.mark.parametrize("operator", ["subtract", "multiply"])
+@pytest.mark.parametrize("case", ["empty", "all-null", "multiple-chunks"])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_unsigned_by_example_preserves_typed_batches(operator: str, case: str, lazy: bool) -> None:
+    runtime = PolarsEngine()
+    examples = [(4, 1, 3), (7, 2, 5), (2, 5, -3)] if operator == "subtract" else [(2, 3, 6), (4, 2, 8), (5, 7, 35)]
+    if case == "empty":
+        pairs: list[tuple[int | None, int | None]] = []
+    elif case == "all-null":
+        pairs = [(None, None)] * 37
+    else:
+        pairs = [
+            *[(left, right) for left, right, _ in examples],
+            (NATIVE_UNSIGNED_MAX, NATIVE_UNSIGNED_MAX if operator == "subtract" else 0),
+            (None, None),
+        ] * 231
+    schema = {"left": pl.UInt128, "right": pl.UInt128}
+    parts = [
+        pl.DataFrame(pairs[start : start + 193], schema=schema, orient="row") for start in range(0, len(pairs), 193)
+    ]
+    original = pl.concat(parts, rechunk=False) if parts else pl.DataFrame(schema=schema)
+    snapshot = original.clone()
+    source = original.lazy() if lazy else original
+    columns = runtime.schema(source)
+    lineage = source_lineage(columns)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "typed-batch",
+                "kind": "byExample",
+                "params": {
+                    "sourceColumns": lineage,
+                    "newColumn": "result",
+                    "examples": [{"inputs": [left, right], "output": result} for left, right, result in examples],
+                },
+            }
+        ),
+        columns,
+        lineage,
+    )
+    assert operation["params"]["program"]["operator"] == operator
+    runtime.validate_transform_preflight(source, operation, runtime.shape(source))
+    expected = [
+        None if left is None or right is None else (left - right if operator == "subtract" else left * right)
+        for left, right in pairs
+    ]
+    for result in (runtime.apply_transform(source, operation), generated(runtime, source, operation)):
+        assert isinstance(result, pl.LazyFrame) == lazy
+        result = result.collect(engine="streaming") if lazy else result
+        assert result["result"].dtype == pl.Int128
+        assert result["result"].to_list() == expected
+        assert_frame_equal(result.select(snapshot.columns), snapshot)
+    assert_frame_equal(original, snapshot)
+
+    if case == "multiple-chunks":
+        overflow = pl.DataFrame(
+            {"left": [NATIVE_UNSIGNED_MAX], "right": [0 if operator == "subtract" else 2]}, schema=schema
+        )
+        overflow_source = overflow.lazy() if lazy else overflow
+        for action in (
+            lambda: runtime.apply_transform(overflow_source, operation),
+            lambda: generated(runtime, overflow_source, operation),
+        ):
+            with pytest.raises(Exception, match="portable 38-digit envelope"):
+                result = action()
+                if lazy:
+                    result.collect(engine="streaming")
+        assert overflow["left"].to_list() == [NATIVE_UNSIGNED_MAX]
 
 
 def test_native_unsigned_max_multiply_zero_preserves_nulls_live_and_generated(unsigned_engine: Any) -> None:
