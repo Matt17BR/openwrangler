@@ -211,6 +211,8 @@ Group By treats input NaN as missing while retaining NaN computed from present a
 float64 grouping keys use the same missing-value and signed-zero equality as other numeric keys. Group By retains
 its native representative key; Pivot retains each first identifier row. Grouped Fill shares this key equality without
 changing the stored keys.
+Sparse Count uses a temporary presence mask for that aggregation alone. Keys, source storage and other aggregates
+on the same column retain their own numeric behavior.
 
 ### Polars
 

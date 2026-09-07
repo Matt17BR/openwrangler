@@ -28,6 +28,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas Parquet imports retain exact nullable integer row labels instead of rounding large index values together.
 - Pandas Group By, Pivot and grouped Fill handle missing Arrow floating keys and signed zero consistently. Aggregate
   NaN results remain distinct from empty-group nulls.
+- Pandas Group By Count handles Sparse columns without breaking other aggregates on the same input.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
 - Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
   DuckDB arrays remain containers in schema and generated-code checks.
