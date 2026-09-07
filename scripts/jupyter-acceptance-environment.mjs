@@ -28,6 +28,7 @@ import {
 } from "./packaged-editor-orchestration.mjs";
 
 const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
+const NOTEBOOK_DEPENDENCIES = Object.freeze([...CORE_DEPENDENCIES, "polars", "duckdb", "fsspec", "pytz"]);
 const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "fsspec", "pyspark"]);
 const BINARY_DEPENDENCIES = Object.freeze([
   "ipykernel",
@@ -50,6 +51,7 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   polars: "1.35.2",
   duckdb: "1.5.4",
   fsspec: "2026.7.0",
+  pytz: "2026.3.post1",
   pyspark: "4.2.0",
   py4j: "0.10.9.9",
   pyarrow: "25.0.0",
@@ -802,21 +804,25 @@ export async function createJupyterAcceptanceKernelPython(
     containedBy,
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
+    includePySpark = true,
     pysparkDistribution = RELEASED_PYSPARK_STABLE_DISTRIBUTION,
     acquirePySparkArtifact = acquireVerifiedPySparkArtifact,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
   validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand, acquirePySparkArtifact);
-  if (platform !== process.platform || platform !== "linux") {
-    throw new Error("Released-Jupyter PySpark acceptance requires Linux descriptor isolation before setup.");
+  if (typeof includePySpark !== "boolean") {
+    throw new Error("Released-Jupyter acceptance requires an explicit PySpark provisioning decision.");
   }
-  const exactPySparkDistribution = validateReleasedPySparkDistribution(pysparkDistribution);
-  const java = await probeJupyterAcceptanceJava({
-    environment,
-    runCommand
-  });
-  console.log(`Released-Jupyter PySpark Java preflight passed: Java ${java.version} (major ${java.major}).`);
+  let exactPySparkDistribution;
+  if (includePySpark) {
+    if (platform !== process.platform || platform !== "linux") {
+      throw new Error("Released-Jupyter PySpark acceptance requires Linux descriptor isolation before setup.");
+    }
+    exactPySparkDistribution = validateReleasedPySparkDistribution(pysparkDistribution);
+    const java = await probeJupyterAcceptanceJava({ environment, runCommand });
+    console.log(`Released-Jupyter PySpark Java preflight passed: Java ${java.version} (major ${java.major}).`);
+  }
   return createJupyterAcceptanceKernelPythonEnvironment(directory, basePython, {
     containedBy,
     environment,
@@ -824,7 +830,9 @@ export async function createJupyterAcceptanceKernelPython(
     acquirePySparkArtifact,
     pysparkDistribution: exactPySparkDistribution,
     runCommand,
-    includePySpark: true,
+    includePySpark,
+    binaryDependencies: includePySpark ? BINARY_DEPENDENCIES : NOTEBOOK_DEPENDENCIES,
+    dependencies: includePySpark ? DEPENDENCIES : NOTEBOOK_DEPENDENCIES,
     labels: Object.freeze({
       baseProbe: "Released-Jupyter base dependency version probe",
       create: "Released-Jupyter private kernel environment creation",
@@ -853,6 +861,8 @@ export async function createJupyterAcceptanceCoreKernelPython(
     platform,
     runCommand,
     includePySpark: false,
+    binaryDependencies: CORE_DEPENDENCIES,
+    dependencies: CORE_DEPENDENCIES,
     labels: Object.freeze({
       create: "Core Jupyter private kernel environment creation",
       install: "Core Jupyter private kernel dependency installation",
@@ -899,6 +909,8 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     platform,
     runCommand,
     includePySpark,
+    binaryDependencies,
+    dependencies,
     labels,
     pysparkDistribution,
     acquirePySparkArtifact
@@ -946,7 +958,7 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
         "--no-warn-script-location",
         "--no-cache-dir",
         "--only-binary=:all:",
-        ...(includePySpark ? BINARY_DEPENDENCIES : CORE_DEPENDENCIES).map(
+        ...binaryDependencies.map(
           (dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`
         )
       ],
@@ -1011,16 +1023,13 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     if (installFailure !== undefined) throw installFailure;
     assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   }
-  const installedVersions = await probeJupyterAcceptancePython(kernelPython, {
+  const installedVersions = await probeJupyterAcceptancePythonDependencies(kernelPython, dependencies, {
     environment,
     label: labels.finalProbe,
-    requireOptionalEngines: includePySpark,
-    requirePySpark: includePySpark,
-    requireJupyterClient: !includePySpark,
     requireRuntimeAbsent: true,
     runCommand
   });
-  for (const dependency of includePySpark ? DEPENDENCIES : CORE_DEPENDENCIES) {
+  for (const dependency of dependencies) {
     const expectedVersion =
       dependency === "pyspark" ? pysparkDistribution.version : RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency];
     if (installedVersions[dependency] !== expectedVersion) {
@@ -2873,6 +2882,19 @@ export async function probeJupyterAcceptancePython(
       : []),
     ...(requirePySpark ? ["pyspark"] : [])
   ];
+  return probeJupyterAcceptancePythonDependencies(python, dependencies, {
+    environment,
+    label,
+    requireRuntimeAbsent,
+    runCommand
+  });
+}
+
+async function probeJupyterAcceptancePythonDependencies(
+  python,
+  dependencies,
+  { environment, label, requireRuntimeAbsent, runCommand }
+) {
   const probe = [
     "import importlib.metadata",
     "import importlib.util",

@@ -80,6 +80,7 @@ import {
 import { resolvePackagedGridColumnCopySelection } from "./packaged-grid-column-copy-selector.mjs";
 import {
   PACKAGED_PYTHON_JUPYTER_PROFILE_ENV,
+  PYTHON_NOTEBOOKS_PROFILE,
   packagedPythonJupyterEditorPlan,
   packagedPythonJupyterPySparkDistribution,
   resolvePackagedPythonJupyterProfile
@@ -322,6 +323,7 @@ try {
           const pythonPreflightProfile = packagedEditorPythonPreflightProfile({
             acceptanceMode,
             jupyterExtensionEnabled: Boolean(jupyterExtensionInstallTarget),
+            pythonJupyterProfile,
             remoteOnly: remoteRJourneyOnly,
             literateDocuments: rJupyterSelection.literateDocuments
           });
@@ -541,7 +543,11 @@ try {
                 jupyterKernelPython = await createJupyterAcceptanceKernelPython(
                   resolve(temporaryRoot, "jv"),
                   testPython,
-                  { containedBy: temporaryRoot, pysparkDistribution }
+                  {
+                    containedBy: temporaryRoot,
+                    pysparkDistribution,
+                    includePySpark: pythonJupyterProfile !== PYTHON_NOTEBOOKS_PROFILE
+                  }
                 );
               }
             } catch (error) {

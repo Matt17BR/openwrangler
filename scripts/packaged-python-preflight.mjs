@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PYTHON_NOTEBOOKS_PROFILE } from "./packaged-python-jupyter.mjs";
 
 export const ACCEPTANCE_PYTHON_INTERPRETER_ERROR = "OW_ACCEPTANCE_PYTHON_INTERPRETER";
 export const ACCEPTANCE_PYTHON_DEPENDENCY_ERROR = "OW_ACCEPTANCE_PYTHON_DEPENDENCIES";
@@ -55,6 +56,7 @@ const PROBE_SOURCE = [
 export function packagedEditorPythonPreflightProfile({
   acceptanceMode,
   jupyterExtensionEnabled,
+  pythonJupyterProfile,
   remoteOnly,
   literateDocuments
 }) {
@@ -62,7 +64,11 @@ export function packagedEditorPythonPreflightProfile({
     if (remoteOnly) return "interpreter-only";
     return literateDocuments ? "jupyter-host-literate" : "jupyter-host";
   }
-  if (acceptanceMode === "data-wrangler-coexistence") return "jupyter-bootstrap";
+  if (
+    acceptanceMode === "data-wrangler-coexistence" ||
+    (acceptanceMode === "full" && jupyterExtensionEnabled && pythonJupyterProfile === PYTHON_NOTEBOOKS_PROFILE)
+  )
+    return "jupyter-bootstrap";
   return jupyterExtensionEnabled ? "editor-jupyter" : "editor";
 }
 

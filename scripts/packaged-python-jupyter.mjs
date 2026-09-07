@@ -1,8 +1,10 @@
 export const PACKAGED_PYTHON_JUPYTER_PROFILE_ENV = "OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE";
+export const PYTHON_NOTEBOOKS_PROFILE = "python-notebooks";
 export const PYSPARK_PRERELEASE_DENIAL_PROFILE = "pyspark-prerelease-denial";
 export const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
 
-const COMPLETE_PHASES = Object.freeze(["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]);
+const PYTHON_NOTEBOOK_PHASES = Object.freeze(["jupyter-deny", "jupyter-allow"]);
+const COMPLETE_PHASES = Object.freeze([...PYTHON_NOTEBOOK_PHASES, "jupyter-pyspark"]);
 const PYSPARK_PRERELEASE_DENIAL_PHASES = Object.freeze(["jupyter-pyspark"]);
 
 export function resolvePackagedPythonJupyterProfile({
@@ -14,9 +16,9 @@ export function resolvePackagedPythonJupyterProfile({
   requestedEditors
 }) {
   if (value === undefined) return undefined;
-  if (value !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
+  if (value !== PYTHON_NOTEBOOKS_PROFILE && value !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
     throw new Error(
-      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV} must be unset or ${JSON.stringify(PYSPARK_PRERELEASE_DENIAL_PROFILE)}.`
+      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV} must be unset, ${JSON.stringify(PYTHON_NOTEBOOKS_PROFILE)}, or ${JSON.stringify(PYSPARK_PRERELEASE_DENIAL_PROFILE)}.`
     );
   }
   if (
@@ -27,12 +29,10 @@ export function resolvePackagedPythonJupyterProfile({
     !sameEditors(requestedEditors, ["vscode"])
   ) {
     throw new Error(
-      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV}=${JSON.stringify(
-        PYSPARK_PRERELEASE_DENIAL_PROFILE
-      )} is valid only for the isolated released-PySpark prerelease-denial journey in VS Code without coexistence or remote Jupyter.`
+      `${PACKAGED_PYTHON_JUPYTER_PROFILE_ENV}=${JSON.stringify(value)} requires full mode and released Jupyter in VS Code without coexistence or remote Jupyter.`
     );
   }
-  return PYSPARK_PRERELEASE_DENIAL_PROFILE;
+  return value;
 }
 
 export function packagedPythonJupyterEditorPlan(profile, editorKey, remoteJupyterEnabled) {
@@ -51,15 +51,15 @@ export function packagedPythonJupyterEditorPlan(profile, editorKey, remoteJupyte
       integrationOnly: false
     });
   }
-  if (profile === PYSPARK_PRERELEASE_DENIAL_PROFILE) {
+  if (profile === PYTHON_NOTEBOOKS_PROFILE || profile === PYSPARK_PRERELEASE_DENIAL_PROFILE) {
     if (editorKey !== "vscode") {
-      throw new Error("Released-Python Jupyter acceptance received an ineligible PySpark prerelease-denial profile.");
+      throw new Error("Focused released-Python Jupyter acceptance requires VS Code.");
     }
     return Object.freeze({
-      phases: PYSPARK_PRERELEASE_DENIAL_PHASES,
+      phases: profile === PYTHON_NOTEBOOKS_PROFILE ? PYTHON_NOTEBOOK_PHASES : PYSPARK_PRERELEASE_DENIAL_PHASES,
       remote: false,
       allowSelector: undefined,
-      pysparkSelector: PYSPARK_PRERELEASE_DENIAL_SELECTOR,
+      pysparkSelector: profile === PYTHON_NOTEBOOKS_PROFILE ? undefined : PYSPARK_PRERELEASE_DENIAL_SELECTOR,
       integrationOnly: true
     });
   }
@@ -67,7 +67,7 @@ export function packagedPythonJupyterEditorPlan(profile, editorKey, remoteJupyte
 }
 
 export function packagedPythonJupyterPySparkDistribution(profile, prereleaseDistribution) {
-  if (profile === undefined) return undefined;
+  if (profile === undefined || profile === PYTHON_NOTEBOOKS_PROFILE) return undefined;
   if (profile !== PYSPARK_PRERELEASE_DENIAL_PROFILE) {
     throw new Error("Released-Python Jupyter acceptance received an unresolved PySpark distribution profile.");
   }
