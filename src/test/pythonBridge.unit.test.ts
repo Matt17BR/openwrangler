@@ -308,43 +308,57 @@ describe("PythonBridge cancellation", () => {
   it.each<SessionBoundRequest>([
     {
       kind: "closeSession",
-      sessionId: "candidate-session",
+      sessionId: "missing-close-session",
       revision: 0
     },
     {
       kind: "getSummary",
-      sessionId: "confirmed-session",
+      sessionId: "missing-summary-session",
       revision: 3,
-      viewRequestId: "summary-after-runtime-stop",
+      viewRequestId: "summary-without-owner",
       filterModel: { filters: [], sort: [] }
     }
-  ])("does not start a stopped runtime for session-bound request $kind", async (request) => {
-    const harness = createHarness();
-    (harness.bridge as unknown as { process?: ChildProcessWithoutNullStreams }).process = undefined;
-
-    await expect(harness.bridge.request(request)).resolves.toMatchObject({
-      kind: "error",
-      code: "unknown_session",
-      message: expect.stringContaining(request.sessionId)
-    });
-
-    expect(harness.ensureProcess).not.toHaveBeenCalled();
-    expect(harness.writes()).toEqual([]);
+  ])("rejects an unowned session-bound request $kind without preparing a runtime", async (request) => {
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+    vi.mocked(pythonEnvironment.probeDependencies).mockClear();
+    const bridge = new PythonBridge(testExtensionContext());
+    const generation = bridge.runtimeGeneration;
+    try {
+      await expect(bridge.request(request)).resolves.toMatchObject({
+        kind: "error",
+        code: "unknown_session",
+        message: expect.stringContaining(request.sessionId),
+        sessionId: request.sessionId
+      });
+      expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+      expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+      expect(bridge.runtimeRunning).toBe(false);
+      expect(bridge.runtimeGeneration).toBe(generation);
+    } finally {
+      await bridge.shutdown();
+    }
   });
 
-  it("does not start a stopped runtime for a direct cancellation request", async () => {
-    const harness = createHarness();
-    (harness.bridge as unknown as { process?: ChildProcessWithoutNullStreams }).process = undefined;
-
-    await expect(
-      harness.bridge.request({ kind: "cancelRequest", targetRequestId: "missing-request" })
-    ).resolves.toMatchObject({
-      kind: "error",
-      code: "cancellation_unavailable",
-      message: expect.stringContaining("missing-request")
-    });
-    expect(harness.ensureProcess).not.toHaveBeenCalled();
-    expect(harness.writes()).toEqual([]);
+  it("rejects an unowned cancellation request without preparing a runtime", async () => {
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+    vi.mocked(pythonEnvironment.probeDependencies).mockClear();
+    const bridge = new PythonBridge(testExtensionContext());
+    const generation = bridge.runtimeGeneration;
+    try {
+      await expect(
+        bridge.request({ kind: "cancelRequest", targetRequestId: "missing-request" })
+      ).resolves.toMatchObject({
+        kind: "error",
+        code: "cancellation_unavailable",
+        message: expect.stringContaining("missing-request")
+      });
+      expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+      expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+      expect(bridge.runtimeRunning).toBe(false);
+      expect(bridge.runtimeGeneration).toBe(generation);
+    } finally {
+      await bridge.shutdown();
+    }
   });
 
   it("rejects a file request when selection changes after preparation resolves but before dispatch", async () => {
