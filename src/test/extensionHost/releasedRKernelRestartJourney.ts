@@ -173,6 +173,7 @@ export function createReleasedRKernelRestartJourney({
       );
       recordReleasedRKernelLifecycleCheckpoint(phase, "initial-kernel-probe:complete");
       recordReleasedRKernelLifecycleCheckpoint(phase, "initial-setup:start");
+      await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
       await executeReleasedNotebookCell(
         notebook,
         RELEASED_JUPYTER_R_SETUP_CELL,
