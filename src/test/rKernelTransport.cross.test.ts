@@ -3145,6 +3145,7 @@ function runR(code: string) {
       HOME: process.env.HOME,
       R_LIBS_USER: process.env.R_LIBS_USER,
       R_LIBS_SITE: process.env.R_LIBS_SITE,
+      OPEN_WRANGLER_R_CONTRACT_OWNER: process.env.OPEN_WRANGLER_R_CONTRACT_OWNER,
       R_PROFILE_USER: "",
       R_ENVIRON_USER: ""
     }
