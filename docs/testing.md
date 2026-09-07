@@ -118,6 +118,8 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
 coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
+Grouped median cases check native integer widths and Decimal precision on current and minimum Polars, including
+empty and null-key groups, exact refusals, and streaming execution. Plan construction must not collect lazy input.
 
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel

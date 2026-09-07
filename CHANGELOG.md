@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
 - Floor and Ceiling preserve exact integer and Decimal values in Python engines, including generated code.
 - Pandas Convert Type rejects out-of-range signed-integer conversions instead of wrapping positive values or
   converting infinities into ordinary integers.

@@ -88,6 +88,9 @@ Polars datetime formatting preserves native time zones and nanosecond fractions 
 `python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
 identity.
 
+Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
+Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
+
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
 App regressions check these actions against the host message decoder. Toggling an ordinary value preserves null and
