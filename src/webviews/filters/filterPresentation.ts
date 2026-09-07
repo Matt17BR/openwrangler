@@ -83,9 +83,42 @@ export const selectionValueKey = (value: unknown): string => {
       Object.prototype.hasOwnProperty.call(cell, "raw") ? cell.raw : ["display", cell.display]
     ]);
   }
-  // Existing runtimes return display strings. Keep their historical string
-  // identity so an already-active legacy filter remains checked.
+  // Persisted filters can retain scalar selections from older runtimes.
   return `legacy:${String(value)}`;
+};
+
+export const matchesLegacySelection = (selected: unknown, candidate: unknown): boolean => {
+  if (isTypedSelectionToken(selected) || !isTypedSelectionToken(candidate)) return false;
+  const { cell, columnType } = candidate;
+  // Mixed Pandas object columns are described as strings. Their numeric and
+  // Boolean representatives must not inherit a legacy string's selection.
+  if (columnType === "string") return cell.kind === "string" && selected === cell.raw;
+  if (typeof selected !== "string") return selected === cell.raw && selected !== null;
+  switch (columnType) {
+    case "integer":
+      return selected === String(cell.raw);
+    case "float":
+      if (cell.kind === "infinity") {
+        return cell.sign === -1
+          ? selected === "-Infinity" || selected === "-inf"
+          : selected === "Infinity" || selected === "inf";
+      }
+      return (
+        /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/u.test(selected) &&
+        Number.isFinite(Number(selected)) &&
+        Number(selected) === cell.raw
+      );
+    case "boolean":
+      return selected.toLowerCase() === String(cell.raw);
+    case "datetime":
+      return selected.replace(" ", "T") === cell.raw;
+    case "duration":
+      // Historical duration lists used the same native text retained here;
+      // raw seconds cannot recover that text without a second duration parser.
+      return selected === cell.raw || (cell.kind === "duration" && selected === cell.display);
+    default:
+      return selected === cell.raw;
+  }
 };
 
 export const isTypedSelectionToken = (value: unknown): value is TypedSelectionToken => {

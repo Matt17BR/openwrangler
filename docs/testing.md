@@ -75,6 +75,12 @@ double and `integer64` cases in `r/tests/complete_catalog_contract.R`.
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup.
 
+FilterPanel component tests own checkbox membership, saved scalar selections, and unnamed-column navigation.
+
+The shared `fixtures/view-literal-contract.json` owns portable filter spellings. Persistence tests retain old bound
+Filter Rows steps while rejecting obsolete viewing payloads; Python filter and native R catalog tests execute the
+historical infinity selections through live and generated code.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:

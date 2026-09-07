@@ -280,6 +280,47 @@ describe("session persistence", () => {
     ).toEqual(expected);
   });
 
+  it.each(["committed", "draft"] as const)(
+    "retains a historical %s infinity Filter Rows step when its old viewing format is discarded",
+    (placement) => {
+      const filter = {
+        column: "value",
+        type: "float",
+        predicates: [],
+        valueFilter: {
+          kind: "values",
+          selectedValues: ["inf", "-inf"],
+          includeNulls: false,
+          includeNaN: false
+        }
+      };
+      const step = {
+        id: "historical-filter",
+        kind: "filterRows",
+        params: {
+          filterModel: {
+            filters: [{ ...filter, column: { id: "c:source:0", name: "value" } }],
+            sort: []
+          }
+        }
+      };
+      const cleaning = placement === "committed" ? { steps: [step] } : { steps: [], draftStep: step };
+
+      const decoded = decodePersistedSession({
+        backend: "pandas",
+        cleaning,
+        view: {
+          filterModel: { filters: [filter], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      });
+
+      expect(decoded).toEqual({ backend: "pandas", cleaning });
+      expect(decoded).not.toHaveProperty("view");
+    }
+  );
+
   it("rejects malformed and unknown saved operations", () => {
     expect(
       decodePersistedSession({

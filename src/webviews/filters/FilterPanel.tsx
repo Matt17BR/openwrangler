@@ -24,6 +24,8 @@ import {
   activeFilterConditionCount,
   activeFilterValueChoiceCount,
   filterValueLabel,
+  matchesLegacySelection,
+  isTypedSelectionToken,
   predicateLabel,
   selectionValueKey
 } from "./filterPresentation";
@@ -118,6 +120,7 @@ export function FilterPanel({
   const selectedValues = new Map(
     (activeFilter?.valueFilter?.selectedValues ?? []).map((value) => [selectionValueKey(value), value])
   );
+  const legacySelectedValues = [...selectedValues].filter(([, value]) => !isTypedSelectionToken(value));
 
   if (!metadata) {
     return <section className="panel">Preparing filters...</section>;
@@ -170,8 +173,14 @@ export function FilterPanel({
     }
     const nextSelected = new Map(selectedValues);
     const key = selectionValueKey(value);
-    if (nextSelected.has(key)) {
-      nextSelected.delete(key);
+    const matchingKeys = [
+      ...(nextSelected.has(key) ? [key] : []),
+      ...legacySelectedValues
+        .filter(([id, selected]) => id !== key && matchesLegacySelection(selected, value))
+        .map(([id]) => id)
+    ];
+    if (matchingKeys.length > 0) {
+      for (const matchingKey of matchingKeys) nextSelected.delete(matchingKey);
     } else {
       nextSelected.set(key, value);
     }
@@ -182,8 +191,8 @@ export function FilterPanel({
       valueFilter: {
         kind: "values",
         selectedValues: [...nextSelected.values()],
-        includeNulls: false,
-        includeNaN: false,
+        includeNulls: activeFilter?.valueFilter?.includeNulls ?? false,
+        includeNaN: activeFilter?.valueFilter?.includeNaN ?? false,
         search
       },
       predicates: activeFilter?.predicates ?? []
@@ -338,6 +347,12 @@ export function FilterPanel({
         />
       )}
 
+      {columnSchema?.name === "" && (
+        <p className="mutedText" role="status">
+          Viewing filters and sorts require a column name. Choose another column.
+        </p>
+      )}
+
       <details className="filterSection" open hidden={!filterSupported}>
         <summary>FILTERS</summary>
         <button
@@ -367,7 +382,7 @@ export function FilterPanel({
           <select
             aria-label="Filter column"
             value={columnId}
-            disabled={disabled || !hasActiveColumn}
+            disabled={disabled || metadata.schema.length === 0}
             onChange={(event) => setColumnId(event.target.value)}
           >
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
@@ -425,7 +440,10 @@ export function FilterPanel({
               <label key={selectionKey} className="checkboxRow">
                 <input
                   type="checkbox"
-                  checked={selectedValues.has(selectionKey)}
+                  checked={
+                    selectedValues.has(selectionKey) ||
+                    legacySelectedValues.some(([, selected]) => matchesLegacySelection(selected, selectionValue))
+                  }
                   disabled={valueControlsDisabled || !supportsTypedComparison}
                   onChange={() => toggleValue(selectionValue)}
                 />
@@ -539,7 +557,7 @@ export function FilterPanel({
           <select
             aria-label="Sort column"
             value={columnId}
-            disabled={disabled || !hasActiveColumn}
+            disabled={disabled || metadata.schema.length === 0}
             onChange={(event) => setColumnId(event.target.value)}
           >
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
@@ -858,7 +876,11 @@ function FilterRuleButton({
 }
 
 const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyMap<string, number>): string =>
-  (nameCounts.get(name) ?? 0) > 1 ? `${name} (column ${position + 1})` : name;
+  name === ""
+    ? `(empty name) (column ${position + 1})`
+    : (nameCounts.get(name) ?? 0) > 1
+      ? `${name} (column ${position + 1})`
+      : name;
 
 const coercePredicateValue = (value: string, columnType: ColumnType): string | number | boolean => {
   if (columnType === "boolean") {

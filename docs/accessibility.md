@@ -98,6 +98,10 @@ Filter and sort forms use native inputs, selects, checkboxes, buttons, and discl
 filters also appear above the grid with **Clear filters** and **Undo latest filter** controls; this filter undo is
 separate from cleaning-plan undo.
 
+Column selectors remain available when a dataframe contains unnamed columns. Viewing filters and sorts require a
+non-empty, unique column name; the drawer explains that limit while allowing selection of another column. Toggling
+a listed value preserves the filter's existing null and NaN selections.
+
 When a focused filter chip is removed, Open Wrangler keeps a stable focus target while the request is pending. After
 the confirmed response, focus moves to the nearest remaining chip, an available filter-history action, or the current
 grid cell. A deliberate focus move is preserved.

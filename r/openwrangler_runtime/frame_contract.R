@@ -1165,7 +1165,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       abort("invalid-view-value", sprintf("%s must be a decimal number", label))
     }
-    if (allow_infinity && grepl("^[+-]?Infinity$", text, perl = TRUE)) {
+    if (allow_infinity && grepl("^(?:[+-]?Infinity|-?inf)$", text, perl = TRUE)) {
       return(if (startsWith(text, "-")) -Inf else Inf)
     }
     if (!grepl("^[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?$", text, perl = TRUE)) {

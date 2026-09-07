@@ -105,7 +105,7 @@ VIEW_PREDICATE_OPERATORS: Mapping[str, frozenset[str]] = {
 }
 _INTEGER_VIEW_TEXT = re.compile(r"^[+-]?\d+$")
 _NUMBER_VIEW_TEXT = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
-_INFINITY_VIEW_TEXT = re.compile(r"^[+-]?Infinity$")
+_INFINITY_VIEW_TEXT = re.compile(r"^(?:[+-]?Infinity|-?inf)$")
 _DATE_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATETIME_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?$")
 _DURATION_SECONDS_TEXT = re.compile(r"^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$")
@@ -572,7 +572,7 @@ def generated_view_value_helper_lines() -> list[str]:
         "        if text == 'NaN':",
         "            raise ValueError('NaN must use the explicit includeNaN option.')",
         ("        number = re.fullmatch(r'[+-]?(?:(?:\\d+(?:\\.\\d*)?)|(?:\\.\\d+))(?:[eE][+-]?\\d+)?', text)"),
-        "        infinity = re.fullmatch(r'[+-]?Infinity', text)",
+        "        infinity = re.fullmatch(r'[+-]?Infinity|-?inf', text)",
         "        if not (number or infinity):",
         "            raise ValueError('Float view-filter values require a decimal number or explicit Infinity.')",
         "        result = float(text)",

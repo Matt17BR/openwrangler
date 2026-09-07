@@ -1260,6 +1260,44 @@ assert_identical(
 )
 remove("complete_composition", envir = source_environment)
 
+source_environment$legacy_infinity_frame <- data.frame(value = c(-Inf, 0, Inf, NA_real_, NaN))
+legacy_infinity_before <- serialize(source_environment$legacy_infinity_frame, NULL, version = 3L)
+for (index in seq_along(c("inf", "-inf"))) {
+  selected <- c("inf", "-inf")[[index]]
+  expected <- if (identical(selected, "inf")) Inf else -Inf
+  infinity_session <- session_id(2000L + index)
+  opened <- dispatch("openSession", list(
+    sessionId = infinity_session, variableName = "legacy_infinity_frame", page = page_window()
+  ))
+  assert_identical(opened$kind, "page", "legacy infinity source did not open")
+  step <- step_with("legacy-infinity", "filterRows", list(filterModel = list(
+    logic = "and", sort = I(list()), filters = I(list(list(
+      column = list(id = "r:c:0", name = "value"), type = "float", predicates = I(list()),
+      valueFilter = list(kind = "values", selectedValues = I(list(selected)), includeNulls = FALSE, includeNaN = FALSE)
+    )))
+  )))
+  preview <- dispatch("previewStep", list(
+    sessionId = infinity_session, revision = 0L, step = step, page = page_window()
+  ))
+  assert_identical(preview$kind, "stepPreview", "legacy infinity Filter Rows did not preview")
+  live_output <- snapshot_from_latest_capture("legacy infinity filter")
+  assert_identical(live_output$value, expected, "legacy infinity filter selected the wrong values")
+  generated_environment <- new.env(parent = baseenv())
+  assign("legacy_infinity_frame", unserialize(legacy_infinity_before), envir = generated_environment)
+  eval(parse(text = preview$code, keep.source = FALSE), envir = generated_environment)
+  assert_frame_identical(
+    generated_environment$open_wrangler_result, live_output, "generated legacy infinity filter diverged"
+  )
+  assert_identical(
+    serialize(source_environment$legacy_infinity_frame, NULL, version = 3L), legacy_infinity_before,
+    "legacy infinity filter changed its source"
+  )
+  assert_identical(
+    dispatch("closeSession", list(sessionId = infinity_session))$kind, "closed", "legacy infinity session did not close"
+  )
+}
+remove("legacy_infinity_frame", envir = source_environment)
+
 agent$dispose()
 cat(paste0(
   "complete native-R catalog contract passed: 32 live/generated/replayed operations; ",

@@ -79,6 +79,11 @@ Discovery selections remain bound to their originating Python kernel until the i
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.
 
+Filters / Sorts keeps column selectors usable when a column has an empty name; name-addressed actions on that column
+remain unavailable. Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
+checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
+without dropping the cleaning plan during replay.
+
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 

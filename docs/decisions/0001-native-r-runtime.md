@@ -123,7 +123,8 @@ Filter Rows and Sort Rows use the same typed rules as the read-only view, but be
 when the user creates a draft. Each source row has a private stable identity that survives filtering, sorting, plan
 history, and diff inspection. Active row counts are tracked separately from that source identity domain. Sort keys
 are applied in priority order with stable ties and independent missing-value placement. Filtering distinguishes `NA`
-from `NaN`. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
+from `NaN`. Float operands accept the historical `inf` and `-inf` aliases alongside explicit `Infinity` forms;
+bound generated code retains their native infinity values. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
 longer follows that key.
 
 Drop Missing Rows treats both `NA` and `NaN` as missing. It can remove rows when any selected column is missing or
