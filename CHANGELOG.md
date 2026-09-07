@@ -22,6 +22,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead
   of rounding them together or rejecting valid unsigned selections.
 - Convert Type accepts supported Arrow dictionary values across chunks and retains the native target's range checks.
+- Fill uses logical Arrow dictionary values and preserves encoded targets when no cells change. Generated Fill code
+  handles native Arrow dates consistently with live execution.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
 - Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
   DuckDB arrays remain containers in schema and generated-code checks.
