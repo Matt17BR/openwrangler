@@ -170,15 +170,24 @@ export function createPackagedTrustedPickleJourney({
       );
       assert.equal(createHash("sha256").update(readFileSync(sourcePath)).digest("hex"), sourceDigest);
 
-      await vscode.commands.executeCommand("notifications.clearAll");
-      assert.equal(
-        await withBoundedAcceptancePromise(
-          converted,
+      let dismissing = true;
+      const dismissCompletion = async (): Promise<void> => {
+        while (dismissing && completion.outcome === undefined) {
+          await vscode.commands.executeCommand("notifications.clearAll");
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        }
+      };
+      try {
+        const [result] = await withBoundedAcceptancePromise(
+          Promise.all([converted, dismissCompletion()]),
           WORKBENCH_OPERATION_TIMEOUT_MS,
           "the trusted pickle completion action"
-        ),
-        true
-      );
+        );
+        if (completion.outcome && "error" in completion.outcome) throw completion.outcome.error;
+        assert.equal(result, true);
+      } finally {
+        dismissing = false;
+      }
       recordAcceptanceProgress("platform-smoke:trusted-pickle:open");
       await withBoundedAcceptancePromise(
         vscode.commands.executeCommand("openWrangler.openFile", vscode.Uri.file(destinationPath)),
