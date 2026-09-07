@@ -1,4 +1,5 @@
 import type * as vscode from "vscode";
+import type { OpenWranglerBridge } from "../../extension/dataBridge";
 import type { NotebookCellResultTrackerDiagnostics } from "../../extension/notebooks/notebookCellResult";
 import type { PythonInteractiveDiagnostics } from "../../extension/notebooks/pythonInteractiveCommands";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
@@ -11,7 +12,7 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 
 export interface TestApi {
-  request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
+  request: OpenWranglerBridge["request"];
   setActiveSession(sessionId: string | undefined): void;
   activeSession():
     | {

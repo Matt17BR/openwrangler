@@ -3185,16 +3185,19 @@ async function exerciseReleasedJupyterExtension(
     assert.ok(applied, "The applied Polars Formula must retain its session.");
     assert.equal(applied.sessionId, polarsFrame.sessionId);
     assert.deepEqual(applied.metadata.steps, [preview.metadata.draftStep]);
-    const appliedPage = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId: polarsFrame.sessionId,
-      revision: applied.metadata.revision,
-      viewRequestId: "released-jupyter-polars-ordinary-applied",
-      filterModel: applied.metadata.filterModel,
-      offset: 0,
-      limit: 10
-    });
+    const appliedPage = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: polarsFrame.sessionId,
+        revision: applied.metadata.revision,
+        viewRequestId: "released-jupyter-polars-ordinary-applied",
+        filterModel: applied.metadata.filterModel,
+        offset: 0,
+        limit: 10
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(appliedPage.kind, "page");
     if (appliedPage.kind !== "page") throw new Error("The applied Polars Formula did not return a page.");
     assert.equal(appliedPage.metadata.sessionId, applied.sessionId);
@@ -3243,17 +3246,20 @@ async function exerciseReleasedJupyterExtension(
     assert.ok(literalOutput);
     assert.equal(literalOutput.type, "integer");
     const assertLiteralPage = async (revision: number, viewRequestId: string): Promise<void> => {
-      const result = await testing.request({
-        kind: "getPage",
-        sessionId: polarsFrame.sessionId,
-        revision,
-        viewRequestId,
-        offset: 0,
-        limit: 2,
-        filterModel: applied.metadata.filterModel,
-        columnOffset: literalOutput.position,
-        columnLimit: 1
-      });
+      const result = await testing.request(
+        {
+          kind: "getPage",
+          sessionId: polarsFrame.sessionId,
+          revision,
+          viewRequestId,
+          offset: 0,
+          limit: 2,
+          filterModel: applied.metadata.filterModel,
+          columnOffset: literalOutput.position,
+          columnLimit: 1
+        },
+        { ephemeralPage: true }
+      );
       const current = testing.activeSession();
       assert.equal(
         result.kind,
