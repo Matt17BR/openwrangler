@@ -2319,12 +2319,14 @@ class PolarsEngine(DataFrameEngine):
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
+            schema = f"_datetime_schema_{index}"
+            expression = f"_datetime_{index}"
             return [
-                (
-                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
-                    f".str.to_datetime(strict=False).dt.strftime({params['format']!r})"
-                    f".alias({target!r}))"
-                )
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}if {schema}[{column!r}].base_type() not in {{pl.Datetime, pl.Date}}:",
+                f"{prefix}    {expression} = {expression}.cast(pl.String).str.to_datetime(strict=False)",
+                (f"{prefix}df = df.with_columns({expression}.dt.strftime({params['format']!r}).alias({target!r}))"),
             ]
         if kind == "groupBy":
             keys = [bound_column_name(reference, kind) for reference in params["keys"]]

@@ -167,6 +167,9 @@ not convert through another dataframe engine. Viewing, all 32 cleaning operation
 supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
 Excel reader requires it; it is not a transport conversion path.
 
+Datetime formatting preserves native Date and Datetime columns, including time zones and nanosecond precision,
+before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
+
 ### DuckDB
 
 DuckDB file sessions retain a connection-free native SQL plan plus immutable column and type metadata. Each request

@@ -15,6 +15,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
 - Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching
   generated code. Native R scaling also handles finite ranges whose difference overflows.
+- Generated Polars datetime-formatting code preserves native time zones and nanosecond precision.
 - Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
   selected before previous-session cleanup.
 - Successful activation survives long scheduler or debugger pauses.
