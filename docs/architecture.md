@@ -270,6 +270,10 @@ Every schema that crosses the runtime, host, or webview boundary has non-empty u
 display data; IDs establish identity. A private row identity supports stable viewing but cannot be named by any public
 operation and never appears in pages, generated public metadata, or exports.
 
+Semantic column families follow the native outer type. Enum labels, nested child types and timezone metadata do not
+change that family; fixed-size arrays remain containers. DuckDB schema, profiles, view validation and value selections
+share its existing engine-specific classifier. Known scalar storage wrappers retain their explicit interpretation.
+
 Viewing filters and sorts address columns by name and require a unique, non-empty name. Cell menus, column headers,
 profile actions, and the filter panel share that eligibility check. Unnamed columns still support viewing, profiling,
 selection, and copy; their name-based actions explain why they are unavailable.

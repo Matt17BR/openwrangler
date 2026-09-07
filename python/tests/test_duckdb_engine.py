@@ -58,6 +58,103 @@ def source_relation() -> Any:
     )
 
 
+@pytest.mark.parametrize("label", ["integer", "decimal", "bool", "array", "struct", "datetime", "plain"])
+def test_duckdb_enum_labels_do_not_change_profiles_or_typed_filters(label: str) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        f"SELECT value::ENUM('{label}', 'other') AS value FROM (VALUES ('{label}'), ('other'), (NULL)) source(value)"
+    )
+    before = source.fetchall()
+    try:
+        assert engine.schema(source)[0]["type"] == "string"
+        summary = engine.summaries(source)[0]
+        assert summary["type"] == "string"
+        assert summary["nullCount"] == 1
+        values, truncated = engine.column_values(source, "value")
+        selected = next(item["selectionValue"] for item in values if item["value"] == label)
+        assert not truncated
+        assert selected == typed_selection_value(label, "string")
+        column_filter = {
+            "column": "value",
+            "type": "string",
+            "predicates": [],
+            "valueFilter": {"kind": "values", "selectedValues": [selected], "includeNulls": False, "includeNaN": False},
+        }
+        filtered = engine.apply_filter_model(source, {"filters": [column_filter], "sort": []})
+        assert engine._terminal_rows(filtered, "SELECT * FROM ow") == [(label,)]
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            step(
+                "filterRows",
+                filterModel={
+                    "filters": [{**column_filter, "column": lineage[0]}],
+                    "sort": [],
+                },
+            ),
+            schema,
+            lineage,
+        )
+        assert execute_generated(engine, source, [operation]).fetchall() == [(label,)]
+        assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("dtype", ["INTEGER[2]", "INTEGER[]"])
+def test_duckdb_fixed_and_variable_arrays_retain_container_profiles_and_sort_restriction(dtype: str) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(f"SELECT value::{dtype} AS value FROM (VALUES ([1,2]), (NULL)) source(value)")
+    before = source.fetchall()
+    try:
+        assert engine.schema(source)[0]["type"] == "list"
+        summary = engine.summaries(source)[0]
+        assert summary["type"] == "list"
+        assert summary["nullCount"] == 1
+        with pytest.raises(EngineError, match="sorting is unavailable for list columns"):
+            engine.apply_filter_model(source, {"filters": [], "sort": [{"column": "value", "direction": "asc"}]})
+        assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
+def test_duckdb_type_owner_keeps_existing_binary_and_unknown_boundaries() -> None:
+    assert duckdb_runtime._semantic_type("BIT") == "binary"
+    assert duckdb_runtime._semantic_type("VARINT") == "unknown"
+    assert duckdb_runtime._semantic_type("TIME") == "unknown"
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            "SELECT value::ENUM('integer','other') AS value FROM (VALUES ('integer'),('other'),(NULL)) t(value)",
+            [None] * 3,
+        ),
+        ("SELECT value::INTEGER[2] AS value FROM (VALUES ([1,2]),(NULL)) t(value)", [None] * 2),
+        ("SELECT value::INTEGER[] AS value FROM (VALUES ([1,2]),(NULL)) t(value)", [None] * 2),
+        ("SELECT value::BIGINT AS value FROM (VALUES (1),(3),(NULL)) t(value)", [0.0, 1.0, None]),
+    ],
+)
+def test_duckdb_min_max_generated_scalar_classification_matches_live(query: str, expected: list[float | None]) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(query)
+    before = source.fetchall()
+    try:
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(step("minMaxScale", column=lineage[0], newColumn="scaled"), schema, lineage)
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == [
+            (*row, value) for row, value in zip(before, expected, strict=True)
+        ]
+        assert generated.fetchall() == [(*row, value) for row, value in zip(before, expected, strict=True)]
+        assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
 def reserve_export_target(path: Path) -> dict[str, str]:
     path.touch(exist_ok=False)
     device, inode = _regular_file_identity(path)

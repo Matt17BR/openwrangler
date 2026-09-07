@@ -1156,9 +1156,18 @@ def normalized_numeric_sum(value: Any, semantic_type: str) -> dict[str, Any]:
 
 def infer_semantic_type(raw_type: str) -> ColumnType:
     lowered = raw_type.lower()
-    # Container dtypes include their children (for example ``List(Int64)``), so
-    # classify the outer type before looking for numeric tokens.
-    if lowered.endswith("[]") or any(token in lowered for token in ("list", "array")):
+    if lowered == "extension<arrow.bool8>[pyarrow]":
+        return "boolean"
+    if lowered == "extension<arrow.uuid>[pyarrow]":
+        return "string"
+    if re.search(r"\[\d*\]$", lowered):
+        return "list"
+    # Sparse is a storage wrapper; other dtype parameters describe children,
+    # enum labels or metadata and must not determine the outer family.
+    if lowered.startswith("sparse["):
+        lowered = lowered[7:].split(",", 1)[0]
+    lowered = re.split(r"[\[<(]", lowered, maxsplit=1)[0]
+    if any(token in lowered for token in ("list", "array")):
         return "list"
     if any(token in lowered for token in ("struct", "dict", "map")):
         return "struct"
@@ -1174,7 +1183,7 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
         return "boolean"
     if "datetime" in lowered or "timestamp" in lowered:
         return "datetime"
-    if lowered == "date" or lowered.endswith("[date]"):
+    if lowered == "date" or raw_type.lower().endswith("[date]"):
         return "date"
     if any(token in lowered for token in ("binary", "bytes", "blob")):
         return "binary"

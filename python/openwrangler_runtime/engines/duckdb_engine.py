@@ -56,7 +56,6 @@ from .base import (
     exact_integer_median,
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
-    infer_semantic_type,
     is_blank_delimited_file,
     is_internal_row_id_label,
     normalize_cell,
@@ -760,7 +759,7 @@ class DuckDBEngine(DataFrameEngine):
         if column not in visible:
             raise EngineError(f"Unknown DuckDB column: {column}")
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
-        column_type = infer_semantic_type(types[column])
+        column_type = _semantic_type(types[column])
         identifier = _quote_ident(column)
         conditions = [_valid_predicate(identifier, types[column])]
         if search:
@@ -2584,7 +2583,10 @@ def _timedelta_seconds_text(value: timedelta) -> str:
 
 def _semantic_type(raw_type: str) -> str:
     lowered = raw_type.lower()
-    if lowered.endswith("[]") or lowered.startswith(("list", "array")):
+    if re.search(r"\[\d*\]$", lowered):
+        return "list"
+    lowered = lowered.split("(", 1)[0]
+    if lowered.startswith(("list", "array")):
         return "list"
     if lowered.startswith(("struct", "map", "union")):
         return "struct"
@@ -3392,14 +3394,10 @@ def _ow_is_float(raw_type):
 
 
 def _ow_is_integer(raw_type):
-    lowered = str(raw_type).lower()
-    return any(
-        token in lowered
-        for token in (
-            "tinyint", "smallint", "integer", "bigint", "hugeint",
-            "utinyint", "usmallint", "uinteger", "ubigint",
-        )
-    )
+    return str(raw_type).lower() in {
+        "tinyint", "smallint", "integer", "bigint", "hugeint",
+        "utinyint", "usmallint", "uinteger", "ubigint", "uhugeint",
+    }
 
 
 def _ow_round_exact_expression(value, raw_type, decimals):
