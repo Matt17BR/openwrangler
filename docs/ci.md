@@ -53,6 +53,9 @@ npm test
 
 The exact-artifact installed smoke and its environment are documented once in [Testing](testing.md).
 
+Released-Jupyter R editor runs use the [notebook/tooling package selection](testing.md#native-r-editor-dependencies)
+resolved by their existing journey. Private package-version and kernel-readiness checks precede editor launch.
+
 ## Scheduled and release workflows
 
 The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:

@@ -416,7 +416,8 @@ try {
               "setup:prepare-r-jupyter-environment"
             );
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
-              containedBy: temporaryRoot
+              containedBy: temporaryRoot,
+              nativeEditorTooling: rJupyterSelection.nativeEditorTooling
             });
             let dependencyProbeResult;
             try {
