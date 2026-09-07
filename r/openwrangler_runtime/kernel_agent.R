@@ -6264,31 +6264,13 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(kind = %s, value = %s)", r_string(replacement$kind), value)
   }
 
-  fill_missing_code_helper_lines <- function(replacement_kinds) {
+  fill_missing_code_helper_lines <- function(replacement_kinds, fill_directional_values) {
     c(
-      if ("directional" %in% replacement_kinds) c(
-        "  .ow_fill_directional <- function(.ow_values, .ow_rows, .ow_direction, .ow_max_gap = NULL) {",
-        "    if (!.ow_direction %in% c(\"forward\", \"backward\")) stop(\"Open Wrangler received an invalid directional fill\", call. = FALSE)",
-        "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
-        "    .ow_result_values <- .ow_values",
-        "    .ow_missing <- is.na(.ow_values[.ow_rows])",
-        "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
-        "    .ow_runs <- rle(.ow_missing)",
-        "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
-        "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
-        "    for (.ow_run_index in which(.ow_runs$values)) {",
-        "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
-        "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
-        "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
-        "      .ow_donor <- if (.ow_direction == \"forward\") .ow_start - 1L else .ow_end + 1L",
-        "      if (.ow_donor < 1L || .ow_donor > length(.ow_rows)) next",
-        "      .ow_donor_position <- .ow_rows[[.ow_donor]]",
-        "      if (is.na(.ow_result_values[.ow_donor_position])) next",
-        "      .ow_result_values[.ow_rows[.ow_start:.ow_end]] <- .ow_result_values[.ow_donor_position]",
-        "    }",
-        "    .ow_result_values",
-        "  }"
-      ),
+      if ("directional" %in% replacement_kinds) {
+        directional_lines <- deparse(fill_directional_values, width.cutoff = 500L)
+        directional_lines[[1L]] <- paste0(".ow_fill_directional <- ", directional_lines[[1L]])
+        paste0("  ", directional_lines)
+      },
       if ("linearInterpolation" %in% replacement_kinds) c(
         "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
         "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
@@ -7594,7 +7576,8 @@ openwrangler_r_kernel_agent <- local({
     maximum_payload_bytes,
     maximum_name_bytes,
     safe_float_midpoint,
-    round_coarse_helpers
+    round_coarse_helpers,
+    fill_directional_values
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7851,7 +7834,7 @@ openwrangler_r_kernel_agent <- local({
     fill_steps <- Filter(function(step) identical(step$kind, "fillMissingValues"), bound_plan)
     if (length(fill_steps) > 0L) {
       fill_kinds <- vapply(fill_steps, function(step) step$replacement$kind, character(1L), USE.NAMES = FALSE)
-      lines <- c(lines, fill_missing_code_helper_lines(fill_kinds))
+      lines <- c(lines, fill_missing_code_helper_lines(fill_kinds, fill_directional_values))
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "groupBy"), logical(1L)))) {
       lines <- c(lines, group_by_code_helper_lines())
@@ -9680,7 +9663,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$limits$payloadBytes,
         frame_contract$limits$nameBytes,
         frame_contract$safe_float_midpoint,
-        frame_contract$round_coarse_helpers
+        frame_contract$round_coarse_helpers,
+        frame_contract$fill_directional_values
       )
     )
   }
@@ -9994,7 +9978,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$payloadBytes,
             frame_contract$limits$nameBytes,
             frame_contract$safe_float_midpoint,
-            frame_contract$round_coarse_helpers
+            frame_contract$round_coarse_helpers,
+            frame_contract$fill_directional_values
           )
         } else {
           NULL
@@ -10047,7 +10032,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$payloadBytes,
             frame_contract$limits$nameBytes,
             frame_contract$safe_float_midpoint,
-            frame_contract$round_coarse_helpers
+            frame_contract$round_coarse_helpers,
+            frame_contract$fill_directional_values
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10109,7 +10095,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$limits$payloadBytes,
               frame_contract$limits$nameBytes,
               frame_contract$safe_float_midpoint,
-              frame_contract$round_coarse_helpers
+              frame_contract$round_coarse_helpers,
+              frame_contract$fill_directional_values
             )
           ))
         }

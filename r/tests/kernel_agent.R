@@ -3352,6 +3352,105 @@ rm("directional_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
 directional_fill_closed <- dispatch("closeSession", list(sessionId = directional_fill_session_id))
 assert_identical(directional_fill_closed$kind, "closed", "the R directional-fill session did not close")
 
+directional_typed_values <- list(
+  factor = ordered(c(NA, "start", NA, NA, NA, "end"), levels = c("end", "start", "unused")),
+  integer64 = bit64::as.integer64(c(NA, "9007199254740993", NA, NA, NA, "9223372036854775807")),
+  datetime = as.POSIXct(c(NA, "2026-01-01", NA, NA, NA, "2026-07-01"), tz = "Europe/Berlin"),
+  duration = as.difftime(c(NA, 1, NA, NA, NA, 2), units = "hours"),
+  empty = double(),
+  all_missing = c(NA_real_, NaN, NA_real_)
+)
+directional_frame_bytes <- function(value) {
+  result <- unserialize(serialize(value, NULL, version = 3L))
+  if (inherits(result, "data.table")) attr(result, ".internal.selfref") <- NULL
+  serialize(result, NULL, version = 3L)
+}
+directional_source_environment <- new.env(parent = baseenv())
+directional_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, directional_source_environment)
+for (directional_type in names(directional_typed_values)) {
+  target <- directional_typed_values[[directional_type]]
+  sequence <- if (length(target) == 6L) c(4L, 1L, 3L, 2L, 6L, 5L) else seq_along(target)
+  directional_source_environment$directional_typed_frame <- data.frame(sequence = sequence, target = target)
+  if (identical(directional_type, "integer64")) {
+    directional_source_environment$directional_typed_frame <- data.table::as.data.table(directional_source_environment$directional_typed_frame)
+    data.table::setkey(directional_source_environment$directional_typed_frame, sequence)
+  } else if (identical(directional_type, "datetime")) {
+    directional_source_environment$directional_typed_frame <- tibble::as_tibble(directional_source_environment$directional_typed_frame)
+  }
+  if (length(target) > 0L) {
+    data.table::setattr(.subset2(directional_source_environment$directional_typed_frame, "target"), "names", paste0("element-", seq_along(target)))
+  }
+  directional_typed_before <- unserialize(serialize(directional_source_environment$directional_typed_frame, NULL, version = 3L))
+  typed_open <- dispatch_with(
+    directional_agent,
+    "openSession",
+    list(sessionId = directional_fill_session_id, variableName = "directional_typed_frame", page = page_window())
+  )
+  assert_identical(typed_open$kind, "page", paste("typed directional fill did not open", directional_type))
+  typed_plan <- list(
+    fill_step("typed-forward", "r:c:1", "target", list(
+      kind = "directional", direction = "forward", maxGap = 2L,
+      orderBy = I(list(list(column = list(id = "r:c:0", name = "sequence"), direction = "asc", nulls = "last")))
+    )),
+    list(id = "typed-custom", kind = "customCode", params = list(
+      code = ".ow_fill_directional <- function(...) stop('custom helper name escaped'); result <- df"
+    )),
+    fill_step("typed-backward", "r:c:1", "target", list(
+      kind = "directional", direction = "backward",
+      orderBy = I(list(list(column = list(id = "r:c:0", name = "sequence"), direction = "asc", nulls = "last")))
+    ))
+  )
+  typed_revision <- 0L
+  for (typed_step in typed_plan) {
+    typed_preview <- dispatch_with(
+      directional_agent,
+      "previewStep",
+      list(sessionId = directional_fill_session_id, revision = typed_revision, step = typed_step, page = page_window())
+    )
+    assert_identical(typed_preview$kind, "stepPreview", paste("typed directional plan did not preview", directional_type, typed_step$id, typed_preview$message))
+    typed_apply <- dispatch_with(
+      directional_agent,
+      "applyDraft",
+      list(sessionId = directional_fill_session_id, revision = typed_preview$revision, page = page_window())
+    )
+    assert_identical(typed_apply$action, "apply", paste("typed directional plan did not apply", directional_type, typed_step$id))
+    typed_revision <- typed_apply$revision
+  }
+  typed_inspection <- dispatch_with(
+    directional_agent,
+    "inspectStepInfo",
+    list(sessionId = directional_fill_session_id, revision = typed_revision, stepId = "typed-backward")
+  )
+  assert_identical(typed_inspection$kind, "stepInspectionInfo", "typed directional plan did not inspect")
+  typed_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+  for (typed_code in list(typed_preview$code, typed_apply$code, typed_inspection$code)) {
+    assert_fill_helpers(typed_code, ".ow_fill_directional")
+    typed_environment <- new.env(parent = baseenv())
+    typed_environment$directional_typed_frame <- unserialize(serialize(directional_typed_before, NULL, version = 3L))
+    typed_environment$rle <- function(...) stop("directional helper used the caller's rle")
+    typed_environment$fill_directional_values <- function(...) stop("directional helper used the caller's function")
+    eval(parse(text = typed_code), envir = typed_environment)
+    assert_identical(
+      directional_frame_bytes(typed_environment$open_wrangler_result),
+      directional_frame_bytes(typed_live),
+      paste("typed directional generated/live metadata disagreed", directional_type)
+    )
+    assert_identical(
+      directional_frame_bytes(typed_environment$directional_typed_frame),
+      directional_frame_bytes(directional_typed_before),
+      "typed directional generated code mutated its source"
+    )
+  }
+  assert_identical(
+    directional_frame_bytes(directional_source_environment$directional_typed_frame),
+    directional_frame_bytes(directional_typed_before),
+    "typed directional live plan mutated its source"
+  )
+  typed_closed <- dispatch_with(directional_agent, "closeSession", list(sessionId = directional_fill_session_id))
+  assert_identical(typed_closed$kind, "closed", "typed directional session did not close")
+}
+directional_agent$dispose()
+
 source_environment$linear_fill_frame <- data.frame(
   coordinate = c(12, 0, 5, 20, 8, 30, 3),
   target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_),

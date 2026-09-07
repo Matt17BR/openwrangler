@@ -224,6 +224,9 @@ explicit named-input behavior. This keeps later attribute-sensitive custom code 
 
 Generated Fill Missing Values code includes only the helper families used by the complete plan. Repeated and mixed
 steps retain each required family once, including scalar datetime and numeric midpoint dependencies.
+Directional Fill uses the same native missing-run and donor-selection function in live execution and standalone
+generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
+existing owners.
 
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and

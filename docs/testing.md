@@ -91,6 +91,8 @@ receipt after layout settles and retain its session, revision, and DOM marker ch
 
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
+Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
+apply, and inspection code must preserve complete live results and source frames despite conflicting caller names.
 
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
