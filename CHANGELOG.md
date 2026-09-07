@@ -13,20 +13,14 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Pandas and Polars exports validate the destination file before truncation. Replacing the temporary path cannot
   redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
-
 - Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching
   generated code. Native R scaling also handles finite ranges whose difference overflows.
-
 - Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
   selected before previous-session cleanup.
-
 - Successful activation survives long scheduler or debugger pauses.
-
 - Value filters preserve null and NaN choices and recognize supported scalar selections. Unnamed
   columns no longer disable column navigation. Summary tab labels remain legible on hover.
-
 - Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
-
 - Release verification retries interrupted downloads within its existing limits, with bounded requests and sanitized
   transport errors. Invalid packages still fail verification.
 

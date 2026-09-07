@@ -9,8 +9,8 @@ Open Wrangler welcomes bug fixes, tests, documentation, and product improvements
 - Node.js `24.19.0` with its bundled npm `11.17.0` is the canonical development, CI, and packaging pair. The
   supported development engine range is `^22.17.0 || ^24.0.0`; Node 23 is intentionally unsupported.
 - VS Code 1.106 or newer for the Extension Development Host.
-- Python 3.10 through 3.14. Python 3.12 is the recommended development version and is the reference version in the
-  main CI workflow.
+- Python 3.10 through 3.14. Python 3.12 is the recommended development version and runs the packaged-editor CI
+  checks. The Python runtime contract job uses 3.10 to check the oldest supported interpreter.
 
 Use npm from the selected Node installation. The lockfile is authoritative; do not substitute another package
 manager.
