@@ -150,6 +150,12 @@ protocol-validation and state-restoration tests own text entry, canonical bounds
 Native R kernel and host transport owners check exact string retention, scalar precision refusal and actual generated
 R under changed display options, including the finite 309-digit endpoint. Existing scalar API controls remain separate.
 
+`python/tests/test_polars_engine.py` also owns ordinary integer Formula checks for paired operands, conversion loss,
+power limits and retained native output types. Live and generated cases preserve paired nulls and mixed-integer
+floating results; a failed preview beyond the requested page preserves the confirmed session. Mixed plans exercise
+Custom Code helper isolation, while structural controls limit guard output to one Boolean and leave floating and
+Decimal paths free of row scans.
+
 Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
 refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned

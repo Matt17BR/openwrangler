@@ -1399,7 +1399,9 @@ def test_polars_column_values_excludes_null_and_nan_special_values(lazy: bool):
     assert has_more is False
 
 
-def _polars_formula_literal_operation(frame: Any, operator: str, value: Any) -> dict[str, Any]:
+def _polars_formula_literal_operation(
+    frame: Any, operator: str, value: Any, *, right_column: bool = False
+) -> dict[str, Any]:
     schema = PolarsEngine().schema(frame)
     lineage = source_lineage(schema)
     return bind_step(
@@ -1410,7 +1412,7 @@ def _polars_formula_literal_operation(frame: Any, operator: str, value: Any) -> 
                 "params": {
                     "leftColumn": lineage[0],
                     "operator": operator,
-                    "value": value,
+                    **({"rightColumn": lineage[1]} if right_column else {"value": value}),
                     "newColumn": "result",
                 },
             }
@@ -1511,10 +1513,10 @@ def test_polars_formula_integer_string_refuses_literal_outside_native_capacity(v
 
 
 @pytest.mark.parametrize("right_column", [False, True])
-def test_polars_formula_existing_native_operands_do_not_run_string_preflight(
+def test_polars_formula_native_integer_collects_only_one_guard_boolean(
     right_column: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = pl.DataFrame({"value": pl.Series([120, None], dtype=pl.Int8), "other": pl.Series([10, 2], dtype=pl.Int8)})
+    source = pl.DataFrame({"value": pl.Series([100, None], dtype=pl.Int8), "other": pl.Series([10, 2], dtype=pl.Int8)})
     frame = source.lazy()
     engine = PolarsEngine()
     operation = _polars_formula_literal_operation(frame, "add", 10)
@@ -1542,12 +1544,20 @@ def test_polars_formula_existing_native_operands_do_not_run_string_preflight(
     expected = source.with_columns((pl.col("value") + right).alias("result"))
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
+    native_collect = pl.LazyFrame.collect
+    observed: list[tuple[int, int]] = []
+
+    def guard_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
+        result = cast(pl.DataFrame, native_collect(query, *args, **kwargs))
+        observed.append(result.shape)
+        assert result.shape == (1, 1) and result.item() is False
+        return result
+
     with monkeypatch.context() as guard:
-        guard.setattr(
-            pl.LazyFrame, "collect", lambda *_args, **_kwargs: pytest.fail("Ordinary Formula preflighted rows.")
-        )
+        guard.setattr(pl.LazyFrame, "collect", guard_collect)
         live = engine.apply_transform(frame, operation)
         generated = namespace["clean_data"](frame)
+    assert observed == [(1, 1), (1, 1)]
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
 
@@ -1685,3 +1695,255 @@ def test_polars_formula_integer_string_downstream_signedness(
         assert eager.schema["next"] == final_dtype
         assert eager.select(source.columns).equals(before)
     assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    ("left_dtype", "left_values", "right_dtype", "right_values", "operator"),
+    [
+        (pl.Int8, [1, 120, None], None, 10, "add"),
+        (pl.UInt8, [2, 0, None], None, 1, "subtract"),
+        (pl.Int16, [2, 30000, None], None, 3, "multiply"),
+        (pl.Int8, [1, None], None, 2**127 - 1, "add"),
+        (pl.Int128, [0, 2**127 - 1, None], pl.Int128, [1, 1, None], "add"),
+        (pl.Int128, [0, -(2**127), None], pl.Int128, [1, 1, None], "subtract"),
+        (pl.Int128, [1, 2**127 - 1, None], pl.Int128, [2, 2, None], "multiply"),
+        (pl.Int128, [2, 2**64, None], pl.UInt32, [3, 2, None], "power"),
+        (pl.UInt128, [1, 2, None], pl.UInt128, [2**32 - 1, 128, None], "power"),
+        (pl.Int8, [2, None], None, 7, "power"),
+        (pl.Int128, [None], pl.UInt128, [2**32], "power"),
+        (pl.Int128, [-1, None], pl.UInt128, [2**127, None], "add"),
+        (pl.UInt64, [2**64 - 1, None], pl.Int64, [-(2**63), None], "add"),
+        (pl.UInt64, [2**64 - 1, None], pl.Int64, [2, None], "modulo"),
+    ],
+)
+def test_polars_formula_native_integer_rejects_unsafe_rows(
+    lazy: bool,
+    left_dtype: Any,
+    left_values: list[Any],
+    right_dtype: Any,
+    right_values: Any,
+    operator: str,
+) -> None:
+    source = pl.DataFrame({"value": pl.Series(left_values, dtype=left_dtype)})
+    if right_dtype is not None:
+        source = source.with_columns(pl.Series("right", right_values, dtype=right_dtype))
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(frame, operator, right_values, right_column=right_dtype is not None)
+    engine.validate_transform_preflight(frame, operation, engine.shape(frame))
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for run in (lambda: engine.apply_transform(frame, operation), lambda: namespace["clean_data"](frame)):
+        with pytest.raises((EngineError, ValueError), match="native integer capacity|loses precision"):
+            run()
+        assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    ("left_dtype", "left_values", "right_dtype", "right_values", "operator", "expected", "dtype"),
+    [
+        (pl.Int8, [120, None], None, 128, "add", [248, None], pl.Int16),
+        (pl.Int8, [120, None], None, 10.0, "add", [130.0, None], pl.Float64),
+        (pl.Int8, [7, None], None, 2, "divide", [3.5, None], pl.Float64),
+        (
+            pl.Int128,
+            [2**127 - 1, 0, None],
+            pl.Int128,
+            [-(2**127) + 1, 2**127 - 1, 1],
+            "add",
+            [0, 2**127 - 1, None],
+            pl.Int128,
+        ),
+        (
+            pl.Int128,
+            [-(2**127), 2**127 - 1, None],
+            pl.Int128,
+            [-(2**127), 2**127 - 1, 1],
+            "subtract",
+            [0, 0, None],
+            pl.Int128,
+        ),
+        (
+            pl.Int128,
+            [2**127 - 1, 1, 0, None],
+            pl.Int128,
+            [1, 2**127 - 1, 2**127 - 1, 2],
+            "multiply",
+            [2**127 - 1, 2**127 - 1, 0, None],
+            pl.Int128,
+        ),
+        (pl.Int128, [-(2**127), None], None, 1, "multiply", [-(2**127), None], pl.Int128),
+        (pl.UInt128, [2**128 - 1, None], None, 1, "multiply", [2**128 - 1, None], pl.UInt128),
+        (
+            pl.Int128,
+            [-2, 2, 1, 0, None],
+            pl.UInt32,
+            [127, 3, 2**32 - 1, 1, 2],
+            "power",
+            [-(2**127), 8, 1, 0, None],
+            pl.Int128,
+        ),
+        (pl.Int8, [-2, 2, 0, None], pl.Int64, [7, 6, 0, 1], "power", [-128, 64, 1, None], pl.Int8),
+        (pl.Int8, [4, None], None, 0.5, "power", [2.0, None], pl.Float64),
+        (pl.Int128, [None, -1], pl.UInt128, [2**127, None], "add", [None, None], pl.Int128),
+        (pl.UInt64, [2**64 - 1, None], pl.Int64, [1, None], "add", [float(2**64), None], pl.Float64),
+        (pl.UInt64, [9, 1, None], pl.Int64, [-4, 0, 2], "modulo", [-3.0, float("nan"), None], pl.Float64),
+        (pl.Int128, [1, None], None, 0, "modulo", [None, None], pl.Int128),
+        (pl.Int128, [], pl.UInt128, [], "multiply", [], pl.Int128),
+        (pl.UInt128, [None, None], pl.UInt128, [0, None], "power", [None, None], pl.UInt128),
+        (pl.Decimal(12, 2), [Decimal("1.25"), None], None, 2, "multiply", [Decimal("2.50"), None], pl.Decimal(38, 2)),
+    ],
+)
+def test_polars_formula_native_integer_keeps_correlated_and_native_results(
+    lazy: bool,
+    left_dtype: Any,
+    left_values: list[Any],
+    right_dtype: Any,
+    right_values: Any,
+    operator: str,
+    expected: list[Any],
+    dtype: Any,
+) -> None:
+    source = pl.DataFrame({"value": pl.Series(left_values, dtype=left_dtype)})
+    if right_dtype is not None:
+        source = source.with_columns(pl.Series("right", right_values, dtype=right_dtype))
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(frame, operator, right_values, right_column=right_dtype is not None)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+        assert isinstance(result, pl.LazyFrame) == lazy
+        eager = result.collect(engine="streaming") if lazy else result
+        assert eager["result"].equals(pl.Series("result", expected, dtype=dtype))
+        assert eager.select(source.columns).equals(before)
+        assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_formula_native_integer_hidden_overflow_restores_session(
+    monkeypatch: pytest.MonkeyPatch, lazy: bool
+) -> None:
+    import __main__
+
+    source = pl.DataFrame({"value": pl.Series([1, 120], dtype=pl.Int8)})
+    before = source.clone()
+    monkeypatch.setattr(__main__, "formula_native_source", source.lazy() if lazy else source, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "variableName": "formula_native_source"},
+        backend="polars",
+        mode="editing",
+        page_size=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    committed = session.committed
+    column = opened["metadata"]["schema"][0]
+    try:
+        with pytest.raises(EngineError, match="native integer capacity"):
+            manager.preview_step(
+                session_id,
+                0,
+                {
+                    "id": "hidden-overflow",
+                    "kind": "formula",
+                    "params": {
+                        "leftColumn": {"id": column["id"], "name": column["name"]},
+                        "operator": "add",
+                        "value": 10,
+                        "newColumn": "result",
+                    },
+                },
+                0,
+                1,
+            )
+        assert session.revision == 0
+        assert session.committed is committed
+        assert session.draft_step is None and session.draft_frame is None
+        assert session.plan == [] and session.bound_plan == []
+        current = manager.get_page(session_id, 0, 0, 1, {"filters": [], "sort": []})
+        assert current["metadata"] == opened["metadata"] and current["page"] == opened["page"]
+        assert source.equals(before)
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_formula_native_integer_mixed_plan_isolates_generated_helpers(lazy: bool) -> None:
+    source = pl.DataFrame({"value": pl.Series([3, -4, None], dtype=pl.Int8), "invalid": [False, True, None]})
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    plan = [_polars_formula_literal_operation(frame, "add", 2)]
+    current = engine.apply_transform(frame, plan[0])
+    custom = validate_step(
+        {
+            "id": "helper-collision",
+            "kind": "customCode",
+            "params": {
+                "code": (
+                    "def _ow_polars_check_formula(*args):\n    raise AssertionError('custom local escaped')\n"
+                    "def root_limit(*args):\n    return 0\n"
+                    "result = df.with_columns(pl.col('result').alias('copied'))"
+                )
+            },
+        }
+    )
+    schema = engine.schema(current)
+    plan.append(bind_step(custom, schema, source_lineage(schema)))
+    current = engine.apply_transform(current, plan[-1])
+    for value, operator, output in [("200", "add", "wide"), (3, "power", "cube")]:
+        schema = engine.schema(current)
+        lineage = source_lineage(schema)
+        selected = next(reference for reference in lineage if reference["name"] == "copied")
+        step = bind_step(
+            validate_step(
+                {
+                    "id": output,
+                    "kind": "formula",
+                    "params": {
+                        "leftColumn": selected,
+                        "value": value,
+                        "operator": operator,
+                        "newColumn": output,
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        plan.append(step)
+        current = engine.apply_transform(current, step)
+    namespace: dict[str, Any] = {}
+    code = engine.compile_plan(plan)
+    exec(code, namespace)
+    generated = namespace["clean_data"](frame)
+    for result in (current, generated):
+        assert isinstance(result, pl.LazyFrame) == lazy
+        eager = result.collect(engine="streaming") if lazy else result
+        assert eager["cube"].equals(pl.Series("cube", [125, -8, None], dtype=pl.Int8))
+        assert eager["wide"].equals(pl.Series("wide", [205, 198, None], dtype=pl.Int16))
+        assert eager.select(source.columns).equals(before)
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("dtype", [pl.Float32, pl.Float64, pl.Decimal(12, 2)])
+def test_polars_formula_native_noninteger_has_no_row_guard(dtype: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = pl.DataFrame({"value": pl.Series([1, 2, None], dtype=dtype)})
+    frame = source.lazy()
+    engine = PolarsEngine()
+    step = _polars_formula_literal_operation(frame, "multiply", 3)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    with monkeypatch.context() as guard:
+        guard.setattr(pl.LazyFrame, "collect", lambda *_args, **_kwargs: pytest.fail("Floating/Decimal rows scanned."))
+        live = engine.apply_transform(frame, step)
+        generated = namespace["clean_data"](frame)
+    expected = source.with_columns((pl.col("value") * pl.lit(3)).alias("result"))
+    assert live.collect().equals(expected)
+    assert generated.collect().equals(expected)

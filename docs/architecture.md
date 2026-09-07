@@ -270,9 +270,15 @@ For a new Formula integer string and an integer source, Polars checks the select
 maximum before add, subtract, multiply or integer power. It uses the smallest common native integer capacity at
 least as wide as the source, checking operands and result bounds; unsupported capacity is refused. Only the two
 aggregate values cross into Python. Division retains native floating output, and modulo retains native null and
-sign behavior. Existing numeric and right-column formulas retain their native arithmetic rules.
+sign behavior.
+
+Ordinary integer Formula keeps its inferred native output dtype and refuses overflow or casts that would introduce
+nulls for present operand pairs. Polars scans the selected operands using each row's actual pair; integer powers use
+bounded exact limits. When UInt64 and signed integers of at most 64 bits promote to Float64, an exact native Int128
+reference detects result precision loss. Correct native floating results and modulo-zero NaN remain unchanged.
+Only one guard Boolean crosses into Python. Floating and Decimal operands, and division, retain native arithmetic.
 Generated code performs the same checks. A caller-owned LazyFrame must keep its external inputs stable between
-this check and later collection; the check does not materialize or snapshot the frame.
+these checks and later collection; the checks do not materialize or snapshot the frame.
 
 Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
 collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit
