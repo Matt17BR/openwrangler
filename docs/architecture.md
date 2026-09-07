@@ -201,6 +201,9 @@ present infinities are rejected before conversion; failed previews or applies pr
 Fill reads selected dictionary targets, donors and keys as logical values. Filled targets use native logical storage;
 targets with no filled cells and unrelated encoded columns retain their dictionary representation. Decimal capacity
 and timezone checks still apply to replacement literals when the target has no missing cells.
+CSV and Parquet export prepare logical scalar dictionary columns in a temporary frame. When the user preserves the
+index, eligible dictionary index levels are prepared there as well. Source arrays, index levels and codes remain
+unchanged; native writers determine the exported string representation.
 
 ### Polars
 
