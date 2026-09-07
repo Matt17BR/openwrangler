@@ -748,9 +748,6 @@ function registerNativeViewsTransactional(
     "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": retain(new OpenWranglerTreeProvider("steps", coordinator))
   };
-  for (const [id, provider] of Object.entries(providers)) {
-    retain(vscode.window.registerTreeDataProvider(id, provider));
-  }
   context.subscriptions.push(
     registerCommand("openWrangler.refreshLiveDataframes", async () => {
       if (notebookVariables?.snapshot()) {
@@ -1049,6 +1046,8 @@ function registerNativeViewsTransactional(
     }),
     registerCommand("openWrangler.insertRDocumentCode", async () => {
       lastNotebookInsertionStatus = undefined;
+      const originatingSessionId = coordinator.activeSession()?.sessionId;
+      const origin = coordinator.activeTextDocumentOrigin();
       if (!(await requireTrustedWorkspace("insert generated code into an R document"))) {
         lastNotebookInsertionStatus = "untrusted";
         return false;
@@ -1059,6 +1058,11 @@ function registerNativeViewsTransactional(
         return reportCodePreviewActionFailure(acquired, "inserting");
       }
       const { snapshot, code } = acquired;
+      if (snapshot.sessionId !== originatingSessionId) {
+        lastNotebookInsertionStatus = "stale";
+        void vscode.window.showWarningMessage("The active dataframe changed before code insertion. Try again.");
+        return false;
+      }
       if (!snapshot.metadata.capabilities.documentInsert || snapshot.metadata.source.kind !== "documentVariable") {
         lastNotebookInsertionStatus = "unsupported-source";
         void vscode.window.showWarningMessage("The active Open Wrangler session did not come from an R document.");
@@ -1069,7 +1073,6 @@ function registerNativeViewsTransactional(
         void vscode.window.showWarningMessage("Only generated R can be inserted into an R source document.");
         return false;
       }
-      const origin = coordinator.activeTextDocumentOrigin();
       if (!origin) {
         lastNotebookInsertionStatus = "missing-source-document";
         void vscode.window.showWarningMessage(
@@ -1103,6 +1106,8 @@ function registerNativeViewsTransactional(
     }),
     registerCommand("openWrangler.insertNotebookCode", async () => {
       lastNotebookInsertionStatus = undefined;
+      const originatingSessionId = coordinator.activeSession()?.sessionId;
+      const notebook = coordinator.activeNotebookDocument();
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) {
         lastNotebookInsertionStatus = "untrusted";
         return false;
@@ -1113,12 +1118,16 @@ function registerNativeViewsTransactional(
         return reportCodePreviewActionFailure(acquired, "inserting");
       }
       const { snapshot, code } = acquired;
+      if (snapshot.sessionId !== originatingSessionId) {
+        lastNotebookInsertionStatus = "stale";
+        void vscode.window.showWarningMessage("The active dataframe changed before code insertion. Try again.");
+        return false;
+      }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
         lastNotebookInsertionStatus = "unsupported-source";
         void vscode.window.showWarningMessage("The active Open Wrangler session did not come from a notebook.");
         return false;
       }
-      const notebook = coordinator.activeNotebookDocument();
       if (!notebook || notebook.isClosed || !vscode.workspace.notebookDocuments.includes(notebook)) {
         lastNotebookInsertionStatus = "missing-notebook";
         void vscode.window.showWarningMessage("Reopen the originating notebook before inserting generated code.");
@@ -1173,12 +1182,7 @@ function registerNativeViewsTransactional(
         ? exportPinnedData(sessionId, revision)
         : false
     ),
-    codePreview,
-    retain(
-      vscode.window.registerWebviewViewProvider("openWrangler.codePreview", codePreview, {
-        webviewOptions: { retainContextWhenHidden: true }
-      })
-    )
+    codePreview
   );
 
   context.subscriptions.push(

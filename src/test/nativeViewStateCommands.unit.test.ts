@@ -57,7 +57,7 @@ describe("native state and presentation commands", () => {
       expect(nativeMocks.activeRegistrations.size).toBe(0);
       expect(nativeMocks.coordinatorListeners.size).toBe(0);
       expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
-      expect(nativeMocks.registrationDisposals.at(-1)).toBe("tree:openWrangler.operations");
+      expect(nativeMocks.registrationDisposals.at(-1)).toBe("command:openWrangler.refreshLiveDataframes");
       expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(1);
 
       firstWrite.resolve();

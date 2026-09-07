@@ -65,6 +65,59 @@ describe("native notebook and document insertion commands", () => {
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Inserted generated R into analysis.R.");
   });
 
+  it.each(["notebook", "R document"] as const)(
+    "keeps %s insertion on its captured origin after the code snapshot resolves",
+    async (kind) => {
+      const notebook = notebookDocument("file:///workspace/origin.ipynb", 3);
+      const replacementNotebook = notebookDocument("file:///workspace/other.ipynb", 5);
+      const documentOrigin = rDocumentOrigin("analysis.R");
+      const replacementDocumentOrigin = rDocumentOrigin("other.R");
+      nativeMocks.notebookDocuments.push(notebook, replacementNotebook);
+      const active = kind === "notebook" ? notebookVariableSnapshot() : rDocumentSnapshot();
+      const registered = register(active, notebook, documentOrigin);
+      const action = command(
+        kind === "notebook" ? "openWrangler.insertNotebookCode" : "openWrangler.insertRDocumentCode"
+      )();
+
+      // The trust check has settled and Code Preview has returned the original snapshot.
+      await Promise.resolve();
+      registered.setActiveSession({ ...active, sessionId: "replacement-session", code: "replacement code" });
+      registered.setNotebookDocument(replacementNotebook);
+      registered.setTextDocumentOrigin(replacementDocumentOrigin);
+
+      await expect(action).resolves.toBe(true);
+      if (kind === "notebook") {
+        expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(notebook, 3, active.code, {
+          source: "frame",
+          backend: "pandas",
+          languageId: "python"
+        });
+      } else {
+        expect(nativeMocks.insertGeneratedRDocumentCode).toHaveBeenCalledWith(documentOrigin, active.code);
+      }
+    }
+  );
+
+  it.each(["notebook", "R document"] as const)(
+    "rejects %s insertion when Code Preview belongs to a different session",
+    async (kind) => {
+      const notebook = notebookDocument("file:///workspace/origin.ipynb", 3);
+      nativeMocks.notebookDocuments.push(notebook);
+      const active = kind === "notebook" ? notebookVariableSnapshot() : rDocumentSnapshot();
+      const registered = register(active, notebook, rDocumentOrigin("analysis.R"));
+      const action = command(
+        kind === "notebook" ? "openWrangler.insertNotebookCode" : "openWrangler.insertRDocumentCode"
+      )();
+
+      registered.setActiveSession({ ...active, sessionId: "replacement-session", code: "replacement code" });
+
+      await expect(action).resolves.toBe(false);
+      expect(registered.notebookInsertionStatus()).toBe("stale");
+      expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+      expect(nativeMocks.insertGeneratedRDocumentCode).not.toHaveBeenCalled();
+    }
+  );
+
   it("does not wait for an actionless missing-code notification", async () => {
     const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
     const active = notebookVariableSnapshot();
@@ -132,3 +185,14 @@ describe("native notebook and document insertion commands", () => {
     expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledOnce();
   });
 });
+
+function rDocumentOrigin(filename: string) {
+  return {
+    kind: "textDocument" as const,
+    document: {
+      uri: { fsPath: `/workspace/${filename}`, toString: () => `file:///workspace/${filename}` },
+      version: 1
+    },
+    version: 1
+  };
+}
