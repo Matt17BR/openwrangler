@@ -435,6 +435,39 @@ def test_server_preflights_the_complete_correlated_envelope_before_committing(
     assert observe_session(manager, session_id, 0) == expected_observation
 
 
+def test_duckdb_unsigned_round_refusal_keeps_the_confirmed_plan(tmp_path: Path) -> None:
+    maximum = 2**128 - 1
+    path = tmp_path / "unsigned-round.csv"
+    source_bytes = b"value\n1\n2\n"
+    path.write_bytes(source_bytes)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="duckdb", page_size=2)
+        session_id = opened["metadata"]["sessionId"]
+        native_values = custom_step(
+            "unsigned-values",
+            f"result = duckdb.sql(\"SELECT '{maximum}'::UHUGEINT AS value UNION ALL SELECT NULL::UHUGEINT\")",
+        )
+        manager.preview_step(session_id, 0, native_values, 0, 2)
+        confirmed = manager.apply_draft(session_id, 1, 0, 2)
+        assert [row["values"][0]["raw"] for row in confirmed["page"]["rows"]] == [str(maximum), None]
+        column = confirmed["metadata"]["schema"][0]
+        invalid = {
+            "id": "overflow",
+            "kind": "roundNumber",
+            "params": {"column": {"id": column["id"], "name": column["name"]}, "decimals": -1, "newColumn": "rounded"},
+        }
+        session = manager.sessions[session_id]
+        before = session_state(session)
+        with pytest.raises(EngineError, match="UHUGEINT capacity"):
+            manager.preview_step(session_id, 2, invalid, 0, 2)
+        assert session_state(session) == before
+        assert manager.get_page(session_id, 2, 0, 2, session.filter_model)["page"] == confirmed["page"]
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+
+
 def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(tmp_path: Path) -> None:
     path = tmp_path / "lazy-source.csv"
     path.write_text("name,value\na,1\nb,2\nc,3\n", encoding="utf-8")

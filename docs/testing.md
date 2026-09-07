@@ -132,6 +132,8 @@ negative and extreme precision, midpoint neighbors, exact integer and Decimal ca
 masks, signed zero, and source identity. Arrow Decimal cases validate native readback and CSV/Parquet export; object
 Decimal cases change the caller's context before execution. Native R's catalog owns its corresponding numeric cases
 and executes them under altered display options.
+DuckDB unsigned 128-bit controls exercise exact capacity refusal, valid neighbors, nulls and empty results. Session
+transactions verify that a failed Round preview retains the previously committed plan and data.
 
 Native R frame and catalog owners compare picker raw values with distinct source values before filtering them.
 Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual JSON preview and generated execution.

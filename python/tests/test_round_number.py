@@ -589,6 +589,34 @@ def test_pandas_round_decimal_special_values_and_caller_context(decimals: int) -
             assert result["value"].tolist() == values
 
 
+@pytest.mark.parametrize("decimals", [-1, -39, -40, 0, 10**100, -(10**100)])
+@pytest.mark.parametrize("shape", ["present", "empty", "null"])
+def test_duckdb_round_unsigned_capacity_preserves_native_values(decimals: int, shape: str) -> None:
+    maximum = 2**128 - 1
+    values = [maximum - 5, maximum - 10, 0, None] if shape == "present" else [None]
+    source = duckdb.sql(
+        "SELECT * FROM (VALUES "
+        + ",".join(f"('{value}'::UHUGEINT)" if value is not None else "(NULL::UHUGEINT)" for value in values)
+        + ") source(value)"
+    )
+    if shape == "empty":
+        source = source.filter("FALSE")
+        values = []
+    expected = [
+        None if value is None else value if decimals >= 0 else 0 if decimals <= -40 else round(value, decimals)
+        for value in values
+    ]
+    adapter = DuckDBEngine()
+    try:
+        for result in rounded_frames(adapter, source, decimals):
+            assert values_for(result, "rounded") == expected
+            assert str(result.types[-1]) == "UHUGEINT"
+            assert values_for(result, "value") == values
+        assert values_for(source, "value") == values
+    finally:
+        adapter.close()
+
+
 @pytest.mark.parametrize("storage", ["wide", "unsigned-wide", "decimal"])
 def test_round_refuses_unrepresentable_exact_output(engine, storage: str) -> None:
     adapter, lazy = engine
@@ -614,7 +642,7 @@ def test_round_refuses_unrepresentable_exact_output(engine, storage: str) -> Non
             message = "Int128|too large"
         else:
             source = duckdb.sql(f"SELECT '{value}'::{raw_type} AS value UNION ALL SELECT NULL::{raw_type}")
-            message = "Could not convert string"
+            message = "UHUGEINT capacity" if storage == "unsigned-wide" else "Could not convert string"
         decimals = -1
     schema = adapter.schema(source)
     lineage = source_lineage(schema)

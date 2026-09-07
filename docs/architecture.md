@@ -189,6 +189,8 @@ otherwise they use the smallest compatible native width and scale. A nonnegative
 rounding does not remove existing Parquet export support. Already negative scales must remain readable by Arrow.
 Polars, DuckDB and Arrow Decimal results beyond usable native capacity are rejected without a floating or object
 fallback. Object Decimal arithmetic uses its own precision context and preserves the caller's.
+DuckDB compares the rounded unsigned 128-bit coefficient against its exact capacity before the final native cast;
+some native Windows casts otherwise wrap an overflowing value. The same expression owns live and generated checks.
 
 Floor and Ceiling preserve exact integer inputs and round Decimal values before any floating conversion. Decimal
 output storage may reduce fractional scale so an integral carry remains representable. Ordinary floating and text
