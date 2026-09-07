@@ -2,7 +2,7 @@
 
 ## Pull requests
 
-Every pull request runs the same five owners:
+Every pull request reports the same five required product checks:
 
 - **Source contracts (Node 24)** runs formatting, lint, TypeScript types, generated protocol/reference checks,
   documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest. It then builds the same
@@ -14,8 +14,17 @@ Every pull request runs the same five owners:
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
 - **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
 
-There is no path classifier. Branch protection directly requires all five product-owner jobs to pass. The separate
-CodeQL gate remains required by branch protection.
+Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python, native R, and
+Windows run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing
+regular, non-executable `README.md` or `docs/**/*.md` files. Each runtime has a cancellable execution job and a short
+required-result job. The latter reports success only for completed execution or a proved documentation-only omission.
+
+The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
+NUL-delimited Git diff; additions, deletions, renames, mode changes, mixed changes, empty diffs, and unavailable or
+unrecognized evidence select full checks. A failed proof job or malformed output fails the required result.
+Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
+canceled execution cannot satisfy a required check when full runtime checks were needed.
+Branch protection continues to require all five product checks and CodeQL.
 
 Drafts and ready pull requests use the same jobs. A new commit cancels the older run for that pull request. Successful
 pull-request jobs do not upload build output. The packaged smoke may upload its bounded diagnostics only after that

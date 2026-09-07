@@ -12,6 +12,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-proof:
+    name: Check documentation-only scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.proof.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - id: proof
+        name: Verify the exact pull-request merge
+        run: node scripts/ci-docs-only.mjs
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_MERGE_SHA: ${{ github.sha }}
+
   javascript:
     name: Source contracts (Node 24)
     runs-on: ubuntu-24.04
@@ -51,8 +75,10 @@ jobs:
       - name: Build with supported Node 22
         run: npm run build
 
-  python:
-    name: Python runtime contracts
+  python-runtime:
+    name: Execute Python runtime contracts
+    needs: docs-proof
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -84,8 +110,33 @@ jobs:
       - name: Python tests
         run: python -m pytest python/tests -q
 
-  r:
-    name: Native R frame, kernel, and transport contracts
+  python:
+    name: Python runtime contracts
+    needs: [docs-proof, python-runtime]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require completed runtime checks or proven documentation edits
+        shell: bash
+        env:
+          PROOF_RESULT: ${{ needs.docs-proof.result }}
+          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          RUNTIME_RESULT: ${{ needs.python-runtime.result }}
+        run: |
+          test "$PROOF_RESULT" = success
+          case "$DOCS_ONLY:$RUNTIME_RESULT" in
+            true:skipped)
+              echo 'Runtime checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false:success) ;;
+            *) exit 1 ;;
+          esac
+
+  r-runtime:
+    name: Execute native R contracts
+    needs: docs-proof
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -148,6 +199,29 @@ jobs:
         env:
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
 
+  r:
+    name: Native R frame, kernel, and transport contracts
+    needs: [docs-proof, r-runtime]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require completed runtime checks or proven documentation edits
+        shell: bash
+        env:
+          PROOF_RESULT: ${{ needs.docs-proof.result }}
+          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          RUNTIME_RESULT: ${{ needs.r-runtime.result }}
+        run: |
+          test "$PROOF_RESULT" = success
+          case "$DOCS_ONLY:$RUNTIME_RESULT" in
+            true:skipped)
+              echo 'Runtime checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false:success) ;;
+            *) exit 1 ;;
+          esac
+
   package-editor:
     name: Packaged VS Code smoke
     runs-on: ubuntu-24.04
@@ -192,8 +266,10 @@ jobs:
           compression-level: 9
           include-hidden-files: false
 
-  windows:
-    name: Windows filesystem and process contracts
+  windows-runtime:
+    name: Execute Windows contracts
+    needs: docs-proof
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -221,3 +297,26 @@ jobs:
           npx --no-install vitest run
           src/test/dependencyInstaller.unit.test.ts
           src/test/processShutdown.unit.test.ts
+
+  windows:
+    name: Windows filesystem and process contracts
+    needs: [docs-proof, windows-runtime]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require completed runtime checks or proven documentation edits
+        shell: bash
+        env:
+          PROOF_RESULT: ${{ needs.docs-proof.result }}
+          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          RUNTIME_RESULT: ${{ needs.windows-runtime.result }}
+        run: |
+          test "$PROOF_RESULT" = success
+          case "$DOCS_ONLY:$RUNTIME_RESULT" in
+            true:skipped)
+              echo 'Runtime checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false:success) ;;
+            *) exit 1 ;;
+          esac
