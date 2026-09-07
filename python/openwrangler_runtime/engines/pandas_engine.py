@@ -872,9 +872,9 @@ class PandasEngine(DataFrameEngine):
             df.isetitem(position, result)
             return df
         if kind == "formula":
-            left = df.iloc[:, self._bound_frame_position(df, params["leftColumn"], kind)]
+            left = _pandas_dictionary_values(df.iloc[:, self._bound_frame_position(df, params["leftColumn"], kind)])
             right = (
-                df.iloc[:, self._bound_frame_position(df, params["rightColumn"], kind)]
+                _pandas_dictionary_values(df.iloc[:, self._bound_frame_position(df, params["rightColumn"], kind)])
                 if params.get("rightColumn")
                 else params["value"]
             )
@@ -1006,7 +1006,7 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            result = _pandas_min_max_scale(df.iloc[:, position])
+            result = _pandas_min_max_scale(_pandas_dictionary_values(df.iloc[:, position]))
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
@@ -1015,10 +1015,11 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
+            series = _pandas_dictionary_values(df.iloc[:, position])
             if kind == "roundNumber":
-                result = _pandas_round(df.iloc[:, position], int(params.get("decimals", 0)))
+                result = _pandas_round(series, int(params.get("decimals", 0)))
             else:
-                result = _pandas_floor_ceil(df.iloc[:, position], kind == "ceilNumber")
+                result = _pandas_floor_ceil(series, kind == "ceilNumber")
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
@@ -1275,8 +1276,12 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        if needs_row_queries:
-            lines.extend(_generated_pandas_dictionary_helpers(include_rows=True))
+        if needs_row_queries or any(
+            step["kind"]
+            in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "byExample", "groupBy"}
+            for step in plan
+        ):
+            lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_integer_filter_helpers())
         if needs_row_queries:
@@ -1516,7 +1521,10 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_float_integer(value):",
-                    "    return value.astype('Float64') if isinstance(value, pd.Series) else float(value)",
+                    "    return (",
+                    "        _open_wrangler_dictionary_values(value).astype('Float64')",
+                    "        if isinstance(value, pd.Series) else float(value)",
+                    "    )",
                     "",
                     "",
                     "def _open_wrangler_is_integer_series(value):",
@@ -1571,6 +1579,10 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_is_decimal_series(series):",
+                    "    if isinstance(series.dtype, pd.ArrowDtype):",
+                    "        import pyarrow as pa",
+                    "        if pa.types.is_decimal(series.dtype.pyarrow_dtype):",
+                    "            return True",
                     "    present = [item for item in series.array if not _open_wrangler_missing_scalar(item)]",
                     "    return bool(present) and all(isinstance(item, Decimal) for item in present)",
                     "",
@@ -1598,7 +1610,11 @@ class PandasEngine(DataFrameEngine):
                     "        if not _open_wrangler_missing_scalar(item)",
                     "        and isinstance(item, Decimal) and item.is_finite()",
                     "    ]",
-                    "    exponent = min([int(item.as_tuple().exponent) for item in values] or [0])",
+                    "    declared_scale = getattr(getattr(series.dtype, 'pyarrow_dtype', None), 'scale', None)",
+                    "    declared_exponent = (",
+                    "        -int(declared_scale) if isinstance(declared_scale, int) and declared_scale >= 0 else 0",
+                    "    )",
+                    "    exponent = min([int(item.as_tuple().exponent) for item in values] or [declared_exponent])",
                     "    return Decimal((0, (0,), exponent))",
                     "",
                     "",
@@ -1836,7 +1852,7 @@ class PandasEngine(DataFrameEngine):
         if kind == "formula":
             left_position = bound_column_position(params["leftColumn"], kind)
             right = (
-                f"df.iloc[:, {bound_column_position(params['rightColumn'], kind)}]"
+                f"_open_wrangler_dictionary_values(df.iloc[:, {bound_column_position(params['rightColumn'], kind)}])"
                 if params.get("rightColumn")
                 else repr(params["value"])
             )
@@ -1845,7 +1861,8 @@ class PandasEngine(DataFrameEngine):
             ]
             return [
                 f"{prefix}df = pd.concat([df, "
-                f"(df.iloc[:, {left_position}] {symbol} {right}).rename({params['newColumn']!r})], axis=1)"
+                f"(_open_wrangler_dictionary_values(df.iloc[:, {left_position}]) {symbol} {right})"
+                f".rename({params['newColumn']!r})], axis=1)"
             ]
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
@@ -2054,7 +2071,10 @@ class PandasEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
             result = f"_scaled_{index}"
-            lines = [f"{prefix}{result} = _open_wrangler_min_max_scale(df.iloc[:, {position}])"]
+            lines = [
+                f"{prefix}{result} = _open_wrangler_min_max_scale("
+                f"_open_wrangler_dictionary_values(df.iloc[:, {position}]))"
+            ]
             if target is None or target == column:
                 return [*lines, f"{prefix}df.isetitem({position}, {result})"]
             return [*lines, f"{prefix}df = pd.concat([df, {result}.rename({target!r})], axis=1)"]
@@ -2062,10 +2082,11 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
+            series = f"_open_wrangler_dictionary_values(df.iloc[:, {position}])"
             expression = (
-                (f"_open_wrangler_round(df.iloc[:, {position}], {params.get('decimals', 0)!r})")
+                f"_open_wrangler_round({series}, {params.get('decimals', 0)!r})"
                 if kind == "roundNumber"
-                else (f"_open_wrangler_floor_ceil(df.iloc[:, {position}], {kind == 'ceilNumber'!r})")
+                else f"_open_wrangler_floor_ceil({series}, {kind == 'ceilNumber'!r})"
             )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
@@ -2123,9 +2144,13 @@ class PandasEngine(DataFrameEngine):
             grouped = f"_grouped_{index}"
             named_name = f"_group_named_{index}"
             selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
+            selected = f"_group_selected_{index}"
             lines = [
                 f"{prefix}{output_labels} = [df.columns[position] for position in {key_positions!r}]",
-                f"{prefix}{source} = pd.concat([df.iloc[:, position] for position in {selected_positions!r}], axis=1)",
+                f"{prefix}{selected} = {{position: _open_wrangler_dictionary_values(df.iloc[:, position]) "
+                f"for position in {list(dict.fromkeys(selected_positions))!r}}}",
+                f"{prefix}{source} = pd.concat([{selected}[position] for position in {selected_positions!r}], axis=1)",
+                f"{prefix}del {selected}",
                 f"{prefix}{source}.columns = {temporary_names!r}",
                 f"{prefix}{named_name} = {named!r}",
             ]
@@ -2588,7 +2613,11 @@ def _pandas_group_by_positions(
         _pandas_group_aggregation_semantics(operation) for _position, operation, _alias in aggregations
     ]
     selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
-    source = pd.concat([df.iloc[:, position] for position in selected_positions], axis=1)
+    selected = {
+        position: _pandas_dictionary_values(df.iloc[:, position]) for position in dict.fromkeys(selected_positions)
+    }
+    source = pd.concat([selected[position] for position in selected_positions], axis=1)
+    del selected
     source.columns = [*key_names, *value_names]
     key_states: list[tuple[object | None, bool]] = []
     for key_name in key_names:
@@ -4137,7 +4166,7 @@ def _pandas_widen_integer(value: Any) -> Any:
 def _pandas_float_integer(value: Any) -> Any:
     import pandas as pd
 
-    return value.astype("Float64") if isinstance(value, pd.Series) else float(value)
+    return _pandas_dictionary_values(value).astype("Float64") if isinstance(value, pd.Series) else float(value)
 
 
 def _pandas_append_result(df: Any, result: Any, name: str) -> Any:

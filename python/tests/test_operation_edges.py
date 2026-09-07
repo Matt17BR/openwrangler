@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from math import isnan
+from math import copysign, isnan
 from typing import Any, cast
 
 import pandas as pd
 import polars as pl
 import pytest
 
-from openwrangler_runtime._column_binding import bind_step
+from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.lineage import derive_lineage, source_lineage
@@ -1335,3 +1335,189 @@ def test_polars_floor_ceil_decimal_output_has_valid_capacity(
         assert result["integral"].to_list() == expected
         assert result["integral"].dtype == pl.Decimal(38, 0)
         result["integral"].to_arrow().validate(full=True)
+
+
+def _dictionary_numeric_buffers(series: pd.Series) -> list[Any]:
+    return [
+        (
+            chunk.type,
+            len(chunk),
+            chunk.offset,
+            len(chunk.dictionary),
+            chunk.dictionary.offset,
+            tuple(
+                None if value is None else value.to_pybytes()
+                for value in [*chunk.buffers(), *chunk.dictionary.buffers()]
+            ),
+        )
+        for chunk in cast(Any, series.array).__arrow_array__().chunks
+    ]
+
+
+@pytest.fixture(params=["integer", "unsigned", "decimal", "float"])
+def pandas_dictionary_numeric_source(request: pytest.FixtureRequest) -> pd.DataFrame:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    dtype, values = {
+        "integer": (pa.int64(), [2**53 + 1, None, -3, 2**53 + 1]),
+        "unsigned": (pa.uint64(), [2**64 - 1, None, 2**53 + 1, 2**64 - 1]),
+        "decimal": (pa.decimal128(30, 3), [Decimal("9007199254740993.125"), None, Decimal("-2.500"), None]),
+        "float": (pa.float64(), [float("nan"), None, -0.0, float("inf"), float("-inf"), 3.5]),
+    }[request.param]
+    indices = pa.array([*range(len(values)), None], type=pa.int8())
+    chunks = [
+        pa.DictionaryArray.from_arrays(indices, pa.array(book, type=dtype), ordered=True)
+        for book in (values, list(reversed(values)))
+    ]
+    selected = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    frame = pd.concat([pd.Series(range(len(selected))), selected, selected], axis=1)
+    frame.columns = ["value", "value", "encoded companion"]
+    frame.index = pd.MultiIndex.from_tuples([("same", i % 2) for i in range(len(frame))], names=["a", "b"])
+    frame.attrs["annotation"] = "retained source"
+    return frame
+
+
+@pytest.mark.parametrize("kind", ["roundNumber", "floorNumber", "ceilNumber", "minMaxScale"])
+@pytest.mark.parametrize("replace", [False, True])
+def test_pandas_dictionary_numeric_operand_preserves_values_and_source(
+    pandas_dictionary_numeric_source: pd.DataFrame, kind: str, replace: bool
+) -> None:
+    frame = pandas_dictionary_numeric_source
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step(kind, column=lineage[1], **({} if replace else {"newColumn": "result"})), schema, lineage
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    encoded = frame.iloc[:, 1].array.__arrow_array__()
+    original_buffers = _dictionary_numeric_buffers(frame.iloc[:, 1])
+    logical = frame.copy()
+    logical.isetitem(1, frame.iloc[:, 1].astype(pd.ArrowDtype(encoded.type.value_type)))
+    expected = runtime.apply_transform(logical, operation)
+    output_position = 1 if replace else 3
+
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual.iloc[:, output_position], expected.iloc[:, output_position])
+        pd.testing.assert_series_equal(actual.iloc[:, 0], frame.iloc[:, 0])
+        assert _dictionary_numeric_buffers(actual.iloc[:, 2]) == original_buffers
+        if not replace:
+            assert _dictionary_numeric_buffers(actual.iloc[:, 1]) == original_buffers
+        for left, right in zip(actual.iloc[:, output_position], expected.iloc[:, output_position], strict=True):
+            if isinstance(left, float) and left == 0:
+                assert copysign(1, left) == copysign(1, right)
+        result_lineage = derive_lineage(lineage, runtime.schema(actual), operation)
+        assert result_lineage[:3] == lineage
+        assert _dictionary_numeric_buffers(frame.iloc[:, 1]) == original_buffers
+        assert frame.attrs == {"annotation": "retained source"}
+        pd.testing.assert_index_equal(frame.index, logical.index)
+
+
+@pytest.mark.parametrize("decimals", [-(10**12), 10**12])
+def test_pandas_empty_dictionary_round_keeps_logical_native_type(
+    pandas_dictionary_numeric_source: pd.DataFrame, decimals: int
+) -> None:
+    frame = pandas_dictionary_numeric_source.iloc[:0]
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("roundNumber", column=lineage[1], decimals=decimals, newColumn="result"), runtime.schema(frame), lineage
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    value_type = frame.iloc[:, 1].dtype.pyarrow_dtype.value_type
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        assert actual.empty
+        assert actual.iloc[:, -1].dtype == pd.ArrowDtype(value_type)
+        assert actual.iloc[:, 2].dtype == frame.iloc[:, 2].dtype
+        pd.testing.assert_index_equal(actual.index, frame.index)
+
+
+@pytest.mark.parametrize("right_column", [False, True])
+def test_pandas_dictionary_formula_uses_logical_operands(right_column: bool) -> None:
+    pa = pytest.importorskip("pyarrow")
+    array = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), pa.array([-3, None, 7]))
+    frame = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.chunked_array([array, array])), "other": 2})
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    params = (
+        {"leftColumn": lineage[1], "rightColumn": lineage[0]}
+        if right_column
+        else {"leftColumn": lineage[0], "value": 2}
+    )
+    operation = bind_step(step("formula", **params, operator="divide", newColumn="result"), schema, lineage)
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    logical = frame.copy()
+    logical["value"] = logical["value"].astype("int64[pyarrow]")
+    expected = runtime.apply_transform(logical, operation)
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected["result"])
+        assert actual["result"].iloc[0] == pytest.approx(-2 / 3 if right_column else -1.5)
+        assert actual["value"].array.__arrow_array__().equals(cast(Any, frame["value"].array).__arrow_array__())
+
+
+def test_pandas_dictionary_by_example_division_and_direct_copy_keep_their_result_types() -> None:
+    pa = pytest.importorskip("pyarrow")
+    array = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), pa.array([2**53 + 1, None, -3]))
+    frame = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.chunked_array([array, array]))})
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    for examples in (
+        [{"inputs": [2], "output": 1}, {"inputs": [6], "output": 3}],
+        [{"inputs": [2], "output": 2}, {"inputs": [6], "output": 6}],
+    ):
+        operation = bind_step(
+            step("byExample", sourceColumns=lineage, examples=examples, newColumn="result"), schema, lineage
+        )
+        runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+        copied = operation["params"]["program"]["kind"] == "column"
+        for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+            if copied:
+                assert (
+                    actual["result"].array.__arrow_array__().equals(cast(Any, frame["value"].array).__arrow_array__())
+                )
+            else:
+                expected = frame["value"].astype("int64[pyarrow]").astype("Float64") / 2
+                pd.testing.assert_series_equal(actual["result"], expected.rename("result"))
+                assert actual["result"].iloc[2] == -1.5
+            assert actual["value"].array.__arrow_array__().equals(cast(Any, frame["value"].array).__arrow_array__())
+
+
+def test_pandas_dictionary_numeric_plan_agrees_after_derived_column_binding() -> None:
+    pa = pytest.importorskip("pyarrow")
+    values = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), pa.array([2**53 + 1, None, -15]))
+    frame = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.chunked_array([values, values]))})
+    runtime = PandasEngine()
+    source_array = cast(Any, frame["value"].array).__arrow_array__()
+    live = frame
+    logical = frame.astype({"value": "int64[pyarrow]"})
+    lineage = source_lineage(runtime.schema(frame))
+    plan = []
+    for kind in ("roundNumber", "formula", "byExample"):
+        params: dict[str, Any]
+        if kind == "roundNumber":
+            params = {"column": lineage[0], "decimals": -1, "newColumn": "rounded"}
+        elif kind == "formula":
+            params = {"leftColumn": lineage[1], "operator": "divide", "value": 2, "newColumn": "ratio"}
+        else:
+            params = {
+                "sourceColumns": [lineage[0]],
+                "newColumn": "inferred",
+                "examples": [{"inputs": [2], "output": 1}, {"inputs": [6], "output": 3}],
+            }
+        operation = bind_step(step(kind, **params), runtime.schema(live), lineage)
+        runtime.validate_transform_preflight(live, operation, runtime.shape(live))
+        live = runtime.apply_transform(live, operation)
+        logical = runtime.apply_transform(logical, operation)
+        lineage = derive_lineage(lineage, runtime.schema(live), operation)
+        plan.append(operation)
+    namespace: dict[str, Any] = {}
+    exec(runtime.compile_plan(plan), namespace)
+    for actual in (live, namespace["clean_data"](frame)):
+        pd.testing.assert_frame_equal(actual.iloc[:, 1:], logical.iloc[:, 1:])
+        assert actual["value"].array.__arrow_array__().equals(source_array)
+        assert cast(Any, frame["value"].array).__arrow_array__().equals(source_array)
+    with pytest.raises(ColumnBindingError, match="collides"):
+        bind_step(step("roundNumber", column=lineage[0], newColumn="ratio"), runtime.schema(live), lineage)
