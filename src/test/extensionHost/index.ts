@@ -10929,6 +10929,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
     app = await exactSessionApp(target.frame, opened.sessionId);
     assert.ok(app, "The Workflow scene must retain its renderer after adding ordered sorts.");
     await previewRevenueProjection(app, testing, "projected_revenue");
+    const workflowSidebar = await arrangePackagedProductSidebar(capturePage, "workflow");
     await fitPackagedWorkflowFormulaDraftGrid(testing, capturePage, opened.sessionId);
     const codePreview = await waitForCodePreview(capturePage, "projected_revenue");
     const visibleCode = await codePreview.innerText();
@@ -10936,7 +10937,6 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
     assert.match(visibleCode, /market_upper/u);
     assert.match(visibleCode, /projected_revenue/u);
     assert.match(visibleCode, /pl\.col\('revenue'\) \+ pl\.lit\(500\)/u);
-    const workflowSidebar = await arrangePackagedProductSidebar(capturePage, "workflow");
     await assertPackagedWorkflowScene(capturePage, testing, opened.sessionId, workflowSidebar, codePreview);
     await clearPackagedProductSceneTransientUi(capturePage);
     await captureWorkbenchScreenshot(
@@ -13099,9 +13099,48 @@ async function fitPackagedWorkflowFormulaDraftGrid(
   );
   target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The final Workflow draft width adjustment requires the exact production renderer.");
+  const widthCorrection = await app.evaluate((root, columnNames) => {
+    type ProductSceneElement = {
+      readonly clientWidth: number;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): { left: number; right: number; width: number };
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    const headers = Array.from(appRoot.querySelectorAll("th[data-column]"));
+    const firstHeader = headers.find((header) => header.getAttribute("data-column") === columnNames[0]);
+    const lastHeader = headers.find((header) => header.getAttribute("data-column") === columnNames.at(-1));
+    if (!scroller || !rowHeader || !firstHeader || !lastHeader) {
+      throw new Error("The Workflow draft fit geometry is incomplete.");
+    }
+    const availableWidth = scroller.clientWidth - rowHeader.getBoundingClientRect().width;
+    const columnSpan = lastHeader.getBoundingClientRect().right - firstHeader.getBoundingClientRect().left;
+    return availableWidth - columnSpan;
+  }, names);
+  if (Math.abs(widthCorrection) > 1) {
+    const adjusted = (columnWidths.get(projectedRevenue.id) ?? widths.at(-1)!) + Math.floor(widthCorrection);
+    assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted Workflow output column must remain readable.");
+    columnWidths = new Map([...columnWidths, [projectedRevenue.id, adjusted]]);
+    await testing.updateViewState(sessionId, {
+      ...testing.activeSession()!.viewState,
+      columnWidths,
+      selectedColumnId: projectedRevenue.id
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The final Workflow output-column width adjustment must synchronize with its exact renderer."
+    );
+  }
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The Workflow draft viewport alignment requires the exact production renderer.");
   const alignment = await app.evaluate((root, firstColumnName) => {
-    type ProductSceneRect = { left: number; width: number };
+    type ProductSceneRect = { left: number; right: number };
     type ProductSceneElement = {
       readonly scrollLeft: number;
       getAttribute(name: string): string | null;
@@ -13118,11 +13157,10 @@ async function fitPackagedWorkflowFormulaDraftGrid(
     if (!scroller || !rowHeader || !firstHeader) {
       throw new Error("The Workflow draft viewport-alignment geometry is incomplete.");
     }
-    const scrollerBounds = scroller.getBoundingClientRect();
     const firstBounds = firstHeader.getBoundingClientRect();
     return {
       currentScrollLeft: scroller.scrollLeft,
-      offset: firstBounds.left - (scrollerBounds.left + rowHeader.getBoundingClientRect().width)
+      offset: firstBounds.left - rowHeader.getBoundingClientRect().right
     };
   }, names[0]);
   const alignedScrollLeft = Math.max(0, Math.round(alignment.currentScrollLeft + alignment.offset));
@@ -13140,39 +13178,6 @@ async function fitPackagedWorkflowFormulaDraftGrid(
     true,
     "The aligned Workflow draft viewport must synchronize with its exact renderer."
   );
-  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  app = await exactSessionApp(target.frame, sessionId);
-  assert.ok(app, "The final Workflow draft width adjustment requires the exact production renderer.");
-  const trailingGap = await app.evaluate((root, columnName) => {
-    type ProductSceneElement = {
-      getAttribute(name: string): string | null;
-      getBoundingClientRect(): { right: number };
-      querySelector(selector: string): ProductSceneElement | null;
-      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
-    };
-    const appRoot = root as unknown as ProductSceneElement;
-    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
-    const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
-      (candidate) => candidate.getAttribute("data-column") === columnName
-    );
-    if (!scroller || !header) throw new Error("The Workflow draft fit geometry is incomplete.");
-    return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
-  }, projectedRevenue.name);
-  if (Math.abs(trailingGap) > 1) {
-    const adjusted = (columnWidths.get(projectedRevenue.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
-    assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted Workflow output column must remain readable.");
-    columnWidths = new Map([...columnWidths, [projectedRevenue.id, adjusted]]);
-    await testing.updateViewState(sessionId, {
-      ...testing.activeSession()!.viewState,
-      columnWidths,
-      selectedColumnId: projectedRevenue.id
-    });
-    assert.equal(
-      await testing.synchronizePanel(sessionId),
-      true,
-      "The final Workflow output-column width adjustment must synchronize with its exact renderer."
-    );
-  }
 }
 
 async function arrangePackagedProductSidebar(
