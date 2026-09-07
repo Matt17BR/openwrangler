@@ -10,12 +10,82 @@ import pytest
 
 import openwrangler_runtime.engines.base as engine_base
 import openwrangler_runtime.engines.polars_engine as polars_engine
-from openwrangler_runtime.engines.base import typed_selection_value
+from openwrangler_runtime._column_binding import bind_step
+from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.export_target import ExportWriterPath, _regular_file_identity
+from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("label", ["integer", "decimal", "bool", "array", "struct", "datetime", "plain"])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_enum_labels_do_not_change_profiles_or_typed_filters(label: str, lazy: bool) -> None:
+    engine = PolarsEngine()
+    source = pl.DataFrame({"value": pl.Series([label, "other", None], dtype=pl.Enum([label, "other"]))})
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    assert engine.schema(frame)[0]["type"] == "string"
+    summary = engine.summaries(frame)[0]
+    assert summary["type"] == "string"
+    assert summary["nullCount"] == 1
+    values, truncated = engine.column_values(frame, "value")
+    selected = next(item["selectionValue"] for item in values if item["value"] == label)
+    assert not truncated
+    assert selected == typed_selection_value(label, "string")
+    column_filter = {
+        "column": "value",
+        "type": "string",
+        "predicates": [],
+        "valueFilter": {"kind": "values", "selectedValues": [selected], "includeNulls": False, "includeNaN": False},
+    }
+    filtered = engine.apply_filter_model(frame, {"filters": [column_filter], "sort": []})
+    assert isinstance(filtered, pl.LazyFrame) == lazy
+    assert (filtered.collect() if lazy else filtered).rows() == [(label,)]
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "enum-filter",
+                "kind": "filterRows",
+                "params": {
+                    "filterModel": {
+                        "filters": [{**column_filter, "column": lineage[0]}],
+                        "sort": [],
+                    }
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    generated = namespace["clean_data"](frame)
+    assert isinstance(generated, pl.LazyFrame) == lazy
+    assert (generated.collect() if lazy else generated).rows() == [(label,)]
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_nested_array_does_not_replace_outer_struct_family(lazy: bool) -> None:
+    engine = PolarsEngine()
+    source = pl.DataFrame(
+        {"value": pl.Series([{"payload": [1, 2]}, None], dtype=pl.Struct({"payload": pl.Array(pl.Int64, 2)}))}
+    )
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    assert engine.schema(frame)[0]["type"] == "struct"
+    summary = engine.summaries(frame)[0]
+    assert summary["type"] == "struct"
+    assert summary["nullCount"] == 1
+    with pytest.raises(EngineError, match="sorting is unavailable for struct columns"):
+        engine.apply_filter_model(frame, {"filters": [], "sort": [{"column": "value", "direction": "asc"}]})
+    assert source.equals(before)
 
 
 def reserve_export_target(path: Path) -> dict[str, str]:

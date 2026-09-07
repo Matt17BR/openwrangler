@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import PandasEngine
 from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell
+from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.operations import validate_step
 
 
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
@@ -114,3 +120,103 @@ def test_semantic_type_inference_covers_duckdb_scalar_and_nested_types() -> None
     assert infer_semantic_type("UUID") == "string"
     assert infer_semantic_type("INTEGER[]") == "list"
     assert infer_semantic_type("MAP(VARCHAR, INTEGER)") == "struct"
+
+
+@pytest.mark.parametrize(
+    "raw_type,expected",
+    [
+        ("Enum(categories=['integer', 'array', 'struct'])", "string"),
+        ("ENUM('decimal', 'bool', 'timestamp')", "string"),
+        ("Struct({'payload': Array(Int64, shape=(2,))})", "struct"),
+        ("struct<payload:array<int>>", "struct"),
+        ("map<string,array<int>>", "struct"),
+        ("Array(Struct({'decimal': String}), shape=(2,))", "list"),
+        ("INTEGER[2]", "list"),
+        ("ENUM('integer')[2]", "list"),
+        ("struct<array: list<item: int64>>[pyarrow]", "struct"),
+        ("large_list<item: struct<value: int64>>[pyarrow]", "list"),
+        ("Sparse[int64, 0]", "integer"),
+        ("Sparse[float64, nan]", "float"),
+        ("int64[pyarrow]", "integer"),
+        ("decimal128(38, 6)[pyarrow]", "decimal"),
+        ("datetime64[ns, America/Indiana/Indianapolis]", "datetime"),
+        ("duration[us][pyarrow]", "duration"),
+        ("string[pyarrow]", "string"),
+        ("category", "string"),
+        ("complex128", "unknown"),
+        ("void", "unknown"),
+        ("extension<example.bool8>[pyarrow]", "unknown"),
+        ("extension<arrow.uuid.extra>[pyarrow]", "unknown"),
+        ("Enum(categories=['extension<arrow.bool8>[pyarrow]'])", "string"),
+        ("struct<extension<arrow.uuid>: int64>[pyarrow]", "struct"),
+    ],
+)
+def test_semantic_type_uses_outer_family_and_preserves_wrappers(raw_type: str, expected: str) -> None:
+    assert infer_semantic_type(raw_type) == expected
+
+
+@pytest.mark.parametrize("dtype", [pd.SparseDtype("int64", 0), pd.SparseDtype("float64", 0.0)])
+def test_pandas_sparse_schema_retains_underlying_numeric_family(dtype: pd.SparseDtype) -> None:
+    source = pd.DataFrame({"value": pd.Series([0, 1, 0], dtype=dtype)})
+    before = source.copy(deep=True)
+    expected = "integer" if dtype.subtype.kind == "i" else "float"
+    assert PandasEngine().schema(source)[0]["type"] == expected
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_arrow_bool8_retains_native_and_generated_equality_filtering() -> None:
+    pa = pytest.importorskip("pyarrow")
+    nested_name = "extension<arrow.bool8>[pyarrow]"
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(pa.array([1, 0, None], type=pa.bool8()), dtype=pd.ArrowDtype(pa.bool8())),
+            "detail": pd.Series(
+                [{nested_name: "yes"}, {nested_name: "no"}, None],
+                dtype=pd.ArrowDtype(pa.struct([(nested_name, pa.string())])),
+            ),
+        }
+    )
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    assert schema[0]["type"] == "boolean"
+    assert schema[1]["type"] == "struct"
+    column_filter = {
+        "column": "value",
+        "type": "boolean",
+        "predicates": [{"kind": "predicate", "operator": "equals", "value": True}],
+    }
+    live = engine.apply_filter_model(source, {"filters": [column_filter], "sort": []})
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "bool8-filter",
+                "kind": "filterRows",
+                "params": {"filterModel": {"filters": [{**column_filter, "column": lineage[0]}], "sort": []}},
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    generated = namespace["clean_data"](source)
+    pd.testing.assert_frame_equal(live, source.iloc[[0]])
+    pd.testing.assert_frame_equal(generated, live)
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_arrow_uuid_retains_its_scalar_schema() -> None:
+    pa = pytest.importorskip("pyarrow")
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(
+                pa.array([UUID("00112233-4455-6677-8899-aabbccddeeff"), None], type=pa.uuid()),
+                dtype=pd.ArrowDtype(pa.uuid()),
+            )
+        }
+    )
+    before = source.copy(deep=True)
+    assert PandasEngine().schema(source)[0]["type"] == "string"
+    pd.testing.assert_frame_equal(source, before)

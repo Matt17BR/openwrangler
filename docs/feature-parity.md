@@ -101,6 +101,9 @@ identity.
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
 
+Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
+container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.
+
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
 App regressions check these actions against the host message decoder. Toggling an ordinary value preserves null and

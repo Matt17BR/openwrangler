@@ -138,6 +138,10 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
 `python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
 
+Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
+selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
+the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.
+
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
 coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
