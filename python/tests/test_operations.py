@@ -76,7 +76,7 @@ def test_operation_registry_is_complete_and_validation_is_strict():
             operator="add",
             newColumn="result",
         )
-    with pytest.raises(OperationError, match="exactly one"):
+    with pytest.raises(OperationError, match="finite numeric value"):
         step(
             "bool-formula",
             "formula",
