@@ -285,6 +285,9 @@ never receives the authority to choose or commit the final destination. For Pyth
 temporary path and pinned identity only after the host syncs and closes its descriptor. Python then opens, truncates,
 writes, flushes, and closes its writer for that exact temporary. Native R streams chunks through the host writer, and
 the host writes generated-script bytes itself.
+Pandas and both eager and lazy Polars pass the validated binary writer to their native CSV and Parquet writers.
+Holding an earlier descriptor does not authorize reopening an unchecked pathname: identity must be checked before
+the writer truncates the file.
 
 After the applicable writer closes, the host revalidates the temporary, source, destination, parent mapping, and
 remote authority and performs one atomic rename. A runtime may use an additional private engine artifact internally,

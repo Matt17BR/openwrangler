@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from decimal import Decimal
 from importlib import import_module
 from importlib.util import find_spec
@@ -281,22 +282,12 @@ class PolarsEngine(DataFrameEngine):
         row_id = self._row_id_column(frame)
         if row_id is not None:
             frame = frame.drop(row_id)
-        if isinstance(frame, pl.LazyFrame):
-            if isinstance(path, ExportWriterPath):
-                with path.open_binary_writer() as writer:
-                    if format_name == "csv":
-                        frame.sink_csv(
-                            writer,
-                            separator=normalized["delimiter"],
-                            quote_char=normalized["quoteChar"],
-                            include_header=normalized["header"],
-                        )
-                        return
-                    if format_name == "parquet":
-                        frame.sink_parquet(writer)
-                        return
-            else:
-                destination = os.fspath(path)
+        with (
+            path.open_binary_writer()
+            if isinstance(path, ExportWriterPath)
+            else nullcontext(os.fspath(path)) as destination
+        ):
+            if isinstance(frame, pl.LazyFrame):
                 if format_name == "csv":
                     frame.sink_csv(
                         destination,
@@ -308,19 +299,19 @@ class PolarsEngine(DataFrameEngine):
                 if format_name == "parquet":
                     frame.sink_parquet(destination)
                     return
-        else:
-            df = self.normalize(frame)
-            if format_name == "csv":
-                df.write_csv(
-                    path,
-                    separator=normalized["delimiter"],
-                    quote_char=normalized["quoteChar"],
-                    include_header=normalized["header"],
-                )
-                return
-            if format_name == "parquet":
-                df.write_parquet(path)
-                return
+            else:
+                df = self.normalize(frame)
+                if format_name == "csv":
+                    df.write_csv(
+                        destination,
+                        separator=normalized["delimiter"],
+                        quote_char=normalized["quoteChar"],
+                        include_header=normalized["header"],
+                    )
+                    return
+                if format_name == "parquet":
+                    df.write_parquet(destination)
+                    return
         raise EngineError(f"Unsupported Polars export format: {format_name}")
 
     def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:

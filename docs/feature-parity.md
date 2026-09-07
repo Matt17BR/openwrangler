@@ -68,6 +68,9 @@ rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
 
+Pandas and Polars CSV/Parquet writers use identity-checked handles before truncation, with replacement-race
+coverage in `python/tests/test_configurable_export.py`.
+
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 

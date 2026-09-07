@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -12,38 +14,142 @@ from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
-from openwrangler_runtime.export_target import ExportTarget
+from openwrangler_runtime.export_target import ExportTarget, ExportTargetError
 from openwrangler_runtime.session import SessionManager
 
 
-def test_pandas_csv_export_applies_the_exact_dialect_encoding_header_and_index_policy(tmp_path: Path) -> None:
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "latin-1"])
+def test_pandas_csv_export_applies_the_exact_dialect_encoding_header_and_index_policy(
+    tmp_path: Path, pinned: bool, encoding: str
+) -> None:
     engine = PandasEngine()
     source = pd.DataFrame(
         {"city": ["café;Nord", "Berlin"], "value": [1, 2]},
         index=pd.Index(["invoice-a", "invoice-b"], name="invoice_id"),
     )
     frame = engine.ensure_row_ids(source, "configured-pandas")
-    destination = tmp_path / "configured-latin-1.csv"
+    destination = tmp_path / "configured.csv"
+    destination.touch()
+    details = destination.stat()
+    target = ExportTarget(destination, details.st_dev, details.st_ino)
 
-    engine.export_data(
-        frame,
-        destination,
-        {
-            "format": "csv",
-            "delimiter": ";",
-            "quoteChar": "'",
-            "encoding": "latin-1",
-            "header": False,
-            "rowAxisPolicy": "preserve",
-        },
-    )
+    with target.pinned_writer_path() if pinned else nullcontext(destination) as writer:
+        engine.export_data(
+            frame,
+            writer,
+            {
+                "format": "csv",
+                "delimiter": ";",
+                "quoteChar": "'",
+                "encoding": encoding,
+                "header": False,
+                "rowAxisPolicy": "preserve",
+            },
+        )
 
-    assert b"caf\xe9" in destination.read_bytes()
-    loaded = pd.read_csv(destination, sep=";", quotechar="'", encoding="latin-1", header=None, index_col=0)
+    assert "café;Nord" in destination.read_text(encoding=encoding)
+    loaded = pd.read_csv(destination, sep=";", quotechar="'", encoding=encoding, header=None, index_col=0)
     assert loaded.index.tolist() == ["invoice-a", "invoice-b"]
     assert loaded.iloc[:, 0].tolist() == ["café;Nord", "Berlin"]
     assert loaded.iloc[:, 1].tolist() == [1, 2]
     assert source.index.tolist() == ["invoice-a", "invoice-b"]
+
+
+@pytest.fixture(params=["pandas", "polars-eager", "polars-lazy"])
+def native_export(request: pytest.FixtureRequest) -> tuple[Any, Any, str]:
+    engine: Any
+    frame: Any
+    if request.param == "pandas":
+        engine = PandasEngine()
+        frame = pd.DataFrame({"value": [1, 2]})
+    else:
+        engine = PolarsEngine()
+        frame = pl.DataFrame({"value": [1, 2]})
+        if request.param == "polars-lazy":
+            frame = frame.lazy()
+    return engine, engine.ensure_row_ids(frame, "pinned-export"), str(request.param)
+
+
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+def test_native_exports_write_the_host_pinned_target(
+    tmp_path: Path, native_export: tuple[Any, Any, str], format_name: str
+) -> None:
+    engine, frame, backend = native_export
+    destination = tmp_path / f"host-reserved.{format_name}"
+    destination.touch()
+    details = destination.stat()
+    options = (
+        {"format": "parquet"}
+        if format_name == "parquet"
+        else {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+    )
+    if backend == "pandas":
+        options["rowAxisPolicy"] = "omit"
+    with ExportTarget(destination, details.st_dev, details.st_ino).pinned_writer_path() as writer:
+        engine.export_data(frame, writer, options)
+    loaded = pl.read_parquet(destination) if format_name == "parquet" else pl.read_csv(destination)
+    assert loaded.to_dict(as_series=False) == {"value": [1, 2]}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows pins prevent target replacement")
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+@pytest.mark.parametrize("replacement", ["symlink", "regular"])
+@pytest.mark.parametrize("replace_during_write", [False, True])
+def test_native_exports_never_write_a_replacement_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    native_export: tuple[Any, Any, str],
+    format_name: str,
+    replacement: str,
+    replace_during_write: bool,
+) -> None:
+    engine, frame, backend = native_export
+    destination = tmp_path / f"host-reserved.{format_name}"
+    destination.touch()
+    details = destination.stat()
+    displaced = tmp_path / "displaced.tmp"
+    source = tmp_path / "source.csv"
+    source.write_bytes(b"original source data\n")
+
+    def replace_target() -> None:
+        destination.rename(displaced)
+        if replacement == "symlink":
+            destination.symlink_to(source)
+        else:
+            destination.write_bytes(b"foreign replacement\n")
+
+    if replace_during_write:
+        frame_type = pd.DataFrame if backend == "pandas" else pl.LazyFrame if backend == "polars-lazy" else pl.DataFrame
+        prefix = "to_" if backend == "pandas" else "sink_" if backend == "polars-lazy" else "write_"
+        method_name = prefix + format_name
+        original_write = getattr(frame_type, method_name)
+
+        def write_after_replacement(native_frame, *args, **kwargs):
+            replace_target()
+            return original_write(native_frame, *args, **kwargs)
+
+        monkeypatch.setattr(frame_type, method_name, write_after_replacement)
+
+    options = (
+        {"format": "parquet"}
+        if format_name == "parquet"
+        else {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+    )
+    if backend == "pandas":
+        options["rowAxisPolicy"] = "omit"
+    with (
+        pytest.raises(ExportTargetError),
+        ExportTarget(destination, details.st_dev, details.st_ino).pinned_writer_path() as writer,
+    ):
+        if not replace_during_write:
+            replace_target()
+        engine.export_data(frame, writer, options)
+
+    assert source.read_bytes() == b"original source data\n"
+    assert destination.read_bytes() == (
+        b"original source data\n" if replacement == "symlink" else b"foreign replacement\n"
+    )
 
 
 @pytest.mark.parametrize("backend", ["polars", "duckdb"])
