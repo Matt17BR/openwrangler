@@ -171,5 +171,9 @@ Run a manual editor scenario only when the change crosses that UI or integration
 - Webview changes: check keyboard operation, accessible names, focus restoration, and light, dark, and high-contrast
   themes for the changed control.
 
+The released-Jupyter first-result journey enables Open Wrangler but leaves kernel consent unanswered until the first
+raw dataframe result appears. It then checks that the result gains its action without another execution. Disabled
+previews must not request automatic inspection; the notebook owner unit tests cover that separate behavior.
+
 Do not retain a second end-to-end journey for behavior already covered by the exact-artifact smoke or a direct source
 test. Do not retry deterministic failures; fix the product or remove a check that cannot identify a distinct failure.
