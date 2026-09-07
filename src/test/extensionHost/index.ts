@@ -3157,30 +3157,48 @@ async function exerciseReleasedJupyterExtension(
     if (phase === "jupyter-allow" && screenshotOutput) {
       await captureReleasedJupyterPolarsDraft(workbench, testing, polarsFrame.sessionId, screenshotOutput);
     }
-    const applied = await testing.request({
-      kind: "applyDraft",
+    const reviewApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The ordinary Polars Formula preview must reach its renderer before apply."
+    );
+    await reviewApp
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === polarsFrame.sessionId &&
+          active.metadata.revision > preview.metadata.revision &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          active.metadata.steps[0]?.id === "released-jupyter-double"
+        );
+      },
+      30_000,
+      "the visible ordinary Polars Formula apply"
+    );
+    const applied = testing.activeSession();
+    assert.ok(applied, "The applied Polars Formula must retain its session.");
+    assert.equal(applied.sessionId, polarsFrame.sessionId);
+    assert.deepEqual(applied.metadata.steps, [preview.metadata.draftStep]);
+    const appliedPage = await testing.request({
+      kind: "getPage",
       ...GRID_COLUMN_WINDOW,
       sessionId: polarsFrame.sessionId,
-      revision: preview.metadata.revision,
+      revision: applied.metadata.revision,
+      viewRequestId: "released-jupyter-polars-ordinary-applied",
+      filterModel: applied.metadata.filterModel,
       offset: 0,
       limit: 10
     });
-    const currentPolarsSession = testing.activeSession();
-    assert.equal(
-      applied.kind,
-      "planUpdated",
-      JSON.stringify({
-        errorCode:
-          applied.kind === "error" && /^[a-z][a-z0-9_]{0,63}$/u.test(applied.code) ? applied.code : "unclassified",
-        recoverable: applied.kind === "error" ? applied.recoverable : null,
-        requestedRevision: preview.metadata.revision,
-        currentRevision: currentPolarsSession?.metadata.revision ?? null,
-        currentSessionMatches: currentPolarsSession?.sessionId === polarsFrame.sessionId,
-        responseSessionMatches: applied.kind === "error" ? applied.sessionId === polarsFrame.sessionId : null
-      })
-    );
-    if (applied.kind !== "planUpdated") throw new Error("The released-Jupyter Polars plan did not apply.");
-    assert.equal(applied.metadata.steps.length, 1);
+    assert.equal(appliedPage.kind, "page");
+    if (appliedPage.kind !== "page") throw new Error("The applied Polars Formula did not return a page.");
+    assert.equal(appliedPage.metadata.sessionId, applied.sessionId);
+    assert.equal(appliedPage.revision, applied.metadata.revision);
 
     recordAcceptanceProgress(`${phase}:polars-exact-formula`);
     const literal = "9007199254740993";
@@ -3298,7 +3316,11 @@ async function exerciseReleasedJupyterExtension(
     assert.deepEqual(restoredPolars.metadata.steps, applied.metadata.steps);
     assert.deepEqual(restoredPolars.metadata.schema, applied.metadata.schema);
     assert.deepEqual(restoredPolars.metadata.source, polarsFrame.metadata.source);
-    assert.deepEqual(restoredPolars.page, applied.page, "Undo must restore the prior source cells and derived values.");
+    assert.deepEqual(
+      restoredPolars.page,
+      appliedPage.page,
+      "Undo must restore the prior source cells and derived values."
+    );
     assert.equal(restoredPolars.code, applied.code);
 
     recordAcceptanceProgress(`${phase}:pandas-recovery-session`);
