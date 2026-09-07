@@ -3,9 +3,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
+import { viewCellSelectionFilter } from "../shared/filterModel";
 import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
+import { matchesLegacySelection } from "../webviews/filters/filterPresentation";
 import { metadata } from "./filterSummary.testFixtures";
 
 const values = new Map<string, ValuesResponse>([
@@ -26,6 +28,121 @@ const values = new Map<string, ValuesResponse>([
 ]);
 
 describe("FilterPanel", () => {
+  it.each(["Filter column", "Sort column"])("keeps %s navigable when an unnamed column is selected", (selectorName) => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    const unnamedMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column, index) => (index === 0 ? { ...column, name: "" } : column))
+    };
+    render(
+      <FilterPanel
+        metadata={unnamedMetadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        activeColumn=""
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+    fireEvent.click(screen.getByText("SORTS"));
+    const chooser = screen.getByLabelText(selectorName);
+    expect(chooser).toBeEnabled();
+    expect(chooser).toHaveDisplayValue("(empty name) (column 1)");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Viewing filters and sorts require a column name. Choose another column."
+    );
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
+    expect(onRequestValues).not.toHaveBeenCalled();
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.change(chooser, { target: { value: "c:1" } });
+    expect(chooser).toHaveDisplayValue("sales");
+    expect(screen.queryByText(/Viewing filters and sorts require a column name/u)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
+    expect(onRequestValues).toHaveBeenLastCalledWith("sales", "");
+    fireEvent.change(chooser, { target: { value: "c:0" } });
+    expect(chooser).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
+    fireEvent.change(chooser, { target: { value: "c:1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [],
+      sort: [{ column: "sales", direction: "asc", nulls: "last" }]
+    });
+  });
+
+  it.each(["null", "NaN"] as const)("preserves selected %s rows while toggling an ordinary value", (missingKind) => {
+    const onApply = vi.fn();
+    const column = metadata.schema[1];
+    const initialFilter = viewCellSelectionFilter(
+      column,
+      missingKind === "null"
+        ? { kind: "null", display: "null", isNull: true, isNaN: false }
+        : { kind: "nan", display: "NaN", isNull: false, isNaN: true },
+      "include"
+    );
+    const selectionValue: TypedSelectionToken = {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "float",
+      cell: { kind: "number", raw: 1, display: "1", isNull: false, isNaN: false }
+    };
+    const columnValues = new Map<string, ValuesResponse>([
+      [
+        column.name,
+        {
+          kind: "columnValues",
+          revision: 0,
+          viewRequestId: "sales-values",
+          column: column.name,
+          values: [{ value: "1", count: 1, selectionValue }],
+          hasMore: false
+        }
+      ]
+    ]);
+    function Harness() {
+      const [model, setModel] = useState<FilterModel>({ filters: [initialFilter], sort: [] });
+      return (
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          values={columnValues}
+          activeColumn={column.name}
+          onApply={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+          onRequestValues={() => undefined}
+        />
+      );
+    }
+    render(<Harness />);
+    const checkbox = screen.getByRole("checkbox");
+    fireEvent.click(checkbox);
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          ...initialFilter,
+          valueFilter: { ...initialFilter.valueFilter, selectedValues: [selectionValue], search: "" }
+        }
+      ],
+      sort: []
+    });
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [{ ...initialFilter, valueFilter: { ...initialFilter.valueFilter, search: "" } }],
+      sort: []
+    });
+    expect(checkbox).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: `Remove is ${missingKind} filter from sales` }));
+    expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+  });
+
   it("renders its loading state without metadata", () => {
     render(
       <FilterPanel
@@ -37,6 +154,214 @@ describe("FilterPanel", () => {
       />
     );
     expect(screen.getByText("Preparing filters...")).toBeInTheDocument();
+  });
+
+  it.each([
+    { type: "string", kind: "string", legacy: "Berlin", raw: "Berlin" },
+    { type: "integer", kind: "integer", legacy: "42", raw: 42 },
+    { type: "integer", kind: "integer", legacy: "9007199254740993", raw: "9007199254740993" },
+    { type: "decimal", kind: "decimal", legacy: "9007199254740993.01", raw: "9007199254740993.01" },
+    { type: "float", kind: "number", legacy: "1.0", raw: 1 },
+    { type: "float", kind: "infinity", legacy: "inf", raw: null },
+    { type: "float", kind: "infinity", legacy: "-inf", raw: null },
+    { type: "boolean", kind: "boolean", legacy: "True", raw: true },
+    { type: "date", kind: "date", legacy: "2026-09-07", raw: "2026-09-07" },
+    { type: "duration", kind: "duration", legacy: "1 day, 0:00:00", raw: 86400 },
+    { type: "datetime", kind: "datetime", legacy: "2026-09-07 12:34:56", raw: "2026-09-07T12:34:56" }
+  ] as const)(
+    "checks and removes a saved $type selection $legacy from the typed value list",
+    ({ type, kind, legacy, raw }) => {
+      const onApply = vi.fn();
+      const selectionValue: TypedSelectionToken = {
+        kind: "typedSelection",
+        version: 1,
+        columnType: type,
+        cell: {
+          kind,
+          raw,
+          display: kind === "infinity" ? (legacy.startsWith("-") ? "-Infinity" : "Infinity") : legacy,
+          ...(kind === "infinity" ? { sign: legacy.startsWith("-") ? (-1 as const) : (1 as const) } : {}),
+          isNull: false,
+          isNaN: false
+        }
+      };
+      render(
+        <FilterPanel
+          metadata={{
+            ...metadata,
+            schema: metadata.schema.map((column, index) => (index === 0 ? { ...column, type } : column))
+          }}
+          model={{
+            filters: [
+              {
+                column: "city",
+                type,
+                predicates: [],
+                valueFilter: { kind: "values", selectedValues: [legacy], includeNulls: false, includeNaN: false }
+              }
+            ],
+            sort: []
+          }}
+          values={
+            new Map([
+              [
+                "city",
+                {
+                  kind: "columnValues",
+                  revision: 0,
+                  viewRequestId: "restored-values",
+                  column: "city",
+                  values: [{ value: legacy, count: 1, selectionValue }],
+                  hasMore: false
+                }
+              ]
+            ])
+          }
+          onApply={onApply}
+          onRequestValues={() => undefined}
+        />
+      );
+      expect(screen.getByRole("checkbox")).toBeChecked();
+      fireEvent.click(screen.getByRole("checkbox"));
+      expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+    }
+  );
+
+  it("keeps display-equal typed objects separate from a restored string and removes duplicate string selections", () => {
+    const onApply = vi.fn();
+    const token = (kind: "string" | "integer", raw: string | number): TypedSelectionToken => ({
+      kind: "typedSelection",
+      version: 1,
+      columnType: "string",
+      cell: { kind, raw, display: "1", isNull: false, isNaN: false }
+    });
+    const stringValue = token("string", "1");
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{
+          filters: [
+            {
+              column: "city",
+              type: "string",
+              predicates: [],
+              valueFilter: { kind: "values", selectedValues: ["1", stringValue], includeNulls: true, includeNaN: false }
+            }
+          ],
+          sort: []
+        }}
+        values={
+          new Map([
+            [
+              "city",
+              {
+                kind: "columnValues",
+                revision: 0,
+                viewRequestId: "mixed-restored-values",
+                column: "city",
+                values: [
+                  { value: "1", count: 1, selectionValue: token("integer", 1) },
+                  { value: "1", count: 2, selectionValue: stringValue }
+                ],
+                hasMore: false
+              }
+            ]
+          ])
+        }
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    const [number, text] = screen.getAllByRole("checkbox");
+    expect(number).not.toBeChecked();
+    expect(text).toBeChecked();
+    fireEvent.click(text);
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          logic: "and",
+          predicates: [],
+          valueFilter: { kind: "values", selectedValues: [], includeNulls: true, includeNaN: false, search: "" }
+        }
+      ],
+      sort: []
+    });
+  });
+
+  it("does not round exact numeric selections or merge mixed objects by their display", () => {
+    const selection = (
+      columnType: TypedSelectionToken["columnType"],
+      cell: TypedSelectionToken["cell"]
+    ): TypedSelectionToken => ({
+      kind: "typedSelection",
+      version: 1,
+      columnType,
+      cell
+    });
+    expect(
+      matchesLegacySelection(
+        "9007199254740993",
+        selection("integer", {
+          kind: "integer",
+          raw: "9007199254740992",
+          display: "9007199254740992",
+          isNull: false,
+          isNaN: false
+        })
+      )
+    ).toBe(false);
+    expect(
+      matchesLegacySelection(
+        "9007199254740993.01",
+        selection("decimal", {
+          kind: "decimal",
+          raw: "9007199254740993.02",
+          display: "9007199254740993.02",
+          isNull: false,
+          isNaN: false
+        })
+      )
+    ).toBe(false);
+    expect(
+      matchesLegacySelection(
+        "True",
+        selection("string", {
+          kind: "boolean",
+          raw: true,
+          display: "True",
+          isNull: false,
+          isNaN: false
+        })
+      )
+    ).toBe(false);
+    expect(
+      matchesLegacySelection(
+        "1 day, 0:00:00",
+        selection("string", {
+          kind: "duration",
+          raw: 86400,
+          display: "1 day, 0:00:00",
+          isNull: false,
+          isNaN: false
+        })
+      )
+    ).toBe(false);
+    for (const legacy of ["0x10", "0b10000", "", " "]) {
+      expect(
+        matchesLegacySelection(
+          legacy,
+          selection("float", {
+            kind: "number",
+            raw: legacy.trim() === "" ? 0 : 16,
+            display: "16.0",
+            isNull: false,
+            isNaN: false
+          })
+        )
+      ).toBe(false);
+    }
   });
 
   it("labels sampled value counts without claiming the discovery is exhaustive", () => {

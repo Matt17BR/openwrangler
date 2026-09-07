@@ -273,6 +273,42 @@ def _value_selection_model(column_type: str, value: Any) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize(("selected", "expected"), [("inf", "positive"), ("-inf", "negative")])
+def test_legacy_infinity_selection_survives_live_bound_and_generated_filters(backend, selected, expected):
+    labels = ["positive", "negative", "finite", "null", "nan"]
+    values = [float("inf"), float("-inf"), 1.0, None, float("nan")]
+    if backend == "pandas":
+        frame = pd.DataFrame({"label": labels, "value": pd.Series(values, dtype="object")})
+    elif backend == "polars":
+        frame = pl.DataFrame({"label": labels, "value": values})
+    else:
+        frame = duckdb.sql(
+            "SELECT * FROM (VALUES ('positive', 'Infinity'::DOUBLE), ('negative', '-Infinity'::DOUBLE), "
+            "('finite', 1.0::DOUBLE), ('null', NULL::DOUBLE), ('nan', 'NaN'::DOUBLE)) AS source(label, value)"
+        )
+    engine = _engine(backend)
+    model = _value_selection_model("float", selected)
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    public_model = deepcopy(model)
+    public_model["filters"][0]["column"] = lineage[1]
+    step = bind_step(
+        validate_step({"id": "filter", "kind": "filterRows", "params": {"filterModel": public_model}}),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace, namespace)
+
+    results = [
+        engine.apply_filter_model(frame, model),
+        engine.apply_transform(frame, step),
+        namespace["clean_data"](frame),
+    ]
+    assert [_filtered_labels(result, backend) for result in results] == [[expected], [expected], [expected]]
+
+
 def _empty_duckdb_contract_frame(column_type: str) -> Any:
     raw_type = {
         "string": "VARCHAR",

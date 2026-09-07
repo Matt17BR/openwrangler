@@ -142,6 +142,10 @@ Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only qu
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
 
+Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
+in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
+defines accepted and rejected forms for live and generated execution.
+
 Min-max Scale computes exact integer and decimal offsets before converting them to double-precision ratios.
 Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in

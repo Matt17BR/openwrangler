@@ -6218,13 +6218,15 @@ literal_contract <- jsonlite::fromJSON("fixtures/view-literal-contract.json", si
 literal_frame <- data.frame(
   date = as.Date("2024-01-01"),
   datetime = as.POSIXct("2024-01-01 00:00:00", tz = "UTC"),
-  duration = as.difftime(0, units = "secs")
+  duration = as.difftime(0, units = "secs"),
+  number = 0
 )
 literal_capture <- openwrangler_r_frame_contract$capture_frame(literal_frame)
 literal_columns <- list(
   date = list(id = "r:c:0", name = "date"),
   datetime = list(id = "r:c:1", name = "datetime"),
-  duration = list(id = "r:c:2", name = "duration")
+  duration = list(id = "r:c:2", name = "duration"),
+  float = list(id = "r:c:3", name = "number")
 )
 materialize_literal <- function(case) {
   column <- literal_columns[[case$type]]
@@ -6237,7 +6239,7 @@ materialize_literal <- function(case) {
       list(predicate("gte", case$value))
     ))),
     row_limit = 1L,
-    column_limit = 3L
+    column_limit = 4L
   )
 }
 for (case in literal_contract$accepted) {

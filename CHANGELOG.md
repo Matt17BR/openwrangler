@@ -22,6 +22,11 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Successful activation survives long scheduler or debugger pauses.
 
+- Value filters preserve null and NaN choices and recognize supported scalar selections. Unnamed
+  columns no longer disable column navigation.
+
+- Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security
