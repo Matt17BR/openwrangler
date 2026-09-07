@@ -1413,7 +1413,8 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             expression = pl.col(column)
             if kind == "roundNumber":
-                expression = _polars_round(expression.cast(pl.Float64, strict=False), int(params.get("decimals", 0)))
+                dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
+                expression = _polars_round_exact(expression, dtype, int(params.get("decimals", 0)))
             else:
                 dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
                 if not dtype.is_integer():
@@ -2315,11 +2316,15 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             if kind == "roundNumber":
-                expression = (
-                    f"_open_wrangler_round(pl.col({column!r}).cast(pl.Float64, strict=False), "
-                    f"{params.get('decimals', 0)!r})"
-                )
-                return [f"{prefix}df = df.with_columns(({expression}).alias({target!r}))"]
+                dtype = f"_round_type_{index}"
+                expression = f"_open_wrangler_round_exact(pl.col({column!r}), {dtype}, {params.get('decimals', 0)!r})"
+                return [
+                    (
+                        f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) "
+                        f"else df.schema)[{column!r}]"
+                    ),
+                    f"{prefix}df = df.with_columns(({expression}).alias({target!r}))",
+                ]
             dtype = f"_integral_type_{index}"
             expression = f"_integral_{index}"
             method = "floor" if kind == "floorNumber" else "ceil"
@@ -2603,6 +2608,61 @@ def _polars_min_max_scale(expression: Any, dtype: Any) -> Any:
     )
 
 
+def _polars_round_exact(expression: Any, dtype: Any, decimals: int) -> Any:
+    import polars as pl
+
+    if dtype.is_integer():
+        if decimals >= 0:
+            return expression
+        if decimals <= -40:
+            return expression * pl.lit(0, dtype=dtype)
+        unsigned = str(dtype).startswith("U")
+        bits = int(str(dtype).removeprefix("U").removeprefix("Int"))
+        low = 0 if unsigned else -(2 ** (bits - 1))
+        high = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1
+        low, high = round(low, decimals), round(high, decimals)
+        target = dtype
+        for width in (8, 16, 32, 64, 128):
+            name = ("UInt" if unsigned else "Int") + str(width)
+            if width < bits or not hasattr(pl, name):
+                continue
+            minimum = 0 if unsigned else -(2 ** (width - 1))
+            maximum = 2**width - 1 if unsigned else 2 ** (width - 1) - 1
+            if low >= minimum and high <= maximum:
+                target = getattr(pl, name)
+                break
+        else:
+            if unsigned and high < 2**127:
+                target = pl.Int128
+        if low == high == 0:
+            return expression * pl.lit(0, dtype=dtype)
+
+        def round_integers(series):
+            return pl.Series([None if value is None else round(value, decimals) for value in series], dtype=target)
+
+        return expression.map_batches(round_integers, return_dtype=target, is_elementwise=True)
+    if dtype.base_type() == pl.Decimal:
+        if decimals >= dtype.scale:
+            return expression
+        target = pl.Decimal(38, max(decimals, 0))
+        if decimals < -(dtype.precision - dtype.scale):
+            return (expression * 0).cast(target)
+        if decimals >= 0:
+            return expression.round(decimals).cast(target)
+        from decimal import ROUND_HALF_EVEN, Context, Decimal
+
+        context = Context(prec=dtype.precision + 1, rounding=ROUND_HALF_EVEN)
+        quantum = Decimal((0, (1,), -decimals))
+
+        def round_decimals(series):
+            return pl.Series(
+                [None if value is None else value.quantize(quantum, context=context) for value in series], dtype=target
+            )
+
+        return expression.map_batches(round_decimals, return_dtype=target, is_elementwise=True)
+    return _polars_round(expression.cast(pl.Float64, strict=False), decimals)
+
+
 def _polars_round(expression: Any, decimals: int) -> Any:
     import math
 
@@ -2632,6 +2692,63 @@ def _polars_round(expression: Any, decimals: int) -> Any:
 
 def _generated_polars_round_helpers() -> list[str]:
     return [
+        "def _open_wrangler_round_exact(expression, dtype, decimals):",
+        "    import polars as pl",
+        "",
+        "    if dtype.is_integer():",
+        "        if decimals >= 0:",
+        "            return expression",
+        "        if decimals <= -40:",
+        "            return expression * pl.lit(0, dtype=dtype)",
+        '        unsigned = str(dtype).startswith("U")',
+        '        bits = int(str(dtype).removeprefix("U").removeprefix("Int"))',
+        "        low = 0 if unsigned else -(2 ** (bits - 1))",
+        "        high = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1",
+        "        low, high = round(low, decimals), round(high, decimals)",
+        "        target = dtype",
+        "        for width in (8, 16, 32, 64, 128):",
+        '            name = ("UInt" if unsigned else "Int") + str(width)',
+        "            if width < bits or not hasattr(pl, name):",
+        "                continue",
+        "            minimum = 0 if unsigned else -(2 ** (width - 1))",
+        "            maximum = 2**width - 1 if unsigned else 2 ** (width - 1) - 1",
+        "            if low >= minimum and high <= maximum:",
+        "                target = getattr(pl, name)",
+        "                break",
+        "        else:",
+        "            if unsigned and high < 2**127:",
+        "                target = pl.Int128",
+        "        if low == high == 0:",
+        "            return expression * pl.lit(0, dtype=dtype)",
+        "",
+        "        def round_integers(series):",
+        "            return pl.Series([None if value is None else round(value, decimals) for value in series],",
+        "                             dtype=target)",
+        "",
+        "        return expression.map_batches(round_integers, return_dtype=target, is_elementwise=True)",
+        "    if dtype.base_type() == pl.Decimal:",
+        "        if decimals >= dtype.scale:",
+        "            return expression",
+        "        target = pl.Decimal(38, max(decimals, 0))",
+        "        if decimals < -(dtype.precision - dtype.scale):",
+        "            return (expression * 0).cast(target)",
+        "        if decimals >= 0:",
+        "            return expression.round(decimals).cast(target)",
+        "        from decimal import ROUND_HALF_EVEN, Context, Decimal",
+        "",
+        "        context = Context(prec=dtype.precision + 1, rounding=ROUND_HALF_EVEN)",
+        "        quantum = Decimal((0, (1,), -decimals))",
+        "",
+        "        def round_decimals(series):",
+        "            return pl.Series(",
+        "                [None if value is None else value.quantize(quantum, context=context) for value in series],",
+        "                dtype=target",
+        "            )",
+        "",
+        "        return expression.map_batches(round_decimals, return_dtype=target, is_elementwise=True)",
+        "    return _open_wrangler_round(expression.cast(pl.Float64, strict=False), decimals)",
+        "",
+        "",
         "def _open_wrangler_round(expression, decimals):",
         "    import math",
         "    import polars as pl",

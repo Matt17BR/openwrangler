@@ -160,10 +160,18 @@ precision, including subnormal values. Live execution and standalone generated c
 the owning engine.
 
 Round accepts finite integer decimal precision, including negative values for rounding to tens and larger units.
-Each engine keeps its ordinary rounding convention and numeric coercion. Precision outside a storage type's useful
-range produces the corresponding unchanged value or signed zero without constructing an unbounded scale. Intermediate
-scaling must not overflow a representable result or wrap an integer. Live and generated code preserve missing and
-non-finite values; a floating result that exceeds its output type becomes signed infinity.
+Python engines round exact integers and Decimal values before floating conversion, using half-even ties. Ordinary
+floating and text coercion keep their existing behavior. Precision outside a storage type's useful range produces the
+corresponding unchanged value or signed zero without constructing an unbounded scale. Intermediate scaling must not
+overflow a representable result or wrap an integer. Live and generated code preserve missing and non-finite values;
+a floating result that exceeds its output type becomes signed infinity.
+
+Pandas may retain large exact integers in object storage. Polars and DuckDB retain native numeric storage, widening
+or reducing fractional scale when needed for a carry. Arrow Decimals keep their original dtype when possible;
+otherwise they use the smallest compatible native width and scale. A nonnegative source scale stays nonnegative so
+rounding does not remove existing Parquet export support. Already negative scales must remain readable by Arrow.
+Polars, DuckDB and Arrow Decimal results beyond usable native capacity are rejected without a floating or object
+fallback. Object Decimal arithmetic uses its own precision context and preserves the caller's.
 
 Floor and Ceiling preserve exact integer inputs and round Decimal values before any floating conversion. Decimal
 output storage may reduce fractional scale so an integral carry remains representable. Ordinary floating and text

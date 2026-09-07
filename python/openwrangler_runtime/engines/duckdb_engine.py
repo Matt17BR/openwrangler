@@ -993,7 +993,11 @@ class DuckDBEngine(DataFrameEngine):
             target = params.get("newColumn", column)
             value = _quote_ident(column)
             if kind == "roundNumber":
-                expression = _duckdb_round_expression(f"try_cast({value} AS DOUBLE)", int(params.get("decimals", 0)))
+                decimals = int(params.get("decimals", 0))
+                raw_type = str(frame.types[self._columns(frame).index(column)])
+                expression = _duckdb_round_exact_expression(value, raw_type, decimals)
+                if expression is None:
+                    expression = _duckdb_round_expression(f"try_cast({value} AS DOUBLE)", decimals)
             else:
                 raw_type = str(frame.types[self._columns(frame).index(column)]).upper()
                 if raw_type in {
@@ -1362,8 +1366,9 @@ class DuckDBEngine(DataFrameEngine):
             if kind != "roundNumber":
                 return [f"{prefix}df = _ow_floor_ceil(df, {column!r}, {target!r}, {kind == 'ceilNumber'!r})"]
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
-            expression = _duckdb_round_expression(value, int(params.get("decimals", 0)))
-            return [f"{prefix}df = _ow_assign(df, {target!r}, {expression!r})"]
+            decimals = int(params.get("decimals", 0))
+            expression = _duckdb_round_expression(value, decimals)
+            return [f"{prefix}df = _ow_round(df, {column!r}, {target!r}, {decimals!r}, {expression!r})"]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             expression = f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})"
@@ -3139,6 +3144,59 @@ def _regex_extract_expression(column: str, pattern: str, group: int) -> str:
     )
 
 
+def _duckdb_round_exact_expression(value: str, raw_type: str, decimals: int) -> str | None:
+    integer_types = [
+        (prefix + name, bits, unsigned)
+        for unsigned, prefix in ((False, ""), (True, "U"))
+        for name, bits in (("TINYINT", 8), ("SMALLINT", 16), ("INTEGER", 32), ("BIGINT", 64), ("HUGEINT", 128))
+    ]
+    raw_type = raw_type.upper()
+    integer = next((item for item in integer_types if item[0] == raw_type), None)
+    if integer is not None:
+        if decimals >= 0:
+            return value
+        if decimals <= -40:
+            return f"{value} * 0::{raw_type}"
+        _, bits, unsigned = integer
+        minimum = 0 if unsigned else -(2 ** (bits - 1))
+        maximum = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1
+        low, high = round(minimum, decimals), round(maximum, decimals)
+        target = raw_type
+        for name, width, candidate_unsigned in integer_types:
+            if candidate_unsigned != unsigned or width < bits:
+                continue
+            minimum = 0 if unsigned else -(2 ** (width - 1))
+            maximum = 2**width - 1 if unsigned else 2 ** (width - 1) - 1
+            if low >= minimum and high <= maximum:
+                target = name
+                break
+        precision, scale = 39, 0
+    else:
+        match = re.fullmatch(r"DECIMAL\((\d+),\s*(\d+)\)", raw_type)
+        if match is None:
+            return None
+        precision, scale = map(int, match.groups())
+        if decimals >= scale:
+            return value
+        target = f"DECIMAL(38,{max(decimals, 0)})"
+    if decimals < -(precision - scale):
+        return f"CASE WHEN {value} IS NULL THEN NULL::{target} ELSE 0::{target} END"
+    # Decimal digits preserve exact coefficients and half-even ties. DuckDB's
+    # native integer rounding can wrap, and native Decimal round is half-away.
+    places = scale - decimals
+    digits = f"replace(ltrim(CAST({value} AS VARCHAR), '-'), '.', '')"
+    quotient = f"CAST(coalesce(nullif(left({digits}, greatest(length({digits}) - {places}, 0)), ''), '0') AS BIGNUM)"
+    remainder = f"lpad(right({digits}, {places}), {places}, '0')"
+    half = "5" + "0" * (places - 1)
+    parity = f"CAST(right(CAST({quotient} AS VARCHAR), 1) AS INTEGER) % 2"
+    up = f"({remainder} > '{half}' OR ({remainder} = '{half}' AND {parity} = 1))"
+    coefficient = f"(CAST(({quotient} + CAST({up} AS INTEGER)) AS VARCHAR) || repeat('0', {max(-decimals, 0)}))"
+    if decimals > 0:
+        padded = f"lpad({coefficient}, CAST(greatest(length({coefficient}), {decimals + 1}) AS INTEGER), '0')"
+        coefficient = f"(left({padded}, length({padded}) - {decimals}) || '.' || right({padded}, {decimals}))"
+    return f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+
+
 def _duckdb_round_expression(value: str, decimals: int) -> str:
     if decimals >= 324:
         return value
@@ -3342,6 +3400,65 @@ def _ow_is_integer(raw_type):
             "utinyint", "usmallint", "uinteger", "ubigint",
         )
     )
+
+
+def _ow_round_exact_expression(value, raw_type, decimals):
+    integer_types = [
+        (prefix + name, bits, unsigned)
+        for unsigned, prefix in ((False, ""), (True, "U"))
+        for name, bits in (("TINYINT", 8), ("SMALLINT", 16), ("INTEGER", 32), ("BIGINT", 64), ("HUGEINT", 128))
+    ]
+    raw_type = raw_type.upper()
+    integer = next((item for item in integer_types if item[0] == raw_type), None)
+    if integer is not None:
+        if decimals >= 0:
+            return value
+        if decimals <= -40:
+            return f"{value} * 0::{raw_type}"
+        _, bits, unsigned = integer
+        minimum = 0 if unsigned else -(2 ** (bits - 1))
+        maximum = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1
+        low, high = round(minimum, decimals), round(maximum, decimals)
+        target = raw_type
+        for name, width, candidate_unsigned in integer_types:
+            if candidate_unsigned != unsigned or width < bits:
+                continue
+            minimum = 0 if unsigned else -(2 ** (width - 1))
+            maximum = 2**width - 1 if unsigned else 2 ** (width - 1) - 1
+            if low >= minimum and high <= maximum:
+                target = name
+                break
+        precision, scale = 39, 0
+    else:
+        match = re.fullmatch(r"DECIMAL\((\d+),\s*(\d+)\)", raw_type)
+        if match is None:
+            return None
+        precision, scale = map(int, match.groups())
+        if decimals >= scale:
+            return value
+        target = f"DECIMAL(38,{max(decimals, 0)})"
+    if decimals < -(precision - scale):
+        return f"CASE WHEN {value} IS NULL THEN NULL::{target} ELSE 0::{target} END"
+    # Decimal digits preserve exact coefficients and half-even ties. DuckDB's
+    # native integer rounding can wrap, and native Decimal round is half-away.
+    places = scale - decimals
+    digits = f"replace(ltrim(CAST({value} AS VARCHAR), '-'), '.', '')"
+    quotient = f"CAST(coalesce(nullif(left({digits}, greatest(length({digits}) - {places}, 0)), ''), '0') AS BIGNUM)"
+    remainder = f"lpad(right({digits}, {places}), {places}, '0')"
+    half = "5" + "0" * (places - 1)
+    parity = f"CAST(right(CAST({quotient} AS VARCHAR), 1) AS INTEGER) % 2"
+    up = f"({remainder} > '{half}' OR ({remainder} = '{half}' AND {parity} = 1))"
+    coefficient = f"(CAST(({quotient} + CAST({up} AS INTEGER)) AS VARCHAR) || repeat('0', {max(-decimals, 0)}))"
+    if decimals > 0:
+        padded = f"lpad({coefficient}, CAST(greatest(length({coefficient}), {decimals + 1}) AS INTEGER), '0')"
+        coefficient = f"(left({padded}, length({padded}) - {decimals}) || '.' || right({padded}, {decimals}))"
+    return f"CAST((CASE WHEN {value} < 0 THEN '-' ELSE '' END) || {coefficient} AS {target})"
+
+
+def _ow_round(df, column, target, decimals, floating_expression):
+    raw_type = str(df.types[_ow_columns(df).index(column)])
+    expression = _ow_round_exact_expression(_ow_ident(column), raw_type, decimals)
+    return _ow_assign(df, target, floating_expression if expression is None else expression)
 
 
 def _ow_floor_ceil(df, column, target, ceiling):

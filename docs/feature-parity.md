@@ -89,6 +89,11 @@ Floor and Ceiling retain exact integer and Decimal values in the Python editing 
 code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
 and session-transaction tests cover value boundaries, missing values and rollback.
 
+Round retains exact integer and Decimal values in live and generated Python execution, including half-even ties
+and negative precision. Pandas may retain large integers in object storage. Polars, DuckDB and Arrow Decimal output
+storage may widen or reduce scale; results beyond usable native capacity are rejected. Arrow Decimal results preserve
+existing CSV and Parquet export support.
+
 Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
 `python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
 identity.

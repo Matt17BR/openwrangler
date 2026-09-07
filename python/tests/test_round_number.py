@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from math import copysign, inf, isfinite, isnan, nextafter
 from typing import Any
 
@@ -418,3 +419,291 @@ def test_pandas_round_extended_float_range(precision_case: str) -> None:
                 ulp = abs(wanted - np.nextafter(wanted, np.longdouble(0)))
                 assert abs(actual - wanted) <= ulp
     pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("storage", ["signed", "unsigned", "wide", "decimal"])
+@pytest.mark.parametrize("decimals", [-(10**12), -40, -20, -1, 0, 1, 10**12])
+def test_round_preserves_exact_native_types(engine, storage: str, decimals: int) -> None:
+    adapter, lazy = engine
+    if storage == "decimal":
+        values = [
+            Decimal("2.50000000000000000001"),
+            Decimal("2.5"),
+            Decimal("-2.5"),
+            Decimal("15.00000000000000000001"),
+            None,
+        ]
+        polars_type, sql_type = pl.Decimal(38, 20), "DECIMAL(38,20)"
+    else:
+        values, polars_type, sql_type = {
+            "signed": ([2**53 + 1, 2**63 - 1, 15, 25, -15, -25, None], pl.Int64, "BIGINT"),
+            "unsigned": ([2**64 - 1, 15, 25, None], pl.UInt64, "UBIGINT"),
+            "wide": ([2**100 + 1, -(2**100 + 1), 15, 25, None], pl.Int128, "HUGEINT"),
+        }[storage]
+    if isinstance(adapter, PandasEngine):
+        dtype = {"signed": "Int64", "unsigned": "UInt64", "wide": "object", "decimal": "object"}[storage]
+        source = pd.DataFrame({"value": pd.Series(values, dtype=dtype), "kept": range(len(values))})
+        source.index = pd.Index(["same"] * len(source), name="source index")
+    elif isinstance(adapter, PolarsEngine):
+        source = pl.DataFrame({"value": pl.Series(values, dtype=polars_type), "kept": range(len(values))})
+        if lazy:
+            source = source.lazy()
+    else:
+        rows = ",".join(
+            f"(NULL::{sql_type},{index})" if value is None else f"('{value}'::{sql_type},{index})"
+            for index, value in enumerate(values)
+        )
+        source = duckdb.sql(f"SELECT * FROM (VALUES {rows}) source(value,kept)")
+    with localcontext() as context:
+        context.prec = 100
+        expected = [
+            None
+            if value is None
+            else 0
+            if decimals <= -40
+            else value
+            if decimals >= 100
+            else Decimal(value).quantize(Decimal((0, (1,), -decimals)), rounding=ROUND_HALF_EVEN)
+            for value in values
+        ]
+    for result in rounded_frames(adapter, source, decimals, replace=decimals == -1):
+        target = "value" if decimals == -1 else "rounded"
+        assert all(
+            pd.isna(actual) if wanted is None else actual == wanted
+            for actual, wanted in zip(values_for(result, target), expected, strict=True)
+        )
+        assert values_for(result, "kept") == list(range(len(values)))
+        if isinstance(adapter, PolarsEngine):
+            frame = result.collect() if lazy else result
+            if storage == "decimal":
+                frame[target].to_arrow().validate(full=True)
+            else:
+                assert frame.schema[target].is_integer()
+        elif isinstance(adapter, DuckDBEngine):
+            schema = {column["name"]: column["rawType"] for column in adapter.schema(result)}
+            assert schema[target] != "DOUBLE"
+    assert all(
+        pd.isna(actual) if expected is None else actual == expected
+        for actual, expected in zip(values_for(source, "value"), values, strict=True)
+    )
+
+
+@pytest.mark.parametrize("bits, precision", [(32, 9), (64, 18), (128, 38), (256, 76)])
+@pytest.mark.parametrize("case", ["fractional", "negative-scale", "empty", "missing"])
+def test_pandas_round_arrow_decimal_keeps_readable_native_output(bits: int, precision: int, case: str) -> None:
+    from io import BytesIO, StringIO
+
+    import pyarrow as pa
+
+    scale = -3 if case == "negative-scale" else 2
+    coefficients = (
+        []
+        if case == "empty"
+        else [None, None]
+        if case == "missing"
+        else [10**precision - 1, -(10**precision - 1), 0, None]
+    )
+    native = getattr(pa, f"decimal{bits}")
+    array = pa.array(
+        [Decimal(value) if value is not None else None for value in coefficients], type=native(precision, 0)
+    ).view(native(precision, scale))
+    source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(array))})
+    source.index = pd.Index(["same"] * len(source), name="source index")
+    before = source.copy(deep=True)
+    for decimals in [-(10**12), scale - 1, 0, 10**12]:
+        with localcontext() as context:
+            context.prec = 160
+            expected = [
+                None
+                if pd.isna(value)
+                else Decimal(0)
+                if decimals < -160
+                else value
+                if decimals > 160
+                else value.quantize(Decimal((0, (1,), -decimals)), rounding=ROUND_HALF_EVEN)
+                for value in source["value"]
+            ]
+        with localcontext() as context:
+            context.prec = 2
+            for result in rounded_frames(PandasEngine(), source, decimals):
+                output = result["rounded"]
+                assert all(
+                    pd.isna(actual) if wanted is None else actual == wanted
+                    for actual, wanted in zip(output, expected, strict=True)
+                )
+                output.array.__arrow_array__().validate(full=True)
+                csv = pd.read_csv(StringIO(output.to_frame().to_csv(index=False)), dtype=str, keep_default_na=False)
+                assert [Decimal(value) if value else None for value in csv["rounded"]] == expected
+                if scale >= 0:
+                    assert output.dtype.pyarrow_dtype.scale >= 0
+                    buffer = BytesIO()
+                    output.to_frame().to_parquet(buffer, index=False)
+                    buffer.seek(0)
+                    restored = pd.read_parquet(buffer, dtype_backend="pyarrow")["rounded"]
+                    assert all(
+                        pd.isna(actual) if wanted is None else actual == wanted
+                        for actual, wanted in zip(restored, expected, strict=True)
+                    )
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_round_arrow_decimal_preserves_existing_export_scale() -> None:
+    import pyarrow as pa
+
+    source = pd.DataFrame({"value": pd.Series([Decimal("99.99"), None], dtype=pd.ArrowDtype(pa.decimal128(5, 2)))})
+    for result in rounded_frames(PandasEngine(), source, -1):
+        assert result["rounded"].dtype == source["value"].dtype
+        assert result["rounded"].iloc[0] == Decimal(100)
+
+
+@pytest.mark.parametrize("decimals", [-(10**12), -1, 0, 1, 10**12])
+def test_pandas_round_decimal_special_values_and_caller_context(decimals: int) -> None:
+    values = [
+        Decimal("2.50000000000000000001"),
+        Decimal("-0"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        None,
+    ]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object)})
+    with localcontext() as context:
+        context.prec = 2
+        for result in rounded_frames(PandasEngine(), source, decimals):
+            output = result["rounded"].tolist()
+            expected = (
+                Decimal(0)
+                if decimals < -100
+                else values[0]
+                if decimals > 100
+                else Decimal(0)
+                if decimals == -1
+                else Decimal(3)
+                if decimals == 0
+                else Decimal("2.5")
+            )
+            assert output[0] == expected
+            assert isinstance(output[1], Decimal) and output[1].is_signed() and output[1] == 0
+            assert isinstance(output[2], Decimal) and output[2].is_nan()
+            assert output[3:] == values[3:]
+            assert result["value"].tolist() == values
+
+
+@pytest.mark.parametrize("storage", ["wide", "unsigned-wide", "decimal"])
+def test_round_refuses_unrepresentable_exact_output(engine, storage: str) -> None:
+    adapter, lazy = engine
+    if isinstance(adapter, PandasEngine):
+        if storage != "decimal":
+            pytest.skip("Pandas object integers have arbitrary precision")
+        import pyarrow as pa
+
+        array = pa.array([Decimal(10**76 - 1), None], type=pa.decimal256(76, 0)).view(pa.decimal256(76, -76))
+        source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(array))})
+        decimals = -152
+        message = "Arrow Decimal output capacity"
+    else:
+        dtype, raw_type, value = {
+            "wide": (pl.Int128, "HUGEINT", 2**127 - 1),
+            "unsigned-wide": (pl.UInt128, "UHUGEINT", 2**128 - 1),
+            "decimal": (pl.Decimal(38, 0), "DECIMAL(38,0)", Decimal(10**38 - 1)),
+        }[storage]
+        if isinstance(adapter, PolarsEngine):
+            source = pl.DataFrame({"value": pl.Series([value, None], dtype=dtype)})
+            if lazy:
+                source = source.lazy()
+            message = "Int128|too large"
+        else:
+            source = duckdb.sql(f"SELECT '{value}'::{raw_type} AS value UNION ALL SELECT NULL::{raw_type}")
+            message = "Could not convert string"
+        decimals = -1
+    schema = adapter.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "round",
+                "kind": "roundNumber",
+                "params": {"column": lineage[0], "decimals": decimals, "newColumn": "rounded"},
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(adapter.compile_plan([operation]), namespace)
+    before = values_for(source, "value")
+    for execute in [lambda: adapter.apply_transform(source, operation), lambda: namespace["clean_data"](source)]:
+        with pytest.raises(Exception, match=message):
+            values_for(execute(), "rounded")
+        assert values_for(source, "value") == before
+
+
+@pytest.mark.parametrize(
+    "sql_type, literal",
+    [("INTEGER[2]", "[1,2]"), ("ENUM('integer','other')", "'integer'"), ("ENUM('decimal','other')", "'decimal'")],
+)
+def test_duckdb_round_keeps_nonnumeric_outer_type_coercion(sql_type: str, literal: str) -> None:
+    adapter = DuckDBEngine()
+    try:
+        source = duckdb.sql(f"SELECT {literal}::{sql_type} AS value")
+        for result in rounded_frames(adapter, source, 0):
+            assert values_for(result, "rounded") == [None]
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("scale", [1, 38])
+def test_round_decimal_carry_produces_valid_output(engine, scale: int) -> None:
+    adapter, lazy = engine
+    maximum = Decimal((0, (9,) * 38, -scale))
+    values = [maximum, maximum.copy_negate(), None]
+    if isinstance(adapter, PandasEngine):
+        import pyarrow as pa
+
+        source = pd.DataFrame({"value": pd.Series(values, dtype=pd.ArrowDtype(pa.decimal128(38, scale)))})
+    elif isinstance(adapter, PolarsEngine):
+        source = pl.DataFrame({"value": pl.Series(values, dtype=pl.Decimal(38, scale))})
+        if lazy:
+            source = source.lazy()
+    else:
+        source = duckdb.sql(
+            f"SELECT value::DECIMAL(38,{scale}) AS value "
+            f"FROM (VALUES ('{maximum}'),('-{maximum}'),(NULL)) source(value)"
+        )
+    expected = [Decimal(10 ** (38 - scale)), Decimal(-(10 ** (38 - scale))), None]
+    for result in rounded_frames(adapter, source, 0):
+        assert all(
+            pd.isna(actual) if wanted is None else actual == wanted
+            for actual, wanted in zip(values_for(result, "rounded"), expected, strict=True)
+        )
+        if isinstance(result, pd.DataFrame):
+            array = result["rounded"].array
+            assert isinstance(array, pd.arrays.ArrowExtensionArray)
+            array.__arrow_array__().validate(full=True)
+        elif isinstance(adapter, PolarsEngine):
+            frame = result.collect() if lazy else result
+            frame["rounded"].to_arrow().validate(full=True)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("exact_type", ["integer", "decimal"])
+def test_round_exact_native_empty_and_missing(engine, empty: bool, exact_type: str) -> None:
+    adapter, lazy = engine
+    if isinstance(adapter, PandasEngine):
+        import pyarrow as pa
+
+        dtype = "Int64" if exact_type == "integer" else pd.ArrowDtype(pa.decimal128(38, 2))
+        source = pd.DataFrame({"value": pd.Series([] if empty else [None, None], dtype=dtype)})
+    elif isinstance(adapter, PolarsEngine):
+        dtype = pl.Int128 if exact_type == "integer" else pl.Decimal(38, 2)
+        source = pl.DataFrame({"value": pl.Series([] if empty else [None, None], dtype=dtype)})
+        if lazy:
+            source = source.lazy()
+    else:
+        sql_type = "HUGEINT" if exact_type == "integer" else "DECIMAL(38,2)"
+        source = duckdb.sql(f"SELECT NULL::{sql_type} AS value FROM range(2)" + (" WHERE FALSE" if empty else ""))
+    for decimals in [-(10**12), -1, 1, 10**12]:
+        for result in rounded_frames(adapter, source, decimals):
+            values = values_for(result, "rounded")
+            assert len(values) == (0 if empty else 2)
+            assert all(pd.isna(value) for value in values)
