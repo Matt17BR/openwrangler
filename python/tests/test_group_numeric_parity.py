@@ -10,7 +10,8 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime._column_binding import bind_step
-from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines import DuckDBEngine, EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 
@@ -813,3 +814,122 @@ def test_pandas_sparse_count_retains_legacy_logical_fill_values(fill: int | floa
         pd.testing.assert_index_equal(frame.index, original.index)
         pd.testing.assert_index_equal(frame.columns, original.columns)
         assert frame.attrs == original.attrs
+
+
+@pytest.mark.parametrize(
+    "kind", ["dropDuplicates", "sortRows", "group-key", "nUnique", "min", "max", "pivot", "groupedFill"]
+)
+@pytest.mark.parametrize("storage", ["dense", "object", "sparse"])
+def test_pandas_extended_float_key_and_ordered_operations_refuse_before_narrowing(kind: str, storage: str) -> None:
+    import numpy as np
+
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble aliases binary64")
+    neighbor = np.nextafter(np.longdouble(1), np.longdouble(2))
+    values = np.array([np.longdouble(1), neighbor, np.longdouble(2)], dtype=np.longdouble)
+    dtype = (
+        object if storage == "object" else pd.SparseDtype(np.longdouble, 0) if storage == "sparse" else np.longdouble
+    )
+    source = pd.DataFrame(
+        {
+            "key": pd.Series(values).astype(dtype),
+            "value": [5.0, None, 8.0],
+            "partition": ["same"] * 3,
+            "label": ["a"] * 3,
+        }
+    )
+    if kind == "groupedFill" and storage == "object":
+        source.loc[2, "key"] = "other"
+    source.index = pd.Index(["same"] * 3, name="row")
+    source.attrs = {"source": "retained"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    if kind == "dropDuplicates":
+        operation = {"kind": kind, "params": {"columns": [lineage[0]], "keep": "first"}}
+    elif kind == "sortRows":
+        operation = {"kind": kind, "params": {"rules": [{"column": lineage[0], "direction": "asc", "nulls": "last"}]}}
+    elif kind == "pivot":
+        operation = {
+            "kind": "pivotWider",
+            "params": {
+                "namesFrom": lineage[3],
+                "valuesFrom": lineage[1],
+                "outputs": [
+                    {"key": typed_selection_value(label, "string"), "name": f"result_{label}"} for label in ("a", "b")
+                ],
+            },
+        }
+    elif kind == "groupedFill":
+        operation = {
+            "kind": "fillMissingValues",
+            "params": {
+                "column": lineage[1],
+                "replacement": {"kind": "groupedStatistic", "statistic": "mean", "keys": [lineage[0]]},
+            },
+        }
+    else:
+        key = lineage[0] if kind == "group-key" else lineage[2]
+        column = lineage[1] if kind == "group-key" else lineage[0]
+        operation = {
+            "kind": "groupBy",
+            "params": {
+                "keys": [key],
+                "aggregations": [
+                    {"column": column, "operation": "count" if kind == "group-key" else kind, "alias": "result"}
+                ],
+            },
+        }
+    bound = bind_step(validate_step({"id": "extended", **operation}), schema, lineage)
+    if kind == "pivot":
+        with pytest.raises(EngineError, match="precision or range"):
+            engine.validate_transform_preflight(source, bound, engine.shape(source))
+    else:
+        engine.validate_transform_preflight(source, bound, engine.shape(source))
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([bound]), namespace)
+    for run in (lambda: engine.apply_transform(source, bound), lambda: namespace["clean_data"](source)):
+        with pytest.raises((EngineError, ValueError), match="precision or range"):
+            run()
+        pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_extended_float_count_keeps_unselected_values_native() -> None:
+    import numpy as np
+
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble aliases binary64")
+    source = pd.DataFrame(
+        {
+            "key": ["same"] * 3,
+            "value": pd.Series(
+                [np.longdouble(1), np.nextafter(np.longdouble(1), np.longdouble(2)), np.longdouble(2)],
+                dtype=np.longdouble,
+            ),
+        }
+    )
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    bound = bind_step(
+        validate_step(
+            {
+                "id": "count",
+                "kind": "groupBy",
+                "params": {
+                    "keys": [lineage[0]],
+                    "aggregations": [{"column": lineage[1], "operation": "count", "alias": "present"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([bound]), namespace)
+    for result in (engine.apply_transform(source, bound), namespace["clean_data"](source)):
+        assert result["present"].tolist() == [3]
+        assert engine.page(result, 0, 10)["rows"][0]["values"][1]["raw"] == 3
+    pd.testing.assert_frame_equal(source, before)

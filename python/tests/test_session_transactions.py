@@ -588,3 +588,59 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         pd.testing.assert_frame_equal(frame, original)
     finally:
         manager.close_all()
+
+
+def test_extended_float_pages_and_preview_preserve_confirmed_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+    import pandas as pd
+
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble aliases binary64")
+    neighbor = np.nextafter(np.longdouble(1), np.longdouble(2))
+    source = pd.DataFrame({"value": pd.Series([np.longdouble(1), neighbor], dtype=object), "safe": [10, 20]})
+    source.index = pd.Index(["same", "same"], name="row")
+    source.attrs = {"source": "retained"}
+    original = source.copy(deep=True)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _: source)
+    manager = SessionManager()
+    descriptor = {"kind": "notebookVariable", "label": "Extended values", "variableName": "frame"}
+    try:
+        with pytest.raises(EngineError, match="precision or range"):
+            manager.open_session(descriptor, backend="pandas", mode="editing")
+        assert not manager.sessions
+        projected = manager.open_session(descriptor, backend="pandas", mode="editing", column_offset=1, column_limit=1)
+        assert [row["values"][0]["raw"] for row in projected["page"]["rows"]] == [10, 20]
+        manager.close_session(projected["metadata"]["sessionId"], 0)
+        opened = manager.open_session(descriptor, backend="pandas", mode="editing", page_size=1)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        before = session_state(session)
+        with pytest.raises(EngineError, match="precision or range"):
+            manager.get_page(sid, 0, 1, 1, {"filters": [], "sort": []})
+        assert session_state(session) == before
+        assert manager.get_page(sid, 0, 0, 1, {"filters": [], "sort": []})["page"]["rows"] == opened["page"]["rows"]
+        changed_view = {
+            "filters": [
+                {
+                    "column": "safe",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 20}],
+                }
+            ],
+            "sort": [],
+        }
+        with pytest.raises(EngineError, match="precision or range"):
+            manager.get_page(sid, 0, 0, 1, changed_view)
+        assert manager.get_page(sid, 0, 0, 1, {"filters": [], "sort": []})["page"]["rows"] == opened["page"]["rows"]
+        before = session_state(session)
+        operation = {
+            "id": "unique",
+            "kind": "dropDuplicates",
+            "params": {"columns": [{"id": "c:source:0", "name": "value"}]},
+        }
+        with pytest.raises(EngineError, match="precision or range"):
+            manager.preview_step(sid, 0, operation, 0, 1)
+        assert session_state(session) == before
+        pd.testing.assert_frame_equal(source, original)
+    finally:
+        manager.close_all()

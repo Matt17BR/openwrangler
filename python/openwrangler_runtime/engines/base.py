@@ -1042,6 +1042,24 @@ def _normalize_column_projection(
     return normalized
 
 
+NUMPY_FLOAT_PRECISION_MESSAGE = (
+    "This NumPy floating value cannot be displayed or queried without losing precision or range. "
+    "Convert the relevant values explicitly to supported storage."
+)
+
+
+def validate_numpy_float(value: Any) -> None:
+    if type(value).__module__ != "numpy" or not _is_numpy_scalar_wrapper(value):
+        return
+    import numpy as np
+
+    if type(value) is not np.longdouble or not np.isfinite(value):
+        return
+    converted = float(value)
+    if not isfinite(converted) or value.as_integer_ratio() != converted.as_integer_ratio():
+        raise EngineError(NUMPY_FLOAT_PRECISION_MESSAGE)
+
+
 def normalize_cell(value: Any) -> dict[str, Any]:
     type_name = type(value).__name__
     if _is_numpy_scalar_wrapper(value) and type_name not in {"datetime64", "timedelta64"}:
@@ -1060,6 +1078,8 @@ def normalize_cell(value: Any) -> dict[str, Any]:
     is_boolean = isinstance(value, bool) or type_name in {"bool", "bool_"}
     is_integer = isinstance(value, Integral) and not is_boolean and type_name != "timedelta64"
     is_real = isinstance(value, Real) and not is_boolean and not is_integer and type_name != "timedelta64"
+    if is_real:
+        validate_numpy_float(value)
     numeric_value = float(str(value)) if is_real else None
     is_nan = False
     infinity_sign: int | None = None
@@ -1387,6 +1407,7 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Integral):
         return int(value)
     if isinstance(value, Real):
+        validate_numpy_float(value)
         numeric_value = float(value)
         if isnan(numeric_value):
             return "NaN"
