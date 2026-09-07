@@ -80,6 +80,10 @@ engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain 
 `r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before
 truncation, with replacement-race coverage in `python/tests/test_configurable_export.py`.
 
+Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
+code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
+and session-transaction tests cover value boundaries, missing values and rollback.
+
 Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
 `python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
 identity.

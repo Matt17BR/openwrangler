@@ -110,6 +110,11 @@ double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export re
 negative and extreme precision, midpoint neighbors, integer overflow, storage types, masks, signed zero, and source
 identity. Native R's catalog owns its corresponding numeric cases and executes them under altered display options.
 
+Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
+exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.
+`python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
+`python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
+
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
 coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
