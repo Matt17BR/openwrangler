@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from decimal import Decimal
 from typing import Any, cast
 
@@ -14,6 +15,104 @@ from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 
 _WIDE_INTEGER = 2**63
+
+
+def test_pandas_session_group_keeps_exact_mixed_numeric_keys(monkeypatch: pytest.MonkeyPatch):
+    import numpy as np
+
+    from openwrangler_runtime import session as session_runtime
+
+    first = np.float64(2**120)
+    exact = 2**120 + sys.hash_info.modulus
+    source = pd.DataFrame({"key": pd.Series([first, exact, first, 0.5], dtype=object), "value": [10, 20, 30, 40]})
+    source.index = pd.Index(["same"] * 4, name="source")
+    before = source.copy(deep=True)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _source: source)
+    manager = session_runtime.SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "Mixed numeric keys",
+            "variableName": "frame",
+            "uri": "file:///mixed-keys.ipynb",
+        },
+        backend="pandas",
+        mode="editing",
+    )
+    session_id = opened["metadata"]["sessionId"]
+    revision = 0
+    try:
+        operation = {
+            "id": "group-preview",
+            "kind": "groupBy",
+            "params": {
+                "keys": [{"id": "c:source:0", "name": "key"}],
+                "aggregations": [
+                    {"column": {"id": "c:source:1", "name": "value"}, "operation": "sum", "alias": "total"}
+                ],
+            },
+        }
+        preview = manager.preview_step(session_id, revision, operation, 0, 20)
+        revision = preview["revision"]
+        expected = pd.DataFrame(
+            {"key": pd.Series([first, exact, 0.5], dtype=object), "total": pd.Series([40, 20, 40], dtype="Int64")}
+        )
+        assert [row["values"] for row in preview["page"]["rows"]] == [
+            row["values"] for row in PandasEngine().page(expected, 0, 20)["rows"]
+        ]
+    finally:
+        manager.close_session(session_id, revision)
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("family", ["float32", "float64", "longdouble"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_mixed_numeric_keys_keep_representatives_and_missing_counts(family, empty):
+    import numpy as np
+
+    power = {"float32": 90, "float64": 120, "longdouble": 126}[family]
+    first = getattr(np, family)(2**power)
+    exact = 2**power + sys.hash_info.modulus
+    values = [first, exact, first, 0.5, None, getattr(np, family)(np.nan)]
+    source = pd.DataFrame(
+        {"key": pd.Series(values, dtype=object), "value": [10, 20, 30, 40, 50, 60], "partition": ["same"] * 6}
+    )
+    if empty:
+        source = source.iloc[:0]
+    source.index = pd.Index(["same"] * len(source), name="source")
+    before = source.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(source)
+    lineage = source_lineage(schema)
+    for grouped in (True, False):
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "groups",
+                    "kind": "groupBy",
+                    "params": {
+                        "keys": [lineage[0 if grouped else 2]],
+                        "aggregations": [
+                            {"column": lineage[0], "operation": "count", "alias": "present"},
+                            {"column": lineage[0], "operation": "nUnique", "alias": "distinct"},
+                            {"column": lineage[1], "operation": "sum", "alias": "total"},
+                        ],
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        runtime.validate_transform_preflight(source, operation, runtime.shape(source))
+        for result in (runtime.apply_transform(source, operation), _execute_generated(runtime, source, operation)):
+            assert result["present"].tolist() == ([] if empty else [2, 1, 1, 0] if grouped else [4])
+            assert result["distinct"].tolist() == ([] if empty else [1, 1, 1, 0] if grouped else [3])
+            assert result["total"].tolist() == ([] if empty else [40, 20, 40, 110] if grouped else [210])
+            if grouped and not empty:
+                assert result["key"].iloc[0] is first
+                assert type(result["key"].iloc[1]) is int and result["key"].iloc[1] == exact
+                assert result["key"].iloc[2] == 0.5 and result["key"].iloc[3] is pd.NA
+            pd.testing.assert_frame_equal(source, before)
 
 
 @pytest.mark.parametrize(

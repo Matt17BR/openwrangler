@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -19,10 +20,70 @@ from openwrangler_runtime.lineage import derive_lineage
 from openwrangler_runtime.operations import OperationError, validate_step
 
 
+@pytest.mark.parametrize("family", ["float32", "float64", "longdouble"])
+@pytest.mark.parametrize("names", [["x", "x", "x", "x", "y"], ["x", "y", "x", "x", "y"]])
+def test_pandas_mixed_numeric_pivot_keys_preserve_distinct_original_identifiers(family, names):
+    import numpy as np
+
+    power = {"float32": 90, "float64": 120, "longdouble": 126}[family]
+    first = getattr(np, family)(2**power)
+    exact = 2**power + sys.hash_info.modulus
+    source = pd.DataFrame(
+        {
+            "id": pd.Series([first, exact, 0.5, None, np.nan], dtype=object),
+            "key": pd.Series(names, dtype="string"),
+            "value": pd.Series([10, 20, 30, 40, 50], dtype="Int64"),
+        }
+    )
+    source.index = pd.Index(["same"] * len(source), name="source")
+    original = source.copy(deep=True)
+    runtime = PandasEngine()
+    operation = bind(runtime, source)
+    runtime.validate_transform_preflight(source, operation, runtime.shape(source))
+    for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+        assert len(result) == 4
+        assert result["id"].iloc[0] is first
+        assert type(result["id"].iloc[1]) is int and result["id"].iloc[1] == exact
+        assert result["id"].iloc[2] == 0.5 and result["id"].iloc[3] is pd.NA
+        pd.testing.assert_series_equal(
+            result["x_value"], pd.Series([10, 20 if names[1] == "x" else None, 30, 40], name="x_value", dtype="Int64")
+        )
+        pd.testing.assert_series_equal(
+            result["y_value"],
+            pd.Series([None, 20 if names[1] == "y" else None, None, 50], name="y_value", dtype="Int64"),
+        )
+        pd.testing.assert_frame_equal(source, original)
+
+
 def token(value: str) -> dict[str, Any]:
     result = typed_selection_value(value, "string")
     assert result is not None
     return result
+
+
+def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_row():
+    import numpy as np
+
+    identifiers = [np.float32(-0.0), np.float32(0.0), 1, np.float32(1.0)]
+    source = pd.DataFrame(
+        {
+            "id": pd.Series(identifiers, dtype=object),
+            "partition": ["a", "b", "c", "d"],
+            "key": pd.Series(["x"] * 4, dtype="string"),
+            "value": pd.Series([10, 20, 30, 40], dtype="Int64"),
+        }
+    )
+    source.index = pd.Index(["same"] * 4, name="source")
+    before = source.copy(deep=True)
+    runtime = PandasEngine()
+    operation = bind(runtime, source, public_step(names_id="c:source:2", values_id="c:source:3"))
+    runtime.validate_transform_preflight(source, operation, runtime.shape(source))
+    for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+        assert result["partition"].tolist() == ["a", "b", "c", "d"]
+        assert all(actual is expected for actual, expected in zip(result["id"].array, identifiers, strict=True))
+        pd.testing.assert_series_equal(result["x_value"], pd.Series([10, 20, 30, 40], dtype="Int64", name="x_value"))
+        assert result["y_value"].isna().all()
+    pd.testing.assert_frame_equal(source, before)
 
 
 @pytest.mark.parametrize("names", [["x", "x"], ["x", "y"]])

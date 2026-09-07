@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -16,6 +17,196 @@ from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cel
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
+
+
+@pytest.mark.parametrize("floating,power", [(np.float32, 90), (np.float64, 120), (np.longdouble, 126)])
+def test_mixed_numeric_keys_preserve_profiles_duplicates_and_original_rows(floating, power):
+    first = floating(2**power)
+    distinct = 2**power + sys.hash_info.modulus
+    values = [distinct, first, 0.5, first, None, floating(np.nan), float("nan")]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "_open_wrangler_numeric_key": range(len(values))})
+    source.index = pd.MultiIndex.from_tuples([("same", i % 2) for i in range(len(values))], names=["outer", "inner"])
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    summary = engine.summaries(source.iloc[[0, 1, 3, 4, 5, 6]])[0]
+    assert summary["distinctCount"] == 2
+    assert summary["topValues"][0] == {"value": str(first), "count": 2}
+    assert summary["nullCount"] == 1 and summary["nanCount"] == 2
+    assert engine.header_stats(source[["value"]])["duplicateRows"] == 1
+    view = engine.apply_filter_model(
+        source, {"filters": [], "sort": [{"column": "value", "direction": "asc", "nulls": "last"}]}
+    )
+    pd.testing.assert_frame_equal(view, source.iloc[[2, 1, 3, 0, 4, 5, 6]])
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    steps = [
+        bind_step(
+            validate_step({"id": "unique", "kind": "dropDuplicates", "params": {"columns": [lineage[0]]}}),
+            schema,
+            lineage,
+        ),
+        bind_step(
+            validate_step(
+                {
+                    "id": "sort",
+                    "kind": "sortRows",
+                    "params": {"rules": [{"column": lineage[0], "direction": "asc", "nulls": "last"}]},
+                }
+            ),
+            schema,
+            lineage,
+        ),
+    ]
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan(steps), namespace)
+    live = source
+    for step in steps:
+        engine.validate_transform_preflight(live, step, engine.shape(live))
+        live = engine.apply_transform(live, step)
+    positions = [2, 1, 0, 4, 5, 6]
+    for actual in (live, namespace["clean_data"](source)):
+        pd.testing.assert_frame_equal(actual, source.iloc[positions])
+        assert all(actual["value"].iloc[i] is values[p] for i, p in enumerate(positions))
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("integer", [np.int64, np.uint64])
+def test_mixed_numeric_keys_sort_boxed_adjacent_integers_exactly(integer):
+    source = pd.DataFrame({"value": pd.Series([integer(2**53 + 1), np.float64(2**53)], dtype=object), "row": [0, 1]})
+    source.index = pd.Index(["same", "same"], name="original")
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    rule = {"column": "value", "direction": "asc", "nulls": "last"}
+    step = bind_step(
+        validate_step({"id": "sort", "kind": "sortRows", "params": {"rules": [{**rule, "column": lineage[0]}]}}),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    for actual in (
+        engine.apply_filter_model(source, {"filters": [], "sort": [rule]}),
+        engine.apply_transform(source, step),
+        namespace["clean_data"](source),
+    ):
+        pd.testing.assert_frame_equal(actual, source.iloc[[1, 0]])
+
+
+@pytest.mark.parametrize("first", [1, 1.0, True, Decimal("1"), np.bool_(True)])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_mixed_numeric_counts_retain_first_labels_and_native_containers(first, reverse):
+    numpy_one = np.float32(1)
+    fraction = np.float32(1.2)
+    values = [
+        first,
+        numpy_one,
+        fraction,
+        "1",
+        [],
+        {},
+        np.array([9]),
+        None,
+        pd.NA,
+        np.float64(np.nan),
+        float("nan"),
+        Decimal("NaN"),
+    ]
+    if reverse:
+        values.reverse()
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object)})
+    source.index = pd.Index(["same"] * len(source), name="source")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    counts, truncated = engine.column_values(source, "value")
+    representative = numpy_one if reverse else first
+    assert not truncated
+    assert len(counts) == 6
+    assert counts[0]["value"] == str(representative) and counts[0]["count"] == 2
+    assert counts[0]["selectionValue"] == typed_selection_value(representative, "string")
+    assert any(item["value"] == str(fraction) and item["count"] == 1 for item in counts)
+    summary = engine.summaries(source)[0]
+    assert summary["distinctCount"] == 6
+    assert summary["topValues"][0] == {"value": str(representative), "count": 2}
+    assert summary["nullCount"] == 2 and summary["nanCount"] == 3
+    pd.testing.assert_frame_equal(source, before)
+    assert all(actual is original for actual, original in zip(source["value"].array, values, strict=True))
+
+
+def test_numeric_key_preserves_custom_numeric_and_temporal_native_behavior():
+    from openwrangler_runtime.engines.pandas_engine import _pandas_numeric_key, _pandas_value_counts
+
+    class UnhashableFloat(float):
+        __hash__: Any = None
+
+    class UnhashableNumpyFloat(np.float64):
+        __hash__: Any = None
+
+    unchanged = [
+        1,
+        0.5,
+        True,
+        Decimal("1"),
+        np.bool_(True),
+        np.timedelta64(1, "ns"),
+        np.timedelta64("NaT", "ns"),
+        np.datetime64("2000-01-01"),
+        UnhashableFloat(1),
+        UnhashableNumpyFloat(1),
+        None,
+        np.float32(np.nan),
+    ]
+    series = pd.Series(unchanged, dtype=object)
+    assert _pandas_numeric_key(series) is series
+    for first in (UnhashableFloat(1), UnhashableNumpyFloat(1), np.timedelta64(1, "ns"), "1", b"1"):
+        for reverse in (False, True):
+            value = np.float32(1)
+            values = [value, first] if reverse else [first, value]
+            source = pd.Series(values, dtype=object)
+            native_values = [float(value) if item is value else item for item in values]
+            native = pd.Series(native_values, dtype=object).value_counts(sort=False)
+            actual = _pandas_value_counts(source, sort=False)
+            assert actual.tolist() == native.tolist()
+            assert all(any(item is original for original in values) for item in actual.index)
+            assert all(actual is original for actual, original in zip(source.array, values, strict=True))
+    empty = pd.Series([], dtype=object)
+    assert _pandas_numeric_key(empty) is empty
+    assert _pandas_value_counts(empty).empty
+    all_missing = pd.Series([None, pd.NA, np.nan, np.float32(np.nan), Decimal("NaN")], dtype=object)
+    assert _pandas_value_counts(all_missing).empty
+
+
+def test_numeric_key_does_not_read_custom_numpy_dtype():
+    from openwrangler_runtime.engines.pandas_engine import _pandas_numeric_key
+
+    class CustomDtype(np.float64):
+        @property
+        def dtype(self):
+            raise AssertionError("A comparison key must not read a subclass dtype property")
+
+    value = CustomDtype(1)
+    source = pd.DataFrame({"value": pd.Series([value, "text"], dtype=object)})
+    before = source.copy(deep=True)
+    series = source["value"]
+    assert _pandas_numeric_key(series) is series
+    engine = PandasEngine()
+    counts, truncated = engine.column_values(source, "value")
+    assert not truncated
+    assert [(item["value"], item["count"]) for item in counts] == [("1.0", 1), ("text", 1)]
+    assert engine.summaries(source)[0]["distinctCount"] == 2
+    assert engine.header_stats(source)["duplicateRows"] == 0
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    step = bind_step(
+        validate_step({"id": "unique", "kind": "dropDuplicates", "params": {"columns": [lineage[0]]}}), schema, lineage
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    for result in (engine.apply_transform(source, step), namespace["clean_data"](source)):
+        pd.testing.assert_frame_equal(result, source)
+        assert result["value"].iloc[0] is value
+    pd.testing.assert_frame_equal(source, before)
 
 
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:

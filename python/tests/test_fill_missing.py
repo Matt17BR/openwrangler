@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from math import isnan
@@ -3458,3 +3459,91 @@ def test_pandas_grouped_fill_uses_floating_key_equality_without_changing_stored_
         pd.testing.assert_series_equal(result["value"], expected)
         assert np.signbit(result["key"].iloc[:4].to_numpy(dtype=float)).tolist() == [True, False, False, True]
         assert result.attrs == source.attrs
+
+
+@pytest.mark.parametrize("family", ["float32", "float64", "longdouble"])
+@pytest.mark.parametrize("statistic", ["mean", "median", "mostFrequent"])
+def test_pandas_mixed_numeric_grouped_fill_keeps_exact_key_partitions(family, statistic):
+    import numpy as np
+
+    power = {"float32": 90, "float64": 120, "longdouble": 126}[family]
+    first = getattr(np, family)(2**power)
+    exact = 2**power + sys.hash_info.modulus
+    keys = [first, first, exact, exact, None, getattr(np, family)(np.nan)]
+    mode = statistic == "mostFrequent"
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(
+                ["ten", None, "twenty", None, "thirty", None] if mode else [10, None, 20, None, 30, None],
+                dtype="string" if mode else "Float64",
+            ),
+            "key": pd.Series(keys, dtype=object),
+        }
+    )
+    source.index = pd.Index(["same"] * len(source), name="source")
+    before = source.copy(deep=True)
+    replacement = {"kind": "groupedStatistic", "keys": [{"id": "c:source:1", "name": "key"}], "statistic": statistic}
+    expected = pd.Series(
+        ["ten", "ten", "twenty", "twenty", "thirty", "thirty"] if mode else [10, 10, 20, 20, 30, 30],
+        dtype="string" if mode else "Float64",
+        index=source.index,
+        name="value",
+    )
+    for result in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(result["value"], expected)
+        assert all(actual is original for actual, original in zip(result["key"].array, keys, strict=True))
+        pd.testing.assert_frame_equal(source, before)
+
+
+def test_pandas_mixed_numeric_grouped_fill_preserves_keys_through_custom_code():
+    import numpy as np
+
+    first = np.float64(2**120)
+    exact = 2**120 + sys.hash_info.modulus
+    source = pd.DataFrame(
+        {
+            "value": pd.Series([10, None, 20, None], dtype="Float64"),
+            "key": pd.Series([first, first, exact, exact], dtype=object),
+        }
+    )
+    source.index = pd.Index(["same"] * 4, name="source")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    operations = [
+        fill_step(
+            bound_ref("c:source:0", "value", 0),
+            {"kind": "groupedStatistic", "statistic": "mean", "keys": [bound_ref("c:source:1", "key", 1)]},
+        ),
+        {
+            "id": "isolated",
+            "kind": "customCode",
+            "params": {
+                "code": (
+                    "import pandas as pd\n"
+                    "if '_open_wrangler_numeric_key' in globals():\n"
+                    "    raise RuntimeError('private helper leaked')\n"
+                    "_open_wrangler_numeric_key = 99\nresult = df.copy()\n"
+                    "result.iloc[1::2, 0] = pd.NA\n"
+                )
+            },
+        },
+        fill_step(
+            bound_ref("c:source:0", "value", 0),
+            {"kind": "groupedStatistic", "statistic": "median", "keys": [bound_ref("c:source:1", "key", 1)]},
+            step_id="median",
+        ),
+    ]
+    engine = PandasEngine()
+    live = source
+    for operation in operations:
+        live = engine.apply_transform(live, operation)
+    code = engine.compile_plan(operations)
+    assert "openwrangler_runtime" not in code
+    namespace: dict[str, Any] = {"_open_wrangler_numeric_key": "caller collision"}
+    exec(code, namespace)
+    expected = pd.Series([10, 10, 20, 20], dtype="Float64", name="value", index=source.index)
+    for result in (live, namespace["clean_data"](source)):
+        pd.testing.assert_series_equal(result["value"], expected)
+        pd.testing.assert_series_equal(result["key"], source["key"])
+        assert result.attrs == source.attrs
+    pd.testing.assert_frame_equal(source, before)

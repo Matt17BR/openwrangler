@@ -932,6 +932,26 @@ def test_heterogeneous_pandas_integer_selection_preserves_unhashable_residents(r
 
 
 @pytest.mark.parametrize(
+    "neighbor",
+    [float(2**120), np.float32(2**90), np.float64(2**120), np.longdouble(2**126)],
+    ids=["python-float", "float32", "float64", "longdouble"],
+)
+def test_mixed_pandas_numeric_picker_keeps_distinct_hash_colliding_values(neighbor):
+    target = int(neighbor) + sys.hash_info.modulus
+    frame = pd.DataFrame({"value": pd.Series([neighbor, target, 0.5], dtype=object), "row": range(3)})
+    frame.index = pd.Index(["neighbor", "exact", "fraction"], name="source_row")
+    before = frame.copy(deep=True)
+    values, has_more = PandasEngine().column_values(frame, "value")
+    assert has_more is False
+    assert len(values) == 3
+    assert [item["count"] for item in values] == [1, 1, 1]
+    exact = next(item for item in values if item["value"] == str(target))
+    assert exact["selectionValue"]["cell"] == normalize_cell(target)
+    _assert_pandas_row_query(frame, _value_selection_model("float", exact["selectionValue"]), [1])
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
     "value, expected_rows",
     [
         ("0.5", [0]),

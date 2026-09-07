@@ -287,7 +287,7 @@ def _pandas_row_key(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
-    series = _pandas_scalar_values(series)
+    series = _pandas_numeric_key(_pandas_scalar_values(series))
     if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):
         fill = series.dtype.fill_value
         bounds = np.iinfo(series.dtype.subtype)
@@ -300,6 +300,85 @@ def _pandas_row_key(series: Any) -> Any:
     else:
         key = pd.Series(series.array, dtype=series.dtype, name=series.name, copy=False)
     return key
+
+
+def _pandas_is_numpy_numeric_key_scalar(value: Any) -> bool:
+    import numpy as np
+
+    return (
+        isinstance(value, (np.integer, np.floating, np.bool_))
+        and not isinstance(value, np.timedelta64)
+        and type(value) is np.generic.dtype.__get__(value).type
+    )
+
+
+def _pandas_numeric_key_value(value: Any) -> Any:
+    import numpy as np
+
+    # Boxed NumPy comparisons can round a neighboring Python integer before comparing it.
+    if not _pandas_is_numpy_numeric_key_scalar(value):
+        return value
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        if value.dtype.itemsize <= 8:
+            native = value.item()
+            if isfinite(native):
+                return native
+        else:
+            try:
+                numerator, denominator = value.as_integer_ratio()
+            except (ValueError, OverflowError):
+                pass
+            else:
+                if denominator == 1:
+                    return numerator
+    return value
+
+
+def _pandas_numeric_key(series: Any) -> Any:
+    import pandas as pd
+
+    if not pd.api.types.is_object_dtype(series.dtype):
+        return series
+    values = series.to_numpy(copy=False)
+    converted = None
+    for position, value in enumerate(values):
+        replacement = _pandas_numeric_key_value(value)
+        if replacement is not value:
+            if converted is None:
+                converted = values.copy()
+            converted[position] = replacement
+    if converted is None:
+        return series
+    # These are comparison keys only; rows and grouped labels keep original scalars.
+    return pd.Series(converted, index=series.index, name=series.name, dtype=object, copy=False)
+
+
+def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
+    import pandas as pd
+
+    keys = _pandas_numeric_key(series)
+    if keys is series:
+        return series.value_counts(dropna=True, sort=sort)
+    counts = keys.value_counts(dropna=True, sort=sort)
+    first: dict[Any, Any] = {}
+    for original, key in zip(series.array, keys.array, strict=True):
+        if (
+            type(key) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(key)
+        ) and not _pandas_is_missing_scalar(key):
+            first.setdefault(key, original)
+    # Native counts and duplicated can disagree for unhashable object residents.
+    # Restore numeric labels directly, without pairing those different partitions.
+    representatives = [
+        first.get(value, value)
+        if type(value) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(value)
+        else value
+        for value in counts.index
+    ]
+    return pd.Series(
+        counts.to_numpy(), index=pd.Index(representatives, dtype=object, name=series.name), name=counts.name
+    )
 
 
 def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any:
@@ -701,7 +780,7 @@ class PandasEngine(DataFrameEngine):
             semantic_type = _pandas_semantic_type(series)
             series = _pandas_scalar_values(series)
             null_count, nan_count = _missing_value_counts(series)
-            value_counts = series.value_counts(dropna=True)
+            value_counts = _pandas_value_counts(series)
             top_values = [{"value": str(index), "count": int(value)} for index, value in value_counts.head(10).items()]
             summary: dict[str, Any] = {
                 "columnId": column_id,
@@ -711,7 +790,7 @@ class PandasEngine(DataFrameEngine):
                 "totalCount": int(len(series)),
                 "nullCount": null_count,
                 "nanCount": nan_count,
-                "distinctCount": int(series.nunique(dropna=True)),
+                "distinctCount": int(value_counts.gt(0).sum()),
                 "topValues": top_values,
             }
             if semantic_type in {"integer", "float", "decimal"}:
@@ -770,7 +849,7 @@ class PandasEngine(DataFrameEngine):
         logical = df
         for position in range(df.shape[1]):
             series = df.iloc[:, position]
-            values = _pandas_scalar_values(series)
+            values = _pandas_numeric_key(_pandas_scalar_values(series))
             if values is not series:
                 if logical is df:
                     logical = df.copy(deep=False)
@@ -800,7 +879,7 @@ class PandasEngine(DataFrameEngine):
         if search and not dictionary_string:
             folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
             series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
-        counts = series.value_counts(sort=False).items()
+        counts = _pandas_value_counts(series, sort=False).items()
         if search and dictionary_string:
             needle = str(search).translate(_ASCII_TO_LOWER)
             counts = [(value, count) for value, count in counts if needle in str(value).translate(_ASCII_TO_LOWER)]
@@ -1340,9 +1419,13 @@ class PandasEngine(DataFrameEngine):
         if needs_nullable_result_helpers or "grouped" in fill_strategies:
             lines.extend(
                 [
-                    "def _open_wrangler_factorize_group_key(series):",
+                    "def _open_wrangler_factorize_group_key(series, keys=None):",
+                    "    keys = _open_wrangler_numeric_key(series) if keys is None else keys",
                     "    codes, uniques = pd.factorize(",
-                    "        series.to_numpy(dtype=object), sort=False, use_na_sentinel=False)",
+                    "        keys.to_numpy(dtype=object), sort=False, use_na_sentinel=False)",
+                    "    if keys is not series:",
+                    "        first = ~pd.Series(codes, copy=False).duplicated().to_numpy()",
+                    "        uniques = series.to_numpy(dtype=object)[first]",
                     "    return pd.Series(codes, index=series.index, name=series.name), uniques",
                     "",
                     "",
@@ -1363,6 +1446,8 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
+        if needs_row_queries or needs_nullable_result_helpers or "grouped" in fill_strategies:
+            lines.extend(_generated_pandas_numeric_key_helpers())
         needs_scalar_values = any(
             step["kind"]
             in {
@@ -1609,9 +1694,10 @@ class PandasEngine(DataFrameEngine):
                     "def _open_wrangler_prepare_group_key(series):",
                     "    if pd.api.types.is_float_dtype(series.dtype):",
                     "        return _open_wrangler_prepare_float_group_key(series), None",
-                    "    if not _open_wrangler_is_integer_series(series):",
+                    "    keys = _open_wrangler_numeric_key(series)",
+                    "    if keys is series and not _open_wrangler_is_integer_series(series):",
                     "        return series, None",
-                    "    return _open_wrangler_factorize_group_key(series)",
+                    "    return _open_wrangler_factorize_group_key(series, keys)",
                     "",
                     "",
                     "def _open_wrangler_restore_group_key(series, uniques):",
@@ -1622,7 +1708,7 @@ class PandasEngine(DataFrameEngine):
                     "    if all(_open_wrangler_missing_scalar(item) or _open_wrangler_integer_scalar(item)",
                     "           for item in restored.array):",
                     "        return _open_wrangler_normalize_integer(restored, enforce_envelope=False)",
-                    "    return restored",
+                    "    return _open_wrangler_group_nulls(restored, restored.isna())",
                     "",
                     "",
                     "def _open_wrangler_widen_integer(value):",
@@ -2327,6 +2413,9 @@ class PandasEngine(DataFrameEngine):
                             f"{prefix}if pd.api.types.is_float_dtype({source}[{value_name!r}].dtype):",
                             f"{prefix}    {source}.isetitem({value_name!r}, "
                             f"_open_wrangler_prepare_group_key({source}[{value_name!r}])[0])",
+                            f"{prefix}else:",
+                            f"{prefix}    {source}.isetitem({value_name!r}, "
+                            f"_open_wrangler_numeric_key({source}[{value_name!r}]))",
                         ]
                     )
                 if ordered_input:
@@ -2604,7 +2693,15 @@ def _pandas_pivot_wider(
             [df.columns[position] for position in identifiers], dtype="object", tupleize_cols=False
         )
         for output_position, uniques in enumerate(key_states):
-            restored = _pandas_restore_group_key(result.iloc[:, output_position], uniques)
+            if uniques is not None:
+                # Joint groups retain their first identifier row, including equal numeric representations.
+                original = _pandas_scalar_values(df.iloc[:, identifiers[output_position]])
+                positions = pd.Series(
+                    first_rows.index[first_rows], index=result.index, name=result.columns[output_position]
+                )
+                restored = _pandas_restore_group_key(positions, original.to_numpy(dtype=object))
+            else:
+                restored = _pandas_restore_group_key(result.iloc[:, output_position], uniques)
             if pd.api.types.is_float_dtype(restored.dtype):
                 zeros = restored.eq(0).fillna(False)
                 if zeros.any():
@@ -2711,7 +2808,13 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "dtype='object', tupleize_cols=False)"
         ),
         "        for output_position, uniques in enumerate(key_states):",
-        ("            restored = _open_wrangler_restore_group_key(result.iloc[:, output_position], uniques)"),
+        "            if uniques is not None:",
+        "                original = _open_wrangler_scalar_values(df.iloc[:, identifiers[output_position]])",
+        "                positions = pd.Series(first_rows.index[first_rows],",
+        "                                      index=result.index, name=result.columns[output_position])",
+        "                restored = _open_wrangler_restore_group_key(positions, original.to_numpy(dtype=object))",
+        "            else:",
+        "                restored = _open_wrangler_restore_group_key(result.iloc[:, output_position], uniques)",
         "            if pd.api.types.is_float_dtype(restored.dtype):",
         "                zeros = restored.eq(0).fillna(False)",
         "                if zeros.any():",
@@ -2815,8 +2918,13 @@ def _pandas_group_by_positions(
     for aggregation_index, (_source_position, _operation, _alias) in enumerate(aggregations):
         _, ordered_input, checked_sum, nullable_integer, decimal_average = aggregation_semantics[aggregation_index]
         value_name = value_names[aggregation_index]
-        if _operation == "nUnique" and pd.api.types.is_float_dtype(source[value_name].dtype):
-            source.isetitem(value_name, _pandas_prepare_group_key(source[value_name])[0])
+        if _operation == "nUnique":
+            source.isetitem(
+                value_name,
+                _pandas_prepare_float_group_key(source[value_name])
+                if pd.api.types.is_float_dtype(source[value_name].dtype)
+                else _pandas_numeric_key(source[value_name]),
+            )
         if ordered_input:
             source.isetitem(value_name, _pandas_ordered_aggregate_input(source[value_name]))
         semantic_type = _pandas_semantic_type(source[value_name])
@@ -4443,10 +4551,14 @@ def _pandas_prepare_float_group_key(series: Any) -> Any:
     return series
 
 
-def _pandas_factorize_group_key(series: Any) -> tuple[Any, Any]:
+def _pandas_factorize_group_key(series: Any, keys: Any = None) -> tuple[Any, Any]:
     import pandas as pd
 
-    codes, uniques = pd.factorize(series.to_numpy(dtype=object), sort=False, use_na_sentinel=False)
+    keys = _pandas_numeric_key(series) if keys is None else keys
+    codes, uniques = pd.factorize(keys.to_numpy(dtype=object), sort=False, use_na_sentinel=False)
+    if keys is not series:
+        first = ~pd.Series(codes, copy=False).duplicated().to_numpy()
+        uniques = series.to_numpy(dtype=object)[first]
     return pd.Series(codes, index=series.index, name=series.name), uniques
 
 
@@ -4455,9 +4567,10 @@ def _pandas_prepare_group_key(series: Any) -> tuple[Any, Any | None]:
 
     if pd.api.types.is_float_dtype(series.dtype):
         return _pandas_prepare_float_group_key(series), None
-    if _pandas_semantic_type(series) != "integer":
+    keys = _pandas_numeric_key(series)
+    if keys is series and _pandas_semantic_type(series) != "integer":
         return series, None
-    return _pandas_factorize_group_key(series)
+    return _pandas_factorize_group_key(series, keys)
 
 
 def _pandas_restore_group_key(series: Any, uniques: Any | None) -> Any:
@@ -4467,7 +4580,11 @@ def _pandas_restore_group_key(series: Any, uniques: Any | None) -> Any:
         return _pandas_group_key(series)
     values = uniques[series.to_numpy(dtype="intp")]
     restored = pd.Series(values, index=series.index, name=series.name, dtype=object)
-    return _pandas_preserve_integer_result(restored) if _pandas_integer_values(restored) is not None else restored
+    return (
+        _pandas_preserve_integer_result(restored)
+        if _pandas_integer_values(restored) is not None
+        else _pandas_group_nulls(restored, restored.isna())
+    )
 
 
 def _pandas_integer_aggregate_input(series: Any) -> Any:
@@ -4890,6 +5007,59 @@ def _generated_pandas_modulo_helpers() -> list[str]:
     ]
 
 
+def _generated_pandas_numeric_key_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_numpy_numeric_key_scalar(value):",
+        "    return (isinstance(value, (np.integer, np.floating, np.bool_))",
+        (
+            "            and not isinstance(value, np.timedelta64) "
+            "and type(value) is np.generic.dtype.__get__(value).type)"
+        ),
+        "",
+        "",
+        "def _open_wrangler_numeric_key_value(value):",
+        "    from math import isfinite",
+        "",
+        "    if not _open_wrangler_numpy_numeric_key_scalar(value):",
+        "        return value",
+        "    if isinstance(value, np.integer):",
+        "        return int(value)",
+        "    if isinstance(value, np.floating):",
+        "        if value.dtype.itemsize <= 8:",
+        "            native = value.item()",
+        "            if isfinite(native):",
+        "                return native",
+        "        else:",
+        "            try:",
+        "                numerator, denominator = value.as_integer_ratio()",
+        "            except (ValueError, OverflowError):",
+        "                pass",
+        "            else:",
+        "                if denominator == 1:",
+        "                    return numerator",
+        "    return value",
+        "",
+        "",
+        "def _open_wrangler_numeric_key(series):",
+        "    if not pd.api.types.is_object_dtype(series.dtype):",
+        "        return series",
+        "    values = series.to_numpy(copy=False)",
+        "    converted = None",
+        "    for position, value in enumerate(values):",
+        "        replacement = _open_wrangler_numeric_key_value(value)",
+        "        if replacement is not value:",
+        "            if converted is None:",
+        "                converted = values.copy()",
+        "            converted[position] = replacement",
+        "    if converted is None:",
+        "        return series",
+        "    # Comparison keys only; original rows and grouped labels retain their scalars.",
+        "    return pd.Series(converted, index=series.index, name=series.name, dtype=object, copy=False)",
+        "",
+        "",
+    ]
+
+
 def _generated_pandas_numeric_filter_helpers() -> list[str]:
     return [
         "def _open_wrangler_numeric_filter(series, method, values):",
@@ -4990,7 +5160,7 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "",
         "",
         "def _open_wrangler_row_key(series):",
-        "    series = _open_wrangler_scalar_values(series)",
+        "    series = _open_wrangler_numeric_key(_open_wrangler_scalar_values(series))",
         "",
         "    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):",
         "        fill = series.dtype.fill_value",
@@ -5569,8 +5739,10 @@ def _pandas_fill_missing_grouped_statistic(
             )
         if pd.api.types.is_float_dtype(key_series.dtype):
             key_series = _pandas_prepare_float_group_key(key_series)
-        elif _pandas_semantic_type(key_series) == "integer":
-            key_series = _pandas_factorize_group_key(key_series)[0]
+        else:
+            keys = _pandas_numeric_key(key_series)
+            if keys is not key_series or _pandas_semantic_type(key_series) == "integer":
+                key_series = _pandas_factorize_group_key(key_series, keys)[0]
         prepared_keys.append(key_series)
     key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)
     groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, observed=True).indices.values()
@@ -6525,8 +6697,10 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "            ], dtype=object)",
         "        if pd.api.types.is_float_dtype(key_series.dtype):",
         "            key_series = _open_wrangler_prepare_float_group_key(key_series)",
-        "        elif _open_wrangler_fill_semantic_type(key_series) == 'integer':",
-        "            key_series = _open_wrangler_factorize_group_key(key_series)[0]",
+        "        else:",
+        "            keys = _open_wrangler_numeric_key(key_series)",
+        "            if keys is not key_series or _open_wrangler_fill_semantic_type(key_series) == 'integer':",
+        "                key_series = _open_wrangler_factorize_group_key(key_series, keys)[0]",
         "        prepared_keys.append(key_series)",
         "    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)",
         (
