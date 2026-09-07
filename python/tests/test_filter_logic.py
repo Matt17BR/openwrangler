@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import operator
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
@@ -250,6 +252,211 @@ def test_pandas_predicate_operators_match_view_bound_and_generated(operator, cas
         namespace["clean_data"](frame),
     ]
     assert [result["label"].tolist() for result in results] == [expected, expected, expected]
+
+
+def _assert_pandas_integer_query(frame, model, expected_rows, *, sort_only=False):
+    engine = PandasEngine()
+    before = frame.copy(deep=True)
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    public_model = deepcopy(model)
+    for item in [*public_model["filters"], *public_model["sort"]]:
+        item["column"] = lineage[list(frame.columns).index(item["column"])]
+    step = {
+        "id": "query",
+        "kind": "sortRows" if sort_only else "filterRows",
+        "params": {"rules": public_model["sort"]} if sort_only else {"filterModel": public_model},
+    }
+    bound = bind_step(validate_step(step), schema, lineage)
+    namespace = {}
+    exec(engine.compile_plan([bound]), namespace, namespace)
+    results = [
+        engine.apply_filter_model(frame, model),
+        engine.apply_transform(frame, bound),
+        namespace["clean_data"](frame),
+    ]
+    for result in results:
+        assert result["row"].tolist() == expected_rows
+        assert result.dtypes.tolist() == frame.dtypes.tolist()
+        assert result.attrs == frame.attrs
+        pd.testing.assert_index_equal(result.columns, frame.columns)
+        pd.testing.assert_index_equal(result.index, frame.index.take(expected_rows))
+        for position in range(frame.shape[1]):
+            expected = frame.iloc[:, position].to_numpy(dtype=object)[expected_rows]
+            actual = result.iloc[:, position].to_numpy(dtype=object)
+            for value, original in zip(actual, expected, strict=True):
+                assert pd.isna(value) if pd.isna(original) else value == original
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def _integer_query_frame(values, dtype):
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=object).astype(dtype), "row": range(len(values))})
+    frame.index = pd.MultiIndex.from_tuples([("same", 7)] * len(frame), names=["group", "index"])
+    frame.attrs = {"source": "unchanged"}
+    return frame
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "uint8",
+        "Int8",
+        "int64",
+        "Int64",
+        "int64[pyarrow]",
+        "uint64",
+        "UInt64",
+        "uint64[pyarrow]",
+        pd.SparseDtype("uint64", 0),
+        pd.SparseDtype("uint64", np.nan),
+        pd.SparseDtype("int64", -7),
+    ],
+)
+def test_pandas_integer_filters_preserve_exact_values_and_bounds(dtype):
+    resolved = pd.api.types.pandas_dtype(dtype)
+    native = getattr(resolved, "numpy_dtype", getattr(resolved, "subtype", resolved))
+    bounds = np.iinfo(native)
+    low, high = int(bounds.min), int(bounds.max)
+    needle = 2**53 + 1 if bounds.bits == 64 else 1
+    values: list[int | None] = [low, 0, needle - 1, needle, needle + 1, high]
+    sparse = isinstance(resolved, pd.SparseDtype)
+    missing = sparse and pd.isna(resolved.fill_value)
+    if sparse and not missing:
+        values.append(int(resolved.fill_value))
+    if missing or (not sparse and isinstance(resolved, pd.api.extensions.ExtensionDtype)):
+        values.append(None)
+    frame = _integer_query_frame(values, dtype)
+    choices, _ = PandasEngine().column_values(frame, "value")
+    token = next(choice["selectionValue"] for choice in choices if choice["value"] == str(needle))
+    assert coerce_typed_view_value(token, "integer") == needle
+
+    for selected in [[needle], [high], [low - 1], [high + 1], [-1, 2**64 - 1], []]:
+        model = _value_selection_model("integer", token)
+        model["filters"][0]["valueFilter"]["selectedValues"] = [
+            typed_selection_value(value, "integer") for value in selected
+        ]
+        expected = [i for i, value in enumerate(values) if not selected or (value is not None and value in selected)]
+        _assert_pandas_integer_query(frame, model, expected)
+    for include_nulls, include_nan in [(True, False), (False, True), (True, True)]:
+        model = _value_selection_model("integer", typed_selection_value(0, "integer"))
+        model["filters"][0]["valueFilter"].update(includeNulls=include_nulls, includeNaN=include_nan)
+        expected = [
+            i
+            for i, value in enumerate(values)
+            if value == 0 or (value is None and (include_nan if missing else include_nulls))
+        ]
+        _assert_pandas_integer_query(frame, model, expected)
+    for spelling, compare in [
+        ("equals", operator.eq),
+        ("notEquals", operator.ne),
+        ("gt", operator.gt),
+        ("gte", operator.ge),
+        ("lt", operator.lt),
+        ("lte", operator.le),
+    ]:
+        for value in [low - 1, needle, high + 1, -(2**100), 2**100]:
+            model = {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": spelling, "value": str(value)}],
+                    }
+                ],
+                "sort": [],
+            }
+            expected = [i for i, item in enumerate(values) if item is not None and compare(item, value)]
+            _assert_pandas_integer_query(frame, model, expected)
+    for low_value, high_value in [(low - 1, high + 1), (needle, needle), (high + 1, high + 2), (high, low)]:
+        model = {
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "predicates": [
+                        {
+                            "kind": "predicate",
+                            "operator": "between",
+                            "value": str(low_value),
+                            "secondValue": str(high_value),
+                        }
+                    ],
+                }
+            ],
+            "sort": [],
+        }
+        _assert_pandas_integer_query(
+            frame,
+            model,
+            [i for i, value in enumerate(values) if value is not None and low_value <= value <= high_value],
+        )
+
+
+@pytest.mark.parametrize("dtype", ["UInt64", "uint64[pyarrow]", pd.SparseDtype("uint64", np.nan)])
+@pytest.mark.parametrize("values", [[], [None, None]])
+def test_pandas_integer_filters_keep_empty_and_missing_storage(dtype, values):
+    frame = _integer_query_frame(values, dtype)
+    model = _value_selection_model("integer", typed_selection_value(2**64 - 1, "integer"))
+    _assert_pandas_integer_query(frame, model, [])
+    model["filters"][0]["valueFilter"].update(includeNulls=True, includeNaN=True)
+    _assert_pandas_integer_query(frame, model, list(range(len(values))))
+
+
+def test_pandas_integer_filters_keep_arbitrary_object_integers():
+    values = [-(2**1000), 0, 2**1000, None]
+    frame = _integer_query_frame(values, object)
+    for selected in [2**1000, -(2**1000), 2**1000 + 1]:
+        model = _value_selection_model("integer", typed_selection_value(selected, "integer"))
+        _assert_pandas_integer_query(frame, model, [i for i, value in enumerate(values) if value == selected])
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "integer",
+                "predicates": [{"kind": "predicate", "operator": "gt", "value": str(2**999)}],
+            }
+        ],
+        "sort": [],
+    }
+    _assert_pandas_integer_query(frame, model, [2])
+
+
+@pytest.mark.parametrize("fill", [0, np.nan, 1.0, -1, 2**64, 1.5])
+@pytest.mark.filterwarnings("ignore:Allowing arbitrary scalar fill_value:FutureWarning")
+def test_pandas_sparse_integer_filters_and_sorting_preserve_returned_values(fill):
+    try:
+        dtype = pd.SparseDtype("uint64", fill)
+    except ValueError:
+        pytest.skip("This Pandas version rejects the older supported non-integer or out-of-range sparse fill.")
+    values = [fill, 2**53 + 4, 2**53 + 3, 2**64 - 1, fill, 2**53 + 3]
+    frame = _integer_query_frame(values, dtype)
+    frame.insert(
+        1, "other sparse", pd.Series([0, 2**53 + 3, 0, 0, 1, 0], dtype=object).astype(pd.SparseDtype("uint64", 0)).array
+    )
+    frame.insert(2, "tie", [1, 0, 0, 0, 1, 1])
+    selected = [2**53 + 3, 2**64 - 1, 0, -1, 2**64]
+    model = _value_selection_model("integer", typed_selection_value(selected[0], "integer"))
+    model["filters"][0]["valueFilter"].update(
+        selectedValues=[typed_selection_value(value, "integer") for value in selected], includeNaN=True
+    )
+    included = [i for i, value in enumerate(values) if pd.isna(value) or value in selected]
+    _assert_pandas_integer_query(frame, model, included)
+    for ascending in [True, False]:
+        for nulls in ["first", "last"]:
+            rules = [
+                {"column": "value", "direction": "asc" if ascending else "desc", "nulls": nulls},
+                {"column": "tie", "direction": "desc", "nulls": "last"},
+            ]
+            for sort_only in [False, True]:
+                query = {"filters": [], "sort": rules} if sort_only else {**model, "sort": rules}
+                rows = list(range(len(values))) if sort_only else included
+                rows = sorted(rows, key=lambda i: frame["tie"].iloc[i], reverse=True)
+                missing_rows = [i for i in rows if pd.isna(values[i])]
+                rows = sorted(
+                    [i for i in rows if not pd.isna(values[i])], key=lambda i: values[i], reverse=not ascending
+                )
+                expected = missing_rows + rows if nulls == "first" else rows + missing_rows
+                _assert_pandas_integer_query(frame, query, expected, sort_only=sort_only)
 
 
 def _value_selection_model(column_type: str, value: Any) -> dict[str, Any]:

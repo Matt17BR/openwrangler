@@ -190,6 +190,74 @@ def _pandas_filter_conditions(
     return tuple(conditions)
 
 
+def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if method == "between":
+        return _pandas_integer_filter(series, "ge", values[:1]) & _pandas_integer_filter(series, "le", values[1:])
+    if not pd.api.types.is_integer_dtype(series.dtype):
+        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])
+    dtype = getattr(series.dtype, "numpy_dtype", getattr(series.dtype, "subtype", series.dtype))
+    bounds = np.iinfo(dtype)
+    low, high = int(bounds.min), int(bounds.max)
+    sparse = isinstance(series.dtype, pd.SparseDtype)
+    if sparse:
+        fill = series.dtype.fill_value
+        if not (pd.isna(fill) or isinstance(fill, (int, np.integer)) and low <= int(fill) <= high):
+            # Older supported Pandas permits logical fills outside the stored integer dtype.
+            logical = pd.Series(series.to_numpy(dtype=object), index=series.index, name=series.name)
+            return logical.isin(list(values)) if method == "isin" else getattr(logical, method)(values[0])
+    if method == "isin":
+        candidates = np.asarray([value for value in values if low <= value <= high], dtype=dtype)
+        comparable = series.fillna(0).sparse.to_dense() if sparse else series
+        result = comparable.isin(candidates)
+        return result & series.notna() if sparse else result
+    value = values[0]
+    if value < low or value > high:
+        below = value < low
+        result = {"eq": False, "ne": True, "gt": below, "ge": below, "lt": not below, "le": not below}[method]
+        return pd.Series(result, index=series.index, name=series.name, dtype=bool)
+    return getattr(series, method)(np.dtype(dtype).type(value))
+
+
+def _pandas_take_rows(frame: Any, positions: Any) -> Any:
+    import pandas as pd
+
+    # These are positions, not a fill-aware reindexing operation.
+    sparse = {
+        position: frame.iloc[:, position].array
+        for position, dtype in enumerate(frame.dtypes)
+        if isinstance(dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(dtype)
+    }
+    if not sparse:
+        return frame.iloc[positions]
+    remaining = [position for position in range(frame.shape[1]) if position not in sparse]
+    result = frame.iloc[:, remaining].iloc[positions].copy(deep=False)
+    for position, array in sparse.items():
+        result.insert(position, frame.columns[position], array.take(positions, allow_fill=False), allow_duplicates=True)
+    result.columns = frame.columns
+    return result
+
+
+def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):
+        fill = series.dtype.fill_value
+        bounds = np.iinfo(series.dtype.subtype)
+        if pd.isna(fill) or isinstance(fill, (int, np.integer)) and int(bounds.min) <= int(fill) <= int(bounds.max):
+            key = series.fillna(0).sparse.to_dense().reset_index(drop=True)
+            if pd.isna(fill):
+                key = pd.Series(pd.arrays.IntegerArray(key.to_numpy(), series.isna().to_numpy(dtype=bool)))
+        else:
+            key = pd.Series(series.to_numpy(dtype=object))
+    else:
+        key = series.reset_index(drop=True)
+    return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()
+
+
 def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition) -> Any:
     method = condition.method
     values = (
@@ -198,7 +266,11 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         else condition.values
     )
     if method == "isin":
-        result = series.isin(list(values))
+        result = (
+            _pandas_integer_filter(series, method, values)
+            if condition.column_type == "integer"
+            else series.isin(list(values))
+        )
         if condition.include_nulls:
             result = result | _null_mask(series)
         if condition.include_nan:
@@ -212,6 +284,8 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         result = folded.str.contains(str(values[0]).translate(_ASCII_TO_LOWER), na=False, regex=False)
     elif method in {"startswith", "endswith"}:
         result = getattr(series.astype(str).str, method)(str(values[0]), na=False)
+    elif condition.column_type == "integer":
+        result = _pandas_integer_filter(series, method, values)
     elif method == "between":
         result = (series >= values[0]) & (series <= values[1])
     else:
@@ -438,6 +512,8 @@ class PandasEngine(DataFrameEngine):
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
+        import numpy as np
+
         df = self.normalize(frame)
         positional_row_axis = self.row_axis(df)["kind"] == "positional"
         column_masks = []
@@ -462,7 +538,7 @@ class PandasEngine(DataFrameEngine):
             mask = column_masks[0]
             for column_mask in column_masks[1:]:
                 mask = mask | column_mask if model.get("logic") == "or" else mask & column_mask
-            filtered = df[mask]
+            filtered = _pandas_take_rows(df, np.flatnonzero(mask.fillna(False).to_numpy(dtype=bool)))
 
         sort_rules = model.get("sort", [])
         if sort_rules:
@@ -473,16 +549,13 @@ class PandasEngine(DataFrameEngine):
                     resolved_rules.append((position, rule))
             if resolved_rules:
                 for position, rule in reversed(resolved_rules):
-                    column = df.columns[position]
                     column_type = _pandas_semantic_type(df.iloc[:, position])
                     if column_type not in VIEW_COMPARABLE_TYPES:
                         raise EngineError(f"Pandas view sorting is unavailable for {column_type} columns.")
-                    filtered = filtered.sort_values(
-                        by=column,
-                        ascending=rule.get("direction", "asc") == "asc",
-                        na_position=rule.get("nulls", "last"),
-                        kind="stable",
+                    order = _pandas_sort_order(
+                        filtered.iloc[:, position], rule.get("direction", "asc") == "asc", rule.get("nulls", "last")
                     )
+                    filtered = _pandas_take_rows(filtered, order)
         if positional_row_axis and filtered is not df:
             filtered = filtered.reset_index(drop=True)
         return filtered
@@ -1068,20 +1141,15 @@ class PandasEngine(DataFrameEngine):
             if not isinstance(rule, Mapping):
                 raise EngineError(f"{operation} requires bound sort rules.")
             position = self._bound_frame_position(result, rule.get("column"), operation)
-            order = (
-                result.iloc[:, position]
-                .reset_index(drop=True)
-                .sort_values(
-                    ascending=rule.get("direction", "asc") == "asc",
-                    na_position=rule.get("nulls", "last"),
-                    kind="stable",
-                )
-                .index.to_numpy()
+            order = _pandas_sort_order(
+                result.iloc[:, position], rule.get("direction", "asc") == "asc", rule.get("nulls", "last")
             )
-            result = result.iloc[order]
+            result = _pandas_take_rows(result, order)
         return result
 
     def _apply_bound_filter_model(self, frame: Any, model: Any) -> Any:
+        import numpy as np
+
         if not isinstance(model, Mapping):
             raise EngineError("filterRows requires a bound filter model.")
         column_masks = []
@@ -1105,7 +1173,7 @@ class PandasEngine(DataFrameEngine):
             mask = column_masks[0]
             for column_mask in column_masks[1:]:
                 mask = mask | column_mask if model.get("logic") == "or" else mask & column_mask
-            filtered = frame.iloc[mask.fillna(False).to_numpy(dtype=bool)]
+            filtered = _pandas_take_rows(frame, np.flatnonzero(mask.fillna(False).to_numpy(dtype=bool)))
         sort = model.get("sort", [])
         return self._apply_bound_sort_rules(filtered, sort, "filterRows") if sort else filtered
 
@@ -1176,6 +1244,10 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if needs_view_value_helpers:
+            lines.extend(_generated_pandas_integer_filter_helpers())
+        if any(step["kind"] in {"filterRows", "sortRows"} for step in plan):
+            lines.extend(_generated_pandas_row_query_helpers())
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
@@ -1578,10 +1650,9 @@ class PandasEngine(DataFrameEngine):
                 order = f"_sort_order_{index}_{rule_index}"
                 lines.extend(
                     [
-                        f"{prefix}{order} = df.iloc[:, {position}].reset_index(drop=True).sort_values(",
-                        f"{prefix}    ascending={rule.get('direction', 'asc') == 'asc'!r},",
-                        f"{prefix}    na_position={rule.get('nulls', 'last')!r}, kind='stable').index.to_numpy()",
-                        f"{prefix}df = df.iloc[{order}]",
+                        f"{prefix}{order} = _open_wrangler_sort_order(df.iloc[:, {position}], "
+                        f"{rule.get('direction', 'asc') == 'asc'!r}, {rule.get('nulls', 'last')!r})",
+                        f"{prefix}df = _open_wrangler_take_rows(df, {order})",
                     ]
                 )
             return lines
@@ -4088,6 +4159,85 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
     raise EngineError(f"Unsupported formula operator: {operator}")
 
 
+def _generated_pandas_integer_filter_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_integer_filter(series, method, values):",
+        "",
+        '    if method == "between":',
+        "        return (",
+        '            _open_wrangler_integer_filter(series, "ge", values[:1])',
+        '            & _open_wrangler_integer_filter(series, "le", values[1:])',
+        "        )",
+        "    if not pd.api.types.is_integer_dtype(series.dtype):",
+        '        return series.isin(list(values)) if method == "isin" else getattr(series, method)(values[0])',
+        '    dtype = getattr(series.dtype, "numpy_dtype", getattr(series.dtype, "subtype", series.dtype))',
+        "    bounds = np.iinfo(dtype)",
+        "    low, high = int(bounds.min), int(bounds.max)",
+        "    sparse = isinstance(series.dtype, pd.SparseDtype)",
+        "    if sparse:",
+        "        fill = series.dtype.fill_value",
+        "        if not (pd.isna(fill) or isinstance(fill, (int, np.integer)) and low <= int(fill) <= high):",
+        "            # Older supported Pandas permits logical fills outside the stored integer dtype.",
+        "            logical = pd.Series(series.to_numpy(dtype=object), index=series.index, name=series.name)",
+        '            return logical.isin(list(values)) if method == "isin" else getattr(logical, method)(values[0])',
+        '    if method == "isin":',
+        "        candidates = np.asarray([value for value in values if low <= value <= high], dtype=dtype)",
+        "        comparable = series.fillna(0).sparse.to_dense() if sparse else series",
+        "        result = comparable.isin(candidates)",
+        "        return result & series.notna() if sparse else result",
+        "    value = values[0]",
+        "    if value < low or value > high:",
+        "        below = value < low",
+        '        result = {"eq": False, "ne": True, "gt": below, "ge": below, '
+        '"lt": not below, "le": not below}[method]',
+        "        return pd.Series(result, index=series.index, name=series.name, dtype=bool)",
+        "    return getattr(series, method)(np.dtype(dtype).type(value))",
+        "",
+        "",
+    ]
+
+
+def _generated_pandas_row_query_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_take_rows(frame, positions):",
+        "",
+        "    # These are positions, not a fill-aware reindexing operation.",
+        "    sparse = {",
+        "        position: frame.iloc[:, position].array",
+        "        for position, dtype in enumerate(frame.dtypes)",
+        "        if isinstance(dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(dtype)",
+        "    }",
+        "    if not sparse:",
+        "        return frame.iloc[positions]",
+        "    remaining = [position for position in range(frame.shape[1]) if position not in sparse]",
+        "    result = frame.iloc[:, remaining].iloc[positions].copy(deep=False)",
+        "    for position, array in sparse.items():",
+        "        result.insert(position, frame.columns[position],",
+        "                      array.take(positions, allow_fill=False), allow_duplicates=True)",
+        "    result.columns = frame.columns",
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_sort_order(series, ascending, nulls):",
+        "",
+        "    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):",
+        "        fill = series.dtype.fill_value",
+        "        bounds = np.iinfo(series.dtype.subtype)",
+        "        if pd.isna(fill) or (isinstance(fill, (int, np.integer))",
+        "                           and int(bounds.min) <= int(fill) <= int(bounds.max)):",
+        "            key = series.fillna(0).sparse.to_dense().reset_index(drop=True)",
+        "            if pd.isna(fill):",
+        "                key = pd.Series(pd.arrays.IntegerArray(key.to_numpy(), series.isna().to_numpy(dtype=bool)))",
+        "        else:",
+        "            key = pd.Series(series.to_numpy(dtype=object))",
+        "    else:",
+        "        key = series.reset_index(drop=True)",
+        '    return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()',
+        "",
+        "",
+    ]
+
+
 def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     column_masks: list[str] = []
     for column_filter in model.get("filters", []):
@@ -4106,7 +4256,10 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     if column_masks:
         operator = " | " if model.get("logic") == "or" else " & "
         lines.append(f"    _filter_mask_{index} = " + operator.join(column_masks))
-        lines.append(f"    df = df.iloc[_filter_mask_{index}.fillna(False).to_numpy(dtype=bool)]")
+        lines.append(
+            f"    df = _open_wrangler_take_rows(df, "
+            f"np.flatnonzero(_filter_mask_{index}.fillna(False).to_numpy(dtype=bool)))"
+        )
     rules = model.get("sort", [])
     if rules:
         for rule_index, rule in enumerate(reversed(rules)):
@@ -4114,10 +4267,9 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
             order = f"_filter_sort_order_{index}_{rule_index}"
             lines.extend(
                 [
-                    f"    {order} = df.iloc[:, {position}].reset_index(drop=True).sort_values(",
-                    f"        ascending={rule.get('direction', 'asc') == 'asc'!r},",
-                    f"        na_position={rule.get('nulls', 'last')!r}, kind='stable').index.to_numpy()",
-                    f"    df = df.iloc[{order}]",
+                    f"    {order} = _open_wrangler_sort_order(df.iloc[:, {position}], "
+                    f"{rule.get('direction', 'asc') == 'asc'!r}, {rule.get('nulls', 'last')!r})",
+                    f"    df = _open_wrangler_take_rows(df, {order})",
                 ]
             )
     return lines
@@ -4133,7 +4285,11 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
     if method == "isin":
         parts = []
         if typed_values:
-            parts.append(f"{series}.isin([{', '.join(typed_values)}])")
+            parts.append(
+                f"_open_wrangler_integer_filter({series}, 'isin', [{', '.join(typed_values)}])"
+                if condition.column_type == "integer"
+                else f"{series}.isin([{', '.join(typed_values)}])"
+            )
         if condition.include_nulls:
             parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
         if condition.include_nan:
@@ -4143,6 +4299,8 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
         result = f"_open_wrangler_mask({series}, _open_wrangler_is_null)"
     elif method == "nan":
         result = f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
+    elif condition.column_type == "integer" and method in {"eq", "ne", "gt", "ge", "lt", "le", "between"}:
+        result = f"_open_wrangler_integer_filter({series}, {method!r}, [{', '.join(typed_values)}])"
     elif method in {"eq", "ne", "gt", "ge", "lt", "le"}:
         symbol = {"eq": "==", "ne": "!=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}[method]
         result = f"({series} {symbol} {typed_values[0]})"
