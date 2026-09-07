@@ -75,6 +75,7 @@ Discovery selections remain bound to their originating Python kernel until the i
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.
 With no notebook open, the Operations view offers **Start R and show dataframes…** after the R terminal closes.
+R terminal discovery can start before R's first prompt; short command lines avoid truncation by terminal startup input.
 
 Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view. The file,
 lazy-provider, and native-view owner tests cover cancellation during loading and file preflight.

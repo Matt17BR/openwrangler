@@ -14,6 +14,7 @@ import {
   R_KERNEL_TRANSPORT_VERSION
 } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
+import { buildRInteractiveDispatchCode } from "../extension/r/rInteractiveRuntime";
 import {
   createNodeRPrivateArtifactOperations,
   type RPrivateArtifactOperations
@@ -23,6 +24,29 @@ import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 describe("interactive R session transport", () => {
+  it.each(["x".repeat(768), 'é漢😀\\"\n\r\t\u2028\u2029'.repeat(100)])(
+    "keeps complete bootstrap lines within canonical terminal input capacity",
+    (component) => {
+      const directory = resolve(tmpdir(), component);
+      const requestId = testId(1);
+      const code = buildRInteractiveDispatchCode({
+        runtimeRoot: directory,
+        ownerToken: "bounded-terminal-owner",
+        bundleId: "1234567890abcdef",
+        requestPath: resolve(directory, "requests", `${requestId}.json`),
+        responsePath: resolve(directory, "responses", `${requestId}.json`),
+        notificationPath: resolve(directory, "notifications.json"),
+        notificationSentinelPath: resolve(directory, "sentinel.json"),
+        notificationRequestId: testId(2),
+        attachmentPath: resolve(directory, "attachment.json"),
+        attachmentNonce: testId(3),
+        expectedProcessId: 1,
+        bootstrapDispatcher: true
+      });
+      expect(Math.max(...code.split("\n").map((line) => Buffer.byteLength(line, "utf8")))).toBeLessThan(1024);
+    }
+  );
+
   it.each(["csv", "parquet"] as const)(
     "streams one bounded %s export through the real interactive transport and closes its private artifact",
     async (format) => {

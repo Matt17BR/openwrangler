@@ -1,13 +1,15 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 import type * as vscode from "vscode";
 import { describe, expect, it } from "vitest";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
+import { buildRInteractiveDispatchCode } from "../extension/r/rInteractiveRuntime";
 import { rCsvExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
@@ -15,6 +17,137 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const rExecutable = process.env.R ?? "R";
 
 describe.skipIf(!enabled)("official R extension interactive transport", () => {
+  it("preserves escaped long paths as exact literals in one R expression", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "ow-r-terminal-literals-"));
+    try {
+      const cases = ["x".repeat(768), 'é漢😀\\"\n\r\t\u0001\u2028\u2029'.repeat(100)].map((component) => {
+        const source = resolve(directory, `${component}'); assign('injected', TRUE); #`);
+        const requestId = randomUUID();
+        const context = {
+          runtimeRoot: source,
+          ownerToken: "terminal-literal-regression",
+          bundleId: "1234567890abcdef",
+          requestPath: resolve(source, "requests", `${requestId}.json`),
+          responsePath: resolve(source, "responses", `${requestId}.json`),
+          notificationPath: resolve(source, "notification.json"),
+          notificationSentinelPath: resolve(source, "sentinel.json"),
+          notificationRequestId: randomUUID(),
+          attachmentPath: resolve(source, "attachment.json"),
+          attachmentNonce: randomUUID(),
+          expectedProcessId: 1,
+          bootstrapDispatcher: true
+        };
+        return {
+          code: buildRInteractiveDispatchCode(context),
+          expected: [
+            resolve(source, "openwrangler_runtime", "interactive_agent.R"),
+            resolve(source, "openwrangler_runtime"),
+            dirname(context.requestPath),
+            dirname(context.responsePath),
+            context.responsePath,
+            context.notificationPath,
+            context.notificationSentinelPath,
+            context.attachmentPath
+          ]
+        };
+      });
+      const fixturePath = resolve(directory, "literals.json");
+      await writeFile(fixturePath, JSON.stringify(cases));
+      const result = spawnSync(
+        rExecutable,
+        [
+          "--vanilla",
+          "--slave",
+          "-e",
+          `
+cases <- jsonlite::fromJSON(${JSON.stringify(fixturePath)}, simplifyVector = FALSE)
+literal_values <- function(node) {
+  if (is.character(node)) return(node)
+  if (is.call(node) && identical(node[[1L]], quote(base::paste0)) &&
+      all(vapply(as.list(node)[-1L], is.character, logical(1L)))) {
+    return(eval(node, envir = baseenv()))
+  }
+  if (is.recursive(node)) return(unlist(lapply(as.list(node), literal_values), use.names = FALSE))
+  character()
+}
+for (case in cases) {
+  expression <- parse(text = case$code, keep.source = FALSE)
+  stopifnot(length(expression) == 1L)
+  observed <- enc2utf8(literal_values(expression))
+  stopifnot(all(enc2utf8(unlist(case$expected)) %in% observed))
+}
+stopifnot(!exists("injected", envir = .GlobalEnv, inherits = FALSE))
+cat("exact-literals:ok")
+`
+        ],
+        { encoding: "utf8", timeout: 10_000, maxBuffer: 4096, windowsHide: true }
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe("exact-literals:ok");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux").each([false, true])(
+    "evaluates one correlated request through a real PTY (ready=%s)",
+    async (ready) => {
+      const directory = await mkdtemp(resolve(tmpdir(), "ow-r-terminal-startup-"));
+      const requestId = randomUUID();
+      const responsePath = resolve(directory, "responses", `${requestId}.json`);
+      const notificationPath = resolve(directory, "notification.json");
+      const notificationSentinelPath = resolve(directory, "sentinel.json");
+      const attachmentPath = resolve(directory, "attachment.json");
+      try {
+        await mkdir(resolve(directory, "requests"));
+        await mkdir(resolve(directory, "responses"));
+        await Promise.all(
+          [notificationPath, notificationSentinelPath, attachmentPath].map((file) => writeFile(file, ""))
+        );
+        await writeFile(
+          resolve(directory, "requests", `${requestId}.json`),
+          JSON.stringify({
+            protocolVersion: 1,
+            requestId,
+            kind: "evaluateAndDiscoverInteractiveVariables",
+            code: "startup_orders <- data.frame(value = 1:3)",
+            workingDirectory: directory
+          })
+        );
+        const result = await runTerminalStartupProbe(responsePath, ready, (pid) =>
+          buildRInteractiveDispatchCode({
+            runtimeRoot: resolve(repositoryRoot, "r"),
+            ownerToken: "terminal-startup-regression",
+            bundleId: "1234567890abcdef",
+            requestPath: resolve(directory, "requests", `${requestId}.json`),
+            responsePath,
+            notificationPath,
+            notificationSentinelPath,
+            notificationRequestId: randomUUID(),
+            attachmentPath,
+            attachmentNonce: randomUUID(),
+            expectedProcessId: pid,
+            bootstrapDispatcher: true
+          })
+        );
+        expect(result).toMatchObject({ canonical: !ready, response: true });
+        const response = JSON.parse(await readFile(responsePath, "utf8"));
+        expect(response).toMatchObject({
+          protocolVersion: 1,
+          requestId,
+          status: "ready",
+          variables: [{ name: "startup_orders", dataframeFlavor: "r.data.frame" }]
+        });
+        const attachment = JSON.parse(await readFile(attachmentPath, "utf8"));
+        expect(attachment.processId).toBe(result.pid);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    15_000
+  );
+
   it("publishes one workspace scan to two transports without echoing Open Wrangler requests", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-interactive-change-test-"));
     const interactive = startInteractiveR();
@@ -471,6 +604,102 @@ function pageWindow(): RKernelPageWindow {
     columnLimit: 20,
     view: { filters: [], sorts: [] }
   };
+}
+
+async function runTerminalStartupProbe(
+  responsePath: string,
+  ready: boolean,
+  buildCode: (pid: number) => string
+): Promise<{ pid: number; canonical: boolean; response: boolean }> {
+  const python = process.env.OPEN_WRANGLER_TEST_PYTHON ?? process.env.OPEN_WRANGLER_PYTHON ?? "python3";
+  const child = spawn(
+    python,
+    [
+      "-I",
+      "-S",
+      "-u",
+      "-c",
+      `
+import json, os, pty, select, signal, sys, termios, time
+gate_read, gate_write = os.pipe()
+pid, terminal = pty.fork()
+if pid == 0:
+    os.close(gate_write)
+    os.read(gate_read, 1)
+    os.close(gate_read)
+    os.execvp(sys.argv[1], [sys.argv[1], "--no-save", "--no-restore", "--quiet"])
+os.close(gate_read)
+def interrupted(signum, frame):
+    raise SystemExit(1)
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
+try:
+    print(json.dumps({"pid": pid}), flush=True)
+    request = json.loads(sys.stdin.readline())
+    os.write(gate_write, b"1")
+    os.close(gate_write)
+    tail = b""
+    count = 0
+    deadline = time.monotonic() + 5
+    if request["ready"]:
+        while not tail.endswith(b"> "):
+            if time.monotonic() >= deadline:
+                raise TimeoutError()
+            if select.select([terminal], [], [], .02)[0]:
+                data = os.read(terminal, 65536)
+                count += len(data)
+                tail = (tail + data)[-64:]
+                if count > 262144:
+                    raise OverflowError()
+    canonical = bool(termios.tcgetattr(terminal)[3] & termios.ICANON)
+    text = request["code"].replace("\\n", "\\r") + "\\r"
+    os.write(terminal, text.encode("utf8"))
+    deadline = time.monotonic() + 5
+    while not os.path.isfile(sys.argv[2]) and time.monotonic() < deadline:
+        if select.select([terminal], [], [], .02)[0]:
+            count += len(os.read(terminal, 65536))
+            if count > 262144:
+                raise OverflowError()
+    print(json.dumps({"pid": pid, "canonical": canonical, "response": os.path.isfile(sys.argv[2])}), flush=True)
+finally:
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    os.close(terminal)
+`,
+      rExecutable,
+      responsePath
+    ],
+    { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
+  );
+  const output = createInterface({ input: child.stdout });
+  let result: { pid: number; canonical: boolean; response: boolean } | undefined;
+  let stderrBytes = 0;
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderrBytes += chunk.length;
+  });
+  const completion = new Promise<number | null>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolveExit);
+  });
+  const timeout = setTimeout(() => child.kill("SIGTERM"), 12_000);
+  try {
+    for await (const line of output) {
+      expect(Buffer.byteLength(line)).toBeLessThan(1024);
+      const value = JSON.parse(line) as { pid: number; canonical?: boolean; response?: boolean };
+      expect(Number.isSafeInteger(value.pid) && value.pid > 0).toBe(true);
+      if (value.response === undefined) child.stdin.end(JSON.stringify({ ready, code: buildCode(value.pid) }) + "\n");
+      else result = value as typeof result;
+    }
+    expect(await completion).toBe(0);
+    expect(stderrBytes).toBe(0);
+    expect(result).toBeDefined();
+    return result!;
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await completion;
+    output.close();
+  }
 }
 
 function resolveMailboxRequestPath(code: string): string {

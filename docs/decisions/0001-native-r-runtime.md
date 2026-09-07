@@ -80,7 +80,9 @@ single request record after plots, help, and data views, a same-process non-atta
 instead of leaving Operations on a minute-long loading state.
 
 Opening a listed item or choosing Refresh is the explicit connection point. Open Wrangler then sends its bundled
-dispatcher through VS Code's terminal API and uses private response files for bounded requests. The dispatcher
+dispatcher through VS Code's terminal API and uses private response files for bounded requests. Dispatch remains one
+R expression, with physical lines below canonical terminal input limits, including escaped long paths. It can run
+while a new R terminal is still starting without a readiness retry. The dispatcher
 registers one task callback for that transport. After a top-level R command, the callback updates the transport's
 private mailbox; the host debounces the notification without sending another R command. Open Wrangler's own requests
 suppress their callback signal. Changing or closing the terminal invalidates the list and session; Open Wrangler never
