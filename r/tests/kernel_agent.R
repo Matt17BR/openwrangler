@@ -2746,6 +2746,12 @@ assert_identical(clone_table_closed$kind, "closed", "the R data.table clone sess
 if (identical(selected_kernel_agent_case, "text-fill-and-cast")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 source("r/tests/kernel_agent_text.R", local = FALSE)
+assert_fill_helpers <- function(code, expected) {
+  lines <- strsplit(code, "\n", fixed = TRUE)[[1L]]
+  declarations <- grep("^[[:space:]]*\\.ow_fill_[a-z_]+ <- function", lines, value = TRUE)
+  names <- sub(" <- function.*$", "", trimws(declarations))
+  assert_identical(names, expected, "generated R Fill Missing Values included unused, missing, or repeated helpers")
+}
 fill_open <- dispatch(
   "openSession",
   list(sessionId = fill_session_id, variableName = "fill_frame", page = page_window())
@@ -2813,9 +2819,7 @@ fill_label_apply <- dispatch(
   list(sessionId = fill_session_id, revision = 3L, page = page_window())
 )
 assert_identical(fill_label_apply$action, "apply", "R factor Fill Missing Values did not apply")
-if (!grepl(".ow_fill_values", fill_label_apply$code, fixed = TRUE)) {
-  stop("generated R Fill Missing Values lost its native helper", call. = FALSE)
-}
+assert_fill_helpers(fill_label_apply$code, c(".ow_fill_datetime", ".ow_fill_values"))
 assign("fill_frame", source_environment$fill_frame, envir = .GlobalEnv)
 eval(parse(text = fill_label_apply$code), envir = .GlobalEnv)
 fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -2879,6 +2883,15 @@ fill_datetime_preview <- dispatch(
   )
 )
 assert_identical(fill_datetime_preview$kind, "stepPreview", "R datetime Fill Missing Values did not preview in UTC")
+fill_datetime_environment <- new.env(parent = baseenv())
+fill_datetime_environment$fill_frame <- fill_source_before
+eval(parse(text = fill_datetime_preview$code), envir = fill_datetime_environment)
+assert_identical(
+  fill_datetime_environment$open_wrangler_result,
+  get("snapshot", envir = latest_full_capture, inherits = FALSE),
+  "generated scalar datetime fill lost its parser dependency or diverged from live"
+)
+assert_identical(fill_datetime_environment$fill_frame, fill_source_before, "generated datetime fill mutated its source")
 generated_dst_source <- fill_source_before
 attr(generated_dst_source$instant, "tzone") <- "Europe/Berlin"
 assign("fill_frame", generated_dst_source, envir = .GlobalEnv)
@@ -3083,9 +3096,7 @@ fallback_fill_complete_apply <- dispatch(
   list(sessionId = fallback_fill_session_id, revision = 3L, page = page_window())
 )
 assert_identical(fallback_fill_complete_apply$action, "apply", "complete R fallback fill did not apply")
-if (!grepl(".ow_fill_from_columns", fallback_fill_complete_apply$code, fixed = TRUE)) {
-  stop("generated R fallback fill lost its native helper", call. = FALSE)
-}
+assert_fill_helpers(fallback_fill_complete_apply$code, ".ow_fill_from_columns")
 assign("fallback_fill_frame", source_environment$fallback_fill_frame, envir = .GlobalEnv)
 eval(parse(text = fallback_fill_complete_apply$code), envir = .GlobalEnv)
 fallback_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -3313,9 +3324,7 @@ directional_complete_apply <- dispatch(
   list(sessionId = directional_fill_session_id, revision = 3L, page = page_window())
 )
 assert_identical(directional_complete_apply$action, "apply", "R directional fill did not apply")
-if (!grepl(".ow_fill_directional", directional_complete_apply$code, fixed = TRUE)) {
-  stop("generated R directional fill lost its native helper", call. = FALSE)
-}
+assert_fill_helpers(directional_complete_apply$code, ".ow_fill_directional")
 assign("directional_fill_frame", source_environment$directional_fill_frame, envir = .GlobalEnv)
 eval(parse(text = directional_complete_apply$code), envir = .GlobalEnv)
 directional_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -3425,9 +3434,7 @@ linear_complete_apply <- dispatch(
   list(sessionId = linear_fill_session_id, revision = 3L, page = page_window())
 )
 assert_identical(linear_complete_apply$action, "apply", "R linear interpolation did not apply")
-if (!grepl(".ow_fill_linear", linear_complete_apply$code, fixed = TRUE)) {
-  stop("generated R linear interpolation lost its native helper", call. = FALSE)
-}
+assert_fill_helpers(linear_complete_apply$code, ".ow_fill_linear")
 linear_generated_flavors <- list(
   data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_), check.names = FALSE),
   tibble::tibble(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
@@ -3497,6 +3504,40 @@ assert_identical(
   linear_fill_before,
   "the R linear-interpolation lifecycle mutated its source"
 )
+linear_scalar_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 4L,
+    step = fill_step("fill-unanchored", "r:c:1", "target", list(kind = "float", value = "9")),
+    page = page_window()
+  )
+)
+assert_identical(linear_scalar_preview$kind, "stepPreview", "R scalar fill after interpolation did not preview")
+assert_identical(linear_scalar_preview$diff$changedCells, 2L, "mixed R fill reported the wrong remaining changes")
+linear_scalar_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = linear_fill_session_id, revision = 5L, page = page_window())
+)
+assert_identical(linear_scalar_apply$action, "apply", "mixed R fill did not apply")
+assert_fill_helpers(linear_scalar_apply$code, c(".ow_fill_linear", ".ow_fill_datetime", ".ow_fill_values"))
+linear_scalar_environment <- new.env(parent = baseenv())
+linear_scalar_environment$linear_fill_frame <- linear_fill_before
+eval(parse(text = linear_scalar_apply$code), envir = linear_scalar_environment)
+assert_identical(
+  linear_scalar_environment$open_wrangler_result,
+  get("snapshot", envir = latest_full_capture, inherits = FALSE),
+  "generated mixed R fill diverged from live execution"
+)
+assert_identical(
+  linear_scalar_environment$open_wrangler_result$target,
+  c(9, 0, 50, Inf, 80, 9, 30),
+  "generated mixed R fill omitted an earlier family or filled in the wrong order"
+)
+assert_identical(
+  linear_scalar_environment$linear_fill_frame, linear_fill_before, "generated mixed R fill mutated its source"
+)
+assert_identical(source_environment$linear_fill_frame, linear_fill_before, "live mixed R fill mutated its source")
 linear_fill_closed <- dispatch("closeSession", list(sessionId = linear_fill_session_id))
 assert_identical(linear_fill_closed$kind, "closed", "the R linear-interpolation session did not close")
 
@@ -3582,9 +3623,7 @@ grouped_fill_apply <- dispatch(
   list(sessionId = grouped_fill_session_id, revision = 1L, page = page_window())
 )
 assert_identical(grouped_fill_apply$action, "apply", "R grouped fill did not apply")
-if (!grepl(".ow_fill_grouped", grouped_fill_apply$code, fixed = TRUE)) {
-  stop("generated R grouped fill lost its native helper", call. = FALSE)
-}
+assert_fill_helpers(grouped_fill_apply$code, ".ow_fill_grouped")
 assign("grouped_fill_frame", source_environment$grouped_fill_frame, envir = .GlobalEnv)
 eval(parse(text = grouped_fill_apply$code), envir = .GlobalEnv)
 grouped_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -3650,9 +3689,7 @@ assert_grouped_generated_case <- function(
     list(sessionId = case_session_id, revision = 1L, page = page_window())
   )
   assert_identical(applied$action, "apply", sprintf("the %s grouped fill did not apply", variable_name))
-  if (!grepl(".ow_fill_grouped", applied$code, fixed = TRUE)) {
-    stop(sprintf("generated %s grouped fill lost its native helper", variable_name), call. = FALSE)
-  }
+  assert_fill_helpers(applied$code, ".ow_fill_grouped")
   assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
   eval(parse(text = applied$code), envir = .GlobalEnv)
   result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)

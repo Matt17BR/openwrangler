@@ -218,6 +218,9 @@ Generated R follows the live operation's native column-metadata behavior at each
 on its already-isolated `data.table` result without making another full data copy; Clone and Custom Code retain their
 explicit named-input behavior. This keeps later attribute-sensitive custom code consistent with the preview.
 
+Generated Fill Missing Values code includes only the helper families used by the complete plan. Repeated and mixed
+steps retain each required family once, including scalar datetime and numeric midpoint dependencies.
+
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
 sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal
