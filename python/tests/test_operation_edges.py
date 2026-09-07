@@ -1547,3 +1547,264 @@ def test_pandas_dictionary_numeric_plan_agrees_after_derived_column_binding() ->
         assert cast(Any, frame["value"].array).__arrow_array__().equals(source_array)
     with pytest.raises(ColumnBindingError, match="collides"):
         bind_step(step("roundNumber", column=lineage[0], newColumn="ratio"), runtime.schema(live), lineage)
+
+
+@pytest.mark.parametrize("bits", [8, 16, 32, 64])
+@pytest.mark.parametrize("unsigned", [False, True])
+def test_pandas_arrow_integer_modulo_preserves_exact_width_and_masks(bits: int, unsigned: bool) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = f"{'u' if unsigned else ''}int{bits}[pyarrow]"
+    largest = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1
+    values = [largest, 0, None, largest - 1]
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=dtype)})
+    frame.index = pd.MultiIndex.from_tuples([("same", 2)] * len(frame), names=["group", "row"])
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=3, operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    expected = pd.Series(
+        [None if value is None else value % 3 for value in values], index=frame.index, name="result", dtype=dtype
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        assert pa.types.is_integer(actual["result"].dtype.pyarrow_dtype)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("native_dtype", ["int64", "Int64", "uint64", "UInt64"])
+@pytest.mark.parametrize("arrow_on_right", [False, True])
+def test_pandas_arrow_integer_modulo_accepts_native_selected_operands(native_dtype: str, arrow_on_right: bool) -> None:
+    pytest.importorskip("pyarrow")
+    unsigned = native_dtype.lower().startswith("u")
+    native_values: list[int | None] = [2**64 - 1, 3, 7, 1] if unsigned else [-(2**63), -3, 7, 1]
+    if native_dtype[0].isupper():
+        native_values[-2] = None
+    arrow_values = [-1, -7, 2**53 + 1, None]
+    frame = pd.DataFrame(
+        {
+            "native": pd.Series(native_values, dtype=native_dtype),
+            "arrow": pd.Series(arrow_values, dtype="int64[pyarrow]"),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    left, right = (0, 1) if arrow_on_right else (1, 0)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[left], rightColumn=lineage[right], operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    pairs = (
+        zip(native_values, arrow_values, strict=True)
+        if arrow_on_right
+        else zip(arrow_values, native_values, strict=True)
+    )
+    values = [None if a is None or b is None else a % b for a, b in pairs]
+    dtype = "uint64[pyarrow]" if unsigned and not arrow_on_right else "int64[pyarrow]"
+    expected = pd.Series(values, index=frame.index, name="result", dtype=dtype)
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    "dtype,values,divisor,result_dtype",
+    [
+        ("int8[pyarrow]", [-127, 127, None], 256, "int64[pyarrow]"),
+        ("uint64[pyarrow]", [2**64 - 1, 2**53 + 1, None], -3, "int64[pyarrow]"),
+        ("int64[pyarrow]", [-(2**63), 2**53 + 1, None], -1, "int64[pyarrow]"),
+        ("int64[pyarrow]", [-1, -(2**63), None], 2**64 - 1, "uint64[pyarrow]"),
+        ("uint8[pyarrow]", [0, 255, None], -129, "int64[pyarrow]"),
+    ],
+)
+def test_pandas_arrow_integer_modulo_scalar_capacity(dtype, values, divisor, result_dtype) -> None:
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=dtype)})
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=divisor, operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    expected = pd.Series(
+        [None if value is None else value % divisor for value in values], name="result", dtype=result_dtype
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("values,divisors", [([], []), ([None, None], [0, None]), ([7, None], [None, 0])])
+def test_pandas_arrow_integer_modulo_missing_pairs_do_not_divide_by_zero(values, divisors) -> None:
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame(
+        {"value": pd.Series(values, dtype="int64[pyarrow]"), "divisor": pd.Series(divisors, dtype="uint64[pyarrow]")}
+    )
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], rightColumn=lineage[1], operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(
+            actual["result"], pd.Series([None] * len(frame), dtype="uint64[pyarrow]", name="result")
+        )
+
+
+@pytest.mark.parametrize("divisor,message", [(0, "nonzero"), (2**64, "64-bit"), (-(2**63) - 1, "64-bit")])
+def test_pandas_arrow_integer_modulo_refuses_invalid_present_divisors(divisor: int, message: str) -> None:
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"value": pd.Series([7, None], dtype="uint64[pyarrow]")})
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=divisor, operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        with pytest.raises((EngineError, ValueError), match=message):
+            run()
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_dictionary_integer_modulo_uses_logical_values() -> None:
+    pa = pytest.importorskip("pyarrow")
+    array = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 2, None], type=pa.int8()), pa.array([2**64 - 1, None, 7], type=pa.uint64())
+    )
+    frame = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.chunked_array([array, array]))})
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=3, operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(
+            actual["result"], pd.Series([0, None, 1, None] * 2, dtype="uint64[pyarrow]", name="result")
+        )
+        assert actual["value"].array.__arrow_array__().equals(pa.chunked_array([array, array]))
+
+
+@pytest.mark.parametrize("dtype", ["int64", "Int64", "uint64", "UInt64", "float64"])
+@pytest.mark.parametrize("zero_divisor", [False, True])
+def test_pandas_ordinary_modulo_keeps_native_behavior(dtype: str, zero_divisor: bool) -> None:
+    frame = pd.DataFrame(
+        {
+            "value": pd.Series([7, 2**53 + 1], dtype=dtype),
+            "divisor": pd.Series([0 if zero_divisor else 3, 7], dtype=dtype),
+        }
+    )
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], rightColumn=lineage[1], operator="modulo", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    expected = (frame["value"] % frame["divisor"]).rename("result")
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+
+
+@pytest.mark.parametrize("operator,value", [("add", 1), ("multiply", 2), ("power", 2)])
+def test_pandas_arrow_other_formula_overflow_stays_checked(operator: str, value: int) -> None:
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"value": pd.Series([2**63 - 1, None], dtype="int64[pyarrow]")})
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=value, operator=operator, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        with pytest.raises(pa.ArrowInvalid, match="overflow"):
+            run()
+
+
+@pytest.mark.parametrize("operator", ["add", "subtract", "multiply", "divide"])
+def test_pandas_arrow_by_example_arithmetic_retains_live_generated_agreement(operator: str) -> None:
+    import operator as arithmetic
+
+    pytest.importorskip("pyarrow")
+    function = getattr(arithmetic, {"add": "add", "subtract": "sub", "multiply": "mul", "divide": "truediv"}[operator])
+    frame = pd.DataFrame(
+        {
+            "value": pd.Series([2, 5, 9, None], dtype="int64[pyarrow]"),
+            "other": pd.Series([7, 3, 4, 2], dtype="int64[pyarrow]"),
+        }
+    )
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step(
+            "byExample",
+            sourceColumns=lineage,
+            newColumn="result",
+            examples=[{"inputs": [a, b], "output": function(a, b)} for a, b in ((2, 7), (5, 3), (9, 4))],
+        ),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    live = runtime.apply_transform(frame, operation)
+    pd.testing.assert_frame_equal(execute_generated(runtime, frame, operation), live)
+    assert live["result"].dropna().tolist() == [function(a, b) for a, b in ((2, 7), (5, 3), (9, 4))]
+
+
+@pytest.mark.parametrize("family", ["floating", "decimal", "floating-divisor"])
+def test_pandas_noninteger_arrow_modulo_keeps_native_refusal(family: str) -> None:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    if family == "decimal":
+        series = pd.Series([Decimal("7.5"), None], dtype=pd.ArrowDtype(pa.decimal128(3, 1)))
+    else:
+        series = pd.Series([7, None], dtype="double[pyarrow]" if family == "floating" else "int64[pyarrow]")
+    frame = pd.DataFrame({"value": series})
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step(
+            "formula",
+            leftColumn=lineage[0],
+            value=2.0 if family == "floating-divisor" else 2,
+            operator="modulo",
+            newColumn="result",
+        ),
+        runtime.schema(frame),
+        lineage,
+    )
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        with pytest.raises(NotImplementedError):
+            run()
+        pd.testing.assert_frame_equal(frame, before)

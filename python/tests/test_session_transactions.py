@@ -501,3 +501,90 @@ def test_integer_cast_overflow_keeps_the_confirmed_session(
         assert manager.get_page(session_id, 0, 0, 10, {"filters": [], "sort": []})["revision"] == 0
     finally:
         manager.close_all()
+
+
+def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pandas as pd
+
+    import __main__
+
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"value": pd.Series([-1, -(2**63), None], dtype="int64[pyarrow]")})
+    frame.index = pd.Index(["same", "same", "last"], name="source row")
+    original = frame.copy(deep=True)
+    monkeypatch.setattr(__main__, "modulo_source", frame, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "modulo_source", "variableName": "modulo_source"},
+            backend="pandas",
+            mode="editing",
+        )
+        session_id = opened["metadata"]["sessionId"]
+        source_column = opened["metadata"]["schema"][0]
+        operation = {
+            "id": "remainder",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": source_column["id"], "name": source_column["name"]},
+                "operator": "modulo",
+                "value": 2**64 - 1,
+                "newColumn": "remainder",
+            },
+        }
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert preview["revision"] == 1
+        confirmed = manager.apply_draft(session_id, 1, 0, 10)
+        assert confirmed["revision"] == 2
+        session = manager.sessions[session_id]
+        expected = frame.assign(
+            remainder=pd.Series([2**64 - 2, 2**63 - 1, None], index=frame.index, dtype="uint64[pyarrow]")
+        )
+        pd.testing.assert_frame_equal(session.committed.loc[:, expected.columns], expected)
+        assert session.plan == [operation]
+        assert len(confirmed["metadata"]["schema"]) == 2
+        result_column = confirmed["metadata"]["schema"][1]
+        page = manager.get_page(
+            session_id,
+            2,
+            0,
+            10,
+            {
+                "filters": [
+                    {
+                        "column": result_column["name"],
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "equals", "value": str(2**64 - 2)}],
+                    }
+                ],
+                "sort": [],
+            },
+        )
+        assert len(page["page"]["rows"]) == 1
+        destination = tmp_path / "remainders.parquet"
+        destination.touch()
+        identity = destination.stat()
+        exported = manager.export_data(
+            session_id,
+            2,
+            str(destination),
+            {"format": "parquet", "rowAxisPolicy": "preserve"},
+            {"device": str(identity.st_dev), "inode": str(identity.st_ino)},
+        )
+        assert exported["kind"] == "dataExported"
+        pd.testing.assert_frame_equal(session.engine.read_file(str(destination)), expected)
+        before = session_state(session)
+        invalid = {
+            "id": "zero",
+            "kind": "formula",
+            "params": {**operation["params"], "value": 0, "newColumn": "invalid"},
+        }
+        with pytest.raises(EngineError, match="nonzero"):
+            manager.preview_step(session_id, 2, invalid, 0, 10)
+        assert session_state(session) == before
+        pd.testing.assert_frame_equal(session.committed.loc[:, expected.columns], expected)
+        pd.testing.assert_frame_equal(frame, original)
+    finally:
+        manager.close_all()

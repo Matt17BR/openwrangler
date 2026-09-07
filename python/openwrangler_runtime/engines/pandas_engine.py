@@ -1397,6 +1397,8 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_numeric_filter_helpers())
         if needs_row_queries:
             lines.extend(_generated_pandas_row_query_helpers())
+        if any(step["kind"] == "formula" and step["params"]["operator"] == "modulo" for step in plan):
+            lines.extend(_generated_pandas_modulo_helpers())
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
@@ -1975,11 +1977,13 @@ class PandasEngine(DataFrameEngine):
             symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
                 params["operator"]
             ]
-            return [
-                f"{prefix}df = pd.concat([df, "
-                f"(_open_wrangler_dictionary_values(df.iloc[:, {left_position}]) {symbol} {right})"
-                f".rename({params['newColumn']!r})], axis=1)"
-            ]
+            left = f"_open_wrangler_dictionary_values(df.iloc[:, {left_position}])"
+            expression = (
+                f"_open_wrangler_modulo({left}, {right})"
+                if params["operator"] == "modulo"
+                else f"({left} {symbol} {right})"
+            )
+            return [f"{prefix}df = pd.concat([df, {expression}.rename({params['newColumn']!r})], axis=1)"]
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
             return [
@@ -4745,10 +4749,145 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
     if operator == "divide":
         return left / right
     if operator == "modulo":
-        return left % right
+        return _pandas_modulo(left, right)
     if operator == "power":
         return left**right
     raise EngineError(f"Unsupported formula operator: {operator}")
+
+
+def _pandas_modulo(left: Any, right: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if not isinstance(left, pd.Series) or not any(
+        isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)
+    ):
+        return left % right
+    import pyarrow as pa
+
+    def integer_type(value: Any) -> Any:
+        if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
+            return None
+        if isinstance(value.dtype, pd.ArrowDtype):
+            dtype = value.dtype.pyarrow_dtype
+            return dtype if pa.types.is_integer(dtype) else None
+        dtype = getattr(value.dtype, "numpy_dtype", value.dtype)
+        if isinstance(dtype, np.dtype) and dtype.kind in "iu" and dtype.itemsize <= 8:
+            return getattr(pa, f"{'u' if dtype.kind == 'u' else ''}int{dtype.itemsize * 8}")()
+        return None
+
+    left_type = integer_type(left)
+    if left_type is None:
+        return left % right
+    right_type = integer_type(right)
+    if isinstance(right, int) and not isinstance(right, bool):
+        bounds = np.iinfo(left_type.to_pandas_dtype())
+        if bounds.min <= right <= bounds.max:
+            right_type = left_type
+        elif -(2**63) <= right < 2**63:
+            right_type = pa.int64()
+        elif 0 <= right < 2**64:
+            right_type = pa.uint64()
+        else:
+            raise EngineError("Arrow integer modulo requires an integer divisor within 64-bit capacity.")
+        right = pd.Series(right, index=left.index, dtype=pd.ArrowDtype(right_type))
+    if right_type is None:
+        return left % right
+
+    def magnitude(series: Any) -> tuple[Any, Any, Any]:
+        missing = series.isna().to_numpy(dtype=bool)
+        negative = series.lt(0).fillna(False).to_numpy(dtype=bool)
+        bits = series.to_numpy(dtype=np.uint64, na_value=0)
+        return np.where(negative, np.negative(bits), bits), negative, missing
+
+    left_magnitude, left_negative, left_missing = magnitude(left)
+    right_magnitude, right_negative, right_missing = magnitude(right)
+    missing = left_missing | right_missing
+    if np.any((right_magnitude == 0) & ~missing):
+        raise EngineError("Arrow integer modulo requires a nonzero divisor where both operands are present.")
+    # Unsigned magnitudes hold INT64_MIN exactly. Adjust a nonzero remainder
+    # toward the divisor's sign, without a signed division overflow or float.
+    remainder = np.remainder(left_magnitude, np.where(right_magnitude == 0, np.uint64(1), right_magnitude))
+    remainder = np.where((left_negative != right_negative) & (remainder != 0), right_magnitude - remainder, remainder)
+    signed = pa.types.is_signed_integer(right_type)
+    width = max(left_type.bit_width, right_type.bit_width)
+    result_type = getattr(pa, f"{'int' if signed else 'uint'}{width}")()
+    if signed:
+        remainder = remainder.astype(np.int64)
+        remainder = np.where(right_negative, np.negative(remainder), remainder)
+    values = pa.array(remainder, mask=missing, type=result_type)
+    return pd.Series(pd.arrays.ArrowExtensionArray(values), index=left.index, name=left.name)
+
+
+def _generated_pandas_modulo_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_modulo(left, right):",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "",
+        "    if not isinstance(left, pd.Series) or not any(",
+        '        isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)',
+        "    ):",
+        "        return left % right",
+        "    import pyarrow as pa",
+        "",
+        "    def integer_type(value):",
+        "        if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):",
+        "            return None",
+        "        if isinstance(value.dtype, pd.ArrowDtype):",
+        "            dtype = value.dtype.pyarrow_dtype",
+        "            return dtype if pa.types.is_integer(dtype) else None",
+        '        dtype = getattr(value.dtype, "numpy_dtype", value.dtype)',
+        '        if isinstance(dtype, np.dtype) and dtype.kind in "iu" and dtype.itemsize <= 8:',
+        "            return getattr(pa, f\"{'u' if dtype.kind == 'u' else ''}int{dtype.itemsize * 8}\")()",
+        "        return None",
+        "",
+        "    left_type = integer_type(left)",
+        "    if left_type is None:",
+        "        return left % right",
+        "    right_type = integer_type(right)",
+        "    if isinstance(right, int) and not isinstance(right, bool):",
+        "        bounds = np.iinfo(left_type.to_pandas_dtype())",
+        "        if bounds.min <= right <= bounds.max:",
+        "            right_type = left_type",
+        "        elif -(2**63) <= right < 2**63:",
+        "            right_type = pa.int64()",
+        "        elif 0 <= right < 2**64:",
+        "            right_type = pa.uint64()",
+        "        else:",
+        '            raise ValueError("Arrow integer modulo requires an integer divisor within 64-bit capacity.")',
+        "        right = pd.Series(right, index=left.index, dtype=pd.ArrowDtype(right_type))",
+        "    if right_type is None:",
+        "        return left % right",
+        "",
+        "    def magnitude(series):",
+        "        missing = series.isna().to_numpy(dtype=bool)",
+        "        negative = series.lt(0).fillna(False).to_numpy(dtype=bool)",
+        "        bits = series.to_numpy(dtype=np.uint64, na_value=0)",
+        "        return np.where(negative, np.negative(bits), bits), negative, missing",
+        "",
+        "    left_magnitude, left_negative, left_missing = magnitude(left)",
+        "    right_magnitude, right_negative, right_missing = magnitude(right)",
+        "    missing = left_missing | right_missing",
+        "    if np.any((right_magnitude == 0) & ~missing):",
+        '        raise ValueError("Arrow integer modulo requires a nonzero divisor where both operands are present.")',
+        "    # Unsigned magnitudes hold INT64_MIN exactly. Adjust a nonzero remainder",
+        "    # toward the divisor's sign, without a signed division overflow or float.",
+        "    remainder = np.remainder(left_magnitude, np.where(right_magnitude == 0, np.uint64(1), right_magnitude))",
+        "    remainder = np.where(",
+        "        (left_negative != right_negative) & (remainder != 0), right_magnitude - remainder, remainder",
+        "    )",
+        "    signed = pa.types.is_signed_integer(right_type)",
+        "    width = max(left_type.bit_width, right_type.bit_width)",
+        "    result_type = getattr(pa, f\"{'int' if signed else 'uint'}{width}\")()",
+        "    if signed:",
+        "        remainder = remainder.astype(np.int64)",
+        "        remainder = np.where(right_negative, np.negative(remainder), remainder)",
+        "    values = pa.array(remainder, mask=missing, type=result_type)",
+        "    return pd.Series(pd.arrays.ArrowExtensionArray(values), index=left.index, name=left.name)",
+        "",
+        "",
+    ]
 
 
 def _generated_pandas_numeric_filter_helpers() -> list[str]:
