@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from decimal import Decimal
 from importlib import import_module
@@ -164,27 +164,6 @@ def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple
     return identifiers, output_values, output_names, normalized
 
 
-def _literal_file_uri(path: str) -> str:
-    """Return an encoded local-file URI for Polars versions without `glob=False`."""
-
-    return Path(path).expanduser().absolute().as_uri()
-
-
-def _scan_literal_file(scanner: Callable[..., Any], path: str, **options: Any) -> Any:
-    """Scan exactly one local file without treating its name as a glob pattern."""
-
-    try:
-        supports_glob = "glob" in signature(scanner).parameters
-    except (TypeError, ValueError):
-        supports_glob = False
-    if supports_glob:
-        return scanner(path, glob=False, **options)
-    # Older scan APIs, including scan_ndjson in current Polars, do not expose `glob`.
-    # An encoded file URI preserves lazy native scanning while making wildcard
-    # characters part of the literal local path.
-    return scanner(_literal_file_uri(path), **options)
-
-
 class PolarsEngine(DataFrameEngine):
     name = "polars"
     runtime_modules = ("polars",)
@@ -247,7 +226,37 @@ class PolarsEngine(DataFrameEngine):
         if extension == ".parquet":
             return pl.scan_parquet(path, glob=False)
         if extension in {".jsonl", ".ndjson"}:
-            return _scan_literal_file(pl.scan_ndjson, path)
+            path = str(Path(path).expanduser().absolute())
+            if os.name == "nt":
+                if any(symbol in path for symbol in "*?["):
+                    raise EngineError(
+                        "Polars cannot safely open this NDJSON path on Windows "
+                        "because it contains glob characters (*, ?, [)."
+                    )
+                return pl.scan_ndjson(path)
+
+            fallback_attempted = False
+
+            def block_python_read(*_args: Any) -> bytes:
+                nonlocal fallback_attempted
+                fallback_attempted = True
+                return b""
+
+            message = "Polars could not acquire a native file handle; the NDJSON source was not read."
+            with open(path, "rb") as source:
+                # Polars duplicates this builtin stream's descriptor on Unix. If duplication fails,
+                # its Python fallback reads the entire source; raising in that callback panics.
+                # Return no bytes and refuse the temporary buffer-backed plan before it escapes.
+                source.read = block_python_read
+                try:
+                    frame = pl.scan_ndjson(source)
+                except Exception as error:
+                    if fallback_attempted:
+                        raise EngineError(message) from error
+                    raise
+                if fallback_attempted:
+                    raise EngineError(message)
+                return frame
         if extension in {".xlsx", ".xls"}:
             sheet_selector = resolve_excel_sheet_selector(options)
             if sheet_selector[0] == "sheetIndex":
