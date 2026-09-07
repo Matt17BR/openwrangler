@@ -25,6 +25,9 @@ npm run test:python
 
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
+The documentation-only CI proof tests use real Git merges to cover exact commit binding, changed paths and modes,
+shallow history, and bounded output. They execute the required-result guards with failed proofs, malformed outputs,
+and skipped or canceled runtime execution.
 The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
 and changed commits, missing history, manual dispatches, and lookup failures.
 
@@ -92,7 +95,9 @@ The pull-request workflow requires five jobs:
   Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
-Branch protection requires all five jobs to pass. See [CI](ci.md) for the job names.
+Branch protection requires all five jobs and the separate CodeQL gate to pass. A proved edit of existing Markdown
+documentation lets the Python, native R, and Windows jobs report an explicit omission; Source and packaged smoke
+still run. See [CI](ci.md) for the exact scope, commit binding, and failure behavior.
 
 ## Failure-artifact allowlist
 
