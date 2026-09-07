@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Multi-column cleaning forms support column search while retaining selections hidden by the search.
 - Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
   Failed runs remain eligible for the next schedule; manual previews still run on request.
 
