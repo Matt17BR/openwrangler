@@ -13,6 +13,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
+  no longer copies source text into framing errors or starts cleanup before the originating execution settles.
+
 - Polars Formula refuses unsupported UInt128 column arithmetic before it can panic on the minimum runtime.
 
 - Failed operation previews show their error inside the open form and retain the input for correction.
