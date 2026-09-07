@@ -859,7 +859,7 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, df.iloc[:, position].rename(params["newName"])], axis=1)
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
-            series = df.iloc[:, position]
+            series = _pandas_dictionary_values(df.iloc[:, position])
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if target == "Int64":
                 result = _pandas_cast_integer(series)
@@ -1290,6 +1290,7 @@ class PandasEngine(DataFrameEngine):
                 "ceilNumber",
                 "minMaxScale",
                 "formula",
+                "castColumn",
                 "groupBy",
                 "textLength",
                 "oneHotEncode",
@@ -1868,14 +1869,15 @@ class PandasEngine(DataFrameEngine):
             return [f"{prefix}df = pd.concat([df, df.iloc[:, {position}].rename({params['newName']!r})], axis=1)"]
         if kind == "castColumn":
             position = bound_column_position(params["column"], kind)
+            series = f"_open_wrangler_dictionary_values(df.iloc[:, {position}])"
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if conversion == "to_datetime":
                 accessor = ".dt.date" if target == "date" else ""
-                expression = f"pd.to_datetime(df.iloc[:, {position}], errors='coerce'){accessor}"
+                expression = f"pd.to_datetime({series}, errors='coerce'){accessor}"
             elif target == "Int64":
-                expression = f"_open_wrangler_cast_integer(df.iloc[:, {position}])"
+                expression = f"_open_wrangler_cast_integer({series})"
             else:
-                expression = f"df.iloc[:, {position}].astype({target!r})"
+                expression = f"{series}.astype({target!r})"
             return [f"{prefix}df.isetitem({position}, {expression})"]
         if kind == "formula":
             left_position = bound_column_position(params["leftColumn"], kind)

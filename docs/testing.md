@@ -145,6 +145,8 @@ The Pandas filter owner checks native, nullable, Arrow and Sparse integer bounda
 viewing and standalone cleaning code. Typed-cell tests cover logical Arrow dictionary profiles and queries, unsigned
 indices, null codebook entries, multiple chunks and encoded source isolation. Operation-edge and Fill tests exercise
 row removal and directional ordering on mixed dictionary/Sparse frames, including exact values in unselected columns.
+The operation owner checks native output dtypes and existing refusals for dictionary casts through session preflight,
+live execution and standalone code, including empty/all-null inputs and unsigned values beyond the signed target.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

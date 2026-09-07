@@ -1454,17 +1454,21 @@ def test_pandas_integer_cast_keeps_valid_nullable_values(dtype: str, values: lis
     pd.testing.assert_frame_equal(source, before)
 
 
-def _dictionary_operation_frames(family: str = "string") -> tuple[pd.DataFrame, pd.DataFrame]:
+def _dictionary_operation_frames(family: str = "string", shape: str = "chunked") -> tuple[pd.DataFrame, pd.DataFrame]:
     import pyarrow as pa
 
-    values, dtype = (
-        (["a.b", None, " É ", "a.b"], pa.large_string())
-        if family == "string"
-        else ([date(2024, 1, 2), None, date(2025, 12, 31), date(2024, 1, 2)], pa.date32())
-    )
+    values, dtype = {
+        "string": (["a.b", None, " É ", "a.b"], pa.large_string()),
+        "date": ([date(2024, 1, 2), None, date(2025, 12, 31), date(2024, 1, 2)], pa.date32()),
+        "integer": ([2**53 + 1, None, -1, 2**53 + 1], pa.int64()),
+        "float": ([1.5, None, -0.0, 1.5], pa.float64()),
+        "boolean": ([True, None, False, True], pa.bool_()),
+        "unsigned": ([2**64 - 1, None, 1, 2**64 - 1], pa.uint64()),
+    }[family]
+    indices = [0, 1, 2, 3, None] if shape == "chunked" else ([] if shape == "empty" else [1, None, 1])
     chunks = [
-        pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, 3, None], type=pa.uint8()), pa.array(dictionary, type=dtype))
-        for dictionary in [values, list(reversed(values))]
+        pa.DictionaryArray.from_arrays(pa.array(indices, type=pa.uint8()), pa.array(dictionary, type=dtype))
+        for dictionary in [values, list(reversed(values)) if shape == "chunked" else values]
     ]
     series = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
     source = pd.DataFrame({"value": series, "untouched": series, "row": range(len(series))})
@@ -1500,7 +1504,9 @@ def _assert_dictionary_operation(source: Any, logical: Any, operation: dict[str,
                 normalize_cell(value) for value in expected.iloc[:, position].array
             ]
             direct_copy = operation["kind"] == "byExample" and operation["params"]["program"]["kind"] == "column"
-            if name not in {"value", "untouched"} and not direct_copy:
+            if (name not in {"value", "untouched"} and not direct_copy) or (
+                operation["kind"] == "castColumn" and name == "value"
+            ):
                 assert actual.iloc[:, position].dtype == expected.iloc[:, position].dtype
             if name == "result" and direct_copy:
                 assert actual[name].array.__arrow_array__().equals(before["value"].array.__arrow_array__())
@@ -1583,3 +1589,48 @@ def test_pandas_dictionary_datetime_format_uses_logical_values() -> None:
         lineage,
     )
     _assert_dictionary_operation(source, logical, operation)
+
+
+@pytest.mark.parametrize(
+    "family,target",
+    [
+        ("string", "string"),
+        ("integer", "integer"),
+        ("float", "float"),
+        ("boolean", "boolean"),
+        ("date", "date"),
+        ("date", "datetime"),
+    ],
+)
+@pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
+def test_pandas_dictionary_casts_use_logical_values_and_native_output_types(
+    family: str, target: str, shape: str
+) -> None:
+    source, logical = _dictionary_operation_frames(family, shape)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(step("dictionary-cast", "castColumn", column=lineage[0], dtype=target), schema, lineage)
+    _assert_dictionary_operation(source, logical, operation)
+
+
+def test_pandas_dictionary_unsigned_cast_retains_signed_range_guard() -> None:
+    source, _logical = _dictionary_operation_frames("unsigned")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("dictionary-cast-range", "castColumn", column=lineage[0], dtype="integer"), schema, lineage
+    )
+    for execute in [
+        lambda: engine.apply_transform(source, operation),
+        lambda: execute_generated(engine, source, [operation]),
+    ]:
+        with pytest.raises((EngineError, ValueError), match="signed 64-bit integer"):
+            execute()
+    for column in ["value", "untouched"]:
+        source_array: Any = source[column].array
+        before_array: Any = before[column].array
+        assert source_array.__arrow_array__().equals(before_array.__arrow_array__())
+    pd.testing.assert_series_equal(source["row"], before["row"])
