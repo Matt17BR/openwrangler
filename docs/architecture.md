@@ -279,6 +279,10 @@ nulls for present operand pairs. Polars scans the selected operands using each r
 bounded exact limits. When UInt64 and signed integers of at most 64 bits promote to Float64, an exact native Int128
 reference detects result precision loss. Correct native floating results and modulo-zero NaN remain unchanged.
 Only one guard Boolean crosses into Python. Floating and Decimal operands, and division, retain native arithmetic.
+Two-column addition, subtraction or multiplication producing UInt128 requires a recognized stable Polars release
+from 1.36 onward. Earlier native kernels can panic depending on collection shape, so the Formula preflight refuses
+this combination before returning a result, including lazy plans. Scalar operands and other operations retain their
+existing paths; nonnumeric or prerelease version labels are conservatively refused for this combination.
 Generated code performs the same checks. A caller-owned LazyFrame must keep its external inputs stable between
 these checks and later collection; the checks do not materialize or snapshot the frame.
 

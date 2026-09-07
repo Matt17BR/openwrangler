@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import glob
 import io
+import json
 import os
 import subprocess
 import sys
+from copy import deepcopy
 from decimal import Decimal
 from math import nextafter
 from pathlib import Path
@@ -1947,3 +1949,169 @@ def test_polars_formula_native_noninteger_has_no_row_guard(dtype: Any, monkeypat
     expected = source.with_columns((pl.col("value") * pl.lit(3)).alias("result"))
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("operator", ["add", "subtract", "multiply"])
+def test_polars_uint128_column_formula_has_correlated_preview_and_safe_later_pages(
+    lazy: bool, operator: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import __main__
+    from openwrangler_runtime import kernel_agent
+
+    source = pl.DataFrame(
+        {"value": pl.Series([1, 2, None], dtype=pl.UInt64), "right": pl.Series([3, 4, None], dtype=pl.UInt64)}
+    )
+    original = source.clone()
+    frame = source.lazy() if lazy else source
+    monkeypatch.setattr(__main__, "uint128_formula_source", frame, raising=False)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "variableName": "uint128_formula_source"},
+        backend="polars",
+        mode="editing",
+        page_size=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    first = opened["metadata"]["schema"][0]
+    try:
+        preview = manager.preview_step(
+            session_id,
+            0,
+            {
+                "id": "wide",
+                "kind": "formula",
+                "params": {
+                    "leftColumn": {"id": first["id"], "name": first["name"]},
+                    "value": str(2**64),
+                    "operator": "add",
+                    "newColumn": "wide",
+                },
+            },
+            0,
+            1,
+        )
+        confirmed = manager.apply_draft(session_id, preview["revision"], 0, 3)
+        session = manager.sessions[session_id]
+        committed, revision, plan = session.committed, session.revision, deepcopy(session.plan)
+        refs = {
+            column["name"]: {"id": column["id"], "name": column["name"]} for column in confirmed["metadata"]["schema"]
+        }
+        operation = {
+            "id": "column-arithmetic",
+            "kind": "formula",
+            "params": {
+                "leftColumn": refs["wide"],
+                "rightColumn": refs["right"],
+                "operator": operator,
+                "newColumn": "result",
+            },
+        }
+        bound = bind_step(validate_step(operation), session.committed_schema, session.committed_lineage)
+        namespace: dict[str, Any] = {}
+        exec(session.engine.compile_plan([*session.bound_plan, bound]), namespace)
+        request_id = f"uint128-{operator}-{lazy}"
+        response = json.loads(
+            kernel_agent.dispatch_json(
+                json.dumps(
+                    {
+                        "protocolVersion": 2,
+                        "requestId": request_id,
+                        "priority": "interactive",
+                        "request": {
+                            "kind": "previewStep",
+                            "sessionId": session_id,
+                            "revision": revision,
+                            "step": operation,
+                            "offset": 0,
+                            "limit": 1,
+                            "columnOffset": 0,
+                            "columnLimit": 64,
+                        },
+                    }
+                )
+            )
+        )
+        assert response["requestId"] == request_id
+        if pl.__version__.startswith("1.35."):
+            assert response["response"]["kind"] == "error"
+            assert "Polars 1.36" in response["response"]["message"]
+            assert session.committed is committed and session.revision == revision and session.plan == plan
+            assert session.draft_step is None and session.draft_frame is None
+            actual = manager.get_page(session_id, revision, 0, 3, {"filters": [], "sort": []})
+            assert actual["metadata"] == confirmed["metadata"] and actual["page"] == confirmed["page"]
+            with pytest.raises(ValueError, match="Polars 1.36"):
+                namespace["clean_data"](frame)
+            # A corrected scalar operation still works on the preserved UInt128 result.
+            corrected = {**operation, "params": {**operation["params"], "value": 1}}
+            corrected["params"].pop("rightColumn")
+            retry = manager.preview_step(session_id, revision, corrected, 0, 1)
+            manager.apply_draft(session_id, retry["revision"], 0, 3)
+        else:
+            assert response["response"]["kind"] == "stepPreview"
+            manager.apply_draft(session_id, response["response"]["revision"], 0, 1)
+            page = manager.get_page(session_id, session.revision, 0, 3, {"filters": [], "sort": []})
+            generated = namespace["clean_data"](frame)
+            generated = generated.collect() if lazy else generated
+            expected = {
+                "add": [2**64 + 4, 2**64 + 6, None],
+                "subtract": [2**64 - 2, 2**64 - 2, None],
+                "multiply": [(2**64 + 1) * 3, (2**64 + 2) * 4, None],
+            }[operator]
+            assert generated["result"].to_list() == expected and generated.schema["result"] == pl.UInt128
+            assert [row["values"][-1]["raw"] for row in page["page"]["rows"]] == [
+                str(value) if value is not None else None for value in expected
+            ]
+        assert source.equals(original)
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("release", ["1.35.2", "1.36.0rc1", "custom"])
+@pytest.mark.parametrize("values", [[], [None, None], [1], [1, 2]])
+def test_polars_uint128_column_formula_refuses_unqualified_release_for_every_shape(
+    release: str, values: list[int | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = pl.DataFrame({"value": pl.Series(values, dtype=pl.UInt128), "right": pl.Series(values, dtype=pl.UInt128)})
+    original = source.clone()
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(source, "add", None, right_column=True)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    monkeypatch.setattr(pl, "__version__", release)
+    for frame in (source, source.lazy()):
+        for run in (
+            lambda frame=frame: engine.apply_transform(frame, operation),
+            lambda frame=frame: namespace["clean_data"](frame),
+        ):
+            with pytest.raises((EngineError, ValueError), match="stable Polars 1.36"):
+                run()
+    assert source.equals(original)
+
+
+@pytest.mark.parametrize("other_dtype", [pl.Boolean, pl.Null])
+@pytest.mark.parametrize("operator", ["add", "subtract", "multiply"])
+@pytest.mark.parametrize("unsigned_left", [False, True])
+def test_polars_uint128_kernel_refusal_includes_noninteger_operands(
+    other_dtype: Any, operator: str, unsigned_left: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unsigned = pl.Series([3, None], dtype=pl.UInt128)
+    other = pl.Series([True, None] if other_dtype == pl.Boolean else [None, None], dtype=other_dtype)
+    source = pl.DataFrame(
+        {"value": unsigned if unsigned_left else other, "right": other if unsigned_left else unsigned}
+    )
+    original = source.clone()
+    engine = PolarsEngine()
+    operation = _polars_formula_literal_operation(source, operator, None, right_column=True)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    monkeypatch.setattr(pl, "__version__", "1.35.2")
+    for frame in (source, source.lazy()):
+        for run in (
+            lambda frame=frame: engine.apply_transform(frame, operation),
+            lambda frame=frame: namespace["clean_data"](frame),
+        ):
+            with pytest.raises((EngineError, ValueError), match="stable Polars 1.36"):
+                run()
+    assert source.equals(original)

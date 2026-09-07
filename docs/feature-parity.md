@@ -94,6 +94,10 @@ and negative precision. Pandas may retain large integers in object storage. Pola
 storage may widen or reduce scale; results beyond usable native capacity are rejected. Arrow Decimal results preserve
 existing CSV and Parquet export support.
 
+Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or
+multiplication producing UInt128. Earlier versions and nonnumeric or prerelease version labels refuse this combination
+before previewing; scalar forms retain their existing behavior.
+
 Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
 `python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
 identity.

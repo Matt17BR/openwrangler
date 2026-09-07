@@ -13,6 +13,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Polars Formula refuses unsupported UInt128 column arithmetic before it can panic on the minimum runtime.
+
 - Failed operation previews show their error inside the open form and retain the input for correction.
 - DuckDB Round refuses unsigned 128-bit overflow on Windows instead of returning a wrapped value.
 - Native R value selections and numeric predicates preserve floating precision instead of selecting a neighboring

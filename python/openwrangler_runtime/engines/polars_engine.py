@@ -4224,6 +4224,16 @@ def _polars_check_formula(frame: Any, left: Any, right: Any, operator: str, resu
     query = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
     schema = query.select(left.alias("left"), right.alias("right"), result.alias("result")).collect_schema()
     left_type, right_type, dtype = schema["left"], schema["right"], schema["result"]
+    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right.meta.is_column():
+        # Earlier owned column kernels can panic even when a one-row preview succeeds.
+        version_parts = pl.__version__.split(".")
+        supported_release = (
+            len(version_parts) == 3
+            and all(part.isdecimal() for part in version_parts)
+            and tuple(int(part) for part in version_parts[:2]) >= (1, 36)
+        )
+        if not supported_release:
+            raise EngineError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
     if not (left_type.is_integer() and right_type.is_integer()):
         return
 
@@ -4350,6 +4360,16 @@ def _ow_polars_check_formula(frame, left, right, operator, result):
     query = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
     schema = query.select(left.alias("left"), right.alias("right"), result.alias("result")).collect_schema()
     left_type, right_type, dtype = schema["left"], schema["right"], schema["result"]
+    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right.meta.is_column():
+        # Earlier owned column kernels can panic even when a one-row preview succeeds.
+        version_parts = pl.__version__.split(".")
+        supported_release = (
+            len(version_parts) == 3
+            and all(part.isdecimal() for part in version_parts)
+            and tuple(int(part) for part in version_parts[:2]) >= (1, 36)
+        )
+        if not supported_release:
+            raise ValueError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
     if not (left_type.is_integer() and right_type.is_integer()):
         return
 
