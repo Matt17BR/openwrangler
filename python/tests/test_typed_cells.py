@@ -12,9 +12,10 @@ import pytest
 
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import PandasEngine
-from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell
+from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell, typed_selection_value
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
+from openwrangler_runtime.session import SessionManager
 
 
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
@@ -169,9 +170,9 @@ def test_pandas_arrow_bool8_retains_native_and_generated_equality_filtering() ->
     nested_name = "extension<arrow.bool8>[pyarrow]"
     source = pd.DataFrame(
         {
-            "value": pd.Series(pa.array([1, 0, None], type=pa.bool8()), dtype=pd.ArrowDtype(pa.bool8())),
+            "value": pd.Series(pa.array([1, 0, -1, 2, None], type=pa.bool8()), dtype=pd.ArrowDtype(pa.bool8())),
             "detail": pd.Series(
-                [{nested_name: "yes"}, {nested_name: "no"}, None],
+                [{nested_name: "yes"}, {nested_name: "no"}, {nested_name: "yes"}, {nested_name: "yes"}, None],
                 dtype=pd.ArrowDtype(pa.struct([(nested_name, pa.string())])),
             ),
         }
@@ -202,9 +203,19 @@ def test_pandas_arrow_bool8_retains_native_and_generated_equality_filtering() ->
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
     generated = namespace["clean_data"](source)
-    pd.testing.assert_frame_equal(live, source.iloc[[0]])
-    pd.testing.assert_frame_equal(generated, live)
-    pd.testing.assert_frame_equal(source, before)
+    for actual, expected in (
+        (live, source.iloc[[0, 2, 3]].reset_index(drop=True)),
+        (generated, source.iloc[[0, 2, 3]]),
+        (source, before),
+    ):
+        pd.testing.assert_index_equal(actual.index, expected.index)
+        pd.testing.assert_index_equal(actual.columns, expected.columns)
+        for position in range(source.shape[1]):
+            assert (
+                actual.iloc[:, position]
+                .array.__arrow_array__()
+                .equals(expected.iloc[:, position].array.__arrow_array__())
+            )
 
 
 def test_pandas_arrow_uuid_retains_its_scalar_schema() -> None:
@@ -219,7 +230,365 @@ def test_pandas_arrow_uuid_retains_its_scalar_schema() -> None:
     )
     before = source.copy(deep=True)
     assert PandasEngine().schema(source)[0]["type"] == "string"
-    pd.testing.assert_frame_equal(source, before)
+    assert cast(Any, source["value"].array).__arrow_array__().equals(cast(Any, before["value"].array).__arrow_array__())
+    pd.testing.assert_index_equal(source.index, before.index)
+
+
+@pytest.mark.parametrize("extension_name", ["arrow.uuid.extra", "example.bool8"])
+def test_unrecognized_arrow_extension_keeps_its_physical_values_and_editing_refusal(extension_name: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+
+    class ForeignScalar(pa.ExtensionType):
+        def __init__(self) -> None:
+            super().__init__(pa.binary(16), extension_name)
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, storage_type: Any, serialized: bytes) -> Any:
+            return cls()
+
+    storage = pa.array([b"a" * 16, None], type=pa.binary(16))
+    array = pa.ExtensionArray.from_storage(ForeignScalar(), storage)
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(array)})
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    assert schema[0]["type"] == "unknown"
+    assert engine.page(source, 0, 20)["rows"][0]["values"][0] == normalize_cell(b"a" * 16)
+    with pytest.raises(ValueError, match="unsupported 'unknown' type"):
+        bind_step(
+            validate_step(
+                {
+                    "id": "unsupported",
+                    "kind": "byExample",
+                    "params": {
+                        "sourceColumns": source_lineage(schema),
+                        "newColumn": "copy",
+                        "examples": [{"inputs": ["a"], "output": "a"}, {"inputs": ["b"], "output": "b"}],
+                    },
+                }
+            ),
+            schema,
+            source_lineage(schema),
+        )
+    assert cast(Any, source["value"].array).__arrow_array__().equals(pa.chunked_array([array]))
+
+
+def _known_scalar_frame(family: str, shape: str = "present") -> tuple[pd.DataFrame, pd.DataFrame]:
+    pa = pytest.importorskip("pyarrow")
+    identifiers = [UUID("00112233-4455-6677-8899-aabbccddeeff"), UUID("ffeeddcc-bbaa-9988-7766-554433221100")]
+    dtype = pa.bool8() if family == "bool8" else pa.uuid()
+    values = [1, 0, -1, 2, None, 0] if family == "bool8" else [*identifiers, None, identifiers[0], identifiers[0], None]
+    if shape == "empty":
+        values = []
+    elif shape == "missing":
+        values = [None, None]
+    elif shape == "no-missing":
+        values = [value for value in values if value is not None]
+    array = pa.array(values, type=dtype)
+    chunks = pa.chunked_array([array.slice(0, len(array) // 2), array.slice(len(array) // 2)])
+    source = pd.DataFrame(
+        {"value": pd.arrays.ArrowExtensionArray(chunks), "_open_wrangler_scalar_values": range(len(array))}
+    )
+    source.index = pd.Index([index // 2 for index in range(len(source))], name="duplicate")
+    source.attrs = {"annotation": "retained"}
+    logical = source.copy(deep=False)
+    logical["value"] = (
+        source["value"].astype(pd.ArrowDtype(pa.bool_()))
+        if family == "bool8"
+        else pd.Series(pd.array(chunks.to_pylist(), dtype="string"), index=source.index)
+    )
+    return source, logical
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+def test_known_arrow_scalar_page_preparation_is_bounded_and_preserves_coordinates(family: str) -> None:
+    source, logical = _known_scalar_frame(family)
+    source["object_uuid"] = pd.Series([UUID(int=1)] * len(source), index=source.index, dtype=object)
+    engine = PandasEngine()
+    frame = engine.ensure_row_ids(source, "known-scalar-page")
+    original = cast(Any, frame["value"].array).__arrow_array__()
+    page = engine.page(frame, 2, 2, total_rows=123, column_projection=[(0, "stable:known")])
+    assert page["columnIds"] == ["stable:known"]
+    assert page["offset"] == 2 and page["limit"] == 2 and page["totalRows"] == 123
+    assert [row["id"] for row in page["rows"]] == ["r:known-scalar-page:2", "r:known-scalar-page:3"]
+    assert [row["rowNumber"] for row in page["rows"]] == [2, 3]
+    assert [row["rowLabel"] for row in page["rows"]] == ["1", "1"]
+    assert [row["values"] for row in page["rows"]] == [[normalize_cell(value)] for value in logical["value"].iloc[2:4]]
+    assert (
+        engine.page(frame, 2, 1, column_projection=[(2, "stable:object")])["rows"][0]["values"][0]["kind"] == "unknown"
+    )
+    assert cast(Any, frame["value"].array).__arrow_array__().equals(original)
+    pd.testing.assert_index_equal(frame.index, source.index)
+    assert frame.attrs == source.attrs
+    json.dumps(page, allow_nan=False)
+
+
+def test_projected_known_scalar_page_does_not_decode_unused_dictionary_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openwrangler_runtime.engines import pandas_engine
+
+    pa = pytest.importorskip("pyarrow")
+    codebook = pa.array([f"unused-{index:05d}-" + "x" * 64 for index in range(10_000)])
+    dictionary = pa.DictionaryArray.from_arrays(pa.array([0, 9_999, 1], type=pa.int32()), codebook)
+    identifiers = pa.array([UUID(int=index) for index in range(3)], type=pa.uuid())
+    source = pd.DataFrame(
+        {
+            "encoded": pd.arrays.ArrowExtensionArray(dictionary),
+            "identifier": pd.arrays.ArrowExtensionArray(identifiers),
+        },
+        index=pd.Index([10, 20, 30], name="source row"),
+    )
+    source.attrs = {"source": "retained"}
+    engine = PandasEngine()
+    frame = engine.ensure_row_ids(source, "dictionary-page")
+    dictionary_values = pandas_engine._pandas_dictionary_values
+
+    def selected_scalar_values(series: Any) -> Any:
+        # An Arrow row slice retains the whole codebook. Its native scalar
+        # iterator already resolves the selected entries without decoding it.
+        if isinstance(series.dtype, pd.ArrowDtype) and pa.types.is_dictionary(series.dtype.pyarrow_dtype):
+            raise AssertionError("A page must not decode an entire dictionary payload.")
+        return dictionary_values(series)
+
+    monkeypatch.setattr(pandas_engine, "_pandas_dictionary_values", selected_scalar_values)
+    page = engine.page(frame, 1, 1, column_projection=[(1, "stable:uuid"), (0, "stable:dictionary")])
+    assert page["columnIds"] == ["stable:uuid", "stable:dictionary"]
+    assert page["rows"] == [
+        {
+            "id": "r:dictionary-page:1",
+            "rowNumber": 1,
+            "rowLabel": "20",
+            "values": [normalize_cell(str(UUID(int=1))), normalize_cell(codebook[9_999].as_py())],
+        }
+    ]
+    assert cast(Any, frame["encoded"].array).__arrow_array__().equals(pa.chunked_array([dictionary]))
+    assert cast(Any, frame["identifier"].array).__arrow_array__().equals(pa.chunked_array([identifiers]))
+    pd.testing.assert_index_equal(frame.index, source.index)
+    assert frame.attrs == source.attrs
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+@pytest.mark.parametrize("shape", ["present", "empty", "missing"])
+def test_known_arrow_scalar_session_uses_its_own_typed_selections(
+    monkeypatch: pytest.MonkeyPatch, family: str, shape: str
+) -> None:
+    import __main__
+
+    source, logical = _known_scalar_frame(family, shape)
+    original = cast(Any, source["value"].array).__arrow_array__()
+    monkeypatch.setattr(__main__, "known_scalar_source", source, raising=False)
+    manager = SessionManager()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "known scalar", "variableName": "known_scalar_source"},
+            backend="pandas",
+            mode="editing",
+            page_size=20,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        column = opened["metadata"]["schema"][0]
+        expected_kind = "boolean" if family == "bool8" else "string"
+        assert all(row["values"][0]["kind"] in {expected_kind, "null"} for row in opened["page"]["rows"])
+        summary = manager.get_summary(session_id, 0, query)["summaries"][0]
+        assert summary["nullCount"] == int(cast(Any, logical["value"].isna().sum()))
+        assert summary["distinctCount"] == logical["value"].nunique()
+        values = manager.get_column_values(session_id, 0, "value", query)["values"]
+        if values:
+            token = values[0]["selectionValue"]
+            expected_positions = np.flatnonzero(logical["value"].eq(token["cell"]["raw"]).fillna(False))
+        else:
+            token = None
+            expected_positions = np.flatnonzero(logical["value"].isna())
+        column_filter = {
+            "column": "value",
+            "type": column["type"],
+            "predicates": [],
+            "valueFilter": {
+                "kind": "values",
+                "selectedValues": [token] if token else [],
+                "includeNulls": token is None,
+                "includeNaN": False,
+            },
+        }
+        query["filters"] = [column_filter]
+        page = manager.get_page(session_id, 0, 0, 20, query)["page"]
+        assert [row["values"][1]["raw"] for row in page["rows"]] == expected_positions.tolist()
+        operation = {
+            "id": "selected",
+            "kind": "filterRows",
+            "params": {
+                "filterModel": {
+                    "filters": [{**column_filter, "column": {"id": column["id"], "name": "value"}}],
+                    "sort": [],
+                }
+            },
+        }
+        preview = manager.preview_step(session_id, 0, operation, 0, 20)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 20)
+        assert len(applied["metadata"]["steps"]) == 1
+        session = manager.sessions[session_id]
+        namespace: dict[str, Any] = {}
+        exec(session.engine.compile_plan(session.bound_plan), namespace)
+        for actual in (session.committed, namespace["clean_data"](source)):
+            assert actual["value"].array.__arrow_array__().equals(original.take(expected_positions))
+            pd.testing.assert_index_equal(actual.index, source.index.take(expected_positions))
+        assert cast(Any, source["value"].array).__arrow_array__().equals(original)
+        assert source.attrs == {"annotation": "retained"}
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+@pytest.mark.parametrize("operation_kind", ["castColumn", "oneHotEncode", "groupBy", "pivotWider", "fillMissingValues"])
+def test_known_arrow_scalar_operations_match_logical_values(family: str, operation_kind: str) -> None:
+    source, logical = _known_scalar_frame(family)
+    source["group"] = "g"
+    logical["group"] = "g"
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    params: dict[str, Any]
+    if operation_kind == "castColumn":
+        params = {"column": lineage[0], "dtype": "string"}
+    elif operation_kind == "oneHotEncode":
+        params = {"columns": [lineage[0]], "dropOriginal": False}
+    elif operation_kind == "groupBy":
+        params = {
+            "keys": [lineage[0]],
+            "aggregations": [{"column": lineage[1], "operation": "count", "alias": "count"}],
+        }
+    elif operation_kind == "pivotWider":
+        params = {
+            "namesFrom": lineage[2],
+            "valuesFrom": lineage[0],
+            "outputs": [
+                {"key": typed_selection_value("g", "string"), "name": "result"},
+                {"key": typed_selection_value("absent", "string"), "name": "absent"},
+            ],
+        }
+    else:
+        params = {"column": lineage[0], "replacement": {"kind": "mostFrequent"}}
+    operation = bind_step(validate_step({"id": "scalar", "kind": operation_kind, "params": params}), schema, lineage)
+    engine.validate_transform_preflight(source, operation, engine.shape(source))
+    expected = engine.apply_transform(logical, operation)
+    original = cast(Any, source["value"].array).__arrow_array__()
+    namespace: dict[str, Any] = {}
+    code = engine.compile_plan([operation])
+    exec(code, namespace)
+    for actual in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+        assert [str(column) for column in actual.columns] == [str(column) for column in expected.columns]
+        assert [row["values"] for row in engine.page(actual, 0, len(actual))["rows"]] == [
+            row["values"] for row in engine.page(expected, 0, len(expected))["rows"]
+        ]
+        if operation_kind not in {"castColumn", "groupBy", "pivotWider", "fillMissingValues"}:
+            assert actual["value"].array.__arrow_array__().equals(original)
+    assert cast(Any, source["value"].array).__arrow_array__().equals(original)
+    assert source.attrs == {"annotation": "retained"}
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+def test_known_arrow_scalar_noop_fill_and_by_example_copy_keep_storage(family: str) -> None:
+    source, _ = _known_scalar_frame(family, "no-missing")
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    samples = [row["values"][0]["raw"] for row in engine.page(source, 0, 2)["rows"]]
+    for kind, params in (
+        ("fillMissingValues", {"column": lineage[0], "replacement": {"kind": "mostFrequent"}}),
+        (
+            "byExample",
+            {
+                "sourceColumns": [lineage[0]],
+                "newColumn": "copy",
+                "examples": [{"inputs": [value], "output": value} for value in samples],
+            },
+        ),
+    ):
+        operation = bind_step(validate_step({"id": "unchanged", "kind": kind, "params": params}), schema, lineage)
+        namespace: dict[str, Any] = {}
+        code = engine.compile_plan([operation])
+        exec(code, namespace)
+        for actual in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            output = actual["copy" if kind == "byExample" else "value"]
+            assert output.array.__arrow_array__().equals(cast(Any, source["value"].array).__arrow_array__())
+        if kind == "byExample":
+            assert "def _open_wrangler_scalar_values" not in code
+
+
+@pytest.mark.parametrize("kind", ["upperText", "byExample"])
+def test_arrow_uuid_text_uses_canonical_strings_and_preserves_source(kind: str) -> None:
+    source, logical = _known_scalar_frame("uuid")
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    params: dict[str, Any] = {"column": lineage[0], "newColumn": "result"}
+    if kind == "byExample":
+        params = {
+            "sourceColumns": [lineage[0]],
+            "newColumn": "result",
+            "examples": [{"inputs": [value], "output": value.upper()} for value in logical["value"].iloc[:2]],
+        }
+    operation = bind_step(validate_step({"id": "text", "kind": kind, "params": params}), schema, lineage)
+    engine.validate_transform_preflight(source, operation, engine.shape(source))
+    namespace: dict[str, Any] = {}
+    code = engine.compile_plan([operation])
+    exec(code, namespace)
+    for actual in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+        assert [normalize_cell(value) for value in actual["result"]] == [
+            normalize_cell(value) for value in engine.apply_transform(logical, operation)["result"]
+        ]
+        assert actual["value"].array.__arrow_array__().equals(cast(Any, source["value"].array).__arrow_array__())
+        pd.testing.assert_index_equal(actual.index, source.index)
+    assert code.count("def _open_wrangler_scalar_values(") == 1
+
+
+@pytest.mark.parametrize("family", ["bool8", "uuid"])
+def test_known_arrow_scalar_sort_and_duplicates_preserve_selected_native_rows(family: str) -> None:
+    source, logical = _known_scalar_frame(family)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    order = [{"column": "value", "direction": "desc", "nulls": "first"}]
+    view = engine.apply_filter_model(source, {"filters": [], "sort": order})
+    expected = logical.sort_values("value", ascending=False, na_position="first", kind="stable")
+    row_column = "_open_wrangler_scalar_values"
+    assert view[row_column].tolist() == expected[row_column].tolist()
+    steps = [
+        bind_step(
+            validate_step({"id": "unique", "kind": "dropDuplicates", "params": {"columns": [lineage[0]]}}),
+            schema,
+            lineage,
+        ),
+        bind_step(
+            validate_step(
+                {"id": "sort", "kind": "sortRows", "params": {"rules": [{**order[0], "column": lineage[0]}]}}
+            ),
+            schema,
+            lineage,
+        ),
+    ]
+    expected = logical.drop_duplicates("value").sort_values(
+        "value", ascending=False, na_position="first", kind="stable"
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan(steps), namespace)
+    live = source
+    for step in steps:
+        live = engine.apply_transform(live, step)
+    for actual in (live, namespace["clean_data"](source)):
+        positions = expected[row_column].tolist()
+        assert actual[row_column].tolist() == positions
+        assert (
+            cast(Any, actual["value"].array)
+            .__arrow_array__()
+            .equals(cast(Any, source["value"].array).__arrow_array__().take(positions))
+        )
+        pd.testing.assert_index_equal(actual.index, expected.index)
+        assert actual.attrs == source.attrs
 
 
 def _arrow_dictionary_fixture(family: str, shape: str = "chunked") -> tuple[pd.DataFrame, pd.DataFrame, str]:

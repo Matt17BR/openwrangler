@@ -246,7 +246,7 @@ def _pandas_row_key(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
-    series = _pandas_dictionary_values(series)
+    series = _pandas_scalar_values(series)
     if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):
         fill = series.dtype.fill_value
         bounds = np.iinfo(series.dtype.subtype)
@@ -306,7 +306,7 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
 
 
 def _pandas_live_column_filter_mask(series: Any, column_filter: Mapping[str, Any], column_type: str) -> Any | None:
-    series = _pandas_dictionary_values(series)
+    series = _pandas_scalar_values(series)
     conditions = [
         _pandas_live_filter_condition(series, condition)
         for condition in _pandas_filter_conditions(column_filter, column_type)
@@ -590,6 +590,17 @@ class PandasEngine(DataFrameEngine):
         selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
         sliced = df.iloc[offset : offset + limit, selected_positions]
         value_offset = 1 if row_id_position is not None else 0
+        prepared = sliced
+        for position in range(value_offset, sliced.shape[1]):
+            series = sliced.iloc[:, position]
+            if _pandas_dictionary_value_type(series) is not None:
+                continue
+            values = _pandas_scalar_values(series)
+            if values is not series:
+                if prepared is sliced:
+                    prepared = sliced.copy(deep=False)
+                prepared.isetitem(position, values)
+        sliced = prepared
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
         row_axis = self.row_axis(df)
@@ -640,7 +651,7 @@ class PandasEngine(DataFrameEngine):
             series = df.iloc[:, frame_position]
             raw_type = str(series.dtype)
             semantic_type = _pandas_semantic_type(series)
-            series = _pandas_dictionary_values(series)
+            series = _pandas_scalar_values(series)
             null_count, nan_count = _missing_value_counts(series)
             value_counts = series.value_counts(dropna=True)
             top_values = [{"value": str(index), "count": int(value)} for index, value in value_counts.head(10).items()]
@@ -711,7 +722,7 @@ class PandasEngine(DataFrameEngine):
         logical = df
         for position in range(df.shape[1]):
             series = df.iloc[:, position]
-            values = _pandas_dictionary_values(series)
+            values = _pandas_scalar_values(series)
             if values is not series:
                 if logical is df:
                     logical = df.copy(deep=False)
@@ -737,7 +748,7 @@ class PandasEngine(DataFrameEngine):
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
         dictionary_string = _pandas_dictionary_value_type(series) is not None and column_type == "string"
-        series = _pandas_dictionary_values(series).dropna()
+        series = _pandas_scalar_values(series).dropna()
         if search and not dictionary_string:
             folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
             series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
@@ -861,7 +872,7 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, df.iloc[:, position].rename(params["newName"])], axis=1)
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
-            series = _pandas_dictionary_values(df.iloc[:, position])
+            series = _pandas_scalar_values(df.iloc[:, position])
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if target == "Int64":
                 result = _pandas_cast_integer(series)
@@ -884,7 +895,7 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "textLength":
             position = self._bound_frame_position(df, params["column"], kind)
-            result = _pandas_dictionary_values(df.iloc[:, position]).astype("string").str.len()
+            result = _pandas_scalar_values(df.iloc[:, position]).astype("string").str.len()
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
@@ -892,7 +903,7 @@ class PandasEngine(DataFrameEngine):
             separator = params.get("prefixSeparator", "_")
             encoded_parts = []
             for position, name in zip(positions, names, strict=True):
-                series = _pandas_dictionary_values(df.iloc[:, position])
+                series = _pandas_scalar_values(df.iloc[:, position])
                 values = sorted(pd.unique(series[series.notna()]), key=str)
                 encoded_parts.extend(
                     series.eq(value).fillna(False).astype("int8").rename(f"{name}{separator}{value}")
@@ -914,7 +925,7 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             encoded = (
-                _pandas_dictionary_values(df.iloc[:, position])
+                _pandas_scalar_values(df.iloc[:, position])
                 .astype("string")
                 .fillna("")
                 .str.get_dummies(sep=params["delimiter"])
@@ -934,9 +945,7 @@ class PandasEngine(DataFrameEngine):
             output_names = list(params["newColumns"])
             ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
             parts = (
-                _pandas_dictionary_values(df.iloc[:, position])
-                .astype("string")
-                .str.split(params["delimiter"], regex=False)
+                _pandas_scalar_values(df.iloc[:, position]).astype("string").str.split(params["delimiter"], regex=False)
             )
             generated = pd.concat(
                 [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
@@ -983,7 +992,7 @@ class PandasEngine(DataFrameEngine):
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
             ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
-            source = _pandas_dictionary_values(df.iloc[:, position]).astype("string")
+            source = _pandas_scalar_values(df.iloc[:, position]).astype("string")
             oversized = (
                 source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
                 | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
@@ -996,7 +1005,7 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            series = _pandas_dictionary_values(df.iloc[:, position]).astype("string")
+            series = _pandas_scalar_values(df.iloc[:, position]).astype("string")
             if kind == "findReplace":
                 result = series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
             elif kind == "stripText":
@@ -1306,15 +1315,10 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        needs_dictionary_values = any(
+        needs_scalar_values = any(
             step["kind"]
             in {
                 "fillMissingValues",
-                "roundNumber",
-                "floorNumber",
-                "ceilNumber",
-                "minMaxScale",
-                "formula",
                 "castColumn",
                 "groupBy",
                 "textLength",
@@ -1328,14 +1332,19 @@ class PandasEngine(DataFrameEngine):
                 "capitalizeText",
                 "lowerText",
                 "upperText",
-                "formatDatetime",
                 "pivotWider",
             }
             or (step["kind"] == "byExample" and step["params"]["program"]["kind"] not in {"literal", "column"})
             for step in plan
         )
+        needs_dictionary_values = needs_scalar_values or any(
+            step["kind"] in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "formatDatetime"}
+            for step in plan
+        )
         if needs_row_queries or needs_dictionary_values:
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
+        if needs_row_queries or needs_scalar_values:
+            lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_integer_filter_helpers())
         if needs_row_queries:
@@ -1482,7 +1491,7 @@ class PandasEngine(DataFrameEngine):
                     "    if isinstance(series.dtype, pd.StringDtype):",
                     "        return series.astype('string')",
                     "    if (",
-                    "        pd.api.types.is_object_dtype(series.dtype)",
+                    "        series.dtype == object",
                     "        or isinstance(series.dtype, pd.CategoricalDtype)",
                     "    ):",
                     "        null_mask = _open_wrangler_float_nan_mask(series)",
@@ -1898,7 +1907,7 @@ class PandasEngine(DataFrameEngine):
             return [f"{prefix}df = pd.concat([df, df.iloc[:, {position}].rename({params['newName']!r})], axis=1)"]
         if kind == "castColumn":
             position = bound_column_position(params["column"], kind)
-            series = f"_open_wrangler_dictionary_values(df.iloc[:, {position}])"
+            series = f"_open_wrangler_scalar_values(df.iloc[:, {position}])"
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if conversion == "to_datetime":
                 accessor = ".dt.date" if target == "date" else ""
@@ -1926,7 +1935,7 @@ class PandasEngine(DataFrameEngine):
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
             return [
-                f"{prefix}df = pd.concat([df, _open_wrangler_dictionary_values(df.iloc[:, {position}])"
+                f"{prefix}df = pd.concat([df, _open_wrangler_scalar_values(df.iloc[:, {position}])"
                 ".astype('string').str.len()"
                 f".rename({params['newColumn']!r})], axis=1)"
             ]
@@ -1946,7 +1955,7 @@ class PandasEngine(DataFrameEngine):
             return [
                 f"{prefix}{parts} = []",
                 f"{prefix}for _position_{index}, _column_{index} in {pairs!r}:",
-                f"{prefix}    {series} = _open_wrangler_dictionary_values(df.iloc[:, _position_{index}])",
+                f"{prefix}    {series} = _open_wrangler_scalar_values(df.iloc[:, _position_{index}])",
                 f"{prefix}    {values} = sorted(pd.unique({series}[{series}.notna()]), key=str)",
                 f"{prefix}    {parts}.extend(",
                 f"{prefix}        {series}.eq(value).fillna(False).astype('int8')",
@@ -1995,7 +2004,7 @@ class PandasEngine(DataFrameEngine):
             order = f"_encoded_order_{index}"
             return [
                 (
-                    f"{prefix}{name} = _open_wrangler_dictionary_values(df.iloc[:, {position}])"
+                    f"{prefix}{name} = _open_wrangler_scalar_values(df.iloc[:, {position}])"
                     ".astype('string').fillna('')"
                     f".str.get_dummies(sep={params['delimiter']!r})"
                 ),
@@ -2057,7 +2066,7 @@ class PandasEngine(DataFrameEngine):
                     f"+ ', '.join({collisions}))"
                 ),
                 (
-                    f"{prefix}{parts} = _open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"
+                    f"{prefix}{parts} = _open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"
                     f".str.split({params['delimiter']!r}, regex=False)"
                 ),
                 (
@@ -2095,7 +2104,7 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}    raise ValueError('Regex extraction would create a duplicate column name: ' "
                     f"+ ', '.join({collisions}))"
                 ),
-                (f"{prefix}{source} = _open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"),
+                (f"{prefix}{source} = _open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"),
                 (
                     f"{prefix}if (({source}.str.len() > "
                     f"{MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
@@ -2114,7 +2123,7 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            base = f"_open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string').str"
+            base = f"_open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string').str"
             if kind == "findReplace":
                 expression = (
                     f"{base}.replace({params['find']!r}, {params['replacement']!r}, "
@@ -2127,7 +2136,7 @@ class PandasEngine(DataFrameEngine):
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
                 expression = (
-                    f"_open_wrangler_dictionary_values(df.iloc[:, {position}]).astype('string')"
+                    f"_open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"
                     f".map(str.{method}, na_action='ignore')"
                 )
             if target is None or target == column:
@@ -2217,7 +2226,7 @@ class PandasEngine(DataFrameEngine):
             selected = f"_group_selected_{index}"
             lines = [
                 f"{prefix}{output_labels} = [df.columns[position] for position in {key_positions!r}]",
-                f"{prefix}{selected} = {{position: _open_wrangler_dictionary_values(df.iloc[:, position]) "
+                f"{prefix}{selected} = {{position: _open_wrangler_scalar_values(df.iloc[:, position]) "
                 f"for position in {list(dict.fromkeys(selected_positions))!r}}}",
                 f"{prefix}for _position, _series in {selected}.items():",
                 f"{prefix}    if pd.api.types.is_float_dtype(_series.dtype):",
@@ -2458,7 +2467,7 @@ def _pandas_validate_pivot_wider(
     if any(is_internal_row_id_label(name) for name in output_names):
         raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
 
-    names = _pandas_dictionary_values(df.iloc[:, names_position])
+    names = _pandas_scalar_values(df.iloc[:, names_position])
     invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)
     invalid = names.isna() | invalid_type | ~names.isin(output_values)
     if bool(invalid.any()):
@@ -2480,7 +2489,7 @@ def _pandas_pivot_wider_identifier_frame(
     states: list[Any | None] = []
     allowed = {"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"}
     for position in identifiers:
-        source = _pandas_dictionary_values(df.iloc[:, position]).reset_index(drop=True)
+        source = _pandas_scalar_values(df.iloc[:, position]).reset_index(drop=True)
         semantic_type = _pandas_semantic_type(source)
         if semantic_type not in allowed:
             raise EngineError(
@@ -2530,8 +2539,8 @@ def _pandas_pivot_wider(
     identifiers, output_values, output_names = _pandas_validate_pivot_wider(
         df, names_position, values_position, outputs
     )
-    names = _pandas_dictionary_values(df.iloc[:, names_position]).reset_index(drop=True)
-    values = _pandas_dictionary_values(df.iloc[:, values_position]).reset_index(drop=True)
+    names = _pandas_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)
+    values = _pandas_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)
     if identifiers:
         identifier_frame, key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
         group_codes = identifier_frame.groupby(
@@ -2548,9 +2557,7 @@ def _pandas_pivot_wider(
                 zeros = restored.eq(0).fillna(False)
                 if zeros.any():
                     # Pivot displays the first identifier row, not the globally canonical zero key.
-                    original = _pandas_dictionary_values(df.iloc[:, identifiers[output_position]]).reset_index(
-                        drop=True
-                    )
+                    original = _pandas_scalar_values(df.iloc[:, identifiers[output_position]]).reset_index(drop=True)
                     restored = restored.mask(zeros, original.loc[first_rows].reset_index(drop=True))
             result.isetitem(output_position, restored)
         group_count = len(result)
@@ -2585,8 +2592,8 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "        raise ValueError('Pivot wider would create duplicate column names.')",
         f"    if any(name.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r}) for name in output_names):",
         '        raise ValueError("Pivot wider would create Open Wrangler\'s reserved private row-identity column.")',
-        "    names = _open_wrangler_dictionary_values(df.iloc[:, names_position]).reset_index(drop=True)",
-        "    values = _open_wrangler_dictionary_values(df.iloc[:, values_position]).reset_index(drop=True)",
+        "    names = _open_wrangler_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)",
+        "    values = _open_wrangler_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)",
         "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)",
         "    invalid = names.isna() | invalid_type | ~names.isin(output_values)",
         "    if bool(invalid.any()):",
@@ -2599,7 +2606,7 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "'timedelta', 'timedelta64', 'bytes', 'date'}"
         ),
         "    for position in identifiers:",
-        "        source = _open_wrangler_dictionary_values(df.iloc[:, position]).reset_index(drop=True)",
+        "        source = _open_wrangler_scalar_values(df.iloc[:, position]).reset_index(drop=True)",
         (
             "        if pd.api.types.is_object_dtype(source.dtype) and "
             "pd.api.types.infer_dtype(source, skipna=True) not in allowed_object_kinds:"
@@ -2657,7 +2664,7 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "                zeros = restored.eq(0).fillna(False)",
         "                if zeros.any():",
         (
-            "                    original = _open_wrangler_dictionary_values("
+            "                    original = _open_wrangler_scalar_values("
             "df.iloc[:, identifiers[output_position]]).reset_index(drop=True)"
         ),
         "                    restored = restored.mask(zeros, original.loc[first_rows].reset_index(drop=True))",
@@ -2734,9 +2741,7 @@ def _pandas_group_by_positions(
         _pandas_group_aggregation_semantics(operation) for _position, operation, _alias in aggregations
     ]
     selected_positions = [*key_positions, *(position for position, _operation, _alias in aggregations)]
-    selected = {
-        position: _pandas_dictionary_values(df.iloc[:, position]) for position in dict.fromkeys(selected_positions)
-    }
+    selected = {position: _pandas_scalar_values(df.iloc[:, position]) for position in dict.fromkeys(selected_positions)}
     for position, series in selected.items():
         if pd.api.types.is_float_dtype(series.dtype):
             nan_mask = (np.isnan(series) & series.notna()).fillna(False)
@@ -3657,6 +3662,23 @@ def _pandas_dictionary_values(series: Any) -> Any:
     return result
 
 
+def _pandas_scalar_values(series: Any) -> Any:
+    import pandas as pd
+
+    series = _pandas_dictionary_values(series)
+    if not isinstance(series.dtype, pd.ArrowDtype):
+        return series
+    import pyarrow as pa
+
+    dtype = series.dtype.pyarrow_dtype
+    if isinstance(dtype, pa.Bool8Type):
+        return series.astype(pd.ArrowDtype(pa.bool_()))
+    if isinstance(dtype, pa.UuidType):
+        values = pd.array(series.array.__arrow_array__().to_pylist(), dtype=pd.StringDtype(storage="python"))
+        return pd.Series(values, index=series.index, name=series.name)
+    return series
+
+
 def _pandas_prepare_dictionary_rows(frame: Any) -> Any:
     import pandas as pd
 
@@ -3718,7 +3740,7 @@ def _pandas_semantic_type(series: Any) -> str:
         if pa.types.is_date(dtype.pyarrow_dtype):
             return "date"
     semantic_type = infer_semantic_type(str(dtype))
-    if semantic_type == "string" and pd.api.types.is_object_dtype(series.dtype):
+    if semantic_type == "string" and series.dtype == object:
         # Pandas' native classifier is exhaustive but runs in its optimized C
         # path.  It avoids the prior Python materialization without making UI
         # capabilities depend on a potentially misleading sample.
@@ -4219,7 +4241,7 @@ def _pandas_nullable_string_copy(series: Any) -> Any:
 
     if isinstance(series.dtype, pd.StringDtype):
         return series.astype("string")
-    if pd.api.types.is_object_dtype(series.dtype) or isinstance(series.dtype, pd.CategoricalDtype):
+    if series.dtype == object or isinstance(series.dtype, pd.CategoricalDtype):
         null_mask = _pandas_float_nan_mask(series)
         if null_mask.any():
             result = series.astype(object)
@@ -4466,7 +4488,7 @@ def _pandas_by_example_expression(
     if kind == "datetimeFormat":
         value = _pandas_by_example_expression(df, program["input"], resolve_position)
         if isinstance(value, pd.Series):
-            value = _pandas_dictionary_values(value)
+            value = _pandas_scalar_values(value)
         return (
             pd.to_datetime(value, format=program["inputFormat"], errors="coerce")
             .dt.strftime(program["outputFormat"])
@@ -4502,7 +4524,7 @@ def _pandas_string_expression(
 
     value = _pandas_by_example_expression(df, program, resolve_position)
     if isinstance(value, pd.Series):
-        value = _pandas_dictionary_values(value)
+        value = _pandas_scalar_values(value)
     return value.astype("string") if hasattr(value, "astype") else pd.Series(value, index=df.index, dtype="string")
 
 
@@ -4543,7 +4565,7 @@ def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
     if kind == "datetimeFormat":
         value = _compile_pandas_by_example(program["input"])
         if program["input"]["kind"] != "literal":
-            value = f"_open_wrangler_dictionary_values({value})"
+            value = f"_open_wrangler_scalar_values({value})"
         return (
             f"pd.to_datetime({value}, "
             f"format={program['inputFormat']!r}, errors='coerce').dt.strftime({program['outputFormat']!r})"
@@ -4572,7 +4594,7 @@ def _compile_pandas_string(program: Mapping[str, Any]) -> str:
     return (
         f"pd.Series({expression!s}, index=df.index, dtype='string')"
         if program["kind"] == "literal"
-        else f"_open_wrangler_dictionary_values({expression}).astype('string')"
+        else f"_open_wrangler_scalar_values({expression}).astype('string')"
     )
 
 
@@ -4653,7 +4675,7 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "",
         "",
         "def _open_wrangler_row_key(series):",
-        "    series = _open_wrangler_dictionary_values(series)",
+        "    series = _open_wrangler_scalar_values(series)",
         "",
         "    if isinstance(series.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(series.dtype):",
         "        fill = series.dtype.fill_value",
@@ -4694,7 +4716,7 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
             mask = f"_filter_column_mask_{index}_{column_index}"
             lines.extend(
                 [
-                    f"    {series} = _open_wrangler_dictionary_values(df.iloc[:, {position}])",
+                    f"    {series} = _open_wrangler_scalar_values(df.iloc[:, {position}])",
                     f"    {mask} = (" + operator.join(conditions) + ")",
                     f"    del {series}",
                 ]
@@ -4914,7 +4936,7 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
     import pandas as pd
 
     original = target
-    target = _pandas_dictionary_values(target)
+    target = _pandas_scalar_values(target)
     result = target.copy()
     filled = False
     semantic_type = _pandas_semantic_type(target)
@@ -4929,7 +4951,7 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
         if not bool(take.any()):
             continue
 
-        fallback = _pandas_dictionary_values(fallback)
+        fallback = _pandas_scalar_values(fallback)
         candidate = fallback.astype("string") if isinstance(result.dtype, pd.StringDtype) else fallback
         selected = take.to_numpy(dtype=bool)
         try:
@@ -5018,7 +5040,7 @@ def _pandas_fill_missing_directional(
         order = order[relative_order]
 
     original = series
-    series = _pandas_dictionary_values(series)
+    series = _pandas_scalar_values(series)
     ordered = series.iloc[order].reset_index(drop=True)
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
     result = ordered.copy()
@@ -5204,10 +5226,10 @@ def _pandas_fill_missing_grouped_statistic(
         return series.copy()
 
     original = series
-    series = _pandas_dictionary_values(series)
+    series = _pandas_scalar_values(series)
     prepared_keys = []
     for position in key_positions:
-        key_series = _pandas_dictionary_values(frame.iloc[:, position]).reset_index(drop=True)
+        key_series = _pandas_scalar_values(frame.iloc[:, position]).reset_index(drop=True)
         if isinstance(key_series.dtype, pd.CategoricalDtype):
             # Pandas omits the missing group for an observed categorical even
             # with dropna=False.  Group the values as objects so null category
@@ -5402,7 +5424,7 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
     original = series
-    series = _pandas_dictionary_values(series)
+    series = _pandas_scalar_values(series)
     missing = _null_mask(series) | _nan_mask(series)
     replacement_kind = replacement.get("kind")
     semantic_type = _pandas_semantic_type(series)
@@ -5465,6 +5487,28 @@ def _pandas_datetime_awareness(series: Any) -> bool:
     if len(awareness) != 1:
         raise EngineError("The selected Pandas datetime column mixes timezone-aware and timezone-naive values.")
     return awareness.pop()
+
+
+def _generated_pandas_scalar_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_scalar_values(series):",
+        "    import pandas as pd",
+        "",
+        "    series = _open_wrangler_dictionary_values(series)",
+        "    if not isinstance(series.dtype, pd.ArrowDtype):",
+        "        return series",
+        "    import pyarrow as pa",
+        "",
+        "    dtype = series.dtype.pyarrow_dtype",
+        "    if isinstance(dtype, pa.Bool8Type):",
+        "        return series.astype(pd.ArrowDtype(pa.bool_()))",
+        "    if isinstance(dtype, pa.UuidType):",
+        '        values = pd.array(series.array.__arrow_array__().to_pylist(), dtype=pd.StringDtype(storage="python"))',
+        "        return pd.Series(values, index=series.index, name=series.name)",
+        "    return series",
+        "",
+        "",
+    ]
 
 
 def _generated_pandas_dictionary_helpers(*, include_rows: bool) -> list[str]:
@@ -5802,7 +5846,7 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_missing_from_columns(target, fallbacks):",
         "    original = target",
-        "    target = _open_wrangler_dictionary_values(target)",
+        "    target = _open_wrangler_scalar_values(target)",
         "    result = target.copy()",
         "    filled = False",
         "    semantic_type = _open_wrangler_fill_semantic_type(target)",
@@ -5834,7 +5878,7 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
         "        take = remaining & available",
         "        if not take.any():",
         "            continue",
-        "        fallback = _open_wrangler_dictionary_values(fallback)",
+        "        fallback = _open_wrangler_scalar_values(fallback)",
         "        candidate = fallback.astype('string') if isinstance(result.dtype, pd.StringDtype) else fallback",
         "        selected = take.to_numpy(dtype=bool)",
         "        try:",
@@ -5924,7 +5968,7 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        )",
         "        order = order[relative_order]",
         "    original = series",
-        "    series = _open_wrangler_dictionary_values(series)",
+        "    series = _open_wrangler_scalar_values(series)",
         "    ordered = series.iloc[order].reset_index(drop=True)",
         (
             "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
@@ -6129,10 +6173,10 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "    if not missing.any():",
         "        return series.copy()",
         "    original = series",
-        "    series = _open_wrangler_dictionary_values(series)",
+        "    series = _open_wrangler_scalar_values(series)",
         "    prepared_keys = []",
         "    for position in key_positions:",
-        "        key_series = _open_wrangler_dictionary_values(df.iloc[:, position]).reset_index(drop=True)",
+        "        key_series = _open_wrangler_scalar_values(df.iloc[:, position]).reset_index(drop=True)",
         "        if isinstance(key_series.dtype, pd.CategoricalDtype):",
         "            key_series = key_series.astype(object)",
         "        if _open_wrangler_grouped_identity_required(key_series):",
@@ -6233,7 +6277,7 @@ def _generated_pandas_fill_value_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    original = series",
-        "    series = _open_wrangler_dictionary_values(series)",
+        "    series = _open_wrangler_scalar_values(series)",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
         "    if replacement_kind in {'mean', 'median', 'mostFrequent'}:",
         "        if replacement_kind == 'mean' and semantic_type != 'float':",
