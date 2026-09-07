@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
 
 - Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
+- Polars By Example accepts exact unsigned cancellation and multiplication by zero on the minimum runtime.
+- Multi-label binarization works across supported Polars versions without changing empty-label behavior.
 - Pandas profiles and row queries use logical Arrow dictionary values, including null entries and repeated values
   across chunks. Row removal preserves encoded columns and exact Sparse integer payloads.
 - Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead

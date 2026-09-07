@@ -230,6 +230,8 @@ Datetime formatting preserves native Date and Datetime columns, including time z
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
 Grouped integer and Decimal medians retain the target dtype and reject unrepresentable midpoints only when a group
 needs filling. Empty groups stay null, and constructing a grouped Fill plan does not collect a lazy frame.
+Exact By Example arithmetic returns typed native batches when unsigned operands require the checked scalar path.
+Multi-label discovery uses the available native explode API while retaining its existing null and empty-label rules.
 
 Generated Fill Missing Values code includes only the helpers referenced by the complete cleaning plan and their
 dependencies. Polars and DuckDB share the selector for their controlled helper declarations; each engine owns its
