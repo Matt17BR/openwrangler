@@ -72,7 +72,13 @@ describe("Python Interactive Window literate dispatch", () => {
       "#| label: load-orders\nframe = make_frame()\n"
     );
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
   });
 
   it("reopens the document's Python session from Quarto prose without accepting its R chunk", async () => {
@@ -100,7 +106,13 @@ describe("Python Interactive Window literate dispatch", () => {
 
     expect(pythonMocks.discover).toHaveBeenCalledTimes(1);
     expect(pythonMocks.discover).toHaveBeenCalledWith(exact.document);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, exact.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      exact.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
     expect(pythonMocks.showInformationMessage).not.toHaveBeenCalledWith(
       expect.stringContaining("More than one Python Interactive Window")
     );

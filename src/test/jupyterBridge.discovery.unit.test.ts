@@ -18,16 +18,160 @@ import {
 
 const notebookMocks = jupyterBridgeMocks();
 const {
+  bindDiscoveredNotebookVariable,
+  disposeNotebookVariableDiscovery,
   buildNotebookVariableDiscoveryCode,
   buildPySparkNotebookPreflightCode,
   discoverVariablesForSelectedKernel,
   isRNotebookVariableDiscovery,
   openDiscoveredRNotebookVariable,
+  openDiscoveredPythonNotebookVariable,
   parsePySparkNotebookPreflightOutput
 } = jupyterBridgeApi();
 
 describe("notebook variable discovery", () => {
   beforeEach(resetNotebookCommandTest);
+
+  it.each(["picker", "focus restoration"])(
+    "rejects a Python selection when its kernel changes during %s",
+    async (phase) => {
+      const original = notebook("file:///workspace/python-kernel-change.ipynb");
+      notebookMocks.notebookDocuments.push(original);
+      notebookMocks.activeNotebookEditor = editor(original);
+      const replacement = {
+        language: "python",
+        status: "idle",
+        onDidChangeStatus: () => ({ dispose() {} }),
+        executeCode: vi.fn()
+      };
+      const replaceKernel = () => {
+        notebookMocks.getKernel.mockResolvedValue(replacement);
+      };
+      if (phase === "picker") {
+        notebookMocks.showQuickPick.mockImplementationOnce(async (items) => {
+          replaceKernel();
+          return items[0];
+        });
+      } else {
+        notebookMocks.restoreEditorGroupAfterQuickPick.mockImplementationOnce(async () => {
+          replaceKernel();
+          return undefined;
+        });
+      }
+      register();
+
+      await command("openWrangler.openNotebookVariable")();
+
+      expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+      expect(replacement.executeCode).not.toHaveBeenCalled();
+      expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("Python notebook kernel changed")
+      );
+    }
+  );
+
+  it("rejects a cached Python descriptor after its selected kernel changes", async () => {
+    const original = notebook("file:///workspace/python-cached.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (isRNotebookVariableDiscovery(discovery)) throw new Error("Expected Python discovery");
+    const replacement = {
+      language: "python",
+      status: "idle",
+      onDidChangeStatus: () => ({ dispose() {} }),
+      executeCode: vi.fn()
+    };
+    notebookMocks.getKernel.mockResolvedValue(replacement);
+    const { context, coordinator } = register();
+
+    await expect(
+      openDiscoveredPythonNotebookVariable(
+        context,
+        coordinator as unknown as SessionCoordinator,
+        original,
+        discovery,
+        discovery.variables[0]!
+      )
+    ).resolves.toBe(false);
+
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(replacement.executeCode).not.toHaveBeenCalled();
+    disposeNotebookVariableDiscovery(discovery);
+  });
+
+  it("rejects a cached Python discovery after a same-object kernel restart", async () => {
+    const original = notebook("file:///workspace/python-restart.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    let statusChanged: (status: string) => void = () => undefined;
+    const dispose = vi.fn();
+    notebookMocks.getKernel.mockResolvedValue({
+      language: "python",
+      status: "idle",
+      executeCode: notebookMocks.executeCode,
+      onDidChangeStatus: (listener) => {
+        statusChanged = listener;
+        return { dispose };
+      }
+    });
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (isRNotebookVariableDiscovery(discovery)) throw new Error("Expected Python discovery");
+    statusChanged("restarting");
+    statusChanged("idle");
+
+    await expect(bindDiscoveredNotebookVariable(original, discovery, discovery.variables[0]!)).rejects.toThrow(
+      "Python notebook kernel changed"
+    );
+    disposeNotebookVariableDiscovery(discovery);
+    disposeNotebookVariableDiscovery(discovery);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("retiring a Python discovery leaves an acquired open binding alive", async () => {
+    const original = notebook("file:///workspace/python-lease.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    const listeners = new Set<(status: string) => void>();
+    notebookMocks.getKernel.mockResolvedValue({
+      language: "python",
+      status: "idle",
+      executeCode: notebookMocks.executeCode,
+      onDidChangeStatus: (listener) => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      }
+    });
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (isRNotebookVariableDiscovery(discovery)) throw new Error("Expected Python discovery");
+    const binding = await bindDiscoveredNotebookVariable(original, discovery, discovery.variables[0]!);
+    expect(listeners.size).toBe(2);
+
+    disposeNotebookVariableDiscovery(discovery);
+    expect(binding.isValid()).toBe(true);
+    expect(listeners.size).toBe(1);
+    for (const listener of listeners) listener("restarting");
+    expect(binding.isValid()).toBe(false);
+    binding.dispose();
+    expect(listeners.size).toBe(0);
+  });
+
+  it("releases the discovery observation when the Python picker is cancelled", async () => {
+    const original = notebook("file:///workspace/python-cancel.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    const dispose = vi.fn();
+    notebookMocks.getKernel.mockResolvedValue({
+      language: "python",
+      status: "idle",
+      executeCode: notebookMocks.executeCode,
+      onDidChangeStatus: () => ({ dispose })
+    });
+    notebookMocks.showQuickPick.mockResolvedValueOnce(undefined);
+    register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+  });
 
   it("populates a branded typed picker with concrete dataframe backends", async () => {
     const original = notebook("file:///workspace/typed.ipynb");

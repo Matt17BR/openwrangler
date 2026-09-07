@@ -706,6 +706,30 @@ describe("active R session commands", () => {
     expect(coordinator.createBridge).not.toHaveBeenCalled();
   });
 
+  it("does not retarget a direct open when cleanup changes the active R terminal", async () => {
+    const original = rTerminal("R");
+    const replacement = rTerminal("R Interactive");
+    setActiveTerminal(original);
+    const previous = transportMock();
+    previous.discoverVariables.mockRejectedValueOnce(new Error("Discovery failed"));
+    const next = transportMock();
+    next.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const { provider, factory, coordinator } = registerWith([previous, next]);
+    await expect(provider.refreshFromCommand()).resolves.toBe(false);
+    previous.dispose.mockImplementationOnce(async () => {
+      emitActiveTerminal(replacement);
+      return undefined;
+    });
+
+    await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(false);
+
+    expect(factory.create).toHaveBeenCalledTimes(1);
+    expect(next.discoverVariables).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
   it("uses the active R session from the stable editor action", async () => {
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();

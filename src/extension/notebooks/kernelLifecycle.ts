@@ -1,5 +1,39 @@
 export type KernelLifecyclePhase = "acquire" | "bootstrap" | "beforeDispatch" | "execute";
 
+export interface KernelGenerationSource {
+  readonly status: string;
+  onDidChangeStatus(listener: (status: string) => void): { dispose(): void };
+}
+
+/** An independently owned observation of one kernel generation. */
+export class KernelGenerationBinding<TKernel extends KernelGenerationSource> {
+  private valid = true;
+  private disposed = false;
+  private readonly subscription: { dispose(): void };
+
+  constructor(readonly kernel: TKernel) {
+    this.subscription = kernel.onDidChangeStatus((status) => {
+      if (invalidatesKernelLifecycle(status)) this.valid = false;
+    });
+    if (invalidatesKernelLifecycle(kernel.status)) this.valid = false;
+  }
+
+  isValid(): boolean {
+    return this.valid;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.valid = false;
+    this.subscription.dispose();
+  }
+}
+
+export function invalidatesKernelLifecycle(status: string): boolean {
+  return status === "restarting" || status === "autorestarting" || status === "terminating" || status === "dead";
+}
+
 export interface RestartableKernelRunOptions<TKernel = unknown> {
   /**
    * Execution may have reached the kernel before it failed. Retrying that phase

@@ -236,6 +236,11 @@ actions also retain the exact visible sender `NotebookEditor`. Before and after 
 document object to remain the sole open object for its URI and revalidates the selected kernel. It never reacquires an
 origin from `activeNotebookEditor`, a matching URI, or another split after work has started.
 
+Python variable discovery retains its exact kernel and observes that kernel's generation through the picker or
+cached variable list. Opening a selection rechecks that receipt and gives the new bridge its own observation until
+the runtime session is confirmed. Refreshing the list cannot retire an already opened session, and a stale selection
+cannot bootstrap or execute against a replacement kernel.
+
 The host creates each live-kernel candidate session ID before dispatch and maps it to the exact kernel. A malformed,
 cancelled, timed-out, stale, or mis-correlated open makes one bounded direct cleanup attempt for that candidate on the
 same mapped kernel. Cleanup never looks up a replacement kernel by URI. Kernel replacement invalidates every session
@@ -248,9 +253,10 @@ object, version, and URI-uniqueness checks. Insertion writes code into the docum
 stable VS Code edit API is URI-addressed, an accepted edit that cannot be proven against the original object is
 indeterminate: Open Wrangler does not retry, roll it back, or claim success against a replacement document.
 
-R terminal sessions apply the equivalent rule to the exact terminal object and process ID. R and Quarto document
-commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved executor across every
-activation, discovery, picker, execution, and focus-restoration await.
+R terminal sessions apply the equivalent rule to the exact terminal object and process ID. Direct active-R opens
+capture that terminal before cleaning up a previous transport; changing terminals requires a new open action.
+R and Quarto document commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved
+executor across every activation, discovery, picker, execution, and focus-restoration await.
 
 ## Persistence and recovery
 

@@ -69,7 +69,13 @@ describe("Python Interactive Window cell dispatch", () => {
 
     expect(pythonMocks.discover.mock.calls.length).toBeGreaterThan(discoveryCallsBeforeCompletion);
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
   });
 
   it("stops when another matching cell appears before the pinned execution finishes", async () => {
@@ -200,7 +206,13 @@ describe("Python Interactive Window cell dispatch", () => {
       expect(pythonMocks.showNotebookDocument).not.toHaveBeenCalled();
       expect(restoredEditor.selection.anchor.line).toBe(1);
       expect(restoredEditor.selection.active.line).toBe(1);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
@@ -305,7 +317,13 @@ describe("Python Interactive Window cell dispatch", () => {
       ).toHaveLength(1);
       expect(pythonMocks.discover).toHaveBeenCalledOnce();
       expect(pythonMocks.openVariable).toHaveBeenCalledOnce();
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
@@ -365,7 +383,13 @@ describe("Python Interactive Window cell dispatch", () => {
         "notebook.selectKernel",
         "jupyter.runcurrentcell"
       ]);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -484,7 +508,13 @@ describe("Python Interactive Window cell dispatch", () => {
       await opening;
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -639,7 +669,13 @@ describe("Python Interactive Window cell dispatch", () => {
         "jupyter.runcurrentcell",
         "notebook.selectKernel"
       ]);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
@@ -664,7 +700,13 @@ describe("Python Interactive Window cell dispatch", () => {
 
     await command("openWrangler.runPythonCellAndOpenVariable")();
 
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
   });
 
   it("stops when Jupyter never publishes the exact Interactive Window editor", async () => {
@@ -964,7 +1006,13 @@ describe("Python Interactive Window cell dispatch", () => {
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runFileInteractive", source.uri);
     expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      interactive.document,
+      expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+      frame
+    );
   });
 
   it("selects a kernel once and retries the same ordinary Python file", async () => {
@@ -1008,7 +1056,13 @@ describe("Python Interactive Window cell dispatch", () => {
       ]);
       expect(pythonMocks.executeCommand).toHaveBeenNthCalledWith(1, "jupyter.runFileInteractive", source.uri);
       expect(pythonMocks.executeCommand).toHaveBeenNthCalledWith(3, "jupyter.runFileInteractive", source.uri);
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -1069,7 +1123,13 @@ describe("Python Interactive Window cell dispatch", () => {
 
       expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
       expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive", expect.anything());
-      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(
+        context,
+        coordinator,
+        interactive.document,
+        expect.objectContaining({ variables: expect.arrayContaining([frame]) }),
+        frame
+      );
     }
   );
 });

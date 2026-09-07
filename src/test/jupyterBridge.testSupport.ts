@@ -4,6 +4,12 @@ import type { OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
 
 type CommandHandler = (...args: unknown[]) => unknown;
+interface TestNotebookKernel {
+  readonly language: string;
+  readonly status?: string;
+  executeCode(code: string): AsyncIterable<{ items: Array<{ mime: string; data: Uint8Array }> }>;
+  onDidChangeStatus?(listener: (status: string) => unknown): { dispose(): void };
+}
 
 const notebookMocks = vi.hoisted(() => ({
   workspaceTrusted: true,
@@ -29,8 +35,10 @@ const notebookMocks = vi.hoisted(() => ({
     disposed: boolean;
   }>,
   executeCode: vi.fn((code: string) => notebookKernelOutputs(code)),
-  getKernel: vi.fn(async () => ({
+  getKernel: vi.fn(async (): Promise<TestNotebookKernel> => ({
     language: "python",
+    status: "idle",
+    onDidChangeStatus: () => ({ dispose: () => undefined }),
     executeCode: notebookMocks.executeCode
   })),
   activateJupyter: vi.fn(async () => ({ kernels: { getKernel: notebookMocks.getKernel } }))
@@ -212,6 +220,9 @@ vi.mock("../extension/webviewPanel", () => ({
 vi.mock("../extension/notebooks/kernelBridge", () => ({
   shouldRegisterNotebookFormatters: () => true,
   KernelBridge: class {
+    static fromDiscoveredVariable(context: ExtensionContext, document: NotebookDocument): unknown {
+      return new this(context, document);
+    }
     constructor(_context: ExtensionContext, document: NotebookDocument) {
       notebookMocks.kernelOrigins.push({ uri: document.uri.toString(), document });
     }
@@ -244,29 +255,38 @@ import {
   discoverVariablesForSelectedKernel,
   isRNotebookVariableDiscovery,
   openDiscoveredRNotebookVariable,
+  openDiscoveredPythonNotebookVariable,
   registerNotebookCommands
 } from "../extension/notebooks/jupyterBridge";
 import {
+  bindDiscoveredNotebookVariable,
+  disposeNotebookVariableDiscovery,
   buildNotebookVariableDiscoveryCode,
   buildPySparkNotebookPreflightCode,
   parsePySparkNotebookPreflightOutput
 } from "../extension/notebooks/notebookVariableDiscovery";
 
 export function jupyterBridgeApi(): {
+  readonly bindDiscoveredNotebookVariable: typeof bindDiscoveredNotebookVariable;
+  readonly disposeNotebookVariableDiscovery: typeof disposeNotebookVariableDiscovery;
   readonly buildNotebookVariableDiscoveryCode: typeof buildNotebookVariableDiscoveryCode;
   readonly buildPySparkNotebookPreflightCode: typeof buildPySparkNotebookPreflightCode;
   readonly discoverVariablesForSelectedKernel: typeof discoverVariablesForSelectedKernel;
   readonly isRNotebookVariableDiscovery: typeof isRNotebookVariableDiscovery;
   readonly openDiscoveredRNotebookVariable: typeof openDiscoveredRNotebookVariable;
+  readonly openDiscoveredPythonNotebookVariable: typeof openDiscoveredPythonNotebookVariable;
   readonly parsePySparkNotebookPreflightOutput: typeof parsePySparkNotebookPreflightOutput;
   readonly vscode: typeof vscode;
 } {
   return {
+    bindDiscoveredNotebookVariable,
+    disposeNotebookVariableDiscovery,
     buildNotebookVariableDiscoveryCode,
     buildPySparkNotebookPreflightCode,
     discoverVariablesForSelectedKernel,
     isRNotebookVariableDiscovery,
     openDiscoveredRNotebookVariable,
+    openDiscoveredPythonNotebookVariable,
     parsePySparkNotebookPreflightOutput,
     vscode
   };
@@ -303,6 +323,8 @@ export function resetNotebookCommandTest(): void {
   notebookMocks.getKernel.mockReset();
   notebookMocks.getKernel.mockResolvedValue({
     language: "python",
+    status: "idle",
+    onDidChangeStatus: () => ({ dispose: () => undefined }),
     executeCode: notebookMocks.executeCode
   });
   notebookMocks.activateJupyter.mockReset();

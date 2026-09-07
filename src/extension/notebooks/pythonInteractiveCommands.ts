@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { SessionCoordinator } from "../sessionCoordinator";
 import {
   discoverNotebookVariables,
+  disposeNotebookVariableDiscovery,
   NotebookVariableDiscoveryError,
   notebookVariablePresentation,
   type NotebookVariableDescriptor,
@@ -106,6 +107,7 @@ export interface PythonInteractiveCommandProvider extends NotebookLiveVariablePr
 type CachedVariable =
   | {
       readonly kind: "python";
+      readonly discovery: NotebookVariableDiscovery;
       readonly descriptor: NotebookVariableDescriptor;
       readonly item: NotebookLiveVariableItem;
     }
@@ -156,6 +158,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   private activeSource: vscode.TextDocument | undefined;
   private currentSnapshot: NotebookLiveVariableSnapshot | undefined;
   private readonly variablesByHandle = new Map<string, CachedVariable>();
+  private currentPythonDiscovery: NotebookVariableDiscovery | undefined;
   private refreshAgain = false;
   private queuedRefreshShowsEmptyMessage = false;
   private refreshCompletion: Promise<void> | undefined;
@@ -218,7 +221,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     this.disposed = true;
     this.activeTarget = undefined;
     this.activeSource = undefined;
-    this.variablesByHandle.clear();
+    this.clearCachedVariables();
     for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
     this.changeEmitter.dispose();
   }
@@ -520,7 +523,19 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       );
       return;
     }
-    await openDiscoveredPythonNotebookVariable(this.context, this.coordinator, notebook, cached.descriptor);
+    await openDiscoveredPythonNotebookVariable(
+      this.context,
+      this.coordinator,
+      notebook,
+      cached.discovery,
+      cached.descriptor
+    );
+  }
+
+  private clearCachedVariables(): void {
+    this.variablesByHandle.clear();
+    if (this.currentPythonDiscovery) disposeNotebookVariableDiscovery(this.currentPythonDiscovery);
+    this.currentPythonDiscovery = undefined;
   }
 
   private synchronizeInitialFocus(): void {
@@ -592,7 +607,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   private setActiveTarget(notebook: vscode.NotebookDocument | undefined): void {
     if (this.activeTarget === notebook) return;
     this.activeTarget = notebook;
-    this.variablesByHandle.clear();
+    this.clearCachedVariables();
     if (!notebook) {
       this.currentSnapshot = undefined;
       this.changeEmitter.fire();
@@ -646,16 +661,20 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         }
         try {
           const discovery = await discoverVariablesForSelectedKernel(notebook);
-          if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
-          if (!currentRefreshShowsEmptyMessage && !shouldInspectNotebookAutomatically()) {
-            this.publishAutomaticInspectionPaused(notebook);
-            continue;
-          }
-          this.publishDiscovery(notebook, discovery);
-          if (currentRefreshShowsEmptyMessage && discovery.variables.length === 0) {
-            void vscode.window.showInformationMessage(
-              "No live Pandas, Polars, DuckDB, PySpark, or R dataframe was found in this kernel."
-            );
+          try {
+            if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
+            if (!currentRefreshShowsEmptyMessage && !shouldInspectNotebookAutomatically()) {
+              this.publishAutomaticInspectionPaused(notebook);
+              continue;
+            }
+            this.publishDiscovery(notebook, discovery);
+            if (currentRefreshShowsEmptyMessage && discovery.variables.length === 0) {
+              void vscode.window.showInformationMessage(
+                "No live Pandas, Polars, DuckDB, PySpark, or R dataframe was found in this kernel."
+              );
+            }
+          } finally {
+            if (this.currentPythonDiscovery !== discovery) disposeNotebookVariableDiscovery(discovery);
           }
         } catch (error) {
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
@@ -663,7 +682,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
             this.publishAutomaticInspectionPaused(notebook);
             continue;
           }
-          this.variablesByHandle.clear();
+          this.clearCachedVariables();
           this.currentSnapshot = {
             state: "error",
             notebookLabel: notebookLabel(notebook),
@@ -684,7 +703,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   }
 
   private publishAutomaticInspectionPaused(notebook: vscode.NotebookDocument): void {
-    this.variablesByHandle.clear();
+    this.clearCachedVariables();
     this.currentSnapshot = {
       state: "empty",
       notebookLabel: notebookLabel(notebook),
@@ -698,8 +717,9 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     notebook: vscode.NotebookDocument,
     discovery: NotebookVariableDiscovery | RNotebookVariableDiscovery
   ): void {
-    this.variablesByHandle.clear();
+    this.clearCachedVariables();
     const rDiscovery = isRNotebookVariableDiscovery(discovery) ? discovery : undefined;
+    if (!rDiscovery) this.currentPythonDiscovery = discovery as NotebookVariableDiscovery;
     const variables = discovery.variables.map((descriptor): NotebookLiveVariableItem => {
       const handle = randomUUID();
       let item: NotebookLiveVariableItem;
@@ -720,7 +740,12 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
           description: `${presentation.family} · ${presentation.kind}`,
           detail: `Live in ${notebookLabel(notebook)}`
         };
-        this.variablesByHandle.set(handle, { kind: "python", descriptor, item });
+        this.variablesByHandle.set(handle, {
+          kind: "python",
+          discovery: discovery as NotebookVariableDiscovery,
+          descriptor,
+          item
+        });
       }
       return item;
     });
@@ -760,54 +785,57 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       );
       return false;
     }
-    if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
-      void vscode.window.showWarningMessage(
-        "The Python file or Interactive Window changed before Open Wrangler could open its dataframe. Try again."
-      );
-      return false;
-    }
-    if (this.activeTarget === notebook) this.publishDiscovery(notebook, discovery);
-    if (discovery.variables.length === 0) {
-      void vscode.window.showInformationMessage(
-        "No live Pandas, Polars, DuckDB, or PySpark dataframe was found. Run the cell that creates it, then try again."
-      );
-      return false;
-    }
+    try {
+      if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+        void vscode.window.showWarningMessage(
+          "The Python file or Interactive Window changed before Open Wrangler could open its dataframe. Try again."
+        );
+        return false;
+      }
+      if (this.activeTarget === notebook) this.publishDiscovery(notebook, discovery);
+      if (discovery.variables.length === 0) {
+        void vscode.window.showInformationMessage(
+          "No live Pandas, Polars, DuckDB, or PySpark dataframe was found. Run the cell that creates it, then try again."
+        );
+        return false;
+      }
 
-    let selected: NotebookVariableDescriptor | undefined;
-    if (discovery.variables.length === 1) {
-      selected = discovery.variables[0];
-    } else {
-      const items = discovery.variables.map(variablePickItem);
-      const choice = await vscode.window.showQuickPick(items, {
-        title: "Open Wrangler: Open Live Dataframe",
-        placeHolder: discovery.truncated
-          ? "Select a dataframe (the discovery list was truncated)"
-          : "Select a dataframe from this Interactive Window",
-        matchOnDescription: true,
-        matchOnDetail: true,
-        ignoreFocusOut: true
-      });
-      if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
-        void vscode.window.showWarningMessage(
-          "The Python file or Interactive Window changed while the picker was open. Try again."
-        );
-        return false;
+      let selected: NotebookVariableDescriptor | undefined;
+      if (discovery.variables.length === 1) {
+        selected = discovery.variables[0];
+      } else {
+        const items = discovery.variables.map(variablePickItem);
+        const choice = await vscode.window.showQuickPick(items, {
+          title: "Open Wrangler: Open Live Dataframe",
+          placeHolder: discovery.truncated
+            ? "Select a dataframe (the discovery list was truncated)"
+            : "Select a dataframe from this Interactive Window",
+          matchOnDescription: true,
+          matchOnDetail: true,
+          ignoreFocusOut: true
+        });
+        if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+          void vscode.window.showWarningMessage(
+            "The Python file or Interactive Window changed while the picker was open. Try again."
+          );
+          return false;
+        }
+        if (!choice || !items.includes(choice)) return false;
+        await restoreEditorGroupAfterQuickPick();
+        if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+          void vscode.window.showWarningMessage(
+            "The Python file or Interactive Window changed while focus returned from the picker. Try again."
+          );
+          return false;
+        }
+        selected = choice.descriptor;
       }
-      if (!choice || !items.includes(choice)) return false;
-      await restoreEditorGroupAfterQuickPick();
-      if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
-        void vscode.window.showWarningMessage(
-          "The Python file or Interactive Window changed while focus returned from the picker. Try again."
-        );
-        return false;
-      }
-      selected = choice.descriptor;
+      if (!selected) return false;
+      this.setDiagnosticStage("opening-variable");
+      return await openDiscoveredPythonNotebookVariable(this.context, this.coordinator, notebook, discovery, selected);
+    } finally {
+      if (this.currentPythonDiscovery !== discovery) disposeNotebookVariableDiscovery(discovery);
     }
-    if (!selected) return false;
-    this.setDiagnosticStage("opening-variable");
-    await openDiscoveredPythonNotebookVariable(this.context, this.coordinator, notebook, selected);
-    return true;
   }
 
   private beginDiagnostics(initialStage: PythonInteractiveDiagnosticStage = "dispatching-cell"): void {
