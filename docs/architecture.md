@@ -228,6 +228,11 @@ process.
 
 ### Native R
 
+Numeric filter operands and typed temporal payloads retain their finite native R value without a text round trip.
+The same parser preserves numeric replacements at the frame boundary; public Fill requests still require replacement
+text. Explicit Infinity tokens and text retain their separate rules, and native floating columns refuse integer-cell
+selection tokens. Generated Filter Rows uses the validated keys from this owner.
+
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and current 32-operation catalog,
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and

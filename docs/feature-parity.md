@@ -133,6 +133,9 @@ columns. Native eager/lazy and executable generated-code regressions cover colli
 
 ## Native R preview
 
+Value selections and numeric predicates retain adjacent R doubles and finite extrema in live and generated filtering.
+Typed temporal selections use the same exact numeric payloads. Invalid previews preserve the confirmed result.
+
 Native R live and generated medians use the same midpoint calculation for Group By and Fill Missing Values,
 including subnormal and extreme doubles. This correction does not expand the supported frame or transport scope.
 

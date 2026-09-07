@@ -42,6 +42,9 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Read-only filters and sorts use the captured stable column ID and name. They remain stable with duplicate names,
   keep source row IDs, and never become cleaning steps. Filters support compound AND/OR logic, typed predicates, and
   selected values; sorts choose direction and missing-value placement independently for each key.
+- Finite numeric filter operands and typed temporal payloads retain their native value while binding. Text parsing
+  does not format an existing number first. Native floating selections still refuse integer-cell tokens; generated
+  filtering uses the same validated keys.
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
   TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
   a complete oversized page or JSON string.

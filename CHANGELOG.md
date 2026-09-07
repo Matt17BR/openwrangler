@@ -13,6 +13,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R value selections and numeric predicates preserve floating precision instead of selecting a neighboring
+  value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
+
 - Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
 - Floor and Ceiling preserve exact integer and Decimal values in Python engines, including generated code.
 - Pandas Convert Type rejects out-of-range signed-integer conversions instead of wrapping positive values or

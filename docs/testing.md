@@ -124,6 +124,11 @@ masks, signed zero, and source identity. Arrow Decimal cases validate native rea
 Decimal cases change the caller's context before execution. Native R's catalog owns its corresponding numeric cases
 and executes them under altered display options.
 
+Native R frame and catalog owners compare picker raw values with distinct source values before filtering them.
+Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual JSON preview and generated execution.
+Rejected numeric previews must preserve the complete confirmed response. Direct numeric Fill and public text-only
+replacement controls retain their separate boundaries.
+
 Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
 exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
