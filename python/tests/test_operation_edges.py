@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from math import isnan
 from typing import Any, cast
 
@@ -8,8 +8,10 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import typed_selection_value
+from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import OperationError, validate_step
 
 
@@ -981,6 +983,76 @@ def test_value_transforms_preserve_documented_coercive_inputs(engine) -> None:
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan(operations), namespace, namespace)
     assert_records_equal(transformed, namespace["clean_data"](frame))
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+@pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
+@pytest.mark.parametrize(
+    ("values", "dtype", "format", "expected"),
+    [
+        pytest.param(
+            [
+                datetime(2024, 1, 2, 8, 4, 5, tzinfo=timezone.utc),
+                datetime(2024, 7, 2, 7, 4, 5, tzinfo=timezone.utc),
+                None,
+            ],
+            pl.Datetime("us", "America/New_York"),
+            "%Y-%m-%d %H:%M:%S %Z",
+            ["2024-01-02 03:04:05 EST", "2024-07-02 03:04:05 EDT", None],
+            id="timezone",
+        ),
+        pytest.param(
+            [1700000000123456789, None],
+            pl.Datetime("ns"),
+            "%Y-%m-%d %H:%M:%S%.9f",
+            ["2023-11-14 22:13:20.123456789", None],
+            id="nanoseconds",
+        ),
+        pytest.param(
+            [datetime(2024, 1, 2, 3, 4, 5, 123456), None],
+            pl.Datetime("us"),
+            "%Y-%m-%d %H:%M:%S%.6f",
+            ["2024-01-02 03:04:05.123456", None],
+            id="microseconds",
+        ),
+        pytest.param([date(2024, 1, 2), None], pl.Date, "%Y/%m/%d", ["2024/01/02", None], id="date"),
+        pytest.param([None, None], pl.Datetime("ns", "UTC"), "%Y", [None, None], id="all-null"),
+        pytest.param([], pl.Date, "%Y", [], id="empty-date"),
+        pytest.param([], pl.Datetime("ns", "UTC"), "%Y", [], id="empty-datetime"),
+        pytest.param(["2024-01-02", "invalid", None], pl.String, "%Y/%m/%d", ["2024/01/02", None, None], id="text"),
+    ],
+)
+def test_polars_datetime_format_preserves_native_values_in_generated_code(
+    lazy: bool, replace: bool, values: list[Any], dtype: Any, format: str, expected: list[str | None]
+) -> None:
+    engine = PolarsEngine()
+    original = pl.DataFrame(
+        {"when's value": pl.Series(values, dtype=dtype), "kept": list(reversed(range(len(values))))}
+    )
+    source = original.lazy() if lazy else original.clone()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    target = "when's value" if replace else "formatted"
+    operation = bind_step(
+        step("formatDatetime", column=lineage[0], format=format, **({} if replace else {"newColumn": target})),
+        schema,
+        lineage,
+    )
+
+    for result in (engine.apply_transform(source, operation), execute_generated(engine, source, operation)):
+        assert isinstance(result, pl.LazyFrame) is lazy
+        output = result.collect() if lazy else result
+        assert output[target].to_list() == expected
+        assert output["kept"].equals(original["kept"])
+        assert output.columns == [*original.columns, *([] if replace else [target])]
+        if not replace:
+            assert output["when's value"].equals(original["when's value"])
+        output_lineage = derive_lineage(lineage, engine.schema(result), operation)
+        assert output_lineage[:2] == lineage
+        if not replace:
+            assert output_lineage[2]["id"] not in {column["id"] for column in lineage}
+    unchanged = source.collect() if isinstance(source, pl.LazyFrame) else source
+    assert unchanged.equals(original)
 
 
 @pytest.mark.parametrize(

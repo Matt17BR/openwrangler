@@ -77,6 +77,10 @@ engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain 
 `r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before
 truncation, with replacement-race coverage in `python/tests/test_configurable_export.py`.
 
+Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
+`python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
+identity.
+
 Filters / Sorts keeps column selectors usable when a column has an empty name; name-addressed actions on that column
 remain unavailable. Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
 checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
