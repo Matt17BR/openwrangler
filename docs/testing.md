@@ -65,25 +65,20 @@ insertion. The existing App component tests retain DOM-before-acknowledgement an
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution.
 
-Export replacement races belong in `python/tests/test_configurable_export.py`, where native writers must leave
-replacement files unchanged.
-
 `python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
-double and `integer64` cases in `r/tests/complete_catalog_contract.R`.
+double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in
+`python/tests/test_configurable_export.py`, where native writers must leave replacement files unchanged.
 
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
-before a session opens. R command tests cover terminal replacement during previous-transport cleanup.
-
-FilterPanel component tests own checkbox membership, saved scalar selections, and unnamed-column navigation.
+before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
+component tests own checkbox membership, saved scalar selections, and unnamed-column navigation; the production
+browser suite owns rendered tab hover contrast. Release-script tests distinguish interrupted fetches and response
+bodies from fatal package validation errors.
 
 The shared `fixtures/view-literal-contract.json` owns portable filter spellings. Persistence tests retain old bound
 Filter Rows steps while rejecting obsolete viewing payloads; Python filter and native R catalog tests execute the
 historical infinity selections through live and generated code.
-
-The production browser suite owns rendered summary-tab hover contrast.
-
-Release-script tests distinguish interrupted fetches and response bodies from fatal package validation errors.
 
 ## Pull-request CI
 

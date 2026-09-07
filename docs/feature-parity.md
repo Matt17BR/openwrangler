@@ -68,16 +68,14 @@ rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
 
-Pandas and Polars CSV/Parquet writers use identity-checked handles before truncation, with replacement-race
-coverage in `python/tests/test_configurable_export.py`.
-
-Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
-engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
-`r/tests/complete_catalog_contract.R`.
-
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.
+
+Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
+engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
+`r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before
+truncation, with replacement-race coverage in `python/tests/test_configurable_export.py`.
 
 Filters / Sorts keeps column selectors usable when a column has an empty name; name-addressed actions on that column
 remain unavailable. Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
