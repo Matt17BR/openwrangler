@@ -155,11 +155,9 @@ def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple
     invalid_eager = invalid.collect(engine="streaming") if isinstance(invalid, pl.LazyFrame) else invalid
     if invalid_eager.height:
         raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
-    duplicates = (
-        normalized.group_by([*identifiers, names_from], maintain_order=True).len().filter(pl.col("len") > 1).limit(1)
-    )
+    duplicates = normalized.select(pl.struct([*identifiers, names_from]).is_duplicated().any())
     duplicate_eager = duplicates.collect(engine="streaming") if isinstance(duplicates, pl.LazyFrame) else duplicates
-    if duplicate_eager.height:
+    if duplicate_eager.item():
         raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
     return identifiers, output_values, output_names, normalized
 
@@ -1370,7 +1368,7 @@ class PolarsEngine(DataFrameEngine):
             ]
             if identifiers:
                 return normalized.group_by(identifiers, maintain_order=True).agg(expressions)
-            group_name = "__open_wrangler_pivot_wider_group"
+            group_name = f"{INTERNAL_ROW_ID_PREFIX}pivot_wider_group"
             return (
                 normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True).agg(expressions).drop(group_name)
             )
@@ -1613,15 +1611,12 @@ class PolarsEngine(DataFrameEngine):
                         "        raise ValueError('Pivot wider namesFrom values must be present and match one "
                         "declared typed key.')"
                     ),
-                    (
-                        "    duplicates = normalized.group_by([*identifiers, names_from], maintain_order=True).len()"
-                        ".filter(pl.col('len') > 1).limit(1)"
-                    ),
+                    ("    duplicates = normalized.select(pl.struct([*identifiers, names_from]).is_duplicated().any())"),
                     (
                         "    duplicates = duplicates.collect(engine='streaming') "
                         "if isinstance(duplicates, pl.LazyFrame) else duplicates"
                     ),
-                    "    if duplicates.height:",
+                    "    if duplicates.item():",
                     (
                         "        raise ValueError('Pivot wider found duplicate identifier-and-key rows; "
                         "aggregation is not supported.')"
@@ -1635,7 +1630,7 @@ class PolarsEngine(DataFrameEngine):
                     "    ]",
                     "    if identifiers:",
                     "        return normalized.group_by(identifiers, maintain_order=True).agg(expressions)",
-                    "    group_name = '__open_wrangler_pivot_wider_group'",
+                    f"    group_name = {f'{INTERNAL_ROW_ID_PREFIX}pivot_wider_group'!r}",
                     (
                         "    return normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True)"
                         ".agg(expressions).drop(group_name)"
