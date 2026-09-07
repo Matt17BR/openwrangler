@@ -3217,8 +3217,8 @@ def _polars_fill_missing_grouped_statistic(
         missing_name = unique("__ow_grouped_missing")
         present = target_value.drop_nulls()
         summary = normalized.group_by(normalized_keys, maintain_order=True).agg(
-            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),
-            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),
+            present.sort().slice((present.len() - 1) // 2, 1).first().alias(lower_name),
+            present.sort().slice(present.len() // 2, 1).first().alias(upper_name),
             target_value.is_null().any().alias(missing_name),
         )
 
@@ -3235,10 +3235,12 @@ def _polars_fill_missing_grouped_statistic(
 
         fill = (
             pl.struct(lower_name, upper_name, missing_name)
-            .map_elements(
-                calculate,
+            .map_batches(
+                lambda items: pl.Series(
+                    [calculate(item) for item in items.struct.unnest().iter_rows(named=True)], dtype=target_dtype
+                ),
                 return_dtype=target_dtype,
-                skip_nulls=False,
+                is_elementwise=True,
             )
             .alias(fill_name)
         )
@@ -3808,8 +3810,8 @@ def _generated_polars_fill_helpers() -> list[str]:
         "        missing_name = unique('__ow_grouped_missing')",
         "        present = target_value.drop_nulls()",
         "        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(",
-        ("            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),"),
-        "            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),",
+        ("            present.sort().slice((present.len() - 1) // 2, 1).first().alias(lower_name),"),
+        "            present.sort().slice(present.len() // 2, 1).first().alias(upper_name),",
         "            target_value.is_null().any().alias(missing_name),",
         "        )",
         "        def calculate(item):",
@@ -3835,8 +3837,11 @@ def _generated_polars_fill_helpers() -> list[str]:
         "                    value = (left + right) / Decimal(2)",
         "                return _ow_decimal_at_scale(value, target_dtype.precision, target_dtype.scale)",
         "            raise ValueError('Grouped median requires an integer or decimal Polars column.')",
-        "        fill = pl.struct(lower_name, upper_name, missing_name).map_elements(",
-        "            calculate, return_dtype=target_dtype, skip_nulls=False",
+        "        fill = pl.struct(lower_name, upper_name, missing_name).map_batches(",
+        "            lambda items: pl.Series(",
+        "                [calculate(item) for item in items.struct.unnest().iter_rows(named=True)], dtype=target_dtype",
+        "            ),",
+        "            return_dtype=target_dtype, is_elementwise=True,",
         "        ).alias(fill_name)",
         "        summary = summary.select(*normalized_keys, fill)",
         "    mapping = summary.lazy() if isinstance(frame, pl.LazyFrame) else summary",
