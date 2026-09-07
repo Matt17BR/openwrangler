@@ -163,12 +163,18 @@ range produces the corresponding unchanged value or signed zero without construc
 scaling must not overflow a representable result or wrap an integer. Live and generated code preserve missing and
 non-finite values; a floating result that exceeds its output type becomes signed infinity.
 
+Floor and Ceiling preserve exact integer inputs and round Decimal values before any floating conversion. Decimal
+output storage may reduce fractional scale so an integral carry remains representable. Ordinary floating and text
+coercion retain their existing behavior, including separate Arrow null and valid-NaN states.
+
 ### Pandas
 
 Pandas executes viewing, all 32 cleaning operations, profiling, generated code, and supported exports in Pandas.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
+present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
 
 ### Polars
 
