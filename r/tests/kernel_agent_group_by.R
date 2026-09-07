@@ -622,3 +622,87 @@ assert_identical(
 )
 group_by_overflow_closed <- dispatch("closeSession", list(sessionId = group_by_overflow_session_id))
 assert_identical(group_by_overflow_closed$kind, "closed", "the failed R Group By session did not close")
+
+local({
+  tiny <- 2^-1074
+  midpoint_cases <- list(
+    odd_subnormal = list(values = tiny, expected = tiny),
+    equal_subnormal = list(values = c(tiny, tiny), expected = tiny),
+    negative_subnormal = list(values = c(-tiny, -tiny), expected = -tiny),
+    adjacent = list(values = c(1, 1 + 3 * .Machine$double.eps), expected = 1 + 2 * .Machine$double.eps),
+    equal_large = list(values = c(1e308, 1e308), expected = 1e308),
+    distinct_large = list(values = c(2^1022, 2^1023), expected = 3 * 2^1021),
+    opposite_large = list(values = c(-.Machine$double.xmax, .Machine$double.xmax), expected = 0),
+    positive_infinity = list(values = c(Inf, Inf), expected = Inf),
+    negative_infinity = list(values = c(-Inf, -Inf), expected = -Inf),
+    opposing_infinities = list(values = c(-Inf, Inf), expected = NaN, fill_error = TRUE),
+    missing = list(values = c(NA_real_, NaN), expected = NA_real_, fill_error = TRUE),
+    mixed_missing = list(values = c(tiny, NA_real_, tiny, NaN), expected = tiny),
+    integer_extremes = list(values = c(-2147483647L, 2147483647L), expected = 0),
+    integer_odd = list(values = 2147483647L, expected = 2147483647)
+  )
+  constructors <- list(
+    data.frame = identity,
+    tibble = function(frame) tibble::as_tibble(frame),
+    data.table = function(frame) data.table::as.data.table(frame)
+  )
+  midpoint_source <- new.env(parent = baseenv())
+  midpoint_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, midpoint_source)
+  on.exit(midpoint_agent$dispose(), add = TRUE)
+  midpoint_session_id <- "b4b4b4b4-b4b4-44b4-84b4-b4b4b4b4b4b4"
+  for (flavor in names(constructors)) {
+    for (case_name in names(midpoint_cases)) {
+      case <- midpoint_cases[[case_name]]
+      missing <- if (is.integer(case$values)) NA_integer_ else NA_real_
+      values <- c(case$values, missing)
+      before <- constructors[[flavor]](data.frame(group = rep("a", length(values)), value = values))
+      for (operation in c("groupBy", "fillMissingValues")) {
+        label <- sprintf("%s %s %s median", flavor, case_name, operation)
+        midpoint_source$midpoint_frame <- if (inherits(before, "data.table")) data.table::copy(before) else before
+        opened <- dispatch_with(midpoint_agent, "openSession", list(
+          sessionId = midpoint_session_id, variableName = "midpoint_frame", page = page_window()
+        ))
+        assert_identical(opened$kind, "page", paste(label, "did not open"))
+        params <- if (identical(operation, "groupBy")) {
+          list(
+            keys = I(list(list(id = "r:c:0", name = "group"))),
+            aggregations = I(list(list(
+              column = list(id = "r:c:1", name = "value"), operation = "median", alias = "median"
+            )))
+          )
+        } else {
+          list(column = list(id = "r:c:1", name = "value"), replacement = list(kind = "median"))
+        }
+        preview <- dispatch_with(midpoint_agent, "previewStep", list(
+          sessionId = midpoint_session_id, revision = 0L,
+          step = list(id = "midpoint", kind = operation, params = params), page = page_window()
+        ))
+        if (identical(operation, "fillMissingValues") && isTRUE(case$fill_error)) {
+          assert_identical(preview$kind, "error", paste(label, "accepted an unavailable median"))
+        } else {
+          assert_identical(preview$kind, "stepPreview", paste(label, "did not preview"))
+          live <- if (identical(operation, "groupBy")) {
+            openwrangler_r_frame_contract$group_by_at(before, 1L, "group", 2L, "value", "median", "median")
+          } else {
+            openwrangler_r_frame_contract$fill_missing_column_at(before, 2L, "value", list(kind = "median"))
+          }
+          expected <- if (identical(operation, "groupBy")) case$expected else {
+            filled <- values
+            filled[is.na(filled)] <- if (is.integer(values)) as.integer(case$expected) else case$expected
+            filled
+          }
+          assert_identical(live[[2L]], expected, paste(label, "changed the live result"))
+          standalone <- new.env(parent = baseenv())
+          standalone$midpoint_frame <- if (inherits(before, "data.table")) data.table::copy(before) else before
+          assert_no_warning(eval(parse(text = preview$code), envir = standalone), paste("generated", label))
+          generated <- standalone$open_wrangler_result
+          assert_identical(generated[[2L]], expected, paste(label, "changed the generated result"))
+          assert_identical(class(generated), class(before), paste(label, "changed the dataframe flavor"))
+          assert_identical(standalone$midpoint_frame, before, paste(label, "changed the generated source"))
+        }
+        assert_identical(midpoint_source$midpoint_frame, before, paste(label, "changed the live source"))
+        invisible(dispatch_with(midpoint_agent, "closeSession", list(sessionId = midpoint_session_id)))
+      }
+    }
+  }
+})

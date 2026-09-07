@@ -6314,7 +6314,7 @@ openwrangler_r_frame_contract <- local({
         count <- length(ordered)
         lower <- ordered[[(count + 1L) %/% 2L]]
         upper <- ordered[[(count + 2L) %/% 2L]]
-        midpoint <- lower / 2 + upper / 2
+        midpoint <- safe_float_midpoint(as.double(lower), as.double(upper))
         if (is.nan(midpoint)) {
           abort("invalid-view-value", "the selected column has no usable numeric median")
         }
@@ -9446,6 +9446,7 @@ openwrangler_r_frame_contract <- local({
     drop_columns_at = drop_columns_at,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
+    safe_float_midpoint = safe_float_midpoint,
     capture_group_result = capture_group_result,
     drop_missing_rows_at = drop_missing_rows_at,
     drop_duplicate_rows_at = drop_duplicate_rows_at,
