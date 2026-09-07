@@ -245,8 +245,12 @@ export type FormulaParams = {
   operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power";
   newColumn: string;
   rightColumn?: ColumnReference;
-  value?: number;
+  value?: FormulaLiteral;
 } & FormulaParams1;
+/**
+ * A finite legacy number or a canonical exact integer string with at most 309 digits whose numeric conversion remains finite. Native engine capacity limits still apply.
+ */
+export type FormulaLiteral = number | string;
 export type FormulaParams1 = {
   [k: string]: unknown;
 };

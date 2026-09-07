@@ -26,6 +26,7 @@ import {
   openWranglerResponseShapes,
   typedCellKinds
 } from "./protocol.generated";
+import { isFormulaLiteral } from "./formulaLiteral";
 import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { isExactNumericSummaryCell, isExactNumericZeroCell } from "./numericSummary";
 import { operationCatalog, type OperationCatalogItem } from "./operationCatalog.generated";
@@ -1006,7 +1007,7 @@ export function isTransformStep(value: unknown): value is TransformStep {
       return (
         hasColumn !== hasValue &&
         (!hasColumn || isColumnReference(params.rightColumn)) &&
-        (!hasValue || isFiniteNumber(params.value))
+        (!hasValue || isFormulaLiteral(params.value))
       );
     }
     case "textLength":

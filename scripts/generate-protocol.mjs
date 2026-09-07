@@ -362,19 +362,30 @@ ${definitions}
 function canonicalProtocolLimits(value) {
   const limits = value?.["x-openwrangler-limits"];
   const customCodeMaximum = value?.definitions?.CustomCodeParams?.properties?.code?.["x-openwrangler-utf8MaxBytes"];
-  const names = ["pythonCustomCodeUtf8Bytes", "pythonRetainedPlanUtf8Bytes", "pythonGeneratedCodeUtf8Bytes"];
+  const formulaInteger = value?.definitions?.FormulaLiteral?.anyOf?.find((variant) => variant.type === "string");
+  const names = [
+    "pythonCustomCodeUtf8Bytes",
+    "pythonRetainedPlanUtf8Bytes",
+    "pythonGeneratedCodeUtf8Bytes",
+    "formulaIntegerDigits",
+    "formulaInputCharacters"
+  ];
   if (
     limits === null ||
     typeof limits !== "object" ||
     names.some((name) => !Number.isSafeInteger(limits[name]) || limits[name] <= 0) ||
-    customCodeMaximum !== limits.pythonCustomCodeUtf8Bytes
+    customCodeMaximum !== limits.pythonCustomCodeUtf8Bytes ||
+    formulaInteger?.maxLength !== limits.formulaIntegerDigits + 1 ||
+    formulaInteger?.pattern !== `^(?:0|-?[1-9][0-9]{0,${limits.formulaIntegerDigits - 1}})(?![\\s\\S])`
   ) {
-    throw new Error("Canonical protocol byte limits are missing, invalid, or inconsistent.");
+    throw new Error("Canonical protocol limits are missing, invalid, or inconsistent.");
   }
   return Object.freeze({
     customCode: limits.pythonCustomCodeUtf8Bytes,
     retainedPlan: limits.pythonRetainedPlanUtf8Bytes,
-    generatedCode: limits.pythonGeneratedCodeUtf8Bytes
+    generatedCode: limits.pythonGeneratedCodeUtf8Bytes,
+    formulaIntegerDigits: limits.formulaIntegerDigits,
+    formulaInputCharacters: limits.formulaInputCharacters
   });
 }
 
@@ -383,6 +394,8 @@ function renderTypeScriptProtocolLimits(limits) {
 export const MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode};
 export const MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan};
 export const MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode};
+export const MAX_FORMULA_INTEGER_DIGITS = ${limits.formulaIntegerDigits};
+export const MAX_FORMULA_INPUT_CHARACTERS = ${limits.formulaInputCharacters};
 `;
 }
 
@@ -391,6 +404,8 @@ function renderPythonProtocolLimits(limits) {
 MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode}
 MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan}
 MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode}
+MAX_FORMULA_INTEGER_DIGITS = ${limits.formulaIntegerDigits}
+MAX_FORMULA_INPUT_CHARACTERS = ${limits.formulaInputCharacters}
 `;
 }
 

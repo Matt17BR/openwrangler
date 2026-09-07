@@ -1013,6 +1013,41 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["9007199254740993", "9007199254740993", "9007199254740993"],
+    [2 ** 60, "1152921504606846976", "1152921504606846976"],
+    [2 ** 53, "9007199254740992", "9007199254740992"],
+    [1e30, "1e+30", 1e30],
+    [2.5, "2.5", 2.5]
+  ])("restores and submits the actual saved Formula literal %s", (value, displayed, expected) => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "saved-formula",
+      kind: "formula",
+      params: { leftColumn: { id: "c:1", name: "sales" }, operator: "add", newColumn: "calculated", value }
+    };
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="formula"
+        initialStep={initialStep}
+        editInputSchema={metadata.schema}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect((screen.getByLabelText("Numeric value") as HTMLInputElement).value).toBe(displayed);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      {
+        ...initialStep,
+        params: { ...initialStep.params, value: expected }
+      },
+      "saved-formula"
+    );
+  });
+
   it("rejects an empty or non-finite Formula scalar before preview", () => {
     const onPreview = vi.fn();
     render(

@@ -80,6 +80,51 @@ describe("R kernel mutation schema", () => {
     ).toThrow("cannot duplicate a key name");
   });
 
+  it("predicts only exactly representable R Formula integer text without changing legacy numbers", () => {
+    for (const [value, rawType] of [
+      ["0", "integer"],
+      ["2147483647", "integer"],
+      ["-2147483647", "integer"],
+      ["-2147483648", "double"],
+      ["2147483648", "double"],
+      ["1152921504606846976", "double"],
+      ["1267650600228229401496703205376", "double"],
+      [2, "integer"],
+      [0.5, "double"],
+      [2 ** 60, "double"]
+    ] as const) {
+      for (const leftType of ["integer", "double", "integer64"] as const) {
+        const input = [{ ...schema[1]!, rawType: leftType }];
+        const output = schemaAfterFormula(input, {
+          id: "literal",
+          kind: "formula",
+          params: { leftColumn: reference(1), operator: "add", value, newColumn: "result" }
+        });
+        const expected = leftType === "double" || rawType === "double" ? "double" : leftType;
+        expect(output.at(-1)?.rawType).toBe(expected);
+        expect(input).toEqual([{ ...schema[1]!, rawType: leftType }]);
+      }
+    }
+    for (const value of ["9007199254740993", "1152921504606847000", "1267650600228229401496703205377"]) {
+      expect(() =>
+        schemaAfterFormula(schema, {
+          id: "literal",
+          kind: "formula",
+          params: { leftColumn: reference(1), operator: "add", value, newColumn: "result" }
+        })
+      ).toThrow("represented exactly");
+    }
+    for (const value of ["-0", "+2", "02", "2\n", "2.5", "1e2", "9".repeat(309)]) {
+      expect(() =>
+        schemaAfterFormula(schema, {
+          id: "literal",
+          kind: "formula",
+          params: { leftColumn: reference(1), operator: "add", value, newColumn: "result" }
+        })
+      ).toThrow("Formula requires");
+    }
+  });
+
   it("accepts exact retained by-example identity and rejects substitution", () => {
     const requested: RKernelTransformStep = {
       id: "derive",

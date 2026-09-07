@@ -1,3 +1,4 @@
+import { formatFormulaLiteral, isFormulaLiteral } from "../../shared/formulaLiteral";
 import { useRef, useState } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
@@ -314,7 +315,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
             label="Numeric value"
             type="number"
             step="any"
-            defaultValue={param("value", "0")}
+            defaultValue={isFormulaLiteral(params.value) ? formatFormulaLiteral(params.value) : param("value", "0")}
             required
           />
         ) : (

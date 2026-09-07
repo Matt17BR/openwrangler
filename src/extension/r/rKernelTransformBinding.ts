@@ -600,7 +600,7 @@ export function rTransformStep(
         operator: step.params.operator,
         newColumn: step.params.newColumn,
         ...(step.params.rightColumn === undefined
-          ? { value: step.params.value as number }
+          ? { value: step.params.value }
           : { rightColumn: Object.freeze({ ...step.params.rightColumn }) })
       })
     });

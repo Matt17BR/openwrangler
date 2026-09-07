@@ -15,6 +15,7 @@ import type {
   RoundNumberTransformStep
 } from "../../shared/protocol";
 import { isRetainedTransformStep } from "../../shared/protocolValidation";
+import { isFormulaLiteral } from "../../shared/formulaLiteral";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 import {
   MAX_PIVOT_WIDER_COLUMNS,
@@ -594,8 +595,16 @@ export function schemaAfterFormula(
     throw new TypeError("Formula requires exactly one right column or numeric value.");
   }
   const right = step.params.rightColumn === undefined ? undefined : resolveOperand(step.params.rightColumn, "right");
-  if (step.params.value !== undefined && !Number.isFinite(step.params.value)) {
-    throw new TypeError("Formula requires a finite numeric value.");
+  if (step.params.value !== undefined && !isFormulaLiteral(step.params.value)) {
+    throw new TypeError("Formula requires a finite number or canonical integer text.");
+  }
+  let scalarValue = step.params.value;
+  if (typeof scalarValue === "string") {
+    const parsed = Number(scalarValue);
+    if (BigInt(parsed).toString() !== scalarValue) {
+      throw new TypeError("The Formula integer literal cannot be represented exactly as an R numeric scalar.");
+    }
+    scalarValue = parsed;
   }
   if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
     throw new TypeError("Formula exceeds the R frame contract column limit.");
@@ -618,10 +627,10 @@ export function schemaAfterFormula(
     throw new TypeError("The formula R column identity is invalid or already exists.");
   }
   const scalarRawType =
-    step.params.value !== undefined &&
-    Number.isInteger(step.params.value) &&
-    step.params.value >= -2_147_483_647 &&
-    step.params.value <= 2_147_483_647
+    scalarValue !== undefined &&
+    Number.isInteger(scalarValue) &&
+    scalarValue >= -2_147_483_647 &&
+    scalarValue <= 2_147_483_647
       ? "integer"
       : "double";
   const rightRawType = right?.rawType ?? scalarRawType;

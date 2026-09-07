@@ -22,6 +22,7 @@ from ..custom_code_scope import (
 )
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
+from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -832,7 +833,7 @@ class DuckDBEngine(DataFrameEngine):
             right = (
                 _quote_ident(bound_column_name(params["rightColumn"], kind))
                 if params.get("rightColumn")
-                else _sql_literal(params["value"])
+                else _sql_literal(_duckdb_formula_scalar(params["value"]))
             )
             left = bound_column_name(params["leftColumn"], kind)
             expression = _formula_expression(_quote_ident(left), right, params["operator"])
@@ -1281,7 +1282,7 @@ class DuckDBEngine(DataFrameEngine):
             right = (
                 f"_ow_ident({bound_column_name(params['rightColumn'], kind)!r})"
                 if params.get("rightColumn")
-                else f"_ow_literal({params['value']!r})"
+                else f"_ow_literal({_duckdb_formula_scalar(params['value'])!r})"
             )
             left = bound_column_name(params["leftColumn"], kind)
             return [
@@ -2951,6 +2952,13 @@ def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_
     if column_type == "float":
         valid += f" AND coalesce(NOT isnan({identifier}), FALSE)"
     return f"(({result}) AND {valid})"
+
+
+def _duckdb_formula_scalar(value: Any) -> int | float:
+    literal = formula_scalar_value(value)
+    if isinstance(value, str) and not -(2**127) <= literal < 2**128:
+        raise EngineError("DuckDB Formula integer text exceeds native 128-bit literal capacity.")
+    return literal
 
 
 def _formula_expression(left: str, right: str, operator: str) -> str:

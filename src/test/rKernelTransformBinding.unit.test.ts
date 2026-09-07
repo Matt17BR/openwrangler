@@ -5,6 +5,7 @@ import type {
   FillMissingReplacement,
   FillMissingValuesTransformStep,
   FilterRowsTransformStep,
+  FormulaTransformStep,
   RoundNumberTransformStep,
   SortRowsTransformStep
 } from "../shared/protocol";
@@ -15,8 +16,25 @@ import {
   isRNumericRoundingStep,
   rTransformStep
 } from "../extension/r/rKernelTransformBinding";
+import { copyRetainedStep, copyRTransformStep } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform binding", () => {
+  it("retains Formula integer text through binding and public plan copies", () => {
+    for (const value of ["1152921504606846976", "1267650600228229401496703205376", 2 ** 60, 0.5]) {
+      const step: FormulaTransformStep = {
+        id: "literal",
+        kind: "formula",
+        params: { leftColumn: reference(0), operator: "add", value, newColumn: "result" }
+      };
+      const bound = rTransformStep(step, schema);
+      expect(bound).toEqual(step);
+      expect(copyRTransformStep(step)).toEqual(step);
+      expect(copyRetainedStep(step)).toEqual(step);
+      expect(JSON.parse(JSON.stringify(copyRetainedStep(step))).params.value).toBe(value);
+      expect(Object.isFrozen(bound.params)).toBe(true);
+    }
+  });
+
   it("binds viewing-independent sort and filter steps to frozen stable identities", () => {
     const sort: SortRowsTransformStep = {
       id: "sort",

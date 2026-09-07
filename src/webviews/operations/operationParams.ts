@@ -1,3 +1,4 @@
+import { parseFormulaLiteral } from "../../shared/formulaLiteral";
 import type { FilterModel } from "../../shared/filterModel";
 import { isActiveColumnFilter } from "../../shared/filterModel";
 import type {
@@ -96,17 +97,13 @@ export function buildParams(
     case "castColumn":
       return { column: columnReference("column"), dtype: value("dtype") };
     case "formula": {
-      const scalar = value("value").trim();
-      if (value("operandMode") !== "column" && (scalar === "" || !Number.isFinite(Number(scalar)))) {
-        throw new Error("Formula requires one finite numeric value or a right column.");
-      }
       return {
         leftColumn: columnReference("leftColumn"),
         operator: value("operator"),
         newColumn: value("newColumn"),
         ...(value("operandMode") === "column"
           ? { rightColumn: columnReference("rightColumn") }
-          : { value: Number(scalar) })
+          : { value: parseFormulaLiteral(value("value")) })
       };
     }
     case "textLength":

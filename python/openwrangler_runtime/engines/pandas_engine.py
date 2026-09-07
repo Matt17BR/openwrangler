@@ -24,6 +24,7 @@ from ..custom_code_scope import (
     execute_custom_code,
 )
 from ..export_target import ExportWriterPath
+from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -1045,7 +1046,7 @@ class PandasEngine(DataFrameEngine):
             right = (
                 _pandas_dictionary_values(df.iloc[:, self._bound_frame_position(df, params["rightColumn"], kind)])
                 if params.get("rightColumn")
-                else params["value"]
+                else formula_scalar_value(params["value"])
             )
             result = _pandas_formula(left, right, params["operator"])
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
@@ -2089,7 +2090,7 @@ class PandasEngine(DataFrameEngine):
             right = (
                 f"_open_wrangler_dictionary_values(df.iloc[:, {bound_column_position(params['rightColumn'], kind)}])"
                 if params.get("rightColumn")
-                else repr(params["value"])
+                else repr(formula_scalar_value(params["value"]))
             )
             symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
                 params["operator"]

@@ -11,6 +11,62 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 operation request validation", () => {
+  it("accepts bounded canonical Formula integers without changing legacy numeric values", () => {
+    const step = (value: unknown) => ({
+      id: "literal",
+      kind: "formula",
+      params: { leftColumn: valueReference, operator: "add", newColumn: "result", value }
+    });
+    const envelope = (value: unknown) => ({
+      protocolVersion: 2,
+      requestId: "formula-literal",
+      priority: "interactive",
+      request: {
+        kind: "previewStep",
+        sessionId: "session",
+        revision: 0,
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 1,
+        step: step(value)
+      }
+    });
+    for (const value of ["0", "9007199254740993", "-9007199254740993", `1${"0".repeat(308)}`, 2 ** 60, 2.5, 1e30]) {
+      expect(isTransformStep(step(value)), String(value)).toBe(true);
+      expect(validateTransportSchema(envelope(value)), String(value)).toBe(true);
+    }
+    for (const value of [
+      "",
+      "-0",
+      "+1",
+      "01",
+      "1.0",
+      "1e3",
+      "0x10",
+      " 1",
+      "1 ",
+      "1\n",
+      "1\r\n",
+      "١",
+      "NaN",
+      "Infinity",
+      "-Infinity",
+      `1${"0".repeat(309)}`,
+      true,
+      null,
+      {},
+      []
+    ]) {
+      expect(isTransformStep(step(value)), String(value)).toBe(false);
+      expect(validateTransportSchema(envelope(value)), String(value)).toBe(false);
+    }
+    // Shape alone cannot express the prior finite-Number ceiling for integer text.
+    for (const value of ["9".repeat(309), Infinity, -Infinity, NaN]) {
+      expect(isTransformStep(step(value)), String(value)).toBe(false);
+    }
+  });
+
   it("enforces the schema-owned Python Custom Code UTF-8 byte limit", () => {
     const preview = requests.find((candidate) => candidate.kind === "previewStep");
     expect(preview?.kind).toBe("previewStep");

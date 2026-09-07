@@ -111,7 +111,13 @@ explicit conversion operations keep their existing behavior.
 Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
 generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing
 the confirmed plan. Other Arrow arithmetic capacity gaps remain tracked in
-[#979](https://github.com/Matt17BR/openwrangler/issues/979). Formula literal input still uses JSON numbers.
+[#979](https://github.com/Matt17BR/openwrangler/issues/979).
+
+Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
+Polars checks native capacity for these strings on integer columns; DuckDB retains its native arithmetic promotion.
+R accepts only literals exactly representable by its existing numeric scalar types. Decimal and exponent input
+retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
+this change cannot recover digits already lost.
 
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
