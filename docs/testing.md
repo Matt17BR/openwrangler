@@ -163,6 +163,10 @@ columns also used as keys. Assertions retain native source values, Sparse positi
 Group By, Pivot and Fill owners also check exact Sparse key partitions, restored labels, multi-key missing groups
 and generated execution. Minimum-version fractional fills have explicit native-construction controls on current
 Pandas. Ordinary integer, nullable, Arrow and object keys retain their output-type policy.
+Typed-cell tests also compare native Arrow `bool8` and UUID pages, profiles, selections and compatible cleaning
+operations with logical native controls. Executed generated code must preserve source arrays and agree with live
+results, including no-op Fill and direct copies. A one-row page with a large dictionary codebook verifies that
+adding known scalar conversion does not decode unused string payloads.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

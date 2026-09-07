@@ -105,6 +105,11 @@ Pandas Arrow date columns, including Parquet imports, retain date-range profiles
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
 follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
 
+Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
+existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
+Selected rows retain their original native arrays. CSV and Parquet round trips for these two types remain under
+investigation in [#988](https://github.com/Matt17BR/openwrangler/issues/988).
+
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
 dictionary values do not gain scalar operations. Integer filtering, sorting, directional Fill and Drop Duplicates
