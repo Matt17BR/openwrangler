@@ -61,15 +61,15 @@ export class RNotebookVariableDiscoveryError extends Error {
   }
 }
 
+export function rNotebookDiscoverySourceProtection(discovery: RNotebookVariableDiscovery): SessionSourceProtection {
+  return discoveryReceipts.get(discovery)?.sourceProtection ?? Object.freeze({ available: false });
+}
+
 /**
  * Inspects only the exact R kernel selected for the captured notebook.
  * Discovery never cancels an execution because Jupyter implements token
  * cancellation as a whole-kernel interrupt.
  */
-export function rNotebookDiscoverySourceProtection(discovery: RNotebookVariableDiscovery): SessionSourceProtection {
-  return discoveryReceipts.get(discovery)?.sourceProtection ?? Object.freeze({ available: false });
-}
-
 export async function discoverRNotebookVariables(
   notebook: vscode.NotebookDocument,
   sourceProtection?: Promise<SessionSourceProtection>
