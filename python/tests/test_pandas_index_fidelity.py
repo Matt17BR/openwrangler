@@ -471,12 +471,23 @@ def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
         assert "Parquet source changed" in str(error)
         assert manager.sessions == {}
     else:
-        assert mutation_denied
-        expected_labels = (
-            [str(2**53 + 1), "null", str(2**53 + 3)] if source_type == "integer-index" else ["0", "1", "2"]
-        )
-        assert [row["rowLabel"] for row in result["page"]["rows"]] == expected_labels
-        manager.close_session(str(result["metadata"]["sessionId"]), 0)
+        try:
+            assert mutation_denied
+            assert path.read_bytes() == first
+            rows = result["page"]["rows"]
+            if source_type == "integer-index":
+                assert [row["rowLabel"] for row in rows] == [str(2**53 + 1), "null", str(2**53 + 3)]
+                expected_values = [11, 12, 13]
+            else:
+                assert result["metadata"]["rowAxis"]["kind"] == "positional"
+                assert [row["rowNumber"] for row in rows] == [0, 1, 2]
+                assert all("rowLabel" not in row for row in rows)
+                expected_values = (
+                    [True, True, None] if source_type == "bool8" else [str(UUID(int=1)), str(UUID(int=2)), None]
+                )
+            assert [row["values"][0]["raw"] for row in rows] == expected_values
+        finally:
+            manager.close_session(str(result["metadata"]["sessionId"]), 0)
     assert mutation_attempted
     assert streams and all(stream.closed for stream in streams)
 

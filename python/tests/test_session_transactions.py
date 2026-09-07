@@ -12,6 +12,7 @@ from openwrangler_runtime import server
 from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime import session_plan as session_plan_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PolarsEngine
+from openwrangler_runtime.export_target import _regular_file_identity
 from openwrangler_runtime.protocol_limits_generated import (
     MAX_GENERATED_PYTHON_CODE_UTF8_BYTES,
     MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
@@ -565,13 +566,13 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         assert len(page["page"]["rows"]) == 1
         destination = tmp_path / "remainders.parquet"
         destination.touch()
-        identity = destination.stat()
+        device, inode = _regular_file_identity(destination)
         exported = manager.export_data(
             session_id,
             2,
             str(destination),
             {"format": "parquet", "rowAxisPolicy": "preserve"},
-            {"device": str(identity.st_dev), "inode": str(identity.st_ino)},
+            {"device": str(device), "inode": str(inode)},
         )
         assert exported["kind"] == "dataExported"
         pd.testing.assert_frame_equal(session.engine.read_file(str(destination)), expected)
