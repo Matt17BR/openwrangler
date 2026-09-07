@@ -1283,6 +1283,12 @@ class PandasEngine(DataFrameEngine):
         if needs_nullable_result_helpers or "grouped" in fill_strategies:
             lines.extend(
                 [
+                    "def _open_wrangler_factorize_group_key(series):",
+                    "    codes, uniques = pd.factorize(",
+                    "        series.to_numpy(dtype=object), sort=False, use_na_sentinel=False)",
+                    "    return pd.Series(codes, index=series.index, name=series.name), uniques",
+                    "",
+                    "",
                     "def _open_wrangler_prepare_float_group_key(series):",
                     "    nan_mask = (np.isnan(series) & series.notna()).fillna(False)",
                     "    if nan_mask.any():",
@@ -1543,25 +1549,21 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_prepare_group_key(series):",
                     "    if pd.api.types.is_float_dtype(series.dtype):",
-                    "        return _open_wrangler_prepare_float_group_key(series), None, False",
+                    "        return _open_wrangler_prepare_float_group_key(series), None",
                     "    if not _open_wrangler_is_integer_series(series):",
-                    "        return series, None, False",
-                    "    sentinel = (",
-                    "        object() if any(_open_wrangler_missing_scalar(item) for item in series.array) else None",
-                    "    )",
-                    "    values = [",
-                    "        sentinel if _open_wrangler_missing_scalar(item) else int(item)",
-                    "        for item in series.array",
-                    "    ]",
-                    "    return pd.Series(values, index=series.index, name=series.name, dtype=object), sentinel, True",
+                    "        return series, None",
+                    "    return _open_wrangler_factorize_group_key(series)",
                     "",
                     "",
-                    "def _open_wrangler_restore_group_key(series, sentinel, integer_key):",
-                    "    if not integer_key:",
+                    "def _open_wrangler_restore_group_key(series, uniques):",
+                    "    if uniques is None:",
                     "        return _open_wrangler_group_key(series)",
-                    "    values = [pd.NA if item is sentinel else item for item in series.array]",
+                    "    values = uniques[series.to_numpy(dtype='intp')]",
                     "    restored = pd.Series(values, index=series.index, name=series.name, dtype=object)",
-                    "    return _open_wrangler_normalize_integer(restored, enforce_envelope=False)",
+                    "    if all(_open_wrangler_missing_scalar(item) or _open_wrangler_integer_scalar(item)",
+                    "           for item in restored.array):",
+                    "        return _open_wrangler_normalize_integer(restored, enforce_envelope=False)",
+                    "    return restored",
                     "",
                     "",
                     "def _open_wrangler_widen_integer(value):",
@@ -2227,18 +2229,14 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}{source}.columns = {temporary_names!r}",
                 f"{prefix}{named_name} = {named!r}",
             ]
-            key_states: list[tuple[str, str]] = []
+            key_states: list[str] = []
             for key_index, key_name in enumerate(key_names):
-                sentinel = f"_group_key_sentinel_{index}_{key_index}"
-                integer_key = f"_group_key_integer_{index}_{key_index}"
+                uniques = f"_group_key_uniques_{index}_{key_index}"
                 prepared = f"_group_key_prepared_{index}_{key_index}"
-                key_states.append((sentinel, integer_key))
+                key_states.append(uniques)
                 lines.extend(
                     [
-                        (
-                            f"{prefix}{prepared}, {sentinel}, {integer_key} = "
-                            f"_open_wrangler_prepare_group_key({source}[{key_name!r}])"
-                        ),
+                        (f"{prefix}{prepared}, {uniques} = _open_wrangler_prepare_group_key({source}[{key_name!r}])"),
                         f"{prefix}{source}.isetitem({key_name!r}, {prepared})",
                     ]
                 )
@@ -2363,10 +2361,10 @@ class PandasEngine(DataFrameEngine):
                             f"_open_wrangler_group_nulls(df.iloc[:, {output_position}], [False] * len(df)))",
                         ]
                     )
-            for output_position, (sentinel, integer_key) in enumerate(key_states):
+            for output_position, uniques in enumerate(key_states):
                 lines.append(
                     f"{prefix}df.isetitem({output_position}, _open_wrangler_restore_group_key("
-                    f"df.iloc[:, {output_position}], {sentinel}, {integer_key}))"
+                    f"df.iloc[:, {output_position}], {uniques}))"
                 )
             for aggregation_index, _aggregation in enumerate(aggregations):
                 _, _ordered_input, _checked_sum, nullable_integer, decimal_average = aggregation_semantics[
@@ -2475,11 +2473,11 @@ def _pandas_validate_pivot_wider(
 def _pandas_pivot_wider_identifier_frame(
     df: Any,
     identifiers: Sequence[int],
-) -> tuple[Any, list[tuple[object | None, bool]]]:
+) -> tuple[Any, list[Any | None]]:
     import pandas as pd
 
     columns = []
-    states: list[tuple[object | None, bool]] = []
+    states: list[Any | None] = []
     allowed = {"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"}
     for position in identifiers:
         source = _pandas_dictionary_values(df.iloc[:, position]).reset_index(drop=True)
@@ -2489,12 +2487,12 @@ def _pandas_pivot_wider_identifier_frame(
                 "Pivot wider identifier columns must use the portable group-key scalar family; "
                 f"{str(df.columns[position])!r} is {semantic_type!r}."
             )
-        prepared, sentinel, integer_key = _pandas_prepare_group_key(source)
-        if not integer_key:
+        prepared, uniques = _pandas_prepare_group_key(source)
+        if uniques is None:
             missing = [_pandas_is_missing_scalar(item) for item in source.array]
             prepared = _pandas_group_nulls(prepared, missing)
         columns.append(prepared)
-        states.append((sentinel, integer_key))
+        states.append(uniques)
     frame = pd.concat(columns, axis=1) if columns else pd.DataFrame(index=range(len(df)))
     frame.columns = list(range(len(identifiers)))
     return frame, states
@@ -2544,8 +2542,8 @@ def _pandas_pivot_wider(
         result.columns = pd.Index(
             [df.columns[position] for position in identifiers], dtype="object", tupleize_cols=False
         )
-        for output_position, (sentinel, integer_key) in enumerate(key_states):
-            restored = _pandas_restore_group_key(result.iloc[:, output_position], sentinel, integer_key)
+        for output_position, uniques in enumerate(key_states):
+            restored = _pandas_restore_group_key(result.iloc[:, output_position], uniques)
             if pd.api.types.is_float_dtype(restored.dtype):
                 zeros = restored.eq(0).fillna(False)
                 if zeros.any():
@@ -2623,14 +2621,14 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "or arrow_scalar):"
         ),
         "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
-        "        prepared, sentinel, integer_key = _open_wrangler_prepare_group_key(source)",
-        "        if not integer_key:",
+        "        prepared, uniques = _open_wrangler_prepare_group_key(source)",
+        "        if uniques is None:",
         (
             "            prepared = _open_wrangler_group_nulls(prepared, "
             "[_open_wrangler_missing_scalar(item) for item in source.array])"
         ),
         "        identifier_columns.append(prepared)",
-        "        key_states.append((sentinel, integer_key))",
+        "        key_states.append(uniques)",
         (
             "    identifier_frame = pd.concat(identifier_columns, axis=1) if identifier_columns "
             "else pd.DataFrame(index=range(len(df)))"
@@ -2653,11 +2651,8 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "        result.columns = pd.Index([df.columns[p] for p in identifiers], "
             "dtype='object', tupleize_cols=False)"
         ),
-        "        for output_position, (sentinel, integer_key) in enumerate(key_states):",
-        (
-            "            restored = _open_wrangler_restore_group_key("
-            "result.iloc[:, output_position], sentinel, integer_key)"
-        ),
+        "        for output_position, uniques in enumerate(key_states):",
+        ("            restored = _open_wrangler_restore_group_key(result.iloc[:, output_position], uniques)"),
         "            if pd.api.types.is_float_dtype(restored.dtype):",
         "                zeros = restored.eq(0).fillna(False)",
         "                if zeros.any():",
@@ -2750,11 +2745,11 @@ def _pandas_group_by_positions(
     source = pd.concat([selected[position] for position in selected_positions], axis=1)
     del selected
     source.columns = [*key_names, *value_names]
-    key_states: list[tuple[object | None, bool]] = []
+    key_states: list[Any | None] = []
     for key_name in key_names:
-        prepared, sentinel, integer_key = _pandas_prepare_group_key(source[key_name])
+        prepared, uniques = _pandas_prepare_group_key(source[key_name])
         source.isetitem(key_name, prepared)
-        key_states.append((sentinel, integer_key))
+        key_states.append(uniques)
     integer_sum_indexes: list[int] = []
     integer_nullable_indexes: list[int] = []
     decimal_sum_indexes: list[int] = []
@@ -2811,10 +2806,10 @@ def _pandas_group_by_positions(
             result.isetitem(
                 output_position, _pandas_group_nulls(result.iloc[:, output_position], [False] * len(result))
             )
-    for output_position, (sentinel, integer_key) in enumerate(key_states):
+    for output_position, uniques in enumerate(key_states):
         result.isetitem(
             output_position,
-            _pandas_restore_group_key(result.iloc[:, output_position], sentinel, integer_key),
+            _pandas_restore_group_key(result.iloc[:, output_position], uniques),
         )
     for aggregation_index, _aggregation in enumerate(aggregations):
         _, _ordered_input, _checked_sum, nullable_integer, decimal_average = aggregation_semantics[aggregation_index]
@@ -4285,26 +4280,31 @@ def _pandas_prepare_float_group_key(series: Any) -> Any:
     return series
 
 
-def _pandas_prepare_group_key(series: Any) -> tuple[Any, object | None, bool]:
+def _pandas_factorize_group_key(series: Any) -> tuple[Any, Any]:
+    import pandas as pd
+
+    codes, uniques = pd.factorize(series.to_numpy(dtype=object), sort=False, use_na_sentinel=False)
+    return pd.Series(codes, index=series.index, name=series.name), uniques
+
+
+def _pandas_prepare_group_key(series: Any) -> tuple[Any, Any | None]:
     import pandas as pd
 
     if pd.api.types.is_float_dtype(series.dtype):
-        return _pandas_prepare_float_group_key(series), None, False
+        return _pandas_prepare_float_group_key(series), None
     if _pandas_semantic_type(series) != "integer":
-        return series, None, False
-    sentinel = object() if any(_pandas_is_missing_scalar(item) for item in series.array) else None
-    values = [sentinel if _pandas_is_missing_scalar(item) else int(item) for item in series.array]
-    return pd.Series(values, index=series.index, name=series.name, dtype=object), sentinel, True
+        return series, None
+    return _pandas_factorize_group_key(series)
 
 
-def _pandas_restore_group_key(series: Any, sentinel: object | None, integer_key: bool) -> Any:
+def _pandas_restore_group_key(series: Any, uniques: Any | None) -> Any:
     import pandas as pd
 
-    if not integer_key:
+    if uniques is None:
         return _pandas_group_key(series)
-    values = [pd.NA if item is sentinel else item for item in series.array]
+    values = uniques[series.to_numpy(dtype="intp")]
     restored = pd.Series(values, index=series.index, name=series.name, dtype=object)
-    return _pandas_preserve_integer_result(restored)
+    return _pandas_preserve_integer_result(restored) if _pandas_integer_values(restored) is not None else restored
 
 
 def _pandas_integer_aggregate_input(series: Any) -> Any:
@@ -5224,6 +5224,8 @@ def _pandas_fill_missing_grouped_statistic(
             )
         if pd.api.types.is_float_dtype(key_series.dtype):
             key_series = _pandas_prepare_float_group_key(key_series)
+        elif _pandas_semantic_type(key_series) == "integer":
+            key_series = _pandas_factorize_group_key(key_series)[0]
         prepared_keys.append(key_series)
     key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)
     groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, observed=True).indices.values()
@@ -6141,6 +6143,8 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "            ], dtype=object)",
         "        if pd.api.types.is_float_dtype(key_series.dtype):",
         "            key_series = _open_wrangler_prepare_float_group_key(key_series)",
+        "        elif _open_wrangler_fill_semantic_type(key_series) == 'integer':",
+        "            key_series = _open_wrangler_factorize_group_key(key_series)[0]",
         "        prepared_keys.append(key_series)",
         "    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)",
         (

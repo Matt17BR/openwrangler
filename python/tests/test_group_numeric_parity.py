@@ -16,6 +16,173 @@ from openwrangler_runtime.operations import validate_step
 _WIDE_INTEGER = 2**63
 
 
+@pytest.mark.parametrize(
+    ("storage", "fill", "ordinary", "wide"),
+    [
+        ("uint64", 0, 1, 2**64 - 1),
+        ("uint64", float("nan"), 0, 2**64 - 1),
+        ("uint64", 1.5, 1, 2**64 - 1),
+        ("int64", -1.5, -1, -(2**63)),
+        ("int64", 1.0, 2, 2**53 + 1),
+        ("int64", -0.0, 1, 2**53 + 1),
+    ],
+)
+def test_pandas_sparse_group_keys_preserve_logical_representatives(
+    storage: str, fill: Any, ordinary: int, wide: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import warnings
+
+    import numpy as np
+
+    from openwrangler_runtime import session as session_runtime
+
+    values = [fill, ordinary, fill, wide]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", FutureWarning)
+        try:
+            key = pd.Series(np.array(values, dtype=object), dtype=pd.SparseDtype(storage, fill))
+        except ValueError as error:
+            # Current Pandas rejects this native input; the supported minimum accepts it.
+            assert fill in {1.5, -1.5}
+            assert "fill_value must be a valid value" in str(error)
+            return
+    assert all(
+        issubclass(item.category, FutureWarning) and "arbitrary scalar fill_value" in str(item.message)
+        for item in caught
+    )
+    frame = pd.DataFrame({"group": key, "value": pd.Series([10, 20, 30, 40], dtype="Int64")})
+    frame.index = pd.Index(["a", "a", "b", "c"], name="row")
+    frame.attrs["source"] = "preserved"
+    original = frame.copy(deep=True)
+    floating = isinstance(fill, float) and not pd.isna(fill)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series(
+                [pd.NA if pd.isna(fill) else fill, ordinary, wide],
+                dtype=object if floating or wide >= 2**63 else "Int64",
+            ),
+            "count": pd.Series([2, 1, 1], dtype="Int64"),
+            "nUnique": pd.Series([2, 1, 1], dtype="int64"),
+            "sum": pd.Series([40, 20, 40], dtype="Int64"),
+        }
+    )
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("count", "nUnique", "sum"))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        pd.testing.assert_frame_equal(result, expected)
+        if floating and fill == 0:
+            assert np.signbit(result["group"].iloc[0])
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _source: frame)
+    manager = session_runtime.SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "label": "Sparse keys",
+            "variableName": "frame",
+            "uri": "file:///sparse-keys.ipynb",
+        },
+        backend="pandas",
+        mode="editing",
+    )
+    session_id = opened["metadata"]["sessionId"]
+    public = {
+        "id": "sparse-key-preview",
+        "kind": "groupBy",
+        "params": {
+            "keys": [{"id": "c:source:0", "name": "group"}],
+            "aggregations": [
+                {"column": {"id": "c:source:1", "name": "value"}, "operation": name, "alias": name}
+                for name in ("count", "nUnique", "sum")
+            ],
+        },
+    }
+    revision = 0
+    try:
+        preview = manager.preview_step(session_id, 0, public, 0, 20)
+        revision = preview["revision"]
+        assert [row["values"] for row in preview["page"]["rows"]] == [
+            row["values"] for row in runtime.page(expected, 0, 20)["rows"]
+        ]
+    finally:
+        manager.close_session(session_id, revision)
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    "storage", ["int64", "uint64", "Int64", "UInt64", "int64[pyarrow]", "uint64[pyarrow]", "object"]
+)
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_integer_group_key_storage_keeps_exact_output_policy(storage: str, empty: bool) -> None:
+    wide = 2**100 + 1 if storage == "object" else 2**64 - 1 if "uint" in storage.lower() else 2**53 + 1
+    missing = None if storage not in {"int64", "uint64"} else 0
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series([wide, missing, wide, missing], dtype=storage),
+            "value": pd.Series([1, 2, 3, 4], dtype="Int64"),
+        }
+    )
+    if empty:
+        frame = frame.iloc[:0]
+    before = frame.copy(deep=True)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series(
+                [] if empty else [wide, pd.NA if missing is None else missing],
+                dtype=object if (empty and storage == "object") or (not empty and wide >= 2**63) else "Int64",
+            ),
+            "count": pd.Series([] if empty else [2, 2], dtype="Int64"),
+            "sum": pd.Series([] if empty else [4, 6], dtype="Int64"),
+        }
+    )
+    runtime = PandasEngine()
+    operation = _group_operation(runtime, frame, ("count", "sum"))
+    for result in (runtime.apply_transform(frame, operation), _execute_generated(runtime, frame, operation)):
+        pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_integer_group_keys_restore_multikey_missing_groups(empty: bool) -> None:
+    frame = pd.DataFrame(
+        {
+            "key": pd.Series([None, None, 2**64 - 1, 2**64 - 1, None], dtype="UInt64"),
+            "partition": pd.Series(["a", "a", None, None, "b"], dtype="string"),
+            "value": pd.Series([1, 2, 3, 4, 5], dtype="Int64"),
+        }
+    )
+    if empty:
+        frame = frame.iloc[:0]
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    step = bind_step(
+        validate_step(
+            {
+                "id": "multikey",
+                "kind": "groupBy",
+                "params": {
+                    "keys": lineage[:2],
+                    "aggregations": [{"column": lineage[2], "operation": "sum", "alias": "total"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    expected = pd.DataFrame(
+        {
+            "key": pd.Series([] if empty else [pd.NA, 2**64 - 1, pd.NA], dtype="Int64" if empty else object),
+            "partition": pd.Series([] if empty else ["a", None, "b"], dtype="string"),
+            "total": pd.Series([] if empty else [3, 7, 5], dtype="Int64"),
+        }
+    )
+    for result in (runtime.apply_transform(frame, step), _execute_generated(runtime, frame, step)):
+        pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
 @pytest.fixture(params=["pandas", "polars", "duckdb"])
 def engine(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Any:
     if request.param == "pandas":
