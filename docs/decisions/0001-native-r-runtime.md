@@ -139,7 +139,8 @@ value can also be calculated within selected groups. All-missing groups stay mis
 values tie for most common. Automatic methods ignore `NA` and `NaN`. Double columns can use linear interpolation
 along an ordinary numeric, `Date`, or `POSIXct` coordinate. The coordinate must be complete, finite, and unique;
 `integer64` coordinates are rejected. Factors, ordered factors, `integer64`, dates, and datetimes stay in their native
-R types.
+R types. Live and generated median calculations share the same floating-point midpoint function, including
+subnormal values and extreme finite values.
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
@@ -236,6 +237,7 @@ rule in this ADR.
   boundary is recorded in [feature parity](../feature-parity.md).
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
-- R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and
-  packaged-editor tests remain required before any user-facing R claim.
+- Pull requests run the R 4.5 contract suite; the cross-platform workflow also checks R 4.4. See
+  [CI](../ci.md) for check ownership. A new user-facing R support claim requires the relevant real IRkernel or
+  packaged-editor evidence.
 - A preview label does not relax notebook ownership, cleanup, or packaged-editor acceptance.

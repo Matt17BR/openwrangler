@@ -27,6 +27,9 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
   has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
   protocol v2.
 
+Native tree views and Code Preview keep their original lazy provider registrations until shutdown. Loading the
+view owner attaches delegates and tree-change forwarding without unregistering a view while VS Code resolves it.
+
 The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
 terminal, or export destination by supplying an identifier the host did not issue and retain.
 
@@ -234,8 +237,9 @@ same mapped kernel. Cleanup never looks up a replacement kernel by URI. Kernel r
 owned by the old kernel; recovery may reopen only against the still-exact originating document and its newly selected
 kernel.
 
-Generated-code insertion repeats exact object, version, URI-uniqueness, and kernel preflight immediately before
-dispatch. Success is reported only after the same notebook contains the uniquely marked inserted cell. Because the
+Generated-code insertion captures the originating session and document before trust or Code Preview synchronization
+waits. The acquired code must belong to that session. Immediately before dispatch, insertion repeats exact document
+object, version, and URI-uniqueness checks. Insertion writes code into the document; it does not execute the kernel. Success is reported only after the same notebook contains the uniquely marked inserted cell. Because the
 stable VS Code edit API is URI-addressed, an accepted edit that cannot be proven against the original object is
 indeterminate: Open Wrangler does not retry, roll it back, or claim success against a replacement document.
 

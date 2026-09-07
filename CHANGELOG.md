@@ -13,6 +13,11 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Code insertion stays bound to the notebook or R document that started the command when the active session changes.
+- Native views keep their registrations while loading, preserving the first tree or Code Preview request.
+- Polars Pivot Wider accepts valid column names that previously collided with internal helper columns.
+- Native R live and generated medians agree for tiny and extreme values in Group By and Fill Missing Values.
+
 - The file picker now ignores unsupported values inserted manually into `openWrangler.enabledFileTypes`. A non-array
   value restores the defaults, while an empty array still disables every file type.
 - Code Preview now sends bounded incremental edits instead of retransmitting the full document after every change.
