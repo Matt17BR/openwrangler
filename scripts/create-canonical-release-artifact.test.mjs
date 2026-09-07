@@ -37,10 +37,12 @@ import {
 import {
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
+  inspectReleaseDocumentationSource,
   PRIMARY_PARITY_SCOPE,
   R_PREVIEW_PARITY_SCOPE,
   STABLE_README_RELEASE_SECTION
 } from "./release-readiness.mjs";
+import { PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
   assertReproducibleVsixArchive as assertReproducibleArchive,
   canonicalizeVsixArchive
@@ -456,6 +458,103 @@ test("publishes exact stable 2.x bytes with Native R retained as preview", async
   );
 });
 
+test("incomplete source documentation remains valid while canonical stable authoring refuses it", async (context) => {
+  const featureParity = parityMatrix(new Map([[PRIMARY_PARITY_SCOPE[0][0], "Partial"]])).replace(
+    "| Yes | Yes | Partial |",
+    "| Yes | Partial | Partial |"
+  );
+  const fixture = await createFixture(context, { featureParity });
+  assert.deepEqual(
+    inspectReleaseDocumentationSource({
+      featureParity,
+      preview: false,
+      readme: readFileSync(join(fixture.root, "README.md"), "utf8"),
+      trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
+      version: stablePackage.version
+    }),
+    []
+  );
+  await assert.rejects(
+    createCanonicalReleaseArtifact(artifactOptions(fixture).options),
+    /Canonical stable release readiness failed:.*CSV\/TSV\/Parquet\/Excel\/JSONL entry points.*Partial.*Yes\/Partial/su
+  );
+  assert.equal(existsSync(fixture.outputDirectory), false);
+});
+
+test("source documentation validates incomplete rows, applicability and tracked evidence", () => {
+  const inspect = (featureParity) =>
+    inspectReleaseDocumentationSource({
+      featureParity,
+      preview: false,
+      readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
+      trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
+      version: stablePackage.version
+    });
+  for (const [status, availability] of [
+    ["Done", "Yes"],
+    ["Partial", "Partial"],
+    ["Planned", "No"],
+    ["Out of scope", "No"]
+  ]) {
+    const featureParity = parityMatrix(new Map([[PRIMARY_PARITY_SCOPE[0][0], status]])).replace(
+      `| Yes | Yes | ${status} |`,
+      `| Yes | ${availability} | ${status} |`
+    );
+    assert.deepEqual(inspect(featureParity), [], status);
+  }
+  const partial = parityMatrix(new Map([[PRIMARY_PARITY_SCOPE[0][0], "Partial"]]));
+  const firstRow = partial.split("\n").find((line) => line.startsWith(`| ${PRIMARY_PARITY_SCOPE[0][0]} |`));
+  const secondRow = partial.split("\n").find((line) => line.startsWith(`| ${PRIMARY_PARITY_SCOPE[1][0]} |`));
+  for (const malformed of [
+    partial.replace(firstRow, ""),
+    partial.replace(secondRow, firstRow),
+    partial.replace(`${firstRow}\n${secondRow}`, `${secondRow}\n${firstRow}`),
+    partial.replace(PRIMARY_PARITY_SCOPE[0][0], "Unknown surface"),
+    partial.replace("| Partial |", "| Complete |"),
+    partial.replace("| Yes | Yes | Partial |", "| Yes | Maybe | Partial |"),
+    partial.replace("| Yes | Yes | Partial |", "| Yes | N/A | Partial |"),
+    partial.replace("| N/A | N/A | Done |", "| Yes | N/A | Done |"),
+    partial.replace("test:scripts/evidence.test.mjs", "test:scripts/untracked.test.mjs"),
+    partial.replace("test:scripts/evidence.test.mjs", "record:../outside.md"),
+    partial.replace("Exact canonical artifact accepted; test:scripts/evidence.test.mjs", "Existing limitation"),
+    partial.replace("Exact canonical artifact accepted", "TODO verify later"),
+    partial.replace("# Feature parity matrix", "# Different document")
+  ]) {
+    assert.notDeepEqual(inspect(malformed), [], malformed.split("\n").slice(0, 6).join("\n"));
+  }
+});
+
+test("source documentation retains channel, README and Native R rules", () => {
+  const stable = {
+    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
+    preview: false,
+    readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
+    trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
+    version: "2.1.0"
+  };
+  assert.deepEqual(inspectReleaseDocumentationSource(stable), []);
+  for (const changed of [
+    { version: "bad" },
+    { preview: undefined },
+    { preview: true },
+    { readme: "# Open Wrangler\n" },
+    { featureParity: parityMatrix() },
+    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Preview | Done |") }
+  ]) {
+    assert.notDeepEqual(inspectReleaseDocumentationSource({ ...stable, ...changed }), []);
+  }
+  const preview = {
+    ...stable,
+    featureParity: nativeRPreviewMatrix(),
+    preview: true,
+    readme: `# Open Wrangler\n\n${PREVIEW_README_RELEASE_SECTION}\n`,
+    version: previewPackage.version
+  };
+  assert.deepEqual(inspectReleaseDocumentationSource(preview), []);
+  assert.notDeepEqual(inspectReleaseDocumentationSource({ ...preview, preview: false }), []);
+  assert.notDeepEqual(inspectReleaseDocumentationSource({ ...preview, featureParity: "" }), []);
+});
+
 test("atomically publishes a provenance-bound preview triple before its tag exists", async (context) => {
   const fixture = await createFixture(context, {
     manifest: previewPackage,
@@ -631,6 +730,24 @@ test("performance-evidence publication rejects every other incomplete row and st
     /Performance-evidence candidate readiness failed:.*Dataset summary and quick insights/su
   );
   assert.equal(existsSync(evidenceFixture.outputDirectory), false);
+
+  for (const [changes, expectedProblem] of [
+    [{ parityStatuses: new Map() }, /must remain Partial/u],
+    [{ manifest: { ...stablePackage, version: "1.0.1" } }, /limited to version 1\.0\.0/u]
+  ]) {
+    const fixture = await createFixture(context, {
+      parityStatuses: allowedPartial,
+      readmeSection: PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
+      ...changes
+    });
+    await assert.rejects(
+      createCanonicalReleaseArtifact(
+        artifactOptions(fixture, { publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE }).options
+      ),
+      expectedProblem
+    );
+    assert.equal(existsSync(fixture.outputDirectory), false);
+  }
 });
 
 test("rejects unknown artifact publication modes before reading or publishing a candidate", async (context) => {
