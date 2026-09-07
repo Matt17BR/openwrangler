@@ -4,6 +4,11 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+### Changed
+
+- Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
+  Failed runs remain eligible for the next schedule; manual previews still run on request.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security

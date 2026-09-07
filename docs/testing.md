@@ -25,6 +25,8 @@ npm run test:python
 
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
+The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
+and changed commits, missing history, manual dispatches, and lookup failures.
 
 Use these checks for changed static boundaries:
 

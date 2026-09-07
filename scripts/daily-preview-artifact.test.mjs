@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { load as parseYaml } from "js-yaml";
 import {
   dailyPreviewReleaseNotes,
   inspectDailyPreviewSourceCommit,
@@ -21,6 +22,75 @@ import { readPreviewReleaseNotesFromCommit } from "./publish-github-preview-rele
 
 const fixtureRoot = resolve(import.meta.dirname, "..");
 const versionPaths = ["package.json", "package-lock.json", "python/openwrangler_runtime/version.py"];
+
+const scheduledSource = "a".repeat(40);
+for (const scenario of [
+  { name: "unchanged source", previous: scheduledSource, build: false },
+  { name: "changed source", previous: "b".repeat(40), build: true },
+  { name: "no successful history", previous: "", build: true },
+  { name: "manual request", previous: scheduledSource, event: "workflow_dispatch", build: true },
+  { name: "history lookup failure", previous: "", apiStatus: 1 },
+  { name: "malformed history source", previous: "invalid" },
+  { name: "non-main request", previous: scheduledSource, ref: "refs/heads/other" }
+]) {
+  test(`scheduled preview decision: ${scenario.name}`, { skip: process.platform === "win32" }, (context) => {
+    const workflow = parseYaml(readFileSync(join(fixtureRoot, ".github/workflows/preview-release.yml"), "utf8"));
+    const check = workflow.jobs.changes;
+    const script = check.steps.find((step) => step.id === "source").run;
+    assert.equal(check.outputs.build, "${{ steps.source.outputs.build }}");
+    assert.equal(workflow.jobs.package.needs, "changes");
+    assert.equal(workflow.jobs.package.if, "${{ needs.changes.outputs.build == 'true' }}");
+    const root = mkdtempSync(join(tmpdir(), "ow-preview-decision-"));
+    context.after(() => rmSync(root, { recursive: true, force: true }));
+    const output = join(root, "output");
+    const summary = join(root, "summary");
+    const argumentsPath = join(root, "gh-arguments");
+    writeFileSync(
+      join(root, "gh"),
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_GH_ARGUMENTS"\nprintf "%s" "$TEST_PREVIOUS_SHA"\nexit "$TEST_GH_STATUS"\n',
+      { mode: 0o755 }
+    );
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", script], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH}`,
+        EVENT_NAME: scenario.event ?? "schedule",
+        EVENT_REF: scenario.ref ?? "refs/heads/main",
+        SOURCE_SHA: scheduledSource,
+        RUN_REPOSITORY: "Matt17BR/openwrangler",
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: summary,
+        TEST_GH_ARGUMENTS: argumentsPath,
+        TEST_PREVIOUS_SHA: scenario.previous,
+        TEST_GH_STATUS: String(scenario.apiStatus ?? 0)
+      }
+    });
+    assert.ifError(result.error);
+    if (scenario.build === undefined) {
+      assert.notEqual(result.status, 0);
+      assert.equal(existsSync(output), false);
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(output, "utf8"), `build=${scenario.build}\n`);
+      assert.match(readFileSync(summary, "utf8"), scenario.build ? /Building/u : /Skipping preview build/u);
+    }
+    if (scenario.event === "workflow_dispatch" || scenario.ref !== undefined) {
+      assert.equal(existsSync(argumentsPath), false);
+    } else {
+      assert.deepEqual(readFileSync(argumentsPath, "utf8").trim().split("\n"), [
+        "api",
+        "--method",
+        "GET",
+        "repos/Matt17BR/openwrangler/actions/workflows/preview-release.yml/runs?event=schedule&status=success&branch=main&per_page=1",
+        "--jq",
+        '.workflow_runs[0].head_sha // ""'
+      ]);
+    }
+  });
+}
 
 function git(root, args) {
   return execFileSync("git", args, {
