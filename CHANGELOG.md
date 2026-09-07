@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   across chunks. Row removal preserves encoded columns and exact Sparse integer payloads.
 - Pandas Arrow `bool8` and UUID columns display logical booleans and canonical UUID strings consistently with
   profiles, selections and compatible cleaning operations.
+- CSV and Parquet exports preserve logical Arrow Boolean and UUID values and selected row labels. Parquet files
+  containing these native extensions reopen without failing on their Pandas dtype metadata.
 - Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead
   of rounding them together or rejecting valid unsigned selections.
 - Convert Type accepts supported Arrow dictionary values across chunks and retains the native target's range checks.
