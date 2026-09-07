@@ -3165,7 +3165,20 @@ async function exerciseReleasedJupyterExtension(
       offset: 0,
       limit: 10
     });
-    assert.equal(applied.kind, "planUpdated");
+    const currentPolarsSession = testing.activeSession();
+    assert.equal(
+      applied.kind,
+      "planUpdated",
+      JSON.stringify({
+        errorCode:
+          applied.kind === "error" && /^[a-z][a-z0-9_]{0,63}$/u.test(applied.code) ? applied.code : "unclassified",
+        recoverable: applied.kind === "error" ? applied.recoverable : null,
+        requestedRevision: preview.metadata.revision,
+        currentRevision: currentPolarsSession?.metadata.revision ?? null,
+        currentSessionMatches: currentPolarsSession?.sessionId === polarsFrame.sessionId,
+        responseSessionMatches: applied.kind === "error" ? applied.sessionId === polarsFrame.sessionId : null
+      })
+    );
     if (applied.kind !== "planUpdated") throw new Error("The released-Jupyter Polars plan did not apply.");
     assert.equal(applied.metadata.steps.length, 1);
 
