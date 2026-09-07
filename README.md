@@ -42,8 +42,9 @@ Wrangler** on its output or from the notebook toolbar.
 
 _Open a live notebook dataframe from its output and continue in the workbench._
 
-**2. Preview a transformation.** Choose **Add step**, select an operation, and configure it. Changed values and
-generated code appear as a draft. Filters and sorts affect only the current view; they do not become cleaning steps.
+**2. Preview a transformation.** If your notebook session opens in Viewing mode and supports editing, choose
+**Switch to Editing** first. Choose **Add step**, select an operation, and configure it. Changed values and generated
+code appear as a draft. Filters and sorts affect only the current view; they do not become cleaning steps.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
