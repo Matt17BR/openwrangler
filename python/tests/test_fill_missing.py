@@ -2655,3 +2655,112 @@ def test_duckdb_uuid_fill_promotes_the_column_to_varchar() -> None:
         assert rows(generated) == rows(live)
     finally:
         engine.close()
+
+
+_POLARS_NATIVE_MEDIAN_CASES = [
+    pytest.param(pl.Int8, -128, -126, -127, -127, id="int8-minimum"),
+    pytest.param(pl.Int64, -(2**63), 2**63 - 2, -1, -(2**63) + 1, id="int64-full-range"),
+    pytest.param(pl.UInt64, 2**64 - 3, 2**64 - 1, 2**64 - 2, 2**64 - 2, id="uint64-maximum"),
+    pytest.param(pl.UInt64, 1, 3, 2, 2, id="uint64-small"),
+    pytest.param(pl.Int128, -(2**127), 2**127 - 2, -1, -(2**127) + 1, id="int128-full-range"),
+    pytest.param(pl.Int128, 1, 3, 2, 2, id="int128-small"),
+    pytest.param(
+        pl.Decimal(38, 2),
+        Decimal("100000000000000000000000000000000001.25"),
+        Decimal("100000000000000000000000000000000001.27"),
+        Decimal("100000000000000000000000000000000001.26"),
+        Decimal("100000000000000000000000000000000001.26"),
+        id="decimal38",
+    ),
+]
+
+
+@pytest.mark.parametrize("dtype,lower,upper,median,fractional_upper", _POLARS_NATIVE_MEDIAN_CASES)
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_polars_grouped_median_preserves_native_endpoints_and_empty_groups(
+    dtype: Any,
+    lower: Any,
+    upper: Any,
+    median: Any,
+    fractional_upper: Any,
+    lazy: bool,
+    empty: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openwrangler_runtime._column_binding import bind_step
+    from openwrangler_runtime.lineage import source_lineage
+    from openwrangler_runtime.operations import validate_step
+
+    groups = ["even"] * 3 + [None] * 4 + ["missing"] * 2 + ["complete"] * 2
+    values = [lower, None, upper, lower, None, median, upper, None, None, lower, fractional_upper]
+    expected_values = [lower, median, upper, lower, median, median, upper, None, None, lower, fractional_upper]
+    source = pl.DataFrame(
+        {
+            "group": pl.Series(groups, dtype=pl.String),
+            "second": pl.Series([None] * len(values), dtype=pl.String),
+            "value": pl.Series(values, dtype=dtype),
+            "__ow_grouped_lower": range(len(values)),
+        }
+    )
+    expected = source.with_columns(pl.Series("value", expected_values, dtype=dtype))
+    if empty:
+        source, expected = source.head(0), expected.head(0)
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "native-median",
+                "kind": "fillMissingValues",
+                "params": {
+                    "column": lineage[2],
+                    "replacement": {"kind": "groupedStatistic", "keys": lineage[:2], "statistic": "median"},
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    engine.validate_transform_preflight(frame, operation, engine.shape(frame))
+
+    def reject_collect(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Grouped median plan construction must not collect its lazy input")
+
+    with monkeypatch.context() as scoped:
+        if lazy:
+            scoped.setattr(pl.LazyFrame, "collect", reject_collect)
+        live = engine.apply_transform(frame, operation)
+        generated = execute_generated(engine, frame, [operation])
+    for actual in [live, generated]:
+        if lazy:
+            assert isinstance(actual, pl.LazyFrame)
+            actual = actual.collect(engine="streaming")
+        assert_frame_equal(actual, expected)
+    assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("dtype,lower,upper,median,fractional_upper", _POLARS_NATIVE_MEDIAN_CASES)
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_grouped_median_rejects_unrepresentable_native_midpoints(
+    dtype: Any,
+    lower: Any,
+    upper: Any,
+    median: Any,
+    fractional_upper: Any,
+    lazy: bool,
+) -> None:
+    del upper, median
+    source = pl.DataFrame({"group": ["x"] * 3, "value": pl.Series([lower, None, fractional_upper], dtype=dtype)})
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    operation = grouped_step("median", 1, [(0, "group")])
+    with pytest.raises((EngineError, ValueError), match="fractional|represented exactly|scale"):
+        normalized_rows(engine.apply_transform(frame, operation))
+    with pytest.raises((EngineError, ValueError), match="fractional|represented exactly|scale"):
+        normalized_rows(execute_generated(engine, frame, [operation]))
+    assert_frame_equal(source, before)
