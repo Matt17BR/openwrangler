@@ -24,6 +24,52 @@ def bound_ref(identifier: str, name: str, position: int) -> dict[str, str | int]
     return {"id": identifier, "name": name, "position": position}
 
 
+@pytest.mark.parametrize("statistic", ["mean", "median", "mostFrequent"])
+@pytest.mark.parametrize("fill_kind", ["zero", "missing", "fractional"])
+@pytest.mark.parametrize("two_keys", [False, True])
+def test_pandas_grouped_fill_keeps_exact_sparse_integer_partitions(
+    statistic: str, fill_kind: str, two_keys: bool
+) -> None:
+    import warnings
+
+    import numpy as np
+
+    dtype = "string" if statistic == "mostFrequent" else "Float64" if statistic == "mean" else "Int64"
+    donors = ["a", "b", "c", "d"] if statistic == "mostFrequent" else [10, 20, 30, 40]
+    fill = 1.5 if fill_kind == "fractional" else float("nan") if fill_kind == "missing" else 0
+    values = [fill, fill, 1, 1, 2**64 - 1, 2**64 - 1, 2**64 - 2, 2**64 - 2]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", FutureWarning)
+        try:
+            key = pd.Series(np.array(values, dtype=object), dtype=pd.SparseDtype("uint64", fill))
+        except ValueError as error:
+            assert fill_kind == "fractional"
+            assert "fill_value must be a valid value" in str(error)
+            return
+    assert all(
+        issubclass(item.category, FutureWarning) and "arbitrary scalar fill_value" in str(item.message)
+        for item in caught
+    )
+    source = pd.DataFrame(
+        {
+            "value": pd.Series([item for donor in donors for item in (donor, None)], dtype=dtype),
+            "key": key,
+        }
+    )
+    keys = [{"id": "c:source:1", "name": "key"}]
+    if two_keys:
+        source["partition"] = pd.Series([None, None, "a", "a", "a", "a", "a", "a"], dtype="string")
+        keys.append({"id": "c:source:2", "name": "partition"})
+    source.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(source))])
+    source.attrs["source"] = "preserved"
+    expected = pd.Series([donor for donor in donors for _ in range(2)], index=source.index, name="value", dtype=dtype)
+    for result in _pandas_fill_public_outputs(
+        source, {"kind": "groupedStatistic", "statistic": statistic, "keys": keys}
+    ):
+        pd.testing.assert_series_equal(result["value"], expected)
+        assert result.attrs == source.attrs
+
+
 def fill_step(
     column: dict[str, str | int],
     replacement: dict[str, Any],

@@ -25,6 +25,42 @@ def token(value: str) -> dict[str, Any]:
     return result
 
 
+@pytest.mark.parametrize("names", [["x", "x"], ["x", "y"]])
+def test_pandas_pivot_preserves_distinct_fractional_sparse_identifiers(names: list[str]) -> None:
+    import warnings
+
+    import numpy as np
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", FutureWarning)
+        try:
+            identifiers = pd.Series(np.array([1.5, 1], dtype=object), dtype=pd.SparseDtype("uint64", 1.5))
+        except ValueError as error:
+            assert "fill_value must be a valid value" in str(error)
+            return
+    assert all(
+        issubclass(item.category, FutureWarning) and "arbitrary scalar fill_value" in str(item.message)
+        for item in caught
+    )
+    frame = pd.DataFrame(
+        {"id": identifiers, "key": pd.Series(names, dtype="string"), "value": pd.Series([10, 20], dtype="Int64")}
+    )
+    original = frame.copy(deep=True)
+    runtime = PandasEngine()
+    operation = bind(runtime, frame)
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    expected = pd.DataFrame(
+        {
+            "id": pd.Series([1.5, 1], dtype=object),
+            "x_value": pd.Series([10, 20 if names[1] == "x" else None], dtype="Int64"),
+            "y_value": pd.Series([None, 20 if names[1] == "y" else None], dtype="Int64"),
+        }
+    )
+    for result in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(frame, original)
+
+
 def public_step(
     *,
     output_names: tuple[str, str] = ("x_value", "y_value"),
