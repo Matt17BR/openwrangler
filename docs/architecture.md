@@ -114,6 +114,11 @@ and recovery either publish a complete confirmed snapshot or restore the prior r
 cache, code, selected column, and profiling ownership. No layer constructs a plausible partial result after an
 ambiguous response.
 
+A failed or cancelled operation preview reports its error inside the dialog that submitted it, alongside the retained
+inputs. The mutation snapshot owns that dialog context and operation kind; unrelated actions keep their workspace
+errors. Error text and code settle together, and changing the operation, closing the dialog or replacing the session
+clears its preview error.
+
 ## Runtime ownership
 
 The standalone Python runtime is single-flight per Python-selection scope. A workspace folder, an exact external

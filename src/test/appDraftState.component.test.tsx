@@ -84,6 +84,121 @@ describe("App draft state boundaries", () => {
     dataGridProps.mockClear();
   });
 
+  it.each([
+    {
+      backend: "r" as const,
+      editing: false,
+      literal: "9007199254740993",
+      message: "The Formula integer literal cannot be represented exactly as an R numeric scalar"
+    },
+    {
+      backend: "polars" as const,
+      editing: false,
+      literal: "340282366920938463463374607431768211456",
+      message: "Formula literal exceeds Polars native integer capacity."
+    },
+    {
+      backend: "polars" as const,
+      editing: true,
+      literal: "340282366920938463463374607431768211456",
+      message: "Formula literal exceeds Polars native integer capacity."
+    }
+  ])(
+    "keeps $backend preview refusal accessible in its retained form (editing=$editing)",
+    async ({ backend, editing, literal, message }) => {
+      const fixture = formulaPreviewFixture(backend, editing);
+      render(<App />);
+      dispatch({ kind: "sessionOpened", ...fixture, summaries: [] });
+      dispatch({ kind: "editorAction", action: editing ? "editLatest" : "openOperation", operationKind: "formula" });
+      const dialog = await screen.findByRole("dialog");
+      const value = within(dialog).getByLabelText("Numeric value", { exact: true });
+      const output = within(dialog).getByLabelText("New column", { exact: true });
+      fireEvent.change(value, { target: { value: literal } });
+      fireEvent.change(output, { target: { value: "exact_result" } });
+      postMessage.mockClear();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+      const request = onlyPreviewRequest();
+      expect(request.step).toMatchObject({ kind: "formula", params: { value: literal, newColumn: "exact_result" } });
+      expect(request.replaceStepId).toBe(editing ? "saved" : undefined);
+      expect(dialog).toHaveAttribute("aria-busy", "true");
+      dispatch({
+        kind: "error",
+        code: backend === "r" ? "invalid_request" : "engine_error",
+        message,
+        recoverable: true
+      });
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(message);
+      expect(dialog).toHaveAttribute("aria-busy", "false");
+      expect(value).toHaveDisplayValue(literal);
+      expect(output).toHaveValue("exact_result");
+      expect(value).toBeEnabled();
+      expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(fixture);
+      expect(screen.queryByRole("region", { name: "Draft review" })).toBeNull();
+
+      fireEvent.change(value, { target: { value: "2" } });
+      postMessage.mockClear();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+      expect(onlyPreviewRequest().step).toMatchObject({ kind: "formula", params: { value: 2 } });
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      dispatch({ kind: "cancelled", targetRequestId: "preview" });
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("The cleaning operation was cancelled.");
+      expect(value).toHaveDisplayValue("2");
+      expect(dialog).toHaveAttribute("aria-busy", "false");
+
+      fireEvent.click(within(dialog).getByRole("button", { name: /^Uppercase/ }));
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      fireEvent.click(within(dialog).getByRole("button", { name: /^Formula column/ }));
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      dispatch({ kind: "editorAction", action: "openOperation", operationKind: "formula" });
+      expect(within(await screen.findByRole("dialog")).queryByRole("alert")).toBeNull();
+    }
+  );
+
+  it("keeps prior viewer and host Undo errors out of an open preview form", async () => {
+    const fixture = formulaPreviewFixture("polars", true);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", ...fixture, summaries: [] });
+    dispatch({ kind: "error", code: "engine_error", message: "Earlier viewer failure", recoverable: true });
+    dispatch({ kind: "editorAction", action: "editLatest" });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(document.querySelector(".appWorkspace [role=alert]")).toHaveTextContent("Earlier viewer failure");
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "runtimeRequest", request: expect.objectContaining({ kind: "undoStep" }) })
+    );
+    dispatch({ kind: "error", code: "engine_error", message: "The requested Undo failed", recoverable: true });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(within(dialog).getByLabelText("Numeric value", { exact: true })).toHaveDisplayValue("2");
+    expect(dialog).toHaveAttribute("aria-busy", "false");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The requested Undo failed");
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(fixture);
+  });
+
+  it("clears a refused form on session replacement without carrying its error", async () => {
+    const fixture = formulaPreviewFixture("polars", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", ...fixture, summaries: [] });
+    dispatch({ kind: "editorAction", action: "openOperation", operationKind: "formula" });
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("New column", { exact: true }), { target: { value: "result" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+    dispatch({ kind: "error", code: "engine_error", message: "Refused previous preview", recoverable: true });
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Refused previous preview");
+    dispatch({
+      kind: "sessionOpened",
+      ...fixture,
+      metadata: { ...fixture.metadata, sessionId: "replacement" },
+      summaries: []
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    dispatch({ kind: "editorAction", action: "openOperation", operationKind: "formula" });
+    expect(within(await screen.findByRole("dialog")).queryByRole("alert")).toBeNull();
+  });
+
   it("uses the immediately previous committed schema for a newly appended draft", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -758,5 +873,59 @@ function emptyDiff() {
     changedCells: 0,
     cells: [],
     truncated: false
+  };
+}
+
+function formulaPreviewFixture(
+  backend: "r" | "polars",
+  editing: boolean
+): { metadata: SessionMetadata; page: GridPage } {
+  const input: ColumnSchema = {
+    id: "c:source:0",
+    name: "input",
+    position: 0,
+    type: "integer",
+    rawType: backend === "r" ? "integer" : "Int64",
+    nullable: false
+  };
+  const step: TransformStep = {
+    id: "saved",
+    kind: "formula",
+    params: { leftColumn: { id: input.id, name: input.name }, operator: "add", value: 2, newColumn: "saved_result" }
+  };
+  const schema = editing ? [input, { ...input, id: "c:step:saved:0", name: "saved_result", position: 1 }] : [input];
+  return {
+    metadata: {
+      ...polarsMetadata,
+      sessionId: "preview-owner",
+      revision: editing ? 1 : 0,
+      backend,
+      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const } : {}),
+      source: { kind: "notebookVariable", label: "synthetic", variableName: "synthetic" },
+      schema,
+      shape: { rows: 1, columns: schema.length },
+      filteredShape: { rows: 1, columns: schema.length },
+      steps: editing ? [step] : [],
+      latestStepInputSchema: [input]
+    },
+    page: {
+      offset: 0,
+      limit: 200,
+      totalRows: 1,
+      columnIds: schema.map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: (editing ? [3, 5] : [3]).map((raw) => ({
+            kind: "integer" as const,
+            raw,
+            display: String(raw),
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    }
   };
 }

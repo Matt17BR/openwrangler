@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import type {
   DataDiff,
   LiveGridPage,
+  OperationKind,
   SessionMetadata,
   StepInspectionResponse,
   TransformStep
@@ -71,12 +72,23 @@ import {
   type QueuedStepSelection,
   type ViewSortActionTarget
 } from "./appState";
-import { useOperationDialogLifecycle } from "./operationDialogLifecycle";
+import { useOperationDialogLifecycle, type OperationDialogPayload } from "./operationDialogLifecycle";
 import { useImportOptionsLifecycle } from "./importOptionsLifecycle";
 import { useInsightsPanelLifecycle } from "./insightsPanelLifecycle";
 import { useProgressiveProfilingLifecycle } from "./progressiveProfilingLifecycle";
 import { useRendererPresentationLifecycle } from "./rendererPresentationLifecycle";
 import { useSessionModeChangeLifecycle } from "./sessionModeChangeLifecycle";
+
+interface OperationPreviewContext {
+  dialog: OperationDialogPayload;
+  kind: OperationKind;
+}
+
+interface ForegroundError {
+  message: string;
+  code?: string;
+  form?: OperationPreviewContext;
+}
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
@@ -108,8 +120,7 @@ export function App() {
   const [confirmedFilterHistory, setConfirmedFilterHistory] =
     useState<ConfirmedFilterHistory>(emptyConfirmedFilterHistory);
   const [filterBarRequestLifecycle, setFilterBarRequestLifecycle] = useState<FilterBarRequestLifecycle>({});
-  const [foregroundError, setForegroundError] = useState<string | undefined>();
-  const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
+  const [foregroundError, setForegroundError] = useState<ForegroundError | undefined>();
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
@@ -161,11 +172,18 @@ export function App() {
   const {
     dialog: operationDialog,
     openDialog: openOperationDialog,
-    closeDialog: closeOperationDialog
+    closeDialog: closeOperationDialogState
   } = useOperationDialogLifecycle({
     scheduleFocusRestoration: scheduleWebviewFocusRestoration,
     canRestoreFocus: canRestoreFocusTo
   });
+  const clearOperationError = useCallback(() => {
+    setForegroundError((current) => (current?.form ? undefined : current));
+  }, []);
+  const closeOperationDialog = useCallback(() => {
+    clearOperationError();
+    closeOperationDialogState();
+  }, [clearOperationError, closeOperationDialogState]);
   const operationOpen = operationDialog !== undefined;
   const {
     pending: importOptionsPending,
@@ -199,7 +217,7 @@ export function App() {
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
-  const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
+  const mutationSnapshot = useRef<{ view: ConfirmedViewState; form?: OperationPreviewContext } | undefined>(undefined);
   const importOptionsUiBusyRef = useRef(true);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
@@ -466,16 +484,17 @@ export function App() {
         return;
       }
       if (isImportOptionsPending()) {
-        setForegroundError("Wait for the current import-options change to finish.");
+        setForegroundError({ message: "Wait for the current import-options change to finish." });
         return;
       }
       const pendingForeground = foregroundRequest.current;
       if (pendingForeground === "mutation") {
-        setForegroundError(
-          intent.action === "open"
-            ? "Wait for the current cleaning operation to finish before adding another step."
-            : "Wait for the current cleaning operation to finish before editing a step."
-        );
+        setForegroundError({
+          message:
+            intent.action === "open"
+              ? "Wait for the current cleaning operation to finish before adding another step."
+              : "Wait for the current cleaning operation to finish before editing a step."
+        });
         return;
       }
       if (pendingForeground) {
@@ -499,13 +518,14 @@ export function App() {
       if (stepInspectionTargetRef.current) clearStepInspection();
       if (intent.action !== "open" && !selectedStep) return;
       const kind = intent.action === "open" ? intent.operationKind : selectedStep?.kind;
+      clearOperationError();
       openOperationDialog({
         ...(kind === undefined ? {} : { kind }),
         ...(selectedStep === undefined ? {} : { editingStep: selectedStep }),
         ...(selectedInputSchema === undefined ? {} : { editingStepInputSchema: selectedInputSchema })
       });
     },
-    [clearStepInspection, isImportOptionsPending, openOperationDialog]
+    [clearOperationError, clearStepInspection, isImportOptionsPending, openOperationDialog]
   );
 
   const requestStepInspection = useCallback(
@@ -518,7 +538,9 @@ export function App() {
       const currentMetadata = metadataRef.current;
       if (foregroundRequest.current) {
         if (latestPageRequest.current?.reason === "projection") {
-          setForegroundError("Wait for the visible columns to finish loading before inspecting a cleaning step.");
+          setForegroundError({
+            message: "Wait for the visible columns to finish loading before inspecting a cleaning step."
+          });
         }
         return;
       }
@@ -556,47 +578,56 @@ export function App() {
     [closeSidePanelState, storePendingStepInspection, storeStepInspection, storeStepInspectionTarget, suspendProfiling]
   );
 
-  const beginMutation = useCallback((): boolean => {
-    if (isImportOptionsPending()) {
-      setForegroundError("Wait for the current import-options change to finish.");
-      return false;
-    }
-    if (foregroundRequest.current) {
-      if (latestPageRequest.current?.reason === "projection") {
-        setForegroundError("Wait for the visible columns to finish loading before changing the cleaning plan.");
-      } else {
-        setForegroundError("Wait for the current data request to finish before changing the cleaning plan.");
+  const beginMutation = useCallback(
+    (form?: OperationPreviewContext): boolean => {
+      if (isImportOptionsPending()) {
+        setForegroundError({ message: "Wait for the current import-options change to finish." });
+        return false;
       }
-      return false;
-    }
-    const previous = captureConfirmedViewState();
-    if (!previous) {
-      setForegroundError("Wait for the dataframe view to finish initializing before changing the cleaning plan.");
-      return false;
-    }
-    clearStepInspection(false, false);
-    flushGridViewState();
-    mutationSnapshot.current = previous;
-    setQueuedOperationIntent(undefined);
-    resetViewProfiling();
-    storeMetadata(withoutDatasetStats(previous.metadata));
-    foregroundRequest.current = "mutation";
-    setFilterBarRequestLifecycle({});
-    setMutationPending(true);
-    storeFailedPageRequest(undefined);
-    setForegroundError(undefined);
-    setProjectionLoading(false);
-    setLoading(true);
-    return true;
-  }, [
-    captureConfirmedViewState,
-    clearStepInspection,
-    flushGridViewState,
-    isImportOptionsPending,
-    resetViewProfiling,
-    storeFailedPageRequest,
-    storeMetadata
-  ]);
+      if (foregroundRequest.current) {
+        if (latestPageRequest.current?.reason === "projection") {
+          setForegroundError({
+            message: "Wait for the visible columns to finish loading before changing the cleaning plan."
+          });
+        } else {
+          setForegroundError({
+            message: "Wait for the current data request to finish before changing the cleaning plan."
+          });
+        }
+        return false;
+      }
+      const previous = captureConfirmedViewState();
+      if (!previous) {
+        setForegroundError({
+          message: "Wait for the dataframe view to finish initializing before changing the cleaning plan."
+        });
+        return false;
+      }
+      clearStepInspection(false, false);
+      flushGridViewState();
+      mutationSnapshot.current = { view: previous, ...(form ? { form } : {}) };
+      setQueuedOperationIntent(undefined);
+      resetViewProfiling();
+      storeMetadata(withoutDatasetStats(previous.metadata));
+      foregroundRequest.current = "mutation";
+      setFilterBarRequestLifecycle({});
+      setMutationPending(true);
+      storeFailedPageRequest(undefined);
+      setForegroundError(undefined);
+      setProjectionLoading(false);
+      setLoading(true);
+      return true;
+    },
+    [
+      captureConfirmedViewState,
+      clearStepInspection,
+      flushGridViewState,
+      isImportOptionsPending,
+      resetViewProfiling,
+      storeFailedPageRequest,
+      storeMetadata
+    ]
+  );
 
   const deleteStep = useCallback(
     (stepId: string) => {
@@ -810,7 +841,7 @@ export function App() {
           return;
         }
         if (isImportOptionsPending()) {
-          setForegroundError("Wait for the current import-options change to finish.");
+          setForegroundError({ message: "Wait for the current import-options change to finish." });
           return;
         }
         if (response.action === "openOperation") {
@@ -910,7 +941,6 @@ export function App() {
       }
 
       if (response.kind === "error") {
-        setForegroundErrorCode(response.code);
         if (response.viewRequestId) {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
@@ -926,26 +956,27 @@ export function App() {
             }
             restoreViewAfterPageFailure(pendingPage, response.code === "pyspark_connect_state_lost");
             storeFailedPageRequest(pendingPage);
-            setForegroundError(response.message);
+            setForegroundError({ message: response.message, code: response.code });
             return;
           }
 
           const settlement = settleProfileMessage(response);
-          if (settlement.foregroundError) setForegroundError(settlement.foregroundError);
+          if (settlement.foregroundError)
+            setForegroundError({ message: settlement.foregroundError, code: response.code });
           return;
         }
         const shouldRestoreMutation = foregroundRequest.current === "mutation";
+        const previous = shouldRestoreMutation ? mutationSnapshot.current : undefined;
         if (shouldRestoreMutation) {
           undoPlanReturnFocus.current = null;
-          const previous = mutationSnapshot.current;
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
           setMutationPending(false);
           setLoading(isImportOptionsPending());
           setProjectionLoading(false);
-          if (previous) restoreConfirmedViewState(previous);
+          if (previous) restoreConfirmedViewState(previous.view);
         } else if (isImportOptionsPending()) {
-          setForegroundError(response.message);
+          setForegroundError({ message: response.message, code: response.code });
           return;
         } else if (!metadataRef.current) {
           clearSynchronization();
@@ -954,7 +985,11 @@ export function App() {
           setRuntimeDependencyInstallPending(false);
         }
         if (response.code === "pyspark_connect_state_lost") setLiveSessionReconnectPending(false);
-        setForegroundError(response.message);
+        setForegroundError({
+          message: response.message,
+          code: response.code,
+          ...(previous?.form ? { form: previous.form } : {})
+        });
         return;
       }
 
@@ -976,17 +1011,19 @@ export function App() {
             setMutationPending(false);
             setLoading(isImportOptionsPending());
             setProjectionLoading(false);
-            if (previous) restoreConfirmedViewState(previous);
-            setForegroundError("The cleaning operation was cancelled.");
+            if (previous) restoreConfirmedViewState(previous.view);
+            setForegroundError({
+              message: "The cleaning operation was cancelled.",
+              ...(previous?.form ? { form: previous.form } : {})
+            });
           } else if (isImportOptionsPending()) {
             return;
           } else if (!metadataRef.current) {
             clearSynchronization();
             setLoading(false);
             setProjectionLoading(false);
-            setForegroundErrorCode(undefined);
             setRuntimeDependencyInstallPending(false);
-            setForegroundError("Opening the dataframe was cancelled.");
+            setForegroundError({ message: "Opening the dataframe was cancelled." });
           }
           return;
         }
@@ -1004,7 +1041,7 @@ export function App() {
           }
           restoreViewAfterPageFailure(pendingPage);
           storeFailedPageRequest(pendingPage);
-          setForegroundError("Page request was cancelled.");
+          setForegroundError({ message: "Page request was cancelled." });
           return;
         }
         settleProfileMessage(response);
@@ -1036,7 +1073,6 @@ export function App() {
         setRuntimeDependencyInstallPending(false);
         setLiveSessionReconnectPending(false);
         setForegroundError(undefined);
-        setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
         resetGridViewState();
         storePendingStepInspection(undefined);
@@ -1084,7 +1120,6 @@ export function App() {
           else setLoading(isImportOptionsPending());
         }
         setForegroundError(undefined);
-        setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
 
         const previousView = confirmedView.current;
@@ -1143,7 +1178,7 @@ export function App() {
         const undoReturnTarget = undoPlanReturnFocus.current;
         undoPlanReturnFocus.current = null;
         clearSynchronization();
-        const previous = mutationSnapshot.current;
+        const previous = mutationSnapshot.current?.view;
         latestPageRequest.current = undefined;
         setFilterBarRequestLifecycle({});
         foregroundRequest.current = undefined;
@@ -1620,10 +1655,10 @@ export function App() {
 
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
     if (!supportsOperation(metadataRef.current?.capabilities, step.kind)) {
-      setForegroundError("That cleaning operation is not available for the current dataframe.");
+      setForegroundError({ message: "That cleaning operation is not available for the current dataframe." });
       return;
     }
-    if (!beginMutation()) return;
+    if (!beginMutation(operationDialog ? { dialog: operationDialog, kind: step.kind } : undefined)) return;
     const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
       kind: "runtimeRequest",
@@ -1808,9 +1843,9 @@ export function App() {
     return (
       <main className="app app-error">
         <h1>Open Wrangler</h1>
-        <p role="alert">{foregroundError}</p>
+        <p role="alert">{foregroundError.message}</p>
         <div className="errorActions">
-          {foregroundErrorCode === "missing_dependencies" && (
+          {foregroundError.code === "missing_dependencies" && (
             <button
               type="button"
               className="toolbarButton"
@@ -2143,10 +2178,10 @@ export function App() {
 
         <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
           <section className="gridShell">
-            {foregroundError && (
+            {foregroundError && !foregroundError.form && (
               <div className="errorBanner" role="alert">
-                <span>{foregroundError}</span>
-                {foregroundErrorCode === "pyspark_connect_state_lost" &&
+                <span>{foregroundError.message}</span>
+                {foregroundError.code === "pyspark_connect_state_lost" &&
                   metadata?.backend === "pyspark" &&
                   metadata.source.kind === "notebookVariable" && (
                     <button
@@ -2159,7 +2194,7 @@ export function App() {
                       {liveSessionReconnectPending ? "Reconnecting…" : "Reconnect"}
                     </button>
                   )}
-                {failedPageRequest && foregroundErrorCode !== "pyspark_connect_state_lost" && (
+                {failedPageRequest && foregroundError.code !== "pyspark_connect_state_lost" && (
                   <button type="button" className="secondaryButton" onClick={retryFailedPage}>
                     Retry page
                   </button>
@@ -2391,6 +2426,12 @@ export function App() {
           initialStep={operationDialog.editingStep}
           editInputSchema={operationDialog.editingStepInputSchema}
           busy={loading || mutationPending || projectionLoading || importOptionsPending}
+          previewError={
+            foregroundError?.form?.dialog === operationDialog
+              ? { kind: foregroundError.form.kind, message: foregroundError.message }
+              : undefined
+          }
+          onOperationChange={clearOperationError}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") closeOperationDialog();
           }}
