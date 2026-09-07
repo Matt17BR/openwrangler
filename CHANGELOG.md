@@ -9,6 +9,11 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
   Failed runs remain eligible for the next schedule; manual previews still run on request.
 
+### Fixed
+
+- Pandas and Polars exports validate the destination file before truncation. Replacing the temporary path cannot
+  redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
+
 ## [2.1.0] - 2026-09-07
 
 ### Security

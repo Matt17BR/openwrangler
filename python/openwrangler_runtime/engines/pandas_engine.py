@@ -4,6 +4,7 @@ import codecs
 import os
 from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from ..custom_code_scope import (
     custom_code_step_lines,
     execute_custom_code,
 )
+from ..export_target import ExportWriterPath
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -355,19 +357,20 @@ class PandasEngine(DataFrameEngine):
         format_name = normalized["format"]
         df = self._visible_frame(self.normalize(frame))
         preserve_index = normalized["rowAxisPolicy"] == "preserve"
-        if format_name == "csv":
-            df.to_csv(
-                path,
-                index=preserve_index,
-                sep=normalized["delimiter"],
-                quotechar=normalized["quoteChar"],
-                encoding=normalized["encoding"],
-                header=normalized["header"],
-            )
-            return
-        if format_name == "parquet":
-            _pandas_parquet_frame(df).to_parquet(path, index=preserve_index)
-            return
+        with path.open_binary_writer() if isinstance(path, ExportWriterPath) else nullcontext(path) as destination:
+            if format_name == "csv":
+                df.to_csv(
+                    destination,
+                    index=preserve_index,
+                    sep=normalized["delimiter"],
+                    quotechar=normalized["quoteChar"],
+                    encoding=normalized["encoding"],
+                    header=normalized["header"],
+                )
+                return
+            if format_name == "parquet":
+                _pandas_parquet_frame(df).to_parquet(destination, index=preserve_index)
+                return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
 
     def validate_export_options(self, options: ExportOptions) -> dict[str, Any]:

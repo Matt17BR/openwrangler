@@ -65,6 +65,9 @@ insertion. The existing App component tests retain DOM-before-acknowledgement an
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution.
 
+Export replacement races belong in `python/tests/test_configurable_export.py`, where native writers must leave
+replacement files unchanged.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:
