@@ -198,6 +198,9 @@ conversion rules, arithmetic limits and output validation apply to those logical
 their encoded storage.
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
+Fill reads selected dictionary targets, donors and keys as logical values. Filled targets use native logical storage;
+targets with no filled cells and unrelated encoded columns retain their dictionary representation. Decimal capacity
+and timezone checks still apply to replacement literals when the target has no missing cells.
 
 ### Polars
 

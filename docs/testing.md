@@ -147,6 +147,8 @@ indices, null codebook entries, multiple chunks and encoded source isolation. Op
 row removal and directional ordering on mixed dictionary/Sparse frames, including exact values in unselected columns.
 The operation owner checks native output dtypes and existing refusals for dictionary casts through session preflight,
 live execution and standalone code, including empty/all-null inputs and unsigned values beyond the signed target.
+Fill tests cover dictionary targets, ordered donors and grouping keys, native Arrow dates, unchanged no-op storage
+and complete-column literal validation. Mixed plans retain source arrays and exercise helper-name collisions.
 
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;

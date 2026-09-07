@@ -109,6 +109,8 @@ dictionary values do not gain scalar operations. Integer filtering, sorting, dir
 preserve exact large values in Sparse columns, including returned columns that were not used as keys.
 Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
 checks also cover encoded unsigned values.
+Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.
+Generated Fill code treats native Arrow dates as dates, including empty and all-null columns.
 
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.
