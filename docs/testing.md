@@ -138,6 +138,9 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
 `python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
 
+Pandas engine tests load native Arrow dates from Parquet and check profiles, value selections, viewing and
+standalone Filter Rows/Sort Rows. Empty, missing and distant dates retain native storage, indices and source bytes.
+
 Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
 the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.

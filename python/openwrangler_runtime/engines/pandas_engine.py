@@ -3325,6 +3325,11 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
 def _pandas_semantic_type(series: Any) -> str:
     import pandas as pd
 
+    if isinstance(series.dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        if pa.types.is_date(series.dtype.pyarrow_dtype):
+            return "date"
     semantic_type = infer_semantic_type(str(series.dtype))
     if semantic_type == "string" and pd.api.types.is_object_dtype(series.dtype):
         # Pandas' native classifier is exhaustive but runs in its optimized C

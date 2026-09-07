@@ -101,6 +101,8 @@ identity.
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
 
+Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
+
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.
 

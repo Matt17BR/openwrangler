@@ -17,6 +17,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
 
 - Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
+- Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
 - Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
   DuckDB arrays remain containers in schema and generated-code checks.
 - Floor and Ceiling preserve exact integer and Decimal values in Python engines, including generated code.
