@@ -239,6 +239,12 @@ not convert through another dataframe engine. Viewing, all 32 cleaning operation
 supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
 Excel reader requires it; it is not a transport conversion path.
 
+CSV and Parquet readers disable native glob expansion. On Unix, JSONL/NDJSON opens the selected path through a
+builtin stream and gives Polars ownership of a duplicated native descriptor. If duplication falls back to a Python
+buffer read, the reader returns no source bytes and refuses the temporary plan. The session still checks its source
+fingerprint before and after reads. On Windows, JSONL/NDJSON uses the direct absolute path and refuses paths containing
+`*`, `?`, or `[`, including verbatim path prefixes, because the supported scanner cannot disable glob expansion.
+
 Datetime formatting preserves native Date and Datetime columns, including time zones and nanosecond precision,
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
 Grouped integer and Decimal medians retain the target dtype and reject unrepresentable midpoints only when a group

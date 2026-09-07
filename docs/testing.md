@@ -181,6 +181,12 @@ Polars and DuckDB engine owners exercise misleading enum labels, nested types, f
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
 the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.
 
+Polars file owners read actual JSONL/NDJSON files beside misleading encoded siblings and escaped-path directories.
+They check selected rows, native lazy projection, standalone transformations and source replacement refusal. Unix
+tests retain native reads after the Python stream closes and exhaust descriptors only inside isolated child
+processes, where fallback buffering, empty-plan publication, panic diagnostics and leaked handles fail assertions.
+Windows dispatch tests are separate from actual Windows file reads and explicit glob-path refusal.
+
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
 coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
