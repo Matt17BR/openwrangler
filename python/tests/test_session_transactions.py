@@ -465,3 +465,39 @@ def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(t
     expected = {**before, "pageCache": [], "pageCacheBytes": 0}
     assert session_state(session) == expected
     assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+
+
+@pytest.mark.parametrize("dtype,value", [("UInt64", 2**64 - 1), ("Float64", float("inf"))])
+def test_integer_cast_overflow_keeps_the_confirmed_session(
+    dtype: str, value: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pandas as pd
+
+    import __main__
+
+    frame = pd.DataFrame({"value": pd.Series([value, None], dtype=dtype)})
+    original = frame.copy(deep=True)
+    monkeypatch.setattr(__main__, "cast_source", frame, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "cast_source", "variableName": "cast_source"},
+            backend="pandas",
+            mode="editing",
+        )
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        before = session_state(session)
+        column = opened["metadata"]["schema"][0]
+        step = {
+            "id": "cast",
+            "kind": "castColumn",
+            "params": {"column": {"id": column["id"], "name": column["name"]}, "dtype": "integer"},
+        }
+        with pytest.raises(EngineError, match="signed 64-bit integer"):
+            manager.preview_step(session_id, 0, step, 0, 10)
+        assert session_state(session) == before
+        pd.testing.assert_frame_equal(frame, original)
+        assert manager.get_page(session_id, 0, 0, 10, {"filters": [], "sort": []})["revision"] == 0
+    finally:
+        manager.close_all()
