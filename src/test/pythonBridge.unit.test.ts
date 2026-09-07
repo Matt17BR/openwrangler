@@ -3152,6 +3152,11 @@ describe("PythonBridge environment resource selection", () => {
     source: "pythonExtension" as const
   };
 
+  beforeEach(() => {
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+    vi.mocked(pythonEnvironment.probeDependencies).mockClear();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
