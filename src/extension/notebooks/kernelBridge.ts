@@ -11,6 +11,7 @@ import type {
 } from "../../shared/protocol";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
+import { PYTHON_STDOUT_MAX_FRAME_BYTES } from "../pythonStdoutLineFramer";
 import type { SessionOpenProgressStage } from "../../shared/sessionOpenProgress";
 import {
   DetachedBridgeRequestError,
@@ -783,7 +784,11 @@ export class KernelBridge implements OpenWranglerBridge {
   }
 
   private async executeFramedRequest(kernel: Kernel, framed: FramedKernelRequest): Promise<OpenWranglerResponse> {
-    return parseKernelResponse(await this.executePython(kernel, framed.code), framed.marker, framed.requestId);
+    return parseKernelResponse(
+      await this.executePython(kernel, framed.code, framed.marker),
+      framed.marker,
+      framed.requestId
+    );
   }
 
   private async executePySparkNotebookPreflight(
@@ -828,7 +833,7 @@ ${
     this.assertNotebookProvenance();
   }
 
-  private async executePython(kernel: Kernel, code: string): Promise<string> {
+  private async executePython(kernel: Kernel, code: string, responseMarker?: string): Promise<string> {
     const tokenSource = new vscode.CancellationTokenSource();
     try {
       // Jupyter maps cancellation to a whole-kernel SIGINT. With PySpark's
@@ -836,7 +841,10 @@ ${
       // and stop unrelated user work even when this request targets Pandas,
       // Polars, or DuckDB. Every execution therefore owns a fresh token that
       // is never cancelled and remains alive until its output settles.
-      return await kernelOutputsToText(kernel.executeCode(code, tokenSource.token));
+      const output = kernel.executeCode(code, tokenSource.token);
+      return await (responseMarker === undefined
+        ? kernelOutputsToText(output)
+        : kernelOutputsToFramedText(output, responseMarker));
     } finally {
       tokenSource.dispose();
     }
@@ -1301,6 +1309,94 @@ export function withKernelSessionIdentity(
 type KernelIdentifiedRequest =
   Exclude<OpenWranglerRequest, OpenSessionRequest> | (OpenSessionRequest & { requestedSessionId: string });
 
+/** Retains only this request's frame, but consumes output until the kernel execution settles. */
+export async function kernelOutputsToFramedText(
+  output: ReturnType<Kernel["executeCode"]>,
+  marker: string
+): Promise<string> {
+  const start = `__OPEN_WRANGLER_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_END_${marker}__`;
+  const chunks: string[] = [];
+  let state: "before" | "body" | "after" = "before";
+  let carry = "";
+  let bytes = 0;
+  let bodyStarted = false;
+  let failure: Error | undefined;
+  const fail = (message: string) => {
+    failure ??= new Error(message);
+    chunks.length = 0;
+    carry = "";
+  };
+  const append = (text: string) => {
+    if (text.length === 0) return;
+    if (!bodyStarted) {
+      bodyStarted = true;
+      // START's print adds one LF outside the response. The response's own
+      // terminating LF remains inside the native publisher's frame ceiling.
+      if (text.startsWith("\n")) text = text.slice(1);
+    }
+    bytes += Buffer.byteLength(text, "utf8");
+    if (bytes > PYTHON_STDOUT_MAX_FRAME_BYTES) {
+      fail("Open Wrangler kernel response exceeds the byte limit.");
+    } else if (text.length > 0) {
+      chunks.push(text);
+    }
+  };
+
+  try {
+    for await (const item of output) {
+      // Returning this iterator early leaves Jupyter's execution listener
+      // queuing output. Discard after failure, without decoding or interrupting.
+      if (failure) continue;
+      let text: string;
+      try {
+        text = carry + outputItemToText(item);
+      } catch {
+        fail("Open Wrangler kernel execution failed while reading its response.");
+        continue;
+      }
+      carry = "";
+      while (text.length > 0 && !failure) {
+        const startIndex = text.indexOf(start);
+        const endIndex = text.indexOf(end);
+        const index = startIndex < 0 ? endIndex : endIndex < 0 ? startIndex : Math.min(startIndex, endIndex);
+        if (index < 0) {
+          // Only ASCII marker prefixes need lookbehind. Keep a trailing high
+          // surrogate too, so a split Unicode scalar is counted once in UTF-8.
+          for (let length = Math.min(text.length, start.length - 1); length > 0; length -= 1) {
+            const suffix = text.slice(-length);
+            if (start.startsWith(suffix) || end.startsWith(suffix)) {
+              carry = start.startsWith(suffix) ? start.slice(0, length) : end.slice(0, length);
+              break;
+            }
+          }
+          const last = text.charCodeAt(text.length - 1);
+          if (state === "body" && carry.length === 0 && last >= 0xd800 && last <= 0xdbff) {
+            carry = String.fromCharCode(last);
+          }
+          if (state === "body") append(text.slice(0, text.length - carry.length));
+          break;
+        }
+        if (state === "body") append(text.slice(0, index));
+        if (failure) break;
+        if (index === startIndex && state === "before") {
+          state = "body";
+        } else if (index === endIndex && state === "body") {
+          state = "after";
+        } else {
+          fail("Open Wrangler kernel response contained duplicate or misplaced markers.");
+        }
+        text = text.slice(index + (index === startIndex ? start.length : end.length));
+      }
+    }
+  } catch (error) {
+    if (!failure) throw error;
+  }
+  if (failure) throw failure;
+  if (state !== "after") throw new Error("Open Wrangler could not parse the kernel response.");
+  return `${start}\n${chunks.join("")}${end}`;
+}
+
 export async function kernelOutputsToText(
   output: ReturnType<Kernel["executeCode"]>,
   maximumBytes = Number.POSITIVE_INFINITY
@@ -1376,7 +1472,7 @@ function parseMarkedJson(output: string, marker: string): string {
   const startIndex = output.indexOf(start);
   const endIndex = output.indexOf(end);
   if (startIndex < 0 || endIndex <= startIndex) {
-    throw new Error(`Open Wrangler could not parse the kernel response. Output: ${output.trim()}`);
+    throw new Error("Open Wrangler could not parse the kernel response.");
   }
   return output.slice(startIndex + start.length, endIndex).trim();
 }
@@ -1602,7 +1698,13 @@ function isBoundedText(value: unknown): value is string {
 }
 
 export function parseKernelResponse(output: string, marker: string, requestId: string): OpenWranglerResponse {
-  const parsed: unknown = JSON.parse(parseMarkedJson(output, marker));
+  const encoded = parseMarkedJson(output, marker);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
+  }
   if (!isRuntimeResponseEnvelope(parsed) || parsed.requestId !== requestId) {
     throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
   }

@@ -391,6 +391,12 @@ Typed cells are strict-JSON-safe and preserve the distinctions needed by filteri
 and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
 
+For framed Python runtime requests, the notebook bridge retains only the current request's marked response, bounded
+by the runtime's 17 MiB frame ceiling. Output before and after that frame is discarded. Framing and decoding failures drain the exact kernel
+execution before returning an error; a complete frame also waits for that execution to settle before publication.
+Missing, duplicate, malformed and oversized frames produce diagnostics without copying their payload. This bounds
+the bridge's retained frame and marker lookbehind, not memory already allocated by Jupyter or an individual output item.
+
 Every live grid request is a two-dimensional row-and-column window. The protocol caps one page at 10,000 rows and 256
 columns. The response returns the exact ordered stable `columnIds` corresponding to every row vector; a missing,
 reordered, duplicated, or partial identity list fails closed. Filters, sorts, full-schema ARIA coordinates, generated

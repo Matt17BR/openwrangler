@@ -1,6 +1,5 @@
 // This is the complete emitted frame (response envelope plus LF), not a page's
-// payload budget. The legacy Python publisher may still fail this host ceiling
-// until its serialization contract is aligned separately.
+// payload budget. Python's native response publisher enforces the same ceiling.
 export const PYTHON_STDOUT_MAX_FRAME_BYTES = 17 * 1_024 * 1_024;
 
 export type PythonStdoutLineFramingErrorCode =

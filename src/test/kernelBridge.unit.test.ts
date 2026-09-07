@@ -1212,6 +1212,108 @@ if isinstance(tree.body[-1], ast.Expr):
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
+  it("drains a failed open before dispatching its exact-kernel cleanup", async () => {
+    const advance = deferred<"draining" | "cleanup">();
+    const release = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    let executionSettled = false;
+    const controller = controllableKernel(async function* (code) {
+      let opening = false;
+      for await (const output of kernelExecution(code, (request) => {
+        requests.push(request);
+        if (request.kind === "openSession") {
+          opening = true;
+          return openedResponse(request.requestedSessionId!);
+        }
+        if (request.kind === "closeSession") {
+          advance.resolve("cleanup");
+          expect(executionSettled).toBe(true);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        return initializedResponse;
+      })) {
+        if (opening) {
+          yield {
+            items: [{ mime: "application/vnd.code.notebook.error", data: Buffer.from("synthetic kernel failure") }]
+          };
+          advance.resolve("draining");
+          await release.promise;
+          executionSettled = true;
+        }
+        yield output;
+      }
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    const pending = bridge.request(openRequest("drained-open")).catch((error: unknown) => error);
+    try {
+      expect(await advance.promise).toBe("draining");
+      expect(requests.map((request) => request.kind)).toEqual(["openSession"]);
+      expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+    } finally {
+      release.resolve();
+      await pending;
+      bridge.dispose();
+    }
+    expect(executionSettled).toBe(true);
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+  });
+
+  it("publishes a noisy open only after its framed response and kernel execution both settle", async () => {
+    const frameReceived = deferred<void>();
+    const release = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controllableKernel(async function* (code) {
+      let opening = false;
+      for await (const output of kernelExecution(code, (request) => {
+        requests.push(request);
+        if (request.kind === "openSession") {
+          opening = true;
+          return openedResponse(request.requestedSessionId!);
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        return initializedResponse;
+      })) {
+        yield { text: "synthetic inspection output\n" };
+        yield output;
+        if (opening) {
+          frameReceived.resolve();
+          await release.promise;
+          yield { text: "synthetic trailing output\n" };
+        }
+      }
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    let settled = false;
+    const opening = bridge.request(openRequest("noisy-open"));
+    const observed = opening.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    try {
+      await frameReceived.promise;
+      expect(settled).toBe(false);
+      expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+      release.resolve();
+      await expect(opening).resolves.toEqual(openedResponse("noisy-open"));
+      await expect(bridge.request(closeRequest("noisy-open"))).resolves.toEqual({
+        kind: "sessionClosed",
+        sessionId: "noisy-open"
+      });
+      expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    } finally {
+      release.resolve();
+      await observed;
+      bridge.dispose();
+    }
+  });
+
   it.each([
     ["pandas", "cancellation"],
     ["polars", "cancellation"],

@@ -237,6 +237,10 @@ Integer-adapter tests synthesize public By Example programs with UInt128 operand
 chunks. Live and generated results retain Int128 and existing overflow refusals. Encoder edge tests cover native
 explode behavior on both dependency endpoints, including empty and repeated labels.
 
+Kernel response tests cover split markers and Unicode, exact byte limits, output outside the frame, malformed
+responses and execution settlement after decoding fails. Bridge tests verify that cleanup waits for the original
+execution and that valid noisy responses still publish their correlated state.
+
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
 component tests own checkbox membership, saved scalar selections, and unnamed-column navigation; the production
