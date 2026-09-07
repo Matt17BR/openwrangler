@@ -965,10 +965,9 @@ def test_pandas_object_schema_inference_is_fast_and_exhaustive() -> None:
     mixed = pd.Series(values, dtype=object)
     assert PandasEngine().schema(mixed.to_frame(name="mixed"))[0]["type"] == "string"
     assert pandas_engine_module._pandas_semantic_type(mixed) == "string"
-    prepared, sentinel, integer_key = pandas_engine_module._pandas_prepare_group_key(mixed)
+    prepared, uniques = pandas_engine_module._pandas_prepare_group_key(mixed)
     assert prepared is mixed
-    assert sentinel is None
-    assert integer_key is False
+    assert uniques is None
 
     sparse_wide = pd.Series([None, 10**40, *([None] * 998)], dtype=object)
     assert PandasEngine().schema(sparse_wide.to_frame(name="wide"))[0]["type"] == "integer"
