@@ -81,6 +81,8 @@ The shared `fixtures/view-literal-contract.json` owns portable filter spellings.
 Filter Rows steps while rejecting obsolete viewing payloads; Python filter and native R catalog tests execute the
 historical infinity selections through live and generated code.
 
+The production browser suite owns rendered summary-tab hover contrast.
+
 ## Pull-request CI
 
 The pull-request workflow requires five jobs:
