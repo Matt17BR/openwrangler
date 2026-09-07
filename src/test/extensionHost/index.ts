@@ -3254,7 +3254,34 @@ async function exerciseReleasedJupyterExtension(
         columnOffset: literalOutput.position,
         columnLimit: 1
       });
-      assert.equal(result.kind, "page");
+      const current = testing.activeSession();
+      assert.equal(
+        result.kind,
+        "page",
+        JSON.stringify({
+          errorCode:
+            result.kind === "error"
+              ? [
+                  "stale_request",
+                  "stale_response",
+                  "unknown_session",
+                  "engine_error",
+                  "invalid_runtime_response",
+                  "runtime_recovery_failed"
+                ].includes(result.code)
+                ? result.code
+                : "unclassified"
+              : undefined,
+          recoverable: result.kind === "error" ? result.recoverable : undefined,
+          requestedRevision: revision,
+          currentRevision: current?.metadata.revision,
+          currentSessionMatches: current?.sessionId === polarsFrame.sessionId,
+          errorSessionMatches: result.kind === "error" ? result.sessionId === polarsFrame.sessionId : undefined,
+          responseViewMatches: "viewRequestId" in result ? result.viewRequestId === viewRequestId : false,
+          currentHasDraft: current?.metadata.draftStep !== undefined,
+          currentDraftMatchesLiteral: current?.metadata.draftStep?.id === literalStepId
+        })
+      );
       if (result.kind !== "page") throw new Error("The exact Polars Formula result did not return a page.");
       assert.deepEqual(result.page.columnIds, [literalOutput.id]);
       assert.deepEqual(
