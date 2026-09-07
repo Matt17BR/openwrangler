@@ -1285,6 +1285,7 @@ class PandasEngine(DataFrameEngine):
         needs_dictionary_values = any(
             step["kind"]
             in {
+                "fillMissingValues",
                 "roundNumber",
                 "floorNumber",
                 "ceilNumber",
@@ -4712,7 +4713,10 @@ def _nan_mask(series: Any) -> Any:
 def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> Any:
     import pandas as pd
 
+    original = target
+    target = _pandas_dictionary_values(target)
     result = target.copy()
+    filled = False
     semantic_type = _pandas_semantic_type(target)
     decimal_spec = _pandas_decimal_spec(target, _pandas_present_values(target)) if semantic_type == "decimal" else None
     datetime_awareness = _pandas_datetime_awareness(target) if semantic_type == "datetime" else None
@@ -4725,6 +4729,7 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
         if not bool(take.any()):
             continue
 
+        fallback = _pandas_dictionary_values(fallback)
         candidate = fallback.astype("string") if isinstance(result.dtype, pd.StringDtype) else fallback
         selected = take.to_numpy(dtype=bool)
         try:
@@ -4785,7 +4790,8 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
                 "Convert the target column to a wider type first."
             )
         result = updated
-    return result
+        filled = True
+    return result if filled else original.copy()
 
 
 def _pandas_fill_missing_directional(
@@ -4811,9 +4817,12 @@ def _pandas_fill_missing_directional(
         )
         order = order[relative_order]
 
+    original = series
+    series = _pandas_dictionary_values(series)
     ordered = series.iloc[order].reset_index(drop=True)
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
     result = ordered.copy()
+    filled = False
     cursor = 0
     while cursor < len(result):
         if not ordered_missing[cursor]:
@@ -4828,11 +4837,14 @@ def _pandas_fill_missing_directional(
         if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
             try:
                 result.iloc[start:end] = ordered.iloc[anchor]
+                filled = True
             except (TypeError, ValueError, OverflowError) as error:
                 raise EngineError(
                     f"Directional fill is incompatible with the selected Pandas column: {error}"
                 ) from error
 
+    if not filled:
+        return original.copy()
     inverse = np.empty(len(order), dtype=np.int64)
     inverse[order] = np.arange(len(order), dtype=np.int64)
     restored = result.iloc[inverse].copy()
@@ -4851,7 +4863,8 @@ def _pandas_fill_missing_linear_interpolation(
 
     import numpy as np
 
-    series = frame.iloc[:, target_position]
+    original = frame.iloc[:, target_position]
+    series = _pandas_dictionary_values(original)
     if _pandas_semantic_type(series) != "float":
         raise EngineError("Linear interpolation requires a floating-point target column.")
     coordinates = _pandas_linear_coordinate_values(frame.iloc[:, coordinate_position])
@@ -4866,6 +4879,7 @@ def _pandas_fill_missing_linear_interpolation(
     ordered_coordinates = [coordinates[int(position)] for position in order]
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
     result = ordered.copy()
+    filled = False
     cursor = 0
     while cursor < len(result):
         if not ordered_missing[cursor]:
@@ -4895,9 +4909,12 @@ def _pandas_fill_missing_linear_interpolation(
                 # This convex form avoids overflowing ``right - left`` for
                 # finite endpoints with opposite signs.
                 result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)
+                filled = True
         except (ArithmeticError, TypeError, ValueError, OverflowError) as error:
             raise EngineError(f"Linear interpolation failed for the selected coordinates: {error}") from error
 
+    if not filled:
+        return original.copy()
     try:
         result = result.astype(series.dtype)
     except (TypeError, ValueError, OverflowError) as error:
@@ -4986,9 +5003,11 @@ def _pandas_fill_missing_grouped_statistic(
     if not missing.any():
         return series.copy()
 
+    original = series
+    series = _pandas_dictionary_values(series)
     prepared_keys = []
     for position in key_positions:
-        key_series = frame.iloc[:, position].reset_index(drop=True)
+        key_series = _pandas_dictionary_values(frame.iloc[:, position]).reset_index(drop=True)
         if isinstance(key_series.dtype, pd.CategoricalDtype):
             # Pandas omits the missing group for an observed categorical even
             # with dropna=False.  Group the values as objects so null category
@@ -5010,6 +5029,7 @@ def _pandas_fill_missing_grouped_statistic(
     exact_identity = statistic == "mostFrequent" and _pandas_grouped_identity_required(series)
 
     result = series.copy()
+    filled = False
     try:
         source = series.reset_index(drop=True)
         for positions in groups:
@@ -5028,9 +5048,10 @@ def _pandas_fill_missing_grouped_statistic(
             if fill_value is None:
                 continue
             result.iloc[missing_positions] = fill_value
+            filled = True
     except (TypeError, ValueError, OverflowError) as error:
         raise EngineError(f"A grouped fill value is incompatible with the selected Pandas column: {error}") from error
-    return result
+    return result if filled else original.copy()
 
 
 def _pandas_grouped_identity_required(series: Any) -> bool:
@@ -5176,6 +5197,8 @@ def _pandas_fill_statistic(
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
+    original = series
+    series = _pandas_dictionary_values(series)
     missing = _null_mask(series) | _nan_mask(series)
     replacement_kind = replacement.get("kind")
     semantic_type = _pandas_semantic_type(series)
@@ -5183,7 +5206,7 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
         if replacement_kind == "mean" and semantic_type != "float":
             raise EngineError("Mean fill requires a floating-point column.")
         if not bool(missing.any()):
-            return series.copy()
+            return original.copy()
         present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
         fill_value = _pandas_fill_statistic(series, present, str(replacement_kind), semantic_type, required=True)
         try:
@@ -5202,7 +5225,7 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     elif semantic_type == "datetime":
         fill_value = require_datetime_fill_awareness(fill_value, _pandas_datetime_awareness(series))
     if not bool(missing.any()):
-        return series.copy()
+        return original.copy()
     target = series.astype("string") if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()
     try:
         return target.mask(missing, fill_value)
@@ -5359,6 +5382,10 @@ def _generated_pandas_fill_type_helpers() -> list[str]:
         "        return 'integer'",
         "    if pd.api.types.is_float_dtype(series.dtype):",
         "        return 'float'",
+        "    if isinstance(series.dtype, pd.ArrowDtype):",
+        "        import pyarrow as pa",
+        "        if pa.types.is_date(series.dtype.pyarrow_dtype):",
+        "            return 'other'",
         "    if pd.api.types.is_datetime64_any_dtype(series.dtype):",
         "        return 'datetime'",
         "    arrow_type = getattr(series.dtype, 'pyarrow_dtype', None)",
@@ -5570,7 +5597,10 @@ def _generated_pandas_fill_statistic_helpers() -> list[str]:
 def _generated_pandas_fill_fallback_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_missing_from_columns(target, fallbacks):",
+        "    original = target",
+        "    target = _open_wrangler_dictionary_values(target)",
         "    result = target.copy()",
+        "    filled = False",
         "    semantic_type = _open_wrangler_fill_semantic_type(target)",
         "    decimal_spec = (",
         "        _open_wrangler_decimal_spec(",
@@ -5600,6 +5630,7 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
         "        take = remaining & available",
         "        if not take.any():",
         "            continue",
+        "        fallback = _open_wrangler_dictionary_values(fallback)",
         "        candidate = fallback.astype('string') if isinstance(result.dtype, pd.StringDtype) else fallback",
         "        selected = take.to_numpy(dtype=bool)",
         "        try:",
@@ -5665,7 +5696,8 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
             "target column. Convert the target column to a wider type first.')"
         ),
         "        result = updated",
-        "    return result",
+        "        filled = True",
+        "    return result if filled else original.copy()",
         "",
         "",
     ]
@@ -5687,12 +5719,15 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "            _open_wrangler_take_rows(df.iloc[:, [position]], order).iloc[:, 0], ascending, nulls",
         "        )",
         "        order = order[relative_order]",
+        "    original = series",
+        "    series = _open_wrangler_dictionary_values(series)",
         "    ordered = series.iloc[order].reset_index(drop=True)",
         (
             "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
             "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
         ),
         "    result = ordered.copy()",
+        "    filled = False",
         "    cursor = 0",
         "    while cursor < len(result):",
         "        if not ordered_missing[cursor]:",
@@ -5707,11 +5742,14 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
         "            try:",
         "                result.iloc[start:end] = ordered.iloc[anchor]",
+        "                filled = True",
         "            except (TypeError, ValueError, OverflowError) as error:",
         (
             "                raise ValueError('Directional fill is incompatible with the selected Pandas column: ' "
             "+ str(error)) from error"
         ),
+        "    if not filled:",
+        "        return original.copy()",
         "    inverse = np.empty(len(order), dtype=np.int64)",
         "    inverse[order] = np.arange(len(order), dtype=np.int64)",
         "    restored = result.iloc[inverse].copy()",
@@ -5803,7 +5841,8 @@ def _generated_pandas_fill_linear_helpers() -> list[str]:
         "",
         "",
         "def _open_wrangler_fill_missing_linear_interpolation(df, target_position, coordinate_position, max_gap):",
-        "    series = df.iloc[:, target_position]",
+        "    original = df.iloc[:, target_position]",
+        "    series = _open_wrangler_dictionary_values(original)",
         "    if _open_wrangler_fill_semantic_type(series) != 'float':",
         "        raise ValueError('Linear interpolation requires a floating-point target column.')",
         "    coordinates = _open_wrangler_linear_coordinate_values(df.iloc[:, coordinate_position])",
@@ -5820,6 +5859,7 @@ def _generated_pandas_fill_linear_helpers() -> list[str]:
             "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
         ),
         "    result = ordered.copy()",
+        "    filled = False",
         "    cursor = 0",
         "    while cursor < len(result):",
         "        if not ordered_missing[cursor]:",
@@ -5848,11 +5888,14 @@ def _generated_pandas_fill_linear_helpers() -> list[str]:
         "                if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:",
         ("                    raise ValueError('coordinate distance produced a non-finite interpolation weight')"),
         ("                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)"),
+        "                filled = True",
         "        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:",
         (
             "            raise ValueError('Linear interpolation failed for the selected coordinates: ' "
             "+ str(error)) from error"
         ),
+        "    if not filled:",
+        "        return original.copy()",
         "    try:",
         "        result = result.astype(series.dtype)",
         "    except (TypeError, ValueError, OverflowError) as error:",
@@ -5881,9 +5924,11 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         ),
         "    if not missing.any():",
         "        return series.copy()",
+        "    original = series",
+        "    series = _open_wrangler_dictionary_values(series)",
         "    prepared_keys = []",
         "    for position in key_positions:",
-        "        key_series = df.iloc[:, position].reset_index(drop=True)",
+        "        key_series = _open_wrangler_dictionary_values(df.iloc[:, position]).reset_index(drop=True)",
         "        if isinstance(key_series.dtype, pd.CategoricalDtype):",
         "            key_series = key_series.astype(object)",
         "        if _open_wrangler_grouped_identity_required(key_series):",
@@ -5901,6 +5946,7 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
         "    exact_identity = statistic == 'mostFrequent' and _open_wrangler_grouped_identity_required(series)",
         "    result = series.copy()",
+        "    filled = False",
         "    source = series.reset_index(drop=True)",
         "    for positions in groups:",
         "        missing_positions = positions[missing[positions]]",
@@ -5914,7 +5960,8 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "        if fill_value is None:",
         "            continue",
         "        result.iloc[missing_positions] = fill_value",
-        "    return result",
+        "        filled = True",
+        "    return result if filled else original.copy()",
         "",
         "",
         "def _open_wrangler_grouped_identity_required(series):",
@@ -5977,12 +6024,14 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
 def _generated_pandas_fill_value_helpers() -> list[str]:
     return [
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
+        "    original = series",
+        "    series = _open_wrangler_dictionary_values(series)",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
         "    if replacement_kind in {'mean', 'median', 'mostFrequent'}:",
         "        if replacement_kind == 'mean' and semantic_type != 'float':",
         "            raise ValueError('Mean fill requires a floating-point column.')",
         "        if not missing.any():",
-        "            return series.copy()",
+        "            return original.copy()",
         "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
         "        fill_value = _open_wrangler_fill_statistic(",
         "            series, present, replacement_kind, semantic_type, True",
@@ -6000,7 +6049,7 @@ def _generated_pandas_fill_value_helpers() -> list[str]:
         "            expected = 'timezone-aware' if column_aware else 'timezone-naive'",
         "            raise ValueError(f'The replacement datetime must be {expected} to match the selected column.')",
         "    if not missing.any():",
-        "        return series.copy()",
+        "        return original.copy()",
         "    target = series.astype('string') if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()",
         "    return target.mask(missing, fill_value)",
         "",
