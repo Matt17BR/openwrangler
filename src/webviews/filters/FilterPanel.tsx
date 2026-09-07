@@ -10,13 +10,13 @@ import type {
 } from "../../shared/filterModel";
 import { MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS, truncateViewValueTextToCodePoints } from "../../shared/viewValueLimits";
 import {
-  ambiguousViewColumnMessage,
   countViewColumnNames,
   isActiveColumnFilter,
   prioritizeSortRule,
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
+  viewColumnNameUnavailableReason,
   viewPredicateOperators
 } from "../../shared/filterModel";
 import {
@@ -96,25 +96,22 @@ export function FilterPanel({
   const activeColumn = columnSchema?.name ?? "";
   const hasActiveColumn = Boolean(columnSchema && activeColumn);
   const activeColumnNameCount = viewColumnNameCounts.get(activeColumn) ?? 0;
-  const activeColumnAmbiguous = activeColumnNameCount > 1;
+  const columnNameUnavailableReason = viewColumnNameUnavailableReason(activeColumn, activeColumnNameCount);
   const activeSortRule = draftSort.find((rule) => rule.column === activeColumn);
   const activeSortInput =
     sortInput.modelKey === modelSortKey && sortInput.columnId === columnId ? sortInput : activeSortRule;
   const sortDirection = activeSortInput?.direction ?? "asc";
   const sortNulls = activeSortInput?.nulls ?? "last";
 
-  const ambiguityMessage = activeColumnAmbiguous
-    ? ambiguousViewColumnMessage(activeColumn, activeColumnNameCount)
-    : undefined;
-  const filterControlsDisabled = disabled || !filterSupported || activeColumnAmbiguous;
-  const sortControlsDisabled = disabled || !sortSupported || activeColumnAmbiguous;
+  const filterControlsDisabled = disabled || !filterSupported || columnNameUnavailableReason !== undefined;
+  const sortControlsDisabled = disabled || !sortSupported || columnNameUnavailableReason !== undefined;
   const valueControlsDisabled = filterControlsDisabled || !columnValuesSupported;
   const supportsTypedComparison = columnSchema ? supportsTypedViewComparison(columnSchema.type) : false;
   const availableOperators = columnSchema ? viewPredicateOperators(columnSchema.type) : [];
   const activePredicateOperator = availableOperators.includes(predicateOperator)
     ? predicateOperator
     : (availableOperators[0] ?? "isNull");
-  const columnValueResponse = activeColumn && !activeColumnAmbiguous ? values.get(activeColumn) : undefined;
+  const columnValueResponse = columnNameUnavailableReason === undefined ? values.get(activeColumn) : undefined;
 
   const activeFilter = activeFilters.find((item) => item.column === activeColumn);
   const selectedValues = new Map(
@@ -347,9 +344,9 @@ export function FilterPanel({
         />
       )}
 
-      {columnSchema?.name === "" && (
+      {columnSchema && columnNameUnavailableReason && (
         <p className="mutedText" role="status">
-          Viewing filters and sorts require a column name. Choose another column.
+          {columnNameUnavailableReason}
         </p>
       )}
 
@@ -393,12 +390,6 @@ export function FilterPanel({
             ))}
           </select>
         </label>
-        {ambiguityMessage && (
-          <p className="mutedText" role="status">
-            {ambiguityMessage}
-          </p>
-        )}
-
         <div className="row">
           <input
             aria-label={`Search values for ${activeColumn || "selected column"}`}

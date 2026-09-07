@@ -22,6 +22,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Canceled editor openings stop deferred panel setup and preserve existing Code Preview actions.
 - Value filters preserve null and NaN choices and recognize supported scalar selections. Unnamed
   columns no longer disable column navigation. Summary tab labels remain legible on hover.
+- Unnamed-column menus and profiles disable unsupported filters and sorts instead of leaving the grid loading.
 - Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
 - Release verification retries interrupted downloads within its existing limits, with bounded requests and sanitized
   transport errors. Invalid packages still fail verification.

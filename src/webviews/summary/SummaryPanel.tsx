@@ -8,6 +8,7 @@ import {
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
+  viewColumnNameUnavailableReason,
   viewNumericBinFilter,
   viewValueSelectionFilter
 } from "../../shared/filterModel";
@@ -178,14 +179,17 @@ function SelectedColumnSummary({
   }
 
   const displayName = schemaDisplayName(schema, metadata.schema);
-  const duplicateNameCount = countViewColumnNames(metadata.schema).get(schema.name) ?? 0;
+  const columnNameUnavailableReason = viewColumnNameUnavailableReason(
+    schema.name,
+    countViewColumnNames(metadata.schema).get(schema.name) ?? 0
+  );
   const activeFilter = filterModel.filters.find(
     (filter) => filter.column === schema.name && isActiveColumnFilter(filter)
   );
   const canFilter =
     filtersSupported &&
     !filtersDisabled &&
-    duplicateNameCount === 1 &&
+    columnNameUnavailableReason === undefined &&
     supportsTypedViewComparison(schema.type) &&
     onApplyFilterModel !== undefined;
   const applyProfileFilter = (filter: ColumnFilter) => {
@@ -209,6 +213,12 @@ function SelectedColumnSummary({
           {schema.rawType}
         </span>
       </header>
+
+      {columnNameUnavailableReason && (
+        <p className="mutedText" role="status">
+          {columnNameUnavailableReason}
+        </p>
+      )}
 
       {activeFilter && (
         <div className="profileFilterStatus" role="status" aria-live="polite">

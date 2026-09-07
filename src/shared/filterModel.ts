@@ -84,8 +84,13 @@ export const countViewColumnNames = (columns: readonly Pick<ColumnSchema, "name"
   return counts;
 };
 
-export const ambiguousViewColumnMessage = (name: string, count: number): string =>
-  `View filters, sorts, and values are unavailable because ${count} columns share the displayed name ${JSON.stringify(name)}. Rename one column in a cleaning step first.`;
+export const viewColumnNameUnavailableReason = (name: string, count: number): string | undefined => {
+  if (name.length === 0) return "Viewing filters and sorts require a column name. Choose another column.";
+  if (count > 1) {
+    return `View filters, sorts, and values are unavailable because ${count} columns share the displayed name ${JSON.stringify(name)}. Rename one column in a cleaning step first.`;
+  }
+  return undefined;
+};
 
 export const emptyFilterModel = (): FilterModel => ({
   logic: "and",

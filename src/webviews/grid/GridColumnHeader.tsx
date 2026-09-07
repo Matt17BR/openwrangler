@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEventHandler, ReactNode } from "react";
 import type { SortDirection, SortRule } from "../../shared/filterModel";
-import { ambiguousViewColumnMessage, supportsTypedViewComparison } from "../../shared/filterModel";
+import { supportsTypedViewComparison, viewColumnNameUnavailableReason } from "../../shared/filterModel";
 import type { ColumnSchema } from "../../shared/protocol";
 import { columnTypePresentation } from "../columnTypes";
 import type { BeginColumnResize } from "./useColumnResizeLifecycle";
@@ -86,21 +86,21 @@ export function GridColumnHeader({
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const filterDisabledDescriptionId = `column-filter-disabled-${column.position}`;
   const sortDisabledDescriptionId = `column-sort-disabled-${column.position}`;
+  const nameDisabledDescriptionId = `column-name-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
-  const ambiguityReason =
-    viewColumnNameCount > 1 ? ambiguousViewColumnMessage(column.name, viewColumnNameCount) : undefined;
-  const filterUnavailable = viewControlsDisabled || filterControlsDisabled || ambiguityReason !== undefined;
+  const columnNameUnavailableReason = viewColumnNameUnavailableReason(column.name, viewColumnNameCount);
+  const filterUnavailable = viewControlsDisabled || filterControlsDisabled || columnNameUnavailableReason !== undefined;
   const filterUnavailableReason = viewControlsDisabled
     ? viewControlsDisabledReason
     : filterControlsDisabled
       ? filterControlsDisabledReason
-      : ambiguityReason;
-  const sortUnavailable = viewControlsDisabled || sortControlsDisabled || ambiguityReason !== undefined;
+      : columnNameUnavailableReason;
+  const sortUnavailable = viewControlsDisabled || sortControlsDisabled || columnNameUnavailableReason !== undefined;
   const sortUnavailableReason = viewControlsDisabled
     ? viewControlsDisabledReason
     : sortControlsDisabled
       ? sortControlsDisabledReason
-      : ambiguityReason;
+      : columnNameUnavailableReason;
   const beginResize: PointerEventHandler<HTMLButtonElement> = (event) => {
     if (viewControlsDisabled) return;
     onBeginResize(event, width, onResize);
@@ -252,6 +252,11 @@ export function GridColumnHeader({
             >
               <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
               <div className="columnMenuContent">
+                {columnNameUnavailableReason && (
+                  <span id={nameDisabledDescriptionId} className="columnMenuNotice">
+                    {columnNameUnavailableReason}
+                  </span>
+                )}
                 {viewControlsDisabled && (
                   <span id={disabledDescriptionId} className="columnMenuNotice">
                     {viewControlsDisabledReason}
@@ -285,7 +290,7 @@ export function GridColumnHeader({
                         ? disabledDescriptionId
                         : filterControlsDisabled
                           ? filterDisabledDescriptionId
-                          : undefined
+                          : nameDisabledDescriptionId
                       : undefined
                   }
                   title={filterUnavailableReason}
@@ -302,7 +307,7 @@ export function GridColumnHeader({
                         ? disabledDescriptionId
                         : sortControlsDisabled
                           ? sortDisabledDescriptionId
-                          : undefined
+                          : nameDisabledDescriptionId
                       : undefined
                   }
                   title={
@@ -325,7 +330,7 @@ export function GridColumnHeader({
                         ? disabledDescriptionId
                         : sortControlsDisabled
                           ? sortDisabledDescriptionId
-                          : undefined
+                          : nameDisabledDescriptionId
                       : undefined
                   }
                   title={

@@ -220,6 +220,10 @@ Every schema that crosses the runtime, host, or webview boundary has non-empty u
 display data; IDs establish identity. A private row identity supports stable viewing but cannot be named by any public
 operation and never appears in pages, generated public metadata, or exports.
 
+Viewing filters and sorts address columns by name and require a unique, non-empty name. Cell menus, column headers,
+profile actions, and the filter panel share that eligibility check. Unnamed columns still support viewing, profiling,
+selection, and copy; their name-based actions explain why they are unavailable.
+
 Typed cells are strict-JSON-safe and preserve the distinctions needed by filtering, rendering, saved notebook output,
 and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.

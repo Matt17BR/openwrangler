@@ -84,8 +84,10 @@ Polars datetime formatting preserves native time zones and nanosecond fractions 
 `python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
 identity.
 
-Filters / Sorts keeps column selectors usable when a column has an empty name; name-addressed actions on that column
-remain unavailable. Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
+Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
+actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
+App regressions check these actions against the host message decoder. Toggling an ordinary value preserves null and
+NaN selections. Supported scalar selections remain
 checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
 without dropping the cleaning plan during replay.
 
