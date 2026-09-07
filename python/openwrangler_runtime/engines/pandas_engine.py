@@ -40,6 +40,7 @@ from ..trusted_pickle_to_parquet import _source_fingerprint
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
+    NUMPY_FLOAT_PRECISION_MESSAGE,
     VIEW_COMPARABLE_TYPES,
     AmbiguousViewColumnError,
     DataFrameEngine,
@@ -77,6 +78,7 @@ from .base import (
     resolve_excel_sheet_selector,
     safe_float_midpoint,
     typed_selection_value,
+    validate_numpy_float,
     validate_view_predicate_operator,
 )
 
@@ -312,12 +314,38 @@ def _pandas_is_numpy_numeric_key_scalar(value: Any) -> bool:
     )
 
 
+def _pandas_validate_query_values(series: Any) -> None:
+    import numpy as np
+    import pandas as pd
+
+    dtype = series.dtype
+    if isinstance(dtype, np.dtype) and dtype.kind == "f":
+        info = np.finfo(dtype)
+        if info.nmant <= 52 and info.maxexp <= 1024:
+            return
+        values = series.to_numpy(copy=False)
+        # This conversion only tests representability; it never supplies query values.
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            restored = values.astype(np.float64).astype(dtype)
+        if np.any(np.isfinite(values) & (values != restored)):
+            raise EngineError(NUMPY_FLOAT_PRECISION_MESSAGE)
+    elif isinstance(dtype, pd.SparseDtype):
+        _pandas_validate_query_values(pd.Series(series.array.sp_values, copy=False))
+        if len(series.array.sp_values) < len(series):
+            validate_numpy_float(dtype.fill_value)
+    elif pd.api.types.is_object_dtype(dtype):
+        for value in series.array:
+            validate_numpy_float(value)
+
+
 def _pandas_numeric_key_value(value: Any) -> Any:
     import numpy as np
 
     # Boxed NumPy comparisons can round a neighboring Python integer before comparing it.
     if not _pandas_is_numpy_numeric_key_scalar(value):
         return value
+    if type(value) is np.longdouble:
+        validate_numpy_float(value)
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.floating):
@@ -340,6 +368,7 @@ def _pandas_numeric_key(series: Any) -> Any:
     import pandas as pd
 
     if not pd.api.types.is_object_dtype(series.dtype):
+        _pandas_validate_query_values(series)
         return series
     values = series.to_numpy(copy=False)
     converted = None
@@ -1430,6 +1459,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_prepare_float_group_key(series):",
+                    "    _open_wrangler_validate_query_values(series)",
                     "    nan_mask = (np.isnan(series) & series.notna()).fillna(False)",
                     "    if nan_mask.any():",
                     "        series = series.mask(nan_mask, pd.NA)",
@@ -1645,6 +1675,7 @@ class PandasEngine(DataFrameEngine):
                     "        and pd.api.types.infer_dtype(series, skipna=True) in {'string', 'unicode', 'empty'}",
                     "    ):",
                     "        return series.astype('string')",
+                    "    _open_wrangler_validate_query_values(series)",
                     "    return series",
                     "",
                     "",
@@ -4510,6 +4541,7 @@ def _pandas_ordered_aggregate_input(series: Any) -> Any:
         "empty",
     }:
         return series.astype("string")
+    _pandas_validate_query_values(series)
     return series
 
 
@@ -4540,6 +4572,7 @@ def _pandas_prepare_float_group_key(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
+    _pandas_validate_query_values(series)
     nan_mask = (np.isnan(series) & series.notna()).fillna(False)
     if nan_mask.any():
         series = series.mask(nan_mask, pd.NA)
@@ -5009,6 +5042,38 @@ def _generated_pandas_modulo_helpers() -> list[str]:
 
 def _generated_pandas_numeric_key_helpers() -> list[str]:
     return [
+        "def _open_wrangler_validate_numpy_float(value):",
+        "    if type(value) is not np.longdouble or not np.isfinite(value):",
+        "        return",
+        "    converted = float(value)",
+        "    if not np.isfinite(converted) or value.as_integer_ratio() != converted.as_integer_ratio():",
+        f"        raise ValueError({NUMPY_FLOAT_PRECISION_MESSAGE!r})",
+        "",
+        "",
+        "def _open_wrangler_validate_query_values(series):",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "",
+        "    dtype = series.dtype",
+        '    if isinstance(dtype, np.dtype) and dtype.kind == "f":',
+        "        info = np.finfo(dtype)",
+        "        if info.nmant <= 52 and info.maxexp <= 1024:",
+        "            return",
+        "        values = series.to_numpy(copy=False)",
+        "        # This conversion only tests representability; it never supplies query values.",
+        '        with np.errstate(over="ignore", under="ignore", invalid="ignore"):',
+        "            restored = values.astype(np.float64).astype(dtype)",
+        "        if np.any(np.isfinite(values) & (values != restored)):",
+        f"            raise ValueError({NUMPY_FLOAT_PRECISION_MESSAGE!r})",
+        "    elif isinstance(dtype, pd.SparseDtype):",
+        "        _open_wrangler_validate_query_values(pd.Series(series.array.sp_values, copy=False))",
+        "        if len(series.array.sp_values) < len(series):",
+        "            _open_wrangler_validate_numpy_float(dtype.fill_value)",
+        "    elif pd.api.types.is_object_dtype(dtype):",
+        "        for value in series.array:",
+        "            _open_wrangler_validate_numpy_float(value)",
+        "",
+        "",
         "def _open_wrangler_numpy_numeric_key_scalar(value):",
         "    return (isinstance(value, (np.integer, np.floating, np.bool_))",
         (
@@ -5022,6 +5087,8 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "",
         "    if not _open_wrangler_numpy_numeric_key_scalar(value):",
         "        return value",
+        "    if type(value) is np.longdouble:",
+        "        _open_wrangler_validate_numpy_float(value)",
         "    if isinstance(value, np.integer):",
         "        return int(value)",
         "    if isinstance(value, np.floating):",
@@ -5042,6 +5109,7 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "",
         "def _open_wrangler_numeric_key(series):",
         "    if not pd.api.types.is_object_dtype(series.dtype):",
+        "        _open_wrangler_validate_query_values(series)",
         "        return series",
         "    values = series.to_numpy(copy=False)",
         "    converted = None",
@@ -5730,6 +5798,7 @@ def _pandas_fill_missing_grouped_statistic(
             # nullable key dtype.
             key_series = key_series.astype(object)
         if _pandas_grouped_identity_required(key_series):
+            _pandas_validate_query_values(key_series)
             key_series = pd.Series(
                 [
                     pd.NA if _is_null_value(value) or _is_nan_value(value) else _pandas_grouped_scalar_identity(value)
@@ -6690,6 +6759,7 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
         "        if isinstance(key_series.dtype, pd.CategoricalDtype):",
         "            key_series = key_series.astype(object)",
         "        if _open_wrangler_grouped_identity_required(key_series):",
+        "            _open_wrangler_validate_query_values(key_series)",
         "            key_series = pd.Series([",
         "                pd.NA if (_open_wrangler_is_null(value) or _open_wrangler_is_nan(value))",
         "                else _open_wrangler_grouped_scalar_identity(value)",

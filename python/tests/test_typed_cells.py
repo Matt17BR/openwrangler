@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from openwrangler_runtime._column_binding import bind_step
-from openwrangler_runtime.engines import PandasEngine
+from openwrangler_runtime.engines import EngineError, PandasEngine
 from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell, typed_selection_value
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
@@ -1508,3 +1508,148 @@ def test_pandas_arrow_dictionary_unsigned_codes_preserve_logical_values(
             normalize_cell(source["value"].iloc[position]) for position in expected["row"]
         ]
     _assert_dictionary_source_unchanged(source, before)
+
+
+@pytest.mark.parametrize("case", ["neighbor", "underflow", "overflow"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_native_extended_float_transport_refuses_loss(case: str, nested: bool) -> None:
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble has no additional binary64 precision on this platform")
+    value = (
+        np.nextafter(np.longdouble(1), np.longdouble(2))
+        if case == "neighbor"
+        else np.longdouble("1e-400" if case == "underflow" else "1e400")
+    )
+    with pytest.raises(EngineError, match="precision or range"):
+        normalize_cell({"nested": [value]} if nested else value)
+
+
+def test_native_extended_float_representable_and_custom_boundaries() -> None:
+    for value in [
+        np.longdouble(1.25),
+        np.longdouble(np.finfo(np.float64).smallest_subnormal),
+        np.longdouble(np.finfo(np.float64).max),
+        np.longdouble(-0.0),
+        np.longdouble(0),
+        np.longdouble("nan"),
+        np.longdouble("inf"),
+        np.longdouble("-inf"),
+        np.float16(0.5),
+        np.float32(0.5),
+        np.float64(0.5),
+    ]:
+        assert normalize_cell(value) == normalize_cell(float(value))
+        assert normalize_cell([value]) == normalize_cell([float(value)])
+
+    class CustomFloat(float):
+        def as_integer_ratio(self):
+            raise AssertionError("Custom ratio must not be called")
+
+    class Wrapped(np.longdouble):
+        def as_integer_ratio(self):
+            raise AssertionError("Custom NumPy ratio must not be called")
+
+    assert normalize_cell(CustomFloat(1.25))["raw"] == 1.25
+    assert normalize_cell(Wrapped(1.25))["raw"] == 1.25
+    if np.finfo(np.longdouble).nmant > 52:
+        value = Wrapped(np.nextafter(np.longdouble(1), np.longdouble(2)))
+        with pytest.raises(EngineError, match="precision or range"):
+            normalize_cell(value)
+        with pytest.raises(EngineError, match="precision or range"):
+            normalize_cell([value])
+
+
+@pytest.mark.parametrize("storage", ["dense", "object", "sparse"])
+@pytest.mark.parametrize("query", ["picker", "profile", "header"])
+def test_extended_float_query_rejects_original_values_before_count_narrowing(storage: str, query: str) -> None:
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble aliases binary64")
+    values = np.array([1, np.nextafter(np.longdouble(1), np.longdouble(2)), 2], dtype=np.longdouble)
+    dtype = (
+        object if storage == "object" else pd.SparseDtype(np.longdouble, 0) if storage == "sparse" else np.longdouble
+    )
+    frame = pd.DataFrame({"value": pd.Series(values).astype(dtype), "safe": [10, 20, 30]})
+    frame.index = pd.Index(["same"] * 3, name="row")
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    calls = {
+        "picker": lambda: engine.column_values(frame, "value"),
+        "profile": lambda: engine.summaries(frame),
+        "header": lambda: engine.header_stats(frame[["value"]]),
+    }
+    with pytest.raises(EngineError, match="precision or range"):
+        calls[query]()
+    assert engine.missing_count(frame, 0) == 0
+    assert engine.summaries(frame, [(1, "safe")])[0]["distinctCount"] == 3
+    assert engine.column_values(frame, "value", search="2")[0][0]["count"] == 1
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_extended_float_profile_keeps_approximate_computed_statistics() -> None:
+    source = pd.DataFrame({"value": pd.Series([np.longdouble(1), np.longdouble(2) ** -53], dtype=np.longdouble)})
+    summary = PandasEngine().summaries(source)[0]
+    assert summary["numeric"]["sum"] == 1.0
+    assert summary["numeric"]["mean"] == 0.5
+    assert summary["distinctCount"] == 2
+
+
+def test_extended_float_selected_guard_keeps_fast_paths_and_sparse_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openwrangler_runtime.engines.pandas_engine import _pandas_validate_query_values
+
+    def unexpected_dense(*_args, **_kwargs):
+        raise AssertionError("Validation must not densify Sparse storage")
+
+    monkeypatch.setattr(pd.arrays.SparseArray, "to_dense", unexpected_dense)
+    monkeypatch.setattr(pd.arrays.SparseArray, "to_numpy", unexpected_dense)
+    if np.finfo(np.longdouble).nmant > 52:
+        neighbor = np.nextafter(np.longdouble(1), np.longdouble(2))
+        for values, fill, refuses in [
+            ([1, 2], neighbor, False),
+            ([neighbor, 2], neighbor, True),
+            ([neighbor, 2], 0, True),
+        ]:
+            series = pd.Series(pd.arrays.SparseArray(np.array(values, dtype=np.longdouble), fill_value=fill))
+            if refuses:
+                with pytest.raises(EngineError, match="precision or range"):
+                    _pandas_validate_query_values(series)
+            else:
+                _pandas_validate_query_values(series)
+
+    class Custom(np.longdouble):
+        def __float__(self):
+            raise AssertionError("Custom floating conversion must not be called")
+
+        def as_integer_ratio(self):
+            raise AssertionError("Custom ratio must not be called")
+
+    _pandas_validate_query_values(pd.Series([Custom(1.25), "other", None], dtype=object))
+    for dtype in (np.longdouble, object):
+        safe = pd.Series(np.array([1.25, -0.0, 0.0, np.nan, np.inf, -np.inf], dtype=np.longdouble), dtype=dtype)
+        before = safe.copy(deep=True)
+        _pandas_validate_query_values(safe)
+        _pandas_validate_query_values(safe.iloc[:0])
+        pd.testing.assert_series_equal(safe, before)
+    narrow = [pd.Series([1.0, -0.0, np.nan], dtype=dtype) for dtype in (np.float16, np.float32, np.float64)]
+    monkeypatch.setattr(
+        pd.Series,
+        "to_numpy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Narrow floats require no value scan")),
+    )
+    for series in narrow:
+        _pandas_validate_query_values(series)
+
+
+def test_non_numpy_transport_does_not_require_numpy(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    values = [None, True, 2**70, 1.25, Decimal("1.25"), {"nested": [1.25, None]}]
+    expected = [normalize_cell(value) for value in values]
+    original_import = builtins.__import__
+
+    def without_numpy(name, *args, **kwargs):
+        if name == "numpy" or name.startswith("numpy."):
+            raise AssertionError("Non-NumPy transport must not import NumPy")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_numpy)
+    assert [normalize_cell(value) for value in values] == expected

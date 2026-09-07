@@ -663,3 +663,54 @@ def test_duckdb_configured_csv_export_remains_native(monkeypatch: pytest.MonkeyP
         {"format": "csv", "delimiter": "|", "quoteChar": '"', "encoding": "utf-8", "header": True},
     )
     assert destination.read_text(encoding="utf-8") == "value\n7\n"
+
+
+def test_pandas_extended_float_csv_and_explicit_floor_remain_native(tmp_path: Path) -> None:
+    import numpy as np
+
+    from openwrangler_runtime._column_binding import bind_step
+    from openwrangler_runtime.lineage import source_lineage
+    from openwrangler_runtime.operations import validate_step
+
+    if np.finfo(np.longdouble).nmant <= 52:
+        pytest.skip("Native longdouble aliases binary64")
+    neighbor = np.nextafter(np.longdouble(1), np.longdouble(2))
+    source = pd.DataFrame({"value": pd.Series([np.longdouble(1), neighbor], dtype=np.longdouble)})
+    before = source.copy(deep=True)
+    destination = tmp_path / "exact.csv"
+    destination.touch()
+    identity = destination.stat()
+    engine = PandasEngine()
+    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        engine.export_data(
+            source,
+            writer,
+            {
+                "format": "csv",
+                "rowAxisPolicy": "omit",
+                "delimiter": ",",
+                "quoteChar": '"',
+                "encoding": "utf-8",
+                "header": True,
+            },
+        )
+    assert destination.read_text().splitlines() == ["value", str(np.longdouble(1)), str(neighbor)]
+    pa = pytest.importorskip("pyarrow")
+    parquet = tmp_path / "unsupported.parquet"
+    parquet.touch()
+    parquet_identity = parquet.stat()
+    with (
+        ExportTarget(parquet, parquet_identity.st_dev, parquet_identity.st_ino).pinned_writer_path() as writer,
+        pytest.raises(pa.ArrowNotImplementedError, match="Unsupported numpy type"),
+    ):
+        engine.export_data(source, writer, {"format": "parquet", "rowAxisPolicy": "omit"})
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step({"id": "floor", "kind": "floorNumber", "params": {"column": lineage[0]}}), schema, lineage
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+        assert [row["values"][0]["raw"] for row in engine.page(result, 0, 10)["rows"]] == [1.0, 1.0]
+    pd.testing.assert_frame_equal(source, before)
