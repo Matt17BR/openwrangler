@@ -3684,6 +3684,21 @@ def _pandas_scalar_values(series: Any) -> Any:
     import pandas as pd
 
     series = _pandas_dictionary_values(series)
+    if series.dtype == object:
+        if pd.api.types.infer_dtype(series, skipna=True) not in {"mixed", "mixed-integer"}:
+            return series
+        from uuid import UUID
+
+        values = series.to_numpy(copy=False)
+        converted = None
+        for position, value in enumerate(values):
+            if isinstance(value, UUID):
+                if converted is None:
+                    converted = values.copy()
+                converted[position] = str(value)
+        if converted is not None:
+            return pd.Series(converted, dtype=object, index=series.index, name=series.name, copy=False)
+        return series
     if not isinstance(series.dtype, pd.ArrowDtype):
         return series
     import pyarrow as pa
@@ -5569,6 +5584,21 @@ def _generated_pandas_scalar_helpers() -> list[str]:
         "    import pandas as pd",
         "",
         "    series = _open_wrangler_dictionary_values(series)",
+        "    if series.dtype == object:",
+        '        if pd.api.types.infer_dtype(series, skipna=True) not in {"mixed", "mixed-integer"}:',
+        "            return series",
+        "        from uuid import UUID",
+        "",
+        "        values = series.to_numpy(copy=False)",
+        "        converted = None",
+        "        for position, value in enumerate(values):",
+        "            if isinstance(value, UUID):",
+        "                if converted is None:",
+        "                    converted = values.copy()",
+        "                converted[position] = str(value)",
+        "        if converted is not None:",
+        "            return pd.Series(converted, dtype=object, index=series.index, name=series.name, copy=False)",
+        "        return series",
         "    if not isinstance(series.dtype, pd.ArrowDtype):",
         "        return series",
         "    import pyarrow as pa",

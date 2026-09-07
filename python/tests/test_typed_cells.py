@@ -316,9 +316,9 @@ def test_known_arrow_scalar_page_preparation_is_bounded_and_preserves_coordinate
     assert [row["rowNumber"] for row in page["rows"]] == [2, 3]
     assert [row["rowLabel"] for row in page["rows"]] == ["1", "1"]
     assert [row["values"] for row in page["rows"]] == [[normalize_cell(value)] for value in logical["value"].iloc[2:4]]
-    assert (
-        engine.page(frame, 2, 1, column_projection=[(2, "stable:object")])["rows"][0]["values"][0]["kind"] == "unknown"
-    )
+    assert engine.page(frame, 2, 1, column_projection=[(2, "stable:object")])["rows"][0]["values"] == [
+        normalize_cell(str(UUID(int=1)))
+    ]
     assert cast(Any, frame["value"].array).__arrow_array__().equals(original)
     pd.testing.assert_index_equal(frame.index, source.index)
     assert frame.attrs == source.attrs
@@ -589,6 +589,181 @@ def test_known_arrow_scalar_sort_and_duplicates_preserve_selected_native_rows(fa
         )
         pd.testing.assert_index_equal(actual.index, expected.index)
         assert actual.attrs == source.attrs
+
+
+@pytest.mark.parametrize("include_nulls", [False, True])
+@pytest.mark.parametrize("include_nan", [False, True])
+def test_object_uuid_session_selections_use_canonical_values_and_preserve_source(
+    monkeypatch: pytest.MonkeyPatch, include_nulls: bool, include_nan: bool
+) -> None:
+    import __main__
+
+    identifier = UUID("92345678-9abc-4def-a123-0123456789ab")
+    values = [str(identifier).upper(), identifier, str(identifier), None, pd.NA, np.nan, pd.NaT, identifier.hex]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "row": range(len(values))})
+    source.index = pd.MultiIndex.from_arrays([["same"] * len(source), [i // 2 for i in range(len(source))]])
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "object_uuid_source", source, raising=False)
+    manager = SessionManager()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "UUID", "variableName": "object_uuid_source"},
+            backend="pandas",
+            mode="editing",
+            page_size=20,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        column = opened["metadata"]["schema"][0]
+        assert column["type"] == "string"
+        assert opened["page"]["rows"][1]["values"][0] == normalize_cell(str(identifier))
+        picker = manager.get_column_values(session_id, 0, "value", query)["values"]
+        selected = [item for item in picker if item["value"] == str(identifier)]
+        assert len(picker) == 3 and len(selected) == 1 and selected[0]["count"] == 2
+        summary = manager.get_summary(session_id, 0, query)["summaries"][0]
+        assert (summary["distinctCount"], summary["nullCount"], summary["nanCount"]) == (3, 3, 1)
+        column_filter = {
+            "column": "value",
+            "type": "string",
+            "predicates": [],
+            "valueFilter": {
+                "kind": "values",
+                "selectedValues": [selected[0]["selectionValue"]],
+                "includeNulls": include_nulls,
+                "includeNaN": include_nan,
+            },
+        }
+        query["filters"] = [column_filter]
+        positions = sorted([1, 2] + ([3, 4, 6] if include_nulls else []) + ([5] if include_nan else []))
+        page = manager.get_page(session_id, 0, 0, 20, query)["page"]
+        assert [row["values"][1]["raw"] for row in page["rows"]] == positions
+        step = {
+            "id": "selected",
+            "kind": "filterRows",
+            "params": {
+                "filterModel": {
+                    "filters": [{**column_filter, "column": {"id": column["id"], "name": "value"}}],
+                    "sort": [],
+                }
+            },
+        }
+        preview = manager.preview_step(session_id, 0, step, 0, 20)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 20)
+        session = manager.sessions[session_id]
+        namespace: dict[str, Any] = {}
+        exec(session.engine.compile_plan(session.bound_plan), namespace)
+        for actual in (session.committed, namespace["clean_data"](source)):
+            pd.testing.assert_frame_equal(actual[source.columns], source.iloc[positions])
+            assert isinstance(actual["value"].iloc[0], UUID)
+        undone = manager.undo_step(session_id, applied["revision"], 0, 20)
+        assert undone["metadata"]["steps"] == []
+        # Undo retains the separate viewing filter until the user clears it.
+        assert len(undone["page"]["rows"]) == len(positions)
+        assert len(
+            manager.get_page(session_id, undone["revision"], 0, 20, {"filters": [], "sort": []})["page"]["rows"]
+        ) == len(values)
+        pd.testing.assert_frame_equal(source, before)
+        assert source.attrs == before.attrs
+        assert all(actual is expected for actual, expected in zip(source["value"].array, values, strict=True))
+    finally:
+        manager.close_all()
+
+
+def test_object_uuid_sort_duplicates_and_copy_keep_physical_values() -> None:
+    identifier = UUID("fedcba98-7654-4321-9876-abcdef123456")
+    values = [str(identifier).upper(), identifier, str(identifier), None, identifier.hex, identifier]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "_open_wrangler_scalar_values": range(6)})
+    source.index = pd.Index([5, 5, 4, 4, 3, 3], name="duplicate")
+    source.attrs = {"origin": "kept"}
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    steps = [
+        bind_step(validate_step({"id": str(i), "kind": kind, "params": params}), schema, lineage)
+        for i, (kind, params) in enumerate(
+            [
+                ("sortRows", {"rules": [{"column": lineage[0], "direction": "asc", "nulls": "last"}]}),
+                ("dropDuplicates", {"columns": [lineage[0]], "keep": "last"}),
+            ]
+        )
+    ]
+    code = engine.compile_plan(steps)
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    live = source
+    for step in steps:
+        live = engine.apply_transform(live, step)
+    for actual in (live, namespace["clean_data"](source)):
+        pd.testing.assert_frame_equal(actual, source.iloc[[0, 5, 4, 3]])
+        assert actual["value"].iloc[1] is identifier and actual.attrs == source.attrs
+    assert code.count("def _open_wrangler_scalar_values(") == 1
+    copy = bind_step(
+        validate_step(
+            {
+                "id": "copy",
+                "kind": "byExample",
+                "params": {
+                    "sourceColumns": [lineage[0]],
+                    "newColumn": "copy",
+                    "examples": [{"inputs": ["a"], "output": "a"}, {"inputs": ["b"], "output": "b"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    code = engine.compile_plan([copy])
+    exec(code, namespace)
+    assert "def _open_wrangler_scalar_values" not in code
+    for actual in (engine.apply_transform(source, copy), namespace["clean_data"](source)):
+        assert all(value is expected for value, expected in zip(actual["copy"].array, values, strict=True))
+
+
+def test_object_uuid_preparation_preserves_other_objects_and_native_token_types() -> None:
+    from openwrangler_runtime.engines.pandas_engine import _pandas_scalar_values
+
+    identifier = UUID(int=1)
+    wide = 2**100 + 7
+    companions = [wide, str(wide), Decimal("3.125"), b"binary", {"nested": [1]}, np.nan, pd.NA, None]
+    series = pd.Series([*companions, identifier], dtype=object, name="mixed")
+    logical = _pandas_scalar_values(series)
+    assert logical.dtype == object and logical.iloc[-1] == str(identifier)
+    assert all(value is expected for value, expected in zip(logical.iloc[:-1].array, companions, strict=True))
+    for values in (["a", None, "b"], [wide, None], companions):
+        unchanged = pd.Series(values, dtype=object)
+        assert _pandas_scalar_values(unchanged) is unchanged
+    frame = pd.DataFrame(
+        {"value": pd.Series([wide, str(wide), identifier, str(identifier)], dtype=object), "row": range(4)}
+    )
+    engine = PandasEngine()
+    picker = engine.column_values(frame, "value")[0]
+    for kind, position in [("integer", 0), ("string", 1)]:
+        token = next(
+            item["selectionValue"]
+            for item in picker
+            if item["value"] == str(wide) and item["selectionValue"]["cell"]["kind"] == kind
+        )
+        result = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "string",
+                        "predicates": [],
+                        "valueFilter": {
+                            "kind": "values",
+                            "selectedValues": [token],
+                            "includeNulls": False,
+                            "includeNaN": False,
+                        },
+                    }
+                ],
+                "sort": [],
+            },
+        )
+        assert result["row"].tolist() == [position]
 
 
 def _arrow_dictionary_fixture(family: str, shape: str = "chunked") -> tuple[pd.DataFrame, pd.DataFrame, str]:
