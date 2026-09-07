@@ -3182,6 +3182,125 @@ async function exerciseReleasedJupyterExtension(
     if (applied.kind !== "planUpdated") throw new Error("The released-Jupyter Polars plan did not apply.");
     assert.equal(applied.metadata.steps.length, 1);
 
+    recordAcceptanceProgress(`${phase}:polars-exact-formula`);
+    const literal = "9007199254740993";
+    const literalName = "exact_units";
+    const literalApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The Polars integer-literal form requires its acknowledged renderer."
+    );
+    await literalApp.getByRole("button", { name: "Add step", exact: true }).click();
+    const literalDialog = literalApp.getByRole("dialog", { name: "Add cleaning step" });
+    await literalDialog.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    await literalDialog.getByPlaceholder("Search operations").fill("formula");
+    await literalDialog.getByRole("button", { name: /^Formula column\b/u }).click();
+    await literalDialog
+      .getByLabel("Left column", { exact: true })
+      .selectOption(columnReference(applied.metadata, "units").id);
+    await literalDialog.getByLabel("Operator", { exact: true }).selectOption("add");
+    await literalDialog.getByLabel("Numeric value", { exact: true }).fill(literal);
+    await literalDialog.getByLabel("New column", { exact: true }).fill(literalName);
+    await literalDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === polarsFrame.sessionId &&
+          draft?.kind === "formula" &&
+          draft.params.newColumn === literalName
+        );
+      },
+      30_000,
+      "the visible Polars integer-literal preview"
+    );
+    await literalDialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    const literalPreview = testing.activeSession();
+    assert.ok(literalPreview?.metadata.draftStep?.kind === "formula");
+    assert.equal(literalPreview.metadata.draftStep.params.value, literal);
+    const literalStepId = literalPreview.metadata.draftStep.id;
+    const literalOutput = literalPreview.metadata.schema.find((column) => column.name === literalName);
+    assert.ok(literalOutput);
+    assert.equal(literalOutput.type, "integer");
+    const assertLiteralPage = async (revision: number, viewRequestId: string): Promise<void> => {
+      const result = await testing.request({
+        kind: "getPage",
+        sessionId: polarsFrame.sessionId,
+        revision,
+        viewRequestId,
+        offset: 0,
+        limit: 2,
+        filterModel: applied.metadata.filterModel,
+        columnOffset: literalOutput.position,
+        columnLimit: 1
+      });
+      assert.equal(result.kind, "page");
+      if (result.kind !== "page") throw new Error("The exact Polars Formula result did not return a page.");
+      assert.deepEqual(result.page.columnIds, [literalOutput.id]);
+      assert.deepEqual(
+        result.page.rows.map((row) => row.id),
+        polarsPage.page.rows.slice(0, 2).map((row) => row.id)
+      );
+      assert.deepEqual(
+        result.page.rows.map((row) => ({
+          kind: row.values[0]?.kind,
+          raw: row.values[0]?.raw,
+          isNull: row.values[0]?.isNull
+        })),
+        [
+          { kind: "integer", raw: "9007199254740996", isNull: false },
+          { kind: "integer", raw: "9007199254741003", isNull: false }
+        ]
+      );
+    };
+    await assertLiteralPage(literalPreview.metadata.revision, "released-jupyter-polars-literal-preview");
+    const literalReviewApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The exact Polars Formula preview must reach its renderer before apply."
+    );
+    await literalReviewApp
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === polarsFrame.sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.at(-1)?.id === literalStepId
+        );
+      },
+      30_000,
+      "the visible Polars integer-literal apply"
+    );
+    const literalApplied = testing.activeSession();
+    assert.ok(literalApplied);
+    assert.equal(literalApplied.metadata.steps.length, 2);
+    const literalStep = literalApplied.metadata.steps.at(-1);
+    assert.ok(literalStep?.kind === "formula");
+    assert.equal(literalStep.params.value, literal);
+    await assertLiteralPage(literalApplied.metadata.revision, "released-jupyter-polars-literal-applied");
+    const restoredPolars = await testing.request({
+      kind: "undoStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: polarsFrame.sessionId,
+      revision: literalApplied.metadata.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(restoredPolars.kind, "planUpdated");
+    if (restoredPolars.kind !== "planUpdated") throw new Error("The exact Polars Formula did not undo.");
+    assert.deepEqual(restoredPolars.metadata.steps, applied.metadata.steps);
+    assert.deepEqual(restoredPolars.metadata.schema, applied.metadata.schema);
+    assert.deepEqual(restoredPolars.metadata.source, polarsFrame.metadata.source);
+    assert.deepEqual(restoredPolars.page, applied.page, "Undo must restore the prior source cells and derived values.");
+    assert.equal(restoredPolars.code, applied.code);
+
     recordAcceptanceProgress(`${phase}:pandas-recovery-session`);
     const pandasRecovery = await openReleasedVariableSession(
       workbench,
@@ -3209,7 +3328,7 @@ async function exerciseReleasedJupyterExtension(
       testing,
       notebook,
       polarsFrame.sessionId,
-      applied,
+      restoredPolars,
       {
         sessionId: pandasRecovery.sessionId,
         revision: pandasRecoveryPage.revision,
