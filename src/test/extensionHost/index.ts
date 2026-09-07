@@ -11260,7 +11260,10 @@ async function capturePackagedFilterResultScene(
       await drawer.waitFor({ state: "hidden", timeout: 10_000 });
     }
     const profileCategory = app.getByRole("button", {
-      name: `Filter market to ${filterValue}; ${expectedRows.toLocaleString()} rows`,
+      name: `Filter market to ${filterValue}; ${filterValue}: ${expectedRows.toLocaleString()} (${new Intl.NumberFormat(
+        undefined,
+        { style: "percent", maximumFractionDigits: 1 }
+      ).format(expectedRows / PACKAGED_SCREENSHOT_ROW_COUNT)})`,
       exact: true
     });
     await profileCategory.waitFor({ state: "visible", timeout: 30_000 });
@@ -11744,9 +11747,24 @@ async function capturePackagedOperationDialogScenes(
     );
 
     recordAcceptanceProgress("verify:screenshots:file-scenes:operation-configuration");
+    const configurationApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "Operation-configuration capture must use the acknowledged renderer after catalog capture."
+    );
+    dialog = configurationApp.getByRole("dialog", { name: "Add cleaning step" });
+    if (await dialog.isVisible().catch(() => false)) {
+      await dialog.getByRole("button", { name: "Close operation picker" }).click();
+      await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    await configurationApp.getByRole("button", { name: "Add step", exact: true }).click();
+    dialog = configurationApp.getByRole("dialog", { name: "Add cleaning step" });
+    await dialog.waitFor({ state: "visible", timeout: 10_000 });
     const search = dialog.getByPlaceholder("Search operations");
     await search.fill("fill missing");
     await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+    await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     const active = testing.activeSession();
     assert.ok(active, "The missing-value configuration capture requires one active session.");
     await dialog.getByLabel("Column", { exact: true }).selectOption(columnReference(active.metadata, "revenue").id);
@@ -11773,7 +11791,14 @@ async function capturePackagedOperationDialogScenes(
       workbench,
       path.resolve(outputDirectory, packagedScreenshotFileName(editor, "operation-configuration", "dark"))
     );
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    const cleanupApp = await reacquireAcknowledgedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      "Operation-configuration cleanup must use the acknowledged renderer after capture."
+    );
+    dialog = cleanupApp.getByRole("dialog", { name: "Add cleaning step" });
+    await dialog.press("Escape");
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
     dialog = undefined;
   } finally {
@@ -12016,8 +12041,8 @@ async function capturePackagedExportOutcomeScenes(
   const exportedData = readFileSync(cleanedDataPath, "utf8");
   const exportedLines = exportedData.trimEnd().split(/\r?\n/u);
   assert.equal(exportedLines.length, PACKAGED_SCREENSHOT_ROW_COUNT + 1);
-  assert.match(exportedLines[0] ?? "", /(?:^|,)market_upper(?:,|$)/u);
-  assert.match(exportedLines[0] ?? "", /(?:^|,)projected_revenue(?:,|$)/u);
+  assert.match(exportedLines[0] ?? "", /(?:^|;)market_upper(?:;|$)/u);
+  assert.match(exportedLines[0] ?? "", /(?:^|;)projected_revenue(?:;|$)/u);
   assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Cleaned-data export must preserve the source bytes.");
 
   await closeVisibleWorkbenchPart(workbench, ".part.panel", [
