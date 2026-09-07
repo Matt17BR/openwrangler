@@ -17,7 +17,7 @@ from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
-from openwrangler_runtime.export_target import ExportTarget, ExportTargetError
+from openwrangler_runtime.export_target import ExportTarget, ExportTargetError, _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
 
@@ -36,11 +36,11 @@ def test_pandas_scalar_export_does_not_materialize_range_axis(
     monkeypatch.setattr(pd.RangeIndex, "array", property(materialized_array))
     destination = tmp_path / f"range.{format_name}"
     destination.touch()
-    identity = destination.stat()
+    identity = _regular_file_identity(destination)
     options: Any = {"format": format_name, "rowAxisPolicy": "preserve"}
     if format_name == "csv":
         options.update(delimiter=",", quoteChar='"', encoding="utf-8", header=True)
-    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         PandasEngine().export_data(source, writer, options)
     if format_name == "csv":
         assert destination.read_bytes() == expected
@@ -71,9 +71,9 @@ def test_pandas_object_uuid_exports_write_canonical_text_without_changing_source
         options.update(delimiter=";", quoteChar='"', encoding="utf-8", header=True)
     destination = tmp_path / f"object-uuid.{format_name}"
     destination.touch()
-    identity = destination.stat()
+    identity = _regular_file_identity(destination)
     engine = PandasEngine()
-    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         engine.export_data(source, writer, options)
     preserve_index = index_policy == "preserve"
     if format_name == "csv":
@@ -131,8 +131,8 @@ def test_pandas_arrow_scalar_exports_write_logical_values(
         options.update(delimiter=";", quoteChar="'", encoding="utf-16", header=True)
     destination = tmp_path / f"logical.{format_name}"
     destination.touch()
-    identity = destination.stat()
-    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+    identity = _regular_file_identity(destination)
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         PandasEngine().export_data(source, writer, options)
     preserve_index = index_policy == "preserve"
     if format_name == "csv":
@@ -193,8 +193,8 @@ def test_pandas_arrow_scalar_index_exports_preserve_logical_labels(
         options.update(delimiter=",", quoteChar='"', encoding="utf-8", header=True)
     destination = tmp_path / f"indexed.{format_name}"
     destination.touch()
-    identity = destination.stat()
-    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+    identity = _regular_file_identity(destination)
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         PandasEngine().export_data(source, writer, options)
     preserve_index = index_policy == "preserve"
     if format_name == "csv":
@@ -271,8 +271,8 @@ def test_pandas_dictionary_exports_use_logical_values_and_reopen(
     for name, frame in [("encoded", source), ("logical", logical)]:
         destination = tmp_path / f"{name}.{format_name}"
         destination.touch()
-        identity = destination.stat()
-        with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        identity = _regular_file_identity(destination)
+        with ExportTarget(destination, *identity).pinned_writer_path() as writer:
             engine.export_data(frame, writer, options)
         paths[name] = destination
 
@@ -345,8 +345,8 @@ def test_pandas_dictionary_index_export_preserves_exact_stored_labels(
     for name, frame in [("encoded", source), ("logical", logical)]:
         destination = tmp_path / f"{name}.{format_name}"
         destination.touch()
-        identity = destination.stat()
-        with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+        identity = _regular_file_identity(destination)
+        with ExportTarget(destination, *identity).pinned_writer_path() as writer:
             engine.export_data(frame, writer, options)
         paths[name] = destination
     if format_name == "csv":
@@ -394,8 +394,8 @@ def test_pandas_csv_export_applies_the_exact_dialect_encoding_header_and_index_p
     frame = engine.ensure_row_ids(source, "configured-pandas")
     destination = tmp_path / "configured.csv"
     destination.touch()
-    details = destination.stat()
-    target = ExportTarget(destination, details.st_dev, details.st_ino)
+    identity = _regular_file_identity(destination)
+    target = ExportTarget(destination, *identity)
 
     with target.pinned_writer_path() if pinned else nullcontext(destination) as writer:
         engine.export_data(
@@ -441,7 +441,7 @@ def test_native_exports_write_the_host_pinned_target(
     engine, frame, backend = native_export
     destination = tmp_path / f"host-reserved.{format_name}"
     destination.touch()
-    details = destination.stat()
+    identity = _regular_file_identity(destination)
     options = (
         {"format": "parquet"}
         if format_name == "parquet"
@@ -449,7 +449,7 @@ def test_native_exports_write_the_host_pinned_target(
     )
     if backend == "pandas":
         options["rowAxisPolicy"] = "omit"
-    with ExportTarget(destination, details.st_dev, details.st_ino).pinned_writer_path() as writer:
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         engine.export_data(frame, writer, options)
     loaded = pl.read_parquet(destination) if format_name == "parquet" else pl.read_csv(destination)
     assert loaded.to_dict(as_series=False) == {"value": [1, 2]}
@@ -470,7 +470,7 @@ def test_native_exports_never_write_a_replacement_target(
     engine, frame, backend = native_export
     destination = tmp_path / f"host-reserved.{format_name}"
     destination.touch()
-    details = destination.stat()
+    identity = _regular_file_identity(destination)
     displaced = tmp_path / "displaced.tmp"
     source = tmp_path / "source.csv"
     source.write_bytes(b"original source data\n")
@@ -503,7 +503,7 @@ def test_native_exports_never_write_a_replacement_target(
         options["rowAxisPolicy"] = "omit"
     with (
         pytest.raises(ExportTargetError),
-        ExportTarget(destination, details.st_dev, details.st_ino).pinned_writer_path() as writer,
+        ExportTarget(destination, *identity).pinned_writer_path() as writer,
     ):
         if not replace_during_write:
             replace_target()
@@ -679,9 +679,9 @@ def test_pandas_extended_float_csv_and_explicit_floor_remain_native(tmp_path: Pa
     before = source.copy(deep=True)
     destination = tmp_path / "exact.csv"
     destination.touch()
-    identity = destination.stat()
+    identity = _regular_file_identity(destination)
     engine = PandasEngine()
-    with ExportTarget(destination, identity.st_dev, identity.st_ino).pinned_writer_path() as writer:
+    with ExportTarget(destination, *identity).pinned_writer_path() as writer:
         engine.export_data(
             source,
             writer,
@@ -698,9 +698,9 @@ def test_pandas_extended_float_csv_and_explicit_floor_remain_native(tmp_path: Pa
     pa = pytest.importorskip("pyarrow")
     parquet = tmp_path / "unsupported.parquet"
     parquet.touch()
-    parquet_identity = parquet.stat()
+    parquet_identity = _regular_file_identity(parquet)
     with (
-        ExportTarget(parquet, parquet_identity.st_dev, parquet_identity.st_ino).pinned_writer_path() as writer,
+        ExportTarget(parquet, *parquet_identity).pinned_writer_path() as writer,
         pytest.raises(pa.ArrowNotImplementedError, match="Unsupported numpy type"),
     ):
         engine.export_data(source, writer, {"format": "parquet", "rowAxisPolicy": "omit"})

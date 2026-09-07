@@ -118,6 +118,8 @@ Export owner tests use actual files to cover source renames and replacements bef
 Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
 including Python Interactive's originating document. The existing atomic-file tests retain destination and temporary
 identity checks; runtime writers retain their separate output-handle contracts.
+The export-target owner also reserves a file through Node and passes its actual identity receipt to the Python pinned
+writer, checking both writing the reserved file and refusal of a mismatched receipt on each platform.
 The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
 owned process root when the session closes.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.

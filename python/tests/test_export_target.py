@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
@@ -405,6 +408,46 @@ def test_cleanup_notes_remain_available_without_base_exception_add_note() -> Non
         _raise_with_windows_cleanup(windows_error, OSError("pin cleanup failed"), "Windows pin cleanup")
     assert raised.value is windows_error
     assert exception_notes(raised.value) == ["Windows pin cleanup also failed: OSError: pin cleanup failed"]
+
+
+def test_node_reserved_identity_authorizes_only_the_matching_pinned_writer(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    assert node is not None
+    path = tmp_path / "host-reserved.csv"
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            "const fs = require('node:fs');"
+            "const fd = fs.openSync(process.argv[1], 'wx', 0o600);"
+            "let receipt;"
+            "try {"
+            "  fs.writeFileSync(fd, 'host-reserved stale bytes');"
+            "  fs.fsyncSync(fd);"
+            "  const stat = fs.fstatSync(fd, {bigint:true});"
+            "  receipt = {device:stat.dev.toString(), inode:stat.ino.toString()};"
+            "} finally { fs.closeSync(fd); }"
+            "process.stdout.write(JSON.stringify(receipt));",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    receipt = json.loads(result.stdout)
+    identity = (int(receipt["device"]), int(receipt["inode"]))
+    assert _regular_file_identity(path) == identity
+    with pytest.raises(ExportTargetError, match="temporary export file changed"):
+        ExportTarget.from_request(str(path), {**receipt, "inode": str(identity[1] + 1)})
+    assert path.read_bytes() == b"host-reserved stale bytes"
+
+    target = ExportTarget.from_request(str(path), receipt)
+    with target.pinned_writer_path() as writer_path, writer_path.open_binary_writer() as writer:
+        writer.write(b"native-stream")
+
+    assert path.read_bytes() == b"native-stream"
+    assert _regular_file_identity(path) == identity
 
 
 def test_binary_writer_truncates_and_keeps_the_reserved_identity(tmp_path) -> None:
