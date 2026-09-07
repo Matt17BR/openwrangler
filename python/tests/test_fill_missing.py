@@ -13,6 +13,7 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
+from polars.testing import assert_frame_equal
 
 from openwrangler_runtime.engines import DuckDBEngine, EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
@@ -1140,12 +1141,95 @@ def test_session_fallback_fill_keeps_nullable_metadata_when_rows_remain_unresolv
         manager.close_session(session_id, 2)
 
 
-def test_polars_generated_fill_plan_uses_python_310_grammar() -> None:
+def test_polars_generated_median_fill_emits_only_its_dependencies() -> None:
     engine = PolarsEngine()
     operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
 
     try:
-        ast.parse(engine.compile_plan([operation]), feature_version=(3, 10))
+        module = ast.parse(engine.compile_plan([operation]), feature_version=(3, 10))
+        assert {node.name for node in module.body if isinstance(node, ast.FunctionDef)} == {
+            "_ow_decimal_at_scale",
+            "_ow_polars_middle_values",
+            "clean_data",
+        }
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_code(lazy: bool) -> None:
+    engine = PolarsEngine()
+    frame = pl.DataFrame(
+        {
+            "sequence": [0, 1, 2, 3],
+            "value": [1.0, None, 3.0, 4.0],
+            "money": pl.Series([Decimal("1.00"), None, Decimal("3.00"), None], dtype=pl.Decimal(12, 2)),
+            "label": ["seed", None, None, "end"],
+            "_ow_polars_fill_missing_from_columns": [9, 8, 7, 6],
+        }
+    )
+    before = frame.clone()
+    custom_code = (
+        "assert '_ow_polars_fill_missing_directional' not in globals()\n"
+        "_ow_decimal_at_scale = 'local'\n"
+        "result = df.clone()"
+    )
+    plan = [
+        {"id": "custom-before", "kind": "customCode", "params": {"code": custom_code}},
+        fill_step(bound_ref("c:source:2", "money", 2), {"kind": "median"}, step_id="median-money"),
+        fill_step(
+            bound_ref("c:source:1", "value", 1),
+            {"kind": "linearInterpolation", "coordinate": bound_ref("c:source:0", "sequence", 0)},
+            step_id="interpolate-value",
+        ),
+        fill_step(
+            bound_ref("c:source:3", "label", 3),
+            {
+                "kind": "directional",
+                "direction": "forward",
+                "orderBy": [{"column": bound_ref("c:source:0", "sequence", 0), "direction": "asc", "nulls": "last"}],
+                "maxGap": 2,
+            },
+            step_id="directional-label",
+        ),
+        {"id": "custom-after", "kind": "customCode", "params": {"code": custom_code}},
+    ]
+    try:
+        code = engine.compile_plan(plan)
+        functions = [
+            node.name
+            for node in ast.parse(code, feature_version=(3, 10)).body
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("_ow_")
+        ]
+        assert len(functions) == len(set(functions))
+        assert set(functions) == {
+            "_ow_decimal_at_scale",
+            "_ow_polars_middle_values",
+            "_ow_polars_fill_missing_directional",
+            "_ow_polars_interpolation_coordinate_kind",
+            "_ow_polars_interpolation_coordinate_expression",
+            "_ow_polars_interpolation_coordinate_roundtrip",
+            "_ow_polars_fill_missing_linear_interpolation",
+        }
+        source = frame.lazy() if lazy else frame
+        live = source
+        for operation in plan:
+            live = engine.apply_transform(live, operation)
+        generated = execute_generated(engine, source, plan)
+        assert isinstance(live, pl.LazyFrame) is lazy
+        assert isinstance(generated, pl.LazyFrame) is lazy
+        expected = frame.with_columns(
+            pl.Series("value", [1.0, 2.0, 3.0, 4.0]),
+            pl.Series(
+                "money",
+                [Decimal("1.00"), Decimal("2.00"), Decimal("3.00"), Decimal("2.00")],
+                dtype=pl.Decimal(12, 2),
+            ),
+            pl.Series("label", ["seed", "seed", "seed", "end"]),
+        )
+        assert_frame_equal(live.collect() if isinstance(live, pl.LazyFrame) else live, expected)
+        assert_frame_equal(generated.collect() if lazy else generated, expected)
+        assert_frame_equal(frame, before)
     finally:
         engine.close()
 

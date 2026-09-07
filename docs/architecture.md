@@ -178,6 +178,10 @@ Excel reader requires it; it is not a transport conversion path.
 Datetime formatting preserves native Date and Datetime columns, including time zones and nanosecond precision,
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
 
+Generated Fill Missing Values code includes only the helpers referenced by the complete cleaning plan and their
+dependencies. Polars and DuckDB share the selector for their controlled helper declarations; each engine owns its
+helper implementations. The emitted programs remain standalone.
+
 ### DuckDB
 
 DuckDB file sessions retain a connection-free native SQL plan plus immutable column and type metadata. Each request

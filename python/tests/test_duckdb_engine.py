@@ -286,66 +286,6 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
         engine.close()
 
 
-def test_duckdb_generated_helper_reachability_preserves_decorated_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = """import math as numbers
-from functools import wraps as copy_metadata
-DEFAULT = 2.75
-
-def decorate(function):
-    @copy_metadata(function)
-    def wrapped(value: float = DEFAULT) -> float:
-        return function(value) + 1
-    return wrapped
-
-@decorate
-def helper(value: float = DEFAULT) -> float:
-    return numbers.floor(value)
-"""
-    monkeypatch.setattr(duckdb_runtime, "_generated_helper_source", lambda: source)
-    duckdb_runtime._generated_helper_catalog.cache_clear()
-    try:
-        selected = duckdb_runtime._reachable_generated_helper_source("def clean_data(df):\n    return helper()\n")
-        namespace: dict[str, Any] = {}
-        exec(selected, namespace)
-
-        assert selected.index("import math as numbers") < selected.index("@decorate")
-        assert "from functools import wraps as copy_metadata" in selected
-        assert "DEFAULT = 2.75" in selected
-        assert "@copy_metadata(function)" in selected
-        assert namespace["helper"]() == 3
-        assert namespace["helper"].__name__ == "helper"
-    finally:
-        duckdb_runtime._generated_helper_catalog.cache_clear()
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        "import math as duplicate, cmath as duplicate\n",
-        "import math as duplicate\nimport cmath as duplicate\n",
-        "from math import *\n",
-        "from __future__ import annotations\n",
-        "FIRST, SECOND = (1, 2)\n",
-        "VALUE: int = 1\n",
-        "class Helper:\n    pass\n",
-        "async def helper():\n    return None\n",
-    ],
-)
-def test_duckdb_generated_helper_catalog_rejects_unsupported_source(
-    monkeypatch: pytest.MonkeyPatch,
-    source: str,
-) -> None:
-    monkeypatch.setattr(duckdb_runtime, "_generated_helper_source", lambda: source)
-    duckdb_runtime._generated_helper_catalog.cache_clear()
-    try:
-        with pytest.raises(RuntimeError):
-            duckdb_runtime._generated_helper_catalog()
-    finally:
-        duckdb_runtime._generated_helper_catalog.cache_clear()
-
-
 @pytest.mark.parametrize(
     "operation",
     [
