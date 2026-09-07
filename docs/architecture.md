@@ -193,6 +193,10 @@ Profiles and query keys use logical values, including null dictionary entries an
 String keys share decoded dictionary entries rather than expanding the text payload once per row. Row selection
 retains encoded columns; it may normalize codebooks or widen their index type when native chunk unification requires
 it. Source arrays remain unchanged.
+Native Arrow `bool8` and UUID columns use logical booleans and canonical UUID strings for pages, queries, profiles
+and selected cleaning operands. Row selection retains their physical arrays; unchanged Fill targets and direct
+copies retain storage as well. Pages prepare only projected rows and leave dictionary scalar iteration bounded by
+the requested page. Arbitrary Arrow extensions do not gain this conversion.
 Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
 Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
 integer values and their fill convention, including columns that did not participate in the query.

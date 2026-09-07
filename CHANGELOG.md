@@ -21,6 +21,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Multi-label binarization works across supported Polars versions without changing empty-label behavior.
 - Pandas profiles and row queries use logical Arrow dictionary values, including null entries and repeated values
   across chunks. Row removal preserves encoded columns and exact Sparse integer payloads.
+- Pandas Arrow `bool8` and UUID columns display logical booleans and canonical UUID strings consistently with
+  profiles, selections and compatible cleaning operations.
 - Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead
   of rounding them together or rejecting valid unsigned selections.
 - Convert Type accepts supported Arrow dictionary values across chunks and retains the native target's range checks.
