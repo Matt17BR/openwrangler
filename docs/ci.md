@@ -14,6 +14,10 @@ Every pull request reports the same five required product checks:
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
 - **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
 
+Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. The required
+R job runs native cancellation contracts before its runtime shards; scheduled R 4.4 qualification includes them
+through the full R command. Source keeps its existing Node-only test owner.
+
 Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python, native R, and
 Windows run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing
 regular, non-executable `README.md` or `docs/**/*.md` files. Each runtime has a cancellable execution job and a short

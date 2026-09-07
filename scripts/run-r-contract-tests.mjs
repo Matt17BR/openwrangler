@@ -4,6 +4,7 @@ import { accessSync, constants as fsConstants, readdirSync, readFileSync, realpa
 import { Transform } from "node:stream";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const FRAME_CONTRACT_TIMEOUT_MS = 120_000;
@@ -23,6 +24,51 @@ const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
 const WINDOWS_JOB_SUPERVISOR_PATH = resolve(root, "scripts/windows-job-supervisor.ps1");
+const LINUX_SIGNAL_HELPER_PATH = resolve(root, "scripts/r-contract-signal.py");
+const LINUX_SIGNAL_MAX_TARGETS = 256;
+const LINUX_SIGNAL_INPUT_MAX_BYTES = 64 * 1024;
+const LINUX_SIGNAL_TIMEOUT_MS = 2_000;
+
+export function createLinuxProcessSignaler(environment = process.env) {
+  const python = resolveAndPreflightAcceptancePython({
+    profile: "repository-command",
+    environment,
+    repositoryRoot: root,
+    platform: "linux"
+  });
+  const execute = (args, input) => {
+    try {
+      execFileSync(python, ["-I", "-S", LINUX_SIGNAL_HELPER_PATH, ...args], {
+        input,
+        encoding: "utf8",
+        timeout: LINUX_SIGNAL_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+        maxBuffer: 4096,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (error) {
+      const detail = error.stderr?.toString().trim() || "the bounded pidfd helper did not complete";
+      throw new Error(`Linux R process supervision failed: ${detail}`, { cause: error });
+    }
+  };
+  execute(["--probe"]);
+  return (targets, ownerToken, signal) => {
+    if (targets.length === 0) return;
+    if (targets.length > LINUX_SIGNAL_MAX_TARGETS) {
+      throw new Error(`Linux R process signaling exceeds its ${LINUX_SIGNAL_MAX_TARGETS}-target bound.`);
+    }
+    const input = JSON.stringify({
+      ownerToken,
+      signal,
+      targets: targets.map(({ pid, startIdentity }) => ({ pid, startIdentity }))
+    });
+    if (Buffer.byteLength(input, "utf8") > LINUX_SIGNAL_INPUT_MAX_BYTES) {
+      throw new Error("Linux R process signaling exceeds its input byte bound.");
+    }
+    execute([], input);
+  };
+}
 
 export const R_FRAME_CONTRACT_CASES = Object.freeze([
   "decimal-ordering",
@@ -499,7 +545,7 @@ export function createPosixProcessTracker(
   {
     readProcessIdentity = readPosixProcessIdentity,
     listProcessIdentities = listPosixProcessIdentities,
-    acquireSignalHandle = () => undefined,
+    signalVerifiedProcesses,
     observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
   } = {}
 ) {
@@ -508,7 +554,6 @@ export function createPosixProcessTracker(
   }
   const observed = new Map();
   const retiredIdentities = new Map();
-  const releasedSignalHandles = new WeakSet();
   let failure;
   let resolveFailure;
   const failurePromise = new Promise((resolveValue) => {
@@ -520,36 +565,9 @@ export function createPosixProcessTracker(
     failure.processTreeUnsettled = true;
     resolveFailure(failure);
   };
-  const releaseSignalHandle = (expected) => {
-    const handle = expected.signalHandle;
-    if (handle === undefined || releasedSignalHandles.has(handle)) return;
-    releasedSignalHandles.add(handle);
-    try {
-      if (typeof handle.close === "function") handle.close();
-    } catch (error) {
-      latch(error);
-      throw failure;
-    }
-  };
   const retire = (expected) => {
-    releaseSignalHandle(expected);
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
-  };
-  const bindSignalHandle = (identity) => {
-    try {
-      const signalHandle = acquireSignalHandle(identity);
-      if (
-        signalHandle !== undefined &&
-        (typeof signalHandle !== "object" || signalHandle === null || typeof signalHandle.signal !== "function")
-      ) {
-        throw new TypeError(`The held POSIX process identity for ${identity.pid} did not expose signal().`);
-      }
-      return Object.freeze({ ...identity, signalHandle });
-    } catch (error) {
-      latch(error);
-      throw failure;
-    }
   };
   const coarseIdentityStillOwned = (expected, current) => {
     if (expected.identityResolution !== "second" && current.identityResolution !== "second") return true;
@@ -640,7 +658,7 @@ export function createPosixProcessTracker(
           throw failure;
         }
         if (!verified || verified.state === "Z" || !sameProcessIdentity(identity, verified)) continue;
-        observed.set(identity.pid, bindSignalHandle(verified));
+        observed.set(identity.pid, verified);
         changed = true;
       }
     }
@@ -652,7 +670,6 @@ export function createPosixProcessTracker(
     if (!rootIdentity || rootIdentity.state === "Z") {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
-    rootIdentity = bindSignalHandle(rootIdentity);
     observed.set(rootPid, rootIdentity);
     observe();
   } catch (error) {
@@ -669,43 +686,33 @@ export function createPosixProcessTracker(
   interval.unref?.();
   return Object.freeze({
     failure: failurePromise,
-    assertHealthy: () => {
-      if (failure) throw failure;
-    },
     observe,
     isSettled: (observer) => {
       observe();
       return observed.size === 0 && observer.isSettled();
     },
     signal: (signal) => {
-      observe();
-      for (const expected of [...observed.values()].sort((left, right) => left.pid - right.pid)) {
-        if (!verifiedIdentity(expected)) {
-          retire(expected);
-          continue;
-        }
-        if (expected.signalHandle === undefined) {
-          latch(
-            new Error(
-              `process ${expected.pid} has no OS-held signal identity on this POSIX platform; refusing numeric PID signaling`
-            )
-          );
-          throw failure;
-        }
+      try {
+        observe();
+      } catch {
+        // Keep the failed observation, but still attempt the retained identities.
+        // The signaler revalidates every target through its exact OS identity.
+      }
+      const targets = [...observed.values()].sort((left, right) => left.pid - right.pid);
+      if (targets.length > 0) {
         try {
-          expected.signalHandle.signal(signal);
-        } catch (error) {
-          if (error?.code !== "ESRCH") {
-            latch(error);
-            throw failure;
+          if (!signalVerifiedProcesses) {
+            throw new Error("this POSIX platform has no verified signaling mechanism; refusing numeric PID signaling");
           }
-          retire(expected);
+          signalVerifiedProcesses(targets, ownerToken, signal);
+        } catch (error) {
+          latch(error);
         }
       }
+      if (failure) throw failure;
     },
     stop: () => {
       clearInterval(interval);
-      for (const expected of observed.values()) releaseSignalHandle(expected);
       observed.clear();
     }
   });
@@ -737,11 +744,30 @@ async function settlePosixProcessTree(
     firstSignal = "SIGTERM"
   } = {}
 ) {
-  tracker.assertHealthy();
-  if (await waitForPosixSettlement(tracker, observer, 1, { sleepFor })) return;
-  tracker.signal(firstSignal);
-  if (await waitForPosixSettlement(tracker, observer, terminationGraceMs, { sleepFor })) return;
-  tracker.signal("SIGKILL");
+  let failure;
+  try {
+    if (await waitForPosixSettlement(tracker, observer, 1, { sleepFor })) return;
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    tracker.signal(firstSignal);
+  } catch (error) {
+    failure ??= error;
+  }
+  const graceDeadline = performance.now() + terminationGraceMs;
+  try {
+    if (await waitForPosixSettlement(tracker, observer, terminationGraceMs, { sleepFor })) return;
+  } catch (error) {
+    failure ??= error;
+    await sleepFor(Math.max(1, graceDeadline - performance.now()));
+  }
+  try {
+    tracker.signal("SIGKILL");
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure) throw failure;
   if (await waitForPosixSettlement(tracker, observer, killGraceMs, { sleepFor })) return;
   throw new Error(`The R contract process tree ${child.pid} remained live after bounded ${firstSignal} and SIGKILL.`);
 }
@@ -982,6 +1008,9 @@ async function runRContractPhaseAsync(
     ...settlementOptions
   } = {}
 ) {
+  const signalVerifiedProcesses =
+    settlementOptions.signalVerifiedProcesses ??
+    (platform === "linux" ? createLinuxProcessSignaler(phase.environment) : undefined);
   const started = now();
   writeLine(`[r-contract] START ${phase.label}; timeout ${formattedSeconds(phase.timeoutMs)}`);
   const ownerToken = randomToken();
@@ -1016,7 +1045,7 @@ async function runRContractPhaseAsync(
       : createProcessTracker(launch.child.pid, ownerToken, {
           readProcessIdentity: settlementOptions.readProcessIdentity,
           listProcessIdentities: settlementOptions.listProcessIdentities,
-          acquireSignalHandle: settlementOptions.acquireSignalHandle,
+          signalVerifiedProcesses,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
   const failurePromise = tracker ? Promise.race([outputBudget.failure, tracker.failure]) : outputBudget.failure;
@@ -1180,10 +1209,11 @@ async function main() {
   const phases = createRContractPhases({ environment: process.env, r, rscript });
   const selected = selectRContractPhases(phases, selection);
   const ordered = orderRContractPhases(selected, selection.seed);
+  const signalVerifiedProcesses = process.platform === "linux" ? createLinuxProcessSignaler() : undefined;
   if (selection.seed !== undefined) {
     process.stdout.write(`[r-contract] ORDER seed ${selection.seed}: ${ordered.map(({ id }) => id).join(", ")}\n`);
   }
-  await runRContractPhasesWithSignalForwarding(ordered);
+  await runRContractPhasesWithSignalForwarding(ordered, { signalVerifiedProcesses });
 }
 
 function invokedDirectly() {

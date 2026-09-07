@@ -62,10 +62,23 @@ npm run test:r-contract
 npm run test:r-contract:frame-and-interactive-transport
 npm run test:r-contract:catalog-and-process-transport
 node scripts/run-r-contract-tests.mjs --shard kernel-agent
+npm run test:scripts:native
 ```
 
 The grouped commands keep real-R process tests serial while separating frame and interactive-transport, catalog and
 process-transport, and kernel-agent failures.
+
+The full R command first runs the native process contracts. `test:scripts:native` selects Linux cancellation or
+Windows Job Object behavior on the current platform; ordinary Source tests do not require this native owner.
+Linux R phase supervision uses the selected repository Python's standard library and kernel pidfds. It requires
+Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The runner checks this capability before starting
+a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
+
+The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
+and escalation. An unverifiable live target leaves the overall phase unsettled even when other verified targets can
+be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism; cancellation there
+remains unresolved. Parent SIGKILL or a runner crash is also outside this shutdown guarantee. These limitations are
+tracked in [#955](https://github.com/Matt17BR/openwrangler/issues/955).
 
 The native-view source tests cover lifetime provider registrations, forwarded tree updates, and session-pinned code
 insertion. The existing App component tests retain DOM-before-acknowledgement and mismatched-marker integration

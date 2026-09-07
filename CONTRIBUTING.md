@@ -67,6 +67,10 @@ Commands such as `npm run lint:python`, `npm run test:python`, and `npm run refe
 by default. An active absolute `VIRTUAL_ENV` is also accepted. If the development interpreter is elsewhere, set
 `OPEN_WRANGLER_PYTHON` to the absolute path of an existing Python 3.10-3.14 executable.
 
+Linux native R contract tests also use this interpreter for process cancellation through kernel pidfds. That helper
+uses only the Python standard library; R dataframe execution remains native R. See [testing](docs/testing.md) for the
+platform coverage and remaining cancellation limitations.
+
 Bash or zsh:
 
 ```bash
