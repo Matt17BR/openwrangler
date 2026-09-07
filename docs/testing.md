@@ -99,6 +99,8 @@ receipt after layout settles and retain its session, revision, and DOM marker ch
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
+The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
+before continuing its existing preview, apply and undo assertions.
 
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
