@@ -8,7 +8,8 @@ import {
   noDraftSnapshot,
   register,
   resetNativeViewMocks,
-  rNotebookSnapshot
+  rNotebookSnapshot,
+  uncancelledViewToken
 } from "./nativeViews.testFixtures";
 
 const exportFileSafely = vi.hoisted(() => vi.fn(async (_options: { contents: Buffer }) => undefined));
@@ -80,7 +81,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
         return { dispose: () => (dispose = undefined) };
       }
     };
-    provider.resolveWebviewView(view);
+    provider.resolveWebviewView(view, { state: undefined }, uncancelledViewToken);
     await import("../webviews/codePreviewMain");
     const editorElement = document.querySelector<HTMLElement>(".cm-editor");
     const editor = editorElement ? EditorView.findFromDOM(editorElement) : null;
@@ -107,6 +108,16 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     expect(initialPreview).toMatchObject({ kind: "codePreview", bufferInvalid: false });
     expect(initialPreview.code).toBe(initialCanonicalCode);
     expect(firstPage.editor.state.doc.toString()).toBe(initialCanonicalCode);
+
+    provider.resolveWebviewView(
+      {
+        get webview() {
+          throw new Error("The cancelled replacement view must not be used.");
+        }
+      },
+      { state: undefined },
+      { ...uncancelledViewToken, isCancellationRequested: true }
+    );
 
     vi.useFakeTimers();
     const vscode = await import("vscode");

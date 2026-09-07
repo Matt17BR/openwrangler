@@ -72,6 +72,9 @@ Discovery selections remain bound to their originating Python kernel until the i
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.
 
+Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view. The file,
+lazy-provider, and native-view owner tests cover cancellation during loading and file preflight.
+
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
 engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
 `r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before

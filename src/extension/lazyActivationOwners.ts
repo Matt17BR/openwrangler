@@ -1001,9 +1001,15 @@ class LazyCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
     return { uri, dispose: () => undefined };
   }
 
-  async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
+  async resolveCustomEditor(
+    document: vscode.CustomDocument,
+    webviewPanel: vscode.WebviewPanel,
+    token: vscode.CancellationToken
+  ): Promise<void> {
+    if (token.isCancellationRequested) return;
     const provider = await this.load();
-    await provider.resolveCustomEditor(document, webviewPanel);
+    if (token.isCancellationRequested) return;
+    await provider.resolveCustomEditor(document, webviewPanel, token);
   }
 }
 
@@ -1048,7 +1054,9 @@ class LazyWebviewViewProvider implements vscode.WebviewViewProvider {
     context: vscode.WebviewViewResolveContext,
     token: vscode.CancellationToken
   ): Promise<void> {
+    if (token.isCancellationRequested) return;
     const provider = await this.load();
+    if (token.isCancellationRequested) return;
     await provider.resolveWebviewView(view, context, token);
   }
 }

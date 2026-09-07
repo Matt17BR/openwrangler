@@ -24,7 +24,11 @@ const fileMocks = vi.hoisted(() => ({
   >(async () => undefined),
   customEditorProvider: undefined as
     | {
-        resolveCustomEditor(document: { uri: unknown }, panel: { dispose(): void }): Promise<void>;
+        resolveCustomEditor(
+          document: { uri: unknown },
+          panel: { dispose(): void },
+          token: vscode.CancellationToken
+        ): Promise<void>;
       }
     | undefined,
   customEditorProviderOptions: undefined as unknown,
@@ -509,7 +513,8 @@ describe("file launch command", () => {
 
     await fileMocks.customEditorProvider?.resolveCustomEditor(
       { uri: vscode.Uri.from({ scheme: "git", path: "/workspace/data.csv" }) },
-      panel
+      panel,
+      resolutionToken()
     );
 
     expect(panel.dispose).toHaveBeenCalledOnce();
@@ -522,7 +527,7 @@ describe("file launch command", () => {
     const panel = { dispose: vi.fn() };
     const { context, bridge } = register();
 
-    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel, resolutionToken());
 
     expect(fileMocks.stat).toHaveBeenCalledWith(uri);
     expect(panel.dispose).not.toHaveBeenCalled();
@@ -553,7 +558,7 @@ describe("file launch command", () => {
     fileMocks.defaultBackend = "polars";
     const { context, bridge } = register();
 
-    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel, resolutionToken());
 
     expect(fileMocks.panelConstructor).toHaveBeenCalledWith(
       panel,
@@ -584,7 +589,7 @@ describe("file launch command", () => {
     fileMocks.defaultBackend = "polars";
     const { context, bridge } = register();
 
-    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel, resolutionToken());
 
     expect(fileMocks.panelConstructor).toHaveBeenCalledWith(
       panel,
@@ -607,14 +612,74 @@ describe("file launch command", () => {
     fileMocks.enabledFileTypes = ["csv"];
     register();
 
-    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel, resolutionToken());
 
     expect(fileMocks.stat).toHaveBeenCalledWith(uri);
     expect(panel.dispose).not.toHaveBeenCalled();
     expect(fileMocks.panelConstructor).toHaveBeenCalledOnce();
     expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
   });
+
+  it.each(["before validation", "during validation", "during detection"])(
+    "abandons a custom editor cancelled %s without constructing or disposing its panel",
+    async (phase) => {
+      const token = resolutionToken(phase === "before validation");
+      fileMocks.stat.mockImplementationOnce(async () => {
+        if (phase === "during validation") token.isCancellationRequested = true;
+        return { type: vscode.FileType.File };
+      });
+      fileMocks.detectImportOptions.mockImplementationOnce(async () => {
+        if (phase === "during detection") token.isCancellationRequested = true;
+        return undefined;
+      });
+      const panel = { dispose: vi.fn() };
+      register();
+
+      await fileMocks.customEditorProvider?.resolveCustomEditor(
+        { uri: vscode.Uri.file("/workspace/data.csv") },
+        panel,
+        token
+      );
+
+      expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+      expect(panel.dispose).not.toHaveBeenCalled();
+      expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
+      expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
+      if (phase === "before validation") expect(fileMocks.stat).not.toHaveBeenCalled();
+      if (phase !== "during detection") expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["directory", "special file", "inaccessible"])(
+    "does not report or dispose a cancelled custom editor after %s validation fails",
+    async (failure) => {
+      const token = resolutionToken();
+      fileMocks.stat.mockImplementationOnce(async () => {
+        token.isCancellationRequested = true;
+        if (failure === "inaccessible") throw new Error("Source is unavailable");
+        return { type: failure === "directory" ? vscode.FileType.Directory : 0 };
+      });
+      const panel = { dispose: vi.fn() };
+      register();
+
+      await fileMocks.customEditorProvider?.resolveCustomEditor(
+        { uri: vscode.Uri.file("/workspace/data.csv") },
+        panel,
+        token
+      );
+
+      expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
+      expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
+      expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+      expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+      expect(panel.dispose).not.toHaveBeenCalled();
+    }
+  );
 });
+
+function resolutionToken(cancelled = false) {
+  return { isCancellationRequested: cancelled, onCancellationRequested: () => ({ dispose: () => undefined }) };
+}
 
 function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
   const context = {

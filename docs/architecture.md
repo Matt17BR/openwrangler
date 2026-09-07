@@ -29,6 +29,8 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 
 Native tree views and Code Preview keep their original lazy provider registrations until shutdown. Loading the
 view owner attaches delegates and tree-change forwarding without unregistering a view while VS Code resolves it.
+Editor and Code Preview resolution retain VS Code's exact cancellation token through loading and file preflight.
+Canceled resolution leaves existing view ownership intact and does not start panel setup or publish late file errors.
 Activation installs its lightweight gates before the first yield. Elapsed setup time does not invalidate successful
 registration; lifecycle cancellation and actual initialization errors still shut down initialized owners.
 

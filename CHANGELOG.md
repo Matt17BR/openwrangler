@@ -19,6 +19,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
   selected before previous-session cleanup.
 - Successful activation survives long scheduler or debugger pauses.
+- Canceled editor openings stop deferred panel setup and preserve existing Code Preview actions.
 - Value filters preserve null and NaN choices and recognize supported scalar selections. Unnamed
   columns no longer disable column navigation. Summary tab labels remain legible on hover.
 - Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
