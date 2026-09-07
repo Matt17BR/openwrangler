@@ -76,7 +76,7 @@
     "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "typecheck:dependencies": "tsc -p tsconfig.dependencies.json --noEmit",
     "lint": "eslint .",
-    "lint:python": "node scripts/run-python.mjs -m ruff check python && node scripts/run-python.mjs -m ruff format --check python && node scripts/run-pyright.mjs python",
+    "lint:python": "node scripts/run-python.mjs -m ruff check python scripts/r-contract-signal.py && node scripts/run-python.mjs -m ruff format --check python scripts/r-contract-signal.py && node scripts/run-pyright.mjs python",
     "format:check": "prettier --check .",
     "format:write": "prettier --write .",
     "docs:check": "node scripts/check-docs.mjs",

@@ -44,7 +44,9 @@ def signal_verified_process(target, owner, requested_signal):
         if fields[0] == b"Z" or fields[19].decode("ascii") != target["startIdentity"]:
             return
         environment = read_bounded(f"/proc/{pid}/environ").split(b"\0")
-        marked = [entry for entry in environment if entry.startswith(OWNER_KEY)] == [OWNER_KEY + owner.encode("ascii")]
+        marked = [entry for entry in environment if entry.startswith(OWNER_KEY)] == [
+            OWNER_KEY + owner.encode("ascii")
+        ]
         # A reused PID cannot substitute another process's stat/environment for
         # an exited pidfd target: check the opened identity after both reads.
         if exited(pidfd):
@@ -77,7 +79,11 @@ def read_request():
     if len(data) > MAX_INPUT_BYTES:
         raise ValueError("signal request exceeds its byte bound")
     request = json.loads(data.decode("utf8"), object_pairs_hook=unique_object)
-    if not isinstance(request, dict) or set(request) != {"ownerToken", "signal", "targets"}:
+    if not isinstance(request, dict) or set(request) != {
+        "ownerToken",
+        "signal",
+        "targets",
+    }:
         raise ValueError("invalid signal request")
     owner = request["ownerToken"]
     if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", owner):
@@ -102,8 +108,14 @@ def read_request():
 
 
 def main():
-    if sys.platform != "linux" or not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-        raise ValueError("Linux R contract supervision requires Python with pidfd support")
+    if (
+        sys.platform != "linux"
+        or not hasattr(os, "pidfd_open")
+        or not hasattr(signal, "pidfd_send_signal")
+    ):
+        raise ValueError(
+            "Linux R contract supervision requires Python with pidfd support"
+        )
     if sys.argv[1:] == ["--probe"]:
         pidfd = os.pidfd_open(os.getpid())
         try:
@@ -118,14 +130,23 @@ def main():
     first_failure = ""
     for target in request["targets"]:
         try:
-            signal_verified_process(target, request["ownerToken"], SIGNALS[request["signal"]])
+            signal_verified_process(
+                target, request["ownerToken"], SIGNALS[request["signal"]]
+            )
         except (OSError, ValueError) as error:
             failures += 1
             if not first_failure:
-                detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+                detail = (
+                    str(error)
+                    if isinstance(error, ValueError)
+                    else type(error).__name__
+                )
                 first_failure = f"process {target['pid']}: {detail}"
     if failures:
-        print(f"Linux R cleanup refused {failures} unverifiable target(s); {first_failure}.", file=sys.stderr)
+        print(
+            f"Linux R cleanup refused {failures} unverifiable target(s); {first_failure}.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
