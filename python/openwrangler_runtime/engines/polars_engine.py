@@ -1411,13 +1411,17 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(scaled.alias(params.get("newColumn", column)))
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
-            expression = pl.col(column).cast(pl.Float64, strict=False)
+            expression = pl.col(column)
             if kind == "roundNumber":
-                expression = _polars_round(expression, int(params.get("decimals", 0)))
-            elif kind == "floorNumber":
-                expression = expression.floor()
+                expression = _polars_round(expression.cast(pl.Float64, strict=False), int(params.get("decimals", 0)))
             else:
-                expression = expression.ceil()
+                dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
+                if not dtype.is_integer():
+                    if dtype.base_type() != pl.Decimal:
+                        expression = expression.cast(pl.Float64, strict=False)
+                    expression = expression.floor() if kind == "floorNumber" else expression.ceil()
+                    if dtype.base_type() == pl.Decimal:
+                        expression = expression.cast(pl.Decimal(38, 0))
             return df.with_columns(expression.alias(params.get("newColumn", column)))
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
@@ -2310,12 +2314,26 @@ class PolarsEngine(DataFrameEngine):
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
-            expression = f"pl.col({column!r}).cast(pl.Float64, strict=False)"
             if kind == "roundNumber":
-                expression = f"_open_wrangler_round({expression}, {params.get('decimals', 0)!r})"
-            else:
-                expression += ".floor()" if kind == "floorNumber" else ".ceil()"
-            return [f"{prefix}df = df.with_columns(({expression}).alias({target!r}))"]
+                expression = (
+                    f"_open_wrangler_round(pl.col({column!r}).cast(pl.Float64, strict=False), "
+                    f"{params.get('decimals', 0)!r})"
+                )
+                return [f"{prefix}df = df.with_columns(({expression}).alias({target!r}))"]
+            dtype = f"_integral_type_{index}"
+            expression = f"_integral_{index}"
+            method = "floor" if kind == "floorNumber" else "ceil"
+            return [
+                f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[{column!r}]",
+                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}if not {dtype}.is_integer():",
+                f"{prefix}    if {dtype}.base_type() != pl.Decimal:",
+                f"{prefix}        {expression} = {expression}.cast(pl.Float64, strict=False)",
+                f"{prefix}    {expression} = {expression}.{method}()",
+                f"{prefix}    if {dtype}.base_type() == pl.Decimal:",
+                f"{prefix}        {expression} = {expression}.cast(pl.Decimal(38, 0))",
+                f"{prefix}df = df.with_columns({expression}.alias({target!r}))",
+            ]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)

@@ -1106,3 +1106,127 @@ def test_custom_code_exceptions_are_structured_engine_errors(engine) -> None:
         engine.apply_transform(frame, step("customCode", code="raise ValueError('boom')"))
     with pytest.raises(EngineError, match=rf"Custom {backend} code must assign"):
         engine.apply_transform(frame, step("customCode", code="result = 42"))
+
+
+def floor_ceil_results(adapter: Any, source: Any, kind: str, replace: bool) -> tuple[Any, Any]:
+    schema = adapter.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step(kind, column=lineage[0], **({} if replace else {"newColumn": "integral"})), schema, lineage
+    )
+    results = (adapter.apply_transform(source, operation), execute_generated(adapter, source, operation))
+    for result in results:
+        assert derive_lineage(lineage, adapter.schema(result), operation)[: len(lineage)] == lineage
+        if isinstance(source, pd.DataFrame):
+            pd.testing.assert_index_equal(result.index, source.index)
+        elif isinstance(source, pl.LazyFrame):
+            assert isinstance(result, pl.LazyFrame)
+    return results
+
+
+@pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("dtype", ["int64", "Int64", "int64[pyarrow]", "uint64[pyarrow]", "object"])
+def test_pandas_floor_ceil_preserve_exact_integers(kind: str, replace: bool, dtype: str) -> None:
+    values: list[Any] = [2**53 + 1, 2**53 + 3, 2**100 + 1] if dtype == "object" else [2**53 + 1, 2**53 + 3]
+    if dtype != "int64":
+        values.append(None)
+    series = pd.Series(values, dtype=dtype, name="same")
+    source = pd.concat([series, pd.Series(range(len(series)), name="same")], axis=1)
+    source.index = pd.Index(["duplicate"] * len(source), name="source index")
+    before = source.copy(deep=True)
+    for result in floor_ceil_results(PandasEngine(), source, kind, replace):
+        output = result.iloc[:, 0 if replace else -1]
+        assert output.dropna().tolist() == source.iloc[:, 0].dropna().tolist()
+        pd.testing.assert_series_equal(output, source.iloc[:, 0], check_names=replace)
+        pd.testing.assert_series_equal(result.iloc[:, 1], source.iloc[:, 1])
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("kind, expected", [("floorNumber", [1, 0, -2, -1]), ("ceilNumber", [2, 1, -1, 0])])
+@pytest.mark.parametrize("storage", ["object", "arrow128", "arrow256"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_floor_ceil_decimal_values_and_nulls(kind: str, expected: list[int], storage: str, empty: bool) -> None:
+    from decimal import Decimal, localcontext
+
+    import pyarrow as pa
+
+    values: list[Any] = [Decimal(text) for text in ["1.0000000000000000000000000001", "0.9999999999999999999999999999"]]
+    values += [value.copy_negate() for value in values]
+    values += [None]
+    dtype = (
+        object
+        if storage == "object"
+        else pd.ArrowDtype(pa.decimal128(38, 28) if storage == "arrow128" else pa.decimal256(76, 28))
+    )
+    source = pd.DataFrame({"value": pd.Series([] if empty else values, dtype=dtype)})
+    before = source.copy(deep=True)
+    with localcontext() as context:
+        context.prec = 2
+        for result in floor_ceil_results(PandasEngine(), source, kind, True):
+            actual = result.iloc[:, 0].tolist()
+            if empty:
+                assert actual == []
+            else:
+                assert actual[:-1] == expected
+                assert pd.isna(actual[-1])
+            if storage != "object":
+                assert result.iloc[:, 0].dtype.pyarrow_dtype.scale == 0
+                result.iloc[:, 0].array.__arrow_array__().validate(full=True)
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("kind, finite", [("floorNumber", 1.0), ("ceilNumber", 2.0)])
+@pytest.mark.parametrize("bits", [32, 64])
+def test_pandas_floor_ceil_preserve_arrow_nan_validity(kind: str, finite: float, bits: int) -> None:
+    from math import copysign
+
+    import pyarrow as pa
+
+    dtype = pa.float32() if bits == 32 else pa.float64()
+    values = [None, float("nan"), 1.25, float("inf"), float("-inf"), -0.0]
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.array(values, type=dtype, from_pandas=False))})
+    expected = pd.Series(
+        pd.arrays.ArrowExtensionArray(pa.array([*values[:2], finite, *values[3:]], type=dtype, from_pandas=False)),
+        name="integral",
+    )
+    for result in floor_ceil_results(PandasEngine(), source, kind, False):
+        pd.testing.assert_series_equal(result["integral"], expected)
+        assert result["integral"].isna().tolist() == [True, False, False, False, False, False]
+        assert copysign(1, result["integral"].iloc[-1]) == -1
+    assert source["value"].isna().tolist() == [True, False, False, False, False, False]
+
+
+@pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt64, pl.Int128])
+def test_polars_floor_ceil_preserve_exact_integer_type(kind: str, lazy: bool, replace: bool, dtype: Any) -> None:
+    values = [2**53 + 1, 2**100 + 1 if dtype == pl.Int128 else 2**53 + 3, None]
+    frame = pl.DataFrame({"value": pl.Series(values, dtype=dtype), "kept": [1, 2, 3]})
+    source = frame.lazy() if lazy else frame
+    for result in floor_ceil_results(PolarsEngine(), source, kind, replace):
+        result = result.collect() if lazy else result
+        output = result["value" if replace else "integral"]
+        assert output.to_list() == values
+        assert output.dtype == dtype
+        assert result["kept"].to_list() == [1, 2, 3]
+    assert frame["value"].to_list() == values
+
+
+@pytest.mark.parametrize("kind, expected", [("floorNumber", [0, -1, None]), ("ceilNumber", [1, 0, None])])
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("scale", [28, 38])
+def test_polars_floor_ceil_decimal_output_has_valid_capacity(
+    kind: str, expected: list[int | None], lazy: bool, scale: int
+) -> None:
+    from decimal import Decimal
+
+    value = Decimal("0." + "9" * scale)
+    source = pl.DataFrame({"value": pl.Series([value, value.copy_negate(), None], dtype=pl.Decimal(38, scale))})
+    source = source.lazy() if lazy else source
+    for result in floor_ceil_results(PolarsEngine(), source, kind, False):
+        result = result.collect() if lazy else result
+        assert result["integral"].to_list() == expected
+        assert result["integral"].dtype == pl.Decimal(38, 0)
+        result["integral"].to_arrow().validate(full=True)
