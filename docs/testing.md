@@ -107,6 +107,10 @@ Grid clipboard, resize-lifecycle and App column-projection component tests own d
 column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
 publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
 
+Native R response tests cover aggregate ASCII string expansion, exact scalar and explicit-array output, and Unicode
+under normal and C locales. The real process owner verifies an oversized valid page returns a correlated error and
+accepts a smaller page in the same process. Existing opening and mutation preflights retain their state assertions.
+
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
 changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
 receipt after layout settles and retain its session, revision, and DOM marker checks.

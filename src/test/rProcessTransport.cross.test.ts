@@ -17,6 +17,52 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("retains the exact R process after aggregate ASCII response expansion is refused", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-response-bound-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `frame <- data.frame(key = c(0L, rep(1L, 600L)), text = c("safe", rep(strrep("\\u4e00", 2730L), 600L)), process = Sys.getpid())`
+    });
+    const sessionId = randomUUID();
+    const safePage = { ...pageWindow(), rowLimit: 1 };
+    try {
+      const opened = await transport.open("frame", safePage, { requestedSessionId: sessionId });
+      const processId = opened.page.page.rows[0]?.values[2]?.raw;
+      expect(processId).toMatch(/^[1-9][0-9]*$/u);
+      await expect(
+        transport.getPage(sessionId, {
+          ...pageWindow(),
+          rowLimit: 600,
+          view: {
+            filters: [
+              {
+                column: { id: "r:c:0", name: "key" },
+                type: "integer",
+                predicates: [{ kind: "predicate", operator: "equals", value: 1 }]
+              }
+            ],
+            sorts: []
+          }
+        })
+      ).rejects.toMatchObject({
+        diagnostic: { kind: "error", code: "runtime_error", message: "The R kernel response is too large" }
+      });
+      expect(transport.isSessionMapped(sessionId)).toBe(true);
+      const recovered = await transport.getPage(sessionId, safePage);
+      expect(recovered.page.rows).toEqual(opened.page.page.rows);
+      expect(recovered.page.rows[0]?.values[2]?.raw).toBe(processId);
+      expect(recovered.shape).toEqual({ rows: 601, columns: 3 });
+      await transport.close(sessionId);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 45_000);
+
   it("runs the dependency preflight before managed process-agent readiness", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-dependency-test-"));
     const emptyLibrary = resolve(temporaryParent, "empty-library");

@@ -21,6 +21,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   filter arrays or null logic as an empty or default-AND Filter Rows draft.
 - Failed viewing pages preserve the last confirmed Python query, so later Apply and Discard do not use an unseen
   filter. Spark retains the prior view's page continuation after a rejected replacement.
+- Large Unicode R pages report a bounded request error instead of terminating the standalone runtime during response
+  encoding. Smaller followup pages remain available in the same process.
 - Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
   no longer copies source text into framing errors or starts cleanup before the originating execution settles.
 - Python notebook-open preflight bounds retained text and error diagnostics before runtime dispatch, including noisy
