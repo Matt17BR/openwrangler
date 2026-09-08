@@ -469,6 +469,18 @@ can remove an erroneous output, using that relation's connection. Empty plans re
 This adds work proportional to the evaluated result at each step, including replay. It verifies the current execution;
 it cannot guarantee that a later evaluation of nondeterministic Custom Code will succeed.
 
+Formula checks addition, subtraction, multiplication and modulo when both selected operands have native fixed-width
+integer types, through 128 bits, and DuckDB promotes the result to DOUBLE. Each evaluated expression checks its actual
+operand pair and result, refusing precision loss while retaining correct native values and types. Its own arithmetic
+resolves from the built-in catalog, so caller macros cannot replace the guard's primitives. Metadata inspection does
+not evaluate source values. The embedded check adds native work and may allocate hash state for distinct operand
+pairs; it does not retain a frame or introduce a Python row loop. Generated code applies the same check and includes
+its helpers once under the existing code-size limit.
+Other native result types, explicit floating or Decimal operands, division, power and By Example retain their existing
+paths. BIGNUM source operands are outside this check and remain unavailable in numeric form choices. Programmatic or
+generated BIGNUM multiplication and modulo can still lose precision; that separate gap is tracked in
+[#1094](https://github.com/Matt17BR/openwrangler/issues/1094).
+
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on

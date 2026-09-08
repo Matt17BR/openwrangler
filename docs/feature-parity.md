@@ -166,7 +166,8 @@ or negative-scale Decimal capacity gaps remain tracked in [#979](https://github.
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
-whose source changes to Boolean. DuckDB retains its native arithmetic promotion.
+whose source changes to Boolean. DuckDB retains exact native promotions and refuses the lossy integer results
+described in its [experimental support section](#duckdb-experimental-file-support).
 R accepts only literals exactly representable by its existing numeric scalar types. Decimal and exponent input
 retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
 this change cannot recover digits already lost.
@@ -321,6 +322,12 @@ DuckDB file sessions remain native and connection-scoped. They do not convert th
 extension auto-install, autoload, and external-file caching stay disabled.
 Cleaning evaluates each result before accepting it, so an error outside the visible rows or columns also refuses the
 step. Generated programs evaluate each intermediate result. This evaluation adds work across all result rows and columns.
+
+Formula rejects lossy DOUBLE promotion for addition, subtraction, multiplication and modulo on native integer types
+through 128 bits, retaining correct results and types. Live and generated checks use the same operand pair; explicit
+floating and Decimal inputs, division and power retain native behavior. BIGNUM operands remain outside numeric form
+choices and this check; their programmatic/generated multiplication and modulo precision gap remains in
+[#1094](https://github.com/Matt17BR/openwrangler/issues/1094).
 
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
 generated code.

@@ -846,6 +846,18 @@ class DuckDBEngine(DataFrameEngine):
             )
             left = bound_column_name(params["leftColumn"], kind)
             expression = _formula_expression(_quote_ident(left), right, params["operator"])
+            if params["operator"] in {"add", "subtract", "multiply", "modulo"}:
+                types = self._relation(
+                    frame,
+                    f"SELECT {_quote_ident(left)} AS l, {right} AS r, {expression} AS actual FROM ow",
+                ).types
+                expression = _guard_duckdb_integer_formula(
+                    "ow." + _quote_ident(left),
+                    "ow." + right if params.get("rightColumn") else right,
+                    params["operator"],
+                    types,
+                    expression,
+                )
             return self._assign(frame, params["newColumn"], expression)
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
@@ -1322,10 +1334,13 @@ class DuckDBEngine(DataFrameEngine):
                 else f"_ow_literal({_duckdb_formula_scalar(params['value'])!r})"
             )
             left = bound_column_name(params["leftColumn"], kind)
-            return [
-                f"{prefix}df = _ow_assign(df, {output_name or repr(params['newColumn'])}, "
-                f"_ow_formula(_ow_ident({left!r}), {right}, {params['operator']!r}))"
-            ]
+            expression = f"_ow_formula(_ow_ident({left!r}), {right}, {params['operator']!r})"
+            if params["operator"] in {"add", "subtract", "multiply", "modulo"}:
+                expression = (
+                    f"_ow_checked_formula(df, _ow_ident({left!r}), {right}, "
+                    f"{params['operator']!r}, {bool(params.get('rightColumn'))!r})"
+                )
+            return [f"{prefix}df = _ow_assign(df, {output_name or repr(params['newColumn'])}, {expression})"]
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
             return [
@@ -3151,6 +3166,93 @@ def _duckdb_formula_scalar(value: Any) -> int | float:
     return literal
 
 
+def _guard_duckdb_integer_formula(left: str, right: str, operator: str, types: Sequence[Any], expression: str) -> str:
+    left_type, right_type, result_type = map(str, types)
+    integer_types = {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+    }
+    if left_type not in integer_types or right_type not in integer_types or result_type != "DOUBLE":
+        return expression
+
+    def native(function: str, *arguments: str) -> str:
+        # All names below are fixed guard primitives, independent of caller macros.
+        return f'system.main."{function}"(' + ", ".join(arguments) + ")"
+
+    symbol = {"add": "+", "subtract": "-", "multiply": "*", "modulo": "%"}[operator]
+    # Preserve the actual Formula operator lookup. Only the guard's own
+    # arithmetic uses explicit builtins, so a wrong actual result is refused.
+    query = (
+        f"WITH operands AS (SELECT l, r, (l {symbol} r) AS actual FROM (SELECT {left} AS l, {right} AS r) AS selected)"
+    )
+    relation = "operands"
+    if operator in {"add", "subtract"}:
+        exact = native(symbol, "CAST(l AS BIGNUM)", "CAST(r AS BIGNUM)")
+        valid = f"CAST({exact} AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
+    else:
+
+        def magnitude(value: str, raw_type: str) -> str:
+            if raw_type.startswith("U"):
+                return f"CAST({value} AS UHUGEINT)"
+            # -(MIN + 1) fits the signed type; the unsigned +1 restores abs(MIN).
+            positive = native("-", native("+", value, "1"))
+            unsigned = native("+", f"CAST({positive} AS UHUGEINT)", "1::UHUGEINT")
+            return f"CASE WHEN {value}<0 THEN {unsigned} ELSE CAST({value} AS UHUGEINT) END"
+
+        query += (
+            f", magnitudes AS (SELECT *, {magnitude('l', left_type)} AS lm, "
+            f"{magnitude('r', right_type)} AS rm FROM operands)"
+        )
+        relation = "magnitudes"
+        if operator == "modulo":
+            remainder = native("%", "lm", native("nullif", "rm", "0::UHUGEINT"))
+            negative = native("-", f"CAST({remainder} AS BIGNUM)")
+            exact = f"CASE WHEN l<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
+            valid = f"CAST(({exact}) AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
+        else:
+
+            def trailing_zeros(value: str) -> str:
+                # For a positive 128-bit integer, popcount((v xor (v-1)) >> 1)
+                # counts its trailing zero bits. The shifted mask fits HUGEINT.
+                mask = native(">>", native("xor", value, native("-", value, "1::UHUGEINT")), "1::UHUGEINT")
+                count = native("bit_count", f"CAST({mask} AS HUGEINT)")
+                return f"CAST({count} AS UHUGEINT)"
+
+            left_odd = native(">>", "lm", trailing_zeros("lm"))
+            right_odd = native(">>", "rm", trailing_zeros("rm"))
+            query += (
+                f", odd_factors AS (SELECT *, CASE WHEN lm=0 THEN 0::UHUGEINT ELSE {left_odd} END AS lo, "
+                f"CASE WHEN rm=0 THEN 0::UHUGEINT ELSE {right_odd} END AS ro FROM magnitudes)"
+            )
+            relation = "odd_factors"
+            # Fixed 128-bit inputs have a finite DOUBLE product. It is exact
+            # precisely when zero or its odd product fits 53 significant bits.
+            bound = native("//", "9007199254740991::UHUGEINT", "ro")
+            capacity = f"CASE WHEN lm=0 OR rm=0 THEN true ELSE lo <= {bound} END"
+            # Once representable, builtin DOUBLE multiplication is an exact
+            # oracle even beyond 128 bits; do not trust a caller's * macro.
+            product = native("*", "CAST(l AS DOUBLE)", "CAST(r AS DOUBLE)")
+            valid = f"({capacity}) AND actual = {product}"
+    if operator != "multiply":
+        # BIGNUM conversion alone discards fractions. Verify the represented
+        # DOUBLE is integral before comparing its exact integer value.
+        valid = f"(actual = CAST(CAST(actual AS BIGNUM) AS DOUBLE)) AND ({valid})"
+    bypass = "l IS NULL OR r IS NULL" + (" OR r=0" if operator == "modulo" else "")
+    refusal = native("error", "'Open Wrangler integer Formula result is not exact.'")
+    return (
+        "(" + query + f" SELECT CASE WHEN {bypass} THEN actual WHEN ({valid}) THEN actual "
+        "ELSE " + refusal + " END FROM " + relation + ")"
+    )
+
+
 def _formula_expression(left: str, right: str, operator: str) -> str:
     if operator == "power":
         return f"power({left}, {right})"
@@ -4915,6 +5017,92 @@ def _ow_min_max(df, column, target):
     return _ow_query(
         df,
         "SELECT " + modifier + " FROM (SELECT *, " + prepared + " AS " + value + " FROM ow)",
+    )
+
+
+def _ow_guard_integer_formula(left, right, operator, types, expression):
+    left_type, right_type, result_type = map(str, types)
+    integer_types = {
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+        "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+    }
+    if left_type not in integer_types or right_type not in integer_types or result_type != "DOUBLE":
+        return expression
+
+    def native(function, *arguments):
+        # All names below are fixed guard primitives, independent of caller macros.
+        return f'system.main."{function}"(' + ", ".join(arguments) + ")"
+
+    symbol = {"add": "+", "subtract": "-", "multiply": "*", "modulo": "%"}[operator]
+    # Preserve the actual Formula operator lookup. Only the guard's own
+    # arithmetic uses explicit builtins, so a wrong actual result is refused.
+    query = (
+        f"WITH operands AS (SELECT l, r, (l {symbol} r) AS actual "
+        f"FROM (SELECT {left} AS l, {right} AS r) AS selected)"
+    )
+    relation = "operands"
+    if operator in {"add", "subtract"}:
+        exact = native(symbol, "CAST(l AS BIGNUM)", "CAST(r AS BIGNUM)")
+        valid = f"CAST({exact} AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
+    else:
+        def magnitude(value, raw_type):
+            if raw_type.startswith("U"):
+                return f"CAST({value} AS UHUGEINT)"
+            # -(MIN + 1) fits the signed type; the unsigned +1 restores abs(MIN).
+            positive = native("-", native("+", value, "1"))
+            unsigned = native("+", f"CAST({positive} AS UHUGEINT)", "1::UHUGEINT")
+            return f"CASE WHEN {value}<0 THEN {unsigned} ELSE CAST({value} AS UHUGEINT) END"
+
+        query += (
+            f", magnitudes AS (SELECT *, {magnitude('l', left_type)} AS lm, "
+            f"{magnitude('r', right_type)} AS rm FROM operands)"
+        )
+        relation = "magnitudes"
+        if operator == "modulo":
+            remainder = native("%", "lm", native("nullif", "rm", "0::UHUGEINT"))
+            negative = native("-", f"CAST({remainder} AS BIGNUM)")
+            exact = f"CASE WHEN l<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
+            valid = f"CAST(({exact}) AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
+        else:
+            def trailing_zeros(value):
+                # For a positive 128-bit integer, popcount((v xor (v-1)) >> 1)
+                # counts its trailing zero bits. The shifted mask fits HUGEINT.
+                mask = native(">>", native("xor", value, native("-", value, "1::UHUGEINT")), "1::UHUGEINT")
+                count = native("bit_count", f"CAST({mask} AS HUGEINT)")
+                return f"CAST({count} AS UHUGEINT)"
+
+            left_odd = native(">>", "lm", trailing_zeros("lm"))
+            right_odd = native(">>", "rm", trailing_zeros("rm"))
+            query += (
+                f", odd_factors AS (SELECT *, CASE WHEN lm=0 THEN 0::UHUGEINT ELSE {left_odd} END AS lo, "
+                f"CASE WHEN rm=0 THEN 0::UHUGEINT ELSE {right_odd} END AS ro FROM magnitudes)"
+            )
+            relation = "odd_factors"
+            # Fixed 128-bit inputs have a finite DOUBLE product. It is exact
+            # precisely when zero or its odd product fits 53 significant bits.
+            bound = native("//", "9007199254740991::UHUGEINT", "ro")
+            capacity = f"CASE WHEN lm=0 OR rm=0 THEN true ELSE lo <= {bound} END"
+            # Once representable, builtin DOUBLE multiplication is an exact
+            # oracle even beyond 128 bits; do not trust a caller's * macro.
+            product = native("*", "CAST(l AS DOUBLE)", "CAST(r AS DOUBLE)")
+            valid = f"({capacity}) AND actual = {product}"
+    if operator != "multiply":
+        # BIGNUM conversion alone discards fractions. Verify the represented
+        # DOUBLE is integral before comparing its exact integer value.
+        valid = f"(actual = CAST(CAST(actual AS BIGNUM) AS DOUBLE)) AND ({valid})"
+    bypass = "l IS NULL OR r IS NULL" + (" OR r=0" if operator == "modulo" else "")
+    refusal = native("error", "'Open Wrangler integer Formula result is not exact.'")
+    return (
+        "(" + query + f" SELECT CASE WHEN {bypass} THEN actual WHEN ({valid}) THEN actual "
+        "ELSE " + refusal + " END FROM " + relation + ")"
+    )
+
+
+def _ow_checked_formula(df, left, right, operator, right_is_column):
+    expression = _ow_formula(left, right, operator)
+    types = _ow_query(df, "SELECT " + left + " AS l, " + right + " AS r, " + expression + " AS actual FROM ow").types
+    return _ow_guard_integer_formula(
+        "ow." + left, "ow." + right if right_is_column else right, operator, types, expression
     )
 
 

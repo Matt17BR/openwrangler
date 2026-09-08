@@ -6,6 +6,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from decimal import Decimal
+from fractions import Fraction
 from math import isnan
 from pathlib import Path
 from threading import Event
@@ -246,6 +247,237 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     result = namespace["clean_data"](frame)
     assert isinstance(result, duckdb.DuckDBPyRelation)
     return result
+
+
+@pytest.mark.parametrize(
+    ("operator", "left", "right", "exact", "refuse", "left_type", "right_type"),
+    [
+        ("add", 2**100 + 1, 1, 2**100 + 2, True, "HUGEINT", "UHUGEINT"),
+        ("subtract", 2**100 + 1, 2**100, 1, True, "HUGEINT", "UHUGEINT"),
+        ("multiply", -1, 2**100 + 1, -(2**100 + 1), True, "HUGEINT", "UHUGEINT"),
+        ("modulo", 2**100 + 1, 2, 1, True, "HUGEINT", "UHUGEINT"),
+        ("add", 2**100 + 1, 2**100 - 1, 2**101, False, "HUGEINT", "UHUGEINT"),
+        ("subtract", 2**100 + 1, 2**100 + 1, 0, False, "HUGEINT", "UHUGEINT"),
+        ("multiply", 3 * 2**100, 5 * 2**100, 15 * 2**200, False, "HUGEINT", "UHUGEINT"),
+        ("add", -(2**127), 2**127, 0, False, "HUGEINT", "UHUGEINT"),
+        ("modulo", -7, 2, -1, False, "HUGEINT", "UHUGEINT"),
+        ("modulo", -(2**127), 0, None, False, "HUGEINT", "UHUGEINT"),
+        ("multiply", -1, 0, 0, False, "HUGEINT", "UHUGEINT"),
+        ("add", 2**100 + 1, 1, 2**100 + 2, True, "UHUGEINT", "HUGEINT"),
+        ("subtract", 2**100 + 1, 2**100, 1, True, "UHUGEINT", "HUGEINT"),
+        ("multiply", 2**100 + 1, -1, -(2**100 + 1), True, "UHUGEINT", "HUGEINT"),
+        ("modulo", 2**100 + 1, -2, 1, True, "UHUGEINT", "HUGEINT"),
+        ("modulo", 2, 2**100 + 1, 2, False, "UHUGEINT", "HUGEINT"),
+        ("modulo", 2**127, -(2**127), 0, False, "UHUGEINT", "HUGEINT"),
+    ],
+)
+def test_duckdb_integer_formula_checks_selected_results_without_changing_native_values(
+    operator: str, left: int, right: int, exact: int | None, refuse: bool, left_type: str, right_type: str
+) -> None:
+    engine = DuckDBEngine()
+    symbol = {"add": "+", "subtract": "-", "multiply": "*", "modulo": "%"}[operator]
+    with duckdb.connect() as connection:
+        frame = connection.sql(
+            'SELECT pos AS ow, lhs AS "left""value", rhs, 17 AS actual FROM '
+            f"(VALUES (0, '{left}'::{left_type}, '{right}'::{right_type}), "
+            f"(1, '{left}'::{left_type}, '{right}'::{right_type}), "
+            f"(2, NULL::{left_type}, '{right}'::{right_type}), "
+            f"(3, '{left}'::{left_type}, NULL::{right_type})) source(pos, lhs, rhs)"
+        )
+        assert list(map(str, frame.types[1:3])) == [left_type, right_type]
+        original = frame.fetchall()
+        native = frame.project(f'*, ("left""value" {symbol} rhs) AS result')
+        native_rows = native.fetchall()
+        assert native.types[-1] == DOUBLE
+        if exact is not None:
+            assert (Fraction(native_rows[0][-1]) != exact) is refuse
+        operation = bound_step(
+            "formula",
+            leftColumn=bound_ref("c:source:1", 'left"value', 1),
+            rightColumn=bound_ref("c:source:2", "rhs", 2),
+            operator=operator,
+            newColumn="result",
+        )
+        try:
+            live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
+            assert list(map(str, live.types)) == list(map(str, native.types))
+            if refuse:
+                with pytest.raises(EngineError, match="integer Formula result is not exact"):
+                    engine.validate_transformation_result(live)
+                # Readiness must evaluate the Formula before a later projection can prune it.
+                with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+                    execute_generated(
+                        engine,
+                        frame,
+                        [operation, bound_step("dropColumns", columns=[bound_ref("c:result", "result", 4)])],
+                    )
+            else:
+                engine.validate_transformation_result(live)
+                generated = execute_generated(engine, frame, [operation])
+                assert generated.types == native.types
+                for actual in (engine._terminal_rows(live, "SELECT * FROM ow"), generated.fetchall()):
+                    assert [row[:-1] for row in actual] == original
+                    assert [row[-1] for row in actual[2:]] == [None, None]
+                    for index in range(2):
+                        value = actual[index][-1]
+                        if exact is None:
+                            assert isnan(value) and isnan(native_rows[index][-1])
+                        else:
+                            assert Fraction(value) == exact
+                            assert value.hex() == native_rows[index][-1].hex()
+            assert frame.fetchall() == original
+            assert connection.sql("SELECT 19").fetchone() == (19,)
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    ("operator", "left", "literal", "expected", "refuse"),
+    [
+        ("add", 0, str(2**128 - 1), 2**128 - 1, True),
+        ("multiply", 0, str(2**128 - 1), 0, False),
+        ("add", 0, str(2**127), 2**127, False),
+        ("modulo", 2**100 + 1, str(2**127 + 1), 2**100 + 1, True),
+    ],
+)
+def test_duckdb_integer_formula_preserves_exact_scalar_literal_intent(
+    operator: str, left: int, literal: str, expected: int, refuse: bool
+) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(f"SELECT '{left}'::HUGEINT AS value")
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], operator=operator, value=literal, newColumn="result"), schema, lineage
+    )
+    try:
+        live = engine.apply_transform(frame, operation)
+        assert str(live.types[-1]) == "DOUBLE"
+        if refuse:
+            with pytest.raises(EngineError, match="integer Formula result is not exact"):
+                engine.validate_transformation_result(live)
+            with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+                execute_generated(engine, frame, [operation])
+        else:
+            generated = execute_generated(engine, frame, [operation])
+            assert generated.types[-1] == DOUBLE
+            assert engine._terminal_rows(live, "SELECT * FROM ow") == generated.fetchall() == [(left, float(expected))]
+            assert Fraction(generated.fetchall()[0][-1]) == expected
+        assert frame.fetchall() == [(left,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("operator", "literal", "dtype", "expected"),
+    [
+        ("add", 1.0, "DECIMAL(38,1)", Decimal(2**100 + 2)),
+        ("power", 2, "DOUBLE", float((2**100 + 1) ** 2)),
+        ("divide", 2, "DOUBLE", float(2**99)),
+    ],
+)
+def test_duckdb_integer_formula_retains_explicit_decimal_and_approximate_operators(
+    operator: str, literal: int | float, dtype: str, expected: Decimal | float
+) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(f"SELECT '{2**100 + 1}'::HUGEINT AS value")
+    operation = bound_step(
+        "formula", leftColumn=bound_ref("c:source:0", "value", 0), operator=operator, value=literal, newColumn="result"
+    )
+    try:
+        live = engine.apply_transform(frame, operation)
+        generated = execute_generated(engine, frame, [operation])
+        assert str(live.types[-1]) == str(generated.types[-1]) == dtype
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == generated.fetchall() == [(2**100 + 1, expected)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("definition", "operator", "left", "right"),
+    [
+        ("bit_count(v) AS 100", "multiply", 2**100 + 1, 2**100 + 1),
+        (f"xor(a,b) AS '{2**101 - 1}'::UHUGEINT", "multiply", 2**100 + 1, 2**100 + 1),
+        ("nullif(a,b) AS 1::UHUGEINT", "modulo", 2**100 + 1, 2),
+        ("error(message) AS 0.0::DOUBLE", "add", 2**100 + 1, 1),
+        (f'"//"(a,b) AS {2**128 - 1}::UHUGEINT', "multiply", 2**100 + 1, 2**100 + 1),
+        ('"*"(a,b) AS 0.0::DOUBLE', "multiply", 2**100, 2),
+        ('"+"(a,b) AS 0.25::DOUBLE', "add", 0, 0),
+        ('"-"(a,b) AS 0.25::DOUBLE', "subtract", 0, 0),
+        ('"%"(a,b) AS 0.25::DOUBLE', "modulo", 0, 2),
+    ],
+)
+def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_owner(
+    definition: str, operator: str, left: int, right: int
+) -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        operation = bound_step(
+            "formula",
+            leftColumn=bound_ref("c:source:0", "lhs", 0),
+            rightColumn=bound_ref("c:source:1", "rhs", 1),
+            operator=operator,
+            newColumn="result",
+        )
+        try:
+            # Live notebook relations retain their private connection. General
+            # emitted SQL uses its existing default connection instead.
+            for context in (connection, duckdb):
+                context.execute("CREATE MACRO " + definition)
+                try:
+                    frame = context.sql(f"SELECT '{left}'::HUGEINT AS lhs, '{right}'::UHUGEINT AS rhs")
+                    if context is connection:
+                        live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
+                        assert str(live.types[-1]) == "DOUBLE"
+                        with pytest.raises(EngineError, match="integer Formula result is not exact"):
+                            engine.validate_transformation_result(live)
+                    else:
+                        with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+                            execute_generated(engine, frame, [operation])
+                    assert frame.fetchall() == [(left, right)]
+                finally:
+                    context.execute("DROP MACRO " + definition.split("(", 1)[0])
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize("generated", [False, True], ids=["live", "generated"])
+def test_duckdb_integer_formula_guards_the_evaluated_volatile_pair(generated: bool) -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        context = duckdb if generated else connection
+        context.execute("CREATE SEQUENCE formula_pair START 2")
+        frame = context.sql(
+            f"SELECT ('{2**100}'::HUGEINT + (nextval('formula_pair') % 2)::HUGEINT) AS lhs, '{2**100}'::UHUGEINT AS rhs"
+        )
+        operation = bound_step(
+            "formula",
+            leftColumn=bound_ref("c:source:0", "lhs", 0),
+            rightColumn=bound_ref("c:source:1", "rhs", 1),
+            operator="subtract",
+            newColumn="result",
+        )
+        try:
+            if generated:
+                # The complete program validates its step once before returning the lazy relation.
+                result = execute_generated(engine, frame, [operation])
+            else:
+                result = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
+                assert context.sql(
+                    "SELECT last_value FROM duckdb_sequences() WHERE sequence_name='formula_pair'"
+                ).fetchone() == (None,)
+                assert engine._terminal_rows(result, "SELECT * FROM ow") == [(2**100, 2**100, 0.0)]
+            assert context.sql("SELECT currval('formula_pair')").fetchone() == (2,)
+            # A separate precheck would incorrectly approve the following odd pair.
+            with pytest.raises((EngineError, duckdb.Error), match="integer Formula result is not exact"):
+                if generated:
+                    result.fetchall()
+                else:
+                    engine._terminal_rows(result, "SELECT * FROM ow")
+            assert context.sql("SELECT currval('formula_pair')").fetchone() == (3,)
+        finally:
+            engine.close()
+            context.execute("DROP SEQUENCE formula_pair")
 
 
 @pytest.mark.parametrize(

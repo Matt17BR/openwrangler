@@ -306,6 +306,13 @@ Boolean companions, Sparse storage, missing-power identities and bounded power v
 By Example and existing noninteger behavior. The session-transaction owner checks failures beyond the previewed
 page, unchanged confirmed state and source bytes, retained Redo history, and a successful correction afterward.
 
+The DuckDB engine owner covers lossy and exact integer Formula promotions, both signed/unsigned operand orders, nulls,
+native types and complete generated programs that refuse before a later projection can discard the erroneous output.
+Caller-macro controls include fractional results that an integer cast could hide;
+volatile-source controls distinguish metadata inspection, generated readiness and later retrieval. Session transactions
+cover off-page refusal, unchanged source and confirmed state, correction and replay. BIGNUM support is not inferred
+from these fixed-width cases.
+
 Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
 refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned
