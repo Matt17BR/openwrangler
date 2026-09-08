@@ -548,6 +548,10 @@ Generated R Group By retains zero groups for empty inputs and preserves the live
 It loads bit64 before grouping when a selected key or aggregation uses integer64, so missing detection,
 key comparison and subsetting retain native values even in a fresh R session.
 
+Built-in R means and profile medians use primitive numeric calculations that bypass registered S3 mean methods.
+Live operations and their generated programs agree; Custom Code retains the caller's ordinary R dispatch.
+Profile calculation and precision limits are described in [ADR 0001](decisions/0001-native-r-runtime.md).
+
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 

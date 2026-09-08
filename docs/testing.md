@@ -114,6 +114,10 @@ separate from the midpoint guarantee.
 The existing native R Group By owner compares typed empty results across base dataframes, tibbles and data.tables.
 It also executes complete generated programs in fresh R processes to check integer64 first/last outputs and exact
 wide keys without a preloaded bit64 namespace, retaining source and result-publication assertions.
+The existing R Fill, Group By, profiling and Custom Code owners register and restore numeric mean methods to check
+built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
+Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain
+signed-zero and nonfinite median behavior that JSON cannot distinguish.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
 ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
 Native R child fixtures retain the caller's temporary-directory settings. Private Spark notebook fixtures use

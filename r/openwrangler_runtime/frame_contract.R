@@ -1960,6 +1960,15 @@ openwrangler_r_frame_contract <- local({
     list(kind = "numeric", bins = json_array(bins))
   }
 
+  numeric_profile_median <- function(values) {
+    count <- length(values)
+    if (count == 0L) return(NA_real_)
+    middle <- (count + 1L) %/% 2L
+    positions <- if (count %% 2L == 0L) middle + 0L:1L else middle
+    selected <- sort(values, partial = positions)[positions]
+    if (length(selected) == 1L) selected[[1L]] else base::mean.default(selected)
+  }
+
   numeric_profile <- function(column, semantics, present_indices, value_keys, budget, label) {
     values <- numeric_profile_values(column, semantics, present_indices)
     numeric <- list()
@@ -1974,8 +1983,8 @@ openwrangler_r_frame_contract <- local({
     candidates <- list(
       min = if (length(values) == 0L) NULL else suppressWarnings(min(values)),
       max = if (length(values) == 0L) NULL else suppressWarnings(max(values)),
-      mean = if (length(values) == 0L) NULL else suppressWarnings(mean(values)),
-      median = if (length(values) == 0L) NULL else suppressWarnings(stats::median(values)),
+      mean = if (length(values) == 0L) NULL else suppressWarnings(base::mean.default(values)),
+      median = if (length(values) == 0L) NULL else suppressWarnings(numeric_profile_median(values)),
       std = if (length(values) < 2L) NULL else suppressWarnings(stats::sd(values))
     )
     for (name in names(candidates)) {
@@ -2006,7 +2015,7 @@ openwrangler_r_frame_contract <- local({
       emptyCount = as.integer(sum(lengths == 0L)),
       minLength = as.integer(min(lengths)),
       maxLength = as.integer(max(lengths)),
-      meanLength = as.double(mean(lengths))
+      meanLength = as.double(base::mean.default(lengths))
     )
   }
 
@@ -2251,7 +2260,7 @@ openwrangler_r_frame_contract <- local({
           if (length(finite_values) != 0L) {
             numeric_sum <- numeric_sum + sum(finite_values)
             chunk_finite_count <- length(finite_values)
-            chunk_mean <- mean(finite_values)
+            chunk_mean <- base::mean.default(finite_values)
             chunk_m2 <- sum((finite_values - chunk_mean)^2)
             if (numeric_finite_count == 0) {
               numeric_mean <- chunk_mean
@@ -2389,7 +2398,7 @@ openwrangler_r_frame_contract <- local({
       }
       sample_values <- numeric_profile_values(sample_column, semantics, sample_indices)
       if (!distribution_sampled && length(sample_values) != 0L) {
-        median_value <- finite_statistic(suppressWarnings(stats::median(sample_values)))
+        median_value <- finite_statistic(suppressWarnings(numeric_profile_median(sample_values)))
         if (!is.null(median_value)) numeric$median <- median_value
       }
       if (!is.null(exact_minimum) && !is.null(exact_maximum)) {
@@ -6453,7 +6462,7 @@ openwrangler_r_frame_contract <- local({
         fill <- if (scale == 0) {
           0
         } else {
-          max(-1, min(1, mean(present / scale))) * scale
+          max(-1, min(1, base::mean.default(present / scale))) * scale
         }
       }
       result <- column
@@ -7139,7 +7148,7 @@ openwrangler_r_frame_contract <- local({
             fill <- -Inf
           } else {
             scale <- max(abs(present))
-            fill <- if (scale == 0) 0 else max(-1, min(1, mean(present / scale))) * scale
+            fill <- if (scale == 0) 0 else max(-1, min(1, base::mean.default(present / scale))) * scale
           }
         } else if (identical(statistic, "median")) {
           fill <- if (identical(target_kind, "integer64")) {
@@ -7671,7 +7680,7 @@ openwrangler_r_frame_contract <- local({
     if (negative_infinity) return(-Inf)
     scale <- max(abs(values))
     if (scale == 0) return(0)
-    max(-1, min(1, mean(values / scale))) * scale
+    max(-1, min(1, base::mean.default(values / scale))) * scale
   }
 
   safe_group_median <- function(values, semantics) {
