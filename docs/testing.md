@@ -464,6 +464,11 @@ VSCODE_TEST_VERSION=stable \
 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
 ```
 
+The broader platform smoke identifies the product's gallery row by its exact extension ID. It requires one visible
+row and a loaded icon observed together within ten seconds. Failure details contain only fixed identity, counts and
+image-state fields. The editor may choose its gallery or local icon URL; archive verification separately checks the
+packaged icon. The test harness's similar display name cannot satisfy this check.
+
 The broader platform smoke checks trusted-pickle publication, unchanged source bytes, worker cleanup, and opening
 the converted Parquet file through the public command. The optional completion-notification action has a direct
 command test; toast visibility is not the conversion-completion signal.
