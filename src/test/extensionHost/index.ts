@@ -6969,20 +6969,62 @@ async function exercisePackagedPlatformSmoke(
 
   recordAcceptanceProgress("platform-smoke:gallery-icon");
   await vscode.commands.executeCommand("workbench.view.extensions");
-  const installedExtension = page
-    .locator(".part.sidebar .monaco-list-row, .part.sidebar [role=treeitem]")
-    .filter({ hasText: "Open Wrangler" })
-    .first();
-  await installedExtension.waitFor({ state: "visible", timeout: 10_000 });
-  const galleryIcon = installedExtension.locator("img").first();
-  await galleryIcon.waitFor({ state: "visible", timeout: 10_000 });
+  const installedExtension = page.locator('.part.sidebar [data-extension-id="matt17br.openwrangler" i]:visible');
+  const galleryDeadline = Date.now() + 10_000;
+  let galleryState;
+  let galleryIconReady = false;
+  do {
+    galleryState = await withBoundedAcceptancePromise(
+      installedExtension.evaluateAll((rows) => {
+        const row = rows.length === 1 ? rows[0] : undefined;
+        const icons = row?.querySelectorAll(".extension-icon > img.icon");
+        const icon = icons?.length === 1 ? icons[0] : undefined;
+        const bounds = icon?.getBoundingClientRect();
+        const style = icon && icon.ownerDocument.defaultView?.getComputedStyle(icon);
+        return {
+          expectedExtensionId: "matt17br.openwrangler",
+          matchingRows: Math.min(rows.length, 2),
+          matchingIcons: Math.min(icons?.length ?? 0, 2),
+          exactRow: row?.getAttribute("data-extension-id")?.toLowerCase() === "matt17br.openwrangler",
+          connected: row?.isConnected === true && icon?.isConnected === true && row.contains(icon),
+          imageTag: icon?.tagName === "IMG",
+          visible:
+            !!bounds &&
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            !!style &&
+            style.visibility !== "hidden" &&
+            style.visibility !== "collapse" &&
+            style.display !== "none",
+          complete: icon?.complete === true,
+          naturalWidthPositive: (icon?.naturalWidth ?? 0) > 0,
+          requestedSourcePresent: !!icon?.src,
+          currentSourceMatches: !!icon?.currentSrc && icon.currentSrc === icon.src,
+          localSource: !!icon?.src && /^(?:file|vscode-file):/.test(icon.src),
+          remoteSource: !!icon?.src && /^https?:/.test(icon.src)
+        };
+      }),
+      Math.max(1, galleryDeadline - Date.now()),
+      "the installed Open Wrangler gallery icon state"
+    );
+    galleryIconReady =
+      galleryState.matchingRows === 1 &&
+      galleryState.matchingIcons === 1 &&
+      galleryState.exactRow &&
+      galleryState.connected &&
+      galleryState.imageTag &&
+      galleryState.visible &&
+      galleryState.complete &&
+      galleryState.naturalWidthPositive &&
+      galleryState.requestedSourcePresent &&
+      galleryState.currentSourceMatches;
+    if (galleryIconReady || Date.now() >= galleryDeadline) break;
+    await page.waitForTimeout(Math.min(50, galleryDeadline - Date.now()));
+  } while (Date.now() < galleryDeadline);
   assert.equal(
-    await galleryIcon.evaluate((image: unknown) => {
-      const candidate = image as { complete?: unknown; naturalWidth?: unknown; tagName?: unknown };
-      return candidate.tagName === "IMG" && candidate.complete === true && Number(candidate.naturalWidth) > 0;
-    }),
+    galleryIconReady,
     true,
-    "The installed Open Wrangler gallery entry must render its packaged icon."
+    `The installed Open Wrangler gallery entry must render its icon. ${JSON.stringify(galleryState)}`
   );
   recordAcceptanceProgress("platform-smoke:trusted-pickle");
   await exercisePackagedTrustedPickleConversion(testing, page, testPython);
