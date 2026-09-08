@@ -13,11 +13,12 @@ concurrency:
 
 jobs:
   docs-proof:
-    name: Check documentation-only scope
+    name: Check runtime test scope
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.proof.outputs.docs_only }}
+      r_omittable: ${{ steps.proof.outputs.r_omittable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,7 +137,7 @@ jobs:
   r-runtime:
     name: Execute native R contracts
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -212,17 +213,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require completed runtime checks or proven documentation edits
+      - name: Require completed native R checks or proven independent changes
         shell: bash
         env:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
-          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
           RUNTIME_RESULT: ${{ needs.r-runtime.result }}
         run: |
           test "$PROOF_RESULT" = success
-          case "$DOCS_ONLY:$RUNTIME_RESULT" in
+          case "$R_OMITTABLE:$RUNTIME_RESULT" in
             true:skipped)
-              echo 'Runtime checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Native R checks omitted: the tested merge only edits existing regular Python runtime/test source or Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success) ;;
             *) exit 1 ;;
