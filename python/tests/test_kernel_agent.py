@@ -1168,6 +1168,96 @@ def test_opaque_operand_refusal_preserves_populated_session_and_pending_draft(ki
     manager.close_session(session_id, 4)
 
 
+def test_request_session_options_preserve_pending_draft_and_fail_before_dispatch(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "session-options.csv"
+    source = "value\n1\n3\n"
+    path.write_text(source, encoding="utf-8")
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", mode="editing", page_size=20
+        )
+        session_id = opened["metadata"]["sessionId"]
+        column_id = opened["metadata"]["schema"][0]["id"]
+        manager.preview_step(
+            session_id,
+            0,
+            {
+                "id": "pending",
+                "kind": "renameColumn",
+                "params": {"column": {"id": column_id, "name": "value"}, "newName": "pending"},
+            },
+            0,
+            20,
+        )
+        valid = _view_request("getPage", session_id, "session-options-view")
+        valid["revision"] = 1
+        before = json.loads(kernel_agent.dispatch_json(_envelope(valid)))["response"]
+        session = manager.sessions[session_id]
+        frames = (session.original, session.committed, session.draft_frame, session.filtered)
+        state = deepcopy((session.plan, session.draft_step, session.revision, session.filter_model, session.page_cache))
+        open_request = {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": path.name, "path": str(path)},
+            "backend": "pandas",
+            "mode": "editing",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 1,
+        }
+        for field in ("priority", "source.kind", "backend", "mode", "cloneFrom"):
+            wire = json.loads(_envelope(open_request, request_id=f"invalid-option-{field}"))
+            if field == "priority":
+                wire["priority"] = []
+            elif field == "source.kind":
+                wire["request"]["source"]["kind"] = {}
+            else:
+                wire["request"][field] = None
+            with monkeypatch.context() as guarded:
+
+                def forbidden(*args, **kwargs):
+                    pytest.fail("Malformed session option reached native session creation")
+
+                guarded.setattr(manager, "open_session", forbidden)
+                response = json.loads(kernel_agent.dispatch_json(json.dumps(wire)))
+            assert response["requestId"] == wire["requestId"]
+            assert response["response"]["code"] == "invalid_request"
+            assert response["response"]["recoverable"] is False
+            assert "detail" not in response["response"]
+            assert set(manager.sessions) == {session_id}
+            assert all(
+                actual is expected
+                for actual, expected in zip(
+                    (session.original, session.committed, session.draft_frame, session.filtered), frames, strict=True
+                )
+            )
+            assert (
+                session.plan,
+                session.draft_step,
+                session.revision,
+                session.filter_model,
+                session.page_cache,
+            ) == state
+            assert json.loads(kernel_agent.dispatch_json(_envelope(valid)))["response"] == before
+        stale = {
+            "kind": "applyDraft",
+            "sessionId": session_id,
+            "revision": 0,
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 64,
+        }
+        assert json.loads(kernel_agent.dispatch_json(_envelope(stale)))["response"]["code"] == "engine_error"
+        stale["revision"] = 1
+        applied = json.loads(kernel_agent.dispatch_json(_envelope(stale)))["response"]
+        assert applied["kind"] == "planUpdated" and applied["page"] == before["page"]
+        assert path.read_text(encoding="utf-8") == source
+    finally:
+        manager.close_all()
+
+
 def test_malformed_json_still_returns_a_canonical_envelope() -> None:
     result = json.loads(kernel_agent.dispatch_json("not-json"))
 

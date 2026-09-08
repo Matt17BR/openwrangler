@@ -256,8 +256,10 @@ Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual
 Rejected numeric previews must preserve the complete confirmed response. Direct numeric Fill and public text-only
 replacement controls retain their separate boundaries.
 
-Python protocol and kernel tests check malformed viewing structures before native query work, including correlated
-errors, retained session state and valid follow-up requests. The native R viewing owner sends raw JSON to distinguish
+Python protocol tests own the request-enum and present-null option matrix, including valid omission and clone controls.
+Kernel and standalone owners check representative `invalid_request` refusals before native dispatch and a valid
+follow-up in the same process. Python protocol and kernel tests also check malformed viewing structures before native
+query work, including correlated errors and retained session state. The native R viewing owner sends raw JSON to distinguish
 objects from arrays, retains a draft after malformed page input, and compares valid Filter Rows output with generated
 code. Python opaque operands and R nullable picker search keep their separate valid-input controls.
 Python operand cases cover depth boundaries, finite wide integers, non-finite numbers and Unicode in values and

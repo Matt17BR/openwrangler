@@ -282,7 +282,11 @@ def decode_request(value: Any) -> dict[str, Any]:
         unexpected_source_fields = set(source) - SOURCE_ALLOWED_FIELDS
         if unexpected_source_fields:
             raise ProtocolError(f"source contains unknown fields: {', '.join(sorted(unexpected_source_fields))}")
-        if source.get("kind") not in {"file", "notebookVariable", "notebookOutput"}:
+        if not isinstance(source.get("kind"), str) or source["kind"] not in {
+            "file",
+            "notebookVariable",
+            "notebookOutput",
+        }:
             raise ProtocolError("source.kind is not supported.")
         if not isinstance(source.get("label"), str) or not source["label"]:
             raise ProtocolError("source.label must be a non-empty string.")
@@ -295,19 +299,23 @@ def decode_request(value: Any) -> dict[str, Any]:
         request = dict(request)
         request["source"] = decoded_source
         backend = request.get("backend")
-        if backend not in {None, "pandas", "polars", "duckdb", "pyspark"}:
+        if "backend" in request and (
+            not isinstance(backend, str) or backend not in {"pandas", "polars", "duckdb", "pyspark"}
+        ):
             raise ProtocolError("backend must be pandas, polars, duckdb, or pyspark.")
         if backend == "pyspark" and source.get("kind") != "notebookVariable":
             raise ProtocolError("The pyspark backend supports only live notebookVariable sources.")
-        if backend == "pyspark" and request.get("mode") not in {None, "viewing"}:
+        if backend == "pyspark" and "mode" in request and request["mode"] != "viewing":
             raise ProtocolError("The pyspark backend supports only viewing mode.")
-        if request.get("mode") not in {None, "viewing", "editing"}:
+        if "mode" in request and (
+            not isinstance(request["mode"], str) or request["mode"] not in {"viewing", "editing"}
+        ):
             raise ProtocolError("mode must be viewing or editing.")
         requested_session_id = request.get("requestedSessionId")
         if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
             raise ProtocolError("requestedSessionId must be a non-empty string.")
         clone_from = request.get("cloneFrom")
-        if clone_from is not None:
+        if "cloneFrom" in request:
             clone = _mapping(clone_from, "cloneFrom")
             if set(clone) != {"sessionId", "revision"}:
                 raise ProtocolError("cloneFrom must contain exactly sessionId and revision.")
@@ -374,7 +382,7 @@ def decode_envelope(value: Any) -> tuple[str, str, dict[str, Any]]:
     if not isinstance(request_id, str) or not request_id:
         raise ProtocolError("requestId must be a non-empty string.")
     priority = envelope.get("priority")
-    if priority not in REQUEST_PRIORITIES:
+    if not isinstance(priority, str) or priority not in REQUEST_PRIORITIES:
         raise ProtocolError("priority must be interactive or background.")
     request = decode_request(envelope.get("request"))
     validate_transport_ids(request_id, request)
