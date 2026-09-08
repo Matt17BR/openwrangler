@@ -172,7 +172,9 @@ def test_explicit_same_source_replacement_keeps_other_columns(engine, case):
 @pytest.mark.parametrize("label", [7, ("a", 2)])
 def test_pandas_inplace_exemption_uses_one_physical_column(label):
     engine = PandasEngine()
-    frame = pd.DataFrame([["a", 91], [None, 81]], columns=[label, "spare"], index=pd.Index([4, 4], name="row"))
+    frame = pd.DataFrame(
+        [["a", 91], [None, 81]], columns=pd.Index([label, "spare"]), index=pd.Index([4, 4], name="row")
+    )
     before = frame.copy(deep=True)
     ref = source_lineage(engine.schema(frame))[0]
     public = public_step("upperText", column=ref, newColumn=str(label))
@@ -203,7 +205,7 @@ def test_pandas_keeps_unrelated_duplicate_labels_and_rejects_canonical_output_co
     for target in ("flag", "7"):
         public = public_step("cloneColumn", column=ref, newName=target)
         clean_data = generated(engine, [bind(engine, seed, public)])
-        frame = pd.DataFrame([["a", 91, 92], [None, 81, 82]], columns=["text", 7, 7], index=[3, 3])
+        frame = pd.DataFrame([["a", 91, 92], [None, 81, 82]], columns=pd.Index(["text", 7, 7]), index=pd.Index([3, 3]))
         before = frame.copy(deep=True)
         if target == "7":
             with pytest.raises(ColumnBindingError, match="collides"):
