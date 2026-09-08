@@ -115,9 +115,10 @@ explicit conversion operations keep their existing behavior.
 Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
 generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing
 the confirmed plan. Other Formula arithmetic repairs eligible UInt64 operand-inference failures and widens selected
-Decimal128 operations to Decimal256, retaining native precision and scale. Existing native successes remain unchanged.
-Negative-operand and widest or negative-scale Decimal capacity gaps remain tracked in
-[#979](https://github.com/Matt17BR/openwrangler/issues/979).
+Decimal128 operations to Decimal256, retaining native precision and scale. UInt64 addition and subtraction also accept
+negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. Existing native
+successes remain unchanged. Negative-column, negative multiply/power and widest or negative-scale Decimal capacity
+gaps remain tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
