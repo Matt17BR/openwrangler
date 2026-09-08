@@ -789,7 +789,9 @@ def test_redo_rebinds_saved_by_example_without_reexecuting_custom_prefix(
 def test_redo_preserves_duplicate_occurrence_binding_and_index(monkeypatch: pytest.MonkeyPatch) -> None:
     import __main__
 
-    source = pd.DataFrame([[1, 10], [2, 20]], columns=["same", "same"], index=pd.Index(["x", "x"], name="rows"))
+    source = pd.DataFrame(
+        [[1, 10], [2, 20]], columns=pd.Index(["same", "same"]), index=pd.Index(["x", "x"], name="rows")
+    )
     original = source.copy(deep=True)
     monkeypatch.setattr(__main__, "redo_duplicate_source", source, raising=False)
     manager = SessionManager()
