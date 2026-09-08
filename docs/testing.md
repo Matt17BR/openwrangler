@@ -463,6 +463,11 @@ After editor and display ownership and private-root identity are verified, a fai
 - A paths, types, and sizes-only profile manifest.
 - Structured failure metadata.
 
+The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
+separately. Failure metadata reports the last stage reached when progress is read after shutdown; it does not identify
+the await active at the exact deadline or measure its duration. These completed stages use the existing inactivity
+watchdog; the absolute phase deadline is unchanged.
+
 Jupyter output logs may be inspected only to derive a fixed failure category and are never copied. Raw profiles,
 settings, workspace storage, databases, arbitrary extension logs, credentials, private keys, and user data are never
 allowed. Collection and sealing use bounded no-follow, single-link, identity-pinned reads and repeat redaction. CI
