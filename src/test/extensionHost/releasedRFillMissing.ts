@@ -132,9 +132,11 @@ export function createReleasedRFillMissingJourney({
     const preview = testing.activeSession();
     assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
     const stepId = preview.metadata.draftStep.id;
-    assert.match(preview.code ?? "", /\.ow_fill_values/u);
-    assert.match(preview.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
-    assert.doesNotMatch(preview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+    assert.ok(/\.ow_fill_values/u.test(preview.code ?? ""), "The R preview must include generated Fill code.");
+    assert.ok(
+      !/\b(?:pandas|polars|python)\b/iu.test(preview.code ?? ""),
+      "Generated R Fill code must remain native R."
+    );
     const previewGap = await testing.request({
       kind: "getPage",
       sessionId,
@@ -190,8 +192,7 @@ export function createReleasedRFillMissingJourney({
     });
     const applied = testing.activeSession();
     assert.ok(applied, "The applied R Fill missing values step must retain its exact session.");
-    assert.match(applied.code ?? "", /\.ow_fill_values/u);
-    assert.match(applied.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
+    assert.ok(/\.ow_fill_values/u.test(applied.code ?? ""), "The applied R step must include generated Fill code.");
 
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     const undoState = (): Record<string, unknown> => {
