@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
+import * as codePreviewLimits from "../shared/codePreviewLimits";
 import {
   appliedStep,
   command,
@@ -166,6 +167,37 @@ describe("native state and presentation commands", () => {
       expectedSessionId: "session",
       expectedRevision: 0
     });
+  });
+
+  it("reuses only previously validated canonical generated source", () => {
+    const validate = vi.spyOn(codePreviewLimits, "isCanonicalCodePreviewText");
+    try {
+      const active = noDraftSnapshot();
+      const registered = register(active);
+      expect(validate).toHaveBeenCalledWith(active.code);
+
+      validate.mockClear();
+      registered.setActiveSession({ ...active });
+      registered.setActiveSession({ ...active, code: active.code.replaceAll("\n", "\r\n") });
+      expect(validate).not.toHaveBeenCalledWith(active.code);
+
+      const changed = `${active.code}# Changed generated source\n`;
+      registered.setActiveSession({ ...active, code: changed });
+      expect(validate).toHaveBeenCalledWith(changed);
+
+      const invalid = "\ud800";
+      registered.setActiveSession({ ...active, code: invalid });
+      expect(validate).toHaveBeenCalledWith(invalid);
+      validate.mockClear();
+      registered.setActiveSession({ ...active, code: invalid });
+      expect(validate).toHaveBeenCalledWith(invalid);
+
+      validate.mockClear();
+      registered.setActiveSession({ ...active, code: "" });
+      expect(validate).toHaveBeenCalledWith("");
+    } finally {
+      validate.mockRestore();
+    }
   });
 
   it("uses a 128-bit nonce in the native Code Preview CSP and script", () => {

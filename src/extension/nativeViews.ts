@@ -462,7 +462,8 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private applySnapshot(snapshot: ActiveSessionSnapshot | undefined): boolean {
     const rawCode = snapshot?.code ?? "";
     const canonicalCode = canonicalizeCodePreviewText(rawCode);
-    const validSource = isCanonicalCodePreviewText(canonicalCode);
+    const validSource =
+      (!this.sourceInvalid && canonicalCode === this.snapshot?.code) || isCanonicalCodePreviewText(canonicalCode);
     const nextGeneratedCode = validSource ? canonicalCode : "";
     const nextSourceInvalid = Boolean(snapshot && !validSource);
     const nextInspectionStepId = snapshot?.stepInspection?.stepId;
