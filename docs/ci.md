@@ -18,14 +18,29 @@ Linux native R jobs explicitly select Python 3.12 for their standard-library pid
 R job runs native cancellation contracts before its runtime shards; scheduled R 4.4 qualification includes them
 through the full R command. Source keeps its existing Node-only test owner.
 
-Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python, native R, and
-Windows run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing
-regular, non-executable `README.md` or `docs/**/*.md` files. Each runtime has a cancellable execution job and a short
-required-result job. The latter reports success only for completed execution or a proved documentation-only omission.
+Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python and Windows
+run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing regular,
+non-executable `README.md` or `docs/**/*.md` files.
+
+The same proof makes a separate native R decision. R execution may also be omitted when every change modifies an
+existing regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or existing
+`README.md`, `CHANGELOG.md` or `docs/**/*.md`. These Python sources are not inputs to the native R suite. Python and
+Windows still run for Python or CHANGELOG changes. Shared/host code, R sources, fixtures, scripts, configuration,
+dependency locks and all other paths require full R. If an R test or runner begins consuming Python source, update
+this proof and its tests in the same change.
+
+This policy reduces fresh R 4.5 environment checks during sequences of isolated Python changes. An omission is not
+a newly executed or transferred R success; it can delay discovery of unrelated hosted-environment regressions.
+Scheduled R 4.4 qualification does not replace R 4.5 coverage. Installed-editor and release qualification remain
+separate from these pull-request decisions.
+
+Each runtime has a cancellable execution job and a short required-result job. The latter reports success only for
+completed execution or a proved omission with actually skipped execution.
 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
-NUL-delimited Git diff; additions, deletions, renames, mode changes, mixed changes, empty diffs, and unavailable or
-unrecognized evidence select full checks. A failed proof job or malformed output fails the required result.
+NUL-delimited Git diff; additions, deletions, renames, mode changes, changes outside the allowed paths, empty diffs,
+and unavailable or unrecognized evidence select full checks. Changes to the proof or workflow also require full R.
+A failed proof job or malformed output fails the required result.
 Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
 canceled execution cannot satisfy a required check when full runtime checks were needed.
 Branch protection continues to require all five product checks and CodeQL.
