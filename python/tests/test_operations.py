@@ -57,12 +57,13 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 32
+    assert len(catalog) == 33
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
         "oneHotEncode",
         "groupBy",
+        "denseRank",
         "byExample",
         "customCode",
     }
@@ -469,6 +470,7 @@ def test_fill_missing_validation_rejects_ambiguous_or_out_of_range_values(replac
         ("lowerText", {"column": "text"}),
         ("upperText", {"column": "text"}),
         ("minMaxScale", {"column": "value"}),
+        ("denseRank", {"column": "value", "direction": "asc", "newColumn": "ranked"}),
         ("roundNumber", {"column": "value"}),
         ("floorNumber", {"column": "value"}),
         ("ceilNumber", {"column": "value"}),
@@ -623,6 +625,8 @@ def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
         ("lowerText", {"column": public_ref("private", PRIVATE_COLUMN)}),
         ("upperText", {"column": public_ref("private", PRIVATE_COLUMN)}),
         ("minMaxScale", {"column": public_ref("private", PRIVATE_COLUMN)}),
+        ("denseRank", {"column": public_ref("private", PRIVATE_COLUMN), "direction": "asc", "newColumn": "ranked"}),
+        ("denseRank", {"column": public_ref("c:source:3", "value"), "direction": "asc", "newColumn": PRIVATE_COLUMN}),
         (
             "roundNumber",
             {"column": public_ref("c:source:3", "value"), "newColumn": PRIVATE_COLUMN},
@@ -1634,3 +1638,17 @@ def test_pandas_dictionary_unsigned_cast_retains_signed_range_guard() -> None:
         before_array: Any = before[column].array
         assert source_array.__arrow_array__().equals(before_array.__arrow_array__())
     pd.testing.assert_series_equal(source["row"], before["row"])
+
+
+@pytest.mark.parametrize("direction", [None, True, [], {}, "ASC", "sideways"])
+def test_dense_rank_rejects_invalid_required_direction(direction: Any) -> None:
+    with pytest.raises(OperationError, match="direction"):
+        step("rank", "denseRank", column=public_ref("c:source:3", "value"), direction=direction, newColumn="ranked")
+
+
+@pytest.mark.parametrize("missing", ["column", "direction", "newColumn"])
+def test_dense_rank_requires_complete_explicit_command(missing: str) -> None:
+    params: dict[str, Any] = {"column": public_ref("c:source:3", "value"), "direction": "asc", "newColumn": "ranked"}
+    del params[missing]
+    with pytest.raises(OperationError, match="missing required"):
+        step("rank", "denseRank", **params)

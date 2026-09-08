@@ -3356,6 +3356,41 @@ assert_identical(text_cleanup_frame, text_cleanup_before, "text transforms mutat
 
 }))
 run_frame_contract_case("numeric-and-datetime", local({
+# Dense Rank uses exact native ordering and reports only its own missingness.
+rank_cases <- list(
+  list(values = c(20L, 10L, 20L, NA_integer_), asc = c(2L, 1L, 2L, NA_integer_)),
+  list(values = c(Inf, -Inf, NaN, NA_real_, -0, 0, 1), asc = c(4L, 1L, NA_integer_, NA_integer_, 2L, 2L, 3L)),
+  list(values = bit64::as.integer64(c("9223372036854775807", "9007199254740993", "9007199254740992", "-9223372036854775807", NA)), asc = c(4L, 3L, 2L, 1L, NA_integer_)),
+  list(values = integer(), asc = integer()),
+  list(values = c(NA_real_, NaN), asc = c(NA_integer_, NA_integer_))
+)
+for (rank_case in rank_cases) {
+  for (direction in c("asc", "desc")) {
+    expected <- rank_case$asc
+    if (identical(direction, "desc") && any(!is.na(expected))) expected <- max(expected, na.rm = TRUE) + 1L - expected
+    assert_identical(openwrangler_r_frame_contract$dense_rank_values(rank_case$values, direction), expected, "Dense Rank lost exact values or missingness")
+  }
+}
+for (unsupported in list(TRUE, "1", factor("1"), as.Date("2020-01-01"), structure(1, class = "custom_numeric"))) {
+  assert_error(openwrangler_r_frame_contract$dense_rank_values(unsupported, "asc"), "numeric")
+}
+assert_error(openwrangler_r_frame_contract$dense_rank_values(1, "sideways"), "direction")
+rank_source <- data.frame(value = c(2, 1, 2))
+rank_capture <- openwrangler_r_frame_contract$capture_frame(rank_source)
+rank_result <- openwrangler_r_frame_contract$dense_rank_column_at(rank_source, 1L, "value", "rank", "asc")
+rank_derived <- function(value, positions = 2L, ids = c("r:c:0", "c:step:rank:0")) {
+  openwrangler_r_frame_contract$capture_frame(value, nullability_source = rank_capture,
+    source_positions = c(1L, 1L), output_ids = ids, dense_rank_positions = positions)
+}
+assert_identical(rank_derived(rank_result)$descriptor$schema[[2L]]$nullable, FALSE, "Rank copied conservative source nullability")
+rank_bad <- rank_result
+rank_bad$rank <- as.double(rank_bad$rank)
+assert_error(rank_derived(rank_bad), "invalid dense-rank output")
+rank_bad$rank <- c(1L, NA_integer_, 2L)
+assert_error(rank_derived(rank_bad), "invalid dense-rank output")
+assert_error(rank_derived(rank_result, c(2L, 2L)), "invalid dense-rank output positions")
+assert_error(openwrangler_r_frame_contract$dense_rank_column_at(rank_source, 1L, "value", "value", "asc"), "column-name-collision")
+assert_error(openwrangler_r_frame_contract$dense_rank_column_at(rank_source, 1L, "stale", "rank", "asc"), "stale-column")
 
 formula_limit_frame <- frame_contract_formula_limit_frame()
 

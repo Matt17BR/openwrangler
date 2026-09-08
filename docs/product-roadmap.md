@@ -43,8 +43,9 @@ code when it removes a demonstrated ownership problem or duplicate behavior; mod
 
 ### Deterministic transforms and validation
 
-Add rank and window operations, more typed formulas, and schema or data-quality checks with clear results. Transpose,
-explode, and unnest need engine-native type and lineage rules. Joins and merge remain deferred until source identity,
+Dense Rank covers numeric ranking into a new column. Add broader window operations, more typed formulas, and schema
+or data-quality checks with clear results. Transpose, explode, and unnest need engine-native type and lineage rules.
+Joins and merge remain deferred until source identity,
 lifecycle, persistence, and immutability rules are defined.
 
 Every new editing operation must work both live and in executable generated code for every editing engine. Cleaning

@@ -166,6 +166,13 @@
       "icon": "case-sensitive"
     },
     {
+      "kind": "denseRank",
+      "title": "Dense rank",
+      "description": "Give equal numeric values equal ranks with no gaps, preserving row order.",
+      "group": "Numeric / datetime",
+      "icon": "symbol-numeric"
+    },
+    {
       "kind": "minMaxScale",
       "title": "Min-max scale",
       "description": "Scale numeric values into the zero-to-one range.",
@@ -958,6 +965,7 @@
         "capitalizeText",
         "lowerText",
         "upperText",
+        "denseRank",
         "minMaxScale",
         "roundNumber",
         "floorNumber",
@@ -1239,6 +1247,16 @@
       "required": ["column", "newColumn"],
       "properties": {
         "column": { "$ref": "#/definitions/ColumnReference" },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "DenseRankParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "direction", "newColumn"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "direction": { "type": "string", "enum": ["asc", "desc"] },
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
@@ -1655,6 +1673,7 @@
         { "$ref": "#/definitions/CapitalizeTextTransformStep" },
         { "$ref": "#/definitions/LowerTextTransformStep" },
         { "$ref": "#/definitions/UpperTextTransformStep" },
+        { "$ref": "#/definitions/DenseRankTransformStep" },
         { "$ref": "#/definitions/MinMaxScaleTransformStep" },
         { "$ref": "#/definitions/RoundNumberTransformStep" },
         { "$ref": "#/definitions/FloorNumberTransformStep" },
@@ -1904,6 +1923,15 @@
             "kind": { "const": "upperText" },
             "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
           }
+        }
+      ]
+    },
+    "DenseRankTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "denseRank" }, "params": { "$ref": "#/definitions/DenseRankParams" } }
         }
       ]
     },

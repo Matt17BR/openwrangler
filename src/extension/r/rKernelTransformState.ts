@@ -380,6 +380,13 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "denseRank") {
+    return {
+      id: step.id,
+      kind: "denseRank",
+      params: { column: { ...step.params.column }, direction: step.params.direction, newColumn: step.params.newColumn }
+    };
+  }
   if (step.kind === "minMaxScale") {
     return {
       id: step.id,
@@ -454,6 +461,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&
+    step.kind !== "denseRank" &&
     step.kind !== "minMaxScale" &&
     step.kind !== "roundNumber" &&
     step.kind !== "floorNumber" &&

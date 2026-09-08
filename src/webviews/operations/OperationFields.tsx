@@ -669,6 +669,30 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
+  if (kind === "denseRank") {
+    const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="Numeric column"
+          columns={numericColumns}
+          defaultValue={initialColumnReference("column", numericColumns[0]?.id)}
+          emptyMessage="No numeric columns are available. Cast a column to a numeric type first."
+        />
+        <SelectField
+          name="direction"
+          label="Direction"
+          defaultValue={param("direction", "asc")}
+          options={[
+            ["asc", "Ascending"],
+            ["desc", "Descending"]
+          ]}
+        />
+        <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "rank")} required />
+      </>
+    );
+  }
   if (kind === "minMaxScale" || kind === "floorNumber" || kind === "ceilNumber") {
     const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
     return (

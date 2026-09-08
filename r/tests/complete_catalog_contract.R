@@ -183,7 +183,7 @@ catalog_kinds <- c(
   "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates",
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
-  "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "minMaxScale", "roundNumber", "floorNumber",
+  "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
   "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
 )
 
@@ -372,6 +372,12 @@ catalog_cases <- list(
       output[["upper word"]][1:3], c("ALPHA", "BETA", "GAMMA"), "Uppercase changed values"
     )
   ),
+  denseRank = list(
+    step = function(frame, id) step_with(id, "denseRank", list(
+      column = column_reference(frame, "number"), direction = "desc", newColumn = "rank"
+    )),
+    verify = function(output, input) assert_identical(output$rank, c(3L, 2L, 2L, NA_integer_, 4L, 1L), "Dense Rank changed distinct-value order")
+  ),
   minMaxScale = list(
     step = function(frame, id) step_with(id, "minMaxScale", list(
       column = column_reference(frame, "number"), newColumn = "scaled number"
@@ -489,7 +495,7 @@ catalog_cases <- list(
 )
 
 assert_identical(names(catalog_cases), catalog_kinds, "the complete R catalog owner is not in canonical order")
-assert_identical(length(catalog_cases), 32L, "the complete R catalog owner does not contain 32 operations")
+assert_identical(length(catalog_cases), 33L, "the complete R catalog owner does not contain 33 operations")
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
@@ -1697,6 +1703,6 @@ remove("precise_fill_frame", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: 32 live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: 33 live/generated/replayed operations; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ByExampleTransformStep,
   ColumnSchema,
+  DenseRankTransformStep,
   FillMissingReplacement,
   FillMissingValuesTransformStep,
   FilterRowsTransformStep,
@@ -19,6 +20,22 @@ import {
 import { copyRetainedStep, copyRTransformStep } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform binding", () => {
+  it("retains a Dense Rank command and its exact reference in independent immutable copies", () => {
+    const step: DenseRankTransformStep = {
+      id: "rank",
+      kind: "denseRank",
+      params: { column: reference(0), direction: "desc", newColumn: "rank" }
+    };
+    const bound = rTransformStep(step, schema);
+    const copied = copyRetainedStep(step);
+    expect(bound).toEqual(step);
+    expect(copyRTransformStep(step)).toEqual(step);
+    expect(copied).toEqual(step);
+    expect(bound.params).not.toBe(step.params);
+    expect(copied.params).not.toBe(step.params);
+    expect(Object.isFrozen(bound.params)).toBe(true);
+    expect(isRNumericRoundingStep(step)).toBe(false);
+  });
   it("retains Formula integer text through binding and public plan copies", () => {
     for (const value of ["1152921504606846976", "1267650600228229401496703205376", 2 ** 60, 0.5]) {
       const step: FormulaTransformStep = {

@@ -267,6 +267,16 @@ const validCases: ParamsCases = {
   capitalizeText: optionalOutputCase("capitalizeText", "c:city", "capitalized", city),
   lowerText: optionalOutputCase("lowerText", "c:city", "lowered", city),
   upperText: optionalOutputCase("upperText", "c:city", "uppered", city),
+  denseRank: {
+    kind: "denseRank",
+    fields: [
+      ["column", "c:sales"],
+      ["direction", "desc"],
+      ["newColumn", "sales_rank"]
+    ],
+    expected: { column: sales, direction: "desc", newColumn: "sales_rank" },
+    filterModel: viewingFilterModel
+  },
   minMaxScale: optionalOutputCase("minMaxScale", "c:sales", "scaled", sales),
   roundNumber: {
     kind: "roundNumber",

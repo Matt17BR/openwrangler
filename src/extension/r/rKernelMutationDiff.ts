@@ -459,7 +459,7 @@ export function assertMutationDiff(
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
-      : step.kind === "formula"
+      : step.kind === "formula" || step.kind === "denseRank"
         ? [step.params.newColumn]
         : step.kind === "byExample"
           ? [step.params.newColumn]
@@ -487,7 +487,7 @@ export function assertMutationDiff(
           ) && expectedRemoved.length === step.params.columns.length
         : step.kind === "cloneColumn"
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-          : step.kind === "formula"
+          : step.kind === "formula" || step.kind === "denseRank"
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
             : step.kind === "byExample"
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0

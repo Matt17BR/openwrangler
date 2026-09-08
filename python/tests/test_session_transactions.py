@@ -12,6 +12,7 @@ from openwrangler_runtime import server
 from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime import session_plan as session_plan_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PolarsEngine
+from openwrangler_runtime.engines.base import ExportOptions
 from openwrangler_runtime.export_target import _regular_file_identity
 from openwrangler_runtime.protocol_limits_generated import (
     MAX_GENERATED_PYTHON_CODE_UTF8_BYTES,
@@ -1065,5 +1066,99 @@ def test_redo_dynamic_custom_result_and_hidden_failure_preserve_current_state(tm
             namespace["clean_data"](pd.read_csv(tmp_path / "transactions.csv")), session.committed[["value", "changed"]]
         )
         assert (tmp_path / "transactions.csv").read_text() == "name,value\na,1\nb,2\nc,3\n"
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+def test_dense_rank_uses_cleaning_population_through_history_and_parquet(
+    tmp_path: Path, backend: str, direction: str
+) -> None:
+    path = tmp_path / "rank-source.csv"
+    original = b"row,value\n0,20\n1,10\n2,20\n3,\n"
+    path.write_bytes(original)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=20
+        )
+        sid = opened["metadata"]["sessionId"]
+        columns = opened["metadata"]["schema"]
+        reference = {"id": columns[1]["id"], "name": columns[1]["name"]}
+        operation = {
+            "id": "rank",
+            "kind": "denseRank",
+            "params": {"column": reference, "direction": direction, "newColumn": "ranked"},
+        }
+        view = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": columns[1]["type"],
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 20}],
+                }
+            ],
+            "sort": [{"column": "row", "direction": "desc", "nulls": "last"}],
+        }
+        manager.get_page(sid, 0, 0, 20, view)
+        preview = manager.preview_step(sid, 0, operation, 0, 20)
+        session = manager.sessions[sid]
+        expected = [2, 1, 2, None] if direction == "asc" else [1, 2, 1, None]
+
+        def rank_values(page: dict[str, Any]) -> list[int | None]:
+            return [None if row["values"][-1]["isNull"] else int(row["values"][-1]["raw"]) for row in page["rows"]]
+
+        assert rank_values(preview["page"]) == [expected[2], expected[0]]
+        confirmed = manager.apply_draft(sid, preview["revision"], 0, 20)
+        assert session.plan == [operation]
+        assert session.committed_lineage[:-1] == [{"id": item["id"], "name": item["name"]} for item in columns]
+        assert session.committed_lineage[-1] == {"id": "c:step:rank:0", "name": "ranked"}
+        assert rank_values(session.engine.page(session.committed, 0, 20)) == expected
+        namespace: dict[str, Any] = {}
+        exec(confirmed["code"], namespace)
+        generated = namespace["clean_data"](session.original)
+        assert rank_values(session.engine.page(generated, 0, 20)) == expected
+        assert session.filter_model == view
+        manager.undo_step(sid, session.revision, 0, 20)
+        assert session.undone_steps == [operation]
+        discarded = {**operation, "id": "discarded", "params": {**operation["params"], "newColumn": "temporary_rank"}}
+        draft = manager.preview_step(sid, session.revision, discarded, 0, 20)
+        manager.discard_draft(sid, draft["revision"], 0, 20)
+        assert session.undone_steps == [operation]
+        before = session_state(session)
+        collision = {**discarded, "params": {**discarded["params"], "newColumn": "value"}}
+        with pytest.raises(EngineError, match="collid"):
+            manager.preview_step(sid, session.revision, collision, 0, 20)
+        assert session_state(session) == before
+
+        def refuse_publication(response: dict[str, Any]) -> None:
+            assert rank_values(response["page"]) == [expected[2], expected[0]]
+            raise ResponsePayloadError("Synthetic rank publication refusal", "response_encoding_failed")
+
+        with pytest.raises(ResponsePayloadError, match="rank publication"):
+            manager.preview_step(sid, session.revision, discarded, 0, 20, response_preflight=refuse_publication)
+        assert session_state(session) == before
+        restored = manager.redo_step(sid, session.revision, 0, 20)
+        assert restored["action"] == "redo"
+        assert session.plan == [operation]
+        assert session.filter_model == view
+        assert rank_values(session.engine.page(session.committed, 0, 20)) == expected
+        destination = tmp_path / "ranked.parquet"
+        destination.touch()
+        device, inode = _regular_file_identity(destination)
+        options: ExportOptions = {"format": "parquet"}
+        if backend == "pandas":
+            options["rowAxisPolicy"] = "preserve"
+        manager.export_data(
+            sid, session.revision, str(destination), options, {"device": str(device), "inode": str(inode)}
+        )
+        reopened = manager.open_session(
+            {"kind": "file", "label": destination.name, "path": str(destination)}, backend=backend, page_size=20
+        )
+        assert rank_values(reopened["page"]) == expected
+        assert reopened["metadata"]["schema"][-1]["type"] == "integer"
+        assert path.read_bytes() == original
     finally:
         manager.close_all()

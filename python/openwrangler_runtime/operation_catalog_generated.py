@@ -169,6 +169,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=("newColumn",),
     ),
     OperationDefinition(
+        kind="denseRank",
+        title="Dense rank",
+        group="Numeric / datetime",
+        required=("column", "direction", "newColumn"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="minMaxScale",
         title="Min-max scale",
         group="Numeric / datetime",

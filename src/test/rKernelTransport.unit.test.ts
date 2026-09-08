@@ -53,6 +53,33 @@ afterEach(() => {
 });
 
 describe("native R kernel runtime bundle", () => {
+  it("admits only closed Dense Rank payloads with an explicit direction and output", () => {
+    const step = {
+      id: "rank",
+      kind: "denseRank",
+      params: { column: { id: "r:c:0", name: "value" }, direction: "asc", newColumn: "rank" }
+    } as const;
+    const request = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    } as const;
+    expect(JSON.parse(encodeRKernelRequest(request)).payload.step).toEqual(step);
+    for (const params of [
+      { column: step.params.column, newColumn: "rank" },
+      { ...step.params, direction: "sideways" },
+      { ...step.params, newColumn: "" },
+      { ...step.params, partition: [] }
+    ]) {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, step: { ...step, params } }
+        } as unknown as RKernelRequest)
+      ).toThrow();
+    }
+  });
   it("embeds the pure-R runtime without referencing the extension filesystem", () => {
     const files = testRuntimeFiles();
     const code = buildRKernelBootstrapCode(files, "transport-owner-a");

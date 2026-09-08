@@ -288,6 +288,11 @@ class _BindingContext:
                 f"{label} has unsupported {column.semantic_type!r} type; regex extraction requires a text column."
             )
 
+    def require_numeric_source(self, reference: Mapping[str, Any], label: str) -> None:
+        column = self._column_for(reference, label)
+        if column.semantic_type not in _NUMERIC_AGGREGATION_TYPES:
+            raise ColumnBindingError(f"{label} requires a numeric column; {column.name!r} is {column.semantic_type!r}.")
+
     def by_example_type(self, reference: Mapping[str, Any], label: str) -> str:
         return self._column_for(reference, label).semantic_type
 
@@ -504,6 +509,7 @@ def bind_step(
         "castColumn",
         "formula",
         "textLength",
+        "denseRank",
         "sortRows",
         "filterRows",
         "dropMissingRows",
@@ -651,6 +657,7 @@ def bind_step(
         "castColumn",
         "fillMissingValues",
         "textLength",
+        "denseRank",
         "multiLabelBinarize",
         "findReplace",
         "stripText",
@@ -738,6 +745,9 @@ def bind_step(
         context.reject_output_collision(params.get("newColumn"), "formula.newColumn")
     elif kind == "textLength":
         context.reject_output_collision(params.get("newColumn"), "textLength.newColumn")
+    elif kind == "denseRank":
+        context.require_numeric_source(params["column"], "denseRank.column")
+        context.reject_output_collision(params.get("newColumn"), "denseRank.newColumn")
     elif kind == "splitTextColumns":
         for index, output_name in enumerate(params.get("newColumns", [])):
             context.reject_output_collision(output_name, f"splitTextColumns.newColumns[{index}]")

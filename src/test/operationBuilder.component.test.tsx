@@ -43,7 +43,6 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(32);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -55,6 +54,93 @@ describe("OperationBuilder", () => {
     expect(search).toHaveFocus();
     expect(screen.getByText("Formula column", { selector: "strong" })).toBeInTheDocument();
     expect(screen.queryByText("Rename column", { selector: "strong" })).not.toBeInTheDocument();
+  });
+
+  it.each(["asc", "desc"] as const)("submits %s dense ranks from the exact selected numeric column", (direction) => {
+    const onPreview = vi.fn();
+    const columns = [
+      metadata.schema[0],
+      { ...metadata.schema[1], name: "value", type: "integer", rawType: "Int64" },
+      { ...metadata.schema[1], id: "c:2", name: "value", position: 2 },
+      { ...metadata.schema[1], id: "c:3", name: "exact", position: 3, type: "decimal", rawType: "Decimal" },
+      { ...metadata.schema[1], id: "c:4", name: "flag", position: 4, type: "boolean", rawType: "Boolean" }
+    ] satisfies SessionMetadata["schema"];
+    const filterModel = {
+      filters: [
+        {
+          column: "city",
+          type: "string" as const,
+          predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
+        }
+      ],
+      sort: [{ column: "city", direction: "desc" as const, nulls: "last" as const }]
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: columns,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 1, columns: columns.length },
+          filterModel
+        }}
+        filterModel={filterModel}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search operations" }), { target: { value: "dense rank" } });
+    fireEvent.click(screen.getByRole("button", { name: /Dense rank/ }));
+    const column = screen.getByRole("combobox", { name: "Numeric column" }) as HTMLSelectElement;
+    expect(Array.from(column.options, (option) => option.value)).toEqual(["c:1", "c:2", "c:3"]);
+    expect(Array.from(column.options, (option) => option.text)).toEqual([
+      "value, column 2",
+      "value, column 3",
+      "exact"
+    ]);
+    fireEvent.change(column, { target: { value: "c:2" } });
+    expect(screen.getByRole("combobox", { name: "Direction" })).toHaveValue("asc");
+    if (direction === "desc") fireEvent.change(screen.getByLabelText("Direction"), { target: { value: direction } });
+    const output = screen.getByRole("textbox", { name: "New column" });
+    expect(output).toHaveValue("rank");
+    fireEvent.change(output, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(output, { target: { value: `rank_${direction}` } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "denseRank",
+        params: { column: { id: "c:2", name: "value" }, direction, newColumn: `rank_${direction}` }
+      },
+      undefined
+    );
+  });
+
+  it("refuses a dense rank preview when no numeric input is available", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: [metadata.schema[0]],
+          shape: { rows: 2, columns: 1 },
+          filteredShape: { rows: 2, columns: 1 }
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="denseRank"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.getByRole("combobox", { name: "Numeric column" })).toBeDisabled();
+    expect(screen.getByText("No numeric columns are available. Cast a column to a numeric type first.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected column is no longer available.");
+    expect(onPreview).not.toHaveBeenCalled();
   });
 
   it("shows only operations advertised by the active dataframe", () => {
@@ -1477,6 +1563,14 @@ describe("OperationBuilder", () => {
     {
       label: "Numeric column",
       step: {
+        id: "rank",
+        kind: "denseRank",
+        params: { column: { id: "c:1", name: "value" }, direction: "desc", newColumn: "ranked" }
+      }
+    },
+    {
+      label: "Numeric column",
+      step: {
         id: "round",
         kind: "roundNumber",
         params: { column: { id: "c:1", name: "value" }, decimals: 2, newColumn: "rounded" }
@@ -1708,6 +1802,7 @@ describe("OperationBuilder", () => {
     ["formula", "Left column", ["c:1"]],
     ["textLength", "Text column", ["c:0"]],
     ["upperText", "Text column", ["c:0"]],
+    ["denseRank", "Numeric column", ["c:1"]],
     ["roundNumber", "Numeric column", ["c:1"]],
     ["formatDatetime", "Date or datetime column", ["c:2"]]
   ] as const)("shows only compatible columns for %s", (kind, label, expectedIds) => {

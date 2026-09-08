@@ -189,9 +189,8 @@ merely because another resource has the same URI, variable name, or display labe
 
 ## Engine boundaries and capabilities
 
-The public catalog contains 32 cleaning operations. The 31 operations that address input columns accept only public
-`{id, name}` references; Custom Code is the sole non-column-addressing operation. The runtime binds public references
-against the exact input schema and lineage to private positions before execution. Unknown, stale, repeated where
+Every cleaning operation except Custom Code addresses input columns through public `{id, name}` references. The runtime
+binds public references against the exact input schema and lineage to private positions before execution. Unknown, stale, repeated where
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
@@ -250,9 +249,16 @@ Floor and Ceiling preserve exact integer inputs and round Decimal values before 
 output storage may reduce fractional scale so an integral carry remains representable. Ordinary floating and text
 coercion retain their existing behavior, including separate Arrow null and valid-NaN states.
 
+Dense Rank appends one integer column while preserving the cleaning input's row order, existing column identities
+and source values. Viewing filters and sorts do not define the rank population. Equal present values share a rank;
+ascending or descending ranks start at one without gaps. Missing inputs, including NaN, produce missing ranks;
+signed zeros tie and infinities remain present. The new column reports its own nullability and uses the engine's
+native integer output width within its existing row capacity. Output collisions and stale references fail before
+publication. Live and generated execution use the same comparison and missing-value rules.
+
 ### Pandas
 
-Pandas executes viewing, all 32 cleaning operations, profiling, generated code, and supported exports in Pandas.
+Pandas executes viewing, all catalog operations, profiling, generated code, and supported exports in Pandas.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
@@ -364,7 +370,7 @@ these checks and later collection; the checks do not materialize or snapshot the
 Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
 collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit
 cleaning exceptions: each materializes the complete lazy frame in Polars to derive its dynamic output columns. They do
-not convert through another dataframe engine. Viewing, all 32 cleaning operations, profiling, generated code, and
+not convert through another dataframe engine. Viewing, all catalog operations, profiling, generated code, and
 supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
 Excel reader requires it; it is not a transport conversion path.
 
@@ -393,7 +399,7 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
-CSV, TSV, JSONL, and Parquet file sessions support native viewing and all 32 cleaning operations in both live and
+CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
@@ -416,7 +422,7 @@ text. Explicit Infinity tokens and text retain their separate rules, and native 
 selection tokens. Generated Filter Rows uses the validated keys from this owner.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
-R-terminal, and owned `Rscript` transports share the same native frame contract and current 32-operation catalog,
+R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 

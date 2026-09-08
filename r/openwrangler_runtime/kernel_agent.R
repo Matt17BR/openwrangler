@@ -3209,6 +3209,17 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (identical(kind, "denseRank")) {
+      params <- exact_record(step$params, c("column", "direction", "newColumn"), "request.payload.step.params")
+      column <- decode_column_reference(params$column, "request.payload.step.params.column", limits$columnIdBytes)
+      direction <- bounded_text(params$direction, "request.payload.step.params.direction", maximum_variable_name_bytes)
+      if (!direction %in% c("asc", "desc")) abort("invalid_request", "Dense Rank direction must be asc or desc")
+      new_column <- bounded_text(params$newColumn, "request.payload.step.params.newColumn", maximum_variable_name_bytes)
+      if (identical(new_column, "")) abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+      return(list(id = step_id, kind = kind,
+        params = list(column = column, direction = direction, newColumn = new_column),
+        outputId = bounded_text(paste0("c:step:", step_id, ":0"), "the derived R rank column identity", limits$columnIdBytes)))
+    }
     if (kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       optional_fields <- if (identical(kind, "roundNumber")) {
         c("decimals", "newColumn")
@@ -3447,6 +3458,7 @@ openwrangler_r_kernel_agent <- local({
       "pivotWider",
       "extractRegexGroup",
       "findReplace",
+      "denseRank",
       "minMaxScale",
       "roundNumber",
       "floorNumber",
@@ -3871,7 +3883,8 @@ openwrangler_r_kernel_agent <- local({
     if (!column$semantics$kind %in% c("integer", "double", "integer64")) {
       abort("invalid_request", "The selected R column is not numeric", TRUE)
     }
-    in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name)
+    in_place <- !identical(step$kind, "denseRank") &&
+      (is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name))
     key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
     if (is.null(key_column_ids)) key_column_ids <- character()
     if (in_place && column$id %in% key_column_ids) {
@@ -3890,7 +3903,8 @@ openwrangler_r_kernel_agent <- local({
       inPlace = in_place,
       outputId = step$outputId,
       semanticKind = column$semantics$kind,
-      decimals = step$params$decimals
+      decimals = step$params$decimals,
+      direction = step$params$direction
     )
   }
 
@@ -5439,6 +5453,17 @@ openwrangler_r_kernel_agent <- local({
         ),
         bound = bound
       ))
+    }
+    if (identical(step$kind, "denseRank")) {
+      bound <- bind_numeric_transform_step(capture, step)
+      result <- frame_contract$dense_rank_column_at(source, bound$position, bound$oldName, bound$newName, bound$direction)
+      return(list(capture = frame_contract$capture_frame(
+        result, nullability_source = capture,
+        source_positions = c(seq_along(capture$descriptor$schema), bound$position),
+        output_ids = c(vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE), bound$outputId),
+        dense_rank_positions = length(capture$descriptor$schema) + 1L,
+        preserve_data_table_element_names = TRUE
+      ), bound = bound))
     }
     if (step$kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       bound <- bind_numeric_transform_step(capture, step)
@@ -7599,7 +7624,8 @@ openwrangler_r_kernel_agent <- local({
     maximum_name_bytes,
     safe_float_midpoint,
     round_coarse_helpers,
-    fill_directional_values
+    fill_directional_values,
+    dense_rank_values
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7955,6 +7981,11 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_integer64_force_missing <- function(.ow_values, .ow_missing) { .ow_storage <- base::unclass(.ow_values); .ow_storage[.ow_missing] <- base::unclass(.ow_integer64_missing)[[1L]]; .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_storage) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_storage }"
       )
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "denseRank"), logical(1L)))) {
+      rank_lines <- deparse(dense_rank_values, width.cutoff = 500L)
+      rank_lines[[1L]] <- paste0(".ow_dense_rank <- ", rank_lines[[1L]])
+      lines <- c(lines, paste0("  ", rank_lines))
+    }
     data_table_copy_metadata_lines <- c(
       "  if (base::inherits(.ow_result, \"data.table\")) {",
       "    for (.ow_column_position in base::seq_len(base::ncol(.ow_result))) data.table::setattr(base::.subset2(.ow_result, .ow_column_position), \"names\", NULL)",
@@ -7962,9 +7993,9 @@ openwrangler_r_kernel_agent <- local({
     )
     for (step in bound_plan) {
       # Match native copy metadata without copying the already-owned values.
-      # Clone and Custom Code preserve names. By Example validates named
+      # Clone, Dense Rank and Custom Code preserve names. By Example validates named
       # intermediates before its public result capture removes them.
-      if (!step$kind %in% c("cloneColumn", "customCode", "byExample")) {
+      if (!step$kind %in% c("cloneColumn", "denseRank", "customCode", "byExample")) {
         lines <- c(lines, data_table_copy_metadata_lines)
       }
       if (identical(step$kind, "sortRows")) {
@@ -8049,7 +8080,7 @@ openwrangler_r_kernel_agent <- local({
             r_string(step$newName)
           )
         )
-      } else if (identical(step$kind, "cloneColumn")) {
+      } else if (step$kind %in% c("cloneColumn", "denseRank")) {
         lines <- c(
           lines,
           sprintf("  .ow_clone_position <- %dL", step$position),
@@ -8062,16 +8093,20 @@ openwrangler_r_kernel_agent <- local({
             "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
             maximum_columns
           ),
-          "  .ow_clone_element_names <- base::attr(base::.subset2(.ow_result, .ow_clone_position), \"names\", exact = TRUE)",
+          if (identical(step$kind, "denseRank")) exact_formula_datetime_type_guard("base::.subset2(.ow_result, .ow_clone_position)", step) else character(),
+          if (identical(step$kind, "denseRank")) {
+            sprintf("  .ow_clone_values <- .ow_dense_rank(base::.subset2(.ow_result, .ow_clone_position), %s)", r_string(step$direction))
+          } else "  .ow_clone_values <- base::.subset2(.ow_result, .ow_clone_position)",
+          "  .ow_clone_element_names <- base::attr(.ow_clone_values, \"names\", exact = TRUE)",
           "  if (inherits(.ow_result, \"data.table\")) {",
           "    data.table::setattr(.ow_result, \"names\", .ow_clone_frame_names)",
-          "    data.table::set(.ow_result, j = .ow_clone_name, value = base::.subset2(.ow_result, .ow_clone_position))",
+          "    data.table::set(.ow_result, j = .ow_clone_name, value = .ow_clone_values)",
           "    if (!base::is.null(.ow_clone_element_names)) data.table::setattr(base::.subset2(.ow_result, ncol(.ow_result)), \"names\", .ow_clone_element_names)",
           "  } else {",
           "    .ow_clone_frame_attributes <- base::attributes(.ow_result)",
           "    .ow_clone_frame_attributes[['row.names']] <- base::.row_names_info(.ow_result, type = 0L)",
           "    .ow_clone_columns <- base::unclass(.ow_result)",
-          "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- base::.subset2(.ow_clone_columns, .ow_clone_position)",
+          "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- .ow_clone_values",
           "    .ow_clone_frame_attributes[[\"names\"]] <- c(.ow_clone_frame_names, .ow_clone_name)",
           "    base::attributes(.ow_clone_columns) <- .ow_clone_frame_attributes",
           "    .ow_result <- .ow_clone_columns",
@@ -9329,7 +9364,7 @@ openwrangler_r_kernel_agent <- local({
     } else if (identical(bound$kind, "splitTextColumns")) {
       bound$newNames
     } else if (
-      bound$kind %in% c("cloneColumn", "formula", "textLength", "byExample", "extractRegexGroup") ||
+      bound$kind %in% c("cloneColumn", "denseRank", "formula", "textLength", "byExample", "extractRegexGroup") ||
         (
           bound$kind %in% c(
             "lowerText",
@@ -9704,7 +9739,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$limits$nameBytes,
         frame_contract$safe_float_midpoint,
         frame_contract$round_coarse_helpers,
-        frame_contract$fill_directional_values
+        frame_contract$fill_directional_values,
+        frame_contract$dense_rank_values
       )
     )
   }
@@ -10040,7 +10076,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$nameBytes,
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
-            frame_contract$fill_directional_values
+            frame_contract$fill_directional_values,
+            frame_contract$dense_rank_values
           )
         } else {
           NULL
@@ -10094,7 +10131,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$nameBytes,
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
-            frame_contract$fill_directional_values
+            frame_contract$fill_directional_values,
+            frame_contract$dense_rank_values
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10169,7 +10207,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$limits$nameBytes,
               frame_contract$safe_float_midpoint,
               frame_contract$round_coarse_helpers,
-              frame_contract$fill_directional_values
+              frame_contract$fill_directional_values,
+              frame_contract$dense_rank_values
             )
           ))
         }

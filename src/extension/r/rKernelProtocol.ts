@@ -354,6 +354,16 @@ export interface RKernelCeilNumberStep {
   }>;
 }
 
+export interface RKernelDenseRankStep {
+  readonly id: string;
+  readonly kind: "denseRank";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    direction: "asc" | "desc";
+    newColumn: string;
+  }>;
+}
+
 export interface RKernelMinMaxScaleStep {
   readonly id: string;
   readonly kind: "minMaxScale";
@@ -536,6 +546,7 @@ export type RKernelTransformStep =
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
+  | RKernelDenseRankStep
   | RKernelMinMaxScaleStep
   | RKernelRoundNumberStep
   | RKernelFloorNumberStep
@@ -1542,6 +1553,14 @@ function validateTransformStep(value: unknown): void {
     if (params.dropOriginal !== undefined && typeof params.dropOriginal !== "boolean") {
       fail("R kernel multi-label parameters contain an invalid drop-original flag.");
     }
+    return;
+  }
+  if (step.kind === "denseRank") {
+    const params = exactRecord(step.params, ["column", "direction", "newColumn"], [], "R kernel dense-rank parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.direction !== "asc" && params.direction !== "desc")
+      fail("R kernel Dense Rank direction must be asc or desc.");
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
   if (

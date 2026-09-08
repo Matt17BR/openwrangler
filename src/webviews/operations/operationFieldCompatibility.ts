@@ -52,6 +52,7 @@ export type TypeRestrictedOperationKind = Extract<
   | "capitalizeText"
   | "lowerText"
   | "upperText"
+  | "denseRank"
   | "minMaxScale"
   | "roundNumber"
   | "floorNumber"
@@ -87,6 +88,7 @@ export function compatibleColumns(
 export function operationColumnTypes(kind: TypeRestrictedOperationKind): ReadonlySet<ColumnType> {
   switch (kind) {
     case "formula":
+    case "denseRank":
     case "minMaxScale":
     case "roundNumber":
     case "floorNumber":

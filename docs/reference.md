@@ -106,6 +106,7 @@
 | `capitalizeText`     | Capitalize              | Categorical / text | `column`                                    | `newColumn`                             |
 | `lowerText`          | Lowercase               | Categorical / text | `column`                                    | `newColumn`                             |
 | `upperText`          | Uppercase               | Categorical / text | `column`                                    | `newColumn`                             |
+| `denseRank`          | Dense rank              | Numeric / datetime | `column`, `direction`, `newColumn`          | None                                    |
 | `minMaxScale`        | Min-max scale           | Numeric / datetime | `column`                                    | `newColumn`                             |
 | `roundNumber`        | Round                   | Numeric / datetime | `column`                                    | `decimals`, `newColumn`                 |
 | `floorNumber`        | Floor                   | Numeric / datetime | `column`                                    | `newColumn`                             |

@@ -75,6 +75,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "castColumn": ("column",),
     "formula": ("leftColumn", "rightColumn"),
     "textLength": ("column",),
+    "denseRank": ("column",),
     "multiLabelBinarize": ("column",),
     "fillMissingValues": ("column",),
     "findReplace": ("column",),
@@ -195,6 +196,9 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
 
     if kind == "sortRows":
         params["rules"] = _normalize_transform_sort_rules(params["rules"], "sortRows.rules", allow_empty=False)
+    elif kind == "denseRank":
+        if not isinstance(params["direction"], str) or params["direction"] not in {"asc", "desc"}:
+            raise OperationError("denseRank.direction must be asc or desc.")
     elif kind == "filterRows":
         params["filterModel"] = _normalize_transform_filter_model(params["filterModel"])
     elif kind == "dropMissingRows" and params.get("how", "any") not in {"any", "all"}:
@@ -706,6 +710,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "cloneColumn",
         "castColumn",
         "textLength",
+        "denseRank",
         "multiLabelBinarize",
         "fillMissingValues",
         "findReplace",

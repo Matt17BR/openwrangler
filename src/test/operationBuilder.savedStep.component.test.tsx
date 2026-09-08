@@ -77,6 +77,11 @@ const compatibleSavedSteps = [
   { id: "saved-capitalize", kind: "capitalizeText", params: { column: { id: "c:1", name: "value" } } },
   { id: "saved-lower", kind: "lowerText", params: { column: { id: "c:1", name: "value" } } },
   { id: "saved-upper", kind: "upperText", params: { column: { id: "c:1", name: "value" } } },
+  {
+    id: "saved-rank",
+    kind: "denseRank",
+    params: { column: { id: "c:2", name: "7" }, direction: "desc", newColumn: "value_rank" }
+  },
   { id: "saved-scale", kind: "minMaxScale", params: { column: { id: "c:2", name: "7" } } },
   { id: "saved-round", kind: "roundNumber", params: { column: { id: "c:2", name: "7" }, decimals: 2 } },
   { id: "saved-floor", kind: "floorNumber", params: { column: { id: "c:2", name: "7" } } },
@@ -107,35 +112,52 @@ const compatibleSavedSteps = [
 ] satisfies TransformStep[];
 
 describe("OperationBuilder saved-step forms", () => {
-  it("blocks an incompatible saved reference before a filtered field can silently retarget it", () => {
-    const onPreview = vi.fn();
-    const savedStep = {
-      id: "saved-incompatible-formula",
-      kind: "formula",
-      params: {
-        leftColumn: { id: "c:1", name: "value" },
-        operator: "add",
-        value: 1,
-        newColumn: "total"
-      }
-    } satisfies TransformStep;
-    render(
-      <OperationBuilder
-        metadata={{ ...metadata, steps: [savedStep] }}
-        filterModel={{ filters: [], sort: [] }}
-        initialStep={savedStep}
-        onClose={() => undefined}
-        onPreview={onPreview}
-      />
-    );
+  it.each([
+    {
+      savedStep: {
+        id: "saved-incompatible-formula",
+        kind: "formula",
+        params: {
+          leftColumn: { id: "c:1", name: "value" },
+          operator: "add",
+          value: 1,
+          newColumn: "total"
+        }
+      },
+      label: "Left column",
+      message: "saved left formula column uses a recorded string column"
+    },
+    {
+      savedStep: {
+        id: "saved-incompatible-rank",
+        kind: "denseRank",
+        params: { column: { id: "c:1", name: "value" }, direction: "desc", newColumn: "value_rank" }
+      },
+      label: "Numeric column",
+      message: "this numeric operation requires an integer, float, or decimal column"
+    }
+  ] satisfies { savedStep: TransformStep; label: string; message: string }[])(
+    "blocks an incompatible saved $savedStep.kind reference before a filtered field can silently retarget it",
+    ({ savedStep, label, message }) => {
+      const onPreview = vi.fn();
+      render(
+        <OperationBuilder
+          metadata={{ ...metadata, steps: [savedStep] }}
+          filterModel={{ filters: [], sort: [] }}
+          initialStep={savedStep}
+          onClose={() => undefined}
+          onPreview={onPreview}
+        />
+      );
 
-    expect(screen.getByRole("alert")).toHaveTextContent("saved left formula column uses a recorded string column");
-    expect(screen.queryByLabelText("Left column")).toBeNull();
-    const preview = screen.getByRole("button", { name: "Preview changes" });
-    expect(preview).toBeDisabled();
-    fireEvent.submit(preview.closest("form") as HTMLFormElement);
-    expect(onPreview).not.toHaveBeenCalled();
-  });
+      expect(screen.getByRole("alert")).toHaveTextContent(message);
+      expect(screen.queryByLabelText(label)).toBeNull();
+      const preview = screen.getByRole("button", { name: "Preview changes" });
+      expect(preview).toBeDisabled();
+      fireEvent.submit(preview.closest("form") as HTMLFormElement);
+      expect(onPreview).not.toHaveBeenCalled();
+    }
+  );
 
   it.each(compatibleSavedSteps)("preserves an unchanged compatible $kind edit", (savedStep) => {
     const schema = [...columns, dateColumn];
