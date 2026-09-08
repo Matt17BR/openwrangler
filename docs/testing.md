@@ -60,7 +60,9 @@ editor processes sharing one private profile. Seed checks same-process close/reo
 checks persistence after editor restart, rendered recovery, and the remaining file and notebook journeys.
 
 The persistence store, response committer and coordinator persistence owners control storage ordering to exercise
-presentation saves during publication, late queued saves, rollback and recovery. The existing installed quick-sort
+presentation saves during publication, late queued saves, rollback and recovery. Coordinator tests also distinguish
+live selection, widths and viewport from durable recovery state after sequential and overlapping failed saves. They
+verify later successful saves, close/reopen, and unchanged warning and diagnostic behavior. The existing installed quick-sort
 journey records bounded sort and owner state only on failure; its DOM observation stays pinned to the original
 session and renderer and has a separate one-second diagnostic limit.
 

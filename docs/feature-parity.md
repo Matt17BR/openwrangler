@@ -54,6 +54,8 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 A failed Python viewing page retains the last confirmed query, so later Apply and Discard do not use an unseen
 filter. Spark also retains the prior view's continuation anchors when a replacement page fails.
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
+Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
+successfully saved state, as the storage warning explains.
 
 The operation catalog search exposes its accessible name before and after entering a query.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.

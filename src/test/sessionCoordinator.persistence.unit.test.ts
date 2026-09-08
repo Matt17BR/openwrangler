@@ -12,6 +12,7 @@ import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersist
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { isOpenWranglerRequest, isOpenWranglerResponse } from "../shared/protocolValidation";
+import type { GridViewState } from "../shared/viewState";
 import {
   inspectionStep,
   openedResponse,
@@ -23,6 +24,125 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
+  it.each([false, true])("keeps the latest live presentation after failed saves (overlapping: %s)", async (overlap) => {
+    const runtimeOpened = presentationOpenedResponse();
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "units", direction: "desc", nulls: "last" }]
+    };
+    let stored: Record<string, unknown> = {};
+    let fail = false;
+    let failedWrites = 0;
+    const firstWriteStarted = rejectingDeferred<void>();
+    const releaseFirstWrite = rejectingDeferred<void>();
+    const workspaceState = {
+      get: vi.fn((_key: string, fallback?: unknown) => stored ?? fallback),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        if (fail) {
+          if (++failedWrites === 1) {
+            firstWriteStarted.resolve(undefined);
+            await releaseFirstWrite.promise;
+          }
+          throw new Error("ordinary presentation storage unavailable");
+        }
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const diagnosticSink = vi.fn();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+    warning.mockClear();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      expect(isOpenWranglerRequest(request)).toBe(true);
+      let response: OpenWranglerResponse;
+      if (request.kind === "openSession") response = runtimeOpened;
+      else if (request.kind === "getPage") response = pageResponseForMetadata(request, runtimeOpened.metadata);
+      else if (request.kind === "closeSession") response = { kind: "sessionClosed", sessionId: request.sessionId };
+      else throw new Error(`Unexpected presentation recovery request: ${request.kind}`);
+      expect(isOpenWranglerResponse(response)).toBe(true);
+      return response;
+    });
+    const coordinator = new SessionCoordinator(workspaceState, diagnosticSink);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const notifiedScrolls: number[] = [];
+    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
+      if (snapshot) notifiedScrolls.push(snapshot.viewState.viewport.scrollLeft);
+    });
+    const view = (scrollLeft: number): GridViewState => ({
+      selectedColumnId: scrollLeft === 10 ? "c:units" : "c:sales",
+      columnWidths: new Map([["c:sales", 100 + scrollLeft]]),
+      viewport: { firstVisibleRow: scrollLeft === 10 ? 0 : 1, scrollLeft }
+    });
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the presentation session to open.");
+      const sessionId = opened.metadata.sessionId;
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: "confirmed-sort",
+          filterModel,
+          offset: 0,
+          limit: 2,
+          columnOffset: 0,
+          columnLimit: 2
+        })
+      ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+      await bridge.updateViewState?.(sessionId, view(10));
+      const durableBefore = structuredClone(stored);
+      notifiedScrolls.length = 0;
+      fail = true;
+      const first = bridge.updateViewState?.(sessionId, view(20));
+      await firstWriteStarted.promise;
+      let second = overlap ? bridge.updateViewState?.(sessionId, view(30)) : undefined;
+      releaseFirstWrite.resolve(undefined);
+      await first;
+      if (!overlap) second = bridge.updateViewState?.(sessionId, view(30));
+      await second;
+
+      expect(bridge.getViewState?.(sessionId)).toEqual(view(30));
+      expect(coordinator.activeSession()).toMatchObject({
+        metadata: { revision: 0, steps: [], filterModel },
+        viewState: { ...view(30), filterModel }
+      });
+      expect(stored).toEqual(durableBefore);
+      expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")).toMatchObject({
+        cleaning: { steps: [] },
+        view: { ...view(10), filterModel }
+      });
+      expect(failedWrites).toBe(2);
+      expect(diagnosticSink.mock.calls).toEqual([["Open Wrangler workspace persistence ordinary save failed: Error"]]);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(notifiedScrolls).toEqual(overlap ? [30] : [20]);
+
+      fail = false;
+      await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+      const reopened = await bridge.request(openRequest);
+      if (reopened.kind !== "sessionOpened") throw new Error("Expected the presentation session to reopen.");
+      expect(bridge.getViewState?.(reopened.metadata.sessionId)).toEqual(view(10));
+      expect(stored).toEqual(durableBefore);
+      await bridge.updateViewState?.(reopened.metadata.sessionId, view(30));
+      expect(bridge.getViewState?.(reopened.metadata.sessionId)).toEqual(view(30));
+      expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")).toMatchObject({
+        cleaning: { steps: [] },
+        view: { ...view(30), filterModel }
+      });
+      expect(diagnosticSink).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFirstWrite.resolve(undefined);
+      subscription.dispose();
+      await coordinator.shutdown();
+      expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(
+        delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession").length
+      );
+      expect(coordinator.diagnostics().sessionCount).toBe(0);
+      warning.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     "retains current sort and latest presentation across a staged page (final write failure: %s)",
     async (failFinalWrite) => {
@@ -463,7 +583,10 @@ describe("SessionCoordinator persistence diagnostics", () => {
       2,
       "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
     );
-    expect(coordinator.activeSession()?.viewState.viewport.scrollLeft).toBe(30);
+    expect(coordinator.activeSession()?.viewState.viewport.scrollLeft).toBe(40);
+    expect(
+      new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")?.view?.viewport.scrollLeft
+    ).toBe(30);
 
     await coordinator.shutdown();
   });
