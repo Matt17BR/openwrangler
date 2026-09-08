@@ -111,6 +111,9 @@ contracts execute generated code for midpoint edge cases alongside live executio
 ties, the normal/subnormal boundary, finite extremes, source preservation and Undo. Direct frame tests also check
 signed zero and bypassing user-defined S3 mean methods. Non-midpoint interpolation counterexamples stay
 separate from the midpoint guarantee.
+The existing native R Group By owner compares typed empty results across base dataframes, tibbles and data.tables.
+It also executes complete generated programs in fresh R processes to check integer64 first/last outputs and exact
+wide keys without a preloaded bit64 namespace, retaining source and result-publication assertions.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
 ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
 Native R child fixtures retain the caller's temporary-directory settings. Private Spark notebook fixtures use

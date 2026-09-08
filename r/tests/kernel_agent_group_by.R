@@ -7,7 +7,8 @@ assert_group_by_flavor_case <- function(
   expected_classes,
   expected_source_key_ids,
   expected_groups,
-  expected_totals
+  expected_totals,
+  key_columns = "group"
 ) {
   source_environment[[variable_name]] <- source
   before <- if (inherits(source, "data.table")) {
@@ -30,9 +31,11 @@ assert_group_by_flavor_case <- function(
         id = step_id,
         kind = "groupBy",
         params = list(
-          keys = I(list(list(id = "r:c:0", name = "group"))),
+          keys = I(lapply(key_columns, function(name) {
+            list(id = sprintf("r:c:%d", match(name, names(source)) - 1L), name = name)
+          })),
           aggregations = I(list(list(
-            column = list(id = "r:c:1", name = "value"),
+            column = list(id = sprintf("r:c:%d", match("value", names(source)) - 1L), name = "value"),
             operation = "sum",
             alias = "total"
           )))
@@ -55,7 +58,7 @@ assert_group_by_flavor_case <- function(
       ),
       totals = vapply(
         previewed$page$page$rows,
-        function(row) as.integer(row$values[[2L]]$raw),
+        function(row) as.integer(row$values[[length(key_columns) + 1L]]$raw),
         integer(1L),
         USE.NAMES = FALSE
       )
@@ -80,6 +83,14 @@ assert_group_by_flavor_case <- function(
   assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
   eval(parse(text = applied$code), envir = .GlobalEnv)
   generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  if (nrow(source) == 0L) {
+    assert_identical(nrow(generated), 0L, "empty Group By invented a group")
+    assert_identical(names(generated), c(key_columns, "total"), "empty Group By changed output names")
+    assert_identical(generated$total, integer(), "empty Group By changed the integer sum type")
+    for (name in key_columns) {
+      assert_identical(generated[[name]], source[[name]], "empty Group By changed typed key metadata")
+    }
+  }
   assert_identical(
     list(
       classes = class(generated),
@@ -154,6 +165,26 @@ assert_group_by_flavor_case(
   c("c", "a", "b"),
   c(3L, 2L, 5L)
 )
+
+for (flavor in c("data.frame", "tibble", "data.table")) {
+  for (key_count in c(1L, 2L)) {
+    empty_source <- data.frame(
+      group = character(), value = integer(),
+      second = ordered(character(), levels = c("a", "b"))
+    )
+    if (identical(flavor, "tibble")) empty_source <- tibble::as_tibble(empty_source)
+    if (identical(flavor, "data.table")) {
+      empty_source <- data.table::as.data.table(empty_source)
+      data.table::setkeyv(empty_source, "second")
+    }
+    assert_group_by_flavor_case(
+      group_by_session_id, "group_by_empty", empty_source,
+      switch(flavor, data.frame = "r.data.frame", tibble = "r.tibble", data.table = "r.data.table"),
+      class(empty_source), if (identical(flavor, "data.table")) list("r:c:2") else list(),
+      character(), integer(), c("group", "second")[seq_len(key_count)]
+    )
+  }
+}
 
 source_environment$group_by_frame <- data.frame(
   group = c(2, 1, 2, NA_real_, NaN, 1, 2),
@@ -725,5 +756,165 @@ local({
         invisible(dispatch_with(midpoint_agent, "closeSession", list(sessionId = midpoint_session_id)))
       }
     }
+  }
+})
+
+local({
+  wide <- bit64::as.integer64(c("9223372036854775807", "9223372036854775806", NA, NA))
+  first_last_source <- data.frame(group = c("a", "a", "a", "b"), wide = wide)
+  key_source <- data.frame(group = wide[c(1L, 2L, 3L, 1L)], value = c(1L, 2L, NA_integer_, 3L))
+  empty_source <- data.frame(
+    group = ordered(character(), levels = c("a", "b")), second = as.Date(character()),
+    wide = bit64::as.integer64(character()), number = integer(),
+    at = as.POSIXct(character(), tz = "UTC"), delta = as.difftime(numeric(), units = "hours"),
+    label = factor(character(), levels = c("a", "b")), value = numeric(), flag = logical()
+  )
+  empty_expected <- empty_source
+  empty_expected$flag <- integer()
+  names(empty_expected) <- c("group", "second", "first", "total", "at", "delta", "label", "mean", "count")
+  cases <- list(
+    first_last = list(
+      source = first_last_source, keys = "group", columns = c("wide", "wide"),
+      operations = c("first", "last"), aliases = c("first", "last"),
+      expected = data.frame(group = c("a", "b"), first = wide[c(1L, 3L)], last = wide[c(2L, 3L)]),
+      loads_bit64 = TRUE
+    ),
+    wide_keys = list(
+      source = key_source, keys = "group", columns = "value", operations = "count", aliases = "count",
+      expected = data.frame(group = wide[1:3], count = c(2L, 1L, 0L)), loads_bit64 = TRUE
+    ),
+    unrelated_wide = list(
+      source = data.frame(group = c("a", "a"), value = c(1L, 2L), unused = wide[1:2]),
+      keys = "group", columns = "value", operations = "count", aliases = "count",
+      expected = data.frame(group = "a", count = 2L), loads_bit64 = FALSE
+    )
+  )
+  for (flavor in c("data.frame", "tibble", "data.table")) {
+    source <- empty_source
+    expected <- empty_expected
+    if (identical(flavor, "tibble")) {
+      source <- tibble::as_tibble(source)
+      expected <- tibble::as_tibble(expected)
+    }
+    if (identical(flavor, "data.table")) {
+      source <- data.table::as.data.table(source)
+      data.table::setkeyv(source, "second")
+      expected <- data.table::as.data.table(expected)
+    }
+    cases[[paste0("empty_", flavor)]] <- list(
+      source = source, keys = c("group", "second"),
+      columns = c("wide", "number", "at", "delta", "label", "value", "flag"),
+      operations = c("first", "sum", "first", "first", "last", "mean", "count"),
+      aliases = names(expected)[-(1:2)], expected = expected, loads_bit64 = TRUE
+    )
+  }
+  sources <- new.env(parent = baseenv())
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(local_agent$dispose(), add = TRUE)
+  session <- "b5b5b5b5-b5b5-45b5-85b5-b5b5b5b5b5b5"
+  cold_bundle <- tempfile("group-by-", fileext = ".rds")
+  cold_script <- tempfile("group-by-", fileext = ".R")
+  cold_log <- tempfile("group-by-", fileext = ".log")
+  on.exit(unlink(c(cold_bundle, cold_script, cold_log)), add = TRUE)
+  # RDS cannot preserve a data.table selfref across processes; compare all other
+  # frame attributes and every typed column exactly. Namespace refusal is injected
+  # only in a separate child, whose original base binding is restored on exit.
+  writeLines(c(
+    "options(warn = 2)",
+    "(function() {",
+    "bundle <- readRDS(commandArgs(TRUE)[[1L]])",
+    "stopifnot(!isNamespaceLoaded('bit64'))",
+    "unavailable <- identical(commandArgs(TRUE)[[2L]], 'unavailable')",
+    "if (unavailable) {",
+    "  original_require <- base::requireNamespace",
+    "  on.exit({unlockBinding('requireNamespace', baseenv()); assign('requireNamespace', original_require, baseenv()); lockBinding('requireNamespace', baseenv())}, add = TRUE)",
+    "  unlockBinding('requireNamespace', baseenv())",
+    "  assign('requireNamespace', function(package, ...) if (identical(package, 'bit64')) FALSE else original_require(package, ...), baseenv())",
+    "  lockBinding('requireNamespace', baseenv())",
+    "}",
+    "scope <- new.env(parent = baseenv())",
+    "scope$group_by_cold <- bundle$source",
+    "before <- serialize(scope$group_by_cold, NULL, version = 3L)",
+    "scope$open_wrangler_result <- 'prior result'",
+    "failure <- tryCatch({eval(parse(text = bundle$code), envir = scope); NULL}, error = identity)",
+    "if (unavailable) {",
+    "  stopifnot(inherits(failure, 'error'), identical(conditionMessage(failure), 'bit64 is required for integer64 Group By'))",
+    "  stopifnot(identical(scope$open_wrangler_result, 'prior result'), identical(serialize(scope$group_by_cold, NULL, version = 3L), before))",
+    "  return(invisible(NULL))",
+    "}",
+    "stopifnot(is.null(failure))",
+    "result <- scope$open_wrangler_result",
+    "if (inherits(result, 'data.table')) {",
+    "  actual_attrs <- attributes(result); expected_attrs <- attributes(bundle$expected)",
+    "  stopifnot(typeof(actual_attrs$.internal.selfref) == 'externalptr', typeof(expected_attrs$.internal.selfref) == 'externalptr')",
+    "  actual_attrs$.internal.selfref <- NULL; expected_attrs$.internal.selfref <- NULL",
+    "  stopifnot(identical(actual_attrs, expected_attrs))",
+    "  stopifnot(identical(lapply(seq_along(result), function(i) result[[i]]), lapply(seq_along(bundle$expected), function(i) bundle$expected[[i]])))",
+    "} else stopifnot(identical(result, bundle$expected))",
+    "stopifnot(identical(isNamespaceLoaded('bit64'), bundle$loads_bit64))",
+    "stopifnot(identical(serialize(scope$group_by_cold, NULL, version = 3L), before))",
+    "scope$group_by_cold <- unserialize(before)",
+    "names(scope$group_by_cold)[1L] <- 'stale key'",
+    "scope$open_wrangler_result <- 'prior result'",
+    "failure <- tryCatch({eval(parse(text = bundle$code), envir = scope); NULL}, error = identity)",
+    "stopifnot(inherits(failure, 'error'), grepl('stale', conditionMessage(failure)))",
+    "stopifnot(identical(scope$open_wrangler_result, 'prior result'))",
+    "})()"
+  ), cold_script)
+  for (case_name in names(cases)) {
+    case <- cases[[case_name]]
+    source_bytes <- serialize(case$source, NULL, version = 3L)
+    sources$group_by_cold <- unserialize(source_bytes)
+    opened <- dispatch_with(local_agent, "openSession", list(
+      sessionId = session, variableName = "group_by_cold", page = page_window()
+    ))
+    assert_identical(opened$kind, "page", paste(case_name, "did not open"))
+    reference <- function(name) list(id = sprintf("r:c:%d", match(name, names(case$source)) - 1L), name = name)
+    step <- list(id = "cold-group-by", kind = "groupBy", params = list(
+      keys = I(lapply(case$keys, reference)),
+      aggregations = I(lapply(seq_along(case$columns), function(i) list(
+        column = reference(case$columns[[i]]), operation = case$operations[[i]], alias = case$aliases[[i]]
+      )))
+    ))
+    for (field in c("keys", "aggregations")) {
+      invalid <- step
+      invalid$params[[field]] <- I(list())
+      refused <- dispatch_with(local_agent, "previewStep", list(
+        sessionId = session, revision = 0L, step = invalid, page = page_window()
+      ))
+      assert_identical(refused$kind, "error", paste(case_name, "accepted empty", field))
+      unchanged <- dispatch_with(local_agent, "getPage", list(sessionId = session, page = page_window()))
+      assert_identical(unchanged$page, opened$page, paste(case_name, "changed state on refusal"))
+    }
+    preview <- dispatch_with(local_agent, "previewStep", list(
+      sessionId = session, revision = 0L, step = step, page = page_window()
+    ))
+    assert_identical(preview$kind, "stepPreview", paste(case_name, "did not preview"))
+    live <- openwrangler_r_frame_contract$group_by_at(
+      case$source, match(case$keys, names(case$source)), case$keys,
+      match(case$columns, names(case$source)), case$columns, case$operations, case$aliases
+    )
+    assert_identical(live, case$expected, paste(case_name, "changed exact live values or metadata"))
+    applied <- dispatch_with(local_agent, "applyDraft", list(
+      sessionId = session, revision = preview$revision, page = page_window()
+    ))
+    assert_identical(applied$action, "apply", paste(case_name, "did not apply"))
+    assert_identical(applied$page, preview$page, paste(case_name, "changed the public preview"))
+    assert_identical(applied$code, preview$code, paste(case_name, "changed the generated program on Apply"))
+    saveRDS(list(code = applied$code, source = case$source, expected = case$expected, loads_bit64 = case$loads_bit64), cold_bundle)
+    modes <- if (identical(case_name, "first_last")) c("normal", "unavailable") else "normal"
+    for (mode in modes) {
+      cold_status <- system2(
+        file.path(R.home("bin"), "Rscript"), c("--vanilla", shQuote(cold_script), shQuote(cold_bundle), mode),
+        stdout = cold_log, stderr = cold_log
+      )
+      assert_identical(cold_status, 0L, paste(case_name, mode, "cold Group By failed", paste(readLines(cold_log), collapse = "\n")))
+    }
+    assert_identical(serialize(sources$group_by_cold, NULL, version = 3L), source_bytes, paste(case_name, "changed source bytes"))
+    undone <- dispatch_with(local_agent, "undoStep", list(
+      sessionId = session, revision = applied$revision, page = page_window()
+    ))
+    assert_identical(undone$page, opened$page, paste(case_name, "did not restore source metadata and rows"))
+    invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
   }
 })

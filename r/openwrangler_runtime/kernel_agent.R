@@ -7238,7 +7238,6 @@ openwrangler_r_kernel_agent <- local({
         stop(sprintf("Open Wrangler %s group sum is outside the supported range", .ow_kind), call. = FALSE)
       }
       if (identical(.ow_kind, "integer")) return(as.integer(.ow_text))
-      if (!requireNamespace("bit64", quietly = TRUE)) stop("bit64 is required for integer64 Group By", call. = FALSE)
       .ow_result <- suppressWarnings(bit64::as.integer64(.ow_text))
       if (is.na(.ow_result)) stop("Open Wrangler integer64 group sum is outside the supported range", call. = FALSE)
       .ow_result
@@ -7282,7 +7281,6 @@ openwrangler_r_kernel_agent <- local({
         if (identical(.ow_operation, "sum")) {
           if (identical(.ow_kind, "integer")) return(0L)
           if (identical(.ow_kind, "integer64")) {
-            if (!requireNamespace("bit64", quietly = TRUE)) stop("bit64 is required for integer64 Group By", call. = FALSE)
             return(bit64::as.integer64("0"))
           }
           return(0)
@@ -7334,6 +7332,12 @@ openwrangler_r_kernel_agent <- local({
       }
       stop("Open Wrangler received an unsupported Group By aggregation", call. = FALSE)
     }
+    if (
+      any(vapply(c(.ow_key_specs, .ow_aggregation_specs), function(.ow_spec) identical(.ow_spec$kind, "integer64"), logical(1L))) &&
+        !requireNamespace("bit64", quietly = TRUE)
+    ) {
+      stop("bit64 is required for integer64 Group By", call. = FALSE)
+    }
     .ow_rows <- seq_len(nrow(.ow_frame))
     .ow_composite <- rep.int("", length(.ow_rows))
     for (.ow_spec in .ow_key_specs) {
@@ -7341,7 +7345,7 @@ openwrangler_r_kernel_agent <- local({
         stop("Open Wrangler column reference is stale", call. = FALSE)
       }
       .ow_token <- .ow_key_token(.ow_frame[[.ow_spec$position]], .ow_spec$kind)
-      .ow_composite <- paste0(.ow_composite, nchar(.ow_token, type = "bytes"), ":", .ow_token)
+      .ow_composite <- paste0(.ow_composite, nchar(.ow_token, type = "bytes"), ":", .ow_token, recycle0 = TRUE)
     }
     .ow_distinct <- unique(.ow_composite)
     .ow_group_ids <- match(.ow_composite, .ow_distinct)

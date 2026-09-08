@@ -269,6 +269,8 @@ Native R Group By medians, median Fill and midpoint interpolation use R's native
 in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.
 Interpolation at other weights still has a [known tiny-value rounding limit](https://github.com/Matt17BR/openwrangler/issues/1064).
 
+Generated native R Group By preserves typed empty results, integer64 keys and first/last values in a fresh R session.
+
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
 limits; none is a stable-release gate.
 
