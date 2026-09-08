@@ -892,6 +892,48 @@ def test_decoder_error_preserves_available_request_and_view_correlation() -> Non
     }
 
 
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+def test_malformed_view_is_rejected_before_native_work_and_preserves_session(kind, tmp_path, monkeypatch) -> None:
+    path = tmp_path / "view-admission.csv"
+    source = "value\n1\n3\n"
+    path.write_text(source, encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=20
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    original, committed, query = session.original, session.committed, session.filter_model
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    request = _view_request(kind, session_id, "invalid-view")
+    request["filterModel"] = {
+        "filters": [
+            {"column": "value", "type": "integer", "predicates": [{"kind": "wrong", "operator": "equals", "value": 1}]}
+        ],
+        "sort": [],
+    }
+    if kind == "getColumnValues":
+        request.update(column="value", limit=3)
+    with monkeypatch.context() as guarded:
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("Malformed viewing input reached the native engine")
+
+        guarded.setattr(session.engine, "apply_filter_model", forbidden)
+        guarded.setattr(session.engine, "column_values", forbidden)
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id="invalid-view-transport")))
+    assert result["requestId"] == "invalid-view-transport"
+    assert result["response"]["code"] == "invalid_request"
+    assert result["response"]["viewRequestId"] == "invalid-view"
+    assert session.filter_model is query
+    assert session.original is original and session.committed is committed
+    assert session.revision == 0 and session.plan == [] and session.draft_step is None
+    assert path.read_text(encoding="utf-8") == source
+    recovery = json.loads(kernel_agent.dispatch_json(_envelope(_view_request("getPage", session_id, "valid-view"))))
+    assert recovery["response"]["page"] == opened["page"]
+    manager.close_session(session_id, 0)
+
+
 def test_malformed_json_still_returns_a_canonical_envelope() -> None:
     result = json.loads(kernel_agent.dispatch_json("not-json"))
 

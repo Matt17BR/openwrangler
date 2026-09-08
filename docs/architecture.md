@@ -155,6 +155,11 @@ Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only qu
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
 
+The Python decoder validates viewing record shapes, list fields and scalar enums before engine dispatch. Native R
+also distinguishes JSON objects from arrays before list conversion and validates scalar logic and operators. Its
+Filter Rows decoder preserves explicit null logic for rejection. Empty viewing lists and backend-specific operand
+semantics remain valid under their existing contracts.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.

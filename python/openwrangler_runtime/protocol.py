@@ -7,7 +7,7 @@ from typing import Any
 
 from .custom_code_output import redact_diagnostic
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
-from .operations import OperationError, validate_step
+from .operations import COLUMN_TYPES, FILTER_OPERATORS, OperationError, validate_step
 from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
 PROTOCOL_VERSION = 2
@@ -244,16 +244,27 @@ def decode_request(value: Any) -> dict[str, Any]:
         model = _mapping(request["filterModel"], "filterModel")
         if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
             raise ProtocolError("filterModel must contain filters and sort arrays.")
-        _validate_view_filter_text(model)
+        _validate_view_filter_model(model)
         sort_columns: set[str] = set()
         for index, value in enumerate(model["sort"]):
             rule = _mapping(value, f"filterModel.sort[{index}]")
+            if set(rule) != {"column", "direction", "nulls"}:
+                raise ProtocolError(f"filterModel.sort[{index}] must contain exactly column, direction and nulls.")
             column = rule.get("column")
             if not isinstance(column, str) or not column:
                 raise ProtocolError(f"filterModel.sort[{index}].column must be a non-empty string.")
+            if not isinstance(rule["direction"], str) or rule["direction"] not in {"asc", "desc"}:
+                raise ProtocolError(f"filterModel.sort[{index}].direction must be asc or desc.")
+            if not isinstance(rule["nulls"], str) or rule["nulls"] not in {"first", "last"}:
+                raise ProtocolError(f"filterModel.sort[{index}].nulls must be first or last.")
             if column in sort_columns:
                 raise ProtocolError("filterModel.sort contains duplicate columns.")
             sort_columns.add(column)
+    if kind == "getColumnValues":
+        if not isinstance(request["column"], str) or not request["column"]:
+            raise ProtocolError("column must be a non-empty string.")
+        if "search" in request and not isinstance(request["search"], str):
+            raise ProtocolError("search must be a string.")
     if kind == "getSummary" and "columnIds" in request:
         column_ids = request["columnIds"]
         if (
@@ -498,31 +509,75 @@ def _validate_target_request_id(value: Any) -> str:
     return value
 
 
-def _validate_view_filter_text(model: Mapping[str, Any]) -> None:
+def _validate_view_filter_model(model: Mapping[str, Any]) -> None:
+    if set(model) - {"filters", "sort", "logic"}:
+        raise ProtocolError("filterModel contains unknown fields.")
+    if "logic" in model and (not isinstance(model["logic"], str) or model["logic"] not in {"and", "or"}):
+        raise ProtocolError("filterModel.logic must be either 'and' or 'or'.")
     for filter_index, filter_value in enumerate(model["filters"]):
-        if not isinstance(filter_value, Mapping):
+        label = f"filterModel.filters[{filter_index}]"
+        column_filter = _mapping(filter_value, label)
+        fields = set(column_filter)
+        if not {"column", "type", "predicates"} <= fields or fields - {
+            "column",
+            "type",
+            "predicates",
+            "logic",
+            "valueFilter",
+        }:
+            raise ProtocolError(f"{label} has invalid fields.")
+        if not isinstance(column_filter["column"], str) or not column_filter["column"]:
+            raise ProtocolError(f"{label}.column must be a non-empty string.")
+        if not isinstance(column_filter["type"], str) or column_filter["type"] not in COLUMN_TYPES:
+            raise ProtocolError(f"{label}.type is unsupported.")
+        if "logic" in column_filter and (
+            not isinstance(column_filter["logic"], str) or column_filter["logic"] not in {"and", "or"}
+        ):
+            raise ProtocolError(f"{label}.logic must be either 'and' or 'or'.")
+        predicates = column_filter["predicates"]
+        if not isinstance(predicates, list):
+            raise ProtocolError(f"{label}.predicates must be an array.")
+        for predicate_index, predicate_value in enumerate(predicates):
+            predicate_label = f"{label}.predicates[{predicate_index}]"
+            predicate = _mapping(predicate_value, predicate_label)
+            fields = set(predicate)
+            if not {"kind", "operator"} <= fields or fields - {"kind", "operator", "value", "secondValue"}:
+                raise ProtocolError(f"{predicate_label} has invalid fields.")
+            if predicate["kind"] != "predicate":
+                raise ProtocolError(f"{predicate_label}.kind must be predicate.")
+            operator = predicate["operator"]
+            if not isinstance(operator, str) or operator not in FILTER_OPERATORS:
+                raise ProtocolError(f"{predicate_label}.operator is unsupported.")
+            if operator not in {"isNull", "isNotNull", "isNaN", "isNotNaN"} and "value" not in predicate:
+                raise ProtocolError(f"{predicate_label}.value is required.")
+            if operator == "between" and "secondValue" not in predicate:
+                raise ProtocolError(f"{predicate_label}.secondValue is required.")
+            for key in ("value", "secondValue"):
+                if key in predicate:
+                    _validate_view_value_text(predicate[key], f"{predicate_label}.{key}")
+        if "valueFilter" not in column_filter:
             continue
-        predicates = filter_value.get("predicates")
-        if isinstance(predicates, list):
-            for predicate_index, predicate_value in enumerate(predicates):
-                if not isinstance(predicate_value, Mapping):
-                    continue
-                for key in ("value", "secondValue"):
-                    if key in predicate_value:
-                        _validate_view_value_text(
-                            predicate_value[key],
-                            f"filterModel.filters[{filter_index}].predicates[{predicate_index}].{key}",
-                        )
-        value_filter = filter_value.get("valueFilter")
-        if not isinstance(value_filter, Mapping):
-            continue
-        selected_values = value_filter.get("selectedValues")
-        if isinstance(selected_values, list):
-            for value_index, selected_value in enumerate(selected_values):
-                _validate_view_value_text(
-                    selected_value,
-                    f"filterModel.filters[{filter_index}].valueFilter.selectedValues[{value_index}]",
-                )
+        value_filter = _mapping(column_filter["valueFilter"], f"{label}.valueFilter")
+        fields = set(value_filter)
+        if not {"kind", "selectedValues", "includeNulls", "includeNaN"} <= fields or fields - {
+            "kind",
+            "selectedValues",
+            "includeNulls",
+            "includeNaN",
+            "search",
+        }:
+            raise ProtocolError(f"{label}.valueFilter has invalid fields.")
+        if value_filter["kind"] != "values":
+            raise ProtocolError(f"{label}.valueFilter.kind must be values.")
+        selected_values = value_filter["selectedValues"]
+        if not isinstance(selected_values, list):
+            raise ProtocolError(f"{label}.valueFilter.selectedValues must be an array.")
+        if not isinstance(value_filter["includeNulls"], bool) or not isinstance(value_filter["includeNaN"], bool):
+            raise ProtocolError(f"{label}.valueFilter missing-value switches must be booleans.")
+        if "search" in value_filter and not isinstance(value_filter["search"], str):
+            raise ProtocolError(f"{label}.valueFilter.search must be a string.")
+        for value_index, selected_value in enumerate(selected_values):
+            _validate_view_value_text(selected_value, f"{label}.valueFilter.selectedValues[{value_index}]")
 
 
 def _validate_view_value_text(value: Any, label: str) -> None:

@@ -503,7 +503,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   decode_predicates <- function(value, limits, filter_index) {
-    if (!is.list(value) || is.object(value) || length(value) > limits$predicatesPerFilter) {
+    if (!is.list(value) || is.object(value) || !is.null(names(value)) || length(value) > limits$predicatesPerFilter) {
       abort("invalid_request", sprintf("view.filters[%d].predicates must be a bounded array", filter_index))
     }
     lapply(seq_along(value), function(index) {
@@ -518,6 +518,7 @@ openwrangler_r_kernel_agent <- local({
         "equals", "notEquals", "contains", "startsWith", "endsWith", "gt", "gte", "lt", "lte",
         "between", "isNull", "isNotNull", "isNaN", "isNotNaN"
       )
+      predicate$operator <- bounded_text(predicate$operator, paste0(label, ".operator"), 16L)
       if (!identical(predicate$kind, "predicate") || !predicate$operator %in% operators) {
         abort("invalid_request", sprintf("%s has an unsupported operator", label))
       }
@@ -548,6 +549,7 @@ openwrangler_r_kernel_agent <- local({
     if (
       !is.list(filter$selectedValues) ||
         is.object(filter$selectedValues) ||
+        !is.null(names(filter$selectedValues)) ||
         length(filter$selectedValues) > limits$selectedValuesPerFilter
     ) {
       abort("invalid_request", sprintf("%s.selectedValues must be a bounded array", label))
@@ -569,10 +571,11 @@ openwrangler_r_kernel_agent <- local({
 
   decode_view <- function(value, limits) {
     view <- exact_record(value, c("filters", "sorts"), "request.view", optional_fields = "logic")
-    if ("logic" %in% names(view) && !view$logic %in% c("and", "or")) {
-      abort("invalid_request", "request.view.logic is unsupported")
+    if ("logic" %in% names(view)) {
+      view$logic <- bounded_text(view$logic, "request.view.logic", 3L)
+      if (!view$logic %in% c("and", "or")) abort("invalid_request", "request.view.logic is unsupported")
     }
-    if (!is.list(view$filters) || is.object(view$filters) || length(view$filters) > limits$filters) {
+    if (!is.list(view$filters) || is.object(view$filters) || !is.null(names(view$filters)) || length(view$filters) > limits$filters) {
       abort("invalid_request", "request.view.filters must be a bounded array")
     }
     filters <- lapply(seq_along(view$filters), function(index) {
@@ -592,8 +595,9 @@ openwrangler_r_kernel_agent <- local({
       if (!filter$type %in% c("string", "integer", "float", "boolean", "datetime", "date", "duration")) {
         abort("invalid_request", sprintf("%s.type is unsupported", label))
       }
-      if ("logic" %in% names(filter) && !filter$logic %in% c("and", "or")) {
-        abort("invalid_request", sprintf("%s.logic is unsupported", label))
+      if ("logic" %in% names(filter)) {
+        filter$logic <- bounded_text(filter$logic, paste0(label, ".logic"), 3L)
+        if (!filter$logic %in% c("and", "or")) abort("invalid_request", sprintf("%s.logic is unsupported", label))
       }
       filter$predicates <- decode_predicates(filter$predicates, limits, index)
       if ("valueFilter" %in% names(filter)) {
@@ -2499,7 +2503,7 @@ openwrangler_r_kernel_agent <- local({
         optional_fields = "logic"
       )
       view <- list(filters = model$filters, sorts = model$sort)
-      if ("logic" %in% names(model)) view$logic <- model$logic
+      if ("logic" %in% names(model)) view["logic"] <- model["logic"]
       decoded <- decode_view(view, limits)
       filter_ids <- vapply(decoded$filters, function(filter) filter$column$id, character(1L), USE.NAMES = FALSE)
       if (anyDuplicated(filter_ids)) {

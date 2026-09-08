@@ -142,6 +142,11 @@ from `NaN`. Float operands accept the historical `inf` and `-inf` aliases alongs
 bound generated code retains their native infinity values. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
 longer follows that key.
 
+The native request decoder checks array identity and scalar logic/operator types before viewing or draft execution.
+An explicit null logic field remains present until validation rejects it; it cannot become a default AND filter.
+Malformed page input leaves an existing draft available for a later valid apply. Picker search remains a required
+nullable field, while optional value-filter search must be text when present.
+
 Drop Missing Rows treats both `NA` and `NaN` as missing. It can remove rows when any selected column is missing or
 only when all selected columns are missing. Drop Duplicates compares selected columns, or all columns when none are
 specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,

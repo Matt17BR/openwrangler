@@ -335,3 +335,85 @@ rename_open <- dispatch(
 )
 assert_identical(rename_open$kind, "page", "the R rename session did not open")
 rename_nullability <- vapply(rename_open$page$schema, `[[`, logical(1L), "nullable")
+
+# Keep malformed JSON shapes intact until the native decoder sees them.
+local({
+  source <- new.env(parent = emptyenv())
+  source$view_frame <- data.frame(value = c(1, NA, 3))
+  before <- serialize(source$view_frame, NULL)
+  boundary_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source)
+  on.exit(boundary_agent$dispose())
+  id <- "92929292-9292-4292-8292-929292929292"
+  send <- function(kind, payload) {
+    request <- list(transportVersion = 14L, requestId = request_id, kind = kind, payload = payload)
+    jsonlite::fromJSON(boundary_agent$dispatch_json(as.character(jsonlite::toJSON(
+      request, auto_unbox = TRUE, digits = 17L, null = "null", na = "null"
+    ))), simplifyVector = FALSE)
+  }
+  window <- function(view = '{"filters":[],"sorts":[]}') {
+    list(rowOffset = 0L, rowLimit = 3L, columnOffset = 0L, columnLimit = 1L,
+         view = jsonlite::fromJSON(view, simplifyVector = FALSE))
+  }
+  opened <- send("openSession", list(sessionId = id, variableName = "view_frame", page = window()))
+  assert_identical(opened$kind, "page", "view-admission source did not open")
+  filter_prefix <- '{"column":{"id":"r:c:0","name":"value"},"type":"float",'
+  malformed_views <- c(
+    '{"filters":{},"sorts":[]}',
+    '{"filters":[],"sorts":[],"logic":null}',
+    '{"filters":[],"sorts":[],"logic":[]}',
+    '{"filters":[],"sorts":[],"logic":{}}',
+    paste0('{"filters":[', filter_prefix, '"predicates":{}}],"sorts":[]}'),
+    paste0('{"filters":[', filter_prefix, '"predicates":[],"logic":null}],"sorts":[]}'),
+    paste0('{"filters":[', filter_prefix, '"predicates":[],"logic":[]}],"sorts":[]}'),
+    paste0('{"filters":[', filter_prefix, '"predicates":[],"valueFilter":',
+           '{"kind":"values","selectedValues":{},"includeNulls":false,"includeNaN":false}}],"sorts":[]}')
+  )
+  for (operator in c("null", "[]", "{}", '["gte"]')) {
+    malformed_views <- c(malformed_views, paste0('{"filters":[', filter_prefix,
+      '"predicates":[{"kind":"predicate","operator":', operator, ',"value":1}]}],"sorts":[]}'))
+  }
+  for (view in malformed_views) {
+    result <- send("getPage", list(sessionId = id, page = window(view)))
+    assert_identical(result$kind, "error", "malformed R view was accepted")
+    assert_identical(result$code, "invalid_request", "malformed R view escaped structural admission")
+    assert_identical(result$requestId, request_id, "malformed R view lost correlation")
+  }
+  for (view in malformed_views[c(1L, 2L, 5L, 8L)]) {
+    model <- window(view)$view
+    names(model)[names(model) == "sorts"] <- "sort"
+    result <- send("previewStep", list(sessionId = id, revision = 0L,
+      step = list(id = "invalid-filter", kind = "filterRows", params = list(filterModel = model)), page = window()))
+    assert_identical(result$code, "invalid_request", "malformed FilterRows model published a draft")
+  }
+  for (search in list(NULL, "")) {
+    result <- send("getColumnValues", list(sessionId = id, column = list(id = "r:c:0", name = "value"),
+      view = window()$view, search = search, limit = 3L))
+    assert_identical(result$kind, "columnValues", "R nullable picker search changed")
+  }
+  recovered <- send("getPage", list(sessionId = id, page = window()))
+  assert_identical(recovered$page, opened$page, "malformed views changed the confirmed R source page")
+
+  valid_view <- paste0('{"filters":[', filter_prefix,
+    '"predicates":[{"kind":"predicate","operator":"equals","value":3}]}],"sorts":[]}')
+  model <- window(valid_view)$view
+  names(model)[names(model) == "sorts"] <- "sort"
+  preview <- send("previewStep", list(sessionId = id, revision = 0L,
+    step = list(id = "valid-filter", kind = "filterRows", params = list(filterModel = model)), page = window()))
+  assert_identical(preview$kind, "stepPreview", "valid FilterRows did not recover after malformed requests")
+  assert_identical(preview$revision, 1L, "malformed requests advanced the R revision")
+  failed_apply <- send("applyDraft", list(sessionId = id, revision = 1L, page = window(malformed_views[[5L]])))
+  assert_identical(failed_apply$code, "invalid_request", "malformed apply page was accepted")
+  assert_identical(failed_apply$requestId, request_id, "malformed apply lost correlation")
+  applied <- send("applyDraft", list(sessionId = id, revision = 1L, page = window()))
+  assert_identical(applied$kind, "planUpdated", "malformed apply consumed the retained draft")
+  assert_identical(applied$revision, 2L, "malformed apply advanced the revision")
+  assert_identical(applied$page, preview$page, "valid apply changed the retained draft rows or metadata")
+  generated <- new.env(parent = globalenv())
+  generated$view_frame <- source$view_frame
+  eval(parse(text = applied$code), envir = generated)
+  assert_identical(generated$open_wrangler_result, source$view_frame[3L, , drop = FALSE],
+    "generated FilterRows disagrees after malformed apply recovery")
+  assert_identical(serialize(source$view_frame, NULL), before, "view admission changed the R source")
+  closed <- send("closeSession", list(sessionId = id))
+  assert_identical(closed$kind, "closed", "view-admission session did not close")
+})
