@@ -21,7 +21,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Fixed
 
 - Native R Drop Duplicates and dataset duplicate counts distinguish exact integer64 keys. All three keep modes
-  retain the correct original rows, including when other columns participate in the comparison.
+  retain the correct original rows, including both supported signed extrema and when other columns participate in the comparison.
+  Data tables also compare selected columns correctly when their labels repeat.
 - DuckDB Drop Duplicates preserves negative zero in retained floating values, including LIST and STRUCT keys,
   in live and generated results.
 - Python runtime errors exclude late stderr from a retired process while keeping that text in the output history.

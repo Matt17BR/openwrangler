@@ -431,9 +431,12 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
-Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. Base dataframes and
-tibbles use temporary decimal text keys; data tables retain their native comparison. Original values and metadata
-remain intact, and generated row reduction uses the same rule.
+Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. All three frame flavors
+use temporary decimal text keys, including for the two supported signed extrema. A data.table comparison remains a data.table
+so other columns retain their native equality and configured numeric rounding. Original values and metadata remain
+intact, and generated row reduction uses the same rule.
+Repeated column labels become unique only in the isolated comparison table, so selected column identities cannot
+collapse to the first matching name.
 
 Native R response encoding stays inside the correlated request error boundary. Oversized ASCII string expansion is
 refused before assembling the escaped response, and the final serialized output retains its complete transport cap.
