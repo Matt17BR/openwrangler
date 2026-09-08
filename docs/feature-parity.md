@@ -50,6 +50,9 @@ Open Wrangler targets desktop VS Code and editors based on it. Release-candidate
 VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
 cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
 
+A failed Python viewing page retains the last confirmed query, so later Apply and Discard do not use an unseen
+filter. Spark also retains the prior view's continuation anchors when a replacement page fails.
+
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed

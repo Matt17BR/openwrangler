@@ -19,6 +19,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   longer leave a changed viewing query or terminate the standalone runtime.
 - Python and native R reject malformed viewing structures before execution. Native R no longer accepts malformed
   filter arrays or null logic as an empty or default-AND Filter Rows draft.
+- Failed viewing pages preserve the last confirmed Python query, so later Apply and Discard do not use an unseen
+  filter. Spark retains the prior view's page continuation after a rejected replacement.
 - Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
   no longer copies source text into framing errors or starts cleanup before the originating execution settles.
 - Python notebook-open preflight bounds retained text and error diagnostics before runtime dispatch, including noisy

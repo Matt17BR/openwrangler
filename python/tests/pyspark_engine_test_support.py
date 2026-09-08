@@ -177,6 +177,7 @@ class _FailureClassifyingSession:
         self.page_cache = {"confirmed": object()}
         self.page_cache_bytes = 128
         self.disposed = False
+        self.access = SessionRequestAdmission()
 
     def clear_page_cache(self) -> None:
         self.page_cache.clear()

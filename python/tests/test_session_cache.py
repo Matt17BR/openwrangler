@@ -387,6 +387,39 @@ def test_page_cache_never_retains_a_single_oversized_block(tmp_path, monkeypatch
     assert session.page_cache_bytes == 0
 
 
+@pytest.mark.parametrize("fault", [float("nan"), "x" * 8_192], ids=["nonfinite", "oversized"])
+@pytest.mark.parametrize("change_view", [False, True], ids=["cache-hit", "changed-view"])
+def test_failed_complete_page_metadata_preserves_view_and_cache(tmp_path, monkeypatch, fault, change_view) -> None:
+    manager, _created = counting_manager()
+    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+    old_frame = session.filtered
+    old_model = session.filter_model
+    old_cache = session.page_cache
+    old_cached = list(old_cache.items())
+    old_bytes = session.page_cache_bytes
+    old_generation = session.view_generation
+    old_epoch = session.view_change_epoch
+    metadata = manager._metadata
+    monkeypatch.setattr(manager, "_metadata", lambda active: {**metadata(active), "fault": fault})
+    monkeypatch.setattr(session_runtime, "MAX_RESPONSE_FRAME_BYTES", 4_096)
+    try:
+        with pytest.raises(ResponsePayloadError):
+            manager.get_page(session_id, 0, 0, 1, greater_than(0) if change_view else old_model)
+        assert session.filtered is old_frame
+        assert session.filter_model is old_model
+        assert session.page_cache is old_cache
+        assert list(old_cache.items()) == old_cached
+        assert all(old_cache[key] is payload for key, payload in old_cached)
+        assert session.page_cache_bytes == old_bytes
+        assert session.view_generation == old_generation
+        assert session.view_change_epoch == old_epoch
+    finally:
+        manager.close_all()
+
+
 def test_strict_page_payload_rejection_happens_before_cache_insertion(tmp_path, monkeypatch) -> None:
     manager, created = counting_manager()
     opened = manager.open_session(source(write_wide_unicode_values(tmp_path, rows=2)), backend="pandas", page_size=1)
@@ -961,10 +994,18 @@ def test_lazy_read_failure_rechecks_source_and_clears_cached_pages(tmp_path) -> 
     session = manager.sessions[session_id]
     assert session.page_cache
 
+    old_filtered = session.filtered
+    old_model = session.filter_model
+    old_generation = session.view_generation
+    old_epoch = session.view_change_epoch
     with pytest.raises(EngineError, match=r"changed or is no longer available.*Reopen") as raised:
-        manager.get_page(session_id, 0, 2, 2, {"filters": [], "sort": []})
+        manager.get_page(session_id, 0, 0, 2, greater_than(0))
 
     assert isinstance(raised.value.__cause__, RuntimeError)
     assert session.page_cache == {}
     assert session.page_cache_bytes == 0
+    assert session.filtered is old_filtered
+    assert session.filter_model is old_model
+    assert session.view_generation == old_generation
+    assert session.view_change_epoch == old_epoch
     manager.close_session(session_id, 0)

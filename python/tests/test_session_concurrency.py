@@ -1,18 +1,142 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 import pytest
 
+from openwrangler_runtime import server
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PolarsEngine
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import PySparkConnectStateLostError, SessionManager
 from openwrangler_runtime.session_access import SessionRequestAdmission
 
 CONCURRENCY_COMPLETION_TIMEOUT_SECONDS = 5
+
+
+def test_invalidation_is_reentrant_with_a_queued_writer_and_active_profile() -> None:
+    # A regressed admission wait would deadlock both threads. Keep that failure
+    # bounded in an owned subprocess rather than leaving a test worker blocked.
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            dedent("""
+            import threading
+            from openwrangler_runtime.session_access import SessionRequestAdmission
+
+            admission = SessionRequestAdmission()
+            entered = threading.Event()
+            def writer():
+                with admission.exclusive():
+                    entered.set()
+
+            with admission.shared(), admission.profile(object, lambda: None):
+                worker = threading.Thread(target=writer)
+                worker.start()
+                with admission._admission_condition:
+                    assert admission._admission_condition.wait_for(
+                        lambda: admission._waiting_writers == 1, timeout=2
+                    )
+                with admission.invalidation():
+                    assert not entered.is_set()
+            worker.join(timeout=2)
+            assert not worker.is_alive()
+            assert entered.is_set()
+        """),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS,
+    )
+
+
+def test_late_profile_state_loss_cannot_republish_invalidated_page_cache(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "profile-state-loss.csv"
+    path.write_text("value\n1\n2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session({"kind": "file", "path": str(path)}, backend="pandas", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    classifying = threading.Event()
+    release_classifier = threading.Event()
+
+    class RemoteStateLoss(EngineError):
+        pass
+
+    def fail_profile(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RemoteStateLoss("Synthetic remote state loss")
+
+    def classify(error: Exception) -> str | None:
+        if not isinstance(error, RemoteStateLoss):
+            return None
+        classifying.set()
+        assert release_classifier.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
+        return "state_lost"
+
+    monkeypatch.setattr(session.engine, "summaries", fail_profile)
+    monkeypatch.setattr(session.engine, "classify_request_failure", classify)
+    model = {"filters": [], "sort": []}
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            profile = executor.submit(
+                server.dispatch,
+                manager,
+                {
+                    "kind": "getSummary",
+                    "sessionId": session_id,
+                    "revision": 0,
+                    "viewRequestId": "failed-profile",
+                    "filterModel": model,
+                },
+                "profile-state-loss",
+            )
+            try:
+                assert classifying.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
+                metadata = manager._metadata
+
+                def page_metadata(active: Any) -> dict[str, Any]:
+                    result = metadata(active)
+                    release_classifier.set()
+                    # The profile lease has ended, but its classified invalidation
+                    # must wait for this page's complete publication boundary.
+                    with pytest.raises(TimeoutError):
+                        profile.result(timeout=0.05)
+                    return result
+
+                with monkeypatch.context() as pending_page:
+                    pending_page.setattr(manager, "_metadata", page_metadata)
+                    page = server.dispatch(
+                        manager,
+                        {
+                            "kind": "getPage",
+                            "sessionId": session_id,
+                            "revision": 0,
+                            "viewRequestId": "cached-page",
+                            "offset": 0,
+                            "limit": 1,
+                            "columnOffset": 0,
+                            "columnLimit": 64,
+                            "filterModel": model,
+                        },
+                        "page-state-loss",
+                    )
+                assert page["page"] is opened["page"]
+                with pytest.raises(PySparkConnectStateLostError):
+                    profile.result(timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
+                assert session.page_cache == {}
+                assert session.page_cache_bytes == 0
+                assert session.filter_model == {**model, "logic": "and"}
+            finally:
+                release_classifier.set()
+    finally:
+        manager.close_all()
 
 
 def test_foreground_page_overtakes_active_profile_while_mutation_waits(tmp_path: Path) -> None:

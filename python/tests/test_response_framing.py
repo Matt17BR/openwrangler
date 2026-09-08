@@ -298,7 +298,7 @@ def test_response_payload_error_maps_to_a_correlated_recoverable_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class PayloadErrorManager(_PassthroughRequestScope):
-        def get_page(self, *_args: Any) -> dict[str, Any]:
+        def get_page(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise server.ResponsePayloadError(
                 "The requested page exceeds the strict response payload limit.",
                 "response_too_large",

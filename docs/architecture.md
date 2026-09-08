@@ -109,6 +109,16 @@ triggers bounded cleanup; it does not claim that user-owned kernel work was inte
 dataset-statistics reads may recover once after a lost runtime when the view is still current. Mutation retry rules do
 not change, and concurrent recovery shares one replacement per runtime owner.
 
+Python page reads stage the viewing query, shapes and bounded cache under the existing foreground-read lock. The
+previous view remains authoritative until page construction, metadata, source validation and the owning engine's
+request scope succeed. Public page responses are checked with their real correlation fields before committing the
+candidate view. This preserves the separate page and complete-frame size limits. Failure preserves the previous
+query, epoch and frame identities; a changed or lost source still invalidates cached data.
+Cache invalidation uses the same reentrant state lock, so a late background failure cannot have its invalidated
+blocks restored by a foreground candidate. It does not join request admission or wait for profiling leases.
+Spark owns a page-only scope for its continuation anchors. A rejected candidate therefore cannot prevent the prior
+view from continuing after a cached page, and background profile failure cannot roll back newer foreground paging.
+
 Mutation state crosses the runtime and webview boundary atomically. Preview, apply, discard, undo, import replacement,
 and recovery either publish a complete confirmed snapshot or restore the prior revision, plan, draft, metadata, page
 cache, code, selected column, and profiling ownership. No layer constructs a plausible partial result after an

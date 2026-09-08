@@ -101,6 +101,72 @@ def session_state(session: Session) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("action", ["apply_draft", "discard_draft"])
+def test_failed_native_view_page_retains_the_confirmed_draft(action: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import pandas as pd
+
+    import __main__
+
+    nested: Any = 0
+    for _ in range(65):
+        nested = [nested]
+    frame = pd.DataFrame({"safe": [1, 2], "value": pd.Series(["visible", nested], dtype=object)})
+    frame.index = pd.Index(["same", "same"], name="source rows")
+    frame.attrs = {"source": "retained"}
+    original = frame.copy(deep=True)
+    monkeypatch.setattr(__main__, "page_transaction_frame", frame, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "page_transaction_frame", "label": "frame"},
+            backend="pandas",
+            mode="editing",
+            page_size=1,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        manager.preview_step(
+            session_id,
+            0,
+            {
+                "id": "rename",
+                "kind": "renameColumn",
+                "params": {"column": {"id": "c:source:1", "name": "value"}, "newName": "renamed"},
+            },
+            0,
+            1,
+        )
+        session = manager.sessions[session_id]
+        before = session_state(session)
+        cache = session.page_cache
+        cached_payloads = [entry.payload for entry in cache.values()]
+        history = session.plan_input_schemas
+        invalid_page_view = {
+            "filters": [
+                {
+                    "column": "safe",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}],
+                }
+            ],
+            "sort": [],
+        }
+        with pytest.raises(ResponsePayloadError, match="encountered depth 65"):
+            manager.get_page(session_id, 1, 0, 1, invalid_page_view)
+
+        assert session_state(session) == before
+        assert session.page_cache is cache
+        assert all(entry.payload is payload for entry, payload in zip(cache.values(), cached_payloads, strict=True))
+        assert session.plan_input_schemas is history
+        result = getattr(manager, action)(session_id, 1, 0, 1)
+        assert result["kind"] == "planUpdated"
+        assert result["revision"] == 2
+        assert result["page"]["totalRows"] == 2
+        pd.testing.assert_frame_equal(frame, original)
+        assert frame.attrs == original.attrs
+    finally:
+        manager.close_all()
+
+
 def fail_after_response_page(
     monkeypatch: pytest.MonkeyPatch,
     manager: SessionManager,

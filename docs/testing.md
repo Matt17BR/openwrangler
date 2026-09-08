@@ -160,6 +160,12 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
 `python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
 
+Python page-publication tests cover native materialization refusal, metadata and correlated-envelope failure,
+source invalidation, request-scope exit, profile leases and exact row-count discovery. Spark continuation controls
+retain the old view's anchors through a rejected replacement page, including a cached first block followed by a
+native continuation. Accepted pages retain the existing page and complete-frame allowances.
+Late background invalidation is serialized with page publication, including reentrant cleanup with a queued writer.
+
 `python/tests/test_formula_literals.py` owns the shared Python Formula scalar boundary, actual file-session
 preview/apply/replay and standalone generated execution across the editing engines. The Polars owner covers native
 capacity, signedness changes, nulls, eager/lazy frames and ordinary numeric controls. Existing operation-form,
