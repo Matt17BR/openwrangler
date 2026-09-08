@@ -30,6 +30,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Changing operations clears validation errors from the previous form.
 - DuckDB evaluates cleaning results before accepting a step, catching errors outside the visible rows or columns.
   Generated programs also check each intermediate result before continuing.
+- Native R medians and midpoint interpolation preserve tiny numeric results in live and generated cleaning code.
+  They use R's native mean while retaining finite-overflow protection and existing equal-value behavior.
 - Staged viewing sorts discard rules whose column was renamed, removed or replaced, avoiding stale sort targets.
 - Undo closes the editor for a removed cleaning step, preventing Preview from submitting a deleted step ID.
 - Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.

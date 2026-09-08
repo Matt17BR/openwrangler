@@ -186,7 +186,7 @@ at least one key and appends a fresh logical column with no missing flags. It pr
 identities, element names, row labels and compatible data-table keys. Capture validates the derived logical output
 separately from its selected input types; generated append behavior preserves the same metadata.
 
-Fill Missing Values offers a typed value, an exact numeric median, the mean of a double column, or the most common
+Fill Missing Values offers a typed value, a numeric median, the mean of a double column, or the most common
 non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
 columns and takes the first present value from each row. Directional fills use an explicit stable sort, restore the
 original row order, and optionally leave missing runs above a chosen length untouched. Median, mean, and most common
@@ -194,8 +194,11 @@ value can also be calculated within selected groups. All-missing groups stay mis
 values tie for most common. Automatic methods ignore `NA` and `NaN`. Double columns can use linear interpolation
 along an ordinary numeric, `Date`, or `POSIXct` coordinate. The coordinate must be complete, finite, and unique;
 `integer64` coordinates are rejected. Factors, ordered factors, `integer64`, dates, and datetimes stay in their native
-R types. Live and generated median calculations share the same floating-point midpoint function, including
-subnormal values and extreme finite values.
+R types. Live and generated medians and interpolation at the midpoint share the same two-value calculation.
+Unequal finite doubles use `base::mean.default`, avoiding both early underflow and user-defined S3 mean methods.
+Equal values retain their original signed zero; existing non-finite and exact integer64 rules remain unchanged.
+Interpolation at other weights can still round tiny intermediate values too early; this is tracked in
+[#1064](https://github.com/Matt17BR/openwrangler/issues/1064).
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
 Standalone generated Fill code includes only the helper families used by the cleaning plan. Mixed steps retain

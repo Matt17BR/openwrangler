@@ -6388,7 +6388,7 @@ openwrangler_r_kernel_agent <- local({
         "        .ow_coordinate_value <- .ow_coordinate_values[[.ow_rows[[.ow_index]]]]",
         "        .ow_weight <- if (.ow_scaled) (.ow_coordinate_value / .ow_coordinate_scale - .ow_scaled_left) / .ow_coordinate_width else (.ow_coordinate_value - .ow_left_coordinate) / .ow_coordinate_width",
         "        if (!is.finite(.ow_weight) || .ow_weight <= 0 || .ow_weight >= 1) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
-        "        .ow_interpolated <- if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
+        "        .ow_interpolated <- if (.ow_weight == 0.5) .ow_safe_float_midpoint(.ow_left_value, .ow_right_value) else if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
         "        if (!is.finite(.ow_interpolated)) stop(\"Linear interpolation produced a non-finite value\", call. = FALSE)",
         "        .ow_result_values[[.ow_rows[[.ow_index]]]] <- .ow_interpolated",
         "      }",
