@@ -214,6 +214,12 @@ Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only qu
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
 
+A locally staged sort order binds each rule to its unique column ID, name and semantic type. Schema changes
+permanently retire rules whose owner disappeared, changed or became ineligible, preserving unaffected rule order.
+The panel uses the confirmed model directly when no local difference is staged. An authoritative sort-model
+replacement resets local edits; the existing Clear-column action preserves its explicitly staged sibling rules.
+Confirmed viewing sorts retain their name/type reconciliation policy.
+
 The Python decoder validates viewing record shapes, list fields and scalar enums before engine dispatch. Native R
 also distinguishes JSON objects from arrays before list conversion and validates scalar logic and operators. Its
 Filter Rows decoder preserves explicit null logic for rejection. Empty viewing lists and backend-specific operand

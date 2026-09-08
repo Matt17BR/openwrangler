@@ -60,6 +60,8 @@ successfully saved state, as the storage warning explains.
 The operation catalog search exposes its accessible name before and after entering a query.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
+Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
+Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.
 
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,
