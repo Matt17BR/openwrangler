@@ -153,11 +153,12 @@ describe("PythonBridge cancellation", () => {
   });
 
   it("retries one transient runtime-selection change before an open-session request is dispatched", async () => {
-    const request = openSessionRequest(remoteFileSource());
+    const request = automaticOpenSessionRequest({ ...remoteFileSource(), importOptions: { encoding: "utf-16le" } });
+    const preparedRequest = { ...request, backend: "pandas" as const };
     const prepare = vi
       .fn<(request: OpenWranglerRequest) => Promise<OpenWranglerRequest | ErrorResponse>>()
       .mockRejectedValueOnce(new pythonEnvironment.PythonEnvironmentResolutionSupersededError())
-      .mockResolvedValueOnce(request);
+      .mockResolvedValueOnce(preparedRequest);
     const harness = createHarness(prepare);
 
     const response = harness.bridge.request(request);
@@ -166,9 +167,12 @@ describe("PythonBridge cancellation", () => {
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(harness.ensureProcess).toHaveBeenCalledOnce();
     const dispatched = harness.writes()[0]!;
-    expect(dispatched.request).toEqual(request);
-    harness.respond(dispatched.requestId, openedFor(request, "session"));
+    const opened = openedFor(preparedRequest, "session");
+    opened.metadata.rowAxis = { kind: "positional", levelNames: [] };
+    harness.respond(dispatched.requestId, opened);
     await expect(response).resolves.toMatchObject({ kind: "sessionOpened" });
+    expect(harness.writes()).toHaveLength(1);
+    expect(dispatched.request).toEqual(preparedRequest);
   });
 
   it("bounds pre-dispatch open-session recovery to one retry when runtime selection keeps changing", async () => {
