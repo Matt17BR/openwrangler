@@ -6978,7 +6978,14 @@ async function exercisePackagedPlatformSmoke(
       installedExtension.evaluateAll((rows) => {
         const row = rows.length === 1 ? rows[0] : undefined;
         const icons = row?.querySelectorAll(".extension-icon > img.icon");
-        const icon = icons?.length === 1 ? icons[0] : undefined;
+        const icon = (icons?.length === 1 ? icons[0] : undefined) as
+          | (NonNullable<typeof row> & {
+              complete: boolean;
+              naturalWidth: number;
+              src: string;
+              currentSrc: string;
+            })
+          | undefined;
         const bounds = icon?.getBoundingClientRect();
         const style = icon && icon.ownerDocument.defaultView?.getComputedStyle(icon);
         return {
