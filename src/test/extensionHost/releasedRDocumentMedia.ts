@@ -142,6 +142,7 @@ export function createReleasedRDocumentMedia(dependencies: ReleasedRDocumentMedi
         preview: false,
         viewColumn: vscode.ViewColumn.One
       });
+      await vscode.commands.executeCommand("workbench.action.evenEditorWidths");
       const dataLine = document
         .getText()
         .split("\n")
