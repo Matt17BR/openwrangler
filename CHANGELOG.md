@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- DuckDB Formula rejects lossy results when mixing signed and unsigned integer types in addition, subtraction,
+  multiplication and modulo. Correct native results retain their types, with matching generated code.
 - Pandas Formula rejects integer wraparound and lossy promotion in addition, subtraction, multiplication and
   nonnegative integer powers. Correct native results retain their types, with matching generated code.
 - Changing operations clears validation errors from the previous form.

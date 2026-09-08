@@ -576,6 +576,83 @@ def test_duckdb_result_error_outside_the_page_preserves_state_and_allows_correct
         manager.close_all()
 
 
+@pytest.mark.parametrize(("operator", "right"), [("add", 1), ("subtract", 2**100), ("multiply", 1), ("modulo", 2)])
+def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_correction(
+    tmp_path: Path, operator: str, right: int
+) -> None:
+    import duckdb
+
+    from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
+
+    path = tmp_path / "integer-formula.csv"
+    source_bytes = ("ow\n" + "".join(f"{index}\n" for index in range(202))).encode()
+    path.write_bytes(source_bytes)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="duckdb", page_size=200)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        assert isinstance(session.engine, DuckDBEngine)
+        prepare = custom_step(
+            "native-integers",
+            "result = df.project(\"*, CASE WHEN ow=201 THEN '"
+            + str(2**100 + 1)
+            + "'::HUGEINT ELSE 0::HUGEINT END AS lhs, '"
+            + str(right)
+            + "'::UHUGEINT AS rhs\")",
+        )
+        preview = manager.preview_step(sid, session.revision, prepare, 0, 200)
+        confirmed = manager.apply_draft(sid, preview["revision"], 0, 200)
+        columns = [{"id": item["id"], "name": item["name"]} for item in confirmed["metadata"]["schema"]]
+        future = {"id": "future", "kind": "cloneColumn", "params": {"column": columns[0], "newName": "future"}}
+        preview = manager.preview_step(sid, session.revision, future, 0, 200)
+        manager.apply_draft(sid, preview["revision"], 0, 200)
+        manager.undo_step(sid, session.revision, 0, 200)
+        before = session_state(session)
+        original_rows = session.engine._terminal_rows(session.original, "SELECT * FROM ow")
+        committed_rows = session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs FROM ow")
+        invalid = {
+            "id": "hidden-inexact",
+            "kind": "formula",
+            "params": {"leftColumn": columns[1], "rightColumn": columns[2], "operator": operator, "newColumn": "bad"},
+        }
+        # Both the offending row and the output column are outside the requested page.
+        with pytest.raises(EngineError, match="integer Formula result is not exact"):
+            manager.preview_step(sid, session.revision, invalid, 0, 200, column_limit=3)
+        assert session_state(session) == before
+        assert session.draft_frame is None
+        assert session.undone_steps == [future]
+        assert session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs FROM ow") == committed_rows
+        assert session.engine._terminal_rows(session.original, "SELECT * FROM ow") == original_rows
+        assert path.read_bytes() == source_bytes
+
+        corrected = {
+            "id": "corrected",
+            "kind": "formula",
+            "params": {"leftColumn": columns[1], "operator": "multiply", "value": 0, "newColumn": "result"},
+        }
+        preview = manager.preview_step(sid, session.revision, corrected, 0, 200)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 200)
+        expected = [(*row, 0) for row in committed_rows]
+        assert session.plan == [prepare, corrected]
+        assert not session.undone_steps
+        assert session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs, result FROM ow") == expected
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(path)))
+        assert list(map(str, generated.types)) == ["BIGINT", "HUGEINT", "UHUGEINT", "HUGEINT"]
+        assert generated.fetchall() == expected
+        manager.undo_step(sid, session.revision, 0, 200)
+        redone = manager.redo_step(sid, session.revision, 0, 200)
+        assert redone["action"] == "redo"
+        assert session.plan == [prepare, corrected]
+        assert session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs, result FROM ow") == expected
+        assert session.engine._terminal_rows(session.original, "SELECT * FROM ow") == original_rows
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+
+
 def test_duckdb_unsigned_round_refusal_keeps_the_confirmed_plan(tmp_path: Path) -> None:
     maximum = 2**128 - 1
     path = tmp_path / "unsigned-round.csv"
