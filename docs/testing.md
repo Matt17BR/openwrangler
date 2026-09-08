@@ -148,6 +148,9 @@ apply, and inspection code must preserve complete live results and source frames
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
 
+The existing scalar-categorical kernel case verifies that integer64 One-hot Encode omits unused arithmetic code,
+retains primitive validation, and includes the arithmetic dependencies needed by a later Formula's right operand.
+
 Native R frame tests own exact integer64 duplicate masks and bounded profile counts. The existing row kernel owner
 checks single and composite keys through Preview, Apply, inspection, Undo/Redo and standalone generated execution,
 including original row identities, frame metadata and integer64 helper admission.

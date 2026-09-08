@@ -1485,11 +1485,88 @@ categorical_scalar_apply <- dispatch(
   "applyDraft",
   list(sessionId = categorical_scalar_session_id, revision = 1L, page = page_window())
 )
+assert_identical(
+  intersect(
+    all.names(parse(text = categorical_scalar_apply$code)),
+    paste0(".ow_integer64_", c("from_integer", "to_double", "missing_mask", "binary", "missing", "force_missing"))
+  ),
+  character(),
+  "generated scalar R one-hot code included unused integer64 arithmetic helpers"
+)
 assign("categorical_scalar_frame", source_environment$categorical_scalar_frame, envir = .GlobalEnv)
 eval(parse(text = categorical_scalar_apply$code), envir = .GlobalEnv)
 categorical_scalar_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(categorical_scalar_generated, categorical_scalar_expected, "generated R one-hot code diverged across supported scalar kinds")
 assert_identical(get("categorical_scalar_frame", envir = .GlobalEnv), categorical_scalar_before, "generated scalar R one-hot code mutated its source")
+local({
+  namespace <- asNamespace("bit64")
+  original_plus <- get("C_plus_integer64", envir = namespace, inherits = FALSE)
+  invalid_plus <- original_plus
+  invalid_plus$numParameters <- invalid_plus$numParameters + 1L
+  on.exit({
+    unlockBinding("C_plus_integer64", namespace)
+    assign("C_plus_integer64", original_plus, envir = namespace)
+    lockBinding("C_plus_integer64", namespace)
+  }, add = TRUE)
+  unlockBinding("C_plus_integer64", namespace)
+  assign("C_plus_integer64", invalid_plus, envir = namespace)
+  lockBinding("C_plus_integer64", namespace)
+  generated_environment <- new.env(parent = baseenv())
+  generated_environment$categorical_scalar_frame <- categorical_scalar_before
+  generated_error <- tryCatch({
+    eval(parse(text = categorical_scalar_apply$code), envir = generated_environment)
+    NULL
+  }, error = identity)
+  assert_identical(
+    inherits(generated_error, "error") && grepl("invalid integer64 Formula primitives", conditionMessage(generated_error), fixed = TRUE),
+    TRUE,
+    "generated scalar R one-hot code accepted an invalid unused addition primitive"
+  )
+  assert_identical(exists("open_wrangler_result", envir = generated_environment, inherits = FALSE), FALSE, "invalid categorical primitive validation published a result")
+  assert_identical(generated_environment$categorical_scalar_frame, categorical_scalar_before, "invalid categorical primitive validation mutated its source")
+})
+categorical_formula_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = categorical_scalar_session_id,
+    revision = 2L,
+    step = list(
+      id = "categorical-right-integer64-formula",
+      kind = "formula",
+      params = list(
+        leftColumn = list(id = "r:c:1", name = "whole"),
+        rightColumn = list(id = "r:c:8", name = "wide"),
+        operator = "add",
+        newColumn = "mixed wide sum"
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(categorical_formula_preview$kind, "stepPreview", "R categorical then right-integer64 Formula did not preview")
+categorical_formula_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = categorical_scalar_session_id, revision = 3L, page = page_window())
+)
+assert_identical(categorical_formula_apply$kind, "planUpdated", "R categorical then right-integer64 Formula did not apply")
+eval(parse(text = categorical_formula_apply$code), envir = .GlobalEnv)
+categorical_formula_expected <- categorical_scalar_expected
+categorical_formula_expected[["mixed wide sum"]] <- bit64::as.integer64(c("9007199254740995", "-1", NA, "9007199254740990", "0"))
+categorical_formula_expected_page <- jsonlite::fromJSON(
+  openwrangler_r_frame_contract$encode_page(openwrangler_r_frame_contract$capture_frame(categorical_formula_expected)),
+  simplifyVector = FALSE
+)
+assert_identical(
+  lapply(categorical_formula_apply$page$page$rows, `[[`, "values"),
+  lapply(categorical_formula_expected_page$page$rows, `[[`, "values"),
+  "live R categorical then right-integer64 Formula changed exact values"
+)
+assert_identical(
+  get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE),
+  categorical_formula_expected,
+  "generated R categorical then right-integer64 Formula changed exact values or frame metadata"
+)
+assert_identical(get("categorical_scalar_frame", envir = .GlobalEnv), categorical_scalar_before, "generated mixed R categorical Formula mutated its source")
 assert_generated_categorical_type_drift <- function(changed, label) {
   changed_bytes <- serialize(changed, NULL, version = 3L)
   assign("categorical_scalar_frame", changed, envir = .GlobalEnv)
