@@ -506,6 +506,68 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       expect(zeroColumnParquet.subarray(-4).toString("utf8")).toBe("PAR1");
       expect((await transport.getPage(zeroColumnSession, pageWindow())).shape).toEqual({ rows: 3, columns: 0 });
 
+      expect(zeroColumn.page.schema).toEqual([]);
+      expect(
+        zeroColumn.page.page.rows.map((row) => ({ id: row.id, rowLabel: row.rowLabel, values: row.values }))
+      ).toEqual([
+        { id: "r:r:0", rowLabel: "row-1", values: [] },
+        { id: "r:r:1", rowLabel: "row-2", values: [] },
+        { id: "r:r:2", rowLabel: "row-3", values: [] }
+      ]);
+      const rowStep = { id: "zero-column-rows", kind: "dropMissingRows", params: {} } as const;
+      const rowPreview = await transport.previewStep(zeroColumnSession, 0, rowStep, pageWindow(), []);
+      expect(rowPreview.page).toEqual(zeroColumn.page);
+      const rowApplied = await transport.applyDraft(zeroColumnSession, 1, pageWindow());
+      expect(rowApplied.page).toEqual(zeroColumn.page);
+      const rowInspection = await transport.inspectStep(zeroColumnSession, 2, rowStep.id, pageWindow(), [], []);
+      expect(rowInspection.inputPage).toEqual(zeroColumn.page);
+      expect(rowInspection.outputPage).toEqual(zeroColumn.page);
+      expect(rowInspection.inputSchema).toEqual([]);
+      expect(rowInspection.outputSchema).toEqual([]);
+      expect(rowInspection.code).toBe(rowApplied.code);
+      expect((await transport.undoStep(zeroColumnSession, 2, pageWindow())).page).toEqual(zeroColumn.page);
+
+      const firstColumnStep = {
+        id: "first-column",
+        kind: "customCode",
+        params: { code: 'result <- df\nresult[["created"]] <- seq_len(nrow(df))\n' }
+      } as const;
+      const firstColumn = await transport.previewStep(zeroColumnSession, 3, firstColumnStep, pageWindow(), []);
+      expect(firstColumn.page.schema).toMatchObject([
+        { id: "c:step:first-column:0", name: "created", position: 0, type: "integer", rawType: "integer" }
+      ]);
+      expect(firstColumn.page.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual([
+        ["1"],
+        ["2"],
+        ["3"]
+      ]);
+      expect(firstColumn.page.page.rows.map((row) => row.id)).toEqual(["r:r:3", "r:r:4", "r:r:5"]);
+      const firstApplied = await transport.applyDraft(zeroColumnSession, 4, pageWindow());
+      expect(firstApplied.page).toEqual(firstColumn.page);
+      expect(firstApplied.code).toBe(firstColumn.code);
+      const firstInspection = await transport.inspectStep(
+        zeroColumnSession,
+        5,
+        firstColumnStep.id,
+        pageWindow(),
+        [],
+        firstColumn.page.schema
+      );
+      expect(firstInspection.inputPage).toEqual(zeroColumn.page);
+      expect(firstInspection.outputPage).toEqual(firstColumn.page);
+      expect(firstInspection.inputSchema).toEqual([]);
+      expect(firstInspection.outputSchema).toEqual(firstColumn.page.schema);
+      expect(firstInspection.code).toBe(firstColumn.code);
+      expect((await transport.undoStep(zeroColumnSession, 5, pageWindow())).page).toEqual(zeroColumn.page);
+      const redoneFirstColumn = await transport.redoStep(zeroColumnSession, 6, firstColumnStep, pageWindow(), []);
+      expect(redoneFirstColumn).toEqual({ ...firstColumn, revision: 7 });
+      const reopenedZeroColumnSession = randomUUID();
+      const reopenedZeroColumn = await transport.open("zero_column_frame", pageWindow(), {
+        requestedSessionId: reopenedZeroColumnSession
+      });
+      expect(reopenedZeroColumn.page).toEqual(zeroColumn.page);
+      expect((await transport.undoStep(zeroColumnSession, 7, pageWindow())).page).toEqual(zeroColumn.page);
+
       for (const sessionId of [
         tibbleSession,
         reopenedTibbleSession,
@@ -513,7 +575,8 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
         reopenedTableSession,
         integer64Session,
         reopenedInteger64Session,
-        zeroColumnSession
+        zeroColumnSession,
+        reopenedZeroColumnSession
       ]) {
         await transport.close(sessionId);
       }

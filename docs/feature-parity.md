@@ -216,6 +216,10 @@ columns. Native eager/lazy and executable generated-code regressions cover colli
 
 ## Native R preview
 
+Custom Code can add the first column to a supported zero-column R source without invalidating its session. The step
+supports inspection, Undo and Redo, and generated R accepts the same source. Drop Missing Rows and Drop Duplicates can
+preserve the empty schema; Custom Code results still require at least one column.
+
 Value selections and numeric predicates retain adjacent R doubles and finite extrema in live and generated filtering.
 Typed temporal selections use the same exact numeric payloads. Invalid previews preserve the confirmed result.
 

@@ -7643,7 +7643,7 @@ openwrangler_r_kernel_agent <- local({
       "    base::stop(\"Open Wrangler generated R supports only a base data.frame, tibble, or data.table without subclasses\", call. = FALSE)",
       "  }",
       sprintf(
-        "  .ow_source_column_count <- .ow_storage_length(.ow_source); if (.ow_source_column_count < 1L || .ow_source_column_count > %dL) base::stop(\"Open Wrangler generated R requires between 1 and %d source columns\", call. = FALSE)",
+        "  .ow_source_column_count <- .ow_storage_length(.ow_source); if (.ow_source_column_count > %dL) base::stop(\"Open Wrangler generated R supports at most %d source columns\", call. = FALSE)",
         maximum_columns,
         maximum_columns
       ),

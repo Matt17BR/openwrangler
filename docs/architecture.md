@@ -418,6 +418,9 @@ Opening and editing still preflight the complete encoded reply before publishing
 
 R frame validation accepts native compact zero-row metadata while independently checking column lengths. Live and
 generated input/output validation apply the same rule, so native empty subsets do not become malformed frames.
+Mutation and inspection decoders distinguish a known empty schema from missing host context. They retain exact
+schema, row-identity and diff checks for zero-column sources. Generated code accepts the same sources; the native
+frame and operation boundaries are defined in [ADR 0001](decisions/0001-native-r-runtime.md).
 
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone and Custom Code retain their

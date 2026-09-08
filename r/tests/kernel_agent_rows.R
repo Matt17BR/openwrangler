@@ -43,6 +43,41 @@ row_reduction_step <- function(kind, id, columns, mode = NULL) {
   list(id = id, kind = kind, params = params)
 }
 
+for (zero_column_kind in c("dropMissingRows", "dropDuplicates")) {
+  zero_column_environment <- new.env(parent = baseenv())
+  zero_column_environment$frame <- data.frame(row.names = c("row-a", "row-b", "row-c"))
+  zero_column_before <- serialize(zero_column_environment$frame, NULL, version = 3L)
+  zero_column_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, zero_column_environment)
+  zero_column_session <- "09090909-0909-4909-8909-090909090909"
+  zero_column_open <- dispatch_with(zero_column_agent, "openSession", list(
+    sessionId = zero_column_session, variableName = "frame", page = page_window()
+  ))
+  zero_column_preview <- dispatch_with(zero_column_agent, "previewStep", list(
+    sessionId = zero_column_session,
+    revision = 0L,
+    step = row_reduction_step(zero_column_kind, zero_column_kind),
+    page = page_window()
+  ))
+  assert_identical(zero_column_preview$kind, "stepPreview", paste(zero_column_kind, "did not preview an empty schema"))
+  zero_column_apply <- dispatch_with(zero_column_agent, "applyDraft", list(
+    sessionId = zero_column_session, revision = 1L, page = page_window()
+  ))
+  assert_identical(zero_column_apply$action, "apply", paste(zero_column_kind, "did not apply an empty schema"))
+  assert_identical(zero_column_apply$page, zero_column_open$page, paste(zero_column_kind, "changed empty-schema rows or IDs"))
+  zero_column_generated <- new.env(parent = baseenv())
+  zero_column_generated$frame <- unserialize(zero_column_before)
+  eval(parse(text = zero_column_apply$code), envir = zero_column_generated)
+  assert_identical(
+    zero_column_generated$open_wrangler_result,
+    unserialize(zero_column_before),
+    paste("generated", zero_column_kind, "changed empty-schema shape or row labels")
+  )
+  assert_identical(serialize(zero_column_generated$frame, NULL, version = 3L), zero_column_before, "generated row reduction mutated its source")
+  assert_identical(serialize(zero_column_environment$frame, NULL, version = 3L), zero_column_before, "live row reduction mutated its source")
+  invisible(dispatch_with(zero_column_agent, "closeSession", list(sessionId = zero_column_session)))
+  zero_column_agent$dispose()
+}
+
 source_environment$row_frame <- data.frame(
   duplicate = c("b", "a", "a", "b", NA, "a", "a"),
   duplicate = c(2, 1, 1, 1, 9, NA, NaN),
