@@ -359,7 +359,16 @@ fit within 64-bit capacity at the runtime boundary. Null operands
 produce nulls, and a zero divisor is rejected only where both operands are present. Generated modulo code uses the
 same calculation.
 
-Other Formula arithmetic first keeps any successful native result unchanged. After eligible Arrow coercion failures,
+Formula add, subtract, multiply and nonnegative integer power check ordinary integer results for wraparound and
+lossy floating-point promotion. This covers NumPy, built-in Pandas nullable and Sparse integer columns, integer
+literals and Boolean companions. Validation compares each active integer pair with its actual native result;
+correct results retain their native values and inferred dtype. Power validation bounds exact work by the native
+result's capacity. Sparse validation reads only the selected columns into exact temporary object arrays.
+Missing-power identities, noninteger Sparse fills and Boolean-only operations retain their native behavior.
+Explicit floating-point and Decimal arithmetic, division, negative or fractional powers, modulo and By Example
+keep their existing paths. Live Formula and generated code share the same validation.
+
+Arrow-backed Formula arithmetic first keeps successful native results unchanged. After eligible Arrow coercion failures,
 UInt64 add, subtract, multiply and power may use an exact UInt64 scalar or convert a nonnegative signed 8–64-bit
 companion column. Failed UInt64-left add or subtract also accepts an exact negative integer literal with magnitude
 at most UInt64 maximum, or a signed right column. Nonpositive columns use the opposite checked operation on their

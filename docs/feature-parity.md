@@ -149,6 +149,11 @@ Extended NumPy floating values that would lose precision or range at the display
 refused with an explicit conversion message. Representable values remain supported; exact native CSV export and
 explicit conversion operations keep their existing behavior.
 
+Pandas Formula rejects integer wraparound and lossy floating-point promotion in addition, subtraction, multiplication
+and nonnegative integer powers. NumPy, nullable and Sparse integer columns retain correct native results and types,
+including exact promotions. Generated code applies the same checks to all affected rows, including those outside
+the displayed page.
+
 Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
 generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing
 the confirmed plan. Other Formula arithmetic repairs eligible UInt64 operand-inference failures and widens selected
@@ -156,7 +161,7 @@ Decimal128 operations to Decimal256, retaining native precision and scale. UInt6
 negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. A UInt64 left column
 also accepts signed right columns, including mixed positive and negative adjustments and signed 64-bit minimum,
 when every repaired result fits UInt64. Addition accepts these columns in either order. Missing operands remain missing.
-Existing native successes remain unchanged. Reversed negative-column subtraction, negative multiply/power and widest
+Existing Arrow-native successes remain unchanged. Reversed negative-column subtraction, negative multiply/power and widest
 or negative-scale Decimal capacity gaps remain tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.

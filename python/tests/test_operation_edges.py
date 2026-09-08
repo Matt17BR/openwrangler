@@ -1855,6 +1855,142 @@ def test_pandas_ordinary_modulo_keeps_native_behavior(dtype: str, zero_divisor: 
         pd.testing.assert_series_equal(actual["result"], expected)
 
 
+@pytest.mark.parametrize(
+    ("dtype", "values", "operator", "right_dtype", "right", "expected", "result_dtype"),
+    [
+        ("int8", [127, 0, -128], "add", "int8", [1, 127, -1], None, None),
+        ("Int8", [127, None], "add", None, 1, None, None),
+        ("Int64", [2**63 - 1, None], "add", None, 1, None, None),
+        ("UInt64", [0, None], "subtract", None, 1, None, None),
+        ("int64", [2**62], "multiply", None, 4, None, None),
+        ("Int64", [2**32, None], "power", None, 2, None, None),
+        ("Int64", [-2, -2, None], "power", "Int64", [63, 64, 2], None, None),
+        ("uint8", [255, 0], "add", "bool", [True, False], None, None),
+        (pd.SparseDtype("int8", 0), [127, 0], "add", None, 1, None, None),
+        ("Int64", [-1, 1, None], "add", "UInt64", [2**63 + 1, 2**63, None], None, None),
+        ("UInt64", [2**64 - 1, 2**64 - 1], "subtract", "Int64", [-1, 0], None, None),
+        ("Int64", [1, 2], "multiply", "UInt64", [2**63 + 1, 2**62], None, None),
+        ("Int64", [-2, 3], "power", "UInt64", [3, 34], None, None),
+        ("Int64", [-1], "power", "UInt64", [2**64 - 1], None, None),
+        ("UInt64", [4, 3], "power", "Int64", [-1, 34], None, None),
+        ("Int64", [2], "power", None, 10**9, None, None),
+        ("Int8", [127, -128, None], "add", "Int16", [1, -1, None], [128, -129, None], "Int16"),
+        ("int8", [127, -128], "add", "int8", [-128, 127], [-1, -1], "int8"),
+        ("UInt8", [254, 0, None], "add", "boolean", [True, False, True], [255, 0, None], "UInt8"),
+        ("boolean", [True, False], "multiply", "Int8", [127, None], [127, None], "Int8"),
+        ("boolean", [True, False], "add", "boolean", [True, True], [True, True], "boolean"),
+        (pd.SparseDtype("int8", 0), [126, 0], "add", None, 1, [127, 1], pd.SparseDtype("int8", 1)),
+        ("Int64", [None, 2**63 - 1], "add", "Int64", [1, None], [None, None], "Int64"),
+        ("Int64", [None, None], "multiply", "UInt64", [2**64 - 1, 2**63 + 1], [None, None], "Float64"),
+        ("Int8", [], "add", None, 1, [], "Int8"),
+        ("Int8", [None], "add", None, 1, [None], "Int8"),
+        ("Int64", [1, None, 0], "power", "Int64", [None, 0, 0], [1, 1, 1], "Int64"),
+        ("Int64", [0, 1, -1], "power", None, 10**9, [0, 1, 1], "Int64"),
+        ("Int64", [-2, 2], "power", "Int64", [63, 62], [-(2**63), 2**62], "Int64"),
+        ("Int64", [-1, 2048], "add", "UInt64", [2**63 + 1, 2**63], [2**63, 2**63 + 2048], "Float64"),
+        ("UInt64", [4, None], "power", "Int64", [-1, -1], [0.25, None], "Float64"),
+        ("Int64", [4, None], "power", None, -0.5, [0.5, None], "Float64"),
+        ("Int8", [127, None], "add", None, 1.0, [128.0, None], "Float64"),
+    ],
+)
+def test_pandas_formula_integer_results_retain_native_values_or_refuse(
+    dtype: Any,
+    values: list[Any],
+    operator: str,
+    right_dtype: Any,
+    right: Any,
+    expected: list[Any] | None,
+    result_dtype: Any,
+) -> None:
+    runtime = PandasEngine()
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=dtype)})
+    if right_dtype is not None:
+        frame["other"] = pd.Series(right, dtype=right_dtype)
+    frame.index = pd.Index(["same"] * len(frame), name="source rows")
+    frame.attrs = {"source": "retained"}
+    original = frame.copy(deep=True)
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step(
+            "formula",
+            leftColumn=lineage[0],
+            operator=operator,
+            newColumn="result",
+            **({"rightColumn": lineage[1]} if right_dtype is not None else {"value": right}),
+        ),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for generated in (False, True):
+        if expected is None:
+            with pytest.raises(ValueError if generated else EngineError, match="exact integer result"):
+                execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
+        else:
+            actual = (
+                execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
+            )
+            pd.testing.assert_series_equal(
+                actual["result"],
+                pd.Series(expected, index=frame.index, name="result", dtype=result_dtype),
+                rtol=0,
+                atol=0,
+            )
+            pd.testing.assert_frame_equal(actual.loc[:, original.columns], original)
+        pd.testing.assert_frame_equal(frame, original)
+        assert frame.attrs == original.attrs
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_pandas_formula_sparse_missing_fill_preserves_exact_unsigned_payloads(overflow: bool) -> None:
+    import numpy as np
+
+    runtime = PandasEngine()
+    value = 2**64 - (1 if overflow else 2)
+    array = pd.arrays.SparseArray(np.array([np.nan, value], dtype=object), dtype=pd.SparseDtype("uint64", np.nan))
+    frame = pd.DataFrame({"value": array})
+    original = frame.copy(deep=True)
+    assert int(array.sp_values[0]) == value
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], operator="add", value=1, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for generated in (False, True):
+        if overflow:
+            with pytest.raises(ValueError if generated else EngineError, match="exact integer result"):
+                execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
+        else:
+            actual = (
+                execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
+            )
+            assert actual["result"].dtype == pd.SparseDtype("uint64", np.nan)
+            assert actual["result"].isna().tolist() == [True, False]
+            assert int(actual["result"].array.sp_values[0]) == 2**64 - 1
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "operator", "value", "error"),
+    [("Int64", "power", -1, ValueError), ("int8", "add", 256, OverflowError)],
+)
+def test_pandas_formula_integer_guard_retains_native_refusals(
+    dtype: str, operator: str, value: int, error: type[Exception]
+) -> None:
+    runtime = PandasEngine()
+    frame = pd.DataFrame({"value": pd.Series([2], dtype=dtype)})
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], operator=operator, value=value, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for generated in (False, True):
+        with pytest.raises(error):
+            execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
+
+
 @pytest.mark.parametrize("operator,value", [("add", 1), ("multiply", 2), ("power", 2)])
 def test_pandas_arrow_other_formula_overflow_stays_checked(operator: str, value: int) -> None:
     pa = pytest.importorskip("pyarrow")

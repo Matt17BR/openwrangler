@@ -920,6 +920,79 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         manager.close_all()
 
 
+@pytest.mark.parametrize("promotion", [False, True], ids=["off-page-wrap", "off-page-promotion"])
+def test_pandas_integer_formula_refusal_preserves_draft_history_and_source(tmp_path: Path, promotion: bool) -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame({"value": pd.Series([-1, 1] if promotion else [0, 2**63 - 1], dtype="Int64")})
+    if promotion:
+        frame["other"] = pd.Series([2**63 + 1, 2**63], dtype="UInt64")
+    frame.index = pd.Index(["same", "same"], name="source rows")
+    path = tmp_path / "integer-formula.parquet"
+    frame.to_parquet(path)
+    original_bytes = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=1
+        )
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        original = session.original.copy(deep=True)
+        columns = [{"id": column["id"], "name": column["name"]} for column in opened["metadata"]["schema"]]
+        safe = {
+            "id": "safe",
+            "kind": "formula",
+            "params": {"leftColumn": columns[0], "operator": "multiply", "value": 1, "newColumn": "safe"},
+        }
+        preview = manager.preview_step(session_id, session.revision, safe, 0, 1)
+        manager.apply_draft(session_id, preview["revision"], 0, 1)
+        future = {"id": "future", "kind": "cloneColumn", "params": {"column": columns[0], "newName": "future"}}
+        preview = manager.preview_step(session_id, session.revision, future, 0, 1)
+        manager.apply_draft(session_id, preview["revision"], 0, 1)
+        manager.undo_step(session_id, session.revision, 0, 1)
+        pending = {**safe, "id": "pending", "params": {**safe["params"], "newColumn": "pending"}}
+        preview = manager.preview_step(session_id, session.revision, pending, 0, 1)
+        manager.discard_draft(session_id, preview["revision"], 0, 1)
+        assert session.draft_frame is None
+        prior_committed = session.committed.copy(deep=True)
+        before = session_state(session)
+        invalid = {
+            "id": "hidden-invalid",
+            "kind": "formula",
+            "params": {
+                "leftColumn": columns[0],
+                "operator": "add",
+                "newColumn": "invalid",
+                **({"rightColumn": columns[1]} if promotion else {"value": 1}),
+            },
+        }
+        with pytest.raises(EngineError, match="exact integer result"):
+            manager.preview_step(session_id, session.revision, invalid, 0, 1)
+        assert session_state(session) == before
+        assert session.draft_frame is None
+        pd.testing.assert_frame_equal(session.committed, prior_committed)
+        pd.testing.assert_frame_equal(session.original, original)
+        assert session.undone_steps == [future]
+        corrected = {**safe, "id": "corrected", "params": {**safe["params"], "newColumn": "corrected"}}
+        preview = manager.preview_step(session_id, session.revision, corrected, 0, 1)
+        confirmed = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        assert session.plan == [safe, corrected]
+        expected = original["value"]
+        assert isinstance(expected, pd.Series)
+        pd.testing.assert_series_equal(session.committed["corrected"], expected.rename("corrected"))
+        namespace: dict[str, Any] = {}
+        exec(confirmed["code"], namespace)
+        replayed = namespace["clean_data"](frame)
+        expected_source = frame["value"]
+        assert isinstance(expected_source, pd.Series)
+        pd.testing.assert_series_equal(replayed["corrected"], expected_source.rename("corrected"))
+        pd.testing.assert_frame_equal(session.original, original)
+        assert path.read_bytes() == original_bytes
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize(
     ("keep", "expected_positions"),
     [("first", [0, 2, 4, 5]), ("last", [1, 3, 4, 5]), ("none", [4, 5])],

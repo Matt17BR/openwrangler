@@ -5094,6 +5094,83 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
     raise EngineError(f"Unsupported formula operator: {operator}")
 
 
+def _pandas_validate_integer_formula(left: Any, right: Any, operator: str, result: Any) -> None:
+    from itertools import repeat
+
+    import numpy as np
+    import pandas as pd
+
+    if operator not in {"add", "subtract", "multiply", "power"}:
+        return
+
+    def integer_kind(value: Any) -> str:
+        if not isinstance(value, pd.Series):
+            return ""
+        dtype = value.dtype
+        if isinstance(dtype, pd.SparseDtype):
+            dtype = dtype.subtype
+        elif type(dtype) in (
+            pd.Int8Dtype,
+            pd.Int16Dtype,
+            pd.Int32Dtype,
+            pd.Int64Dtype,
+            pd.UInt8Dtype,
+            pd.UInt16Dtype,
+            pd.UInt32Dtype,
+            pd.UInt64Dtype,
+            pd.BooleanDtype,
+        ):
+            dtype = cast(Any, dtype).numpy_dtype
+        return dtype.kind if isinstance(dtype, np.dtype) and dtype.kind in "biu" and dtype.itemsize <= 8 else ""
+
+    left_kind = integer_kind(left)
+    right_kind = "i" if type(right) is int else integer_kind(right)
+    if not left_kind or not right_kind or left_kind == right_kind == "b":
+        return
+
+    def values(series: Any) -> Any:
+        # Sparse scalar lookup is costly; object conversion of only a selected
+        # array preserves integer payloads and fills without floating coercion.
+        return series.to_numpy(dtype=object) if isinstance(series.dtype, pd.SparseDtype) else series.array
+
+    right_values = values(right) if isinstance(right, pd.Series) else repeat(right, len(left))
+    for left_value, right_value, result_value in zip(values(left), right_values, values(result), strict=True):
+        # Missing pairs and noninteger Sparse fills retain native semantics,
+        # including 1**NA and NA**0. Inspect actual pairs, never independent extrema.
+        if not isinstance(left_value, (Integral, np.bool_)) or not isinstance(right_value, (Integral, np.bool_)):
+            continue
+        first, second = int(left_value), int(right_value)
+        if operator == "power" and second < 0:
+            continue
+        if isinstance(result_value, (Integral, np.bool_)) or (
+            isinstance(result_value, Real) and isfinite(result_value) and result_value == int(cast(Any, result_value))
+        ):
+            actual = int(cast(Any, result_value))
+        else:
+            raise EngineError("Pandas Formula cannot preserve the exact integer result in its native dtype.")
+        if operator == "add":
+            expected = first + second
+        elif operator == "subtract":
+            expected = first - second
+        elif operator == "multiply":
+            expected = first * second
+        elif first == 0:
+            expected = int(second == 0)
+        elif first == 1:
+            expected = 1
+        elif first == -1:
+            expected = -1 if second % 2 else 1
+        else:
+            # |first|**second >= 2**((bit_length(|first|)-1)*second).
+            # Reject outside the actual result's capacity before computing pow.
+            # Any remaining exact power has fewer than twice that many bits.
+            if (abs(first).bit_length() - 1) * second >= abs(actual).bit_length():
+                raise EngineError("Pandas Formula cannot preserve the exact integer result in its native dtype.")
+            expected = first**second
+        if actual != expected:
+            raise EngineError("Pandas Formula cannot preserve the exact integer result in its native dtype.")
+
+
 def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
     import numpy as np
     import pandas as pd
@@ -5101,7 +5178,9 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
     if operator == "modulo" or not any(
         isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)
     ):
-        return _pandas_formula(left, right, operator)
+        result = _pandas_formula(left, right, operator)
+        _pandas_validate_integer_formula(left, right, operator, result)
+        return result
     import pyarrow as pa
 
     try:
@@ -5257,6 +5336,81 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '    raise ValueError(f"Unsupported formula operator: {operator}")',
         "",
         "",
+        "def _open_wrangler_validate_integer_formula(left, right, operator, result):",
+        "    from itertools import repeat",
+        "    from math import isfinite",
+        "    from numbers import Integral, Real",
+        "",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "",
+        '    if operator not in {"add", "subtract", "multiply", "power"}:',
+        "        return",
+        "",
+        "    def integer_kind(value):",
+        "        if not isinstance(value, pd.Series):",
+        '            return ""',
+        "        dtype = value.dtype",
+        "        if isinstance(dtype, pd.SparseDtype):",
+        "            dtype = dtype.subtype",
+        "        elif type(dtype) in (",
+        "            pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype,",
+        "            pd.UInt8Dtype, pd.UInt16Dtype, pd.UInt32Dtype, pd.UInt64Dtype, pd.BooleanDtype,",
+        "        ):",
+        "            dtype = dtype.numpy_dtype",
+        '        return dtype.kind if isinstance(dtype, np.dtype) and dtype.kind in "biu" and '
+        'dtype.itemsize <= 8 else ""',
+        "",
+        "    left_kind = integer_kind(left)",
+        '    right_kind = "i" if type(right) is int else integer_kind(right)',
+        '    if not left_kind or not right_kind or left_kind == right_kind == "b":',
+        "        return",
+        "    def values(series):",
+        "        # Sparse scalar lookup is costly; object conversion of only a selected",
+        "        # array preserves integer payloads and fills without floating coercion.",
+        "        return series.to_numpy(dtype=object) if isinstance(series.dtype, pd.SparseDtype) else series.array",
+        "",
+        "    right_values = values(right) if isinstance(right, pd.Series) else repeat(right, len(left))",
+        "    for left_value, right_value, result_value in zip(values(left), right_values, "
+        "values(result), strict=True):",
+        "        # Missing pairs and noninteger Sparse fills retain native semantics,",
+        "        # including 1**NA and NA**0. Inspect actual pairs, never independent extrema.",
+        "        if not isinstance(left_value, (Integral, np.bool_)) or not "
+        "isinstance(right_value, (Integral, np.bool_)):",
+        "            continue",
+        "        first, second = int(left_value), int(right_value)",
+        '        if operator == "power" and second < 0:',
+        "            continue",
+        "        if isinstance(result_value, (Integral, np.bool_)) or (",
+        "            isinstance(result_value, Real) and isfinite(result_value) and result_value == int(result_value)",
+        "        ):",
+        "            actual = int(result_value)",
+        "        else:",
+        '            raise ValueError("Pandas Formula cannot preserve the exact integer result in its native dtype.")',
+        '        if operator == "add":',
+        "            expected = first + second",
+        '        elif operator == "subtract":',
+        "            expected = first - second",
+        '        elif operator == "multiply":',
+        "            expected = first * second",
+        "        elif first == 0:",
+        "            expected = int(second == 0)",
+        "        elif first == 1:",
+        "            expected = 1",
+        "        elif first == -1:",
+        "            expected = -1 if second % 2 else 1",
+        "        else:",
+        "            # |first|**second >= 2**((bit_length(|first|)-1)*second).",
+        "            # Reject outside the actual result's capacity before computing pow.",
+        "            # Any remaining exact power has fewer than twice that many bits.",
+        "            if (abs(first).bit_length() - 1) * second >= abs(actual).bit_length():",
+        '                raise ValueError("Pandas Formula cannot preserve the exact integer result '
+        'in its native dtype.")',
+        "            expected = first**second",
+        "        if actual != expected:",
+        '            raise ValueError("Pandas Formula cannot preserve the exact integer result in its native dtype.")',
+        "",
+        "",
         "def _open_wrangler_formula_result(left, right, operator):",
         "    import numpy as np",
         "    import pandas as pd",
@@ -5264,7 +5418,9 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "    if not any(",
         '        isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)',
         "    ):",
-        "        return _open_wrangler_formula(left, right, operator)",
+        "        result = _open_wrangler_formula(left, right, operator)",
+        "        _open_wrangler_validate_integer_formula(left, right, operator, result)",
+        "        return result",
         "    import pyarrow as pa",
         "",
         "    try:",

@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Pandas Formula rejects integer wraparound and lossy promotion in addition, subtraction, multiplication and
+  nonnegative integer powers. Correct native results retain their types, with matching generated code.
 - Changing operations clears validation errors from the previous form.
 - Staged viewing sorts discard rules whose column was renamed, removed or replaced, avoiding stale sort targets.
 - Undo closes the editor for a removed cleaning step, preventing Preview from submitting a deleted step ID.
