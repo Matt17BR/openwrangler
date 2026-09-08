@@ -18,6 +18,7 @@ from .protocol import (
     decode_envelope,
     decode_request_payload,
     error_response,
+    request_error_types,
     request_id_for_payload,
     response_envelope,
     response_for_error,
@@ -358,7 +359,7 @@ def main() -> int:
                     response = future.result()
                 except CancelledError:
                     response = {"kind": "cancelled", "targetRequestId": request_id}
-                except Exception as error:
+                except request_error_types() as error:
                     response = response_for_error(error)
             if response.get("kind") in {"error", "cancelled"} and view_request_id:
                 response["viewRequestId"] = view_request_id
@@ -443,7 +444,7 @@ def main() -> int:
                 submitted = True
             except _TerminalTransportError:
                 raise
-            except Exception as error:
+            except request_error_types() as error:
                 response = response_for_error(error)
                 if view_request_id:
                     response["viewRequestId"] = view_request_id

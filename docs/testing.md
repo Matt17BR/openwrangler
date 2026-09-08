@@ -166,6 +166,9 @@ retain cancellation correlation before dispatch, including synchronous listener 
 request leases or treating unstarted work as an ambiguous mutation.
 Bridge and process transport owners exercise actual Writable error events after failed writes. They check request
 rejection, authoritative Python cancellation responses, late retired-stream errors and exact process cleanup.
+The existing Python server-protocol and kernel-agent owners check native panic error correlation, retained state,
+follow-up requests and close. They distinguish the loaded native exception from caller interrupts and changed
+public aliases, and retain optional-import, cancellation and request-registry cleanup controls.
 The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
 before continuing its existing preview, apply and undo assertions.
 
