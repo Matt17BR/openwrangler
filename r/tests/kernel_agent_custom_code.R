@@ -1093,6 +1093,8 @@ custom_agent$dispose()
 
 custom_s3_script <- tempfile(fileext = ".R")
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "arguments <- commandArgs(trailingOnly = TRUE)",
   "source(arguments[[1L]], local = FALSE)",
   "source(arguments[[2L]], local = FALSE)",
@@ -1120,7 +1122,8 @@ writeLines(c(
   "if (!identical(generated_environment$open_wrangler_result, source_frame)) stop('S3-poison generated output changed', call. = FALSE)",
   "if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop('S3-poison Custom Code mutated source', call. = FALSE)",
   "if (!identical(dispatch_count, 0L)) stop('caller S3 poison was dispatched', call. = FALSE)",
-  "agent$dispose()"
+  "agent$dispose()",
+  "}, \"Custom Code S3-isolation child\"))"
 ), custom_s3_script, useBytes = TRUE)
 custom_s3_output <- system2(
   file.path(R.home("bin"), "Rscript"),

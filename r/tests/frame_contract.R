@@ -333,6 +333,8 @@ assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_ca
 
 date_page_s3_script <- tempfile(fileext = ".R")
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "local({",
   "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
   "  calls <- 0L",
@@ -344,7 +346,8 @@ writeLines(c(
   "  if (!identical(calls, 0L)) stop(\"Date page encoding dispatched to a caller is.na.Date method\", call. = FALSE)",
   "  if (!identical(page$page$rows[[1L]]$values[[1L]]$display, \"2026-01-01\") || !identical(page$page$rows[[2L]]$values[[1L]]$kind, \"null\")) stop(\"Date page encoding changed under S3 isolation\", call. = FALSE)",
   "  if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop(\"Date page encoding mutated its source\", call. = FALSE)",
-  "})"
+  "})",
+  "}, \"Date page S3-isolation child\"))"
 ), date_page_s3_script, useBytes = TRUE)
 date_page_s3_output <- system2(
   file.path(R.home("bin"), "Rscript"),
@@ -360,6 +363,8 @@ unlink(date_page_s3_script)
 
 integer64_capture_s3_script <- tempfile(fileext = ".R")
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "local({",
   "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
   "  requireNamespace(\"bit64\", quietly = TRUE)",
@@ -375,7 +380,8 @@ writeLines(c(
   "  raw <- vapply(page$page$rows, function(row) row$values[[2L]]$raw, character(1L))",
   "  if (!identical(raw, c(\"5\", \"6\"))) stop(\"integer64 Formula page changed under S3 isolation\", call. = FALSE)",
   "  if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop(\"integer64 Formula capture mutated its source\", call. = FALSE)",
-  "})"
+  "})",
+  "}, \"integer64 Formula capture S3-isolation child\"))"
 ), integer64_capture_s3_script, useBytes = TRUE)
 integer64_capture_s3_output <- system2(
   file.path(R.home("bin"), "Rscript"),
@@ -2250,6 +2256,8 @@ assert_identical(
 
 bit64_native_substitution_script <- tempfile(fileext = ".R")
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "local({",
   "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
   "  requireNamespace(\"bit64\", quietly = TRUE)",
@@ -2267,7 +2275,8 @@ writeLines(c(
   "  on.exit({ unlockBinding(\"C_as_character_integer64\", namespace); assign(\"C_as_character_integer64\", original_character, envir = namespace); lockBinding(\"C_as_character_integer64\", namespace) }, add = TRUE)",
   "  failed <- inherits(try({ capture <- openwrangler_r_frame_contract$capture_frame(source_frame); openwrangler_r_frame_contract$materialize_page(capture, row_offset = 0L, row_limit = 2L, column_offset = 0L, column_limit = 1L) }, silent = TRUE), \"try-error\")",
   "  if (!failed) stop(\"page materialization accepted a substituted bit64 character primitive\", call. = FALSE)",
-  "})"
+  "})",
+  "}, \"bit64 native substitution child\"))"
 ), bit64_native_substitution_script, useBytes = TRUE)
 bit64_native_substitution_output <- system2(
   file.path(R.home("bin"), "Rscript"),
@@ -2351,6 +2360,8 @@ formula_cold_rds <- tempfile(fileext = ".rds")
 formula_cold_script <- tempfile(fileext = ".R")
 saveRDS(named_wide_formula, formula_cold_rds, version = 3L)
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "local({",
   "  arguments <- commandArgs(trailingOnly = TRUE)",
   "  if (isNamespaceLoaded(\"bit64\")) stop(\"bit64 was already loaded in the cold Formula child\", call. = FALSE)",
@@ -2373,7 +2384,8 @@ writeLines(c(
   "  if (!identical(unname(safe_character(exact$exact)), c(\"9007199254740994\", NA_character_, \"9223372036854775807\")) || !identical(attr(exact$exact, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"cold Formula used poisoned integer64 arithmetic or lost names\", call. = FALSE)",
   "  widened <- openwrangler_r_frame_contract$formula_column_at(source_frame, 1L, \"value\", \"divide\", \"widened\", right_value = 2L)",
   "  if (!identical(unname(widened$widened), c(4503599627370496, NA_real_, 4611686018427387904)) || !identical(attr(widened$widened, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"cold Formula used poisoned integer64 conversion or lost names\", call. = FALSE)",
-  "})"
+  "})",
+  "}, \"cold integer64 Formula child\"))"
 ), formula_cold_script, useBytes = TRUE)
 formula_cold_output <- system2(
   file.path(R.home("bin"), "Rscript"),
@@ -8531,6 +8543,8 @@ assert_error(
 
 categorical_s3_script <- tempfile(fileext = ".R")
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
   "invisible(compiler::enableJIT(0L))",
   "invisible(loadNamespace('data.table'))",
@@ -8616,7 +8630,8 @@ writeLines(c(
   "if (typeof(attr(table_hot$value, '.internal.selfref', exact = TRUE)) != 'externalptr') stop('hot self-reference invalid', call. = FALSE)",
   "if (typeof(attr(table_labels$value, '.internal.selfref', exact = TRUE)) != 'externalptr') stop('label self-reference invalid', call. = FALSE)",
   "if (!identical(serialize(table_source, NULL, version = 3L), table_before)) stop('data.table source bytes changed', call. = FALSE)",
-  "if (!identical(metadata_calls, 0L)) stop('caller AsIs metadata method was dispatched', call. = FALSE)"
+  "if (!identical(metadata_calls, 0L)) stop('caller AsIs metadata method was dispatched', call. = FALSE)",
+  "}, \"categorical S3-isolation child\"))"
 ), categorical_s3_script, useBytes = TRUE)
 categorical_s3_output <- system2(
   file.path(R.home("bin"), "Rscript"),
