@@ -196,6 +196,33 @@ async function executeDiscovery(kernel: Kernel, notebook: vscode.NotebookDocumen
   return withKernelTimeout(completion, DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS, () => undefined);
 }
 
+export async function executePySparkNotebookPreflight(
+  kernel: Kernel,
+  notebook: vscode.NotebookDocument,
+  variableName: string,
+  expectedBackend: DataBackend | undefined
+): Promise<PySparkNotebookPreflight> {
+  const marker = randomUUID().replaceAll("-", "");
+  const tokenSource = new vscode.CancellationTokenSource();
+  const message = "Open Wrangler could not verify PySpark in the selected notebook kernel.";
+  try {
+    assertNotebookProvenance(notebook);
+    // The bridge owns the host deadline. Its detachment must not interrupt
+    // unrelated kernel work or dispose this execution's token before settlement.
+    const output = kernel.executeCode(
+      buildPySparkNotebookPreflightCode(marker, variableName, expectedBackend),
+      tokenSource.token
+    );
+    const text = await collectBoundedKernelText(output, notebook, message);
+    return parsePySparkNotebookPreflightOutput(text, marker);
+  } catch (error) {
+    if (error instanceof NotebookVariableDiscoveryError) throw error;
+    throw new PySparkNotebookPreflightError(message);
+  } finally {
+    tokenSource.dispose();
+  }
+}
+
 async function collectBoundedKernelText(
   output: ReturnType<Kernel["executeCode"]>,
   notebook: vscode.NotebookDocument,
@@ -242,11 +269,15 @@ async function collectBoundedKernelText(
               throw new NotebookVariableDiscoveryError(kernelErrorMessage);
             }
             if (!isKernelTextMime(item.mime)) continue;
-            bytes += item.data.byteLength;
+            if (item.data.byteLength > MAX_DISCOVERY_OUTPUT_BYTES - bytes) {
+              throw oversizedDiscoveryResponse();
+            }
+            const text = Buffer.from(item.data.buffer, item.data.byteOffset, item.data.byteLength).toString("utf8");
+            bytes += Buffer.byteLength(text, "utf8");
             if (bytes > MAX_DISCOVERY_OUTPUT_BYTES) {
               throw oversizedDiscoveryResponse();
             }
-            chunks.push(Buffer.from(item.data.buffer, item.data.byteOffset, item.data.byteLength).toString("utf8"));
+            chunks.push(text);
           }
         }
       } catch (error) {

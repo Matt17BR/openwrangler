@@ -231,11 +231,18 @@ async function* pySparkPreflightExecution(
   const marker = code.match(/__OPEN_WRANGLER_PYSPARK_VERSION_START_([a-f0-9]{32})__/)?.[1];
   if (!marker) throw new Error("Kernel test preflight did not contain a response marker.");
   yield {
-    text: [
-      `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
-      JSON.stringify({ isPySpark, protocolVersion: 1, version }),
-      `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
-    ].join("\n")
+    items: [
+      {
+        mime: "application/vnd.code.notebook.stdout",
+        data: Buffer.from(
+          [
+            `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+            JSON.stringify({ isPySpark, protocolVersion: 1, version }),
+            `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+          ].join("\n")
+        )
+      }
+    ]
   };
 }
 
@@ -243,11 +250,18 @@ async function* malformedPySparkPreflightExecution(code: string): AsyncIterable<
   const marker = code.match(/__OPEN_WRANGLER_PYSPARK_VERSION_START_([a-f0-9]{32})__/)?.[1];
   if (!marker) throw new Error("Kernel test preflight did not contain a response marker.");
   yield {
-    text: [
-      `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
-      '{"isPySpark":true,"protocolVersion":1,"version":',
-      `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
-    ].join("\n")
+    items: [
+      {
+        mime: "application/vnd.code.notebook.stdout",
+        data: Buffer.from(
+          [
+            `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+            '{"isPySpark":true,"protocolVersion":1,"version":',
+            `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+          ].join("\n")
+        )
+      }
+    ]
   };
 }
 
