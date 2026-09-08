@@ -20,6 +20,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Python 3.10 accepts short datetime fractions and compact timezone offsets in filters and Fill Missing Values,
+  with matching generated code. Invalid offset hours or minutes are rejected.
 - Pandas timestamps retain nanosecond fractions and time-zone offset seconds in grid cells, nested values, profiles
   and value choices. Searching the corrected labels preserves ordinary value counts and representations.
 - Pandas keeps present Arrow timestamps and durations distinct from missing values in filters, pages and profiles.

@@ -212,6 +212,12 @@ Float filter values accept explicit `Infinity` and `-Infinity`, plus the histori
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.
 
+Python datetime filter and explicit Fill values accept one to six fractional digits and minute-resolution offsets
+written as `+0530` or `+05:30`. The common decoder pads fractions and inserts the offset colon before native parsing,
+so accepted spellings have the same meaning on Python 3.10 and newer. Offset hours above 23 and minutes above 59
+are rejected before normalization. Generated filters use the same checks; generated Fill uses the validated native
+value's canonical literal. Calendar validity, timezone awareness and each engine's storage limits still apply.
+
 Formula retains large bare decimal integer input as canonical text through the webview, public plan, persistence
 and replay. Its additive v2 scalar representation accepts existing finite numbers or canonical integer strings with
 at most 309 digits whose Number conversion remains finite. Form input is bounded to 4,096 characters before parsing.

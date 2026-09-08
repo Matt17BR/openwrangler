@@ -274,6 +274,29 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
         assert text_page["totalRows"] == 2
         assert [row["values"][0]["display"] for row in text_page["rows"]] == ["alpha", "ALPHA"]
 
+        for literal in ("2026-01-01T12:00:00.0Z", "2026-01-01T12:00:00+0000"):
+            datetime_view = engine.apply_filter_model(
+                indexed,
+                {
+                    "filters": [
+                        {
+                            "column": "happened",
+                            "type": "datetime",
+                            "valueFilter": {
+                                "kind": "values",
+                                "selectedValues": [literal],
+                                "includeNulls": False,
+                                "includeNaN": False,
+                            },
+                        }
+                    ],
+                    "sort": [],
+                },
+            )
+            datetime_page = engine.page(datetime_view, 0, 3, total_rows=None, column_projection=[(0, "name-id")])
+            assert datetime_page["totalRows"] == 2
+            assert [row["values"][0]["display"] for row in datetime_page["rows"]] == ["Beta", "Beta"]
+
         sorted_model = {
             "logic": "and",
             "filters": [

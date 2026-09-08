@@ -1262,13 +1262,28 @@ def test_live_and_generated_predicates_preserve_wide_integers_and_boolean_text(b
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["match"]
 
 
+_DATETIME_SELECTION_CASES = [
+    ("2024-01-01T12:00:00+02:00", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.1Z", datetime(2024, 1, 1, 10, microsecond=100000, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.12Z", datetime(2024, 1, 1, 10, microsecond=120000, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.123Z", datetime(2024, 1, 1, 10, microsecond=123000, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.1234Z", datetime(2024, 1, 1, 10, microsecond=123400, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.12345Z", datetime(2024, 1, 1, 10, microsecond=123450, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00.123456Z", datetime(2024, 1, 1, 10, microsecond=123456, tzinfo=timezone.utc)),
+    ("2024-01-01T12:30:00+0230", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+    ("2024-01-01T07:30:00-0230", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+    ("2024-01-01 10:00:00.1", datetime(2024, 1, 1, 10, microsecond=100000)),
+    ("2024-01-02T09:59:00+23:59", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+    ("2023-12-31T10:01:00-2359", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+    ("2024-01-01T10:00:00-0000", datetime(2024, 1, 1, 10, tzinfo=timezone.utc)),
+]
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
-def test_live_and_generated_datetime_selection_matches_equivalent_instants(backend):
+@pytest.mark.parametrize("literal, expected", _DATETIME_SELECTION_CASES)
+def test_live_and_generated_datetime_selection_matches_equivalent_instants(backend, literal, expected):
     engine = PandasEngine() if backend == "pandas" else PolarsEngine()
-    instants = [
-        datetime(2024, 1, 1, 10, 0, tzinfo=timezone.utc),
-        datetime(2024, 1, 1, 11, 0, tzinfo=timezone.utc),
-    ]
+    instants = [expected, expected + timedelta(hours=1)]
     records = {"label": ["match", "other"], "value": instants}
     frame = pd.DataFrame(records) if backend == "pandas" else pl.DataFrame(records)
     model = {
@@ -1280,7 +1295,7 @@ def test_live_and_generated_datetime_selection_matches_equivalent_instants(backe
                 "logic": "and",
                 "valueFilter": {
                     "kind": "values",
-                    "selectedValues": ["2024-01-01T12:00:00+02:00"],
+                    "selectedValues": [literal],
                     "includeNulls": False,
                     "includeNaN": False,
                 },
@@ -1294,14 +1309,17 @@ def test_live_and_generated_datetime_selection_matches_equivalent_instants(backe
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["match"]
 
 
-def test_duckdb_live_and_generated_datetime_selection_preserves_offset_instants():
+@pytest.mark.parametrize("literal, expected", _DATETIME_SELECTION_CASES)
+def test_duckdb_live_and_generated_datetime_selection_preserves_offset_instants(literal, expected):
     engine = DuckDBEngine()
+    raw_type = "TIMESTAMPTZ" if expected.tzinfo is not None else "TIMESTAMP"
+    other = expected + timedelta(hours=1)
     frame = duckdb.sql(
         "SELECT * FROM (VALUES "
-        "('match', TIMESTAMPTZ '2024-01-01 10:00:00+00:00'), "
-        "('other', TIMESTAMPTZ '2024-01-01 11:00:00+00:00')) AS values(label, value)"
+        f"('match', {expected.isoformat()!r}::{raw_type}), "
+        f"('other', {other.isoformat()!r}::{raw_type})) AS values(label, value)"
     )
-    model = _value_selection_model("datetime", "2024-01-01T12:00:00+02:00")
+    model = _value_selection_model("datetime", literal)
 
     assert _filtered_labels(engine.apply_filter_model(frame, model), "duckdb") == ["match"]
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), "duckdb") == ["match"]

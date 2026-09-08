@@ -2705,11 +2705,27 @@ def test_datetime_fill_rejects_naive_and_aware_mismatches(backend: str, column_a
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
-@pytest.mark.parametrize("column_aware", [False, True])
-def test_datetime_fill_accepts_matching_awareness(backend: str, column_aware: bool) -> None:
+@pytest.mark.parametrize(
+    "replacement, expected",
+    [
+        ("2026-08-05T18:20:00", datetime(2026, 8, 5, 18, 20)),
+        ("2026-08-05T18:20:00+00:00", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+        ("2026-08-05 18:20:00.1", datetime(2026, 8, 5, 18, 20, microsecond=100000)),
+        ("2026-08-05T18:20:00.12Z", datetime(2026, 8, 5, 18, 20, microsecond=120000, tzinfo=timezone.utc)),
+        ("2026-08-05T18:20:00.123Z", datetime(2026, 8, 5, 18, 20, microsecond=123000, tzinfo=timezone.utc)),
+        ("2026-08-05T18:20:00.1234Z", datetime(2026, 8, 5, 18, 20, microsecond=123400, tzinfo=timezone.utc)),
+        ("2026-08-05T18:20:00.12345Z", datetime(2026, 8, 5, 18, 20, microsecond=123450, tzinfo=timezone.utc)),
+        ("2026-08-05T18:20:00.123456Z", datetime(2026, 8, 5, 18, 20, microsecond=123456, tzinfo=timezone.utc)),
+        ("2026-08-05T20:50:00+0230", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+        ("2026-08-05T15:50:00-0230", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+        ("2026-08-06T18:19:00+23:59", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+        ("2026-08-04T18:21:00-2359", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+        ("2026-08-05T18:20:00-0000", datetime(2026, 8, 5, 18, 20, tzinfo=timezone.utc)),
+    ],
+)
+def test_datetime_fill_accepts_matching_awareness(backend: str, replacement: str, expected: datetime) -> None:
+    column_aware = expected.tzinfo is not None
     present = datetime(2026, 1, 1, 12, tzinfo=timezone.utc) if column_aware else datetime(2026, 1, 1, 12)
-    replacement = "2026-08-05T18:20:00+00:00" if column_aware else "2026-08-05T18:20:00"
-    expected = datetime.fromisoformat(replacement)
     if backend == "pandas":
         engine = PandasEngine()
         dtype = "datetime64[ns, UTC]" if column_aware else "datetime64[ns]"
