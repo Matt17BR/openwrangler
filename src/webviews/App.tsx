@@ -185,7 +185,8 @@ export function App() {
   const {
     dialog: operationDialog,
     openDialog: openOperationDialog,
-    closeDialog: closeOperationDialogState
+    closeDialog: closeOperationDialogState,
+    reconcileEditingStep
   } = useOperationDialogLifecycle({
     scheduleFocusRestoration: scheduleWebviewFocusRestoration,
     canRestoreFocus: canRestoreFocusTo
@@ -1348,7 +1349,10 @@ export function App() {
         );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") closeOperationDialog();
-        else clearStepInspection(false, false);
+        else {
+          reconcileEditingStep(nextMetadata.steps);
+          clearStepInspection(false, false);
+        }
         restartProfilingAfterMutation(nextMetadata);
         if (shouldRestorePlanFocus) {
           restoreCleaningPlanFocus(planReturnTarget);
@@ -1386,6 +1390,7 @@ export function App() {
     isImportOptionsPending,
     nextViewRequestId,
     openSidePanel,
+    reconcileEditingStep,
     reconcileSidePanelAvailability,
     requestOperationIntent,
     requestImportOptionsChange,

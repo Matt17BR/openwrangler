@@ -129,6 +129,8 @@ receipt after layout settles and retain its session, revision, and DOM marker ch
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
+The same App owner checks that removing an edited step closes its dialog and restores focus while failed Undo,
+surviving edit targets and new-operation forms retain their input.
 The same UI owners check Redo after the last Undo, focus ownership, draft/projection gates and exact attempt
 correlation before success or failure can settle a mutation. Panel controls verify that an empty-history refusal
 also clears the snapshot used on remount. Native session and transaction owners check ordered re-execution,

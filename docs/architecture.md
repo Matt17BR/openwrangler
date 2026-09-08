@@ -132,6 +132,8 @@ A failed or cancelled operation preview reports its error inside the dialog that
 inputs. The mutation snapshot owns that dialog context and operation kind; unrelated actions keep their workspace
 errors. Error text and code settle together, and changing the operation, closing the dialog or replacing the session
 clears its preview error.
+A successful accepted plan update also closes an editing dialog whose applied step no longer exists, using the
+existing focus restoration. Failed updates, surviving step targets and ordinary new-operation forms retain their input.
 
 Redo retains the commands removed by Undo in the exact runtime session. It binds the next saved command to the
 current confirmed input and executes that step once; it does not replay the preceding plan or retain old dataframe
