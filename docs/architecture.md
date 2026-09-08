@@ -244,8 +244,17 @@ their encoded storage.
 Formula modulo supports Arrow integer operands using native unsigned magnitudes and the divisor's sign, with no
 floating conversion. The result uses the widest operand width and the divisor's signedness. Integer literals must
 fit within 64-bit capacity at the runtime boundary. Null operands
-produce nulls, and a zero divisor is rejected only where both operands are present. Other Formula arithmetic retains
-its native coercion and capacity checks. Generated modulo code uses the same calculation.
+produce nulls, and a zero divisor is rejected only where both operands are present. Generated modulo code uses the
+same calculation.
+
+Other Formula arithmetic first keeps any successful native result unchanged. After eligible Arrow coercion failures,
+UInt64 add, subtract, multiply and power may use an exact UInt64 scalar or convert a nonnegative signed 8–64-bit
+companion column. Companions must use native NumPy, built-in Pandas nullable or Arrow integer storage; Sparse and
+arbitrary extension types do not enter this repair. Selected Decimal128 operands may widen to Decimal256 with the
+same precision and scale for add, subtract, multiply and divide. Each repair makes one checked native call; overflow
+and unsupported cases still refuse. Live and generated Formula share this behavior without changing By Example.
+Negative operands and the widest or negative-scale Decimal capacity gaps remain tracked in
+[#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.

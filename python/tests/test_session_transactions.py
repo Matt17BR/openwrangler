@@ -624,6 +624,124 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         manager.close_all()
 
 
+@pytest.mark.parametrize("family", ["uint64", "decimal-multiply", "decimal-divide"])
+def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    import json
+    from decimal import Decimal
+
+    import pandas as pd
+
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    unsigned = family == "uint64"
+    series = (
+        pd.Series([3, 2**64 - 1, None], dtype="uint64[pyarrow]")
+        if unsigned
+        else pd.Series([Decimal("1.125"), Decimal("-2.500"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
+    )
+    frame = pd.DataFrame({"value": series, "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]")})
+    frame.index = pd.Index(["same", "same", "last"], name="source row")
+    frame.attrs = {"source": "retained"}
+    original = frame.copy(deep=True)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _: frame)
+    descriptor = {"kind": "notebookVariable", "label": "Formula source", "variableName": "frame"}
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(descriptor, backend="pandas", mode="editing", page_size=1)
+        session_id = opened["metadata"]["sessionId"]
+        columns = opened["metadata"]["schema"]
+        operation = {
+            "id": "capacity",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": columns[0]["id"], "name": columns[0]["name"]},
+                "operator": "subtract" if unsigned else ("multiply" if family == "decimal-multiply" else "divide"),
+                "value": "2" if unsigned else (2 if family == "decimal-multiply" else 3),
+                "newColumn": "result",
+            },
+        }
+        expected = pd.Series(
+            [1, 2**64 - 3, None]
+            if unsigned
+            else (
+                [Decimal("2.250"), Decimal("-5.000"), None]
+                if family == "decimal-multiply"
+                else [Decimal("0.37500000000000000000000"), Decimal("-0.83333333333333333333333"), None]
+            ),
+            index=frame.index,
+            name="result",
+            dtype="uint64[pyarrow]"
+            if unsigned
+            else pd.ArrowDtype(pa.decimal256(50, 3 if family == "decimal-multiply" else 23)),
+        )
+        preview = manager.preview_step(session_id, 0, json.loads(json.dumps(operation)), 0, 1)
+        session = manager.sessions[session_id]
+        assert session.draft_frame is not None
+        pd.testing.assert_series_equal(session.draft_frame["result"], expected)
+        confirmed = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        pd.testing.assert_series_equal(session.committed["result"], expected)
+        assert session.plan == [operation]
+        namespace: dict[str, Any] = {}
+        exec(confirmed["code"], namespace)
+        generated = namespace["clean_data"](frame)
+        pd.testing.assert_series_equal(generated["result"], expected)
+        pd.testing.assert_frame_equal(generated.iloc[:, :2], original)
+
+        before = session_state(session)
+        invalid = {
+            "id": "hidden-invalid",
+            "kind": "formula",
+            "params": {
+                "leftColumn": operation["params"]["leftColumn"],
+                "operator": "multiply" if unsigned else "divide",
+                "newColumn": "invalid",
+                **({"value": 2} if unsigned else {"rightColumn": {"id": columns[1]["id"], "name": columns[1]["name"]}}),
+            },
+        }
+        with pytest.raises(pa.ArrowInvalid, match="(?i)overflow|divide by zero"):
+            manager.preview_step(session_id, confirmed["revision"], invalid, 0, 1)
+        assert session_state(session) == before
+        pd.testing.assert_series_equal(session.committed["result"], expected)
+        corrected = {"id": "corrected", "kind": "formula", "params": {**operation["params"], "newColumn": "corrected"}}
+        repaired = manager.preview_step(session_id, confirmed["revision"], corrected, 0, 1)
+        manager.discard_draft(session_id, repaired["revision"], 0, 1)
+        assert session.plan == [operation]
+
+        replay = manager.open_session(descriptor, backend="pandas", mode="editing", page_size=1)
+        replay_id = replay["metadata"]["sessionId"]
+        replayed = manager.preview_step(replay_id, 0, json.loads(json.dumps(session.plan[0])), 0, 1)
+        manager.apply_draft(replay_id, replayed["revision"], 0, 1)
+        pd.testing.assert_series_equal(manager.sessions[replay_id].committed["result"], expected)
+
+        destination = tmp_path / "formula.parquet"
+        destination.touch()
+        device, inode = _regular_file_identity(destination)
+        manager.export_data(
+            session_id,
+            session.revision,
+            str(destination),
+            {"format": "parquet", "rowAxisPolicy": "preserve"},
+            {"device": str(device), "inode": str(inode)},
+        )
+        physical = pq.read_table(destination)
+        assert isinstance(expected.dtype, pd.ArrowDtype)
+        assert isinstance(expected.array, pd.arrays.ArrowExtensionArray)
+        assert physical.schema.field("result").type == expected.dtype.pyarrow_dtype
+        assert physical["result"].equals(expected.array.__arrow_array__())
+        reopened = session.engine.read_file(str(destination))
+        if unsigned:
+            pd.testing.assert_series_equal(reopened["result"], expected)
+        else:
+            assert reopened["result"].tolist() == [None if pd.isna(value) else value for value in expected]
+        pd.testing.assert_index_equal(reopened.index, frame.index)
+        pd.testing.assert_frame_equal(frame, original)
+        assert frame.attrs == original.attrs
+    finally:
+        manager.close_all()
+
+
 def test_extended_float_pages_and_preview_preserve_confirmed_source(monkeypatch: pytest.MonkeyPatch) -> None:
     import numpy as np
     import pandas as pd

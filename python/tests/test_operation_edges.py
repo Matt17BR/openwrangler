@@ -1808,3 +1808,371 @@ def test_pandas_noninteger_arrow_modulo_keeps_native_refusal(family: str) -> Non
         with pytest.raises(NotImplementedError):
             run()
         pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    "values,operator,literal,expected",
+    [
+        ([2**64 - 1, 2**64 - 2, None], "add", 0, [2**64 - 1, 2**64 - 2, None]),
+        ([2**64 - 1, 2**64 - 2, None], "subtract", 2, [2**64 - 3, 2**64 - 4, None]),
+        ([2**64 - 1, 2**64 - 2, None], "multiply", 0, [0, 0, None]),
+        ([2**64 - 1, 2**64 - 2, None], "power", 1, [2**64 - 1, 2**64 - 2, None]),
+        ([0, 1, None], "multiply", str(2**64 - 1), [0, 2**64 - 1, None]),
+        ([0, 1, None], "power", str(2**64 - 1), [0, 1, None]),
+    ],
+)
+def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator, literal, expected) -> None:
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"value": pd.Series(values, dtype="uint64[pyarrow]")})
+    frame.index = pd.MultiIndex.from_tuples([("same", 2)] * len(frame), names=["group", "row"])
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=literal, operator=operator, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    assert operation["params"]["value"] == literal
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(
+            actual["result"], pd.Series(expected, index=frame.index, name="result", dtype="uint64[pyarrow]")
+        )
+        actual["result"].array.__arrow_array__().validate(full=True)
+        assert actual["result"].dtype == pd.ArrowDtype(pa.uint64())
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("bits", [8, 16, 32, 64])
+@pytest.mark.parametrize("storage", ["numpy", "nullable", "arrow"])
+@pytest.mark.parametrize("arrow_on_right", [False, True])
+@pytest.mark.parametrize("operator", ["add", "power"])
+def test_pandas_arrow_formula_capacity_accepts_nonnegative_signed_columns(
+    bits: int, storage: str, arrow_on_right: bool, operator: str
+) -> None:
+    pytest.importorskip("pyarrow")
+    signed_dtype = f"Int{bits}" if storage == "nullable" else f"int{bits}{'[pyarrow]' if storage == 'arrow' else ''}"
+    frame = pd.DataFrame(
+        {
+            "wide": pd.Series([2**64 - 1, 2**64 - 2, None], dtype="uint64[pyarrow]"),
+            "signed": pd.Series([0, 1, 2], dtype=signed_dtype),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    left, right = (1, 0) if arrow_on_right else (0, 1)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[left], rightColumn=lineage[right], operator=operator, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    values = (
+        [2**64 - 1, 2**64 - 1, None]
+        if operator == "add"
+        else [0 if arrow_on_right else 1, 1 if arrow_on_right else 2**64 - 2, None]
+    )
+    expected = pd.Series(values, index=frame.index, name="result", dtype="uint64[pyarrow]")
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("shape", ["values", "empty", "null"])
+@pytest.mark.parametrize("operator", ["multiply", "divide"])
+def test_pandas_arrow_formula_capacity_widens_decimal_without_changing_declared_scale(
+    shape: str, operator: str
+) -> None:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    values = (
+        [Decimal("1.125"), Decimal("-2.500"), None] if shape == "values" else ([] if shape == "empty" else [None, None])
+    )
+    frame = pd.DataFrame({"value": pd.Series(values, dtype=pd.ArrowDtype(pa.decimal128(30, 3)))})
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step(
+            "formula",
+            leftColumn=lineage[0],
+            value=2 if operator == "multiply" else 3,
+            operator=operator,
+            newColumn="result",
+        ),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    expected_values = (
+        [Decimal("2.250"), Decimal("-5.000"), None]
+        if operator == "multiply"
+        else [Decimal("0.37500000000000000000000"), Decimal("-0.83333333333333333333333"), None]
+    )
+    expected = pd.Series(
+        expected_values if shape == "values" else [None] * len(frame),
+        index=frame.index,
+        name="result",
+        dtype=pd.ArrowDtype(pa.decimal256(50, 3 if operator == "multiply" else 23)),
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        actual["result"].array.__arrow_array__().validate(full=True)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("right_column", [False, True])
+def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_column: bool) -> None:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame(
+        {
+            "decimal": pd.Series(
+                [Decimal("1.125"), Decimal("-2.500"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3))
+            ),
+            "integer": pd.Series([2, 3, 4], dtype="int64[pyarrow]"),
+        }
+    )
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    left, right = (1, 0) if right_column else (0, 0)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[left], rightColumn=lineage[right], operator="multiply", newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    expected = pd.Series(
+        [Decimal("2.250"), Decimal("-7.500"), None]
+        if right_column
+        else [Decimal("1.265625"), Decimal("6.250000"), None],
+        name="result",
+        dtype=pd.ArrowDtype(pa.decimal256(50, 3) if right_column else pa.decimal256(61, 6)),
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    "family", ["signed-result", "empty", "null", "float", "integer-divide", "decimal-add", "decimal-power"]
+)
+def test_pandas_arrow_formula_capacity_preserves_successful_native_results(family: str) -> None:
+    import operator
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    value, op, operand = pd.Series([0, 3, None], dtype="uint64[pyarrow]"), "subtract", 2
+    if family in {"empty", "null"}:
+        value = pd.Series([] if family == "empty" else [None, None], dtype="uint64[pyarrow]")
+    elif family == "float":
+        value = pd.Series(pd.arrays.ArrowExtensionArray(pa.array([1.25, float("nan"), None, -0.0], from_pandas=False)))
+        op = "multiply"
+    elif family == "integer-divide":
+        op = "divide"
+    elif family in {"decimal-add", "decimal-power"}:
+        value = pd.Series([Decimal("1.125"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
+        op = "add" if family == "decimal-add" else "power"
+    native = {
+        "add": operator.add,
+        "subtract": operator.sub,
+        "multiply": operator.mul,
+        "divide": operator.truediv,
+        "power": operator.pow,
+    }[op](value, operand)
+    frame = pd.DataFrame({"value": value})
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=operand, operator=op, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], native.rename("result"))
+        observed = actual["result"].array.__arrow_array__()
+        expected = native.array.__arrow_array__()
+        assert observed.is_null().to_pylist() == expected.is_null().to_pylist()
+        if family == "float":
+            if expected[1].is_valid:
+                assert isnan(observed[1].as_py())
+            assert copysign(1, observed[3].as_py()) == copysign(1, expected[3].as_py())
+
+
+@pytest.mark.parametrize(
+    "family", ["overflow", "negative", "above-uint64", "decimal-capacity", "decimal-negative-scale"]
+)
+def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> None:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    value, operand, op = pd.Series([2**64 - 1, None], dtype="uint64[pyarrow]"), 1, "add"
+    error: type[Exception] = pa.ArrowInvalid
+    if family == "negative":
+        operand = -1
+    elif family == "above-uint64":
+        operand, op, error = 2**64, "multiply", OverflowError
+    elif family == "decimal-capacity":
+        value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
+    elif family == "decimal-negative-scale":
+        value = pd.Series([Decimal("1200"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2)))
+        error = TypeError
+    frame = pd.DataFrame({"value": value})
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=str(operand), operator=op, newColumn="result"),
+        runtime.schema(frame),
+        lineage,
+    )
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        with pytest.raises(error):
+            run()
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extensions() -> None:
+    import numpy as np
+
+    pa = pytest.importorskip("pyarrow")
+    casts: list[str] = []
+
+    # The factory receives a dtype class in Pandas 2 and a dtype instance in Pandas 3.
+    def domain_array_type(*_args: object, **_kwargs: object) -> type[pd.api.extensions.ExtensionArray]:
+        return DomainIntArray
+
+    class DomainIntDtype(pd.api.extensions.ExtensionDtype):
+        numpy_dtype = np.dtype("int64")
+        construct_array_type = domain_array_type
+
+        @property
+        def name(self) -> str:
+            return "domain_integer"
+
+        @property
+        def type(self) -> Any:
+            return np.int64
+
+        @property
+        def kind(self) -> str:
+            return "i"
+
+        @property
+        def na_value(self) -> Any:
+            return pd.NA
+
+    class DomainIntArray(pd.arrays.IntegerArray):
+        @property
+        def dtype(self) -> Any:
+            return DomainIntDtype()
+
+        def astype(self, dtype: Any, copy: bool = True) -> Any:
+            casts.append(str(dtype))
+            return super().astype(dtype, copy=copy)
+
+    assert domain_array_type(DomainIntDtype) is DomainIntArray
+    assert DomainIntDtype().construct_array_type() is DomainIntArray
+    frame = pd.DataFrame(
+        {
+            "wide": pd.Series([2**64 - 1, 2**64 - 2, None], dtype="uint64[pyarrow]"),
+            "domain": pd.Series(DomainIntArray(np.array([0, 1, 0], dtype=np.int64), np.array([False, False, True]))),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    assert schema[1]["type"] == "integer"
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], rightColumn=lineage[1], operator="add", newColumn="result"),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    with pytest.raises(pa.ArrowInvalid) as native:
+        _ = frame["wide"] + frame["domain"]
+    assert casts == []
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        with pytest.raises(pa.ArrowInvalid) as refused:
+            run()
+        assert str(refused.value) == str(native.value)
+        assert casts == []
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_code_isolated() -> None:
+    pa = pytest.importorskip("pyarrow")
+    dictionary = pa.DictionaryArray.from_arrays(pa.array([0, 1, None], type=pa.int8()), pa.array(["x", "y"]))
+    frame = pd.DataFrame(
+        {
+            "value": pd.Series([2**64 - 1, 2**64 - 2, None], dtype="uint64[pyarrow]"),
+            "encoded": pd.arrays.ArrowExtensionArray(dictionary),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    frame.attrs = {"source": "unchanged"}
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(frame))
+    live = frame
+    plan = []
+    for kind in ("formula", "customCode", "byExample", "formula"):
+        if kind == "formula":
+            params = {
+                "leftColumn": lineage[0],
+                "operator": "subtract",
+                "value": 2,
+                "newColumn": "repaired" if not plan else "again",
+            }
+        elif kind == "customCode":
+            params = {
+                "code": "_open_wrangler_formula_result = None\n_open_wrangler_formula = None\n"
+                "_pandas_formula = None\nresult = df"
+            }
+        else:
+            params = {
+                "sourceColumns": [lineage[2]],
+                "examples": [{"inputs": [2], "output": 4}, {"inputs": [5], "output": 7}],
+                "newColumn": "inferred",
+            }
+        operation = bind_step(step(kind, **params), runtime.schema(live), lineage)
+        runtime.validate_transform_preflight(live, operation, runtime.shape(live))
+        live = runtime.apply_transform(live, operation)
+        lineage = derive_lineage(lineage, runtime.schema(live), operation)
+        plan.append(operation)
+    code = runtime.compile_plan(plan)
+    assert code.count("def _open_wrangler_formula_result(") == 1
+    assert "def _open_wrangler_modulo(" not in code
+    assert "def _open_wrangler_formula_result(" not in runtime.compile_plan([plan[2]])
+    namespace: dict[str, Any] = {"_open_wrangler_formula_result": object()}
+    exec(code, namespace)
+    generated = namespace["clean_data"](frame)
+    pd.testing.assert_frame_equal(generated, live)
+    expected_inferred = frame["value"].astype(object)
+    assert isinstance(expected_inferred, pd.Series)
+    expected_inferred = expected_inferred.rename("inferred")
+    for actual in (live, generated):
+        pd.testing.assert_series_equal(actual["inferred"], expected_inferred)
+        pd.testing.assert_series_equal(actual["repaired"], actual["again"].rename("repaired"))
+        assert actual["encoded"].array.__arrow_array__().equals(pa.chunked_array([dictionary]))
+        pd.testing.assert_index_equal(actual.index, frame.index)
+    pd.testing.assert_frame_equal(frame, before)

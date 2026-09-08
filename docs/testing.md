@@ -168,6 +168,10 @@ Formula modulo cases in the operation-edge owner compare exact signed/unsigned A
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
 refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned
 Parquet export, and verifies the complete confirmed state after a rejected zero-divisor preview.
+The same owners check UInt64 scalar and signed-companion inference, Decimal128-to-256 arithmetic, unchanged native
+successes, excluded custom integer extensions and exact physical export types. Mixed Formula, By Example and Custom
+Code plans execute standalone output and check helper isolation. Session tests verify reported and replayed dtypes,
+rollback for errors beyond the displayed page and successful correction afterward.
 
 Pandas engine tests load native Arrow dates from Parquet and check profiles, value selections, viewing and
 standalone Filter Rows/Sort Rows. Empty, missing and distant dates retain native storage, indices and source bytes.
