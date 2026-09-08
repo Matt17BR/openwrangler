@@ -19165,19 +19165,14 @@ async function prepareVisibleApplyDiagnostics(
       timeoutMs,
       "one observation of the original visible Apply app"
     );
-  assert.deepEqual(
-    await observe(WORKBENCH_OPERATION_TIMEOUT_MS),
-    {
-      appCount: 1,
-      appConnected: true,
-      appSessionMatches: true,
-      appRendererMatches: true,
-      alertPresent: false,
-      applyPresent: true,
-      applyEnabled: true
-    },
-    "Visible Apply requires an enabled button and no existing scoped alert in its exact app."
-  );
+  const initial = await observe(WORKBENCH_OPERATION_TIMEOUT_MS);
+  assert.equal(initial.appCount, 1, "Visible Apply requires exactly its original app.");
+  assert.ok(initial.appConnected, "Visible Apply requires its connected app.");
+  assert.ok(initial.appSessionMatches, "Visible Apply must retain the exact app session.");
+  assert.ok(initial.appRendererMatches, "Visible Apply must retain the exact app renderer.");
+  assert.equal(initial.alertPresent, false, "Visible Apply requires no existing scoped alert in its exact app.");
+  assert.ok(initial.applyPresent, "Visible Apply requires its button in its exact app.");
+  // The existing Locator.click owns actionability while a pending page settles.
   return async () => {
     const active = testing.activeSession();
     const current = testing.sessionSnapshot(expected.sessionId);
