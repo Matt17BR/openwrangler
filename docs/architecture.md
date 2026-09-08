@@ -108,6 +108,10 @@ Python and R kernel execution is not treated as safely interruptible. Timeout or
 triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and
 dataset-statistics reads may recover once after a lost runtime when the view is still current. Mutation retry rules do
 not change, and concurrent recovery shares one replacement per runtime owner.
+Recovery checks the originating session and source after opening its candidate and around each replayed request.
+Close, cancellation or supersession stops subsequent replay, including fallback viewing requests. Already-started
+execution retains its settlement barrier before candidate cleanup.
+Detached saved-view restoration also waits for the originating execution before closing its candidate.
 
 Python page reads stage the viewing query, shapes and bounded cache under the existing foreground-read lock. The
 previous view remains authoritative until page construction, metadata, source validation and the owning engine's

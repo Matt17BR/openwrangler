@@ -8,7 +8,7 @@ import type {
   SessionBoundRequest,
   SessionOpenedResponse
 } from "../shared/protocol";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
 import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
 import { confirmSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
@@ -261,8 +261,15 @@ export class SessionRuntimeEstablisher {
           request.columnLimit,
           options
         );
-      } catch {
-        await this.runtimeCleanup.close(session, "failed saved-state runtime");
+      } catch (error) {
+        if (error instanceof DetachedBridgeRequestError) {
+          this.runtimeCleanup.trackDelegateSettlement(
+            session.delegate,
+            error.settlement.then(() => this.runtimeCleanup.close(session, "failed saved-state runtime"))
+          );
+        } else {
+          await this.runtimeCleanup.close(session, "failed saved-state runtime");
+        }
         return {
           established: false,
           response: protocolError(

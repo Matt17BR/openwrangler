@@ -136,7 +136,17 @@ export class SessionRuntimeRecovery {
     isStillCurrent?: () => boolean,
     onRestoredPage?: (page: PageResponse) => void
   ): Promise<boolean> {
-    if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) return false;
+    const isCurrent = (): boolean =>
+      hooks.isCurrent() &&
+      (!isStillCurrent || isStillCurrent()) &&
+      options?.cancellation?.isCancellationRequested !== true;
+    const assertCurrent = (): void => {
+      if (!isCurrent()) throw new Error("The recovery request was superseded.");
+      if (hooks.originMismatch(session.openRequest)) {
+        throw new Error("The originating source changed while recovery was restoring its runtime session.");
+      }
+    };
+    if (!isCurrent()) return false;
     if (hooks.originMismatch(session.openRequest)) return false;
     const persisted = persistedSessionState(
       session.metadata,
@@ -162,7 +172,7 @@ export class SessionRuntimeRecovery {
         session.openRequest.source.kind === "file"
           ? await captureSessionSourceFiles(session.openRequest.source)
           : session.sourceProtection;
-      if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) return false;
+      assertCurrent();
       if (session.metadata.backend === "r") {
         const delegateFactory = runtimeRecoveryDelegateFactory(session.delegate);
         if (delegateFactory) {
@@ -171,12 +181,7 @@ export class SessionRuntimeRecovery {
             throw new Error("Native-R recovery must use a fresh verified runtime delegate.");
           }
           replacementDelegate = createdDelegate;
-          if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
-            throw new Error("The recovery request was superseded before its replacement runtime opened.");
-          }
-          if (hooks.originMismatch(session.openRequest)) {
-            throw new Error("The originating source changed before recovery opened its replacement runtime.");
-          }
+          assertCurrent();
         }
       }
       const candidateDelegate = replacementDelegate?.delegate ?? session.delegate;
@@ -192,10 +197,7 @@ export class SessionRuntimeRecovery {
         code: "",
         viewState: initialViewingState(response.metadata)
       };
-      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (hooks.originMismatch(session.openRequest)) {
-        throw new Error("The originating source changed while recovery was opening its runtime session.");
-      }
+      assertCurrent();
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
       restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
@@ -205,17 +207,15 @@ export class SessionRuntimeRecovery {
         session.openRequest.columnOffset,
         session.openRequest.columnLimit,
         recoveryFollowupOptions(options),
-        requiredSchema !== undefined
+        requiredSchema !== undefined,
+        assertCurrent
       );
       if (session.openRequest.source.kind === "file" && sourceProtection)
         candidate.sourceProtection = await confirmSessionSourceProtection(sourceProtection);
       if (requiredSchema && !isDeepStrictEqual(candidate.metadata.schema, requiredSchema)) {
         throw new Error("The replayed live dataframe schema no longer matches the confirmed Open Wrangler view.");
       }
-      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (hooks.originMismatch(session.openRequest)) {
-        throw new Error("The originating source changed while recovery was restoring its runtime session.");
-      }
+      assertCurrent();
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError) {
         const delegate = replacementDelegate?.delegate ?? candidate?.delegate ?? session.delegate;
@@ -228,7 +228,7 @@ export class SessionRuntimeRecovery {
       return false;
     }
 
-    if (!hooks.isCurrent() || (isStillCurrent && !isStillCurrent())) {
+    if (!isCurrent()) {
       await this.discardCandidate(candidate, replacementDelegate);
       return false;
     }

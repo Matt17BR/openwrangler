@@ -1,7 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import type { FilterModel, PageResponse, SessionBoundRequest, SessionMetadata } from "../shared/protocol";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
-import type { BridgeRequestOptions, OpenWranglerBridge, SessionPresentation } from "./dataBridge";
+import {
+  DetachedBridgeRequestError,
+  type BridgeRequestOptions,
+  type OpenWranglerBridge,
+  type SessionPresentation
+} from "./dataBridge";
 import type { DecodedPersistedSessionState, PersistedCleaningState } from "./sessionPersistence";
 import { responseMismatch } from "./sessionResponseValidation";
 import type { SessionSourceProtection } from "./files/safeFileExport";
@@ -33,14 +38,24 @@ export class SessionRuntimeStateRestorer {
     columnOffset: number,
     columnLimit: number,
     options?: BridgeRequestOptions,
-    requireExactView = false
+    requireExactView = false,
+    assertCurrent?: () => void
   ): Promise<PageResponse> {
-    await this.restoreCleaningState(session, state.cleaning, columnOffset, columnLimit, options);
+    await this.restoreCleaningState(session, state.cleaning, columnOffset, columnLimit, options, assertCurrent);
     if (requireExactView) {
       if (!state.view) throw new RuntimeStateRestoreError("Open Wrangler could not recover the confirmed view.");
-      return this.restoreOneViewingState(session, state.view, pageSize, columnOffset, columnLimit, "saved", options);
+      return this.restoreOneViewingState(
+        session,
+        state.view,
+        pageSize,
+        columnOffset,
+        columnLimit,
+        "saved",
+        options,
+        assertCurrent
+      );
     }
-    return this.restoreViewingState(session, state.view, pageSize, columnOffset, columnLimit, options);
+    return this.restoreViewingState(session, state.view, pageSize, columnOffset, columnLimit, options, assertCurrent);
   }
 
   async restoreCleaningState(
@@ -154,7 +169,8 @@ export class SessionRuntimeStateRestorer {
     pageSize: number,
     columnOffset: number,
     columnLimit: number,
-    options?: BridgeRequestOptions
+    options?: BridgeRequestOptions,
+    assertCurrent?: () => void
   ): Promise<PageResponse> {
     if (!savedView)
       return this.restoreOneViewingState(
@@ -164,7 +180,8 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit,
         "empty",
-        options
+        options,
+        assertCurrent
       );
     try {
       return await this.restoreOneViewingState(
@@ -174,9 +191,12 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit,
         "saved",
-        options
+        options,
+        assertCurrent
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) throw error;
+      assertCurrent?.();
       return this.restoreOneViewingState(
         session,
         emptyConfirmedViewingState(),
@@ -184,7 +204,8 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit,
         "empty",
-        options
+        options,
+        assertCurrent
       );
     }
   }

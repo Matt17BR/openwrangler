@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
-import type { OpenWranglerBridge } from "../extension/dataBridge";
+import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
 import {
   persistedSessionState,
   persistenceKey,
@@ -123,6 +123,73 @@ describe("SessionRuntimeEstablisher", () => {
       response: { kind: "sessionOpened", metadata: { revision: 0, steps: [] } }
     });
     expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
+  });
+
+  it("waits for a detached saved view before closing its unpublished runtime", async () => {
+    const persisted = serializePersistedSession(
+      persistedSessionState(openedResponse().metadata, {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      })
+    );
+    if (!persisted) throw new Error("Expected saved state to serialize.");
+    const stored = { [persistenceKey(openRequest.source, "polars")]: persisted };
+    const workspaceState = {
+      get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
+      update: vi.fn(async () => undefined),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    let settled = false;
+    const detached = new DetachedBridgeRequestError(
+      "The saved view is still settling.",
+      "timeout",
+      true,
+      settlement.then(() => {
+        settled = true;
+      })
+    );
+    const requests: OpenWranglerRequest[] = [];
+    const delegate: OpenWranglerBridge = {
+      onIdle: vi.fn(),
+      request: async (request): Promise<OpenWranglerResponse> => {
+        requests.push(request);
+        if (request.kind === "openSession") return openedResponse("pending-view-runtime");
+        if (request.kind === "getPage") throw detached;
+        if (request.kind === "closeSession") {
+          expect(settled).toBe(true);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected saved-view request: ${request.kind}`);
+      }
+    };
+    const cleanup = new SessionRuntimeCleanup(() => false);
+    const owner = new SessionRuntimeEstablisher(
+      cleanup,
+      new SessionRuntimeStateRestorer(),
+      new SessionPersistenceStore(workspaceState)
+    );
+    try {
+      await expect(owner.establish(delegate, openRequest, undefined, undefined, hooks())).resolves.toMatchObject({
+        established: false,
+        response: { kind: "error", code: "saved_view_restore_failed" }
+      });
+      expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage"]);
+      cleanup.releaseIfIdle(delegate);
+      expect(delegate.onIdle).not.toHaveBeenCalled();
+      expect(workspaceState.update).not.toHaveBeenCalled();
+      settle();
+      await cleanup.waitForTracked();
+      expect(requests).toHaveLength(3);
+      expect(requests[2]).toEqual({ kind: "closeSession", sessionId: "pending-view-runtime", revision: 0 });
+      expect(delegate.onIdle).toHaveBeenCalledOnce();
+    } finally {
+      settle();
+      await cleanup.waitForTracked();
+    }
   });
 
   it("does not dispatch an opening after its coordinator has already shut down", async () => {
