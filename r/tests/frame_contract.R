@@ -1119,6 +1119,29 @@ assert_error(
 
 }))
 run_frame_contract_case("column-operations", local({
+# Mark Duplicates owns a present logical capture, not a cloned key type.
+mark_source <- data.frame(value = c(1L, 1L, 2L), row.names = letters[1:3])
+mark_before <- serialize(mark_source, NULL, version = 3L)
+mark_capture <- openwrangler_r_frame_contract$capture_frame(mark_source)
+mark_result <- openwrangler_r_frame_contract$mark_duplicate_rows_at(mark_source, 1L, "value", "flag")
+mark_derived <- function(value, positions = 2L, ids = c("r:c:0", "c:step:mark:0")) {
+  openwrangler_r_frame_contract$capture_frame(value, nullability_source = mark_capture,
+    source_positions = c(1L, 1L), output_ids = ids, mark_duplicate_positions = positions)
+}
+assert_identical(mark_result$flag, c(TRUE, TRUE, FALSE), "Mark Duplicates lost repeated members")
+assert_identical(mark_derived(mark_result)$descriptor$schema[[2L]]$nullable, FALSE, "Duplicate flags copied key missingness")
+for (invalid_flags in list(c(1L, 1L, 0L), c(TRUE, NA, FALSE), structure(c(TRUE, TRUE, FALSE), names = letters[1:3]))) {
+  invalid_mark <- unclass(mark_result)
+  invalid_mark[[2L]] <- invalid_flags
+  attributes(invalid_mark) <- attributes(mark_result)
+  assert_error(mark_derived(invalid_mark), "invalid mark-duplicate output")
+}
+assert_error(mark_derived(mark_result, c(2L, 2L)), "invalid mark-duplicate output positions")
+assert_error(mark_derived(mark_result, ids = c("r:c:0", "r:c:0")), "identities")
+assert_error(openwrangler_r_frame_contract$mark_duplicate_rows_at(mark_source, integer(), character(), "flag"), "non-empty")
+assert_error(openwrangler_r_frame_contract$mark_duplicate_rows_at(mark_source, 1L, "stale", "flag"), "stale-column")
+assert_error(openwrangler_r_frame_contract$mark_duplicate_rows_at(mark_source, 1L, "value", "value"), "column-name-collision")
+assert_identical(serialize(mark_source, NULL, version = 3L), mark_before, "Duplicate append mutated its source")
 
 rename_frame <- data.frame(
   duplicate = c(1L, 2L),

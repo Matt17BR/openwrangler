@@ -497,7 +497,7 @@ def step_output_collision_checks(
         yield params.get("newName"), "renameColumn.newName", params["column"]
     elif kind == "cloneColumn":
         yield params.get("newName"), "cloneColumn.newName", None
-    elif kind in {"formula", "textLength", "denseRank", "byExample", "extractRegexGroup"}:
+    elif kind in {"formula", "textLength", "denseRank", "byExample", "extractRegexGroup", "markDuplicates"}:
         yield params.get("newColumn"), f"{kind}.newColumn", None
     elif kind == "splitTextColumns":
         for index, output_name in enumerate(params.get("newColumns", [])):
@@ -570,6 +570,7 @@ def bind_step(
         "dropMissingRows",
         "fillMissingValues",
         "dropDuplicates",
+        "markDuplicates",
         "oneHotEncode",
         "multiLabelBinarize",
         "findReplace",
@@ -639,8 +640,11 @@ def bind_step(
             params["columns"] = context.bind_many(params["columns"], f"{kind}.columns")
         return bound
 
-    if kind in {"selectColumns", "dropColumns", "oneHotEncode"}:
+    if kind in {"selectColumns", "dropColumns", "oneHotEncode", "markDuplicates"}:
         params["columns"] = context.bind_many(params.get("columns"), f"{kind}.columns")
+        if kind == "markDuplicates":
+            for output_name, label, replacing in step_output_collision_checks(bound):
+                context.reject_output_collision(output_name, label, replacing=replacing)
         if kind == "dropColumns" and len(params["columns"]) == len(context.columns):
             raise ColumnBindingError("dropColumns must leave at least one visible column.")
         return bound

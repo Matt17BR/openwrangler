@@ -804,6 +804,9 @@ class DuckDBEngine(DataFrameEngine):
                 bound_column_name(params["column"], kind),
                 params["replacement"],
             )
+        if kind == "markDuplicates":
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return self._mark_duplicates(frame, columns, params["newColumn"])
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -1162,8 +1165,8 @@ class DuckDBEngine(DataFrameEngine):
         if plan:
             clean_data_lines.append("    _ow_check_addressability(df)")
         for index, step in enumerate(plan):
-            if step["kind"] == "denseRank":
-                # The native rank helper already validates its fresh destination.
+            if step["kind"] in {"denseRank", "markDuplicates"}:
+                # These native helpers already validate their fresh destinations.
                 output_guards, output_name = [], None
             else:
                 output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
@@ -1278,6 +1281,9 @@ class DuckDBEngine(DataFrameEngine):
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
             return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, {value})"]
+        if kind == "markDuplicates":
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return [f"{prefix}df = _ow_mark_duplicates(df, {columns!r}, {params['newColumn']!r})"]
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -2205,6 +2211,21 @@ class DuckDBEngine(DataFrameEngine):
             f"USING ({_quote_ident(order_name)}) ORDER BY n.{_quote_ident(order_name)}"
         )
         return self._relation(frame, query)
+
+    def _mark_duplicates(self, frame: Any, columns: list[str], target: str) -> Any:
+        original = self._columns(frame)
+        _ensure_duckdb_output_columns_available(original, [target], "Mark duplicates")
+        order_name = _unique_internal([*original, target], "__ow_dupe_order")
+        flag_name = _unique_internal([*original, target, order_name], "__ow_dupe_flag")
+        order, flag = map(_quote_ident, (order_name, flag_name))
+        # Keep partition comparison separate from the original scalar/nested values.
+        return self._relation(
+            frame,
+            f"WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS {order} FROM ow), "
+            f"membership AS (SELECT {order}, count(*) OVER (PARTITION BY {_identifier_list(columns)}) > 1 "
+            f"AS {flag} FROM numbered) SELECT n.* EXCLUDE ({order}), m.{flag} AS {_quote_ident(target)} "
+            f"FROM numbered n JOIN membership m USING ({order}) ORDER BY n.{order}",
+        )
 
     def _one_hot(self, frame: Any, params: Mapping[str, Any]) -> Any:
         columns = list(params["columns"])
@@ -4462,6 +4483,25 @@ def _ow_drop_duplicates(df, columns, keep):
         + _ow_ident(order_name) + ") ORDER BY n." + _ow_ident(order_name)
     )
     return _ow_query(df, query)
+
+
+def _ow_mark_duplicates(df, columns, target):
+    original = _ow_columns(df)
+    _ow_check_outputs(original, [target], "Mark duplicates")
+    if target.casefold() in {name.casefold() for name in original}:
+        raise ValueError("Mark duplicates would create DuckDB column names that differ only by case.")
+    order_name = _ow_unique([*original, target], "__ow_dupe_order")
+    flag_name = _ow_unique([*original, target, order_name], "__ow_dupe_flag")
+    order, flag = map(_ow_ident, (order_name, flag_name))
+    # Publish original values, not the window's normalized comparison keys.
+    return _ow_query(
+        df,
+        "WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS " + order + " FROM ow), "
+        + "membership AS (SELECT " + order + ", count(*) OVER (PARTITION BY " + _ow_identifiers(columns)
+        + ") > 1 AS " + flag + " FROM numbered) SELECT n.* EXCLUDE (" + order + "), m." + flag
+        + " AS " + _ow_ident(target) + " FROM numbered n JOIN membership m USING (" + order
+        + ") ORDER BY n." + order,
+    )
 
 
 def _ow_check_outputs(existing, generated, operation):

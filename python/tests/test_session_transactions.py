@@ -272,13 +272,23 @@ def test_many_small_custom_steps_fail_before_preview_mutation(tmp_path: Path, mo
     assert_unchanged_and_closable(manager, session_id, 0, before)
 
 
-def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("kind", ["formula", "markDuplicates"])
+def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path: Path, monkeypatch, kind: str) -> None:
+    def operation(step_id: str) -> dict[str, Any]:
+        if kind == "formula":
+            return formula_step(step_id)
+        return {
+            "id": step_id,
+            "kind": kind,
+            "params": {"columns": [{"id": "c:source:1", "name": "value"}], "newColumn": "is_duplicate"},
+        }
+
     manager, session_id = open_pandas_session(tmp_path)
     session = manager.sessions[session_id]
 
     monkeypatch.setattr(session.engine, "compile_plan", lambda _steps: "x" * MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
 
-    accepted = manager.preview_step(session_id, 0, formula_step("exact-code"), 0, 2)
+    accepted = manager.preview_step(session_id, 0, operation("exact-code"), 0, 2)
     assert len(accepted["code"].encode("utf-8")) == MAX_GENERATED_PYTHON_CODE_UTF8_BYTES
     manager.close_session(session_id, accepted["revision"])
 
@@ -302,7 +312,7 @@ def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path
     monkeypatch.setattr(session.engine, "apply_transform", observe_transform)
 
     with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
-        manager.preview_step(session_id, 0, formula_step("oversized-code"), 0, 2)
+        manager.preview_step(session_id, 0, operation("oversized-code"), 0, 2)
     assert transform_calls == 0
     assert_unchanged_and_closable(manager, session_id, 0, before)
 
@@ -1395,6 +1405,121 @@ def test_dense_rank_uses_cleaning_population_through_history_and_parquet(
         )
         assert rank_values(reopened["page"]) == expected
         assert reopened["metadata"]["schema"][-1]["type"] == "integer"
+        assert path.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_path: Path, backend: str) -> None:
+    path = tmp_path / "duplicates.csv"
+    original = b"row,key\n0,a\n1,b\n2,a\n3,\n4,\n"
+    path.write_bytes(original)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=20
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        source_ids = [row["id"] for row in opened["page"]["rows"]]
+        columns = opened["metadata"]["schema"]
+        refs = [{"id": item["id"], "name": item["name"]} for item in columns]
+        operation = {
+            "id": "mark",
+            "kind": "markDuplicates",
+            "params": {"columns": [refs[1]], "newColumn": "is_duplicate"},
+        }
+        view = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "row",
+                    "type": columns[0]["type"],
+                    "predicates": [{"kind": "predicate", "operator": "lte", "value": 1}],
+                }
+            ],
+            "sort": [{"column": "row", "direction": "desc", "nulls": "last"}],
+        }
+        manager.get_page(sid, 0, 0, 20, view)
+
+        def flags(page: dict[str, Any], position: int = -1) -> list[bool]:
+            values = [row["values"][position] for row in page["rows"]]
+            assert all(not cell["isNull"] and type(cell["raw"]) is bool for cell in values)
+            return [cell["raw"] for cell in values]
+
+        draft = manager.preview_step(sid, session.revision, operation, 0, 20)
+        assert flags(draft["page"]) == [False, True]  # Matching row 2 is hidden by the viewing filter.
+        applied = manager.apply_draft(sid, draft["revision"], 0, 20)
+        full = session.engine.page(session.committed, 0, 20)
+        assert flags(full) == [True, False, True, True, True]
+        assert [row["id"] for row in full["rows"]] == source_ids
+        assert session.committed_lineage == [*refs, {"id": "c:step:mark:0", "name": "is_duplicate"}]
+        assert session.filter_model == view
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        assert flags(session.engine.page(namespace["clean_data"](session.original), 0, 20)) == flags(full)
+        manager.undo_step(sid, session.revision, 0, 20)
+        assert session.undone_steps == [operation]
+        before = session_state(session)
+        stale = {**operation, "params": {**operation["params"], "columns": [{"id": "stale", "name": "key"}]}}
+        with pytest.raises(EngineError, match="stale"):
+            manager.preview_step(sid, session.revision, stale, 0, 20)
+        assert session_state(session) == before
+        collision = {**operation, "params": {**operation["params"], "newColumn": "key"}}
+        with pytest.raises(EngineError, match="collid"):
+            manager.preview_step(sid, session.revision, collision, 0, 20)
+        assert session_state(session) == before
+
+        def reject(response: dict[str, Any]) -> None:
+            assert flags(response["page"]) == [False, True]
+            raise ResponsePayloadError("Synthetic mark publication refusal", "response_encoding_failed")
+
+        with pytest.raises(ResponsePayloadError, match="mark publication"):
+            manager.preview_step(sid, session.revision, operation, 0, 20, response_preflight=reject)
+        assert session_state(session) == before
+        temporary = {**operation, "id": "temporary"}
+        draft = manager.preview_step(sid, session.revision, temporary, 0, 20)
+        manager.discard_draft(sid, draft["revision"], 0, 20)
+        assert session.undone_steps == [operation]
+        manager.redo_step(sid, session.revision, 0, 20)
+        assert flags(session.engine.page(session.committed, 0, 20)) == flags(full)
+        destination = tmp_path / "marked.parquet"
+        destination.touch()
+        device, inode = _regular_file_identity(destination)
+        options: ExportOptions = {"format": "parquet"}
+        if backend == "pandas":
+            options["rowAxisPolicy"] = "preserve"
+        manager.export_data(
+            sid, session.revision, str(destination), options, {"device": str(device), "inode": str(inode)}
+        )
+        reopened = manager.open_session(
+            {"kind": "file", "label": destination.name, "path": str(destination)}, backend=backend, page_size=20
+        )
+        assert flags(reopened["page"]) == flags(full)
+        assert reopened["metadata"]["schema"][-1]["type"] == "boolean"
+        clone = {
+            "id": "clone",
+            "kind": "cloneColumn",
+            "params": {"column": session.committed_lineage[-1], "newName": "copy"},
+        }
+        draft = manager.preview_step(sid, session.revision, clone, 0, 20)
+        manager.apply_draft(sid, draft["revision"], 0, 20)
+        replacement = {**operation, "params": {**operation["params"], "columns": refs}}
+        draft = manager.preview_step(sid, session.revision, replacement, 0, 20, replace_step_id="mark")
+        assert flags(session.engine.page(session.draft_frame, 0, 20)) == [False] * 5
+        assert session.draft_lineage == [*refs, {"id": "c:step:mark:0", "name": "is_duplicate"}]
+        exec(draft["code"], namespace)
+        generated = session.engine.page(namespace["clean_data"](session.original), 0, 20)
+        assert flags(generated) == [False] * 5
+        # The host owns suffix replay; native earlier-step preview cannot bypass that transaction.
+        with pytest.raises(EngineError, match="host plan-rewrite transaction"):
+            manager.apply_draft(sid, draft["revision"], 0, 20)
+        manager.discard_draft(sid, session.revision, 0, 20)
+        assert session.plan == [operation, clone]
+        full = session.engine.page(session.committed, 0, 20)
+        assert flags(full, -2) == flags(full) == [True, False, True, True, True]
+        assert [row["id"] for row in full["rows"]] == source_ids
         assert path.read_bytes() == original
     finally:
         manager.close_all()

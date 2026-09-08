@@ -1135,8 +1135,8 @@ class PandasEngine(DataFrameEngine):
             else:
                 df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], replacement))
             return df
-        if kind == "dropDuplicates":
-            keep = params.get("keep", "first")
+        if kind in {"dropDuplicates", "markDuplicates"}:
+            keep = "none" if kind == "markDuplicates" else params.get("keep", "first")
             positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
             if not positions:
                 return df
@@ -1144,6 +1144,8 @@ class PandasEngine(DataFrameEngine):
                 [_pandas_row_key(df.iloc[:, position]) for position in positions], axis=1, ignore_index=True
             )
             duplicated = keys.duplicated(keep=False if keep == "none" else keep)
+            if kind == "markDuplicates":
+                return _pandas_append_result(df, duplicated.to_numpy(dtype=bool), params["newColumn"])
             return _pandas_take_rows(df, np.flatnonzero((~duplicated).to_numpy(dtype=bool)))
         if kind == "selectColumns":
             selected = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
@@ -1554,6 +1556,7 @@ class PandasEngine(DataFrameEngine):
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_rank_helpers = any(step["kind"] == "denseRank" for step in plan)
+        needs_duplicate_keys = any(step["kind"] == "markDuplicates" for step in plan)
         needs_pivot_longer_helpers = any(step["kind"] == "pivotLonger" for step in plan)
         needs_pivot_wider_helpers = any(step["kind"] == "pivotWider" for step in plan)
         needs_counter = any(
@@ -1622,7 +1625,13 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        if needs_row_queries or needs_nullable_result_helpers or "grouped" in fill_strategies or needs_rank_helpers:
+        if (
+            needs_row_queries
+            or needs_nullable_result_helpers
+            or "grouped" in fill_strategies
+            or needs_rank_helpers
+            or needs_duplicate_keys
+        ):
             lines.extend(_generated_pandas_numeric_key_helpers())
         needs_scalar_values = any(
             step["kind"]
@@ -1650,13 +1659,13 @@ class PandasEngine(DataFrameEngine):
             step["kind"] in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "formatDatetime"}
             for step in plan
         )
-        if needs_row_queries or needs_dictionary_values or needs_rank_helpers:
+        if needs_row_queries or needs_dictionary_values or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
-        if needs_row_queries or needs_scalar_values or needs_rank_helpers:
+        if needs_row_queries or needs_scalar_values or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_numeric_filter_helpers())
-        if needs_row_queries or needs_rank_helpers:
+        if needs_row_queries or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_row_query_helpers(include_queries=needs_row_queries))
         if needs_rank_helpers:
             lines.extend(_generated_pandas_dense_rank_helpers())
@@ -2198,8 +2207,8 @@ class PandasEngine(DataFrameEngine):
                 f"{series}, {missing}, {replacement_kind!r}, {value}))"
             )
             return lines
-        if kind == "dropDuplicates":
-            keep = params.get("keep", "first")
+        if kind in {"dropDuplicates", "markDuplicates"}:
+            keep = "none" if kind == "markDuplicates" else params.get("keep", "first")
             positions = (
                 [bound_column_position(column, kind) for column in params["columns"]] if params.get("columns") else None
             )
@@ -2217,7 +2226,10 @@ class PandasEngine(DataFrameEngine):
                 ),
                 f"{prefix}    del _duplicate_keys_{index}",
                 (
-                    f"{prefix}    df = _open_wrangler_take_rows(df, "
+                    f"{prefix}    df = pd.concat([df, pd.Series(_duplicated_{index}.to_numpy(dtype=bool), "
+                    f"index=df.index, name={output_name or repr(params['newColumn'])})], axis=1)"
+                    if kind == "markDuplicates"
+                    else f"{prefix}    df = _open_wrangler_take_rows(df, "
                     f"np.flatnonzero((~_duplicated_{index}).to_numpy(dtype=bool)))"
                 ),
             ]

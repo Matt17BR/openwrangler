@@ -272,6 +272,13 @@ signed zeros tie and infinities remain present. The new column reports its own n
 native integer output width within its existing row capacity. Output collisions and stale references fail before
 publication. Live and generated execution use the same comparison and missing-value rules.
 
+Mark Duplicates appends a present Boolean for every row, true for every member of a repeated group of selected keys.
+The selection must contain at least one column. The complete cleaning input defines membership independently of
+viewing filters, sorts and pages. Each engine retains its selected Drop Duplicates equality and admission rules,
+including missing-value distinctions. Original values, order and identities remain intact. The output uses its own
+Boolean type while preserving the engine's conservative schema nullability policy. An empty input retains its
+schema and gains an empty Boolean column. Live and generated code apply the same rules and output-name checks.
+
 ### Pandas
 
 Pandas executes viewing, all catalog operations, profiling, generated code, and supported exports in Pandas.
@@ -482,8 +489,9 @@ schema, row-identity and diff checks for zero-column sources. Generated code acc
 frame and operation boundaries are defined in [ADR 0001](decisions/0001-native-r-runtime.md).
 
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
-on its already-isolated `data.table` result without making another full data copy; Clone and Custom Code retain their
-explicit named-input behavior. This keeps later attribute-sensitive custom code consistent with the preview.
+on its already-isolated `data.table` result without making another full data copy; Clone, Dense Rank, Mark Duplicates
+and Custom Code retain their explicit named-input behavior. This keeps later attribute-sensitive custom code consistent
+with the preview.
 
 Generated Fill Missing Values code includes only the helper families used by the complete plan. Repeated and mixed
 steps retain each required family once, including scalar datetime and numeric midpoint dependencies.

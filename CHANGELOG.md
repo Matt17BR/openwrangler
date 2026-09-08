@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Mark Duplicates flags every row whose selected values occur more than once. It retains all records and their
+  order, with matching generated code in Pandas, Polars, DuckDB and native R.
+
 - Dense Rank appends numeric ranks in Pandas, Polars, DuckDB and native R. Ascending and descending ranks preserve
   ties, missing values and input row order, and generate matching native code.
 

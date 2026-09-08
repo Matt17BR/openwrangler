@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ColumnSchema,
+  MarkDuplicatesTransformStep,
   DataDiff,
   GroupByTransformStep,
   OneHotEncodeTransformStep,
@@ -24,6 +25,28 @@ import {
 } from "../extension/r/rKernelMutationSchema";
 
 describe("R kernel mutation schema", () => {
+  it("predicts present logical duplicate flags without copying comparison-column types or changing keys", () => {
+    const step: MarkDuplicatesTransformStep = {
+      id: "mark",
+      kind: "markDuplicates",
+      params: { columns: [reference(0), reference(1)], newColumn: "is_duplicate" }
+    };
+    const actual = schemaAfterRStep(schema, step, ["b"]);
+    expect(actual).toEqual([
+      ...schema,
+      { id: "c:step:mark:0", name: "is_duplicate", position: 2, rawType: "logical", type: "boolean", nullable: false }
+    ]);
+    expect(keyColumnsAfterRStep(["b"], actual, step)).toEqual(["b"]);
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+      "already exists"
+    );
+    expect(() =>
+      schemaAfterRStep(schema, { ...step, params: { ...step.params, columns: [{ id: "stale", name: "count" }] } }, [])
+    ).toThrow("stale or mismatched");
+    expect(() => schemaAfterRStep(actual, { ...step, params: { ...step.params, newColumn: "again" } }, [])).toThrow(
+      "identity already exists"
+    );
+  });
   it("predicts an appended integer rank with independent missingness and rejects stale/colliding outputs", () => {
     const step = {
       id: "rank",

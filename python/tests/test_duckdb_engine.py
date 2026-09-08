@@ -1585,6 +1585,7 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         ),
     ]
     column_plan = [
+        bound_step("markDuplicates", columns=[bound_ref("c:source:3", "value", 3)], newColumn="is_duplicate"),
         bound_step(
             "cloneColumn",
             column=bound_ref("c:source:3", "value", 3),

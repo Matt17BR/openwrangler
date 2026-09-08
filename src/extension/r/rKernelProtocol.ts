@@ -354,6 +354,15 @@ export interface RKernelCeilNumberStep {
   }>;
 }
 
+export interface RKernelMarkDuplicatesStep {
+  readonly id: string;
+  readonly kind: "markDuplicates";
+  readonly params: Readonly<{
+    columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    newColumn: string;
+  }>;
+}
+
 export interface RKernelDenseRankStep {
   readonly id: string;
   readonly kind: "denseRank";
@@ -546,6 +555,7 @@ export type RKernelTransformStep =
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
+  | RKernelMarkDuplicatesStep
   | RKernelDenseRankStep
   | RKernelMinMaxScaleStep
   | RKernelRoundNumberStep
@@ -1553,6 +1563,12 @@ function validateTransformStep(value: unknown): void {
     if (params.dropOriginal !== undefined && typeof params.dropOriginal !== "boolean") {
       fail("R kernel multi-label parameters contain an invalid drop-original flag.");
     }
+    return;
+  }
+  if (step.kind === "markDuplicates") {
+    const params = exactRecord(step.params, ["columns", "newColumn"], [], "R kernel mark-duplicates parameters");
+    validateRowReductionColumnReferences(params.columns, "mark duplicates");
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
   if (step.kind === "denseRank") {

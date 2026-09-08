@@ -200,6 +200,16 @@ The installed operation-group journey checks ranks after a cleaning sort and run
 The default comprehensive R notebook journey's core catalog submits the visible rank form and checks bounded pages
 across its full input before Undo. The focused `core-operations` selector retains its separate Clone lifecycle scope.
 
+`python/tests/test_mark_duplicates.py` owns live/generated Boolean membership across the Python editing engines,
+including native key equality, empty and missing populations, exact retained values and source/index preservation.
+Existing session owners cover hidden matching rows, output identity, history and export. Native R frame, kernel and
+catalog owners check logical capture, selected integer64 keys and named/keyed frame metadata. Shared and operation-form
+tests cover required selections, stale references, output names and saved-step editing through the existing owners.
+The installed Python operation-group journey checks flags after a cleaning sort and replay. The existing Polars
+first-use journey also previews and applies Mark Duplicates, checks a visible `False` cell, and undoes it before continuing
+the export flow. The default comprehensive R notebook journey submits the form, checks a visible `TRUE` cell and bounded
+original values and flags across both groups, and verifies Apply and Undo without changing the source notebook.
+
 `python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in

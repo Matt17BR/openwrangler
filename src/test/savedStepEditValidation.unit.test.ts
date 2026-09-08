@@ -45,6 +45,7 @@ const validSteps = {
   dropMissingRows: step("dropMissingRows", { columns: [text], how: "any" }),
   fillMissingValues: step("fillMissingValues", { column: value, replacement: { kind: "median" } }),
   dropDuplicates: step("dropDuplicates", { columns: [text], keep: "first" }),
+  markDuplicates: step("markDuplicates", { columns: [text, nested, mystery], newColumn: "is_duplicate" }),
   selectColumns: step("selectColumns", { columns: [text] }),
   dropColumns: step("dropColumns", { columns: [text] }),
   renameColumn: step("renameColumn", { column: text, newName: "renamed" }),
@@ -167,6 +168,7 @@ describe("savedStepEditError", () => {
     ],
     ["optional column lists", step("dropMissingRows", { columns: [missing] }), "column 1"],
     ["drop-duplicates lists", step("dropDuplicates", { columns: [missing] }), "column 1"],
+    ["mark-duplicates lists", step("markDuplicates", { columns: [missing], newColumn: "flag" }), "column 1"],
     ["select lists", step("selectColumns", { columns: [missing] }), "column 1"],
     ["drop lists", step("dropColumns", { columns: [missing] }), "column 1"],
     ["encoding lists", step("oneHotEncode", { columns: [missing] }), "column 1"],
@@ -312,6 +314,7 @@ describe("savedStepEditError", () => {
       })
     ],
     ["column list", step("oneHotEncode", { columns: [text, text] })],
+    ["column list", step("markDuplicates", { columns: [text, text], newColumn: "flag" })],
     [
       "fill columns",
       step("fillMissingValues", {

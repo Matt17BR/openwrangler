@@ -63,6 +63,7 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Sort/filter cleaning steps", "Yes", "Yes"],
   ["Select/drop/rename/clone/cast/formula/length", "Yes", "Yes"],
   ["Drop missing/duplicate rows", "Yes", "Yes"],
+  ["Mark duplicate groups", "Yes", "Yes"],
   ["Fill missing values", "Yes", "Yes"],
   ["One-hot and multi-label binarization", "Yes", "Yes"],
   ["Find/replace/strip/split/case transforms", "Yes", "Yes"],

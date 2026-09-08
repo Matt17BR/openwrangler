@@ -180,7 +180,7 @@ text_step <- function(frame, id, kind, new_column = NULL, ...) {
 }
 
 catalog_kinds <- c(
-  "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates",
+  "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates", "markDuplicates",
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
@@ -233,6 +233,13 @@ catalog_cases <- list(
     verify = function(output, input) assert_identical(
       output$duplicate, c("u", "v", "w", "x"), "Drop Duplicates kept the wrong rows"
     )
+  ),
+  markDuplicates = list(
+    step = function(frame, id) step_with(id, "markDuplicates", list(
+      columns = I(list(column_reference(frame, "duplicate"))), newColumn = "is_duplicate"
+    )),
+    verify = function(output, input) assert_identical(output$is_duplicate,
+      c(FALSE, TRUE, TRUE, FALSE, TRUE, TRUE), "Mark Duplicates did not mark every repeated member")
   ),
   selectColumns = list(
     step = function(frame, id) step_with(id, "selectColumns", list(columns = I(list(
@@ -495,7 +502,7 @@ catalog_cases <- list(
 )
 
 assert_identical(names(catalog_cases), catalog_kinds, "the complete R catalog owner is not in canonical order")
-assert_identical(length(catalog_cases), 33L, "the complete R catalog owner does not contain 33 operations")
+assert_identical(length(catalog_cases), length(catalog_kinds), "the complete R catalog owner has an incomplete operation count")
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
@@ -1091,6 +1098,21 @@ for (case in flavor_cases[vapply(flavor_cases, function(case) {
       }
     }
   }
+}
+
+# Logical duplicate append retains the names and keys its comparison does not own.
+for (case in flavor_cases[1:3]) {
+  metadata_index <- metadata_index + 1L
+  mark_metadata <- step_with("metadata-mark", "markDuplicates", list(
+    columns = I(list(column_reference(case$value, "category"))), newColumn = "duplicate flag"
+  ))
+  output <- run_metadata_plan(case$value, list(mark_metadata), paste(case$label, "duplicate metadata"), metadata_index)
+  for (position in seq_along(case$value)) {
+    assert_identical(output[[position]], case$value[[position]], paste(case$label, "mark changed retained values/element metadata"))
+  }
+  assert_identical(output[["duplicate flag"]], if (inherits(case$value, "data.table")) c(FALSE, TRUE, TRUE) else c(TRUE, FALSE, TRUE), paste(case$label, "mark changed factor groups"))
+  assert_identical(row.names(output), row.names(case$value), "Mark changed row labels")
+  if (inherits(case$value, "data.table")) assert_identical(data.table::key(output), data.table::key(case$value), "Mark changed key metadata")
 }
 
 metadata_clone <- step_with("metadata-clone", "cloneColumn", list(
@@ -1703,6 +1725,6 @@ remove("precise_fill_frame", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: 33 live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: ", length(catalog_cases), " live/generated/replayed operations; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

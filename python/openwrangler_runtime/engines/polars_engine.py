@@ -1227,6 +1227,9 @@ class PolarsEngine(DataFrameEngine):
             else:
                 literal = pl.lit(fill_value) if dtype == pl.Null else pl.lit(fill_value).cast(dtype, strict=True)
             return df.with_columns(expression.fill_null(literal).alias(column))
+        if kind == "markDuplicates":
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return df.with_columns(pl.struct(columns).is_duplicated().alias(params["newColumn"]))
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]]
@@ -2061,6 +2064,12 @@ class PolarsEngine(DataFrameEngine):
                     ]
                 )
             return lines
+        if kind == "markDuplicates":
+            columns = [bound_column_name(column, kind) for column in params["columns"]]
+            return [
+                f"{prefix}df = df.with_columns(pl.struct({columns!r}).is_duplicated()"
+                f".alias({output_name or repr(params['newColumn'])}))"
+            ]
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None

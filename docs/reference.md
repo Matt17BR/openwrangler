@@ -89,6 +89,7 @@
 | `dropMissingRows`    | Drop missing rows       | Rows / order       | None                                        | `columns`, `how`                        |
 | `fillMissingValues`  | Fill missing values     | Rows / order       | `column`, `replacement`                     | None                                    |
 | `dropDuplicates`     | Drop duplicates         | Rows / order       | None                                        | `columns`, `keep`                       |
+| `markDuplicates`     | Mark duplicates         | Rows / order       | `columns`, `newColumn`                      | None                                    |
 | `selectColumns`      | Select columns          | Columns / types    | `columns`                                   | None                                    |
 | `dropColumns`        | Drop columns            | Columns / types    | `columns`                                   | None                                    |
 | `renameColumn`       | Rename column           | Columns / types    | `column`, `newName`                         | None                                    |

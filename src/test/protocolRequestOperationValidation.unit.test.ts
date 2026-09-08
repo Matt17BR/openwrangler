@@ -11,6 +11,59 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 operation request validation", () => {
+  it("admits only the closed Mark Duplicates column-list and output contract", () => {
+    const valid = { columns: [valueReference, otherReference], newColumn: "is_duplicate" };
+    const admission = (params: unknown) => {
+      const step = { id: "mark", kind: "markDuplicates", params };
+      const request = {
+        kind: "previewStep",
+        sessionId: "session",
+        revision: 0,
+        offset: 0,
+        limit: 4,
+        columnOffset: 0,
+        columnLimit: 8,
+        step
+      };
+      const envelope = { protocolVersion: 2, requestId: "mark-preview", priority: "interactive", request };
+      return [
+        isTransformStep(step),
+        isOpenWranglerRequest(request),
+        isRuntimeRequestEnvelope(envelope),
+        validateTransportSchema(envelope)
+      ];
+    };
+    expect(admission(valid)).toEqual([true, true, true, true]);
+    expect(admission({ ...valid, columns: [{ id: "empty-name", name: "" }] })).toEqual([true, true, true, true]);
+    for (const params of [
+      null,
+      [],
+      {},
+      { columns: valid.columns },
+      { newColumn: "is_duplicate" },
+      { ...valid, columns: [] },
+      { ...valid, columns: null },
+      { ...valid, columns: [valueReference, valueReference] },
+      { ...valid, columns: ["value"] },
+      { ...valid, columns: [{ id: "", name: "value" }] },
+      { ...valid, columns: [{ ...valueReference, position: 0 }] },
+      { ...valid, newColumn: "" },
+      { ...valid, newColumn: null },
+      { ...valid, keep: "first" },
+      { ...valid, mode: "all" },
+      { ...valid, filterModel: { filters: [], sort: [] } }
+    ]) {
+      expect(admission(params), JSON.stringify(params)).toEqual([false, false, false, false]);
+    }
+    // JSON Schema checks duplicate objects; the decoder also rejects repeated identities with different names.
+    expect(admission({ ...valid, columns: [valueReference, { ...valueReference, name: "other" }] })).toEqual([
+      false,
+      false,
+      false,
+      true
+    ]);
+  });
+
   it("admits only the closed Dense Rank reference, direction and output contract", () => {
     const valid = { column: valueReference, direction: "asc", newColumn: "rank" };
     const admission = (params: unknown) => {

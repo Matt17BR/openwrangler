@@ -97,6 +97,7 @@ _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "selectColumns": ("columns",),
     "dropColumns": ("columns",),
     "oneHotEncode": ("columns",),
+    "markDuplicates": ("columns",),
     "groupBy": ("keys",),
     "byExample": ("sourceColumns",),
     "pivotLonger": ("columns",),
@@ -703,7 +704,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         )
     elif kind in {"dropMissingRows", "dropDuplicates"}:
         references.extend(("columns.name", item.get("name")) for item in params.get("columns", []))
-    elif kind in {"selectColumns", "dropColumns", "oneHotEncode", "pivotLonger"}:
+    elif kind in {"selectColumns", "dropColumns", "oneHotEncode", "markDuplicates", "pivotLonger"}:
         references.extend(("columns.name", item.get("name")) for item in params["columns"])
     elif kind in {
         "renameColumn",

@@ -9,6 +9,7 @@ import * as vscode from "vscode";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
+import type { TransformStep } from "../shared/protocol";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { RProcessSessionTransport } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
@@ -20,143 +21,167 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
-  it("publishes Dense Rank through the public R bridge, preserves history after refusal, and ranks beyond the view", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-rank-test-"));
-    const transport = new RProcessSessionTransport({
-      runtimeRoot,
-      rscriptPath,
-      temporaryParent,
-      workingDirectory: temporaryParent,
-      documentText: "frame <- data.frame(value = c(20, 10, 20, NA_real_), keep = 1:4, row.names = letters[1:4])"
-    });
-    const context = {
-      extension: { packageJSON: { version: "2.1.0" } },
-      subscriptions: []
-    } as unknown as vscode.ExtensionContext;
-    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
-    const sessionId = randomUUID();
-    const source = {
-      kind: "documentVariable",
-      uri: vscode.Uri.file(resolve(temporaryParent, "rank.R")).toString(),
-      variableName: "frame",
-      label: "frame"
-    } as const;
-    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
-    const step = {
-      id: "rank",
-      kind: "denseRank",
-      params: { column: { id: "r:c:0", name: "value" }, direction: "asc", newColumn: "rank" }
-    } as const;
-    try {
-      const opened = await bridge.request({
-        kind: "openSession",
-        source,
-        backend: "r",
-        mode: "editing",
-        requestedSessionId: sessionId,
-        pageSize: 10,
-        columnOffset: 0,
-        columnLimit: 10
+  it.each([
+    { kind: "denseRank", expected: ["2", "1", "2", null], rawType: "integer", type: "integer", nullable: true },
+    {
+      kind: "markDuplicates",
+      expected: [true, false, true, false],
+      rawType: "logical",
+      type: "boolean",
+      nullable: false
+    }
+  ] as const)(
+    "publishes $kind through the public R bridge and preserves population/history/source after refusal",
+    async (example) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-rank-test-"));
+      const transport = new RProcessSessionTransport({
+        runtimeRoot,
+        rscriptPath,
+        temporaryParent,
+        workingDirectory: temporaryParent,
+        documentText: "frame <- data.frame(value = c(20, 10, 20, NA_real_), keep = 1:4, row.names = letters[1:4])"
       });
-      expect(opened.kind).toBe("sessionOpened");
-      if (opened.kind !== "sessionOpened") throw new Error("Dense Rank source did not open");
-      const filterModel = {
-        filters: [
-          {
-            column: "keep",
-            type: "integer" as const,
-            predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: 1 }]
-          }
-        ],
-        sort: []
-      };
-      const viewed = await bridge.request({
-        kind: "getPage",
-        sessionId,
-        revision: 0,
-        viewRequestId: "rank-view",
-        ...window,
-        filterModel
-      });
-      expect(viewed.kind, JSON.stringify(viewed)).toBe("page");
-      const preview = await bridge.request({ kind: "previewStep", sessionId, revision: 0, step, ...window });
-      expect(preview.kind).toBe("stepPreview");
-      expect(isOpenWranglerResponse(preview)).toBe(true);
-      if (preview.kind !== "stepPreview") throw new Error(JSON.stringify(preview));
-      expect(preview.page.rows).toHaveLength(1);
-      expect(preview.page.rows[0]?.values.at(-1)?.raw).toBe("2");
-      expect(preview.metadata.schema.at(-1)).toMatchObject({
-        id: "c:step:rank:0",
-        rawType: "integer",
-        type: "integer",
-        nullable: true
-      });
-      const applied = await bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window });
-      expect(applied.kind).toBe("planUpdated");
-      if (applied.kind !== "planUpdated") throw new Error(JSON.stringify(applied));
-      const all = await bridge.request({
-        kind: "getPage",
-        sessionId,
-        revision: 2,
-        viewRequestId: "rank-all",
-        filterModel: { filters: [], sort: [] },
-        ...window
-      });
-      expect(all.kind).toBe("page");
-      if (all.kind !== "page") throw new Error(JSON.stringify(all));
-      expect(all.page.rows.map((row) => row.values.at(-1)?.raw)).toEqual(["2", "1", "2", null]);
-      expect(all.page.rows.map((row) => row.id)).toEqual(opened.page.rows.map((row) => row.id));
-      const undo = await bridge.request({ kind: "undoStep", sessionId, revision: 2, ...window });
-      expect(undo.kind).toBe("planUpdated");
-      if (undo.kind !== "planUpdated") throw new Error(JSON.stringify(undo));
-      expect(undo.metadata.canRedo).toBe(true);
-      for (const params of [
-        { ...step.params, newColumn: "value" },
-        { ...step.params, column: { id: "r:c:0", name: "stale" } }
-      ]) {
-        const refused = await bridge.request({
-          kind: "previewStep",
+      const context = {
+        extension: { packageJSON: { version: "2.1.0" } },
+        subscriptions: []
+      } as unknown as vscode.ExtensionContext;
+      const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
+      const sessionId = randomUUID();
+      const source = {
+        kind: "documentVariable",
+        uri: vscode.Uri.file(resolve(temporaryParent, "rank.R")).toString(),
+        variableName: "frame",
+        label: "frame"
+      } as const;
+      const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+      const step: TransformStep =
+        example.kind === "denseRank"
+          ? {
+              id: "rank",
+              kind: "denseRank",
+              params: { column: { id: "r:c:0", name: "value" }, direction: "asc", newColumn: "rank" }
+            }
+          : {
+              id: "rank",
+              kind: "markDuplicates",
+              params: { columns: [{ id: "r:c:0", name: "value" }], newColumn: "rank" }
+            };
+      try {
+        const opened = await bridge.request({
+          kind: "openSession",
+          source,
+          backend: "r",
+          mode: "editing",
+          requestedSessionId: sessionId,
+          pageSize: 10,
+          columnOffset: 0,
+          columnLimit: 10
+        });
+        expect(opened.kind).toBe("sessionOpened");
+        if (opened.kind !== "sessionOpened") throw new Error("Dense Rank source did not open");
+        const filterModel = {
+          filters: [
+            {
+              column: "keep",
+              type: "integer" as const,
+              predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: 1 }]
+            }
+          ],
+          sort: []
+        };
+        const viewed = await bridge.request({
+          kind: "getPage",
           sessionId,
-          revision: 3,
-          step: { ...step, id: "invalid", params },
+          revision: 0,
+          viewRequestId: "rank-view",
+          ...window,
+          filterModel
+        });
+        expect(viewed.kind, JSON.stringify(viewed)).toBe("page");
+        const preview = await bridge.request({ kind: "previewStep", sessionId, revision: 0, step, ...window });
+        expect(preview.kind).toBe("stepPreview");
+        expect(isOpenWranglerResponse(preview)).toBe(true);
+        if (preview.kind !== "stepPreview") throw new Error(JSON.stringify(preview));
+        expect(preview.page.rows).toHaveLength(1);
+        expect(preview.page.rows[0]?.values.at(-1)?.raw).toBe(example.expected[0]);
+        expect(preview.metadata.schema.at(-1)).toMatchObject({
+          id: "c:step:rank:0",
+          rawType: example.rawType,
+          type: example.type,
+          nullable: example.nullable
+        });
+        const applied = await bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window });
+        expect(applied.kind).toBe("planUpdated");
+        if (applied.kind !== "planUpdated") throw new Error(JSON.stringify(applied));
+        const all = await bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision: 2,
+          viewRequestId: "rank-all",
+          filterModel: { filters: [], sort: [] },
           ...window
         });
-        expect(refused.kind).toBe("error");
+        expect(all.kind).toBe("page");
+        if (all.kind !== "page") throw new Error(JSON.stringify(all));
+        expect(all.page.rows.map((row) => row.values.at(-1)?.raw)).toEqual(example.expected);
+        expect(all.page.rows.map((row) => row.id)).toEqual(opened.page.rows.map((row) => row.id));
+        const undo = await bridge.request({ kind: "undoStep", sessionId, revision: 2, ...window });
+        expect(undo.kind).toBe("planUpdated");
+        if (undo.kind !== "planUpdated") throw new Error(JSON.stringify(undo));
+        expect(undo.metadata.canRedo).toBe(true);
+        const invalidSteps: TransformStep[] = [
+          step.kind === "markDuplicates"
+            ? { ...step, id: "invalid", params: { ...step.params, newColumn: "value" } }
+            : { ...step, id: "invalid", params: { ...step.params, newColumn: "value" } },
+          step.kind === "markDuplicates"
+            ? { ...step, id: "invalid", params: { ...step.params, columns: [{ id: "r:c:0", name: "stale" }] } }
+            : { ...step, id: "invalid", params: { ...step.params, column: { id: "r:c:0", name: "stale" } } }
+        ];
+        for (const invalidStep of invalidSteps) {
+          const refused = await bridge.request({
+            kind: "previewStep",
+            sessionId,
+            revision: 3,
+            step: invalidStep,
+            ...window
+          });
+          expect(refused.kind).toBe("error");
+        }
+        const redone = await bridge.request({
+          kind: "redoStep",
+          sessionId,
+          revision: 3,
+          viewRequestId: "rank-redo",
+          ...window
+        });
+        expect(redone.kind).toBe("planUpdated");
+        expect(isOpenWranglerResponse(redone)).toBe(true);
+        if (redone.kind !== "planUpdated") throw new Error(JSON.stringify(redone));
+        expect(redone.viewRequestId).toBe("rank-redo");
+        expect(redone.page).toEqual(all.page);
+        expect(redone.code).toBe(applied.code);
+        expect(redone.metadata.steps).toEqual(applied.metadata.steps);
+        const reopened = await bridge.request({
+          kind: "openSession",
+          source,
+          backend: "r",
+          mode: "editing",
+          requestedSessionId: randomUUID(),
+          pageSize: 10,
+          columnOffset: 0,
+          columnLimit: 10
+        });
+        expect(reopened.kind).toBe("sessionOpened");
+        if (reopened.kind !== "sessionOpened") throw new Error(JSON.stringify(reopened));
+        expect(reopened.page).toEqual(opened.page);
+        expect(reopened.metadata.schema).toEqual(opened.metadata.schema);
+      } finally {
+        await bridge.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
       }
-      const redone = await bridge.request({
-        kind: "redoStep",
-        sessionId,
-        revision: 3,
-        viewRequestId: "rank-redo",
-        ...window
-      });
-      expect(redone.kind).toBe("planUpdated");
-      expect(isOpenWranglerResponse(redone)).toBe(true);
-      if (redone.kind !== "planUpdated") throw new Error(JSON.stringify(redone));
-      expect(redone.viewRequestId).toBe("rank-redo");
-      expect(redone.page).toEqual(all.page);
-      expect(redone.code).toBe(applied.code);
-      expect(redone.metadata.steps).toEqual(applied.metadata.steps);
-      const reopened = await bridge.request({
-        kind: "openSession",
-        source,
-        backend: "r",
-        mode: "editing",
-        requestedSessionId: randomUUID(),
-        pageSize: 10,
-        columnOffset: 0,
-        columnLimit: 10
-      });
-      expect(reopened.kind).toBe("sessionOpened");
-      if (reopened.kind !== "sessionOpened") throw new Error(JSON.stringify(reopened));
-      expect(reopened.page).toEqual(opened.page);
-      expect(reopened.metadata.schema).toEqual(opened.metadata.schema);
-    } finally {
-      await bridge.dispose();
-      expect(await readdir(temporaryParent)).toEqual([]);
-      await rm(temporaryParent, { recursive: true, force: true });
     }
-  });
+  );
   it("contains stdin error events while rejecting the write and retaining exact process cleanup", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-stdin-error-test-"));
     const transport = new RProcessSessionTransport({

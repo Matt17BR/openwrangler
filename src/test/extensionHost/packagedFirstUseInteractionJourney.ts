@@ -694,6 +694,131 @@ export function createPackagedFirstUseInteractionJourney(
     );
     app = await reacquireApp("Pivot wider undo");
 
+    recordAcceptanceProgress("platform-smoke:mark-duplicates");
+    const markBase = testing.activeSession();
+    assert.ok(markBase?.sessionId === sessionId);
+    assert.equal(markBase.metadata.backend, "polars");
+    assert.equal(markBase.metadata.mode, "editing");
+    assert.equal(markBase.metadata.steps.length, 0);
+    assert.equal(markBase.metadata.draftStep, undefined);
+    const markSource = columnReference(markBase.metadata, "order_id");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const markDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await markDialog.getByPlaceholder("Search operations").fill("mark duplicates");
+    await markDialog.getByRole("button", { name: /^Mark duplicates\b/u }).click();
+    await markDialog.getByRole("checkbox", { name: "order_id", exact: true }).check();
+    await markDialog.getByLabel("New column", { exact: true }).fill("order_repeated");
+    await markDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.revision === markBase.metadata.revision + 1 &&
+          active.metadata.draftStep?.kind === "markDuplicates"
+        );
+      },
+      30_000,
+      "previewing duplicate flags through the public CSV form"
+    );
+    const markPreview = testing.activeSession();
+    assert.ok(markPreview?.metadata.draftStep?.kind === "markDuplicates");
+    const markStep = markPreview.metadata.draftStep;
+    assert.deepEqual(markStep.params, { columns: [markSource], newColumn: "order_repeated" });
+    const markOutput = markPreview.metadata.schema.at(-1);
+    assert.ok(markOutput);
+    assert.equal(markOutput.id, `c:step:${markStep.id}:0`);
+    assert.equal(markOutput.name, "order_repeated");
+    assert.equal(markOutput.position, markBase.metadata.schema.length);
+    assert.equal(markOutput.type, "boolean");
+    assert.deepEqual(markPreview.metadata.schema.slice(0, -1), markBase.metadata.schema);
+    app = await rediscoverApp("CSV duplicate flag preview");
+    const markReview = app.getByRole("region", { name: "Draft review" });
+    await markReview.getByText("Mark duplicates", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await markReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.revision === markPreview.metadata.revision + 1 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          active.metadata.steps[0]?.id === markStep.id
+        );
+      },
+      30_000,
+      "applying the CSV duplicate flag"
+    );
+    const markApplied = testing.activeSession();
+    assert.ok(markApplied);
+    assert.deepEqual(markApplied.metadata.schema, markPreview.metadata.schema);
+    assert.deepEqual(markApplied.metadata.steps, [markStep]);
+    assert.equal(markApplied.code, markPreview.code);
+    app = await rediscoverApp("Applied CSV duplicate flag");
+    const markColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await markColumnSearch.fill(markOutput.name);
+    await app
+      .getByRole("option", { name: /^order_repeated,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await markColumnSearch.press("Enter");
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.revision === markApplied.metadata.revision &&
+          active.viewState.selectedColumnId === markOutput.id
+        );
+      },
+      10_000,
+      "selecting the applied CSV duplicate flag through column search"
+    );
+    app = await reacquireApp("Selected CSV duplicate flag");
+    const markHeader = app.locator('th[data-column="order_repeated"]').first();
+    await markHeader.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(await markHeader.getAttribute("data-grid-column"), String(markOutput.position));
+    const markCell = app.locator(`td[data-grid-row="0"][data-grid-column="${markOutput.position}"]`).first();
+    await markCell.getByText("False", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await markCell.innerText()).trim(), "False");
+    const markCellBounds = await markCell.boundingBox();
+    const markViewport = await app.getByTestId("data-grid-scroller").boundingBox();
+    assert.ok(markCellBounds && markViewport);
+    assert.ok(
+      markCellBounds.x >= markViewport.x - 1 &&
+        markCellBounds.y >= markViewport.y - 1 &&
+        markCellBounds.x + markCellBounds.width <= markViewport.x + markViewport.width + 1 &&
+        markCellBounds.y + markCellBounds.height <= markViewport.y + markViewport.height + 1,
+      "The CSV duplicate flag cell must be inside the visible grid viewport."
+    );
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.revision === markApplied.metadata.revision + 1 &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined
+        );
+      },
+      30_000,
+      "undoing the CSV duplicate flag before the existing final step"
+    );
+    const markRestored = testing.activeSession();
+    assert.ok(markRestored);
+    assert.deepEqual(markRestored.metadata.schema, markBase.metadata.schema);
+    assert.deepEqual(markRestored.metadata.source, markBase.metadata.source);
+    assert.deepEqual(markRestored.viewState.filterModel, markBase.viewState.filterModel);
+    assert.equal(markRestored.code, markBase.code);
+    assertExactBytes(
+      await vscode.workspace.fs.readFile(fixture),
+      sourceBytes,
+      "Mark duplicates must preserve its CSV."
+    );
+    app = await rediscoverApp("CSV duplicate flag Undo");
+
     recordAcceptanceProgress("platform-smoke:draft-apply");
     await previewUppercaseMarket(app, testing, "market_upper");
     app = await rediscoverApp("Draft-apply validation");

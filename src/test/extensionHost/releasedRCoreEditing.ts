@@ -192,6 +192,193 @@ export async function exerciseReleasedRCoreEditingCatalog(
     await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
 
+    recordAcceptanceProgress(`${phase}:editing:mark-duplicates-preview-apply-undo`);
+    const duplicateBase = testing.activeSession();
+    assert.ok(duplicateBase?.sessionId === sessionId);
+    assert.equal(duplicateBase.metadata.steps.length, 0);
+    assert.equal(duplicateBase.metadata.draftStep, undefined);
+    assert.deepEqual(duplicateBase.viewState.filterModel, { filters: [], sort: [] });
+    const duplicateSource = duplicateBase.metadata.schema.find((column) => column.name === "group");
+    assert.ok(duplicateSource);
+    const duplicateSourceBytes = readFileSync(notebookPath);
+    const duplicateNotebookVersion = notebook.version;
+    const duplicateNotebookDirty = notebook.isDirty;
+    const duplicateNotebookCells = notebook.getCells().map((cell) => cell.document.getText());
+    const readDuplicateSample = async (active: ActiveSession): Promise<DataRow[]> => {
+      const rows: DataRow[] = [];
+      for (const offset of [0, 602]) {
+        const response = await testing.request(
+          {
+            kind: "getPage",
+            sessionId,
+            revision: active.metadata.revision,
+            viewRequestId: `${phase}-duplicates-${active.metadata.revision}-${offset}`,
+            offset,
+            limit: 2,
+            filterModel: duplicateBase.viewState.filterModel,
+            columnOffset: 0,
+            columnLimit: active.metadata.schema.length
+          },
+          { ephemeralPage: true }
+        );
+        assert.equal(response.kind, "page");
+        if (response.kind !== "page") throw new Error("The native R duplicate sample did not return a page.");
+        assert.equal(response.metadata.sessionId, sessionId);
+        assert.equal(response.revision, active.metadata.revision);
+        assert.equal(response.page.totalRows, 1205);
+        assert.equal(response.page.offset, offset);
+        assert.equal(response.page.rows.length, 2);
+        assert.deepEqual(
+          response.page.columnIds,
+          active.metadata.schema.map((column) => column.id)
+        );
+        rows.push(...response.page.rows);
+      }
+      return rows;
+    };
+    const duplicateOriginalRows = await readDuplicateSample(duplicateBase);
+    assert.deepEqual(
+      duplicateOriginalRows.map((row) => row.values[duplicateSource.position]?.raw),
+      ["A", "A", "B", "B"]
+    );
+    const duplicatePicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    await duplicatePicker.dialog.getByPlaceholder("Search operations").fill("mark duplicates");
+    await duplicatePicker.dialog.getByRole("button", { name: /^Mark duplicates\b/u }).click();
+    await duplicatePicker.dialog.getByRole("checkbox", { name: "group", exact: true }).check();
+    await duplicatePicker.dialog.getByLabel("New column", { exact: true }).fill("group_repeated");
+    await duplicatePicker.dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () =>
+        testing.activeSession()?.sessionId === sessionId &&
+        testing.activeSession()?.metadata.draftStep?.kind === "markDuplicates",
+      30_000,
+      "previewing Mark Duplicates through the native R form"
+    );
+    const duplicatePreview = testing.activeSession();
+    assert.ok(duplicatePreview?.metadata.draftStep?.kind === "markDuplicates");
+    const duplicateStep = duplicatePreview.metadata.draftStep;
+    assert.deepEqual(duplicateStep.params, {
+      columns: [{ id: duplicateSource.id, name: duplicateSource.name }],
+      newColumn: "group_repeated"
+    });
+    const duplicateOutput = duplicatePreview.metadata.schema.at(-1);
+    assert.ok(duplicateOutput);
+    assert.equal(duplicateOutput.id, `c:step:${duplicateStep.id}:0`);
+    assert.equal(duplicateOutput.position, duplicateBase.metadata.schema.length);
+    assert.equal(duplicateOutput.name, "group_repeated");
+    assert.equal(duplicateOutput.type, "boolean");
+    assert.equal(duplicateOutput.rawType, "logical");
+    assert.equal(duplicateOutput.nullable, false);
+    assert.deepEqual(duplicatePreview.metadata.schema.slice(0, -1), duplicateBase.metadata.schema);
+    assertReleasedRGeneratedCode(duplicatePreview.code ?? "", "group_repeated");
+    const duplicatePreviewRows = await readDuplicateSample(duplicatePreview);
+    assert.deepEqual(
+      duplicatePreviewRows.map((row) => ({ ...row, values: row.values.slice(0, -1) })),
+      duplicateOriginalRows
+    );
+    assert.deepEqual(
+      duplicatePreviewRows.map((row) => row.values.at(-1)),
+      Array.from({ length: 4 }, () => ({ kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false }))
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R duplicate draft must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Mark Duplicates draft");
+    const duplicateReview = app.getByRole("region", { name: "Draft review" });
+    await duplicateReview.getByText("Mark duplicates", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await duplicateReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          active.metadata.steps[0]?.id === duplicateStep.id
+        );
+      },
+      30_000,
+      "applying native R Mark Duplicates"
+    );
+    const duplicateApplied = testing.activeSession();
+    assert.ok(duplicateApplied);
+    assert.deepEqual(duplicateApplied.metadata.steps, [duplicateStep]);
+    assert.deepEqual(duplicateApplied.metadata.schema, duplicatePreview.metadata.schema);
+    assert.equal(duplicateApplied.code, duplicatePreview.code);
+    assert.deepEqual(await readDuplicateSample(duplicateApplied), duplicatePreviewRows);
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R duplicate flag must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Mark Duplicates session");
+    const duplicateColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await duplicateColumnSearch.fill(duplicateOutput.name);
+    await app
+      .getByRole("option", { name: /^group_repeated,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await duplicateColumnSearch.press("Enter");
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.revision === duplicateApplied.metadata.revision &&
+          active.viewState.selectedColumnId === duplicateOutput.id
+        );
+      },
+      10_000,
+      "selecting the applied native R duplicate flag through column search"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R duplicate flag");
+    const duplicateHeader = app.locator('th[data-column="group_repeated"]').first();
+    await duplicateHeader.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(await duplicateHeader.getAttribute("data-grid-column"), String(duplicateOutput.position));
+    const duplicateCell = app.locator(`td[data-grid-row="0"][data-grid-column="${duplicateOutput.position}"]`).first();
+    await duplicateCell.getByText("TRUE", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await duplicateCell.innerText()).trim(), "TRUE");
+    const duplicateCellBounds = await duplicateCell.boundingBox();
+    const duplicateViewport = await app.getByTestId("data-grid-scroller").boundingBox();
+    assert.ok(duplicateCellBounds && duplicateViewport);
+    assert.ok(
+      duplicateCellBounds.x >= duplicateViewport.x - 1 &&
+        duplicateCellBounds.y >= duplicateViewport.y - 1 &&
+        duplicateCellBounds.x + duplicateCellBounds.width <= duplicateViewport.x + duplicateViewport.width + 1 &&
+        duplicateCellBounds.y + duplicateCellBounds.height <= duplicateViewport.y + duplicateViewport.height + 1,
+      "The native R duplicate flag cell must be inside the visible grid viewport."
+    );
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 0 &&
+          !active.metadata.schema.some((column) => column.id === duplicateOutput.id)
+        );
+      },
+      30_000,
+      "undoing native R Mark Duplicates"
+    );
+    const duplicateRestored = testing.activeSession();
+    assert.ok(duplicateRestored);
+    assert.deepEqual(duplicateRestored.metadata.schema, duplicateBase.metadata.schema);
+    assert.equal(duplicateRestored.code ?? "", duplicateBase.code ?? "");
+    assert.deepEqual(duplicateRestored.viewState.filterModel, duplicateBase.viewState.filterModel);
+    assert.deepEqual(await readDuplicateSample(duplicateRestored), duplicateOriginalRows);
+    assert.equal(notebook.version, duplicateNotebookVersion);
+    assert.equal(notebook.isDirty, duplicateNotebookDirty);
+    assert.deepEqual(
+      notebook.getCells().map((cell) => cell.document.getText()),
+      duplicateNotebookCells
+    );
+    assertExactBytes(
+      readFileSync(notebookPath),
+      duplicateSourceBytes,
+      "Mark Duplicates must preserve the source notebook."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Mark Duplicates");
+
     recordAcceptanceProgress(`${phase}:editing:dense-rank-preview-apply-undo`);
     const rankBase = testing.activeSession();
     assert.ok(rankBase?.sessionId === sessionId);

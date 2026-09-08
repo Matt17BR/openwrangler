@@ -93,6 +93,16 @@ const validCases: ParamsCases = {
     ],
     expected: { columns: [city], keep: "last" }
   },
+  markDuplicates: {
+    kind: "markDuplicates",
+    fields: [
+      ["columns", "c:sales"],
+      ["columns", "c:city"],
+      ["newColumn", "is_duplicate"]
+    ],
+    expected: { columns: [sales, city], newColumn: "is_duplicate" },
+    filterModel: viewingFilterModel
+  },
   selectColumns: {
     kind: "selectColumns",
     fields: [
@@ -446,6 +456,20 @@ describe("buildParams", () => {
     expect(() => buildParams("selectColumns", form([]), emptyFilterModel, schema)).toThrow(
       "Select columns requires at least one compatible column."
     );
+    expect(() => buildParams("markDuplicates", form([["newColumn", "flag"]]), emptyFilterModel, schema)).toThrow(
+      "Mark duplicates requires at least one compatible column."
+    );
+    expect(() =>
+      buildParams(
+        "markDuplicates",
+        form([
+          ["columns", "c:missing"],
+          ["newColumn", "flag"]
+        ]),
+        emptyFilterModel,
+        schema
+      )
+    ).toThrow("The selected column is no longer available.");
   });
 
   it.each([
