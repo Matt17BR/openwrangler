@@ -295,50 +295,42 @@ retain the old view's anchors through a rejected replacement page, including a c
 native continuation. Accepted pages retain the existing page and complete-frame allowances.
 Late background invalidation is serialized with page publication, including reentrant cleanup with a queued writer.
 
-`python/tests/test_formula_literals.py` owns the shared Python Formula scalar boundary, actual file-session
-preview/apply/replay and standalone generated execution across the editing engines. The Polars owner covers native
-capacity, signedness changes, nulls, eager/lazy frames and ordinary numeric controls. Existing operation-form,
-protocol-validation and state-restoration tests own text entry, canonical bounds and retained public plans.
-Native R kernel and host transport owners check exact string retention, scalar precision refusal and actual generated
-R under changed display options, including the finite 309-digit endpoint. Existing scalar API controls remain separate.
-The kernel Formula missing-power case owns the exact captured native vector, wire cell kinds and generated result.
+Formula's arithmetic limits and engine-specific behavior are defined in [Engine boundaries and
+capabilities](architecture.md#engine-boundaries-and-capabilities). The owners below compare live and generated
+execution, exact values and native types, missing operands, source preservation and expected refusals.
 
-`python/tests/test_polars_engine.py` also owns ordinary integer Formula checks for paired operands, conversion loss,
-power limits and retained native output types. Boolean/integer cases cover native capacity and saved CSV plans
-replayed after a source column changes to Boolean, including unchanged confirmed state on refusal.
-Live and generated cases preserve paired nulls and mixed-integer
-floating results; a failed preview beyond the requested page preserves the confirmed session. Mixed plans exercise
-Custom Code helper isolation, while structural controls limit guard output to one Boolean and leave floating and
-Decimal paths free of row scans.
-The same owner checks minimum-version UInt128 column-kernel refusal before eager or lazy publication, including
-correlated notebook errors, confirmed-state recovery and working scalar and current-runtime controls.
+`python/tests/test_formula_literals.py` owns canonical integer text and file-session Preview, Apply, saved-plan replay
+and standalone execution across Pandas, Polars and DuckDB. Text entry and request validation belong to
+`operationBuilder.component.test.tsx`, `operationParams.unit.test.ts` and
+`protocolRequestOperationValidation.unit.test.ts` under `src/test/`.
 
-Ordinary Pandas integer Formula cases in the operation-edge owner compare live and standalone generated results
-against exact integer arithmetic. They check wraparound, lossy and exact promotions, selected operand pairs,
-Boolean companions, Sparse storage, missing-power identities and bounded power validation. Controls preserve
-By Example and existing noninteger behavior. The session-transaction owner checks failures beyond the previewed
-page, unchanged confirmed state and source bytes, retained Redo history, and a successful correction afterward.
+`python/tests/test_polars_engine.py` owns scalar capacity, integer and Boolean operand checks, eager/lazy behavior,
+helper isolation and bounded validation. Its public-session cases cover hidden-row refusal and saved plans replayed
+after a source type change. Its UInt128 column arithmetic cases distinguish correct execution on the current version
+from refusal before publication on the minimum version. They also check recovery, scalar operations and generated
+code.
 
-The DuckDB engine owner covers lossy and exact integer Formula promotions, both signed/unsigned operand orders, nulls,
-native types and complete generated programs that refuse before a later projection can discard the erroneous output.
-Caller-macro controls include fractional results that an integer cast could hide;
-volatile-source controls distinguish metadata inspection, generated readiness and later retrieval. Session transactions
-cover off-page refusal, unchanged source and confirmed state, correction and replay. BIGNUM support is not inferred
-from these fixed-width cases.
+`python/tests/test_operation_edges.py` owns checks for exact Pandas integer results, including Boolean companions,
+Sparse storage and native power identities with missing operands. The same file owns Arrow integer modulo and eligible
+integer/Decimal capacity repairs. These cases compare actual operand pairs, preserve missing values and retain correct
+native results and existing refusals. Mixed Formula, By Example and Custom Code programs check helper isolation
+without changing the other operations' behavior.
 
-Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
-standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
-refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned
-Parquet export, and verifies the complete confirmed state after a rejected zero-divisor preview.
-The same owners check UInt64 scalar and signed-companion inference, Decimal128-to-256 arithmetic, unchanged native
-successes, excluded custom integer extensions and exact physical export types. Negative UInt64 add/subtract literals
-and signed companion columns cover native signed successes, exact unsigned results, signed widths and storage,
-INT64_MIN, duplicate indexes and empty/null inputs. Addition also covers signed-left/UInt64-right columns while
-retaining native signed results and failed-native negative-output refusals. Mixed-sign cases check both null-pair
-directions and active underflow or overflow beyond the displayed row. Existing native results and unsupported operand
-refusals remain covered. Mixed Formula, By Example and Custom Code plans execute standalone output and check helper isolation.
-Session tests verify reported and replayed dtypes, exact Parquet output, retained Redo history after a failed mixed-sign
-preview, and successful correction afterward.
+`python/tests/test_duckdb_engine.py` owns fixed-width integer promotion checks in both signed/unsigned operand orders
+and protection from caller-defined macros. Its cases with volatile inputs distinguish metadata inspection from
+readiness and later retrieval, checking the operand pair used by each evaluation. Complete generated programs must
+refuse before a later projection can discard an erroneous Formula result. These cases do not establish BIGNUM support.
+
+`python/tests/test_session_transactions.py` owns Pandas and DuckDB refusal for rows beyond the previewed page,
+preservation of confirmed state and Redo history, successful correction and replay. Its Arrow cases also verify
+viewing, reported/replayed dtypes and exact Parquet readback. The Polars public-session cases remain in its engine
+owner above.
+
+Native R's `r/tests/kernel_agent.R` and `src/test/rKernelTransport.cross.test.ts` own literal precision and complete
+generated execution, including the finite 309-digit endpoint. The kernel's missing-power
+case compares the captured native vector, wire cell kinds and generated result.
+`src/test/rKernelTransformBinding.unit.test.ts` and `src/test/rKernelMutationSchema.unit.test.ts` own exact text
+retention and type prediction.
 
 Typed-cell tests check timestamp text, fractions, offsets and exact instants for UTC, minute and second offsets,
 including historical Berlin. They cover native timestamp units, nested values, ordinary datetime subclasses and
