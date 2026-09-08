@@ -13,6 +13,9 @@ import pytest
 from openwrangler_runtime.custom_code_scope import (
     CUSTOM_CODE_FUNCTION_NAME,
     CustomCodeScopeError,
+    custom_code_definition_lines,
+    custom_code_prelude_lines,
+    custom_code_step_lines,
     execute_custom_code,
     validate_custom_code_scope,
 )
@@ -388,3 +391,154 @@ def test_invalid_scope_is_rejected_before_new_or_replacement_draft(tmp_path: Pat
         )
     assert session_state(session) == before_replacement
     assert manager.close_session(session_id, 2) == {"kind": "sessionClosed", "sessionId": session_id}
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+@pytest.mark.parametrize("later_repair", [False, True], ids=["final-result", "intermediate-result"])
+def test_retained_custom_plan_refuses_zero_column_results_on_new_input(
+    tmp_path: Path, backend: str, later_repair: bool
+) -> None:
+    source = tmp_path / "original.csv"
+    source.write_bytes(b"key\n2\n3\n")
+    changed_source = tmp_path / "changed.csv"
+    changed_source.write_bytes(b"key\n20\n30\n")
+    code = (
+        "result = df.iloc[:, :0] if df['key'].max() > 10 else df"
+        if backend == "pandas"
+        else "result = df.select([]) if df.select(pl.col('key').max()).collect().item() > 10 else df"
+    )
+    operation = custom_step(code, "conditional")
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(source)}, backend=backend, page_size=2)
+        session_id = opened["metadata"]["sessionId"]
+        preview = manager.preview_step(session_id, 0, operation, 0, 2)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 2)
+        assert manager.sessions[session_id].plan == [operation]
+        if later_repair:
+            repair = custom_step(
+                "result = pd.DataFrame({'repaired': [9, 8]})"
+                if backend == "pandas"
+                else "result = pl.DataFrame({'repaired': [9, 8]}).lazy()",
+                "repair",
+            )
+            preview = manager.preview_step(session_id, applied["revision"], repair, 0, 2)
+            applied = manager.apply_draft(session_id, preview["revision"], 0, 2)
+            assert manager.sessions[session_id].plan == [operation, repair]
+
+        namespace: dict[str, Any] = {}
+        exec(compile(applied["code"], "<retained-custom-plan>", "exec"), namespace, namespace)
+        original: Any = pd.DataFrame({"key": [2, 3]}) if backend == "pandas" else pl.DataFrame({"key": [2, 3]}).lazy()
+        expected = (["repaired"], [(9,), (8,)]) if later_repair else (["key"], [(2,), (3,)])
+        assert materialize(namespace["clean_data"](original)) == expected
+        assert materialize(original) == (["key"], [(2,), (3,)])
+
+        changed = manager.open_session({"kind": "file", "path": str(changed_source)}, backend=backend, page_size=2)
+        changed_id = changed["metadata"]["sessionId"]
+        session = manager.sessions[changed_id]
+        before = session_state(session)
+        before_cache = deepcopy(session.page_cache)
+        with pytest.raises(EngineError, match="must leave at least one visible column"):
+            manager.preview_step(changed_id, 0, operation, 0, 2)
+        assert session_state(session) == before
+        assert session.page_cache == before_cache
+
+        caller: Any = (
+            pd.DataFrame({"key": [20, 30]}, index=pd.Index([4, 4], name="row"))
+            if backend == "pandas"
+            else pl.DataFrame({"key": [20, 30]}).lazy()
+        )
+        with pytest.raises(ValueError, match="must leave at least one visible column"):
+            namespace["clean_data"](caller)
+        assert materialize(caller) == (["key"], [(20,), (30,)])
+        if backend == "pandas":
+            assert caller.index.equals(pd.Index([4, 4], name="row"))
+    finally:
+        manager.close_all()
+        assert source.read_bytes() == b"key\n2\n3\n"
+        assert changed_source.read_bytes() == b"key\n20\n30\n"
+
+
+@pytest.mark.parametrize(("backend", "lazy"), [("pandas", False), ("polars", False), ("polars", True)])
+@pytest.mark.parametrize("case", ["typed-empty", "empty-series", "first-column", "internal-scaffold"])
+def test_custom_result_column_check_preserves_native_empty_and_first_column_results(
+    backend: str, lazy: bool, case: str
+) -> None:
+    engine: Any = PandasEngine() if backend == "pandas" else PolarsEngine()
+    if backend == "pandas":
+        frame: Any = (
+            pd.DataFrame(index=pd.Index([8, 8], name="row"))
+            if case == "first-column"
+            else pd.DataFrame({"key": pd.Series([2, 3], dtype="Int64")})
+        )
+        codes = {
+            "typed-empty": "result = df.head(0)",
+            "empty-series": "result = pd.Series([], dtype='Int64', name='key')",
+            "first-column": "result = df.assign(first=1)",
+            "internal-scaffold": "scaffold = df.iloc[:, :0]\nresult = scaffold.assign(first=1)",
+        }
+        source = frame.copy(deep=True)
+    else:
+        frame = pl.DataFrame() if case == "first-column" else pl.DataFrame({"key": [2, 3]})
+        frame = frame.lazy() if lazy else frame
+        codes = {
+            "typed-empty": "result = df.head(0)",
+            "empty-series": "result = pl.Series('key', [], dtype=pl.Int64)",
+            "first-column": "result = df.with_columns(pl.lit(1).alias('first'))",
+            "internal-scaffold": "scaffold = df.select([])\nresult = scaffold.with_columns(pl.lit(1).alias('first'))",
+        }
+        source = frame.clone()
+    try:
+        operation = custom_step(codes[case])
+        live = engine.apply_transform(frame, operation)
+        engine.validate_transformation_result(live)
+        generated = execute_generated(engine, frame, operation)
+        assert type(generated) is type(live)
+        assert materialize(live)[0] == (["key"] if case in {"typed-empty", "empty-series"} else ["first"])
+        if case in {"typed-empty", "empty-series"}:
+            assert materialize(live)[1] == []
+        if backend == "pandas":
+            pd.testing.assert_frame_equal(live, generated, check_exact=True)
+            pd.testing.assert_frame_equal(frame, source, check_exact=True)
+        else:
+            from polars.testing import assert_frame_equal
+
+            assert_frame_equal(live, generated, check_exact=True)
+            assert_frame_equal(frame, source, check_exact=True)
+
+        if case == "first-column":
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([]), namespace, namespace)
+            unchanged = namespace["clean_data"](frame)
+            if backend == "pandas":
+                pd.testing.assert_frame_equal(unchanged, frame, check_exact=True)
+            else:
+                assert unchanged is frame
+    finally:
+        engine.close()
+
+
+def test_generated_custom_result_schema_check_does_not_evaluate_lazy_rows() -> None:
+    visits: list[int] = []
+
+    def observe(batch: pl.DataFrame) -> pl.DataFrame:
+        visits.append(batch.height)
+        return batch
+
+    frame = pl.DataFrame({"key": [2, 3]}).lazy().map_batches(observe, schema={"key": pl.Int64})
+    # Exercise this shared emitter separately from whole-plan expression-readiness validation.
+    lines = [
+        *custom_code_prelude_lines(),
+        "import polars as pl",
+        *custom_code_definition_lines("result = df", index=0),
+        "def custom_result(df):",
+        *custom_code_step_lines(prefix="    ", engine_name="polars", index=0),
+        "    return df",
+    ]
+    namespace: dict[str, Any] = {}
+    exec(compile("\n".join(lines), "<generated-custom-result>", "exec"), namespace, namespace)
+    result = namespace["custom_result"](frame)
+    assert result is frame
+    assert visits == []
+    assert result.collect().rows() == [(2,), (3,)]
+    assert visits == [2]

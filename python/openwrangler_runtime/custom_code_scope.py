@@ -150,6 +150,8 @@ def custom_code_step_lines(*, prefix: str, engine_name: str, index: int) -> list
             f"{prefix}if not isinstance({result}, (pd.DataFrame, pd.Series)):",
             (f"{prefix}    raise ValueError('Custom Pandas code must assign a Pandas DataFrame or Series to result.')"),
             f"{prefix}df = {result}.to_frame() if isinstance({result}, pd.Series) else {result}",
+            f"{prefix}if len(df.columns) == 0:",
+            f"{prefix}    raise ValueError('A transformation must leave at least one visible column.')",
         ]
     if engine_name == "polars":
         return [
@@ -160,6 +162,8 @@ def custom_code_step_lines(*, prefix: str, engine_name: str, index: int) -> list
                 "'Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.')"
             ),
             f"{prefix}df = {result}.to_frame() if isinstance({result}, pl.Series) else {result}",
+            f"{prefix}if len(df.collect_schema() if isinstance(df, pl.LazyFrame) else df.columns) == 0:",
+            f"{prefix}    raise ValueError('A transformation must leave at least one visible column.')",
         ]
     return [
         f"{prefix}df = _ow_visible_relation(df)",

@@ -77,6 +77,8 @@ when duplicate or display-colliding labels are ambiguous. Generated Python check
 or renaming a column. Harmless extra columns and valid in-place replacements remain supported, including after earlier steps.
 Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
 results, before later expressions can read the wrong column. Case-only Rename remains supported.
+Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
+Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
 names. Lazy cleaning results are evaluated before confirmation and after each generated step, then retained as
 LazyFrames. One-hot encoding, multi-label encoding and Custom Code may instead materialize their results.
