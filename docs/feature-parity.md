@@ -390,6 +390,6 @@ These dispositions do not block stable publication unless a release starts adver
 | Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                          |
 | VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental     |
 | Localization and telemetry                                                                | Deferred product breadth                                                                              |
-| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred and explicitly nonblocking in the product roadmap                                            |
+| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                              |
 
 The current priorities and deferral dependencies live in the [product roadmap](product-roadmap.md).
