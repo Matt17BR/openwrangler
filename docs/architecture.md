@@ -455,6 +455,9 @@ Directional Fill uses the same native missing-run and donor-selection function i
 generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
 existing owners.
 
+Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
+operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
+
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
 sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal
