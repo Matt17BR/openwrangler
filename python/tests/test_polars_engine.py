@@ -9,7 +9,7 @@ import sys
 from copy import deepcopy
 from decimal import Decimal
 from math import nextafter
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from textwrap import dedent
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -222,20 +222,28 @@ def test_polars_file_scans_treat_glob_metacharacters_as_literal_path_characters(
     assert frame.collect().get_column("value").to_list() == [17, 18]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows cannot scan literal NDJSON glob characters.")
 @pytest.mark.parametrize(
-    "name",
+    ("name", "verbatim"),
     [
-        "[selected].jsonl",
-        "question?.ndjson",
-        "star*.ndjson",
-        "space %20 {x}].ndjson",
-        "[nested]/source.ndjson",
-        "back\\slash.ndjson",
+        *[
+            pytest.param(name, False, marks=pytest.mark.skipif(os.name == "nt", reason="Unix literal-path read."))
+            for name in [
+                "[selected].jsonl",
+                "question?.ndjson",
+                "star*.ndjson",
+                "space %20 {x}].ndjson",
+                "[nested]/source.ndjson",
+                "back\\slash.ndjson",
+            ]
+        ],
+        *[
+            pytest.param(name, True, marks=pytest.mark.skipif(os.name != "nt", reason="Native Windows path read."))
+            for name in ["plain.jsonl", "space %20 {x}].ndjson"]
+        ],
     ],
 )
 def test_polars_ndjson_session_reads_only_the_selected_file_and_invalidates_replacement(
-    name: str, tmp_path: Path
+    name: str, verbatim: bool, tmp_path: Path
 ) -> None:
     path = tmp_path / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,8 +256,9 @@ def test_polars_ndjson_session_reads_only_the_selected_file_and_invalidates_repl
     encoded = tmp_path / path.as_uri().rsplit("/", 1)[1]
     if encoded != path:
         encoded.write_bytes(b'{"value":99}\n')
+    selected_path = "\\\\?\\" + str(path.absolute()) if verbatim else str(path)
     manager = SessionManager()
-    opened = manager.open_session({"kind": "file", "label": name, "path": str(path)}, backend="polars", page_size=1)
+    opened = manager.open_session({"kind": "file", "label": name, "path": selected_path}, backend="polars", page_size=1)
     session_id = opened["metadata"]["sessionId"]
     try:
         assert opened["page"]["rows"][0]["values"][0]["display"] == "17"
@@ -312,23 +321,47 @@ def test_polars_ndjson_native_plan_outlives_the_closed_builtin_stream(
 
 
 @pytest.mark.parametrize(
-    "name", ["plain.ndjson", "space %20 {x}].jsonl", "[selected].jsonl", "question?.jsonl", "star*.jsonl"]
+    ("name", "accepted"),
+    [
+        (r"C:\plain.ndjson", True),
+        (r"C:\space %20 {x}].jsonl", True),
+        (r"C:\[selected].jsonl", False),
+        (r"C:\question?.jsonl", False),
+        (r"C:\star*.jsonl", False),
+        (r"\\?\C:\plain.jsonl", True),
+        (r"\\?\c:\space %20 {x}].ndjson", True),
+        (r"\\?\C:\[selected].jsonl", False),
+        (r"\\?\C:\[parent]\plain.jsonl", False),
+        (r"\\?\C:\question?.jsonl", False),
+        (r"\\?\C:\star*.jsonl", False),
+        (r"\\?\UNC\server\share\plain.jsonl", False),
+        (r"\\server\share\plain.jsonl", True),
+        (r"\\?\Volume{fixture}\plain.jsonl", False),
+        (r"\\?\C:plain.jsonl", False),
+    ],
 )
 def test_polars_ndjson_windows_branch_uses_direct_paths_or_refuses_glob_syntax(
-    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    name: str, accepted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # This checks dispatch on every platform; native Windows qualification is separate.
-    path = tmp_path / name
+    class WindowsPath(PureWindowsPath):
+        def expanduser(self) -> WindowsPath:
+            return self
+
+        def absolute(self) -> WindowsPath:
+            return self
+
     calls: list[str] = []
+    monkeypatch.setattr(polars_engine, "Path", WindowsPath)
     monkeypatch.setattr(polars_engine, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(pl, "scan_ndjson", lambda source: calls.append(source))
-    if any(symbol in str(path) for symbol in "*?["):
-        with pytest.raises(EngineError, match="Windows.*glob"):
-            PolarsEngine().read_file(str(path))
+    if not accepted:
+        with pytest.raises(EngineError):
+            PolarsEngine().read_file(name)
         assert not calls
     else:
-        PolarsEngine().read_file(str(path))
-        assert calls == [str(path.absolute())]
+        PolarsEngine().read_file(name)
+        assert calls == [name]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Resource limits and native file duplication are Unix-only.")

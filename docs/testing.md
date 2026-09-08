@@ -234,7 +234,8 @@ Polars file owners read actual JSONL/NDJSON files beside misleading encoded sibl
 They check selected rows, native lazy projection, standalone transformations and source replacement refusal. Unix
 tests retain native reads after the Python stream closes and exhaust descriptors only inside isolated child
 processes, where fallback buffering, empty-plan publication, panic diagnostics and leaked handles fail assertions.
-Windows dispatch tests are separate from actual Windows file reads and explicit glob-path refusal.
+Windows dispatch tests are separate from actual Windows local-drive verbatim reads, live/generated operations,
+source-replacement refusal and explicit glob-path refusal.
 
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill

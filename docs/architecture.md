@@ -310,8 +310,9 @@ Excel reader requires it; it is not a transport conversion path.
 CSV and Parquet readers disable native glob expansion. On Unix, JSONL/NDJSON opens the selected path through a
 builtin stream and gives Polars ownership of a duplicated native descriptor. If duplication falls back to a Python
 buffer read, the reader returns no source bytes and refuses the temporary plan. The session still checks its source
-fingerprint before and after reads. On Windows, JSONL/NDJSON uses the direct absolute path and refuses paths containing
-`*`, `?`, or `[`, including verbatim path prefixes, because the supported scanner cannot disable glob expansion.
+fingerprint before and after reads. On Windows, JSONL/NDJSON forwards the normalized absolute path unchanged. The glob
+check excludes only the structural `\\?\C:\` local-drive prefix; it still refuses `*`, `?`, or `[` in the remaining
+path and unsupported verbatim prefixes because the supported scanner cannot disable glob expansion.
 
 Datetime formatting preserves native Date and Datetime columns, including time zones and nanosecond precision,
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.

@@ -160,8 +160,9 @@ container type names. Fixed-size DuckDB arrays remain containers, with unsupport
 Polars By Example supports exact unsigned cancellation and multiplication by zero on the minimum runtime.
 Multi-label binarization retains empty, missing and repeated-label behavior across supported Polars versions.
 Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
-On Windows, paths containing `*`, `?`, or `[` are refused before opening, including verbatim path prefixes. Full
-Windows literal-path support remains open in [#986](https://github.com/Matt17BR/openwrangler/issues/986).
+On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
+Paths containing `*`, `?`, or `[` after that prefix, and unsupported verbatim prefixes, remain refused. Full Windows
+literal-path support remains open in [#986](https://github.com/Matt17BR/openwrangler/issues/986).
 
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
