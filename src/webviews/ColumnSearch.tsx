@@ -103,7 +103,7 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
       }
       if (results.length === 0) return;
       const delta = event.key === "ArrowDown" ? 1 : -1;
-      setActiveIndex((current) => (current + delta + results.length) % results.length);
+      setActiveIndex((current) => (Math.min(current, results.length - 1) + delta + results.length) % results.length);
       return;
     }
     if (event.key === "Home" && open && results.length > 0) {
@@ -120,7 +120,9 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
       event.preventDefault();
       const pageSize = Math.max(1, Math.floor(maximumResultViewportHeight / resultHeight) - 1);
       const delta = event.key === "PageDown" ? pageSize : -pageSize;
-      setActiveIndex((current) => Math.max(0, Math.min(results.length - 1, current + delta)));
+      setActiveIndex((current) =>
+        Math.max(0, Math.min(results.length - 1, Math.min(current, results.length - 1) + delta))
+      );
       return;
     }
     if (event.key === "Enter" && open && activeColumn) {

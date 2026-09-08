@@ -55,6 +55,7 @@ A failed Python viewing page retains the last confirmed query, so later Apply an
 filter. Spark also retains the prior view's continuation anchors when a replacement page fails.
 
 The operation catalog search exposes its accessible name before and after entering a query.
+Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,

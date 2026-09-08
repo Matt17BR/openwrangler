@@ -120,6 +120,66 @@ describe("ColumnSearch", () => {
     expect(input).toHaveAttribute("aria-expanded", "false");
   });
 
+  it.each([
+    { key: "ArrowUp", option: "amount, Integer column, column 2", columnId: "c:int" },
+    { key: "ArrowDown", option: "label, Text column", columnId: "c:text" },
+    { key: "PageUp", option: "label, Text column", columnId: "c:text" }
+  ])("moves $key from the displayed option after the schema shrinks", ({ key, option, columnId }) => {
+    const onSelect = vi.fn();
+    const { rerender } = render(<ColumnSearch columns={columns} onSelect={onSelect} />);
+    const input = screen.getByRole("combobox", { name: "Column" });
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "End" });
+    expect(input).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "opaque, Unknown column" }).id
+    );
+
+    rerender(<ColumnSearch columns={columns.slice(0, 3)} onSelect={onSelect} />);
+    const displayed = screen.getByRole("option", { name: "amount, Number column, column 3" });
+    expect(displayed).toHaveAttribute("aria-posinset", "3");
+    expect(input).toHaveAttribute("aria-activedescendant", displayed.id);
+
+    fireEvent.keyDown(input, { key });
+    expect(input).toHaveAttribute("aria-activedescendant", screen.getByRole("option", { name: option }).id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(columnId);
+  });
+
+  it("retains empty-list safety and ordinary navigation when the schema regrows", () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(<ColumnSearch columns={columns} onSelect={onSelect} />);
+    const input = screen.getByRole("combobox", { name: "Column" });
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "End" });
+    rerender(<ColumnSearch columns={[]} onSelect={onSelect} />);
+
+    expect(screen.getByRole("listbox", { name: "Matching columns" })).toBeEmptyDOMElement();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    for (const key of ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Enter"]) {
+      fireEvent.keyDown(input, { key });
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+
+    rerender(<ColumnSearch columns={columns.slice(0, 3)} onSelect={onSelect} />);
+    const first = screen.getByRole("option", { name: "label, Text column" });
+    const last = screen.getByRole("option", { name: "amount, Number column, column 3" });
+    expect(input).toHaveAttribute("aria-activedescendant", last.id);
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+
+    fireEvent.keyDown(input, { key: "Home" });
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input).toHaveAttribute("aria-activedescendant", last.id);
+    fireEvent.keyDown(input, { key: "PageUp" });
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+    fireEvent.keyDown(input, { key: "PageDown" });
+    expect(input).toHaveAttribute("aria-activedescendant", last.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("c:float");
+  });
+
   it("makes every column in a wide schema reachable without a 100-result cap", async () => {
     const wideColumns = Array.from({ length: 417 }, (_, position): ColumnSchema => ({
       id: `c:${position}`,
