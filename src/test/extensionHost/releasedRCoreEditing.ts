@@ -348,6 +348,32 @@ export async function exerciseReleasedRCoreEditingCatalog(
     );
     assertExactBytes(readFileSync(notebookPath), rankSourceBytes, "Dense Rank must preserve the source notebook.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Dense Rank");
+    const rankRestoredFirstColumn = rankRestored.metadata.schema[0];
+    assert.equal(rankRestoredFirstColumn?.name, "row_id");
+    assert.ok(rankRestoredFirstColumn);
+    const rankColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await rankColumnSearch.waitFor({ state: "visible", timeout: 10_000 });
+    await rankColumnSearch.fill(rankRestoredFirstColumn.name);
+    await app
+      .getByRole("option", { name: /^row_id,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await rankColumnSearch.press("Enter");
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return active?.sessionId === sessionId && active.viewState.selectedColumnId === rankRestoredFirstColumn.id;
+      },
+      10_000,
+      "selecting the restored first R column after Dense Rank"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored first R column after Dense Rank");
+    await app.locator('th[data-column="row_id"]').waitFor({ state: "visible", timeout: 10_000 });
+    await app
+      .locator('td[data-grid-row="0"][data-grid-column="0"]')
+      .first()
+      .getByText("1", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
   }
 
   recordAcceptanceProgress(`${phase}:editing:preview-discard`);
