@@ -1140,7 +1140,7 @@ class DuckDBEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         if plan and all(step["kind"] == "renameColumn" for step in plan):
-            lines = ["def clean_data(df):"]
+            lines = ["def clean_data(df):", "    _ow_check_addressability(df)"]
             for index, step in enumerate(plan):
                 params = step["params"]
                 column = bound_column_name(params["column"], "renameColumn")
@@ -1152,10 +1152,13 @@ class DuckDBEngine(DataFrameEngine):
                     f"    df = df.project({projection!r} + {output_name}.replace({quote!r}, {quote * 2!r}) "
                     f"+ {quote + ')'!r})"
                 )
+                lines.append("    _ow_check_addressability(df)")
             lines.append("    return df")
-            return "\n".join(lines) + "\n"
+            clean_data = "\n".join(lines)
+            helpers = select_generated_helpers(_generated_helper_source(), clean_data)
+            return helpers + "\n\n" + clean_data + "\n"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
-        clean_data_lines = ["def clean_data(df):"]
+        clean_data_lines = ["def clean_data(df):", "    _ow_check_addressability(df)"]
         for index, step in enumerate(plan):
             if step["kind"] == "denseRank":
                 # The native rank helper already validates its fresh destination.
@@ -1164,6 +1167,7 @@ class DuckDBEngine(DataFrameEngine):
                 output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
             clean_data_lines.extend(output_guards)
             clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
+            clean_data_lines.append("    _ow_check_addressability(df)")
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
@@ -3521,6 +3525,12 @@ def _ow_query(df, query):
     else:
         sql = "WITH ow AS (" + df.sql_query() + ") " + query
     return duckdb.sql(sql)
+
+
+def _ow_check_addressability(df):
+    folded = [str(column).casefold() for column in df.columns]
+    if len(set(folded)) != len(folded):
+        raise ValueError("DuckDB cannot safely address columns whose names differ only by case.")
 
 
 def _ow_columns(df):
