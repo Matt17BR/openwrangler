@@ -993,6 +993,159 @@ def test_duckdb_duplicates_preserve_source_values_through_history_and_export(
         manager.close_all()
 
 
+@pytest.mark.parametrize(
+    "family",
+    [
+        "integer",
+        "unsigned",
+        "timestamp",
+        "timezone",
+        "duration",
+        "timestamp-minimum",
+        "timezone-minimum",
+        "duration-minimum",
+    ],
+)
+@pytest.mark.parametrize("keep,expected_positions", [("first", [0, 1, 3]), ("last", [1, 2, 3]), ("none", [1, 3])])
+def test_pandas_arrow_duplicates_preserve_parquet_history_and_export(
+    tmp_path: Path, family: str, keep: str, expected_positions: list[int]
+) -> None:
+    import pandas as pd
+    import pyarrow as pa
+
+    dtype, high = {
+        "integer": (pa.int64(), 2**63 - 1),
+        "unsigned": (pa.uint64(), 2**64 - 1),
+        "timestamp": (pa.timestamp("ns"), 2**60 + 2),
+        "timezone": (pa.timestamp("ns", tz="Europe/Berlin"), 2**60 + 2),
+        "duration": (pa.duration("ns"), 2**60 + 2),
+        "timestamp-minimum": (pa.timestamp("ns"), -(2**63) + 1),
+        "timezone-minimum": (pa.timestamp("ns", tz="UTC"), -(2**63) + 1),
+        "duration-minimum": (pa.duration("ns"), -(2**63) + 1),
+    }[family]
+    source = pd.DataFrame(
+        {"key": pd.Series(pa.array([high, high - 1, high, None], type=dtype), dtype=pd.ArrowDtype(dtype))}
+    )
+    source.index = pd.Index([3, 1, 3, 2], name="source rows")
+    path = tmp_path / "arrow-duplicates.parquet"
+    source.to_parquet(path)
+    original = path.read_bytes()
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", page_size=20
+        )
+        sid = opened["metadata"]["sessionId"]
+        stats = manager.get_dataset_stats(sid, 0, view)
+        reference = {key: opened["metadata"]["schema"][0][key] for key in ("id", "name")}
+        operation = {
+            "id": "exact-duplicates",
+            "kind": "dropDuplicates",
+            "params": {"columns": [reference], "keep": keep},
+        }
+        preview = manager.preview_step(sid, 0, operation, 0, 20)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 20)
+        expected_rows = [opened["page"]["rows"][position] for position in expected_positions]
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in expected_rows]
+        assert [row["values"] for row in applied["page"]["rows"]] == [row["values"] for row in expected_rows]
+        assert applied["metadata"]["schema"] == opened["metadata"]["schema"]
+        assert preview["page"] == applied["page"]
+        assert preview["code"] == applied["code"]
+        assert stats["stats"]["duplicateRows"] == 1
+        assert stats["stats"]["missingCells"] == stats["stats"]["missingRows"] == 1
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](pd.read_parquet(path))
+        pd.testing.assert_frame_equal(generated, source.iloc[expected_positions], check_exact=True)
+        assert (
+            generated["key"]
+            .array.__arrow_array__()
+            .equals(source.iloc[expected_positions]["key"].array.__arrow_array__())
+        )
+        destination = tmp_path / "cleaned.parquet"
+        destination.touch()
+        device, inode = _regular_file_identity(destination)
+        manager.export_data(
+            sid,
+            applied["revision"],
+            str(destination),
+            {"format": "parquet", "rowAxisPolicy": "preserve"},
+            {"device": str(device), "inode": str(inode)},
+        )
+        reopened = pd.read_parquet(destination)
+        pd.testing.assert_frame_equal(reopened, source.iloc[expected_positions], check_exact=True)
+        assert pa.array(reopened["key"]).equals(pa.array(source.iloc[expected_positions]["key"]))
+        undone = manager.undo_step(sid, applied["revision"], 0, 20)
+        assert undone["page"]["rows"] == opened["page"]["rows"]
+        redone = manager.redo_step(sid, undone["revision"], 0, 20)
+        assert redone["page"]["rows"] == applied["page"]["rows"]
+        assert redone["code"] == applied["code"]
+        assert redone["metadata"]["steps"] == [operation]
+        assert path.read_bytes() == original
+        pd.testing.assert_frame_equal(pd.read_parquet(path), source, check_exact=True)
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("signed", [True, False])
+def test_pandas_sparse_profile_agrees_with_exact_drop_after_custom_code(tmp_path: Path, signed: bool) -> None:
+    import pandas as pd
+
+    from openwrangler_runtime.engines import PandasEngine
+
+    dtype = "int64" if signed else "uint64"
+    high = 2 ** (63 if signed else 64) - 1
+    values = [0, high, high - 1, high]
+    path = tmp_path / "sparse-source.csv"
+    path.write_text("value\n" + "\n".join(map(str, values)) + "\n", encoding="utf-8")
+    original = path.read_bytes()
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", mode="editing", page_size=10
+        )
+        sid = opened["metadata"]["sessionId"]
+        operation = {
+            "id": "sparse-values",
+            "kind": "customCode",
+            "params": {
+                "code": "result = df.copy()\n"
+                f"result['value'] = pd.Series(pd.arrays.SparseArray(df['value'].to_numpy(dtype={dtype!r}), "
+                f"dtype=pd.SparseDtype({dtype!r}, 0)), index=df.index)\n"
+                "result.index.name = 'source rows'"
+            },
+        }
+        preview = manager.preview_step(sid, 0, operation, 0, 10)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        assert [str(row["values"][0]["raw"]) for row in applied["page"]["rows"]] == list(map(str, values))
+        stats = manager.get_dataset_stats(sid, applied["revision"], view)["stats"]
+        assert stats == {
+            "duplicateRows": 1,
+            "missingCells": 0,
+            "missingRows": 0,
+            "missingValuesByColumn": [{"column": "value", "count": 0}],
+        }
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](pd.read_csv(path))
+        assert generated["value"].dtype == pd.SparseDtype(dtype, 0)
+        assert [int(value) for value in generated["value"]] == values
+        assert PandasEngine().header_stats(generated) == stats
+        reference = {key: applied["metadata"]["schema"][0][key] for key in ("id", "name")}
+        drop = {"id": "exact-drop", "kind": "dropDuplicates", "params": {"columns": [reference], "keep": "first"}}
+        dropped = manager.preview_step(sid, applied["revision"], drop, 0, 10)
+        assert dropped["page"]["rows"] == applied["page"]["rows"][:3]
+        discarded = manager.discard_draft(sid, dropped["revision"], 0, 10)
+        assert discarded["page"]["rows"] == applied["page"]["rows"]
+        assert discarded["metadata"]["steps"] == [operation]
+        assert manager.get_dataset_stats(sid, discarded["revision"], view)["stats"] == stats
+        assert path.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
 def test_extended_float_pages_and_preview_preserve_confirmed_source(monkeypatch: pytest.MonkeyPatch) -> None:
     import numpy as np
     import pandas as pd

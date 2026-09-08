@@ -303,6 +303,19 @@ def _pandas_row_key(series: Any) -> Any:
             key = pd.Series(series.to_numpy(dtype=object))
     else:
         key = pd.Series(series.array, dtype=series.dtype, name=series.name, copy=False)
+    if isinstance(key.dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        dtype = key.dtype.pyarrow_dtype
+        if (pa.types.is_integer(dtype) or pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype)) and cast(
+            "pd.arrays.ArrowExtensionArray", key.array
+        ).__arrow_array__().null_count:
+            # Nullable Arrow duplicate comparison can round exact keys through float64.
+            # Time-of-day values keep their native path: boxing can lose nanoseconds.
+            # Temporal boxing can turn a present INT64_MIN payload into missing.
+            if pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype):
+                key = key.astype(pd.ArrowDtype(pa.int64()))
+            key = key.astype(object)
     return key
 
 
@@ -924,6 +937,8 @@ class PandasEngine(DataFrameEngine):
         return null_count + nan_count
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
+        import pandas as pd
+
         df = self._visible_frame(self.normalize(frame))
         logical = df
         for position in range(df.shape[1]):
@@ -937,10 +952,18 @@ class PandasEngine(DataFrameEngine):
         missing_by_column = []
         for position, column in enumerate(df.columns):
             missing_by_column.append({"column": str(column), "count": int(df.iloc[:, position].isna().sum())})
+        single_dtype = df.dtypes.iloc[0] if df.shape[1] == 1 else None
+        duplicate_keys = (
+            _pandas_row_key(df.iloc[:, 0])
+            if isinstance(single_dtype, pd.ArrowDtype)
+            or isinstance(single_dtype, pd.SparseDtype)
+            and pd.api.types.is_integer_dtype(single_dtype)
+            else df
+        )
         return {
-            "missingCells": int(df.isna().sum().sum()),
+            "missingCells": sum(item["count"] for item in missing_by_column),
             "missingRows": int(df.isna().any(axis=1).sum()),
-            "duplicateRows": int(df.duplicated().sum()),
+            "duplicateRows": int(duplicate_keys.duplicated().sum()),
             "missingValuesByColumn": missing_by_column,
         }
 
@@ -5559,6 +5582,15 @@ def _generated_pandas_row_query_helpers(*, include_queries: bool = True) -> list
         "            key = pd.Series(series.to_numpy(dtype=object))",
         "    else:",
         "        key = pd.Series(series.array, dtype=series.dtype, name=series.name, copy=False)",
+        "    if isinstance(key.dtype, pd.ArrowDtype):",
+        "        import pyarrow as pa",
+        "        dtype = key.dtype.pyarrow_dtype",
+        "        if (",
+        "            pa.types.is_integer(dtype) or pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype)",
+        "        ) and key.array.__arrow_array__().null_count:",
+        "            if pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype):",
+        "                key = key.astype(pd.ArrowDtype(pa.int64()))",
+        "            key = key.astype(object)",
         "    return key",
         "",
         "",

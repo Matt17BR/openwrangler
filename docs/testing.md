@@ -162,6 +162,14 @@ DuckDB engine tests compare retained scalar and nested values, zero signs and na
 in live and generated results. Session transactions own the corresponding preview/history and source-preservation
 assertions.
 
+Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
+dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day
+nanoseconds and ordinary object missing-value distinctions. Present minimum temporal storage values remain distinct
+from real nulls. Public Parquet sessions verify the same comparison through Preview, history and export.
+Sparse integer profile controls preserve exact neighboring values, fill conventions and missing counts, including a
+public Custom Code session whose dataset count must agree with Drop Duplicates.
+Missing-cell totals are checked against per-column counts for multiple Sparse columns and mixed Dense/Sparse frames.
+
 Native R frame and catalog owners cover constructor and subset forms of empty tables, operations and Custom Code
 that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
 the same structural assertions.
