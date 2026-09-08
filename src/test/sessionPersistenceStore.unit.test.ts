@@ -12,6 +12,245 @@ import { type SessionPersistenceFailure, SessionPersistenceStore } from "../exte
 const source: SessionSource = { kind: "file", label: "sample.csv", path: "/workspace/sample.csv" };
 
 describe("SessionPersistenceStore", () => {
+  it("preserves a staged candidate and confirmed cleaning/filter during a presentation save", async () => {
+    const key = persistenceKey(source, "polars");
+    const previous = state("polars", 1);
+    const candidate: PersistedSessionState = {
+      ...state("polars", 2),
+      cleaning: {
+        steps: [
+          {
+            id: "clone",
+            kind: "cloneColumn",
+            params: {
+              column: { id: "c:value", name: "value" },
+              newName: "copy"
+            }
+          }
+        ]
+      },
+      view: {
+        ...state("polars", 2).view,
+        filterModel: { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] }
+      }
+    };
+    let stored: Record<string, unknown> = { [key]: serializePersistedSession(previous) };
+    const persistence = new SessionPersistenceStore(
+      memento(
+        () => stored,
+        (value) => {
+          stored = value;
+        }
+      ).value
+    );
+    const staged = await persistence.stageCurrent(source, candidate);
+    if (staged.kind !== "staged") throw new Error("Expected the candidate to stage.");
+    const pending = structuredClone(stored[key]);
+    const presentation = {
+      ...candidate,
+      view: {
+        ...candidate.view,
+        selectedColumnId: "c:value",
+        columnWidths: new Map([["c:value", 317]]),
+        viewport: { firstVisibleRow: 7, scrollLeft: 67 }
+      }
+    };
+    await persistence.save(source, "polars", () => presentation);
+    expect(stored[key]).toMatchObject({
+      pendingCurrentCommit: {
+        token: staged.transaction.token,
+        candidate: serializePersistedSession(candidate)
+      }
+    });
+    expect(persistence.load(source, "polars")).toMatchObject({
+      cleaning: previous.cleaning,
+      view: { ...presentation.view, filterModel: previous.view.filterModel }
+    });
+    expect(pending).toMatchObject({ pendingCurrentCommit: { candidate: serializePersistedSession(candidate) } });
+    const commit = vi.fn();
+    await expect(
+      persistence.commitStagedCurrent(
+        staged.transaction,
+        () => presentation,
+        () => true,
+        commit
+      )
+    ).resolves.toEqual({ kind: "committed" });
+    expect(commit).toHaveBeenCalledWith(presentation);
+    expect(persistence.load(source, "polars")).toEqual(presentation);
+  });
+
+  it("samples a queued save after an earlier commit publishes its new cleaning and filter", async () => {
+    const key = persistenceKey(source, "polars");
+    const otherSource = { ...source, path: "/workspace/blocker.csv" };
+    let live = state("polars", 1);
+    let stored: Record<string, unknown> = { [key]: serializePersistedSession(live) };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const persistence = new SessionPersistenceStore(
+      mementoFrom(
+        () => stored,
+        async (_key, value) => {
+          stored = value;
+          if (value[persistenceKey(otherSource, "polars")]) {
+            entered.resolve(undefined);
+            await release.promise;
+          }
+        }
+      )
+    );
+    const staged = await persistence.stageCurrent(source, live);
+    if (staged.kind !== "staged") throw new Error("Expected staging to succeed.");
+    const blocker = persistence.save(otherSource, "polars", () => state("polars", 0));
+    try {
+      await entered.promise;
+      const candidate: PersistedSessionState = {
+        ...state("polars", 7),
+        cleaning: {
+          steps: [
+            {
+              id: "clone",
+              kind: "cloneColumn",
+              params: {
+                column: { id: "c:value", name: "value" },
+                newName: "copy"
+              }
+            }
+          ]
+        },
+        view: {
+          ...state("polars", 7).view,
+          filterModel: { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] }
+        }
+      };
+      const commit = persistence.commitStagedCurrent(
+        staged.transaction,
+        () => candidate,
+        () => true,
+        (prepared) => {
+          live = prepared;
+        }
+      );
+      const save = persistence.save(source, "polars", () => live);
+      expect(live.cleaning.steps).toEqual([]);
+      release.resolve(undefined);
+      await blocker;
+      await expect(commit).resolves.toEqual({ kind: "committed" });
+      await expect(save).resolves.toEqual({ kind: "committed" });
+      expect(persistence.load(source, "polars")).toEqual(candidate);
+      expect(stored[key]).toEqual(serializePersistedSession(candidate));
+    } finally {
+      release.resolve(undefined);
+      await blocker;
+    }
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["invalid", { opaque: "retained" }],
+    ["without view", { backend: "polars", cleaning: { steps: [] } }]
+  ])("does not invent a reloadable candidate when the previous snapshot is %s", async (_label, previous) => {
+    const key = persistenceKey(source, "polars");
+    let stored: Record<string, unknown> = previous === undefined ? {} : { [key]: previous };
+    const memory = memento(
+      () => stored,
+      (value) => {
+        stored = value;
+      }
+    );
+    const persistence = new SessionPersistenceStore(memory.value);
+    const staged = await persistence.stageCurrent(source, state("polars", 2));
+    if (staged.kind !== "staged") throw new Error("Expected staging to succeed.");
+    const pending = structuredClone(stored[key]);
+    await persistence.save(source, "polars", () => state("polars", 7));
+    expect(memory.update).toHaveBeenCalledOnce();
+    expect(stored[key]).toEqual(pending);
+    await expect(persistence.restoreStagedCurrent(staged.transaction)).resolves.toEqual({ kind: "stale" });
+    expect(stored[key]).toEqual(previous);
+  });
+
+  it("keeps a newer staged token active when an older transaction finishes", async () => {
+    const key = persistenceKey(source, "polars");
+    let stored: Record<string, unknown> = { [key]: serializedState("polars", 1) };
+    const persistence = new SessionPersistenceStore(
+      memento(
+        () => stored,
+        (value) => {
+          stored = value;
+        }
+      ).value
+    );
+    const older = await persistence.stageCurrent(source, state("polars", 2));
+    const newer = await persistence.stageCurrent(source, state("polars", 3));
+    if (older.kind !== "staged" || newer.kind !== "staged") throw new Error("Expected both candidates to stage.");
+    const commit = vi.fn();
+    await expect(
+      persistence.commitStagedCurrent(
+        older.transaction,
+        () => state("polars", 2),
+        () => true,
+        commit
+      )
+    ).resolves.toEqual({ kind: "stale" });
+    expect(commit).not.toHaveBeenCalled();
+    await persistence.save(source, "polars", () => state("polars", 7));
+    expect(stored[key]).toMatchObject({ pendingCurrentCommit: { token: newer.transaction.token } });
+    await expect(
+      persistence.commitStagedCurrent(
+        newer.transaction,
+        () => state("polars", 3),
+        () => true,
+        commit
+      )
+    ).resolves.toEqual({ kind: "committed" });
+    expect(commit).toHaveBeenCalledOnce();
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 3));
+  });
+
+  it.each(["final-write", "publication-rollback", "serialization-rollback", "supplier"] as const)(
+    "releases a finished %s token so a later save can recover durable state",
+    async (failurePoint) => {
+      const key = persistenceKey(source, "polars");
+      let stored: Record<string, unknown> = { [key]: serializedState("polars", 1) };
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        if (update.mock.calls.length === 2) throw new Error("terminal persistence unavailable");
+        stored = value;
+      });
+      const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+      const staged = await persistence.stageCurrent(source, state("polars", 2));
+      if (staged.kind !== "staged") throw new Error("Expected staging to succeed.");
+      const candidate = state("polars", 2);
+      if (failurePoint === "serialization-rollback") candidate.view.viewport.scrollLeft = Number.NaN;
+      const operation = persistence.commitStagedCurrent(
+        staged.transaction,
+        () => {
+          if (failurePoint === "supplier") throw new Error("state supplier failed");
+          return candidate;
+        },
+        () => true,
+        () => {
+          if (failurePoint === "publication-rollback") throw new Error("publication failed");
+          return () => true;
+        }
+      );
+      if (failurePoint === "publication-rollback" || failurePoint === "supplier")
+        await expect(operation).rejects.toThrow();
+      else await expect(operation).resolves.toMatchObject({ kind: "unavailable" });
+      expect(stored[key]).toHaveProperty("pendingCurrentCommit");
+      // The supplier throws before a second write, so its recovery save uses the
+      // next available write rather than this fixture's injected write fault.
+      if (failurePoint === "supplier")
+        update.mockImplementation(async (_key, value) => {
+          stored = value;
+        });
+      await expect(persistence.save(source, "polars", () => state("polars", 17))).resolves.toEqual({
+        kind: "committed"
+      });
+      expect(stored[key]).toEqual(serializedState("polars", 17));
+      expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
+    }
+  );
+
   it("loads only decoded state for the exact source and backend", () => {
     const key = persistenceKey(source, "polars");
     let stored: Record<string, unknown> = { [key]: serializedState("pandas", 1) };
@@ -112,10 +351,17 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.load(source, "r")).toBeUndefined();
     expect(persistence.load(source, "pyspark")).toBeUndefined();
 
-    await persistence.save(snapshotSource, state("polars", 1));
-    await persistence.save(source, state("r", 2));
-    await persistence.save(source, state("pyspark", 3));
-    await expect(persistence.commitCurrent(source, state("r", 4), () => true, commit)).resolves.toEqual({
+    await persistence.save(snapshotSource, "polars", () => state("polars", 1));
+    await persistence.save(source, "r", () => state("r", 2));
+    await persistence.save(source, "pyspark", () => state("pyspark", 3));
+    await expect(
+      persistence.commitCurrent(
+        source,
+        () => state("r", 4),
+        () => true,
+        commit
+      )
+    ).resolves.toEqual({
       kind: "committed"
     });
 
@@ -134,9 +380,9 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(workspaceState);
     const secondSource: SessionSource = { ...source, path: "/workspace/second.csv" };
 
-    const first = persistence.save(source, state("polars", 1));
+    const first = persistence.save(source, "polars", () => state("polars", 1));
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
-    const second = persistence.save(secondSource, state("duckdb", 2));
+    const second = persistence.save(secondSource, "duckdb", () => state("duckdb", 2));
     await Promise.resolve();
     expect(update).toHaveBeenCalledOnce();
     firstUpdate.resolve();
@@ -162,7 +408,7 @@ describe("SessionPersistenceStore", () => {
     await expect(
       persistence.commitCurrent(
         source,
-        state("polars", 2),
+        () => state("polars", 2),
         () => true,
         () => {
           throw callbackFailure;
@@ -172,7 +418,7 @@ describe("SessionPersistenceStore", () => {
     expect(stored[key]).toEqual(previous);
     expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
 
-    await expect(persistence.save(source, state("polars", 3))).resolves.toEqual({ kind: "committed" });
+    await expect(persistence.save(source, "polars", () => state("polars", 3))).resolves.toEqual({ kind: "committed" });
     expect(persistence.load(source, "polars")).toEqual(state("polars", 3));
   });
 
@@ -191,7 +437,7 @@ describe("SessionPersistenceStore", () => {
     const failure = await persistence
       .commitCurrent(
         source,
-        state("polars", 2),
+        () => state("polars", 2),
         () => true,
         () => {
           throw publicationFailure;
@@ -240,7 +486,7 @@ describe("SessionPersistenceStore", () => {
     expect(live).toBe("previous");
     expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
     expect(persistence.load(source, "polars")).toEqual(state("polars", 1));
-    await expect(persistence.save(source, state("polars", 3))).resolves.toEqual({ kind: "committed" });
+    await expect(persistence.save(source, "polars", () => state("polars", 3))).resolves.toEqual({ kind: "committed" });
     expect(persistence.load(source, "polars")).toEqual(state("polars", 3));
   });
 
@@ -249,7 +495,14 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(memory.value);
     const commit = vi.fn();
 
-    await expect(persistence.commitCurrent(source, state("polars", 1), () => false, commit)).resolves.toEqual({
+    await expect(
+      persistence.commitCurrent(
+        source,
+        () => state("polars", 1),
+        () => false,
+        commit
+      )
+    ).resolves.toEqual({
       kind: "stale"
     });
 
@@ -267,7 +520,12 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
     const commit = vi.fn();
 
-    const pending = persistence.commitCurrent(source, state("polars", 2), () => true, commit);
+    const pending = persistence.commitCurrent(
+      source,
+      () => state("polars", 2),
+      () => true,
+      commit
+    );
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     expect(commit).not.toHaveBeenCalled();
     expect(stored[persistenceKey(source, "polars")]).toHaveProperty("pendingCurrentCommit");
@@ -318,7 +576,7 @@ describe("SessionPersistenceStore", () => {
     await expect(
       persistence.commitCurrent(
         source,
-        state("polars", 2),
+        () => state("polars", 2),
         () => true,
         () => {
           liveOwner = "candidate";
@@ -349,7 +607,12 @@ describe("SessionPersistenceStore", () => {
     const commit = vi.fn();
     let current = true;
 
-    const pending = persistence.commitCurrent(source, state("polars", 2), () => current, commit);
+    const pending = persistence.commitCurrent(
+      source,
+      () => state("polars", 2),
+      () => current,
+      commit
+    );
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     current = false;
     firstUpdate.resolve();
@@ -370,7 +633,12 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
     let current = true;
 
-    const pending = persistence.commitCurrent(source, state("polars", 2), () => current, vi.fn());
+    const pending = persistence.commitCurrent(
+      source,
+      () => state("polars", 2),
+      () => current,
+      vi.fn()
+    );
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     current = false;
     firstUpdate.resolve();
@@ -396,8 +664,13 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(workspaceState, failures);
     let current = true;
 
-    await persistence.save(source, state("polars", 2));
-    const pending = persistence.commitCurrent(source, state("polars", 3), () => current, vi.fn());
+    await persistence.save(source, "polars", () => state("polars", 2));
+    const pending = persistence.commitCurrent(
+      source,
+      () => state("polars", 3),
+      () => current,
+      vi.fn()
+    );
     await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
     current = false;
     staged.resolve();
@@ -439,8 +712,13 @@ describe("SessionPersistenceStore", () => {
     );
     let current = true;
 
-    await persistence.save(source, state("polars", 1));
-    const candidateB = persistence.commitCurrent(source, state("polars", 2), () => current, vi.fn());
+    await persistence.save(source, "polars", () => state("polars", 1));
+    const candidateB = persistence.commitCurrent(
+      source,
+      () => state("polars", 2),
+      () => current,
+      vi.fn()
+    );
     await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
     current = false;
     staged.resolve();
@@ -589,7 +867,7 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.load(source, "polars")).toBeUndefined();
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "read" });
 
-    await persistence.save(source, state("polars", 2));
+    await persistence.save(source, "polars", () => state("polars", 2));
     expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 2));
     expect(failureReceipts(failures)).toEqual([
@@ -606,7 +884,14 @@ describe("SessionPersistenceStore", () => {
     const pageCommit = vi.fn();
     const replacementCommit = vi.fn(() => vi.fn());
 
-    await expect(persistence.commitCurrent(source, state("polars", 1), () => true, pageCommit)).resolves.toEqual({
+    await expect(
+      persistence.commitCurrent(
+        source,
+        () => state("polars", 1),
+        () => true,
+        pageCommit
+      )
+    ).resolves.toEqual({
       kind: "unavailable",
       failure: {
         kind: "read",
@@ -646,13 +931,13 @@ describe("SessionPersistenceStore", () => {
     });
     const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
 
-    await persistence.save(source, state("polars", 1));
-    await persistence.save(otherSource, state("polars", 2));
+    await persistence.save(source, "polars", () => state("polars", 1));
+    await persistence.save(otherSource, "polars", () => state("polars", 2));
 
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
     expect(persistence.status(otherSource, "polars")).toEqual({ degraded: false, epoch: 0 });
 
-    await persistence.save(source, state("polars", 3));
+    await persistence.save(source, "polars", () => state("polars", 3));
     expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(mementoFrom(() => stored, update)).load(otherSource, "polars")).toEqual(
       state("polars", 2)
@@ -675,8 +960,8 @@ describe("SessionPersistenceStore", () => {
     persistence.retainOwner("session-a", source, "polars");
     persistence.retainOwner("session-b", otherSource, "polars");
 
-    await persistence.save(source, state("polars", 1));
-    await persistence.save(otherSource, state("polars", 2));
+    await persistence.save(source, "polars", () => state("polars", 1));
+    await persistence.save(otherSource, "polars", () => state("polars", 2));
     expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 2, retainedKeys: 2, degradedKeys: 2 });
     expect(failures).toHaveBeenCalledTimes(2);
 
@@ -686,7 +971,7 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 1 });
 
     writesFail = false;
-    await persistence.save(otherSource, state("polars", 3));
+    await persistence.save(otherSource, "polars", () => state("polars", 3));
     expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 1, retainedKeys: 1, degradedKeys: 0 });
 
     persistence.releaseOwner("session-b");
@@ -707,7 +992,7 @@ describe("SessionPersistenceStore", () => {
       const ownerSource: SessionSource = { ...source, path: `/workspace/session-${index}.csv` };
       const ownerId = `session-${index}`;
       persistence.retainOwner(ownerId, ownerSource, "polars");
-      await persistence.save(ownerSource, state("polars", index));
+      await persistence.save(ownerSource, "polars", () => state("polars", index));
       persistence.releaseOwner(ownerId);
     }
 
@@ -720,7 +1005,7 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(mementoFrom(() => ({}), update));
     persistence.retainOwner("closing-session", source, "polars");
 
-    const save = persistence.save(source, state("polars", 1));
+    const save = persistence.save(source, "polars", () => state("polars", 1));
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     persistence.releaseOwner("closing-session");
     write.reject(new Error("storage unavailable during close"));
@@ -739,7 +1024,7 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(mementoFrom(() => ({}), update));
     persistence.retainOwner("session-a", source, "polars");
 
-    void persistence.save(source, state("polars", 1));
+    void persistence.save(source, "polars", () => state("polars", 1));
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     const opening = await persistence.withOpeningOwner("opening:b", otherSource, undefined, async () =>
       persistence.load(otherSource, "polars")
@@ -771,20 +1056,31 @@ describe("SessionPersistenceStore", () => {
     const persistence = new SessionPersistenceStore(workspaceState, failures);
     const commit = vi.fn();
 
-    await expect(persistence.commitCurrent(source, state("polars", 1), () => true, commit)).resolves.toMatchObject({
+    await expect(
+      persistence.commitCurrent(
+        source,
+        () => state("polars", 1),
+        () => true,
+        commit
+      )
+    ).resolves.toMatchObject({
       kind: "unavailable",
       failure: { kind: "save" },
       liveState: "unchanged"
     });
-    await expect(persistence.save(source, state("polars", 2))).resolves.toMatchObject({ kind: "unavailable" });
+    await expect(persistence.save(source, "polars", () => state("polars", 2))).resolves.toMatchObject({
+      kind: "unavailable"
+    });
     expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "save" });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toBeUndefined();
 
-    await expect(persistence.save(source, state("polars", 3))).resolves.toEqual({ kind: "committed" });
+    await expect(persistence.save(source, "polars", () => state("polars", 3))).resolves.toEqual({ kind: "committed" });
     expect(persistence.status(source, "polars")).toEqual({ degraded: false, epoch: 0 });
     expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 3));
 
-    await expect(persistence.save(source, state("polars", 4))).resolves.toMatchObject({ kind: "unavailable" });
+    await expect(persistence.save(source, "polars", () => state("polars", 4))).resolves.toMatchObject({
+      kind: "unavailable"
+    });
 
     expect(commit).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledTimes(4);

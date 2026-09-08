@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
-import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata, SessionSource } from "../shared/protocol";
+import type {
+  FilterModel,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
+  SessionMetadata,
+  SessionSource
+} from "../shared/protocol";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
+import { isOpenWranglerRequest, isOpenWranglerResponse } from "../shared/protocolValidation";
 import {
   inspectionStep,
   openedResponse,
@@ -15,6 +23,311 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
+  it.each([false, true])(
+    "retains current sort and latest presentation across a staged page (final write failure: %s)",
+    async (failFinalWrite) => {
+      const runtimeOpened = presentationOpenedResponse();
+      const firstFilter: FilterModel = {
+        filters: [],
+        sort: [{ column: "units", direction: "desc", nulls: "last" }]
+      };
+      const nextFilter: FilterModel = {
+        filters: [],
+        sort: [{ column: "sales", direction: "desc", nulls: "last" }, ...firstFilter.sort]
+      };
+      const key = persistenceKey(openRequest.source, "polars");
+      let stored: Record<string, unknown> = {};
+      let armed = false;
+      let paused = false;
+      const stageStarted = rejectingDeferred<void>();
+      const releaseStage = rejectingDeferred<void>();
+      const workspaceState = {
+        get: vi.fn((_key: string, fallback?: unknown) => stored ?? fallback),
+        update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+          const entry = value[key];
+          const pending = typeof entry === "object" && entry !== null && "pendingCurrentCommit" in entry;
+          if (armed && !pending && failFinalWrite) throw new Error("final page storage unavailable");
+          stored = value;
+          if (armed && pending && !paused) {
+            paused = true;
+            stageStarted.resolve(undefined);
+            await releaseStage.promise;
+          }
+        }),
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        expect(isOpenWranglerRequest(request)).toBe(true);
+        let response: OpenWranglerResponse;
+        if (request.kind === "openSession") response = runtimeOpened;
+        else if (request.kind === "getPage") {
+          response = {
+            ...pageResponseForMetadata(request, runtimeOpened.metadata),
+            page: { ...runtimeOpened.page, offset: request.offset, limit: request.limit }
+          };
+        } else if (request.kind === "closeSession") response = { kind: "sessionClosed", sessionId: request.sessionId };
+        else throw new Error(`Unexpected staged-page request: ${request.kind}`);
+        expect(isOpenWranglerResponse(response)).toBe(true);
+        return response;
+      });
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+      try {
+        const opened = await bridge.request(openRequest);
+        if (opened.kind !== "sessionOpened") throw new Error("Expected the presentation session to open.");
+        const sessionId = opened.metadata.sessionId;
+        const sort = (filterModel: FilterModel, viewRequestId: string) =>
+          bridge.request(
+            {
+              kind: "getPage",
+              sessionId,
+              revision: 0,
+              viewRequestId,
+              filterModel,
+              offset: 0,
+              limit: 2,
+              columnOffset: 0,
+              columnLimit: 2
+            },
+            { viewContextId: viewRequestId }
+          );
+        await expect(sort(firstFilter, "first-sort")).resolves.toMatchObject({ kind: "page" });
+        armed = true;
+        const page = sort(nextFilter, "next-sort");
+        await stageStarted.promise;
+        const presentation = bridge.updateViewState?.(sessionId, {
+          selectedColumnId: "c:sales",
+          columnWidths: new Map([["c:sales", 317]]),
+          viewport: { firstVisibleRow: 1, scrollLeft: 67 }
+        });
+        releaseStage.resolve(undefined);
+        await presentation;
+        await expect(page).resolves.toMatchObject(
+          failFinalWrite
+            ? { kind: "error", code: "persistence_unavailable" }
+            : { kind: "page", metadata: { filterModel: nextFilter } }
+        );
+        const expectedFilter = failFinalWrite ? firstFilter : nextFilter;
+        const expectedView = {
+          filterModel: expectedFilter,
+          selectedColumnId: "c:sales",
+          columnWidths: new Map([["c:sales", 317]]),
+          viewport: { firstVisibleRow: failFinalWrite ? 1 : 0, scrollLeft: 67 }
+        };
+        expect(coordinator.activeSession()).toEqual(coordinator.sessionSnapshot(sessionId));
+        expect(coordinator.activeSession()).toMatchObject({
+          metadata: { filterModel: expectedFilter },
+          viewState: expectedView
+        });
+        expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")).toMatchObject({
+          cleaning: { steps: [] },
+          view: expectedView
+        });
+        await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+        expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(1);
+        expect(coordinator.diagnostics().sessionCount).toBe(0);
+      } finally {
+        releaseStage.resolve(undefined);
+        await coordinator.shutdown();
+      }
+    }
+  );
+
+  it("retains presentation and the pending owner while a mutation is executing", async () => {
+    const runtimeOpened = presentationOpenedResponse();
+    const mutationStarted = rejectingDeferred<void>();
+    const releaseMutation = rejectingDeferred<void>();
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn(() => stored),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "applyDraft") {
+        mutationStarted.resolve(undefined);
+        await releaseMutation.promise;
+        const response: OpenWranglerResponse = {
+          ...planUpdatedResponse(1, [inspectionStep], request.sessionId),
+          metadata: {
+            ...runtimeOpened.metadata,
+            revision: 1,
+            steps: [inspectionStep],
+            latestStepInputSchema: runtimeOpened.metadata.schema
+          },
+          page: runtimeOpened.page
+        };
+        expect(isOpenWranglerResponse(response)).toBe(true);
+        return response;
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected pending presentation request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the mutation session to open.");
+      const sessionId = opened.metadata.sessionId;
+      await bridge.updateViewState?.(sessionId, {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft: 5 }
+      });
+      const mutation = bridge.request({
+        kind: "applyDraft",
+        sessionId,
+        revision: 0,
+        offset: 0,
+        limit: openRequest.pageSize,
+        columnOffset: 0,
+        columnLimit: 16
+      });
+      await mutationStarted.promise;
+      await bridge.updateViewState?.(sessionId, {
+        selectedColumnId: "c:sales",
+        columnWidths: new Map([["c:sales", 317]]),
+        viewport: { firstVisibleRow: 1, scrollLeft: 67 }
+      });
+      expect(stored[persistenceKey(openRequest.source, "polars")]).toHaveProperty("pendingCurrentCommit");
+      expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")?.cleaning.steps).toEqual(
+        []
+      );
+      releaseMutation.resolve(undefined);
+      await expect(mutation).resolves.toMatchObject({ kind: "planUpdated", metadata: { steps: [inspectionStep] } });
+      expect(coordinator.activeSession()?.viewState).toMatchObject({
+        selectedColumnId: "c:sales",
+        columnWidths: new Map([["c:sales", 317]]),
+        viewport: { firstVisibleRow: 1, scrollLeft: 67 }
+      });
+      expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")).toMatchObject({
+        cleaning: { steps: [inspectionStep] },
+        view: coordinator.activeSession()?.viewState
+      });
+    } finally {
+      releaseMutation.resolve(undefined);
+      await coordinator.shutdown();
+    }
+  });
+
+  it("persists presentation while an unrelated background profile remains active", async () => {
+    const runtimeOpened = presentationOpenedResponse();
+    const profileStarted = rejectingDeferred<void>();
+    const releaseProfile = rejectingDeferred<void>();
+    let profileFinished = false;
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn(() => stored),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "getSummary") {
+        profileStarted.resolve(undefined);
+        await releaseProfile.promise;
+        profileFinished = true;
+        return {
+          kind: "error",
+          code: "owned_profile",
+          message: "Synthetic profile settled.",
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected background presentation request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the profile session to open.");
+      const sessionId = opened.metadata.sessionId;
+      const profile = bridge.request(
+        {
+          kind: "getSummary",
+          sessionId,
+          revision: 0,
+          viewRequestId: "background-profile",
+          filterModel: runtimeOpened.metadata.filterModel
+        },
+        { priority: "background" }
+      );
+      await profileStarted.promise;
+      await bridge.updateViewState?.(sessionId, {
+        selectedColumnId: "c:sales",
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft: 67 }
+      });
+      expect(profileFinished).toBe(false);
+      expect(new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")?.view).toMatchObject({
+        selectedColumnId: "c:sales",
+        viewport: { scrollLeft: 67 }
+      });
+      releaseProfile.resolve(undefined);
+      await expect(profile).resolves.toMatchObject({ kind: "error", code: "owned_profile" });
+    } finally {
+      releaseProfile.resolve(undefined);
+      await coordinator.shutdown();
+    }
+  });
+
+  it("does not save a queued presentation from a session that has closed", async () => {
+    let stored: Record<string, unknown> = {};
+    const firstWrite = rejectingDeferred<void>();
+    const releaseWrite = rejectingDeferred<void>();
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      if (update.mock.calls.length === 1) {
+        firstWrite.resolve(undefined);
+        await releaseWrite.promise;
+      }
+      stored = value;
+    });
+    const workspaceState = {
+      get: vi.fn(() => stored),
+      update,
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return presentationOpenedResponse();
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected retired presentation request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the closing session to open.");
+      const sessionId = opened.metadata.sessionId;
+      const save = (scrollLeft: number) =>
+        bridge.updateViewState?.(sessionId, {
+          columnWidths: new Map(),
+          viewport: { firstVisibleRow: 0, scrollLeft }
+        });
+      const first = save(17);
+      await firstWrite.promise;
+      const queued = save(29);
+      await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+      releaseWrite.resolve(undefined);
+      await Promise.all([first, queued]);
+      expect(update).toHaveBeenCalledOnce();
+      expect(
+        new SessionPersistenceStore(workspaceState).load(openRequest.source, "polars")?.view?.viewport.scrollLeft
+      ).toBe(17);
+      expect(coordinator.activeSession()).toBeUndefined();
+      expect(coordinator.diagnostics().sessionCount).toBe(0);
+    } finally {
+      releaseWrite.resolve(undefined);
+      await coordinator.shutdown();
+    }
+  });
+
   it.each([
     ["null", null],
     ["array", []],
@@ -619,4 +932,50 @@ function rejectingDeferred<T>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function presentationOpenedResponse(): ReturnType<typeof openedResponse> {
+  const opened = openedResponse();
+  return {
+    ...opened,
+    metadata: {
+      ...opened.metadata,
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:sales", name: "sales", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:units", name: "units", position: 1, rawType: "Int64", type: "integer", nullable: false }
+      ]
+    },
+    page: {
+      offset: 0,
+      limit: openRequest.pageSize,
+      totalRows: 2,
+      columnIds: ["c:sales", "c:units"],
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: [2, 20].map((value) => ({
+            kind: "integer",
+            raw: value,
+            display: String(value),
+            isNull: false,
+            isNaN: false
+          }))
+        },
+        {
+          id: "r:1",
+          rowNumber: 1,
+          values: [1, 10].map((value) => ({
+            kind: "integer",
+            raw: value,
+            display: String(value),
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    }
+  };
 }

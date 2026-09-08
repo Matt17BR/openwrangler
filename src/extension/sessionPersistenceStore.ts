@@ -63,6 +63,7 @@ export interface SessionPersistenceOpeningResult<T> {
 export class SessionPersistenceStore {
   private storageTail: Promise<void> = Promise.resolve();
   private commitOrdinal = 0;
+  private readonly activeCurrentTokens = new Map<string, string>();
   private replacementOrdinal = 0;
   private readonly ownerStatuses = new Map<string, OwnerPersistenceStatus>();
   private readonly retainedOwnerKeys = new Map<string, string>();
@@ -157,21 +158,51 @@ export class SessionPersistenceStore {
     return state?.backend === backend ? state : undefined;
   }
 
-  async save(source: SessionSource, state: PersistedSessionState): Promise<SessionPersistenceCommitResult> {
-    if (!this.workspaceState || !isPersistentSession(source, state.backend)) return { kind: "committed" };
-    const serialized = serializePersistedSession(state);
-    if (!serialized) return { kind: "committed" };
-    const key = persistenceKey(source, state.backend);
+  async save(
+    source: SessionSource,
+    backend: DataBackend,
+    getState: () => PersistedSessionState | undefined
+  ): Promise<SessionPersistenceCommitResult> {
+    if (!this.workspaceState || !isPersistentSession(source, backend)) return { kind: "committed" };
+    const key = persistenceKey(source, backend);
     let result: SessionPersistenceCommitResult = { kind: "committed" };
     await this.enqueue(key, async () => {
+      const state = getState();
+      if (!state) {
+        result = { kind: "stale" };
+        return;
+      }
+      if (state.backend !== backend) throw new Error("A presentation save cannot change its backend.");
+      const serialized = serializePersistedSession(state);
+      if (!serialized) return;
       const stored = this.readStored(key);
       if (!stored.ok) {
         result = unavailable(stored.failure, "unchanged");
         return;
       }
-      const written = await this.writeStored(key, { ...stored.value, [key]: serialized }, "save");
-      if (written.ok) this.confirmPersistence(key);
-      else result = unavailable(written.failure, "unchanged");
+      const pending = pendingCurrentCommit(stored.value[key]);
+      const activePending = pending && this.activeCurrentTokens.get(key) === pending.token;
+      let value: unknown = serialized;
+      if (activePending) {
+        const previous = pending.hadPreviousState ? decodePersistedSession(pending.previousState) : undefined;
+        // Presentation must neither publish the candidate nor invent a confirmed
+        // state when this transaction has no valid previous recovery snapshot.
+        if (!previous?.view || previous.backend !== backend) return;
+        value = {
+          pendingCurrentCommit: {
+            ...pending,
+            previousState: {
+              backend,
+              cleaning: previous.cleaning,
+              view: { ...serialized.view, filterModel: previous.view.filterModel }
+            }
+          }
+        };
+      }
+      const written = await this.writeStored(key, { ...stored.value, [key]: value }, "save");
+      if (written.ok) {
+        if (!activePending) this.confirmPersistence(key);
+      } else result = unavailable(written.failure, "unchanged");
     });
     return result;
   }
@@ -209,91 +240,104 @@ export class SessionPersistenceStore {
       const pendingWrite = await this.writeStored(key, { ...stored.value, [key]: pending }, "save");
       if (!pendingWrite.ok) {
         result = { kind: "unavailable", failure: pendingWrite.failure, liveState: "unchanged" };
-      }
+      } else this.activeCurrentTokens.set(key, token);
     });
     return result;
   }
 
   async commitCurrent(
     source: SessionSource,
-    state: PersistedSessionState,
+    getState: () => PersistedSessionState,
     isCurrent: () => boolean,
-    commit: () => void | (() => boolean | void)
+    commit: (state: PersistedSessionState) => void | (() => boolean | void)
   ): Promise<SessionPersistenceCommitResult> {
     if (!isCurrent()) return { kind: "stale" };
-    const staged = await this.stageCurrent(source, state);
+    const staged = await this.stageCurrent(source, getState());
     if (staged.kind === "unavailable") return staged;
-    return this.commitStagedCurrent(staged.transaction, state, isCurrent, commit);
+    return this.commitStagedCurrent(staged.transaction, getState, isCurrent, commit);
   }
 
   async commitStagedCurrent(
     transaction: SessionPersistenceTransaction,
-    state: PersistedSessionState,
+    getState: () => PersistedSessionState,
     isCurrent: () => boolean,
-    commit: () => void | (() => boolean | void)
+    commit: (state: PersistedSessionState) => void | (() => boolean | void)
   ): Promise<SessionPersistenceCommitResult> {
     if (!transaction.key || !transaction.token) {
       if (!isCurrent()) return { kind: "stale" };
-      commit();
+      commit(getState());
       return { kind: "committed" };
     }
-    if (
-      transaction.backend !== state.backend ||
-      persistenceKey(transaction.source, transaction.backend) !== transaction.key
-    ) {
-      throw new Error("A persistence transaction cannot be committed for a different source or backend.");
-    }
-    const serialized = serializePersistedSession(state);
-    if (!serialized) return this.restoreStagedCurrent(transaction);
-
     const key = transaction.key;
     const token = transaction.token;
     let result: SessionPersistenceCommitResult = { kind: "stale" };
     await this.enqueue(key, async () => {
-      if (!isCurrent()) {
-        result = await this.restorePendingCommit(key, token);
-        return;
-      }
-      const latest = this.readStored(key);
-      if (!latest.ok) {
-        result = unavailable(latest.failure, "unchanged");
-        return;
-      }
-      const latestPending = pendingCurrentCommit(latest.value[key], token);
-      if (!latestPending) return;
-      if (!isCurrent()) {
-        result = await this.restorePending(key, latest.value, latestPending);
-        return;
-      }
-      let rollback: void | (() => boolean | void);
       try {
-        rollback = commit();
-      } catch (error) {
-        const restored = await this.restorePending(key, latest.value, latestPending);
-        if (restored.kind === "unavailable") {
-          throw this.combinedFailure(error, restored.failure, "Publication and persistence rollback both failed.");
+        if (!isCurrent()) {
+          result = await this.restorePendingCommit(key, token);
+          return;
         }
-        throw error;
+        const latest = this.readStored(key);
+        if (!latest.ok) {
+          result = unavailable(latest.failure, "unchanged");
+          return;
+        }
+        const latestPending = pendingCurrentCommit(latest.value[key], token);
+        if (!latestPending) return;
+        if (!isCurrent()) {
+          result = await this.restorePending(key, latest.value, latestPending);
+          return;
+        }
+        const state = getState();
+        if (transaction.backend !== state.backend || persistenceKey(transaction.source, state.backend) !== key) {
+          throw new Error("A persistence transaction cannot be committed for a different source or backend.");
+        }
+        const serialized = serializePersistedSession(state);
+        if (!serialized) {
+          result = await this.restorePending(key, latest.value, latestPending);
+          return;
+        }
+        let rollback: void | (() => boolean | void);
+        try {
+          rollback = commit(state);
+        } catch (error) {
+          const restored = await this.restorePending(key, latest.value, latestPending);
+          if (restored.kind === "unavailable") {
+            throw this.combinedFailure(error, restored.failure, "Publication and persistence rollback both failed.");
+          }
+          throw error;
+        }
+        const candidateWrite = await this.writeStored(key, { ...latest.value, [key]: serialized }, "save");
+        if (!candidateWrite.ok) {
+          const rolledBack = this.rollbackPublished(candidateWrite.failure, rollback);
+          result = unavailable(candidateWrite.failure, rolledBack ? "unchanged" : "committed");
+          return;
+        }
+        this.confirmPersistence(key);
+        result = { kind: "committed" };
+      } finally {
+        this.releaseCurrentTransaction(key, token);
       }
-      const candidateWrite = await this.writeStored(key, { ...latest.value, [key]: serialized }, "save");
-      if (!candidateWrite.ok) {
-        const rolledBack = this.rollbackPublished(candidateWrite.failure, rollback);
-        result = unavailable(candidateWrite.failure, rolledBack ? "unchanged" : "committed");
-        return;
-      }
-      this.confirmPersistence(key);
-      result = { kind: "committed" };
     });
     return result;
   }
 
   async restoreStagedCurrent(transaction: SessionPersistenceTransaction): Promise<SessionPersistenceCommitResult> {
     if (!transaction.key || !transaction.token) return { kind: "stale" };
+    const { key, token } = transaction;
     let result: SessionPersistenceCommitResult = { kind: "stale" };
-    await this.enqueue(transaction.key, async () => {
-      result = await this.restorePendingCommit(transaction.key!, transaction.token!);
+    await this.enqueue(key, async () => {
+      try {
+        result = await this.restorePendingCommit(key, token);
+      } finally {
+        this.releaseCurrentTransaction(key, token);
+      }
     });
     return result;
+  }
+
+  private releaseCurrentTransaction(key: string, token: string): void {
+    if (this.activeCurrentTokens.get(key) === token) this.activeCurrentTokens.delete(key);
   }
 
   async commitRuntimeReplacement(

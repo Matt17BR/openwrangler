@@ -7475,6 +7475,47 @@ async function exercisePackagedBackendSwitchJourney(
 
 async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
   recordAcceptanceProgress(checkpoint);
+  const sessionId = testing.activeSession()?.sessionId;
+  assert.ok(sessionId, "The quick-sort journey requires an active session.");
+  const pinnedRenderer = testing.panelSynchronizationReceipt(sessionId);
+  const sortState = (sort: FilterModel["sort"] | undefined) => ({
+    count: sort?.length,
+    rules: sort?.slice(0, 4).map((rule) => ({
+      column: rule.column === "market" || rule.column === "revenue" ? rule.column : "other",
+      direction: rule.direction,
+      nulls: rule.nulls
+    }))
+  });
+  const sortDiagnostics = async () => {
+    const exact = testing.sessionSnapshot(sessionId);
+    const renderer = testing.panelSynchronizationReceipt(sessionId);
+    return JSON.stringify({
+      activeSessionMatches: testing.activeSession()?.sessionId === sessionId,
+      sessionPresent: exact !== undefined,
+      revision: exact?.metadata.revision,
+      metadataSort: sortState(exact?.metadata.filterModel.sort),
+      viewingSort: sortState(exact?.viewState.filterModel.sort),
+      scheduler: testing.sessionSchedulerState(sessionId),
+      panelHydrated: testing.panelHydrated(sessionId),
+      rendererReceiptPresent: renderer !== undefined,
+      rendererStillPinned: pinnedRenderer !== undefined && sameRendererSynchronizationReceipt(pinnedRenderer, renderer),
+      stalePageErrorPresent: await withAcceptanceOperationDeadline(
+        (async () => {
+          if (!pinnedRenderer) return "unavailable";
+          const app = await exactSessionApp(frame, sessionId, pinnedRenderer.syncId);
+          if (!app) return "owner-mismatch";
+          return (
+            (await app
+              .getByRole("alert")
+              .filter({ hasText: "Ignored a page superseded while its viewing state was being saved." })
+              .count()) > 0
+          );
+        })(),
+        1_000,
+        "one observation of the original quick-sort app"
+      ).catch(() => "unavailable")
+    });
+  };
   const marketHeader = frame.locator('th[data-column="market"]').first();
   const marketMenu = marketHeader.locator("details.columnMenu").first();
   await marketMenu.getByLabel("Column actions for market").click();
@@ -7492,7 +7533,8 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
       );
     },
     10_000,
-    "the market quick sort to become the highest-priority viewing sort"
+    "the market quick sort to become the highest-priority viewing sort",
+    sortDiagnostics
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="1"]')
@@ -7530,7 +7572,8 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
       );
     },
     10_000,
-    "the revenue quick sort to become priority 1 while retaining market as its tie-breaker"
+    "the revenue quick sort to become priority 1 while retaining market as its tie-breaker",
+    sortDiagnostics
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')
@@ -7551,7 +7594,8 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
       return sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc";
     },
     10_000,
-    "clearing the primary revenue sort to retain the market tie-breaker as priority 1"
+    "clearing the primary revenue sort to retain the market tie-breaker as priority 1",
+    sortDiagnostics
   );
   const revenueSortIndicator = revenueHeader.getByRole("button", { name: /Clear sort for revenue/u });
   await revenueSortIndicator.waitFor({ state: "hidden", timeout: 10_000 });
@@ -7573,7 +7617,8 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
   await waitFor(
     () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
     10_000,
-    "clearing the final market sort"
+    "clearing the final market sort",
+    sortDiagnostics
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')

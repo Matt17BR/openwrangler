@@ -317,7 +317,9 @@ export class SessionCoordinator implements vscode.Disposable {
     const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
     const previous = session.viewState;
     session.viewState = next;
-    const persistenceResult = await this.responseCommitter.persistSession(session);
+    const isCurrent = () => this.isLiveSession(session) && !session.closing && !session.reconfiguring;
+    const persistenceResult = await this.responseCommitter.persistSession(session, isCurrent);
+    if (persistenceResult.kind === "stale" || !isCurrent()) return;
     if (persistenceResult.kind === "unavailable" && session.viewState === next) {
       session.viewState = previous;
       return;

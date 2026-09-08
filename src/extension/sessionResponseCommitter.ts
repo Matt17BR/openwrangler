@@ -10,7 +10,7 @@ import type {
   StepInspectionResponse
 } from "../shared/protocol";
 import type { BridgeRequestOptions, SessionPresentation } from "./dataBridge";
-import { persistedSessionState } from "./sessionPersistence";
+import { persistedSessionState, type PersistedSessionState } from "./sessionPersistence";
 import {
   SessionPersistenceStore,
   type SessionPersistenceCommitResult,
@@ -51,10 +51,26 @@ export class SessionResponseCommitter {
     void this.persistence.releaseOwner(sessionId);
   }
 
-  async persistSession(session: SessionResponseState): Promise<SessionPersistenceCommitResult> {
+  async persistSession(
+    session: SessionResponseState,
+    isCurrent: () => boolean
+  ): Promise<SessionPersistenceCommitResult> {
     this.retainSession(session);
-    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
-    return this.persistence.save(session.openRequest.source, state);
+    const { openRequest, runtimeId, delegate } = session;
+    const source = openRequest.source;
+    const backend = session.metadata.backend;
+    return this.persistence.save(source, backend, () => {
+      if (
+        !isCurrent() ||
+        session.openRequest !== openRequest ||
+        session.openRequest.source !== source ||
+        session.runtimeId !== runtimeId ||
+        session.delegate !== delegate ||
+        session.metadata.backend !== backend
+      )
+        return undefined;
+      return persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+    });
   }
 
   async stageMutation(session: SessionResponseState): Promise<SessionPersistenceStageResult> {
@@ -253,21 +269,22 @@ export class SessionResponseCommitter {
       !isDeepStrictEqual(session.metadata.shape, response.metadata.shape) ||
       !isDeepStrictEqual(session.metadata.filteredShape, response.metadata.filteredShape);
     const stateChanged = filterChanged || revisionChanged || planChanged || shapeChanged;
-    const nextViewState = reconcileViewingState(
-      {
-        ...gridState(session.viewState),
-        filterModel: response.metadata.filterModel,
-        ...(filterChanged && response.kind === "page"
-          ? {
-              viewport: {
-                firstVisibleRow: response.page.offset,
-                scrollLeft: session.viewState.viewport.scrollLeft
+    const nextViewState = () =>
+      reconcileViewingState(
+        {
+          ...gridState(session.viewState),
+          filterModel: response.metadata.filterModel,
+          ...(filterChanged && response.kind === "page"
+            ? {
+                viewport: {
+                  firstVisibleRow: response.page.offset,
+                  scrollLeft: session.viewState.viewport.scrollLeft
+                }
               }
-            }
-          : {})
-      },
-      response.metadata
-    );
+            : {})
+        },
+        response.metadata
+      );
     const viewContextChanged = Boolean(
       pageRequest && session.activeViewContextId !== undefined && options?.viewContextId !== session.activeViewContextId
     );
@@ -299,7 +316,7 @@ export class SessionResponseCommitter {
         : response.kind === "planUpdated"
           ? undefined
           : session.draftBaseViewChangeEpoch;
-    const commitState = (): void => {
+    const commitState = (viewState: SessionResponseState["viewState"]): void => {
       if (pageRequest) {
         session.activeViewContextId = options?.viewContextId;
       } else if (planChanged) {
@@ -311,7 +328,7 @@ export class SessionResponseCommitter {
       session.runtimeRevision = response.revision;
       if (stateChanged) {
         session.metadata = response.metadata;
-        session.viewState = nextViewState;
+        session.viewState = viewState;
       }
       session.viewChangeEpoch = nextViewChangeEpoch;
       if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
@@ -323,13 +340,14 @@ export class SessionResponseCommitter {
       }
     };
     if (stateChanged) {
-      const state = persistedSessionState(response.metadata, gridState(nextViewState), nextDraftBaseFilterModel);
-      const previous = sessionPublication(session);
+      const state = () =>
+        persistedSessionState(response.metadata, gridState(nextViewState()), nextDraftBaseFilterModel);
       let published: SessionPublication | undefined;
-      const commitPublication = (): (() => boolean) => {
+      const commitPublication = (prepared: PersistedSessionState): (() => boolean) => {
+        const previous = sessionPublication(session);
         let rollbackActivation: (() => boolean | void) | undefined;
         try {
-          commitState();
+          commitState(prepared.view);
           callbacks.activate((rollback) => {
             rollbackActivation = rollback;
           });
@@ -397,7 +415,7 @@ export class SessionResponseCommitter {
         );
       }
     } else {
-      commitState();
+      commitState(nextViewState());
       if (stateChanged || viewContextChanged) callbacks.activate();
     }
     return {
