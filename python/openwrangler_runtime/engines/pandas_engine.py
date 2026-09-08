@@ -4946,6 +4946,9 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                         left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"
                     )
             if isinstance(error, pa.ArrowInvalid):
+                if operator == "add" and right_type == pa.uint64() and is_signed_column(left):
+                    left, right = right, left
+                    left_type, right_type = right_type, left_type
                 if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):
                     minimum = right.min()
                     if pd.isna(minimum) or minimum >= 0:
@@ -5107,6 +5110,9 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"',
         "                    )",
         "            if isinstance(error, pa.ArrowInvalid):",
+        '                if operator == "add" and right_type == pa.uint64() and is_signed_column(left):',
+        "                    left, right = right, left",
+        "                    left_type, right_type = right_type, left_type",
         "                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):",
         "                    minimum = right.min()",
         "                    if pd.isna(minimum) or minimum >= 0:",

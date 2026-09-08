@@ -232,9 +232,10 @@ Parquet export, and verifies the complete confirmed state after a rejected zero-
 The same owners check UInt64 scalar and signed-companion inference, Decimal128-to-256 arithmetic, unchanged native
 successes, excluded custom integer extensions and exact physical export types. Negative UInt64 add/subtract literals
 and signed companion columns cover native signed successes, exact unsigned results, signed widths and storage,
-INT64_MIN, duplicate indexes and empty/null inputs. Mixed-sign cases check both null-pair directions and active
-underflow or overflow beyond the displayed row. Existing native results and unsupported operand refusals remain
-covered. Mixed Formula, By Example and Custom Code plans execute standalone output and check helper isolation.
+INT64_MIN, duplicate indexes and empty/null inputs. Addition also covers signed-left/UInt64-right columns while
+retaining native signed results and failed-native negative-output refusals. Mixed-sign cases check both null-pair
+directions and active underflow or overflow beyond the displayed row. Existing native results and unsupported operand
+refusals remain covered. Mixed Formula, By Example and Custom Code plans execute standalone output and check helper isolation.
 Session tests verify reported and replayed dtypes, exact Parquet output, retained Redo history after a failed mixed-sign
 preview, and successful correction afterward.
 

@@ -304,10 +304,11 @@ requested result, so unused branches cannot overflow. Native null masks preserve
 positive or negative adjustments paired with null left values. Exact signed-type admission precedes the unsigned
 cast; nonnegative rows become zero before modular negation, preserving even the magnitude of INT64_MIN. Companions
 must use native NumPy, built-in Pandas nullable or Arrow integer storage; Sparse and arbitrary extension types do not
-enter this repair. Every repaired result must fit UInt64.
+enter this repair. Every repaired result must fit UInt64. Addition uses the same repair when the UInt64 column is on
+the right; operand orientation changes only after the original native operation fails.
 Selected Decimal128 operands may widen to Decimal256 with the same precision and scale for add, subtract, multiply
 and divide. These and the existing scalar or single-sign repairs make one checked arithmetic call. Live and generated
-Formula share this behavior without changing By Example. Reversed negative-column operands, negative multiply/power
+Formula share this behavior without changing By Example. Reversed negative-column subtraction, negative multiply/power
 and the widest or negative-scale Decimal capacity gaps remain tracked in
 [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
