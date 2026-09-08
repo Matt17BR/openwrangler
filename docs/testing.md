@@ -200,6 +200,13 @@ The engine owner also executes complete generated programs on private connection
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.
 
+Polars engine and session transaction owners check deferred-result refusal before publication, confirmed-state
+preservation and successful correction. Complete generated programs refuse an invalid intermediate even when a later
+step drops its output. Native eager/lazy values, types, nulls and source preservation remain covered; the existing
+Custom Code owner checks Series normalization and scalar refusal.
+The Decimal operation owner checks live and generated readiness under caller-configured streaming without changing
+that setting, alongside exact output capacity and null checks. This does not qualify later streaming retrieval.
+
 Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
 dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day
 nanoseconds and ordinary object missing-value distinctions. Present minimum temporal storage values remain distinct

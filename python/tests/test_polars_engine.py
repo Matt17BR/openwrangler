@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from copy import deepcopy
 from decimal import Decimal
 from math import nextafter
@@ -1763,21 +1764,36 @@ def test_polars_formula_native_integer_collects_only_one_guard_boolean(
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
     native_collect = pl.LazyFrame.collect
-    observed: list[tuple[int, int]] = []
+    native_collect_all = pl.collect_all
+    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
     def guard_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
         result = cast(pl.DataFrame, native_collect(query, *args, **kwargs))
-        observed.append(result.shape)
-        assert result.shape == (1, 1) and result.item() is False
+        observed.append((dict(result.schema), result.rows()))
         return result
 
+    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
+        queries = list(queries)
+        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
+        results = native_collect_all(queries, *args, **kwargs)
+        assert len(results) == 1
+        observed.append((dict(results[0].schema), results[0].rows()))
+        return results
+
     with monkeypatch.context() as guard:
+        guard.setattr(pl, "collect_all", readiness_collect)
         guard.setattr(pl.LazyFrame, "collect", guard_collect)
         live = engine.apply_transform(frame, operation)
+        assert observed == [({"invalid": pl.Boolean}, [(False,)])]
+        observed.clear()
         generated = namespace["clean_data"](frame)
-    assert observed == [(1, 1), (1, 1)]
+    assert observed == [
+        ({"invalid": pl.Boolean}, [(False,)]),
+        ({"value": pl.UInt32, "other": pl.UInt32, "result": pl.UInt32}, [(1, 2, 1)]),
+    ]
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
+    assert live.collect_schema() == generated.collect_schema() == expected.schema
 
 
 def test_polars_formula_integer_string_preflights_only_selected_native_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1788,20 +1804,33 @@ def test_polars_formula_integer_string_preflights_only_selected_native_bounds(mo
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
     native_collect = pl.LazyFrame.collect
-    observed: list[tuple[int, int]] = []
+    native_collect_all = pl.collect_all
+    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
     def bounded_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
         result = cast(pl.DataFrame, native_collect(query, *args, **kwargs))
-        observed.append(result.shape)
-        assert result.shape == (1, 2)
-        assert result.row(0) == (0, 99)
+        observed.append((dict(result.schema), result.rows()))
         return result
 
+    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
+        queries = list(queries)
+        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
+        results = native_collect_all(queries, *args, **kwargs)
+        assert len(results) == 1
+        observed.append((dict(results[0].schema), results[0].rows()))
+        return results
+
     with monkeypatch.context() as guard:
+        guard.setattr(pl, "collect_all", readiness_collect)
         guard.setattr(pl.LazyFrame, "collect", bounded_collect)
         live = engine.apply_transform(frame, operation)
+        assert observed == [({"minimum": pl.Int64, "maximum": pl.Int64}, [(0, 99)])]
+        observed.clear()
         generated = namespace["clean_data"](frame)
-    assert observed == [(1, 2), (1, 2)]
+    assert observed == [
+        ({"minimum": pl.Int64, "maximum": pl.Int64}, [(0, 99)]),
+        ({"minimum": pl.UInt32, "maximum": pl.UInt32, "result": pl.UInt32}, [(100, 100, 100)]),
+    ]
     for result in (live, generated):
         eager = result.collect()
         assert eager["result"].to_list() == [2**63 + value for value in range(100)]
@@ -2158,13 +2187,34 @@ def test_polars_formula_native_noninteger_has_no_row_guard(dtype: Any, monkeypat
     step = _polars_formula_literal_operation(frame, "multiply", 3)
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace)
+    native_collect = pl.LazyFrame.collect
+    native_collect_all = pl.collect_all
+    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
+
+    def observed_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
+        result = cast(pl.DataFrame, native_collect(query, *args, **kwargs))
+        observed.append((dict(result.schema), result.rows()))
+        return result
+
+    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
+        queries = list(queries)
+        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
+        results = native_collect_all(queries, *args, **kwargs)
+        assert len(results) == 1
+        observed.append((dict(results[0].schema), results[0].rows()))
+        return results
+
     with monkeypatch.context() as guard:
-        guard.setattr(pl.LazyFrame, "collect", lambda *_args, **_kwargs: pytest.fail("Floating/Decimal rows scanned."))
+        guard.setattr(pl, "collect_all", readiness_collect)
+        guard.setattr(pl.LazyFrame, "collect", observed_collect)
         live = engine.apply_transform(frame, step)
+        assert observed == []
         generated = namespace["clean_data"](frame)
+    assert observed == [({"value": pl.UInt32, "result": pl.UInt32}, [(2, 2)])]
     expected = source.with_columns((pl.col("value") * pl.lit(3)).alias("result"))
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
+    assert live.collect_schema() == generated.collect_schema() == expected.schema
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -2331,3 +2381,132 @@ def test_polars_uint128_kernel_refusal_includes_noninteger_operands(
             with pytest.raises((EngineError, ValueError), match="stable Polars 1.36"):
                 run()
     assert source.equals(original)
+
+
+@pytest.mark.parametrize("boundary", ["live", "generated", "generated-drop"])
+def test_polars_result_readiness_refuses_invalid_intermediate_before_projection(boundary: str) -> None:
+    source = pl.DataFrame({"pos": [0, 1, 2], "value": ["1", "bad", None]})
+    before = source.clone()
+    engine = PolarsEngine()
+    custom = validate_step(
+        {
+            "id": "strict-cast",
+            "kind": "customCode",
+            "params": {"code": 'result = df.lazy().with_columns(pl.col("value").cast(pl.Int64))'},
+        }
+    )
+    intermediate = engine.apply_transform(source, custom)
+    assert isinstance(intermediate, pl.LazyFrame)
+    assert intermediate.collect_schema() == {"pos": pl.Int64, "value": pl.Int64}
+    if boundary == "live":
+        with pytest.raises(pl.exceptions.InvalidOperationError):
+            engine.validate_transformation_result(intermediate)
+    else:
+        plan = [custom]
+        if boundary == "generated-drop":
+            schema = engine.schema(intermediate)
+            plan.append(
+                bind_step(
+                    validate_step(
+                        {
+                            "id": "drop-invalid",
+                            "kind": "dropColumns",
+                            "params": {"columns": [source_lineage(schema)[1]]},
+                        }
+                    ),
+                    schema,
+                    source_lineage(schema),
+                )
+            )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan(plan), namespace)
+        with pytest.raises(pl.exceptions.InvalidOperationError):
+            namespace["clean_data"](source)
+    assert source.schema == before.schema
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_polars_result_readiness_preserves_native_objects_nulls_and_empty_frames(lazy: bool, empty: bool) -> None:
+    token = object()
+    source = pl.DataFrame(
+        {
+            "object": pl.Series([token, None], dtype=pl.Object),
+            "number": pl.Series([-0.0, None], dtype=pl.Float64),
+            "nested": pl.Series([{"items": [1, None]}, None], dtype=pl.Struct({"items": pl.List(pl.Int64)})),
+        }
+    )
+    if empty:
+        source = source.head(0)
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    engine.validate_transformation_result(frame)
+    step = validate_step({"id": "identity", "kind": "customCode", "params": {"code": "result = df"}})
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    result = namespace["clean_data"](frame)
+    assert result is frame
+    output = result.collect(engine="streaming") if lazy else result
+    assert output.schema == source.schema
+    assert output.shape == source.shape
+    assert output.null_count().row(0) == ((0, 0, 0) if empty else (1, 1, 1))
+    if not empty:
+        assert output["object"][0] is token and source["object"][0] is token
+        assert output["number"][0].hex() == source["number"][0].hex() == "-0x0.0p+0"
+        assert output["nested"].to_list() == source["nested"].to_list() == [{"items": [1, None]}, None]
+    with pytest.raises(EngineError, match="at least one visible column"):
+        engine.validate_transformation_result(pl.DataFrame().lazy() if lazy else pl.DataFrame())
+
+
+def test_polars_result_readiness_executes_each_step_but_preserves_lazy_construction_and_empty_plan() -> None:
+    visits: list[int | None] = []
+
+    def observe(value: int | None) -> int | None:
+        visits.append(value)
+        return value
+
+    source = pl.DataFrame({"value": pl.Series([1, 2, None], dtype=pl.Int64)})
+    frame = source.lazy().with_columns(pl.col("value").map_elements(observe, return_dtype=pl.Int64, skip_nulls=False))
+    engine = PolarsEngine()
+    first_schema = engine.schema(frame)
+    first = bind_step(
+        validate_step(
+            {
+                "id": "first",
+                "kind": "renameColumn",
+                "params": {"column": source_lineage(first_schema)[0], "newName": "next"},
+            }
+        ),
+        first_schema,
+        source_lineage(first_schema),
+    )
+    intermediate = engine.apply_transform(frame, first)
+    second_schema = engine.schema(intermediate)
+    second = bind_step(
+        validate_step(
+            {
+                "id": "second",
+                "kind": "renameColumn",
+                "params": {"column": source_lineage(second_schema)[0], "newName": "value"},
+            }
+        ),
+        second_schema,
+        source_lineage(second_schema),
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([first, second]), namespace)
+    empty_namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([]), empty_namespace)
+    assert empty_namespace["clean_data"](frame) is frame
+    assert visits == []
+    engine.validate_transformation_result(intermediate)
+    assert Counter(visits) == Counter([1, 2, None])
+    visits.clear()
+    generated = namespace["clean_data"](frame)
+    assert isinstance(generated, pl.LazyFrame)
+    assert Counter(visits) == Counter([1, 2, None] * 2)
+    visits.clear()
+    assert generated.collect(engine="streaming").equals(source)
+    assert Counter(visits) == Counter([1, 2, None])
+    assert source.schema == {"value": pl.Int64} and source.rows() == [(1,), (2,), (None,)]

@@ -1482,12 +1482,20 @@ def test_polars_floor_ceil_decimal_output_has_valid_capacity(
 
     value = Decimal("0." + "9" * scale)
     source = pl.DataFrame({"value": pl.Series([value, value.copy_negate(), None], dtype=pl.Decimal(38, scale))})
+    before = source.clone()
     source = source.lazy() if lazy else source
-    for result in floor_ceil_results(PolarsEngine(), source, kind, False):
+    engine = PolarsEngine()
+    with pl.Config(engine_affinity="streaming" if lazy else None):
+        configuration = pl.Config.state()
+        results = floor_ceil_results(engine, source, kind, False)
+        engine.validate_transformation_result(results[0])
+        assert pl.Config.state() == configuration
+    for result in results:
         result = result.collect() if lazy else result
         assert result["integral"].to_list() == expected
         assert result["integral"].dtype == pl.Decimal(38, 0)
         result["integral"].to_arrow().validate(full=True)
+    assert (source.collect() if isinstance(source, pl.LazyFrame) else source).equals(before)
 
 
 def _dictionary_numeric_buffers(series: pd.Series) -> list[Any]:
