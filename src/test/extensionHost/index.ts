@@ -14334,6 +14334,56 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Same-name numeric columns must retain their own statistics."
     );
 
+    const assertGeneratedPandasPreview = async (
+      preview: Extract<OpenWranglerResponse, { kind: "stepPreview" }>,
+      sourceName: "duplicate_frame" | "structural_frame",
+      integerLabelId: string,
+      rowPositions: readonly number[] | null = null
+    ): Promise<void> => {
+      const contract = JSON.stringify({
+        code: preview.code,
+        schema: preview.metadata.schema,
+        page: preview.page,
+        integerLabelId,
+        rowPositions
+      });
+      const verification = [
+        "import pandas as pd",
+        "from openwrangler_runtime.engines.pandas_engine import PandasEngine",
+        "namespace = {}",
+        "exec(contract['code'], namespace, namespace)",
+        "input_frame = source.copy(deep=True)",
+        "result = namespace['clean_data'](input_frame)",
+        "pd.testing.assert_frame_equal(input_frame, snapshot, check_exact=True)",
+        "pd.testing.assert_frame_equal(source, snapshot, check_exact=True)",
+        "schema, page = contract['schema'], contract['page']",
+        "labels = [7 if column['id'] == contract['integerLabelId'] else column['name'] for column in schema]",
+        "assert [(type(label), label) for label in result.columns] == [(type(label), label) for label in labels]",
+        "pd.testing.assert_index_equal(result.columns, pd.Index(labels, name=snapshot.columns.name), exact=True)",
+        "positions = contract['rowPositions']",
+        "expected_index = snapshot.index if positions is None else pd.Index(snapshot.index.to_numpy()[positions], name=snapshot.index.name)",
+        "pd.testing.assert_index_equal(result.index, expected_index, exact=True)",
+        "assert page['offset'] == 0 and len(page['rows']) == page['totalRows'] == len(expected_index)",
+        "assert page['columnIds'] == [column['id'] for column in schema]",
+        "assert result.shape == (len(expected_index), len(schema))",
+        "engine = PandasEngine()",
+        "assert [{key: value for key, value in column.items() if key != 'id'} for column in engine.schema(result)] == [{key: value for key, value in column.items() if key != 'id'} for column in schema]",
+        "projection = tuple((position, column['id']) for position, column in enumerate(schema))",
+        "generated_page = engine.page(result, 0, 10, column_projection=projection)",
+        "assert [row['values'] for row in generated_page['rows']] == [row['values'] for row in page['rows']]",
+        "print('PANDAS_DUPLICATE_GENERATED_OK')"
+      ].join("\n");
+      const output = await jupyter.testing.execute(
+        notebook.uri,
+        `exec(${JSON.stringify(verification)}, {'contract': __import__('json').loads(${JSON.stringify(contract)}), 'source': ${sourceName}, 'snapshot': ${sourceName}_source})`
+      );
+      assert.equal(
+        output.trim(),
+        "PANDAS_DUPLICATE_GENERATED_OK",
+        "The complete emitted Pandas plan must match its live preview."
+      );
+    };
+
     let duplicateRevision = active.metadata.revision;
     const valueSteps: TransformStep[] = [
       {
@@ -14357,16 +14407,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         params: { column: secondDatetime, format: "%Y" }
       }
     ];
-    const valueCodeMarkers: readonly (readonly RegExp[])[] = [
-      [
-        /for _position_0, _column_0 in \[\(4, 'category'\)\]:\s+_encoded_series_0 = df\.iloc\[:, _position_0\]/u,
-        /\.eq\(value\)\.fillna\(False\)\.astype\('int8'\)/u
-      ],
-      [/df\.isetitem\(2, df\.iloc\[:, 2\]\.astype\('string'\)\.map\(str\.upper, na_action='ignore'\)\)/u],
-      [/df\.isetitem\(1, _open_wrangler_round\(pd\.to_numeric\(df\.iloc\[:, 1\], errors='coerce'\), 1\)\)/u],
-      [/df\.isetitem\(6, pd\.to_datetime\(df\.iloc\[:, 6\], errors='coerce'\)\.dt\.strftime\('%Y'\)\)/u]
-    ];
-
     for (const [index, step] of valueSteps.entries()) {
       recordAcceptanceProgress(`verify:notebook:pandas-duplicates:value:${step.kind}:preview`);
       const valuePreview = await testing.request({
@@ -14382,13 +14422,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (valuePreview.kind !== "stepPreview") {
         throw new Error(`Packaged ${step.kind} duplicate-label preview did not resolve.`);
       }
-      for (const marker of valueCodeMarkers[index]) {
-        assert.match(
-          valuePreview.code,
-          marker,
-          `${step.kind} generated code must bind its operation-specific implementation to the exact Pandas position.`
-        );
-      }
+      await assertGeneratedPandasPreview(valuePreview, "duplicate_frame", integerLabel.id);
       assert.doesNotMatch(
         JSON.stringify(valuePreview.metadata.draftStep),
         /"position"\s*:/u,
@@ -14488,20 +14522,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       }
     ];
     const expectedThirdColumnAfterStep = [["B", "C", "A", "D"], ["C", "A", "D"], ["C", "A"], ["C"]];
-    const expectedCodeMarkerAfterStep: readonly (readonly RegExp[])[] = [
-      [/_sort_order_4_0 = df\.iloc\[:, 2\]/u, /_sort_order_4_1 = df\.iloc\[:, 1\]/u],
-      [
-        /_filter_mask_5 = .*df\.iloc\[:, 0\] == _open_wrangler_view_value\(2, 'integer'\).*_open_wrangler_is_null.*_open_wrangler_is_nan/u
-      ],
-      [
-        /_missing_positions_6 = \[1\] or list\(range\(df\.shape\[1\]\)\)/u,
-        /\[df\.iloc\[:, position\]\.notna\(\) for position in _missing_positions_6\]/u
-      ],
-      [
-        /_duplicate_positions_7 = \[0, 1\] or list\(range\(df\.shape\[1\]\)\)/u,
-        /df\.iloc\[:, _duplicate_positions_7\]/u
-      ]
-    ];
+    const expectedSourceRowsAfterStep = [[1, 2, 0, 3], [2, 0, 3], [2, 0], [2]] as const;
 
     for (const [index, step] of duplicateSteps.entries()) {
       recordAcceptanceProgress(`verify:notebook:pandas-duplicates:rows:${step.kind}:preview`);
@@ -14518,13 +14539,12 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (duplicatePreview.kind !== "stepPreview") {
         throw new Error(`Packaged ${step.kind} duplicate-label preview did not resolve.`);
       }
-      for (const marker of expectedCodeMarkerAfterStep[index]) {
-        assert.match(
-          duplicatePreview.code,
-          marker,
-          `${step.kind} generated code must bind its operation-specific implementation to the exact Pandas position.`
-        );
-      }
+      await assertGeneratedPandasPreview(
+        duplicatePreview,
+        "duplicate_frame",
+        integerLabel.id,
+        expectedSourceRowsAfterStep[index]
+      );
       assert.doesNotMatch(
         JSON.stringify(duplicatePreview.metadata.draftStep),
         /"position"\s*:/u,
@@ -14756,15 +14776,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         params: { column: structuralFirstDuplicate, newName: structuralRenamedFirst.name }
       }
     ];
-    const structuralCodeMarkers = [
-      /df = df\.iloc\[:, \[1, 2, 0, 4, 3, 6, 5\]\]\.copy\(\)/u,
-      /df = pd\.concat\(\[df, df\.iloc\[:, 0\]\.rename\('second_copy'\)\], axis=1\)/u,
-      /df\.isetitem\(2, df\.iloc\[:, 2\]\.astype\('Float64'\)\)/u,
-      /df = pd\.concat\(\[df, \(df\.iloc\[:, 2\] \+ df\.iloc\[:, 0\]\)\.rename\('combined'\)\], axis=1\)/u,
-      /df = pd\.concat\(\[df, df\.iloc\[:, 1\]\.astype\('string'\)\.str\.len\(\)\.rename\('label_length'\)\], axis=1\)/u,
-      /df = df\.iloc\[:, \[position for position in range\(df\.shape\[1\]\) if position not in \[0\]\]\]\.copy\(\)/u,
-      /_columns_6\[1\] = 'renamed_first'/u
-    ] as const;
     const secondDuplicateCells = [
       { kind: "number", raw: 10.26, display: "10.26", isNull: false, isNaN: false },
       { kind: "number", raw: 20.74, display: "20.74", isNull: false, isNaN: false },
@@ -14819,11 +14830,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (structuralPreview.kind !== "stepPreview") {
         throw new Error(`Packaged ${step.kind} structural preview did not resolve.`);
       }
-      assert.match(
-        structuralPreview.code,
-        structuralCodeMarkers[index],
-        `${step.kind} generated code must use the exact position after the preceding lineage changes.`
-      );
+      await assertGeneratedPandasPreview(structuralPreview, "structural_frame", structuralIntegerLabel.id);
       assert.doesNotMatch(
         structuralPreview.code,
         /df\[['"]duplicate['"]\]/u,
