@@ -184,6 +184,14 @@ describe("OperationBuilder", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
     expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "renameColumn",
+        params: { column: { id: "c:1", name: "sales" }, newName: "revenue" }
+      },
+      undefined
+    );
   });
 
   it("exposes preview progress and disables every dialog control while busy", () => {
@@ -949,6 +957,14 @@ describe("OperationBuilder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: "rename-second",
+        kind: "renameColumn",
+        params: { column: { id: "c:1", name: "value" }, newName: "second_value" }
+      },
+      "rename-second"
+    );
   });
 
   it("keeps every visible label unique when source names imitate positional fallbacks", () => {
