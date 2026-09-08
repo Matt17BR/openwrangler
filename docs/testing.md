@@ -415,10 +415,21 @@ Shared IRkernel, native-frame and Parquet fixtures keep their dependencies, incl
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
 
+The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It omits the
+Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
+native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
+extension records drive installation and expected versions. Both tooling scopes keep the same private R package
+roots and IRkernel readiness checks.
+
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Changes to this selection also require a
 fresh notebook core run and a full tooling/literate run against the same supplied VSIX; graph size alone does not
 establish setup-time savings.
+
+`src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
+missing or mismatched extensions, commands and CLI configuration. Changes to terminal tooling selection also require
+the focused terminal and full literate journeys against the same supplied VSIX. Fewer selected artifacts alone do
+not establish setup-time savings.
 
 ## Release-candidate checks
 

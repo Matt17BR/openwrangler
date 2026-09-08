@@ -48,6 +48,7 @@ export const R_EDITOR_ACCEPTANCE_TOOLING = Object.freeze({
 export async function prepareREditorAcceptanceTooling(
   parent,
   {
+    literateDocuments = true,
     artifactPaths = {},
     fetchImpl = fetch,
     onArtifactAttempt,
@@ -55,6 +56,9 @@ export async function prepareREditorAcceptanceTooling(
     environment = createEditorAcceptanceEnvironment()
   } = {}
 ) {
+  if (typeof literateDocuments !== "boolean") {
+    throw new Error("R editor tooling requires a boolean literate documents decision.");
+  }
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("Native R and Quarto editor acceptance currently supports Linux x64 only.");
   }
@@ -64,17 +68,22 @@ export async function prepareREditorAcceptanceTooling(
   const canonicalParent = privateDirectory(parent);
   const root = join(canonicalParent, `r-editor-${randomUUID()}`);
   mkdirSync(root, { mode: 0o700 });
-  const extensionVsixes = [];
-  for (const key of ["rSyntax", "r", "quartoExtension"]) {
+  const extensions = [];
+  for (const key of ["rSyntax", "r", ...(literateDocuments ? ["quartoExtension"] : [])]) {
     const pin = R_EDITOR_ACCEPTANCE_TOOLING[key];
-    extensionVsixes.push(
-      await acquireExactArtifact(root, key, pin, {
-        fetchImpl,
-        onAttempt: onArtifactAttempt,
-        sourcePath: artifactPaths[key]
+    extensions.push(
+      Object.freeze({
+        id: pin.id,
+        vsix: await acquireExactArtifact(root, key, pin, {
+          fetchImpl,
+          onAttempt: onArtifactAttempt,
+          sourcePath: artifactPaths[key]
+        })
       })
     );
   }
+  Object.freeze(extensions);
+  if (!literateDocuments) return Object.freeze({ root, extensions });
   const quartoArchive = await acquireExactArtifact(root, "quartoCli", R_EDITOR_ACCEPTANCE_TOOLING.quartoCli, {
     fetchImpl,
     onAttempt: onArtifactAttempt,
@@ -110,7 +119,7 @@ export async function prepareREditorAcceptanceTooling(
   }
   return Object.freeze({
     root,
-    extensionVsixes: Object.freeze(extensionVsixes),
+    extensions,
     quartoExecutable,
     pandocDirectory: resolve(pandocExecutable, "..")
   });

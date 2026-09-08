@@ -12,7 +12,7 @@ export interface FocusedReleasedRAcceptanceOwners<TTesting, TWorkbench> {
   readonly testPython: string | undefined;
   readonly platform: NodeJS.Platform;
   readonly screenshotOutput: string | undefined;
-  readonly assertNativeEditorTooling: () => Promise<boolean>;
+  readonly assertNativeEditorTooling: (literateDocuments?: boolean) => Promise<boolean>;
   readonly connectToEditorWorkbench: () => Promise<TWorkbench>;
   readonly createLiterateDirectory: () => string;
   readonly cleanupLiterateDirectory: (directory: string) => void;
@@ -35,9 +35,9 @@ export function createFocusedReleasedRAcceptanceHandlers<TTesting, TWorkbench>(
       assert.ok(owners.testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
       owners.recordProgress("jupyter-r:interactive:tooling-start");
       assert.equal(
-        await owners.assertNativeEditorTooling(),
+        await owners.assertNativeEditorTooling(false),
         true,
-        "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
+        "Focused active R acceptance requires the pinned official R editor tooling."
       );
       owners.recordProgress("jupyter-r:interactive:tooling-ready");
       await owners.exerciseInteractiveTerminalJourney(owners.testing, await owners.connectToEditorWorkbench());

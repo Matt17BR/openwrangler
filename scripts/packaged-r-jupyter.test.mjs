@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +20,7 @@ import {
   rAcceptanceRepositories
 } from "./jupyter-acceptance-environment.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
+import { prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 
 const notebookPackages = ["IRkernel", "jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet"];
 
@@ -154,6 +164,7 @@ test("all R journey selectors retain their existing local and tooling boundaries
       selected.nativeEditorTooling,
       selector === "interactive-terminal" || selector === "literate-documents"
     );
+    assert.equal(selected.literateDocuments, selector === "literate-documents");
   }
   assert.equal(
     resolvePackagedRJourneySelection({ ...common, selector: "remote-r-jupyter", remoteJupyterEnabled: true }).local,
@@ -167,6 +178,27 @@ test("all R journey selectors retain their existing local and tooling boundaries
     { selector: "remote-r-jupyter" }
   ])
     assert.throws(() => resolvePackagedRJourneySelection({ ...common, ...options }));
+});
+
+test("invalid literate tooling scope fails before artifact or command work", async (t) => {
+  const fixture = provisioning(t);
+  let attempts = 0;
+  for (const literateDocuments of [null, 0, 1, "false", [], {}]) {
+    await assert.rejects(
+      prepareREditorAcceptanceTooling(fixture.root, {
+        literateDocuments,
+        onArtifactAttempt() {
+          attempts += 1;
+          throw new Error("Unexpected artifact acquisition.");
+        },
+        runCommand: fixture.options.runCommand
+      }),
+      /boolean literate documents decision/u
+    );
+    assert.equal(attempts, 0);
+    assert.equal(fixture.commands.length, 0);
+    assert.deepEqual(readdirSync(fixture.root).sort(), ["R", "Rscript"]);
+  }
 });
 
 test("notebook roots retain supplemental installs and private dependency refusals on each platform", async (t) => {

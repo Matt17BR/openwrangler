@@ -31,18 +31,27 @@ const RELEASED_R_TOOLING_COMMANDS = [
   "quarto.preview"
 ] as const;
 
-export async function assertReleasedNativeREditorTooling(dependencies: ReleasedRToolingDependencies): Promise<boolean> {
-  const installed = RELEASED_R_TOOLING_EXTENSIONS.map(([id, version]) => ({
-    id,
-    version,
-    extension: dependencies.getExtension(id)
-  }));
+export async function assertReleasedNativeREditorTooling(
+  dependencies: ReleasedRToolingDependencies,
+  literateDocuments = true
+): Promise<boolean> {
+  if (typeof literateDocuments !== "boolean") {
+    throw new TypeError("R editor tooling requires a boolean literate documents decision.");
+  }
+  const installed = RELEASED_R_TOOLING_EXTENSIONS.filter(([id]) => literateDocuments || id !== "quarto.quarto").map(
+    ([id, version]) => ({
+      id,
+      version,
+      extension: dependencies.getExtension(id)
+    })
+  );
   if (installed.every(({ extension }) => extension === undefined)) return false;
   for (const { id, version, extension } of installed) {
     assert.ok(extension, `Packaged R acceptance requires ${id}@${version}.`);
     assert.equal(extension.packageJSON.version, version, `Packaged R acceptance requires ${id}@${version}.`);
   }
   for (const id of ["reditorsupport.r", "quarto.quarto"] as const) {
+    if (!literateDocuments && id === "quarto.quarto") continue;
     const extension = dependencies.getExtension(id);
     assert.ok(extension);
     await dependencies.withBoundedPromise(extension.activate(), 30_000, `activating ${id}`);
@@ -50,8 +59,10 @@ export async function assertReleasedNativeREditorTooling(dependencies: ReleasedR
   }
   const commands = new Set(await dependencies.getCommands());
   for (const command of RELEASED_R_TOOLING_COMMANDS) {
-    assert.ok(commands.has(command), `The native R/Quarto profile did not register ${command}.`);
+    if (!literateDocuments && command.startsWith("quarto.")) continue;
+    assert.ok(commands.has(command), `The selected native R editor tooling did not register ${command}.`);
   }
+  if (!literateDocuments) return true;
   const quarto = dependencies.getConfiguration<string>("quarto", "path");
   assert.ok(
     quarto && dependencies.pathIsAbsolute(quarto) && dependencies.pathExists(quarto),
