@@ -20,11 +20,139 @@ from python.tests.pyspark_engine_test_support import (
 import __main__
 import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import EngineError, PySparkEngine
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import ResponsePayloadError, SessionManager
 from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 
 sample_frame = _shared_sample_frame
 spark_session = _shared_spark_session
+
+
+@pytest.mark.parametrize("failure_stage", ("response", "request_scope_exit", "cancellation"))
+def test_failed_page_preserves_cached_spark_continuation(
+    spark_session: Any, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    source = spark_session.range(8).selectExpr("id AS value")
+    variable = "open_wrangler_page_continuation"
+    monkeypatch.setattr(__main__, variable, source, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "variableName": variable},
+        backend="pyspark",
+        page_size=2,
+        column_limit=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    previous_view = session.filter_model
+    previous_frame = session.filtered
+    previous_cache = session.page_cache
+    previous_generation = session.view_generation
+    previous_epoch = session.view_change_epoch
+    model = {
+        "filters": [
+            {"column": "value", "type": "integer", "predicates": [{"kind": "predicate", "operator": "gte", "value": 4}]}
+        ],
+        "sort": [],
+    }
+    response_seen = False
+
+    def preflight(response: dict[str, Any]) -> None:
+        nonlocal response_seen
+        response_seen = True
+        assert [row["values"][0]["raw"] for row in response["page"]["rows"]] == [4, 5]
+        assert session.filter_model is previous_view
+        if failure_stage == "response":
+            raise ResponsePayloadError("Synthetic correlated response refusal", "response_encoding_failed")
+        if failure_stage == "cancellation":
+            raise KeyboardInterrupt("Synthetic page cancellation")
+
+    try:
+        with monkeypatch.context() as fault:
+            if failure_stage == "request_scope_exit":
+                # Keep real Spark paging, but fail the existing Classic job-property
+                # restoration owner after the complete response has been checked.
+                fault.setattr(session.engine, "_indexed_frame", _FakeClassicFrame(_RestoreFailingSparkContext()))
+            with pytest.raises(
+                (ResponsePayloadError, RuntimeError, KeyboardInterrupt), match="refusal|Could not restore|cancellation"
+            ):
+                manager.get_page(
+                    session_id,
+                    0,
+                    0,
+                    2,
+                    model,
+                    column_limit=1,
+                    request_id="failed-spark-page",
+                    response_preflight=preflight,
+                )
+        assert response_seen
+        assert session.filter_model is previous_view
+        assert session.filtered is previous_frame
+        assert session.page_cache is previous_cache
+        assert session.view_generation == previous_generation
+        assert session.view_change_epoch == previous_epoch
+        first = manager.get_page(session_id, 0, 0, 2, _empty_view(), column_limit=1, request_id="cached-spark-page")
+        assert first["page"] is opened["page"]
+        following = manager.get_page(
+            session_id, 0, 2, 2, _empty_view(), column_limit=1, request_id="continued-spark-page"
+        )
+        assert [row["values"][0]["raw"] for row in following["page"]["rows"]] == [2, 3]
+        assert source.count() == 8
+    finally:
+        manager.close_all()
+
+
+def test_failed_terminal_page_keeps_spark_totals_unknown_until_success(
+    spark_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    variable = "open_wrangler_page_totals"
+    source = spark_session.range(3).selectExpr("id AS value")
+    monkeypatch.setattr(__main__, variable, source, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "variableName": variable},
+        backend="pyspark",
+        page_size=2,
+        column_limit=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    previous_cache = session.page_cache
+
+    def reject(response: dict[str, Any]) -> None:
+        assert response["page"]["totalRows"] == 3
+        assert response["metadata"]["shape"]["rows"] == 3
+        assert response["metadata"]["filteredShape"]["rows"] == 3
+        raise ResponsePayloadError("Synthetic terminal page refusal", "response_encoding_failed")
+
+    try:
+        with pytest.raises(ResponsePayloadError, match="terminal page refusal"):
+            manager.get_page(
+                session_id,
+                0,
+                2,
+                2,
+                _empty_view(),
+                column_limit=1,
+                request_id="failed-terminal-page",
+                response_preflight=reject,
+            )
+        assert session.source_shape["rows"] is None
+        assert session.committed_shape["rows"] is None
+        assert session.filtered_shape["rows"] is None
+        assert session.page_cache is previous_cache
+        first = manager.get_page(session_id, 0, 0, 2, _empty_view(), column_limit=1)
+        assert first["page"] is opened["page"]
+        assert first["page"]["totalRows"] is None
+        terminal = manager.get_page(session_id, 0, 2, 2, _empty_view(), column_limit=1)
+        assert terminal["page"]["totalRows"] == 3
+        assert session.source_shape["rows"] == session.committed_shape["rows"] == session.filtered_shape["rows"] == 3
+        exact_first = manager.get_page(session_id, 0, 0, 2, _empty_view(), column_limit=1)
+        assert exact_first["page"]["totalRows"] == 3
+        assert exact_first["page"] is not opened["page"]
+        assert source.count() == 3
+    finally:
+        manager.close_all()
 
 
 def test_session_manager_detects_live_variable_and_disables_mutation_capabilities(

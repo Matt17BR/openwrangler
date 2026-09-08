@@ -32,6 +32,12 @@ class SessionRequestAdmission:
             self._lock.release()
 
     @contextmanager
+    def invalidation(self) -> Iterator[None]:
+        """Serialize cache cleanup without admitting work or waiting for profiles."""
+        with self._lock:
+            yield
+
+    @contextmanager
     def profile(
         self,
         capture_view: Callable[[], _View],

@@ -816,6 +816,11 @@ class DataFrameEngine(ABC):
         return normalized
 
     @contextmanager
+    def page_read_scope(self) -> Iterator[None]:
+        """Retain adapter-owned paging state until the complete page read succeeds."""
+        yield
+
+    @contextmanager
     def request_scope(self, request_id: str) -> Iterator[None]:
         """Associate one protocol request with engine work, when supported."""
         del request_id

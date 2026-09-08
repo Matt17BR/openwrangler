@@ -12,6 +12,7 @@ import pytest
 
 from openwrangler_runtime import kernel_agent, notebook, server
 from openwrangler_runtime import protocol as runtime_protocol
+from openwrangler_runtime import session as session_runtime
 from openwrangler_runtime import session_plan as session_plan_runtime
 from openwrangler_runtime.by_example import evaluate_program
 from openwrangler_runtime.engines import AmbiguousViewColumnError, EngineError
@@ -22,6 +23,7 @@ from openwrangler_runtime.response_framing import (
     ResponseEncodingError,
     ResponseFrameTooLargeError,
     encode_response_frame,
+    strict_json_byte_length,
 )
 from openwrangler_runtime.session import (
     PySparkConnectStateLostError,
@@ -33,6 +35,150 @@ from openwrangler_runtime.session import (
 from openwrangler_runtime.session_source import LiveSourceInvalidatedError
 
 EMPTY_FILTER = {"filters": [], "sort": []}
+
+
+def test_failed_native_view_page_keeps_the_draft_discardable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import __main__
+
+    nested: Any = 0
+    for _ in range(65):
+        nested = [nested]
+    frame = pd.DataFrame({"safe": range(1, 27), "value": pd.Series(["visible"] * 25 + [nested], dtype=object)})
+    original = frame.copy(deep=True)
+    monkeypatch.setattr(__main__, "kernel_page_frame", frame, raising=False)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+
+    def send(request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+        assert result["requestId"] == request_id
+        return result["response"]
+
+    try:
+        opened = send(
+            {
+                "kind": "openSession",
+                "source": {"kind": "notebookVariable", "variableName": "kernel_page_frame", "label": "frame"},
+                "backend": "pandas",
+                "mode": "editing",
+                "pageSize": 25,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+            "page-open",
+        )
+        assert opened["kind"] == "sessionOpened"
+        session_id = opened["metadata"]["sessionId"]
+        window = {"offset": 0, "limit": 25, "columnOffset": 0, "columnLimit": 2}
+        preview = send(
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                **window,
+                "step": {
+                    "id": "rename",
+                    "kind": "renameColumn",
+                    "params": {
+                        "column": {"id": "c:source:1", "name": "value"},
+                        "newName": "renamed",
+                    },
+                },
+            },
+            "page-preview",
+        )
+        assert preview["kind"] == "stepPreview"
+        failed = send(
+            {
+                "kind": "getPage",
+                "sessionId": session_id,
+                "revision": 1,
+                "viewRequestId": "failed-view",
+                **window,
+                "filterModel": {
+                    "filters": [
+                        {
+                            "column": "safe",
+                            "type": "integer",
+                            "predicates": [
+                                {"kind": "predicate", "operator": "gte", "value": 26},
+                            ],
+                        }
+                    ],
+                    "sort": [],
+                },
+            },
+            "page-failure",
+        )
+        assert failed["kind"] == "error"
+        assert failed["code"] == "page_payload_invalid"
+        assert failed["viewRequestId"] == "failed-view"
+        discarded = send({"kind": "discardDraft", "sessionId": session_id, "revision": 1, **window}, "page-discard")
+        assert discarded["kind"] == "planUpdated"
+        assert discarded["revision"] == 2
+        assert discarded["page"] == opened["page"]
+        pd.testing.assert_frame_equal(frame, original)
+    finally:
+        manager.close_all()
+
+
+def test_page_preflight_preserves_frame_margin_and_includes_view_correlation(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "page-frame.csv"
+    path.write_text("value\n1\n2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "path": str(path), "label": path.name}, backend="pandas", page_size=1
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "integer",
+                "predicates": [
+                    {"kind": "predicate", "operator": "gte", "value": 2},
+                ],
+            }
+        ],
+        "sort": [],
+    }
+    target = manager.get_page(session_id, 0, 0, 1, model, column_limit=1)
+    manager.get_page(session_id, 0, 0, 1, EMPTY_FILTER, column_limit=1)
+    request = {**_view_request("getPage", session_id, "é" * 64), "filterModel": model, "limit": 1, "columnLimit": 1}
+    request_id = "correlated-page"
+    old_model = session.filter_model
+    old_cache = session.page_cache
+    old_epoch = session.view_change_epoch
+    try:
+        with monkeypatch.context() as limited:
+            limited.setattr(
+                server,
+                "MAX_RESPONSE_FRAME_BYTES",
+                strict_json_byte_length(response_envelope(request_id, target), MAX_RESPONSE_FRAME_BYTES) + 1,
+            )
+            with pytest.raises(ResponsePayloadError, match="correlated state response exceeds"):
+                server.dispatch(manager, request, request_id)
+            assert session.filter_model is old_model
+            assert session.page_cache is old_cache
+            limited.setattr(kernel_agent, "_manager", manager)
+            result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+            assert result["requestId"] == request_id
+            assert result["response"]["code"] == "response_too_large"
+            assert result["response"]["viewRequestId"] == request["viewRequestId"]
+            assert session.filter_model is old_model
+            assert session.view_change_epoch == old_epoch
+
+        page_size = strict_json_byte_length(target["page"], MAX_RESPONSE_FRAME_BYTES)
+        monkeypatch.setattr(session_runtime, "MAX_STRICT_RESPONSE_PAYLOAD_BYTES", page_size + 1)
+        assert strict_json_byte_length(target, MAX_RESPONSE_FRAME_BYTES) > page_size + 1
+        accepted = server.dispatch(manager, request, request_id)
+        assert accepted["kind"] == "page"
+        assert accepted["viewRequestId"] == request["viewRequestId"]
+        assert accepted["page"] == target["page"]
+        assert session.view_change_epoch == old_epoch + 1
+    finally:
+        manager.close_all()
 
 
 def _envelope(
@@ -799,6 +945,7 @@ def test_kernel_mutation_preflight_failure_rolls_back_real_dispatch(monkeypatch)
     )["response"]
     session_id = opened["metadata"]["sessionId"]
     original_page = opened["page"]
+    original_frame_limit = server.MAX_RESPONSE_FRAME_BYTES
     monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", 256)
 
     failed = json.loads(
@@ -837,6 +984,7 @@ def test_kernel_mutation_preflight_failure_rolls_back_real_dispatch(monkeypatch)
     assert session.draft_step is None
     assert session.draft_frame is None
 
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", original_frame_limit)
     observed = json.loads(
         kernel_agent.dispatch_json(
             _envelope(

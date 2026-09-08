@@ -116,6 +116,18 @@ class PySparkEngine(DataFrameEngine):
         _require_supported_pyspark_runtime()
 
     @contextmanager
+    def page_read_scope(self) -> Iterator[None]:
+        """Keep continuation anchors for the last confirmed page on failure."""
+        previous_frame = self._paging_frame
+        previous_anchors = self._paging_anchors.copy()
+        try:
+            yield
+        except BaseException:
+            self._paging_frame = previous_frame
+            self._paging_anchors = previous_anchors
+            raise
+
+    @contextmanager
     def request_scope(self, request_id: str) -> Iterator[None]:
         """Give Classic Spark jobs a request-owned group without changing caller state."""
 

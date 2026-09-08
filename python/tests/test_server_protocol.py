@@ -793,7 +793,7 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
 
 def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monkeypatch) -> None:
     class AmbiguousManager(_PassthroughRequestScope):
-        def get_page(self, *_args: Any) -> dict[str, Any]:
+        def get_page(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
         def close_all(self) -> None:
@@ -946,7 +946,7 @@ def test_stdio_server_preserves_correlated_live_session_errors(
     expected_response: dict[str, Any],
 ) -> None:
     class FailingManager(_PassthroughRequestScope):
-        def get_page(self, *_args: Any) -> dict[str, Any]:
+        def get_page(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise error
 
         def close_session(self, *_args: Any) -> dict[str, Any]:
@@ -1008,7 +1008,7 @@ def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
 
 def test_dispatch_echoes_view_request_id() -> None:
     class PagingManager:
-        def get_page(self, *_args: Any) -> dict[str, Any]:
+        def get_page(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"kind": "page", "revision": 0, "page": {}, "metadata": {}}
 
     response = server.dispatch(
@@ -1029,44 +1029,56 @@ def test_dispatch_echoes_view_request_id() -> None:
     assert response["viewRequestId"] == "view-page"
 
 
-def test_dispatch_binds_the_protocol_request_id_during_session_work() -> None:
+def test_dispatch_binds_the_protocol_request_id_during_session_work(tmp_path, monkeypatch) -> None:
+    from openwrangler_runtime.session import SessionManager
+
     events: list[tuple[str, str]] = []
+    request_id = "d88bc868-b427-4656-923e-849ad39b2768"
+    path = tmp_path / "request-scope.csv"
+    path.write_text("value\n1\n2\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session({"kind": "file", "path": str(path)}, backend="pandas", page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    engine = manager.sessions[session_id].engine
+    native_page = engine.page
 
-    class PagingManager:
-        @contextmanager
-        def request_scope(self, request_id: str, request: dict[str, Any]):
-            assert request["sessionId"] == "session"
-            events.append(("enter", request_id))
-            try:
-                yield
-            finally:
-                events.append(("exit", request_id))
+    @contextmanager
+    def request_scope(current_request_id: str):
+        events.append(("enter", current_request_id))
+        try:
+            yield
+        finally:
+            events.append(("exit", current_request_id))
 
-        def get_page(self, *_args: Any) -> dict[str, Any]:
-            assert events == [("enter", "d88bc868-b427-4656-923e-849ad39b2768")]
-            return {"kind": "page", "revision": 0, "page": {}, "metadata": {}}
+    def page(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert events == [("enter", request_id)]
+        events.append(("page", request_id))
+        return native_page(*args, **kwargs)
 
-    response = server.dispatch(
-        PagingManager(),  # type: ignore[arg-type]
-        {
-            "kind": "getPage",
-            "sessionId": "session",
-            "revision": 0,
-            "viewRequestId": "view-page",
-            "offset": 0,
-            "limit": 20,
-            "columnOffset": 0,
-            "columnLimit": 7,
-            "filterModel": {"logic": "and", "filters": [], "sort": []},
-        },
-        "d88bc868-b427-4656-923e-849ad39b2768",
-    )
+    monkeypatch.setattr(engine, "request_scope", request_scope)
+    monkeypatch.setattr(engine, "page", page)
+    try:
+        response = server.dispatch(
+            manager,
+            {
+                "kind": "getPage",
+                "sessionId": session_id,
+                "revision": 0,
+                "viewRequestId": "view-page",
+                "offset": 1,
+                "limit": 1,
+                "columnOffset": 0,
+                "columnLimit": 7,
+                "filterModel": {"logic": "and", "filters": [], "sort": []},
+            },
+            request_id,
+        )
 
-    assert response["kind"] == "page"
-    assert events == [
-        ("enter", "d88bc868-b427-4656-923e-849ad39b2768"),
-        ("exit", "d88bc868-b427-4656-923e-849ad39b2768"),
-    ]
+        assert response["kind"] == "page"
+        assert response["page"]["rows"][0]["values"][0]["raw"] == 2
+        assert events == [("enter", request_id), ("page", request_id), ("exit", request_id)]
+    finally:
+        manager.close_all()
 
 
 def test_dispatch_passes_the_protocol_request_id_into_session_open() -> None:

@@ -137,10 +137,10 @@ def dispatch(
     request: dict[str, Any],
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    if request_id is not None:
+    if request_id is not None and request.get("kind") != "getPage":
         with manager.request_scope(request_id, request):
             return _dispatch(manager, request, request_id)
-    return _dispatch(manager, request, None)
+    return _dispatch(manager, request, request_id)
 
 
 def _dispatch(
@@ -149,7 +149,7 @@ def _dispatch(
     request_id: str | None,
 ) -> dict[str, Any]:
     kind = request.get("kind")
-    response_preflight = _mutation_response_preflight(request_id)
+    response_preflight = _state_response_preflight(request_id)
     if kind == "initialize":
         return manager.initialize()
     if kind == "openSession":
@@ -174,6 +174,8 @@ def _dispatch(
                 request.get("filterModel", {"filters": [], "sort": []}),
                 int(request["columnOffset"]),
                 int(request["columnLimit"]),
+                response_preflight=_state_response_preflight(request_id, request["viewRequestId"]),
+                request_id=request_id,
             ),
             request,
         )
@@ -279,22 +281,26 @@ def _with_view_request_id(response: dict[str, Any], request: dict[str, Any]) -> 
     return correlated
 
 
-def _mutation_response_preflight(request_id: str | None) -> Callable[[dict[str, Any]], None] | None:
+def _state_response_preflight(
+    request_id: str | None,
+    view_request_id: str | None = None,
+) -> Callable[[dict[str, Any]], None] | None:
     if request_id is None:
         return None
 
     def preflight(response: dict[str, Any]) -> None:
-        envelope = response_envelope(request_id, response)
+        correlated = response if view_request_id is None else {**response, "viewRequestId": view_request_id}
+        envelope = response_envelope(request_id, correlated)
         try:
             payload_size = strict_json_byte_length(envelope, MAX_RESPONSE_FRAME_BYTES - 1)
         except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as error:
             raise ResponsePayloadError(
-                "The correlated mutation response could not be encoded as strict JSON. Request fewer rows or columns.",
+                "The correlated state response could not be encoded as strict JSON. Request fewer rows or columns.",
                 "response_encoding_failed",
             ) from error
         if payload_size + 1 > MAX_RESPONSE_FRAME_BYTES:
             raise ResponsePayloadError(
-                "The correlated mutation response exceeds the "
+                "The correlated state response exceeds the "
                 f"{MAX_RESPONSE_FRAME_BYTES:,}-byte transport frame limit including LF. "
                 "Request fewer rows or columns.",
                 "response_too_large",

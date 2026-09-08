@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ._column_binding import ColumnBindingError, bind_step
@@ -21,6 +21,7 @@ from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
 from .protocol import MAX_COLUMN_LIMIT
+from .response_framing import MAX_RESPONSE_FRAME_BYTES
 from .session_access import SessionRequestAdmission
 from .session_plan import compile_plan_with_limits, preflight_retained_plan
 from .session_result import (
@@ -165,8 +166,9 @@ class Session:
                 raise EngineError(f"Could not close the {self.backend} session: {error}") from error
 
     def clear_page_cache(self) -> None:
-        self.page_cache.clear()
-        self.page_cache_bytes = 0
+        with self.access.invalidation():
+            self.page_cache.clear()
+            self.page_cache_bytes = 0
 
 
 @dataclass(slots=True)
@@ -518,17 +520,54 @@ class SessionManager:
         filter_model: Mapping[str, Any],
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
-        with session.access.shared(), self._validated_source_read(session):
-            self._assert_revision(session, revision)
-            self._filtered(session, filter_model)
-            return {
-                "kind": "page",
-                "revision": session.revision,
-                "page": self._page(session, offset, limit, column_offset, column_limit),
-                "metadata": self._metadata(session),
-            }
+        with session.access.shared():
+            with session.engine.page_read_scope(), self._validated_source_read(session):
+                self._assert_revision(session, revision)
+                # This unregistered candidate shares the exact source, engine and
+                # immutable frame/history objects. Only its bounded cache index
+                # and the view fields below can change during a page read.
+                candidate = replace(session, page_cache=OrderedDict(session.page_cache))
+                request_context = (
+                    self.request_scope(request_id, {"kind": "getPage", "sessionId": session_id})
+                    if request_id is not None
+                    else nullcontext()
+                )
+                with request_context:
+                    self._filtered(candidate, filter_model)
+                    response = {
+                        "kind": "page",
+                        "revision": candidate.revision,
+                        "page": self._page(candidate, offset, limit, column_offset, column_limit),
+                        "metadata": self._metadata(candidate),
+                    }
+                    if response_preflight is not None:
+                        response_preflight(response)
+                    else:
+                        # The page keeps its 16 MiB payload cap. Metadata may
+                        # use the remaining space in the existing frame limit.
+                        strict_response_payload_size(
+                            response,
+                            "page response",
+                            "Request fewer rows or columns.",
+                            maximum_size=MAX_RESPONSE_FRAME_BYTES - 1,
+                        )
+            # Source validation and request-scope cleanup must both succeed
+            # before this view becomes the input to later page or edit requests.
+            session.filtered = candidate.filtered
+            session.filter_model = candidate.filter_model
+            session.filtered_shape = candidate.filtered_shape
+            session.view_generation = candidate.view_generation
+            session.view_change_epoch = candidate.view_change_epoch
+            session.page_cache = candidate.page_cache
+            session.page_cache_bytes = candidate.page_cache_bytes
+            session.committed_shape = candidate.committed_shape
+            session.source_shape = candidate.source_shape
+            return response
 
     def get_summary(
         self,
