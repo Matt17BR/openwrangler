@@ -66,6 +66,8 @@ non-string labels and exposes named index or MultiIndex row labels independently
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed
 when duplicate or display-colliding labels are ambiguous. Generated Python checks destination names before appending
 or renaming a column. Harmless extra columns and valid in-place replacements remain supported, including after earlier steps.
+Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
+results, before later expressions can read the wrong column. Case-only Rename remains supported.
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
 names; ordinary lazy operations stay lazy, while one-hot encoding, multi-label encoding, and custom code may materialize.
 Pandas accepts its supported text encodings

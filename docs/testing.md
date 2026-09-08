@@ -136,8 +136,11 @@ generated code with its existing value, dtype, label and index comparator.
 `python/tests/test_generated_output_columns.py` owns static output-name agreement between public binding and
 standalone generated Python across Pandas, Polars and DuckDB. It checks occupied outputs, harmless extra columns,
 replacement of the selected source column, canonical Pandas labels, earlier steps and Custom Code, lazy metadata
-inspection, private-connection Rename chains and long-name code capacity. Existing Regex, Split and dynamic-output owners retain
-their stronger validation; session transaction tests retain exact generated-size and pre-transform rollback checks.
+inspection, private-connection Rename chains and long-name code capacity. DuckDB cases cover case-insensitive input
+and intermediate collisions, categorical output pairs, and public Clone or Custom Code plans whose later Formula and
+Select steps could otherwise conceal a wrong-column result. Case-only Rename and case-distinct Pandas/Polars outputs
+remain valid. Existing Regex, Split and Pivot owners retain their stronger validation; session transaction tests retain
+exact generated-size and pre-transform rollback checks.
 
 Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
 retain cancellation correlation before dispatch, including synchronous listener registration, without losing
