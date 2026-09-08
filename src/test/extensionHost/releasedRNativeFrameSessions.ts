@@ -165,7 +165,9 @@ export function createReleasedRNativeFrameSessions({
     for (const expected of RELEASED_R_COLLAPSE_FRAMES) {
       recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:start");
       await showExactReleasedNotebook(notebook);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:notebook-shown");
       await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:selection-submitted");
       const session = await waitForReleasedVariableSession(
         workbench,
         testing,
