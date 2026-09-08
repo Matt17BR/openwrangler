@@ -516,6 +516,10 @@ Kernel bridge and variable-discovery tests cover notebook preflight byte, output
 expansion, exact document replacement, fixed errors and execution settlement after cancellation or a host deadline.
 Actual generated Python controls check quiet and noisy notebook-open paths before runtime dispatch.
 
+DuckDB engine tests verify temporary query-view cleanup after reads, metadata inspection, query failures and source
+deletion, while preserving caller objects, source evaluation counts and primary errors. The engine and notebook
+owners also cover repeated session closes and successful or refused captures on both supported DuckDB cohorts.
+
 For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.
