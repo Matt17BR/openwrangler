@@ -918,3 +918,55 @@ local({
     invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
   }
 })
+
+# Ordinary Group By means retain their default reduction under registered caller methods.
+local({
+  methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
+  method_names <- c("mean.numeric", "mean.integer")
+  had_methods <- vapply(method_names, exists, logical(1L), envir = methods, inherits = FALSE)
+  prior_methods <- lapply(method_names, function(name) {
+    if (exists(name, methods, inherits = FALSE)) get(name, methods, inherits = FALSE) else NULL
+  })
+  on.exit(for (i in seq_along(method_names)) {
+    if (had_methods[[i]]) assign(method_names[[i]], prior_methods[[i]], methods)
+    else if (exists(method_names[[i]], methods, inherits = FALSE)) rm(list = method_names[[i]], envir = methods)
+  }, add = TRUE)
+  poison <- function(...) stop("caller mean method dispatched", call. = FALSE)
+  registerS3method("mean", "numeric", poison, envir = baseenv())
+  registerS3method("mean", "integer", poison, envir = baseenv())
+  stopifnot(inherits(try(base::mean(c(1, 3, 5)), silent = TRUE), "try-error"))
+  sources <- new.env(parent = baseenv())
+  sources$method_group <- data.frame(group = c("a", "a", "a", "b"), value = c(1, 3, 5, NA))
+  before <- serialize(sources$method_group, NULL, version = 3L)
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(local_agent$dispose(), add = TRUE)
+  session <- "72727272-7272-4272-8272-727272727272"
+  opened <- dispatch_with(local_agent, "openSession", list(
+    sessionId = session, variableName = "method_group", page = page_window()
+  ))
+  preview <- dispatch_with(local_agent, "previewStep", list(
+    sessionId = session, revision = 0L, page = page_window(),
+    step = list(id = "method-mean", kind = "groupBy", params = list(
+      keys = list(list(id = "r:c:0", name = "group")),
+      aggregations = list(list(column = list(id = "r:c:1", name = "value"), operation = "mean", alias = "average"))
+    ))
+  ))
+  assert_identical(preview$kind, "stepPreview", "a caller mean method intercepted Group By")
+  assert_identical(preview$page$page$rows[[1L]]$values[[2L]]$raw, "3", "Group By used a caller mean result")
+  applied <- dispatch_with(local_agent, "applyDraft", list(
+    sessionId = session, revision = preview$revision, page = page_window()
+  ))
+  assert_identical(applied$page, preview$page, "mean Group By changed its preview on Apply")
+  copied <- new.env(parent = baseenv())
+  copied$method_group <- unserialize(before)
+  eval(parse(text = applied$code), envir = copied)
+  assert_identical(copied$open_wrangler_result, data.frame(group = c("a", "b"), average = c(3, NA)),
+    "generated mean Group By changed values, types or missing groups")
+  assert_identical(serialize(copied$method_group, NULL, version = 3L), before, "generated mean Group By mutated source")
+  assert_identical(serialize(sources$method_group, NULL, version = 3L), before, "live mean Group By mutated source")
+  undone <- dispatch_with(local_agent, "undoStep", list(
+    sessionId = session, revision = applied$revision, page = page_window()
+  ))
+  assert_identical(undone$page, opened$page, "mean Group By did not restore its input page")
+  invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+})

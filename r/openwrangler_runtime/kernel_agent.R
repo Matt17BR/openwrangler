@@ -6425,7 +6425,7 @@ openwrangler_r_kernel_agent <- local({
         "        .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0); .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
         "        if (.ow_positive_infinity && .ow_negative_infinity) next",
         "        if (.ow_positive_infinity) { .ow_fill <- Inf } else if (.ow_negative_infinity) { .ow_fill <- -Inf } else {",
-        "          .ow_scale <- max(abs(.ow_present)); .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+        "          .ow_scale <- max(abs(.ow_present)); .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_present / .ow_scale))) * .ow_scale",
         "        }",
         "      } else if (.ow_statistic == \"median\") {",
         "        .ow_ordered <- sort(.ow_present); .ow_present_count <- length(.ow_ordered)",
@@ -6519,7 +6519,7 @@ openwrangler_r_kernel_agent <- local({
         "        .ow_fill <- -Inf",
         "      } else {",
         "        .ow_scale <- max(abs(.ow_present))",
-        "        .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+        "        .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_present / .ow_scale))) * .ow_scale",
         "      }",
         "    } else if (.ow_replacement_kind == \"median\") {",
         "      if (!any(.ow_missing)) return(.ow_values)",
@@ -7308,7 +7308,7 @@ openwrangler_r_kernel_agent <- local({
         if (.ow_positive_infinity) return(Inf)
         if (.ow_negative_infinity) return(-Inf)
         .ow_scale <- max(abs(.ow_numeric))
-        return(if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_numeric / .ow_scale))) * .ow_scale)
+        return(if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_numeric / .ow_scale))) * .ow_scale)
       }
       if (identical(.ow_operation, "median")) {
         .ow_ordered <- sort(.ow_present)

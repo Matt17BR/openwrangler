@@ -5689,6 +5689,66 @@ profile_reference <- function(capture, position) {
   list(id = schema$id, name = schema$name)
 }
 
+# Profile reductions use their native default even when callers register mean methods.
+local({
+  methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
+  method_names <- c("mean.numeric", "mean.integer")
+  had_methods <- vapply(method_names, exists, logical(1L), envir = methods, inherits = FALSE)
+  prior_methods <- lapply(method_names, function(name) {
+    if (exists(name, methods, inherits = FALSE)) get(name, methods, inherits = FALSE) else NULL
+  })
+  on.exit(for (i in seq_along(method_names)) {
+    if (had_methods[[i]]) assign(method_names[[i]], prior_methods[[i]], methods)
+    else if (exists(method_names[[i]], methods, inherits = FALSE)) rm(list = method_names[[i]], envir = methods)
+  }, add = TRUE)
+  frames <- lapply(c(3L, openwrangler_r_frame_contract$limits$profileSampleRows + 1L), function(size) {
+    values <- c(1, 3, rep(NA_real_, size - 2L))
+    text <- c("a", "bbb", rep(NA_character_, size - 2L))
+    data.frame(number = values, integer = as.integer(values), wide = bit64::as.integer64(values),
+      duration = as.difftime(values, units = "hours"), text = text, factor = factor(text))
+  })
+  profiles <- lapply(frames, function(frame) {
+    capture <- openwrangler_r_frame_contract$capture_frame(frame)
+    openwrangler_r_frame_contract$materialize_summaries(
+      capture, lapply(seq_along(frame), function(i) profile_reference(capture, i))
+    )
+  })
+  poison <- function(...) stop("caller mean method dispatched", call. = FALSE)
+  registerS3method("mean", "numeric", poison, envir = baseenv())
+  registerS3method("mean", "integer", poison, envir = baseenv())
+  assert_error(base::mean(c(1, 3)), "caller mean method dispatched")
+  assert_error(base::mean(c(1L, 3L)), "caller mean method dispatched")
+  for (i in seq_along(frames)) {
+    frame <- frames[[i]]
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_frame(frame)
+    actual <- openwrangler_r_frame_contract$materialize_summaries(
+      capture, lapply(seq_along(frame), function(position) profile_reference(capture, position))
+    )
+    assert_identical(actual, profiles[[i]], "registered means changed complete small or chunked profiles")
+    for (position in 1:4) {
+      assert_identical(actual[[position]]$numeric$mean, 2, "a numeric profile mean changed")
+      assert_identical(actual[[position]]$numeric$median, 2, "an even numeric profile median dispatched mean")
+    }
+    for (position in 5:6) assert_identical(actual[[position]]$text$meanLength, 2, "a text profile mean changed")
+    assert_identical(serialize(frame, NULL, version = 3L), before, "registered-method profiling mutated source")
+  }
+  middle_cases <- list(
+    list(values = c(-0, -0), expected = 0),
+    list(values = c(3, 1, 2), expected = 2),
+    list(values = rep(.Machine$double.xmax, 2L), expected = .Machine$double.xmax),
+    list(values = c(-Inf, Inf), expected = NULL),
+    list(values = c(NA_real_, NaN), expected = NULL),
+    list(values = numeric(), expected = NULL)
+  )
+  for (case in middle_cases) {
+    capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = case$values))
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    assert_true(identical(summary$numeric$median, case$expected, num.eq = FALSE),
+      "profile median changed native default bits or empty/non-finite omission")
+  }
+})
+
 profile_source_before <- unserialize(serialize(base_frame, NULL, version = 3L))
 base_summaries <- openwrangler_r_frame_contract$materialize_summaries(
   base_capture,

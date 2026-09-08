@@ -271,6 +271,10 @@ Interpolation at other weights still has a [known tiny-value rounding limit](htt
 
 Generated native R Group By preserves typed empty results, integer64 keys and first/last values in a fresh R session.
 
+Registered R mean methods do not alter built-in Fill and Group By means or profile means and medians.
+Custom Code retains ordinary R dispatch; existing numeric precision limits remain documented in
+[ADR 0001](decisions/0001-native-r-runtime.md).
+
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
 limits; none is a stable-release gate.
 

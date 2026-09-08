@@ -3040,7 +3040,7 @@ mean_fill_apply <- dispatch(
   list(sessionId = mean_fill_session_id, revision = 1L, page = page_window())
 )
 assert_identical(mean_fill_apply$action, "apply", "R mean fill did not apply")
-if (!grepl("mean(.ow_present / .ow_scale)", mean_fill_apply$code, fixed = TRUE)) {
+if (!grepl("base::mean.default(.ow_present / .ow_scale)", mean_fill_apply$code, fixed = TRUE)) {
   stop("generated R mean fill lost its native calculation", call. = FALSE)
 }
 assign("mean_fill_frame", source_environment$mean_fill_frame, envir = .GlobalEnv)
@@ -3063,6 +3063,64 @@ assert_identical(source_environment$mean_fill_frame, mean_fill_before, "the R me
 rm("mean_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
 mean_fill_closed <- dispatch("closeSession", list(sessionId = mean_fill_session_id))
 assert_identical(mean_fill_closed$kind, "closed", "the R mean-fill session did not close")
+
+# Built-in means must not dispatch caller S3 methods, including in complete copied programs.
+local({
+  methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
+  method_names <- c("mean.numeric", "mean.integer")
+  had_methods <- vapply(method_names, exists, logical(1L), envir = methods, inherits = FALSE)
+  prior_methods <- lapply(method_names, function(name) {
+    if (exists(name, methods, inherits = FALSE)) get(name, methods, inherits = FALSE) else NULL
+  })
+  on.exit(for (i in seq_along(method_names)) {
+    if (had_methods[[i]]) assign(method_names[[i]], prior_methods[[i]], methods)
+    else if (exists(method_names[[i]], methods, inherits = FALSE)) rm(list = method_names[[i]], envir = methods)
+  }, add = TRUE)
+  poison <- function(...) stop("caller mean method dispatched", call. = FALSE)
+  registerS3method("mean", "numeric", poison, envir = baseenv())
+  registerS3method("mean", "integer", poison, envir = baseenv())
+  stopifnot(inherits(try(base::mean(c(1, 3, 5)), silent = TRUE), "try-error"))
+  sources <- new.env(parent = baseenv())
+  sources$method_fill <- data.frame(
+    group = c(rep("present", 4L), "missing", "missing"), value = c(1, 3, 5, NA, NA, NA),
+    row.names = paste0("mean-", 1:6)
+  )
+  before <- serialize(sources$method_fill, NULL, version = 3L)
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(local_agent$dispose(), add = TRUE)
+  session <- "71717171-7171-4171-8171-717171717171"
+  for (grouped in c(FALSE, TRUE)) {
+    opened <- dispatch_with(local_agent, "openSession", list(
+      sessionId = session, variableName = "method_fill", page = page_window()
+    ))
+    replacement <- if (grouped) list(
+      kind = "groupedStatistic", statistic = "mean", keys = list(list(id = "r:c:0", name = "group"))
+    ) else list(kind = "mean")
+    preview <- dispatch_with(local_agent, "previewStep", list(
+      sessionId = session, revision = 0L,
+      step = fill_step("method-mean", "r:c:1", "value", replacement), page = page_window()
+    ))
+    assert_identical(preview$kind, "stepPreview", "a caller mean method intercepted built-in Fill")
+    assert_identical(preview$page$page$rows[[4L]]$values[[2L]]$raw, "3", "built-in Fill used a caller mean result")
+    applied <- dispatch_with(local_agent, "applyDraft", list(
+      sessionId = session, revision = preview$revision, page = page_window()
+    ))
+    assert_identical(applied$page, preview$page, "mean Fill changed its preview on Apply")
+    copied <- new.env(parent = baseenv())
+    copied$method_fill <- unserialize(before)
+    eval(parse(text = applied$code), envir = copied)
+    expected <- unserialize(before)
+    expected$value <- if (grouped) c(1, 3, 5, 3, NA, NA) else c(1, 3, 5, 3, 3, 3)
+    assert_identical(copied$open_wrangler_result, expected, "generated mean Fill changed values, types or row names")
+    assert_identical(serialize(copied$method_fill, NULL, version = 3L), before, "generated mean Fill mutated its source")
+    assert_identical(serialize(sources$method_fill, NULL, version = 3L), before, "live mean Fill mutated its source")
+    undone <- dispatch_with(local_agent, "undoStep", list(
+      sessionId = session, revision = applied$revision, page = page_window()
+    ))
+    assert_identical(undone$page, opened$page, "mean Fill did not restore its input page")
+    invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+  }
+})
 
 source_environment$fallback_fill_frame <- data.frame(
   target_partial = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),

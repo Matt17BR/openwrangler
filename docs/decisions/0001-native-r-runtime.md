@@ -126,7 +126,7 @@ from the same request. Same-schema changes made in the notebook are therefore vi
 user to reopen the frame.
 
 Large profiles do not fail at an arbitrary dataframe row or cell count. The R contract scans cheap column and missing
-statistics in bounded chunks, keeps those results exact, and takes a deterministic sample of at most 100,000
+statistics in bounded chunks and takes a deterministic sample of at most 100,000
 non-missing values only for expensive histograms and categorical distributions. Omitted exact statistics display as
 `n/a`, sampled charts carry an explicit marker, and percentages use the sample population. Dataset missing counts stay
 exact; duplicate-row detection publishes the sample size when its deterministic sample is bounded below the visible
@@ -135,6 +135,14 @@ lock onto periodic data. Opening Filters discovers values from at most 100,000 s
 size. A non-empty value search scans the column exactly in bounded chunks, with no separate dataframe row or cell
 limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching key text and asks for a narrower
 term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
+
+Mean Fill, ordinary numeric Group By means, and numeric/text profile means use `base::mean.default`
+on validated primitive values.
+Profile medians select their middle value or pair with partial sorting; the pair uses the same default reduction.
+This preserves native profile arithmetic, including signed zero, without dispatching to registered mean methods.
+Custom Code retains normal R method dispatch. Floating-point cancellation and chunk-merge overflow remain tracked in
+[#1070](https://github.com/Matt17BR/openwrangler/issues/1070) and
+[#1074](https://github.com/Matt17BR/openwrangler/issues/1074); method isolation does not correct those limits.
 
 Editing supports the Native R operations published in the
 [generated transformation reference](../reference.md#transformation-operations), which is authoritative for the

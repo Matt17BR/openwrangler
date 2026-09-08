@@ -49,6 +49,45 @@ custom_assert_true <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
 }
 
+# Deliberate Custom Code calls keep caller S3 dispatch; built-in isolation is not a global override.
+local({
+  methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
+  method_names <- c("mean.numeric", "mean.integer")
+  had_methods <- vapply(method_names, exists, logical(1L), envir = methods, inherits = FALSE)
+  prior_methods <- lapply(method_names, function(name) {
+    if (exists(name, methods, inherits = FALSE)) get(name, methods, inherits = FALSE) else NULL
+  })
+  on.exit(for (i in seq_along(method_names)) {
+    if (had_methods[[i]]) assign(method_names[[i]], prior_methods[[i]], methods)
+    else if (exists(method_names[[i]], methods, inherits = FALSE)) rm(list = method_names[[i]], envir = methods)
+  }, add = TRUE)
+  registerS3method("mean", "numeric", function(...) 999, envir = baseenv())
+  assert_identical(base::mean(c(1, 3)), 999, "the Custom Code mean method control did not register")
+  sources <- new.env(parent = baseenv())
+  sources$method_custom <- data.frame(value = c(1, 3, NA), row.names = c("a", "b", "c"))
+  before <- serialize(sources$method_custom, NULL, version = 3L)
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(local_agent$dispose(), add = TRUE)
+  session <- "73737373-7373-4373-8373-737373737373"
+  invisible(dispatch_with(local_agent, "openSession", list(
+    sessionId = session, variableName = "method_custom", page = page_window()
+  )))
+  preview <- dispatch_with(local_agent, "previewStep", list(
+    sessionId = session, revision = 0L, page = page_window(),
+    step = custom_step("caller-mean", "result <- df; result$value[is.na(result$value)] <- mean(result$value, na.rm = TRUE)")
+  ))
+  assert_identical(preview$kind, "stepPreview", "Custom Code rejected deliberate caller mean dispatch")
+  assert_identical(preview$page$page$rows[[3L]]$values[[1L]]$raw, "999", "Custom Code lost caller mean dispatch")
+  copied <- new.env(parent = baseenv())
+  copied$method_custom <- unserialize(before)
+  eval(parse(text = preview$code), envir = copied)
+  expected <- unserialize(before); expected$value[[3L]] <- 999
+  assert_identical(copied$open_wrangler_result, expected, "generated Custom Code lost caller mean dispatch")
+  assert_identical(serialize(copied$method_custom, NULL, version = 3L), before, "generated mean Custom Code mutated source")
+  assert_identical(serialize(sources$method_custom, NULL, version = 3L), before, "live mean Custom Code mutated source")
+  invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+})
+
 zero_column_sources <- list(
   data.frame(row.names = c("row-a", "row-b", "row-c")),
   tibble::tibble(.rows = 0L),

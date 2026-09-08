@@ -30,6 +30,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Changing operations clears validation errors from the previous form.
 - DuckDB evaluates cleaning results before accepting a step, catching errors outside the visible rows or columns.
   Generated programs also check each intermediate result before continuing.
+- Registered R mean methods no longer change built-in means or profile medians. Custom Code keeps normal R dispatch.
 - Generated native R Group By handles empty inputs and preserves integer64 keys and first/last values in a fresh R session.
 - Native R medians and midpoint interpolation preserve tiny numeric results in live and generated cleaning code.
   They use R's native mean while retaining finite-overflow protection and existing equal-value behavior.
