@@ -107,6 +107,106 @@ row_reduction_step <- function(kind, id, columns, mode = NULL) {
   list(id = id, kind = kind, params = params)
 }
 
+# Exact integer64 duplicate survivors must agree through JSON, capture and replay.
+for (duplicate_flavor in c("base", "tibble", "data.table")) {
+  for (duplicate_positions in list(1L, 1:3)) {
+    for (duplicate_mode in c("first", "last", "none")) {
+      duplicate_text <- c("9223372036854775807", "9223372036854775807", "9223372036854775806", NA_character_, NA_character_)
+      duplicate_environment <- new.env(parent = baseenv())
+      duplicate_frame <- data.frame(
+        key = bit64::as.integer64(duplicate_text),
+        key = factor(c("same", "same", "same", NA, NA)),
+        key = as.Date(c("2026-01-01", "2026-01-01", "2026-01-01", NA, NA)),
+        ordinal = 1:5,
+        check.names = FALSE,
+        row.names = paste0("source-", 1:5)
+      )
+      if (identical(duplicate_flavor, "tibble")) duplicate_frame <- tibble::as_tibble(duplicate_frame, .name_repair = "minimal")
+      if (identical(duplicate_flavor, "data.table")) {
+        duplicate_frame <- data.table::as.data.table(duplicate_frame)
+        data.table::setkeyv(duplicate_frame, "ordinal")
+      }
+      duplicate_environment$frame <- duplicate_frame
+      duplicate_before <- serialize(duplicate_frame, NULL, version = 3L)
+      duplicate_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, duplicate_environment)
+      duplicate_session <- "74747474-7474-4474-8474-747474747474"
+      duplicate_open <- dispatch_with(duplicate_agent, "openSession", list(sessionId = duplicate_session, variableName = "frame", page = page_window()))
+      duplicate_step <- row_reduction_step("dropDuplicates", "exact-duplicates", lapply(duplicate_positions, function(position) {
+        list(id = paste0("r:c:", position - 1L), name = "key")
+      }), duplicate_mode)
+      latest_full_capture <<- NULL
+      duplicate_preview <- dispatch_with(duplicate_agent, "previewStep", list(sessionId = duplicate_session, revision = 0L, step = duplicate_step, page = page_window()))
+      assert_identical(duplicate_preview$kind, "stepPreview", "Integer64 Drop Duplicates did not preview")
+      duplicate_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+      duplicate_expected <- switch(duplicate_mode, first = c(1L, 3L, 4L), last = c(2L, 3L, 5L), none = 3L)
+      assert_identical(duplicate_live[[4L]], duplicate_expected, "Integer64 Drop Duplicates removed a distinct value or kept the wrong occurrence")
+      assert_identical(as.character(duplicate_live[[1L]]), duplicate_text[duplicate_expected], "Native duplicate survivors lost exact integer64 values")
+      assert_identical(duplicate_preview$diff$removedRows, 5L - length(duplicate_expected), "Integer64 duplicate diff changed")
+      assert_identical(vapply(duplicate_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE), paste0("r:r:", duplicate_expected - 1L), "Integer64 duplicate survivors lost source row IDs")
+      assert_identical(duplicate_preview$page$schema, duplicate_open$page$schema, "Integer64 duplicate comparison changed schema or column identities")
+      duplicate_apply <- dispatch_with(duplicate_agent, "applyDraft", list(sessionId = duplicate_session, revision = 1L, page = page_window()))
+      assert_identical(duplicate_apply$page, duplicate_preview$page, "Integer64 duplicate Apply changed its confirmed preview")
+      duplicate_generated <- new.env(parent = baseenv())
+      duplicate_generated$frame <- unserialize(duplicate_before)
+      eval(parse(text = duplicate_apply$code), envir = duplicate_generated)
+      assert_identical(as.character(duplicate_generated$open_wrangler_result[[1L]]), duplicate_text[duplicate_expected], "Generated duplicate survivors lost exact integer64 values")
+      assert_identical(lapply(duplicate_generated$open_wrangler_result, identity), lapply(duplicate_live, identity), "Generated duplicate survivors changed values or column metadata")
+      assert_identical(class(duplicate_generated$open_wrangler_result), class(duplicate_live), "Generated duplicates changed native frame flavor")
+      assert_identical(attr(duplicate_generated$open_wrangler_result, "sorted"), attr(duplicate_live, "sorted"), "Generated duplicates lost the data.table key")
+      assert_identical(row.names(duplicate_generated$open_wrangler_result), row.names(duplicate_live), "Generated duplicates changed row labels")
+      assert_identical(serialize(duplicate_generated$frame, NULL, version = 3L), duplicate_before, "Generated duplicates mutated their source")
+      if (identical(duplicate_flavor, "base") && identical(duplicate_positions, 1:3) && identical(duplicate_mode, "none")) {
+        duplicate_cold_bundle <- tempfile(fileext = ".rds")
+        duplicate_cold_script <- tempfile(fileext = ".R")
+        tryCatch({
+          saveRDS(list(frame = unserialize(duplicate_before), code = duplicate_apply$code), duplicate_cold_bundle, version = 3L)
+          writeLines(c(
+            "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+            "invisible(assert_no_warning({",
+            "  bundle <- readRDS(commandArgs(TRUE)[[1L]])",
+            "  if (isNamespaceLoaded(\"bit64\")) stop(\"The duplicate child did not start with a cold bit64 namespace\")",
+            "  source_before <- serialize(bundle$frame, NULL, version = 3L)",
+            "  generated <- new.env(parent = baseenv()); generated$frame <- bundle$frame",
+            "  eval(parse(text = bundle$code), envir = generated)",
+            "  stopifnot(identical(as.character(generated$open_wrangler_result[[1L]]), \"9223372036854775806\"))",
+            "  stopifnot(identical(generated$open_wrangler_result[[4L]], 3L))",
+            "  stopifnot(identical(serialize(generated$frame, NULL, version = 3L), source_before))",
+            "}, \"cold generated integer64 duplicates\"))"
+          ), duplicate_cold_script, useBytes = TRUE)
+          duplicate_cold_output <- system2(file.path(R.home("bin"), "Rscript"),
+            c("--vanilla", shQuote(duplicate_cold_script), shQuote(duplicate_cold_bundle)), stdout = TRUE, stderr = TRUE)
+          duplicate_cold_status <- attr(duplicate_cold_output, "status", exact = TRUE)
+          assert_identical(is.null(duplicate_cold_status) || identical(duplicate_cold_status, 0L), TRUE, "Cold generated integer64 duplicates failed")
+          assert_identical(duplicate_cold_output, character(), "Cold generated integer64 duplicates emitted a diagnostic")
+        }, finally = unlink(c(duplicate_cold_bundle, duplicate_cold_script)))
+        for (duplicate_side in c("input", "output")) {
+          duplicate_inspection <- dispatch_with(duplicate_agent, "inspectStepPage", list(sessionId = duplicate_session, revision = 2L, stepId = duplicate_step$id, side = duplicate_side, page = page_window()))
+          duplicate_expected_page <- if (identical(duplicate_side, "input")) duplicate_open$page$page else duplicate_apply$page$page
+          assert_identical(duplicate_inspection$kind, "stepInspectionPage", "Integer64 duplicate inspection failed")
+          assert_identical(duplicate_inspection$page$page, duplicate_expected_page, "Integer64 duplicate inspection changed source or survivor identities")
+        }
+        duplicate_undo <- dispatch_with(duplicate_agent, "undoStep", list(sessionId = duplicate_session, revision = 2L, page = page_window()))
+        assert_identical(duplicate_undo$page, duplicate_open$page, "Integer64 duplicate Undo did not restore the source")
+        duplicate_redo <- dispatch_with(duplicate_agent, "redoStep", list(sessionId = duplicate_session, revision = 3L, expectedStepId = duplicate_step$id, page = page_window()))
+        assert_identical(duplicate_redo$page, duplicate_apply$page, "Integer64 duplicate Redo changed the exact survivors")
+        assert_identical(duplicate_redo$code, duplicate_apply$code, "Integer64 duplicate Redo changed its generated plan")
+        duplicate_formula <- list(id = "exact-after-duplicates", kind = "formula", params = list(
+          leftColumn = list(id = "r:c:0", name = "key"), operator = "add", value = 0L, newColumn = "exact"
+        ))
+        duplicate_formula_preview <- dispatch_with(duplicate_agent, "previewStep", list(sessionId = duplicate_session, revision = 4L, step = duplicate_formula, page = page_window()))
+        assert_identical(duplicate_formula_preview$kind, "stepPreview", "Formula did not bind the retained integer64 column")
+        duplicate_formula_apply <- dispatch_with(duplicate_agent, "applyDraft", list(sessionId = duplicate_session, revision = 5L, page = page_window()))
+        eval(parse(text = duplicate_formula_apply$code), envir = duplicate_generated)
+        assert_identical(as.character(duplicate_generated$open_wrangler_result$exact), "9223372036854775806", "Mixed duplicate and Formula helpers changed exact arithmetic")
+        assert_identical(duplicate_generated$open_wrangler_result[[4L]], 3L, "Mixed duplicate and Formula helpers changed row identity")
+      }
+      assert_identical(serialize(duplicate_environment$frame, NULL, version = 3L), duplicate_before, "Native duplicates mutated their source")
+      invisible(dispatch_with(duplicate_agent, "closeSession", list(sessionId = duplicate_session)))
+      duplicate_agent$dispose()
+    }
+  }
+}
+
 for (zero_column_kind in c("dropMissingRows", "dropDuplicates")) {
   zero_column_environment <- new.env(parent = baseenv())
   zero_column_environment$frame <- data.frame(row.names = c("row-a", "row-b", "row-c"))

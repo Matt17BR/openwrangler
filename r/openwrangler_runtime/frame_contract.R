@@ -8501,6 +8501,28 @@ openwrangler_r_frame_contract <- local({
     subset_rows_at(value, resolved$inspected, which(keep))
   }
 
+  duplicate_row_mask <- function(value, keep, integer64_text) {
+    # Compare exact decimal keys without changing the retained native columns.
+    wide <- base::vapply(base::seq_along(value), function(position) {
+      base::identical(base::class(base::.subset2(value, position)), "integer64")
+    }, base::logical(1L), USE.NAMES = FALSE)
+    if (base::any(wide) && !base::inherits(value, "data.table")) {
+      columns <- base::lapply(base::seq_along(value), function(position) {
+        column <- base::.subset2(value, position)
+        if (wide[[position]]) integer64_text(column) else column
+      })
+      value <- base::structure(columns, names = base::names(value),
+        row.names = base::.row_names_info(value, 0L), class = "data.frame")
+    }
+    if (base::identical(keep, "first")) {
+      base::duplicated(value)
+    } else if (base::identical(keep, "last")) {
+      base::duplicated(value, fromLast = TRUE)
+    } else {
+      base::duplicated(value) | base::duplicated(value, fromLast = TRUE)
+    }
+  }
+
   drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first") {
     resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-duplicates")
     if (!is.character(keep) || length(keep) != 1L || is.na(keep) || !keep %in% c("first", "last", "none")) {
@@ -8514,13 +8536,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       value[resolved$positions]
     }
-    duplicates <- if (identical(keep, "first")) {
-      duplicated(compared)
-    } else if (identical(keep, "last")) {
-      duplicated(compared, fromLast = TRUE)
-    } else {
-      duplicated(compared) | duplicated(compared, fromLast = TRUE)
-    }
+    duplicates <- duplicate_row_mask(compared, keep, integer64_as_character)
     subset_rows_at(value, resolved$inspected, which(!duplicates))
   }
 
@@ -9338,7 +9354,7 @@ openwrangler_r_frame_contract <- local({
       } else {
         frame[source_positions, , drop = FALSE]
       }
-      as.integer(sum(duplicated(sampled_frame)))
+      as.integer(sum(duplicate_row_mask(sampled_frame, "first", integer64_as_character)))
     }
     stats <- list(
       missingCells = as.double(sum(as.double(missing_counts))),
@@ -9561,6 +9577,7 @@ openwrangler_r_frame_contract <- local({
     rename_column_at = rename_column_at,
     clone_column_at = clone_column_at,
     dense_rank_values = dense_rank_values,
+    duplicate_row_mask = duplicate_row_mask,
     dense_rank_column_at = dense_rank_column_at,
     by_example_column_at = by_example_column_at,
     one_hot_encode_columns_at = one_hot_encode_columns_at,
