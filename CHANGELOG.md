@@ -15,6 +15,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Delayed grid navigation keeps newer header or control focus. Interrupted column drags no longer overwrite restored
   widths or continue after the view changes or controls become disabled.
+- Python and native R reject malformed viewing structures before execution. Native R no longer accepts malformed
+  filter arrays or null logic as an empty or default-AND Filter Rows draft.
 - Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
   no longer copies source text into framing errors or starts cleanup before the originating execution settles.
 - Python notebook-open preflight bounds retained text and error diagnostics before runtime dispatch, including noisy

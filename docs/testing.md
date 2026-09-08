@@ -148,6 +148,11 @@ Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual
 Rejected numeric previews must preserve the complete confirmed response. Direct numeric Fill and public text-only
 replacement controls retain their separate boundaries.
 
+Python protocol and kernel tests check malformed viewing structures before native query work, including correlated
+errors, retained session state and valid follow-up requests. The native R viewing owner sends raw JSON to distinguish
+objects from arrays, retains a draft after malformed page input, and compares valid Filter Rows output with generated
+code. Python opaque operands and R nullable picker search keep their separate valid-input controls.
+
 Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
 exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.
 `python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;

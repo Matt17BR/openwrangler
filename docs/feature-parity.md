@@ -173,6 +173,8 @@ App regressions check these actions against the host message decoder. Toggling a
 NaN selections. Supported scalar selections remain
 checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
 without dropping the cleaning plan during replay.
+Python and native R reject malformed viewing structures before execution. Native R applies the same array and
+logic admission checks to Filter Rows drafts; valid empty filters and existing native operand behavior remain.
 
 Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates,
 One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;

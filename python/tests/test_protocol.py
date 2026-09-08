@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from openwrangler_runtime import SessionManager, __version__
@@ -444,6 +446,155 @@ def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
                 "request": request,
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement", "remove"),
+    [
+        (("extra",), True, False),
+        (("logic",), None, False),
+        (("logic",), {}, False),
+        (("logic",), "xor", False),
+        (("filters", 0, "extra"), True, False),
+        (("filters", 0, "column"), "", False),
+        (("filters", 0, "type"), [], False),
+        (("filters", 0, "type"), "unsupported", False),
+        (("filters", 0, "logic"), [], False),
+        (("filters", 0, "predicates"), None, True),
+        (("filters", 0, "predicates"), {}, False),
+        (("filters", 0, "predicates", 0, "kind"), None, True),
+        (("filters", 0, "predicates", 0, "kind"), "values", False),
+        (("filters", 0, "predicates", 0, "extra"), True, False),
+        (("filters", 0, "predicates", 0, "operator"), [], False),
+        (("filters", 0, "predicates", 0, "operator"), "unsupported", False),
+        (("filters", 0, "predicates", 0, "value"), None, True),
+        (("filters", 0, "predicates", 0, "secondValue"), None, True),
+        (("filters", 0, "valueFilter"), None, False),
+        (("filters", 0, "valueFilter", "kind"), "predicate", False),
+        (("filters", 0, "valueFilter", "extra"), True, False),
+        (("filters", 0, "valueFilter", "selectedValues"), "1", False),
+        (("filters", 0, "valueFilter", "selectedValues"), {}, False),
+        (("filters", 0, "valueFilter", "includeNulls"), None, True),
+        (("filters", 0, "valueFilter", "includeNulls"), "false", False),
+        (("filters", 0, "valueFilter", "includeNaN"), 0, False),
+        (("filters", 0, "valueFilter", "search"), None, False),
+        (("sort", 0, "direction"), None, True),
+        (("sort", 0, "nulls"), None, True),
+        (("sort", 0, "extra"), True, False),
+        (("sort", 0, "direction"), [], False),
+        (("sort", 0, "direction"), "sideways", False),
+        (("sort", 0, "nulls"), {}, False),
+        (("sort", 0, "nulls"), "middle", False),
+    ],
+)
+def test_view_queries_reject_malformed_structure(path, replacement, remove: bool) -> None:
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "float",
+                "predicates": [{"kind": "predicate", "operator": "between", "value": 1, "secondValue": 3}],
+                "valueFilter": {"kind": "values", "selectedValues": [1], "includeNulls": False, "includeNaN": False},
+            }
+        ],
+        "sort": [{"column": "value", "direction": "asc", "nulls": "last"}],
+    }
+    target = model
+    for key in path[:-1]:
+        target = target[key]
+    if remove:
+        del target[path[-1]]
+    else:
+        target[path[-1]] = replacement
+    with pytest.raises(ProtocolError, match="filterModel"):
+        decode_envelope(
+            {
+                "protocolVersion": 2,
+                "requestId": "invalid-view",
+                "priority": "interactive",
+                "request": {
+                    "kind": "getPage",
+                    "sessionId": "session",
+                    "revision": 0,
+                    "viewRequestId": "view",
+                    "offset": 0,
+                    "limit": 3,
+                    "columnOffset": 0,
+                    "columnLimit": 1,
+                    "filterModel": model,
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+def test_view_queries_preserve_valid_structure_and_opaque_values(kind: str) -> None:
+    values = [None, False, 0, 0.5, " spaced ", [1, None], {"nested": "x" * (MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)}]
+    columns = [
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "datetime",
+        "date",
+        "duration",
+        "binary",
+        "list",
+        "struct",
+        "unknown",
+    ]
+    model = {
+        "logic": "or",
+        "filters": [
+            {
+                "column": " repeated ",
+                "type": column_type,
+                "logic": "and",
+                "predicates": [
+                    {"kind": "predicate", "operator": "isNull"},
+                    {"kind": "predicate", "operator": "isNotNull", "value": None, "secondValue": values},
+                ],
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": values,
+                    "includeNulls": False,
+                    "includeNaN": True,
+                    "search": " ",
+                },
+            }
+            for column_type in columns
+        ],
+        "sort": [{"column": " repeated ", "direction": "desc", "nulls": "first"}],
+    }
+    request = {"kind": kind, "sessionId": "session", "revision": 0, "viewRequestId": "view", "filterModel": model}
+    if kind == "getPage":
+        request.update(offset=0, limit=3, columnOffset=0, columnLimit=1)
+    elif kind == "getColumnValues":
+        request.update(column=" repeated ", limit=3, search="")
+    before = deepcopy(request)
+    decoded = decode_envelope(
+        {"protocolVersion": 2, "requestId": "valid-view", "priority": "interactive", "request": request}
+    )[2]
+    assert decoded == before
+    assert decoded["filterModel"] is model
+    assert model["filters"][0]["valueFilter"]["selectedValues"] is values
+
+
+@pytest.mark.parametrize(("field", "value"), [("column", ""), ("column", 1), ("search", None), ("search", 0)])
+def test_column_values_rejects_nontext_query_fields(field: str, value: object) -> None:
+    request = {
+        "kind": "getColumnValues",
+        "sessionId": "session",
+        "revision": 0,
+        "viewRequestId": "view",
+        "column": "value",
+        "limit": 3,
+        "filterModel": {"filters": [], "sort": []},
+        field: value,
+    }
+    with pytest.raises(ProtocolError, match=field):
+        decode_envelope({"protocolVersion": 2, "requestId": "picker", "priority": "interactive", "request": request})
 
 
 def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() -> None:
