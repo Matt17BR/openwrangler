@@ -422,6 +422,133 @@ def test_pandas_drop_duplicates_keeps_distinct_sparse_integer_neighbors(keep: st
     pd.testing.assert_frame_equal(source, before)
 
 
+@pytest.mark.parametrize(
+    "family,layout",
+    [
+        (family, layout)
+        for family in ["integer", "unsigned", "timestamp", "timezone", "duration", "time", "date", "dictionary"]
+        for layout in ["nullable", "present", "composite", "empty", "all-missing"]
+    ]
+    + [
+        (family, layout)
+        for family in ["timestamp-minimum", "timezone-minimum", "duration-minimum"]
+        for layout in ["nullable", "present", "composite"]
+    ],
+)
+@pytest.mark.parametrize("keep", ["first", "last", "none"])
+def test_pandas_arrow_duplicates_keep_exact_neighbor_rows(family: str, layout: str, keep: str) -> None:
+    import pyarrow as pa
+
+    dtype, high, low = {
+        "integer": (pa.int64(), 2**63 - 1, 2**63 - 2),
+        "unsigned": (pa.uint64(), 2**64 - 1, 2**64 - 2),
+        "timestamp": (pa.timestamp("ns"), 2**60 + 2, 2**60 + 1),
+        "timezone": (pa.timestamp("ns", tz="Europe/Berlin"), 2**60 + 2, 2**60 + 1),
+        "duration": (pa.duration("ns"), 2**60 + 2, 2**60 + 1),
+        "timestamp-minimum": (pa.timestamp("ns"), -(2**63) + 1, -(2**63)),
+        "timezone-minimum": (pa.timestamp("ns", tz="UTC"), -(2**63) + 1, -(2**63)),
+        "duration-minimum": (pa.duration("ns"), -(2**63) + 1, -(2**63)),
+        "time": (pa.time64("ns"), 2**40 + 2, 2**40 + 1),
+        "date": (pa.date64(), 172_800_000, 86_400_000),
+        "dictionary": (pa.int64(), 2**63 - 1, 2**63 - 2),
+    }[family]
+    values: list[int | None] = [] if layout == "empty" else [None] * 4 if layout == "all-missing" else [high, low, high]
+    if layout in {"nullable", "composite"}:
+        values.append(None)
+    array = pa.array(values, type=dtype)
+    if family == "dictionary":
+        array = array.dictionary_encode()
+    source = pd.concat(
+        [
+            pd.Series(array, dtype=pd.ArrowDtype(array.type)),
+            pd.Series([1] * len(values)),
+            pd.Series(range(len(values))),
+        ],
+        axis=1,
+    )
+    source.columns = pd.Index([7, 7, "row"])
+    source.index = pd.MultiIndex.from_tuples([("source", i % 2) for i in range(len(values))], names=["group", "row"])
+    source.attrs = {"synthetic": "unchanged"}
+    before = source.copy(deep=True)
+    expected_rows = {
+        "nullable": {"first": [0, 1, 3], "last": [1, 2, 3], "none": [1, 3]},
+        "composite": {"first": [0, 1, 3], "last": [1, 2, 3], "none": [1, 3]},
+        "present": {"first": [0, 1], "last": [1, 2], "none": [1]},
+        "empty": {"first": [], "last": [], "none": []},
+        "all-missing": {"first": [0], "last": [3], "none": []},
+    }[layout][keep]
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("dropDuplicates", columns=lineage[:2] if layout == "composite" else lineage[:1], keep=keep),
+        schema,
+        lineage,
+    )
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        assert actual["row"].tolist() == expected_rows
+        pd.testing.assert_frame_equal(actual, source.iloc[expected_rows], check_exact=True)
+        assert actual.iloc[:, 0].array.__arrow_array__().equals(source.iloc[expected_rows, 0].array.__arrow_array__())
+        assert actual.attrs == source.attrs
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.iloc[:, 0].array.__arrow_array__().equals(before.iloc[:, 0].array.__arrow_array__())
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        "integer",
+        "unsigned",
+        "timestamp",
+        "timezone",
+        "duration",
+        "timestamp-minimum",
+        "timezone-minimum",
+        "duration-minimum",
+        "time",
+    ],
+)
+@pytest.mark.parametrize(
+    "direction,nulls,expected_rows",
+    [
+        ("asc", "last", [1, 0, 2, 3]),
+        ("desc", "last", [0, 2, 1, 3]),
+        ("asc", "first", [3, 1, 0, 2]),
+        ("desc", "first", [3, 0, 2, 1]),
+    ],
+)
+def test_pandas_nullable_arrow_row_keys_keep_value_order(
+    family: str, direction: str, nulls: str, expected_rows: list[int]
+) -> None:
+    import pyarrow as pa
+
+    dtype, high = {
+        "integer": (pa.int64(), 2**63 - 1),
+        "unsigned": (pa.uint64(), 2**64 - 1),
+        "timestamp": (pa.timestamp("ns"), 2**60 + 2),
+        "timezone": (pa.timestamp("ns", tz="UTC"), 2**60 + 2),
+        "duration": (pa.duration("ns"), 2**60 + 2),
+        "timestamp-minimum": (pa.timestamp("ns"), -(2**63) + 1),
+        "timezone-minimum": (pa.timestamp("ns", tz="UTC"), -(2**63) + 1),
+        "duration-minimum": (pa.duration("ns"), -(2**63) + 1),
+        "time": (pa.time64("ns"), 2**40 + 2),
+    }[family]
+    source = pd.DataFrame(
+        {
+            "key": pd.Series(pa.array([high, high - 1, high, None], type=dtype), dtype=pd.ArrowDtype(dtype)),
+            "row": range(4),
+        }
+    )
+    source.index = pd.Index([3, 1, 3, 2], name="source")
+    engine = PandasEngine()
+    operation = bound_step(
+        "sortRows", rules=[{"column": bound_ref("c:source:0", "key", 0), "direction": direction, "nulls": nulls}]
+    )
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        assert actual["row"].tolist() == expected_rows
+        pd.testing.assert_frame_equal(actual, source.iloc[expected_rows], check_exact=True)
+
+
 def test_pandas_duplicate_keys_preserve_object_missing_kinds() -> None:
     source = pd.DataFrame(
         {"key": pd.Series([None, float("nan"), pd.NA, "a", "a", None], dtype=object), "row": range(6)}

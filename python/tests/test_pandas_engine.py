@@ -68,6 +68,116 @@ def test_pandas_file_session_matches_protocol():
     assert [row["values"][0]["display"] for row in page["page"]["rows"]] == ["Rome", "Milan"]
 
 
+@pytest.mark.parametrize(
+    "family,layout",
+    [
+        (family, layout)
+        for family in ["integer", "unsigned", "timestamp", "timezone", "duration", "time", "date"]
+        for layout in ["nullable", "present", "composite", "empty", "all-missing"]
+    ]
+    + [
+        (family, layout)
+        for family in ["timestamp-minimum", "timezone-minimum", "duration-minimum"]
+        for layout in ["nullable", "present", "composite"]
+    ],
+)
+def test_pandas_arrow_duplicate_stats_preserve_exact_keys_and_missing_counts(family: str, layout: str) -> None:
+    import pyarrow as pa
+
+    dtype, high, low = {
+        "integer": (pa.int64(), 2**63 - 1, 2**63 - 2),
+        "unsigned": (pa.uint64(), 2**64 - 1, 2**64 - 2),
+        "timestamp": (pa.timestamp("ns"), 2**60 + 2, 2**60 + 1),
+        "timezone": (pa.timestamp("ns", tz="UTC"), 2**60 + 2, 2**60 + 1),
+        "duration": (pa.duration("ns"), 2**60 + 2, 2**60 + 1),
+        "timestamp-minimum": (pa.timestamp("ns"), -(2**63) + 1, -(2**63)),
+        "timezone-minimum": (pa.timestamp("ns", tz="UTC"), -(2**63) + 1, -(2**63)),
+        "duration-minimum": (pa.duration("ns"), -(2**63) + 1, -(2**63)),
+        "time": (pa.time64("ns"), 2**40 + 2, 2**40 + 1),
+        "date": (pa.date64(), 172_800_000, 86_400_000),
+    }[family]
+    values: list[int | None] = [] if layout == "empty" else [None] * 4 if layout == "all-missing" else [high, low, high]
+    if layout in {"nullable", "composite"}:
+        values.append(None)
+    source = pd.DataFrame({"key": pd.Series(pa.array(values, type=dtype), dtype=pd.ArrowDtype(dtype))})
+    if layout == "composite":
+        source["same"] = 1
+    source.index = pd.Index([i % 2 for i in range(len(source))], name="source")
+    before = source.copy(deep=True)
+    stats = PandasEngine().header_stats(source)
+    missing = 4 if layout == "all-missing" else 1 if layout in {"nullable", "composite"} else 0
+    assert stats == {
+        "duplicateRows": 0 if layout == "empty" else 3 if layout == "all-missing" else 1,
+        "missingCells": missing,
+        "missingRows": missing,
+        "missingValuesByColumn": [{"column": "key", "count": missing}]
+        + ([{"column": "same", "count": 0}] if layout == "composite" else []),
+    }
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert pa.array(source["key"]).equals(pa.array(before["key"]))
+
+
+@pytest.mark.parametrize("signed", [True, False])
+@pytest.mark.parametrize("layout", ["zero-fill", "value-fill", "missing-fill", "empty", "all-missing"])
+def test_pandas_sparse_duplicate_stats_preserve_exact_keys_and_missing_counts(signed: bool, layout: str) -> None:
+    dtype = "int64" if signed else "uint64"
+    high = 2 ** (63 if signed else 64) - 1
+    fill = np.nan if layout in {"missing-fill", "all-missing"} else high if layout == "value-fill" else 0
+    values = (
+        []
+        if layout == "empty"
+        else [np.nan] * 4
+        if layout == "all-missing"
+        else [np.nan, high, high - 1, high, np.nan]
+        if layout == "missing-fill"
+        else [0, high, high - 1, high]
+    )
+    array = pd.arrays.SparseArray(np.array(values, dtype=object), dtype=pd.SparseDtype(dtype, fill))
+    if layout == "missing-fill":
+        assert array.sp_values.tolist() == [high, high - 1, high]
+    source = pd.DataFrame({"key": array})
+    source.index = pd.Index([i % 2 for i in range(len(source))], name="source")
+    source.attrs = {"source": "unchanged"}
+    before = source.copy(deep=True)
+    stats = PandasEngine().header_stats(source)
+    missing = 4 if layout == "all-missing" else 2 if layout == "missing-fill" else 0
+    assert stats == {
+        "duplicateRows": 0
+        if layout == "empty"
+        else 3
+        if layout == "all-missing"
+        else 2
+        if layout == "missing-fill"
+        else 1,
+        "missingCells": missing,
+        "missingRows": missing,
+        "missingValuesByColumn": [{"column": "key", "count": missing}],
+    }
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("layout", ["single", "multiple", "mixed", "empty", "all-missing"])
+def test_pandas_sparse_missing_cell_total_reuses_exact_column_counts(layout: str) -> None:
+    values = [] if layout == "empty" else [np.nan] * 4 if layout == "all-missing" else [np.nan, 1.0, np.nan, 2.0]
+    source = pd.DataFrame({"sparse": pd.Series(values, dtype=pd.SparseDtype("float64", np.nan))})
+    if layout in {"multiple", "mixed"}:
+        source["other"] = pd.Series(
+            [0.0, np.nan, 0.0, np.nan], dtype=pd.SparseDtype("float64", np.nan) if layout == "multiple" else "float64"
+        )
+    before = source.copy(deep=True)
+    stats = PandasEngine().header_stats(source)
+    first_count = 0 if layout == "empty" else 4 if layout == "all-missing" else 2
+    assert stats == {
+        "duplicateRows": 0 if layout == "empty" else 3 if layout == "all-missing" else 1,
+        "missingCells": first_count + (2 if layout in {"multiple", "mixed"} else 0),
+        "missingRows": 0 if layout == "empty" else 4 if layout in {"multiple", "mixed", "all-missing"} else 2,
+        "missingValuesByColumn": [{"column": "sparse", "count": first_count}]
+        + ([{"column": "other", "count": 2}] if layout in {"multiple", "mixed"} else []),
+    }
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
 def test_pandas_excel_file_session(tmp_path):
     path = tmp_path / "sample.xlsx"
     pd.DataFrame({"name": ["alpha", "beta"], "value": [1, 2]}).to_excel(path, index=False)

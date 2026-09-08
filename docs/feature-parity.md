@@ -164,6 +164,10 @@ Pandas scalar Arrow dictionaries use logical values for profiles, value selectio
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
 dictionary values do not gain scalar operations. Integer filtering, sorting, directional Fill and Drop Duplicates
 preserve exact large values in Sparse columns, including returned columns that were not used as keys.
+Nullable Arrow integers, timestamps and durations preserve exact duplicate membership, including nanosecond
+differences, in live and generated row removal and dataset duplicate counts. Retained rows keep their original arrays.
+Sparse integer dataset duplicate counts agree with the existing exact row-removal comparison.
+Missing-cell totals agree with per-column counts for Sparse and mixed Dense/Sparse dataframes.
 Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
 checks also cover encoded unsigned values.
 Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.

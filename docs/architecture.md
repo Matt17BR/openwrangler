@@ -287,6 +287,12 @@ select the original physical rows, while derived logical values and exported UUI
 Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
 Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
 integer values and their fill convention, including columns that did not participate in the query.
+Nullable Arrow integer, timestamp and duration keys retain their exact values during duplicate comparison, including
+nanosecond differences. Dataset duplicate counts use the same comparison keys. These temporary keys preserve value
+ordering; temporal keys use integer storage values so present extrema remain distinct from nulls.
+Retained columns and native indexes keep their original representation.
+Single-column Sparse integer duplicate counts also use the existing exact row keys, retaining native fill conventions.
+The missing-cell total sums the per-column counts, including Sparse columns, without a second aggregate scan.
 Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,
 duplicates, grouping and Pivot share those keys while retaining original source scalars and representative labels.
 Group By retains the first key representative; Pivot retains the first complete identifier row for each group.

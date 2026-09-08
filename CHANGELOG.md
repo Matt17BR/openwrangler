@@ -20,6 +20,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Pandas Drop Duplicates and dataset duplicate counts retain distinct nullable Arrow integers, timestamps and
+  durations, including exact nanosecond differences. Retained rows keep their original values and types.
+  Sparse integer duplicate counts also retain exact neighboring values.
+- Pandas missing-cell totals correctly count multiple missing values in Sparse columns and reuse the per-column counts.
 - Native R Drop Duplicates and dataset duplicate counts distinguish exact integer64 keys. All three keep modes
   retain the correct original rows, including both supported signed extrema and when other columns participate in the comparison.
   Data tables also compare selected columns correctly when their labels repeat.

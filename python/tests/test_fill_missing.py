@@ -1013,6 +1013,61 @@ def test_pandas_directional_fill_uses_exact_duplicate_label_positions_in_live_an
     assert normalized_rows(generated) == expected
 
 
+@pytest.mark.parametrize(
+    "family",
+    [
+        "integer",
+        "unsigned",
+        "timestamp",
+        "timezone",
+        "duration",
+        "timestamp-minimum",
+        "timezone-minimum",
+        "duration-minimum",
+        "time",
+    ],
+)
+@pytest.mark.parametrize("direction,expected", [("forward", [11, 11, 22, 22]), ("backward", [22, 11, 22, None])])
+def test_pandas_directional_fill_keeps_exact_nullable_arrow_key_order(
+    family: str, direction: str, expected: list[int | None]
+) -> None:
+    dtype, high = {
+        "integer": (pa.int64(), 2**63 - 1),
+        "unsigned": (pa.uint64(), 2**64 - 1),
+        "timestamp": (pa.timestamp("ns"), 2**60 + 2),
+        "timezone": (pa.timestamp("ns", tz="UTC"), 2**60 + 2),
+        "duration": (pa.duration("ns"), 2**60 + 2),
+        "timestamp-minimum": (pa.timestamp("ns"), -(2**63) + 1),
+        "timezone-minimum": (pa.timestamp("ns", tz="UTC"), -(2**63) + 1),
+        "duration-minimum": (pa.duration("ns"), -(2**63) + 1),
+        "time": (pa.time64("ns"), 2**40 + 2),
+    }[family]
+    source = pd.DataFrame(
+        {
+            "key": pd.Series(pa.array([high, high - 1, high, None], type=dtype), dtype=pd.ArrowDtype(dtype)),
+            "value": pd.Series([None, 11, 22, None], dtype="Int64"),
+        }
+    )
+    source.index = pd.Index([3, 1, 3, 2], name="source")
+    before = source.copy(deep=True)
+    operation = fill_step(
+        bound_ref("c:source:1", "value", 1),
+        {
+            "kind": "directional",
+            "direction": direction,
+            "orderBy": [{"column": bound_ref("c:source:0", "key", 0), "direction": "asc", "nulls": "last"}],
+        },
+    )
+    engine = PandasEngine()
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, [operation])]:
+        pd.testing.assert_series_equal(
+            actual["value"], pd.Series(expected, index=source.index, name="value", dtype="Int64")
+        )
+        pd.testing.assert_series_equal(actual["key"], source["key"])
+        assert pa.array(actual["key"]).equals(pa.array(source["key"]))
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
 def test_duckdb_directional_fill_preserves_case_variant_internal_name_columns() -> None:
     engine = DuckDBEngine()
     source = duckdb.sql(
