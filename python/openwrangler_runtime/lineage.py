@@ -90,12 +90,13 @@ def _align(
     step: Mapping[str, Any],
 ) -> ColumnLineage:
     by_name = _pools(candidates)
+    candidate_ids = {column["id"] for column in candidates}
     aligned: ColumnLineage = []
     created = 0
     for column in after_schema:
         name = str(column["name"])
         identifier = by_name[name].popleft() if by_name[name] else _step_column_id(step, created)
-        if not any(candidate["id"] == identifier for candidate in candidates):
+        if identifier not in candidate_ids:
             created += 1
         aligned.append({"id": identifier, "name": name})
     return aligned
