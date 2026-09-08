@@ -1819,6 +1819,12 @@ def test_pandas_noninteger_arrow_modulo_keeps_native_refusal(family: str) -> Non
         ([2**64 - 1, 2**64 - 2, None], "power", 1, [2**64 - 1, 2**64 - 2, None]),
         ([0, 1, None], "multiply", str(2**64 - 1), [0, 2**64 - 1, None]),
         ([0, 1, None], "power", str(2**64 - 1), [0, 1, None]),
+        ([2**64 - 1, 1, None], "add", "-1", [2**64 - 2, 0, None]),
+        ([2**64 - 2, 0, None], "subtract", "-1", [2**64 - 1, 1, None]),
+        ([2**64 - 1, 2**64 - 1, None], "add", str(-(2**64 - 1)), [0, 0, None]),
+        ([0, 3, None], "subtract", str(-(2**63)), [2**63, 2**63 + 3, None]),
+        ([], "add", str(-(2**64 - 1)), []),
+        ([None, None], "add", str(-(2**64 - 1)), [None, None]),
     ],
 )
 def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator, literal, expected) -> None:
@@ -1966,7 +1972,20 @@ def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_col
 
 
 @pytest.mark.parametrize(
-    "family", ["signed-result", "empty", "null", "float", "integer-divide", "decimal-add", "decimal-power"]
+    "family",
+    [
+        "signed-result",
+        "empty",
+        "null",
+        "float",
+        "integer-divide",
+        "decimal-add",
+        "decimal-power",
+        "negative-add",
+        "negative-subtract",
+        "negative-empty",
+        "negative-null",
+    ],
 )
 def test_pandas_arrow_formula_capacity_preserves_successful_native_results(family: str) -> None:
     import operator
@@ -1974,8 +1993,10 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
 
     pa = pytest.importorskip("pyarrow")
     value, op, operand = pd.Series([0, 3, None], dtype="uint64[pyarrow]"), "subtract", 2
-    if family in {"empty", "null"}:
-        value = pd.Series([] if family == "empty" else [None, None], dtype="uint64[pyarrow]")
+    if family.startswith("negative-"):
+        op, operand = "subtract" if family == "negative-subtract" else "add", -1
+    if family in {"empty", "null", "negative-empty", "negative-null"}:
+        value = pd.Series([] if family.endswith("empty") else [None, None], dtype="uint64[pyarrow]")
     elif family == "float":
         value = pd.Series(pd.arrays.ArrowExtensionArray(pa.array([1.25, float("nan"), None, -0.0], from_pandas=False)))
         op = "multiply"
@@ -2011,7 +2032,19 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
 
 
 @pytest.mark.parametrize(
-    "family", ["overflow", "negative", "above-uint64", "decimal-capacity", "decimal-negative-scale"]
+    "family",
+    [
+        "overflow",
+        "negative-underflow",
+        "negative-overflow",
+        "negative-multiply",
+        "negative-power",
+        "negative-column",
+        "below-negative-uint64",
+        "above-uint64",
+        "decimal-capacity",
+        "decimal-negative-scale",
+    ],
 )
 def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> None:
     from decimal import Decimal
@@ -2019,8 +2052,16 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
     pa = pytest.importorskip("pyarrow")
     value, operand, op = pd.Series([2**64 - 1, None], dtype="uint64[pyarrow]"), 1, "add"
     error: type[Exception] = pa.ArrowInvalid
-    if family == "negative":
+    if family.startswith("negative-"):
         operand = -1
+        if family == "negative-underflow":
+            value = pd.Series([2**64 - 1, 0, None], dtype="uint64[pyarrow]")
+        elif family != "negative-column":
+            op = family.removeprefix("negative-")
+            if op == "overflow":
+                op = "subtract"
+    elif family == "below-negative-uint64":
+        operand, error = -(2**64), OverflowError
     elif family == "above-uint64":
         operand, op, error = 2**64, "multiply", OverflowError
     elif family == "decimal-capacity":
@@ -2029,11 +2070,19 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         value = pd.Series([Decimal("1200"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2)))
         error = TypeError
     frame = pd.DataFrame({"value": value})
+    if family == "negative-column":
+        frame["right"] = pd.Series([-1, None], dtype="int64[pyarrow]")
     before = frame.copy(deep=True)
     runtime = PandasEngine()
     lineage = source_lineage(runtime.schema(frame))
     operation = bind_step(
-        step("formula", leftColumn=lineage[0], value=str(operand), operator=op, newColumn="result"),
+        step(
+            "formula",
+            leftColumn=lineage[0],
+            operator=op,
+            newColumn="result",
+            **({"rightColumn": lineage[1]} if family == "negative-column" else {"value": str(operand)}),
+        ),
         runtime.schema(frame),
         lineage,
     )

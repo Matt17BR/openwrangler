@@ -624,7 +624,9 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         manager.close_all()
 
 
-@pytest.mark.parametrize("family", ["uint64", "decimal-multiply", "decimal-divide"])
+@pytest.mark.parametrize(
+    "family", ["uint64", "uint64-negative-add", "uint64-negative-subtract", "decimal-multiply", "decimal-divide"]
+)
 def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
 ) -> None:
@@ -635,9 +637,15 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
 
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
-    unsigned = family == "uint64"
+    unsigned = family.startswith("uint64")
+    negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract"}
+    unsigned_values = [3, 2**64 - 1, None]
+    if family == "uint64-negative-add":
+        unsigned_values = [2**64 - 1, 1, None]
+    elif family == "uint64-negative-subtract":
+        unsigned_values = [3, 2**64 - 2, None]
     series = (
-        pd.Series([3, 2**64 - 1, None], dtype="uint64[pyarrow]")
+        pd.Series(unsigned_values, dtype="uint64[pyarrow]")
         if unsigned
         else pd.Series([Decimal("1.125"), Decimal("-2.500"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
     )
@@ -662,8 +670,16 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 "newColumn": "result",
             },
         }
+        if negative_literal:
+            operation["params"]["operator"] = "add" if family == "uint64-negative-add" else "subtract"
+            operation["params"]["value"] = "-1"
+        unsigned_expected = [1, 2**64 - 3, None]
+        if family == "uint64-negative-add":
+            unsigned_expected = [2**64 - 2, 0, None]
+        elif family == "uint64-negative-subtract":
+            unsigned_expected = [4, 2**64 - 1, None]
         expected = pd.Series(
-            [1, 2**64 - 3, None]
+            unsigned_expected
             if unsigned
             else (
                 [Decimal("2.250"), Decimal("-5.000"), None]
@@ -700,6 +716,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 **({"value": 2} if unsigned else {"rightColumn": {"id": columns[1]["id"], "name": columns[1]["name"]}}),
             },
         }
+        if negative_literal:
+            invalid["params"]["operator"] = operation["params"]["operator"]
+            invalid["params"]["value"] = "-2"
         with pytest.raises(pa.ArrowInvalid, match="(?i)overflow|divide by zero"):
             manager.preview_step(session_id, confirmed["revision"], invalid, 0, 1)
         assert session_state(session) == before

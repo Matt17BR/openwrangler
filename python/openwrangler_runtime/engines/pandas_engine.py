@@ -4939,8 +4939,13 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
             return bool(pd.isna(minimum) or minimum >= 0)
 
         if operator in {"add", "subtract", "multiply", "power"}:
-            if left_type == pa.uint64() and type(right) is int and 0 <= right < 2**64:
-                return _pandas_formula(left, pa.scalar(right, type=pa.uint64()), operator)
+            if left_type == pa.uint64() and type(right) is int:
+                if 0 <= right < 2**64:
+                    return _pandas_formula(left, pa.scalar(right, type=pa.uint64()), operator)
+                if operator in {"add", "subtract"} and -(2**64 - 1) <= right < 0:
+                    return _pandas_formula(
+                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"
+                    )
             if isinstance(error, pa.ArrowInvalid):
                 if left_type == pa.uint64() and isinstance(right, pd.Series) and nonnegative_signed_column(right):
                     return _pandas_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)
@@ -5072,8 +5077,13 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "            return bool(pd.isna(minimum) or minimum >= 0)",
         "",
         '        if operator in {"add", "subtract", "multiply", "power"}:',
-        "            if left_type == pa.uint64() and type(right) is int and 0 <= right < 2**64:",
-        "                return _open_wrangler_formula(left, pa.scalar(right, type=pa.uint64()), operator)",
+        "            if left_type == pa.uint64() and type(right) is int:",
+        "                if 0 <= right < 2**64:",
+        "                    return _open_wrangler_formula(left, pa.scalar(right, type=pa.uint64()), operator)",
+        '                if operator in {"add", "subtract"} and -(2**64 - 1) <= right < 0:',
+        "                    return _open_wrangler_formula(",
+        '                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"',
+        "                    )",
         "            if isinstance(error, pa.ArrowInvalid):",
         "                if left_type == pa.uint64() and isinstance(right, pd.Series) "
         "and nonnegative_signed_column(right):",

@@ -249,12 +249,14 @@ same calculation.
 
 Other Formula arithmetic first keeps any successful native result unchanged. After eligible Arrow coercion failures,
 UInt64 add, subtract, multiply and power may use an exact UInt64 scalar or convert a nonnegative signed 8–64-bit
-companion column. Companions must use native NumPy, built-in Pandas nullable or Arrow integer storage; Sparse and
-arbitrary extension types do not enter this repair. Selected Decimal128 operands may widen to Decimal256 with the
-same precision and scale for add, subtract, multiply and divide. Each repair makes one checked native call; overflow
+companion column. After a failed native UInt64 add or subtract, an exact negative integer literal with magnitude
+at most UInt64 maximum uses the opposite checked operation on its unsigned magnitude. Companions must use native
+NumPy, built-in Pandas nullable or Arrow integer storage; Sparse and arbitrary extension types do not enter this repair.
+Selected Decimal128 operands may widen to Decimal256 with the same precision and scale for add, subtract, multiply
+and divide. Each repair makes one checked native call; overflow
 and unsupported cases still refuse. Live and generated Formula share this behavior without changing By Example.
-Negative operands and the widest or negative-scale Decimal capacity gaps remain tracked in
-[#979](https://github.com/Matt17BR/openwrangler/issues/979).
+Negative column operands, negative multiply/power literals and the widest or negative-scale Decimal capacity gaps
+remain tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
