@@ -319,6 +319,8 @@ in the [Native R ADR](decisions/0001-native-r-runtime.md).
 
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
 extension auto-install, autoload, and external-file caching stay disabled.
+Cleaning evaluates each result before accepting it, so an error outside the visible rows or columns also refuses the
+step. Generated programs evaluate each intermediate result. This evaluation adds work across all result rows and columns.
 
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
 generated code.

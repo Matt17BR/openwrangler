@@ -291,7 +291,7 @@ def test_polars_lazy_guards_use_metadata_without_collecting_rows():
     assert resident.rows() == [(1, 99), (None, 98)]
 
 
-def test_duckdb_rename_chain_keeps_private_relation_and_evaluates_source_once():
+def test_duckdb_rename_chain_keeps_private_relation_and_evaluates_source_once_per_query():
     engine = DuckDBEngine()
     calls = []
     with duckdb.connect() as connection:
@@ -310,8 +310,11 @@ def test_duckdb_rename_chain_keeps_private_relation_and_evaluates_source_once():
             old_name = ref["name"].replace('"', '""')
             new_name = target.replace('"', '""')
             middle = middle.project(f'* RENAME ("{old_name}" AS "{new_name}")')
-        result = generated(engine, plan)(frame)
+        clean_data = generated(engine, plan)
         assert calls == []
+        result = clean_data(frame)
+        assert calls == [0, 1, 2] * len(plan)
+        calls.clear()
         rows = result.fetchall()
         assert [row[0] for row in rows] == [0, 1, 2] and calls == [0, 1, 2]
         assert all(row[1] == 0 and copysign(1, row[1]) == -1 for row in rows)

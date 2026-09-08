@@ -363,6 +363,11 @@ class DuckDBEngine(DataFrameEngine):
         row_count = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 
+    def validate_transformation_result(self, frame: Any) -> None:
+        super().validate_transformation_result(frame)
+        columns = ", ".join("ow." + _quote_ident(column) for column in self._columns(frame))
+        self._terminal_scalar(frame, f"SELECT system.main.bit_xor(system.main.hash({columns})) FROM ow")
+
     def validate_column_addressability(self, frame: Any) -> None:
         """DuckDB SQL identifiers cannot distinguish names by case alone."""
 
@@ -1156,6 +1161,7 @@ class DuckDBEngine(DataFrameEngine):
                     f"+ {quote + ')'!r})"
                 )
                 lines.append("    _ow_check_addressability(df)")
+                lines.append("    _ow_validate_result(df)")
             lines.append("    return df")
             clean_data = "\n".join(lines)
             helpers = select_generated_helpers(_generated_helper_source(), clean_data)
@@ -1173,6 +1179,7 @@ class DuckDBEngine(DataFrameEngine):
             clean_data_lines.extend(output_guards)
             clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
             clean_data_lines.append("    _ow_check_addressability(df)")
+            clean_data_lines.append("    _ow_validate_result(df)")
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
@@ -3554,6 +3561,11 @@ def _ow_check_addressability(df):
     folded = [str(column).casefold() for column in df.columns]
     if len(set(folded)) != len(folded):
         raise ValueError("DuckDB cannot safely address columns whose names differ only by case.")
+
+
+def _ow_validate_result(df):
+    columns = ", ".join(_ow_ident(column) for column in df.columns)
+    df.aggregate("system.main.bit_xor(system.main.hash(" + columns + "))").fetchone()
 
 
 def _ow_columns(df):

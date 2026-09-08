@@ -13,6 +13,8 @@ from typing import Any
 
 import duckdb
 import pytest
+from duckdb.func import FunctionNullHandling
+from duckdb.sqltypes import BIGINT, DOUBLE
 
 import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
@@ -326,6 +328,145 @@ def test_duckdb_rename_only_generated_code_matches_live_with_quoted_names() -> N
         assert "_ow_pivot_wider" not in code
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("kind", ["formula", "customCode"])
+def test_duckdb_generated_result_errors_cannot_be_hidden_by_later_drop(kind: str) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql("SELECT * FROM (VALUES (0::BIGINT), (9223372036854775807), (NULL)) source(value)")
+    original = frame.fetchall()
+    operation = (
+        bound_step("formula", leftColumn=bound_ref("c:source:0", "value", 0), operator="add", value=1, newColumn="bad")
+        if kind == "formula"
+        else bound_step(
+            "customCode",
+            code=(
+                "result = df.project(\"*, CASE WHEN value > 0 THEN error('owned result error') ELSE value END AS bad\")"
+            ),
+        )
+    )
+    try:
+        with pytest.raises(duckdb.Error, match="Overflow in addition|owned result error"):
+            execute_generated(
+                engine, frame, [operation, bound_step("dropColumns", columns=[bound_ref("c:derived:bad", "bad", 1)])]
+            )
+        assert frame.columns == ["value"]
+        assert frame.types == [BIGINT]
+        assert frame.fetchall() == original == [(0,), (2**63 - 1,), (None,)]
+    finally:
+        engine.close()
+
+
+def test_duckdb_result_validation_evaluates_quoted_physical_columns() -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        'SELECT 0 AS ow, value + 1 AS "a""b", 2 AS "hash(ow)", NULL::INTEGER AS "comma,name" '
+        "FROM (VALUES (0::BIGINT), (9223372036854775807)) source(value)"
+    )
+    columns = list(frame.columns)
+    types = list(frame.types)
+    try:
+        with pytest.raises(EngineError, match="Overflow in addition"):
+            engine.validate_transformation_result(frame)
+        with pytest.raises(duckdb.Error, match="Overflow in addition"):
+            execute_generated(
+                engine, frame, [bound_step("cloneColumn", column=bound_ref("c:source:0", "ow", 0), newName="copy")]
+            )
+        assert frame.columns == columns == ["ow", 'a"b', "hash(ow)", "comma,name"]
+        assert frame.types == types
+        assert frame.project('ow, "hash(ow)", "comma,name"').fetchall() == [(0, 2, None), (0, 2, None)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_duckdb_result_validation_preserves_native_complex_values(empty: bool) -> None:
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        "SELECT 9223372036854775807::BIGINT AS ow, 12.50::DECIMAL(10,2) AS amount, "
+        "[1,NULL,2] AS items, {'zero': CAST('-0.0' AS DOUBLE), 'missing': NULL::BIGINT} AS nested, "
+        "CAST('-0.0' AS DOUBLE) AS zero, NULL::INTEGER AS missing" + (" WHERE FALSE" if empty else "")
+    )
+    expected = (
+        [] if empty else [(2**63 - 1, Decimal("12.50"), [1, None, 2], {"zero": -0.0, "missing": None}, -0.0, None)]
+    )
+    types = list(frame.types)
+    try:
+        engine.validate_transformation_result(frame)
+        generated = execute_generated(
+            engine, frame, [bound_step("renameColumn", column=bound_ref("c:source:0", "ow", 0), newName="OW")]
+        )
+        assert generated.columns == ["OW", "amount", "items", "nested", "zero", "missing"]
+        assert generated.types == types
+        for rows in (frame.fetchall(), generated.fetchall()):
+            assert rows == expected
+            for row in rows:
+                assert row[3]["zero"].hex() == row[4].hex() == "-0x0.0p+0"
+        assert frame.columns[0] == "ow"
+        assert frame.types == types
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("shadow", [None, "hash", "bit_xor"])
+def test_duckdb_generated_rename_results_use_the_private_connection(
+    monkeypatch: pytest.MonkeyPatch, shadow: str | None
+) -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        if shadow is not None:
+            connection.execute(f"CREATE MACRO {shadow}(x) AS 0::UBIGINT")
+        visits: list[int | None] = []
+
+        def observed(value: int | None) -> int | None:
+            visits.append(value)
+            return value
+
+        connection.create_function(
+            "owned_result_observed",
+            observed,
+            ["BIGINT"],
+            "BIGINT",
+            null_handling=FunctionNullHandling.SPECIAL,
+            side_effects=True,
+        )
+        frame = connection.sql(
+            "SELECT owned_result_observed(value) AS ow, CAST('-0.0' AS DOUBLE) AS zero "
+            "FROM (VALUES (0::BIGINT), (9223372036854775807), (NULL)) source(value)"
+        )
+        plan = [
+            bound_step("renameColumn", column=bound_ref("c:source:0", "ow", 0), newName='a"b'),
+            bound_step("renameColumn", column=bound_ref("c:source:0", 'a"b', 0), newName="OW"),
+        ]
+
+        def unexpected_global_connection(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Generated Rename must use the source relation's connection.")
+
+        try:
+            with monkeypatch.context() as scoped:
+                scoped.setattr(duckdb, "sql", unexpected_global_connection)
+                scoped.setattr(duckdb, "connect", unexpected_global_connection)
+                invalid = connection.sql(
+                    "SELECT CASE WHEN value > 0 THEN error('owned private result error') ELSE value END AS ow "
+                    "FROM (VALUES (0), (1)) source(value)"
+                )
+                with pytest.raises(duckdb.Error, match="owned private result error"):
+                    execute_generated(engine, invalid, plan)
+                assert invalid.columns == ["ow"]
+                generated = execute_generated(engine, frame, plan)
+                assert 0 in visits and 2**63 - 1 in visits and None in visits
+                assert generated.columns == ["OW", "zero"]
+                assert generated.types == frame.types == [BIGINT, DOUBLE]
+                actual = generated.fetchall()
+                assert actual == [(0, -0.0), (2**63 - 1, -0.0), (None, -0.0)]
+                assert all(row[1].hex() == "-0x0.0p+0" for row in actual)
+            assert frame.columns == ["ow", "zero"]
+            assert frame.fetchall() == actual
+            assert connection.sql("SELECT 17").fetchone() == (17,)
+            if shadow is not None:
+                assert connection.sql(f"SELECT {shadow}(17)").fetchone() == (0,)
+        finally:
+            engine.close()
 
 
 def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:

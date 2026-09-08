@@ -343,11 +343,15 @@ def test_duckdb_mark_evaluates_numbered_source_once_per_execution() -> None:
             lineage,
         )
         namespace: dict[str, Any] = {}
+        seen.clear()
         exec(adapter.compile_plan([bound]), namespace)
         live = adapter.apply_transform(frame, bound)
+        assert seen == []
+        generated = namespace["clean_data"](source)
+        assert seen == list(range(7))
         for read in (
             lambda: adapter._terminal_rows(live, "SELECT * FROM ow"),
-            lambda: namespace["clean_data"](source).fetchall(),
+            generated.fetchall,
         ):
             seen.clear()
             rows = read()
