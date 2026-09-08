@@ -15,6 +15,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
   no longer copies source text into framing errors or starts cleanup before the originating execution settles.
+- Python notebook-open preflight bounds retained text and error diagnostics before runtime dispatch, including noisy
+  kernels and malformed output. Output refusals drain the originating execution without interrupting it.
 
 - Polars Formula refuses unsupported UInt128 column arithmetic before it can panic on the minimum runtime.
 

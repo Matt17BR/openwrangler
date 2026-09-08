@@ -406,6 +406,12 @@ execution before returning an error; a complete frame also waits for that execut
 Missing, duplicate, malformed and oversized frames produce diagnostics without copying their payload. This bounds
 the bridge's retained frame and marker lookbehind, not memory already allocated by Jupyter or an individual output item.
 
+Notebook variable discovery and notebook-open preflight share a collector capped at 64 KiB of retained UTF-8 text,
+128 output objects and 256 items. Raw text size is checked before decoding; decoded size is checked before retention.
+Malformed, oversized or structured-error output is discarded while the exact execution drains to settlement.
+Preflight uses the bridge's existing host deadline and never interrupts unrelated kernel work. Unknown preflight
+execution failures produce a fixed diagnostic without copying the kernel error.
+
 Every live grid request is a two-dimensional row-and-column window. The protocol caps one page at 10,000 rows and 256
 columns. The response returns the exact ordered stable `columnIds` corresponding to every row vector; a missing,
 reordered, duplicated, or partial identity list fails closed. Filters, sorts, full-schema ARIA coordinates, generated

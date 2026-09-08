@@ -19,6 +19,7 @@ import { KernelGenerationBinding } from "../extension/notebooks/kernelLifecycle"
 import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 import {
   cancellationSource,
+  closeNotebook,
   closeRequest,
   controllableKernel,
   controlledFakeKernel,
@@ -204,7 +205,9 @@ function controlledExecutedPySparkPreflightKernel(
       if (result.error || result.signal !== null || result.status !== 0) {
         throw new Error(`Executed PySpark preflight failed: ${result.error ?? result.signal ?? result.stderr}`);
       }
-      return textKernelExecution(result.stdout);
+      return (async function* () {
+        yield { items: [{ mime: "application/vnd.code.notebook.stdout", data: Buffer.from(result.stdout) }] };
+      })();
     }
     return kernelExecution(code, (request) => {
       requests.push(request);
@@ -231,6 +234,327 @@ classic_module.__dict__["DataFrame"] = DataFrame
 sys.modules["pyspark"] = pyspark_module
 sys.modules["pyspark.sql.classic.dataframe"] = classic_module
 `;
+
+describe("notebook preflight output ownership", () => {
+  const fixedError = "Open Wrangler could not verify PySpark in the selected notebook kernel.";
+  const oversizedError = "Open Wrangler rejected an oversized notebook variable discovery response.";
+  const item = (value: string | Uint8Array, mime = "application/vnd.code.notebook.stdout") => ({
+    mime,
+    data: typeof value === "string" ? Buffer.from(value) : value
+  });
+  const preflightText = (code: string, isPySpark = false) => {
+    const marker = code.match(/__OPEN_WRANGLER_PYSPARK_VERSION_START_([a-f0-9]{32})__/)?.[1];
+    if (!marker) throw new Error("Expected the actual preflight marker.");
+    return [
+      `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+      JSON.stringify({ protocolVersion: 1, isPySpark, version: isPySpark ? "4.2.0" : null }),
+      `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+    ].join("\n");
+  };
+  function preflightKernel(execute: (code: string) => AsyncIterable<unknown>) {
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controllableKernel((code) => {
+      if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) return execute(code);
+      return kernelExecution(code, (request) => {
+        requests.push(request);
+        return request.kind === "openSession"
+          ? openedResponse(request.requestedSessionId!, request.backend ?? "pandas")
+          : initializedResponse;
+      });
+    });
+    mockKernel(controller.kernel);
+    return { ...controller, requests };
+  }
+
+  it.each([false, true])("bounds the complete response for explicit PySpark=%s", async (explicit) => {
+    for (const bytes of [65_535, 65_536, 65_537]) {
+      const controller = preflightKernel(async function* (code) {
+        const text = preflightText(code, explicit);
+        yield { items: [item(text + " ".repeat(bytes - Buffer.byteLength(text)))] };
+      });
+      const bridge = createKernelBridge();
+      try {
+        const request = explicit
+          ? openRequest("bounded-preflight", "pyspark")
+          : unpinnedOpenRequest("bounded-preflight");
+        if (bytes <= 65_536) {
+          await expect(bridge.request(request)).resolves.toMatchObject({ kind: "sessionOpened" });
+          expect(controller.requests.map((request) => request.kind)).toEqual(["openSession"]);
+        } else {
+          await expect(bridge.request(request)).rejects.toThrow(oversizedError);
+          expect(controller.requests).toEqual([]);
+        }
+        expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+      } finally {
+        bridge.dispose();
+      }
+    }
+  });
+
+  it.each([
+    [128, 2, true],
+    [129, 1, false],
+    [1, 257, false],
+    [2, 129, false]
+  ] as const)("bounds %i output objects with %i items each", async (outputs, items, accepted) => {
+    const controller = preflightKernel(async function* (code) {
+      for (let index = 0; index < outputs; index += 1) {
+        yield {
+          items: Array.from({ length: items }, (_, position) =>
+            item(index === 0 && position === 0 ? preflightText(code) : "")
+          )
+        };
+      }
+    });
+    const bridge = createKernelBridge();
+    try {
+      const pending = bridge.request(unpinnedOpenRequest("counted-preflight"));
+      if (accepted) {
+        await expect(pending).resolves.toMatchObject({ kind: "sessionOpened" });
+        expect(controller.requests.map((request) => request.kind)).toEqual(["openSession"]);
+      } else {
+        await expect(pending).rejects.toThrow(oversizedError);
+        expect(controller.requests).toEqual([]);
+      }
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it.each([65_536, 65_537])("bounds %i decoded UTF-8 bytes after replacement decoding", async (bytes) => {
+    const controller = preflightKernel(async function* (code) {
+      const text = preflightText(code);
+      const padding = bytes - Buffer.byteLength(text);
+      const data = Buffer.concat([
+        Buffer.alloc(Math.floor(padding / 3), 255),
+        Buffer.from(" ".repeat(padding % 3) + text)
+      ]);
+      expect(data.byteLength).toBeLessThan(65_536);
+      expect(Buffer.byteLength(data.toString("utf8"))).toBe(bytes);
+      yield { items: [item(data)] };
+    });
+    const bridge = createKernelBridge();
+    try {
+      const pending = bridge.request(unpinnedOpenRequest("decoded-preflight"));
+      if (bytes === 65_536) {
+        await expect(pending).resolves.toMatchObject({ kind: "sessionOpened" });
+        expect(controller.requests.map((request) => request.kind)).toEqual(["openSession"]);
+      } else {
+        await expect(pending).rejects.toThrow(oversizedError);
+        expect(controller.requests).toEqual([]);
+      }
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it("reads the public item byte range and text MIME types while ignoring non-text payloads", async () => {
+    const controller = preflightKernel(async function* (code) {
+      const text = preflightText(code);
+      const backing = Buffer.from(`unused${text}unused`);
+      yield {
+        items: [
+          item(backing.subarray(6, 26), "text/plain"),
+          item(backing.subarray(26, backing.length - 6), "application/x.notebook.stream.stderr"),
+          item(" ", "application/vnd.code.notebook.stderr"),
+          item("ignored".repeat(10_000), "application/json")
+        ]
+      };
+    });
+    const bridge = createKernelBridge();
+    try {
+      await expect(bridge.request(unpinnedOpenRequest("item-preflight"))).resolves.toMatchObject({
+        kind: "sessionOpened"
+      });
+      expect(controller.requests.map((request) => request.kind)).toEqual(["openSession"]);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it.each(["raw byte limit", "decoded byte limit", "structured error", "malformed item"] as const)(
+    "drains after %s without retaining later items or disposing the execution token early",
+    async (kind) => {
+      const ready = deferred<void>();
+      const release = deferred<void>();
+      const inspected = vi.fn(() => {
+        throw new Error("Later output must not be inspected.");
+      });
+      const rawData = new Uint8Array(65_537);
+      const rawBuffer = rawData.buffer;
+      const rawBufferRead = vi.fn(() => rawBuffer);
+      Object.defineProperty(rawData, "buffer", { get: rawBufferRead });
+      let naturalCompletion = false;
+      let returned = vi.fn();
+      const controller = preflightKernel(() => {
+        const failure =
+          kind === "raw byte limit"
+            ? item(rawData)
+            : kind === "decoded byte limit"
+              ? item(Buffer.alloc(21_846, 255))
+              : kind === "structured error"
+                ? item("synthetic-error:".repeat(10_000), "application/vnd.code.notebook.error")
+                : { mime: "text/plain", data: "not Uint8Array" };
+        const stream = (async function* () {
+          yield {
+            items: [
+              failure,
+              {
+                get mime() {
+                  return inspected();
+                }
+              }
+            ]
+          };
+          ready.resolve();
+          await release.promise;
+          yield {
+            get items() {
+              return inspected();
+            }
+          };
+          naturalCompletion = true;
+        })();
+        returned = vi.spyOn(stream, "return");
+        return stream;
+      });
+      const disposed = vi.spyOn(vscode.CancellationTokenSource.prototype, "dispose");
+      const bridge = createKernelBridge();
+      let settled = false;
+      try {
+        const pending = bridge
+          .request(unpinnedOpenRequest("drained-preflight"))
+          .catch((error: unknown) => error)
+          .finally(() => {
+            settled = true;
+          });
+        await ready.promise;
+        const token = controller.executionTokens().at(-1)!;
+        expect(settled).toBe(false);
+        expect(
+          disposed.mock.contexts.some(
+            (source) => source instanceof vscode.CancellationTokenSource && source.token === token
+          )
+        ).toBe(false);
+        expect(returned).not.toHaveBeenCalled();
+        expect(controller.requests).toEqual([]);
+        release.resolve();
+        const error = await pending;
+        const message = kind.endsWith("byte limit")
+          ? oversizedError
+          : kind === "structured error"
+            ? fixedError
+            : "Open Wrangler received a malformed notebook variable discovery response.";
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(message);
+        expect(naturalCompletion).toBe(true);
+        expect(inspected).not.toHaveBeenCalled();
+        expect(rawBufferRead).not.toHaveBeenCalled();
+        expect(returned).not.toHaveBeenCalled();
+        expect(
+          disposed.mock.contexts.filter(
+            (source) => source instanceof vscode.CancellationTokenSource && source.token === token
+          )
+        ).toHaveLength(1);
+        expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+        expect(controller.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        bridge.dispose();
+      }
+    }
+  );
+
+  it.each([false, true])("normalizes iterator rejection after local failure=%s", async (localFailure) => {
+    const payload = "synthetic-iterator-detail:".repeat(5_000);
+    const controller = preflightKernel(async function* () {
+      if (localFailure) yield { items: [item(new Uint8Array(65_537))] };
+      throw new Error(payload);
+    });
+    const bridge = createKernelBridge();
+    try {
+      const error = await bridge.request(unpinnedOpenRequest("rejected-preflight")).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(localFailure ? oversizedError : fixedError);
+      expect((error as Error).cause).toBeUndefined();
+      expect(controller.requests).toEqual([]);
+      expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it.each(["timeout", "cancellation", "document replacement"] as const)(
+    "retains the exact preflight execution until settlement after %s",
+    async (kind) => {
+      vi.useFakeTimers();
+      const ready = deferred<void>();
+      const release = deferred<void>();
+      let naturalCompletion = false;
+      const controller = preflightKernel(async function* (code) {
+        yield { items: [item(preflightText(code))] };
+        ready.resolve();
+        await release.promise;
+        naturalCompletion = true;
+      });
+      const original = notebookDocument();
+      setOpenNotebookDocuments(original);
+      const bridge = createKernelBridge(original);
+      const cancellation = cancellationSource();
+      const disposed = vi.spyOn(vscode.CancellationTokenSource.prototype, "dispose");
+      let settled = false;
+      try {
+        const pending = bridge
+          .request(unpinnedOpenRequest("owned-preflight"), {
+            timeoutMs: kind === "timeout" ? 30 : 60_000,
+            cancellation: cancellation.token
+          })
+          .catch((error: unknown) => error)
+          .finally(() => {
+            settled = true;
+          });
+        await ready.promise;
+        const token = controller.executionTokens().at(-1)!;
+        if (kind === "timeout") await vi.advanceTimersByTimeAsync(30);
+        else if (kind === "cancellation") {
+          cancellation.cancel();
+          await vi.advanceTimersByTimeAsync(0);
+        } else {
+          closeNotebook(original);
+          setOpenNotebookDocuments(notebookDocument());
+        }
+        expect(settled).toBe(kind !== "document replacement");
+        expect(naturalCompletion).toBe(false);
+        expect(
+          disposed.mock.contexts.some(
+            (source) => source instanceof vscode.CancellationTokenSource && source.token === token
+          )
+        ).toBe(false);
+        expect(controller.requests).toEqual([]);
+        release.resolve();
+        const error = await pending;
+        await vi.advanceTimersByTimeAsync(0);
+        if (kind === "document replacement") {
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toContain("originating notebook is no longer open");
+        } else {
+          expect(error).toMatchObject({ kind: "cancelled" });
+        }
+        expect(naturalCompletion).toBe(true);
+        expect(
+          disposed.mock.contexts.filter(
+            (source) => source instanceof vscode.CancellationTokenSource && source.token === token
+          )
+        ).toHaveLength(1);
+        expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+        expect(controller.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        bridge.dispose();
+      }
+    }
+  );
+});
 
 describe("kernel retry classification", () => {
   it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {

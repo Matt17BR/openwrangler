@@ -320,6 +320,10 @@ failures that source tests cannot observe. It must not rebuild or substitute the
 
 ## Focused Python notebook checks
 
+Kernel bridge and variable-discovery tests cover notebook preflight byte, output and item limits, malformed UTF-8
+expansion, exact document replacement, fixed errors and execution settlement after cancellation or a host deadline.
+Actual generated Python controls check quiet and noisy notebook-open paths before runtime dispatch.
+
 For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.

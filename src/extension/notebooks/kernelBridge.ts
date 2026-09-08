@@ -3,7 +3,6 @@ import * as path from "node:path";
 import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type {
-  DataBackend,
   OpenSessionRequest,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -29,11 +28,7 @@ import {
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
-import {
-  assertSupportedPySparkNotebookPreflight,
-  buildPySparkNotebookPreflightCode,
-  parsePySparkNotebookPreflightOutput
-} from "./notebookVariableDiscovery";
+import { assertSupportedPySparkNotebookPreflight, executePySparkNotebookPreflight } from "./notebookVariableDiscovery";
 import {
   copySessionSource,
   exportPythonDataSafely,
@@ -558,8 +553,9 @@ export class KernelBridge implements OpenWranglerBridge {
                   throw new Error("Open Wrangler received a notebook-variable source without a variable name.");
                 }
                 await assertKernelStillSelectedForRequest(acquired, observation);
-                const preflight = await this.executePySparkNotebookPreflight(
+                const preflight = await executePySparkNotebookPreflight(
                   acquired.kernel,
+                  this.notebookDocument,
                   variableName,
                   runtimeRequest.backend
                 );
@@ -789,19 +785,6 @@ export class KernelBridge implements OpenWranglerBridge {
       framed.marker,
       framed.requestId
     );
-  }
-
-  private async executePySparkNotebookPreflight(
-    kernel: Kernel,
-    variableName: string,
-    expectedBackend: DataBackend | undefined
-  ) {
-    const marker = randomUUID().replaceAll("-", "");
-    const output = await this.executePython(
-      kernel,
-      buildPySparkNotebookPreflightCode(marker, variableName, expectedBackend)
-    );
-    return parsePySparkNotebookPreflightOutput(output, marker);
   }
 
   private async assertKernelStillSelected(acquired: AcquiredKernel, observation: KernelObservation): Promise<void> {
