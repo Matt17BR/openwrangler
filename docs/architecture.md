@@ -262,6 +262,12 @@ Pandas executes viewing, all catalog operations, profiling, generated code, and 
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
+fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
+value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion. Search keeps
+its original per-row text and counting order, correcting only affected timestamp and present temporal-extremum text.
+Numeric dtypes and dedicated string dtypes bypass the temporal search scan. Ordinary datetime objects retain their existing formatting;
+timestamp conversion and input precision stay with their existing owners.
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
 Parquet reads repair nullable integer index levels from their exact physical fields while retaining ordinary Pandas
@@ -291,6 +297,11 @@ Nullable Arrow integer, timestamp and duration keys retain their exact values du
 nanosecond differences. Dataset duplicate counts use the same comparison keys. These temporary keys preserve value
 ordering; temporal keys use integer storage values so present extrema remain distinct from nulls.
 Retained columns and native indexes keep their original representation.
+Arrow timestamp and duration null masks use native validity, including logical null entries in dictionaries.
+Pages and profile labels retain native context for present nanosecond extrema that Pandas boxes as `NaT`.
+Page context is prepared after row and column projection; profile extrema use native aggregation. Supported Fill
+methods retain native temporal donors and directional anchors in live and generated code. Source arrays stay unchanged.
+Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
 Single-column Sparse integer duplicate counts also use the existing exact row keys, retaining native fill conventions.
 The missing-cell total sums the per-column counts, including Sparse columns, without a second aggregate scan.
 Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,

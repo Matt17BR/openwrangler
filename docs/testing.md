@@ -277,6 +277,16 @@ refusals remain covered. Mixed Formula, By Example and Custom Code plans execute
 Session tests verify reported and replayed dtypes, exact Parquet output, retained Redo history after a failed mixed-sign
 preview, and successful correction afterward.
 
+Typed-cell tests check timestamp text, fractions, offsets and exact instants for UTC, minute and second offsets,
+including historical Berlin. They cover native timestamp units, nested values, ordinary datetime subclasses and
+Parquet session pages, profiles and value choices while preserving source values. Search controls retain duration
+representations, equivalent-value spellings and exclusion of unsupported numeric residents.
+
+Typed-cell tests distinguish present Arrow temporal extrema from nulls in projected pages, profiles and value choices,
+including dictionary null entries and chunk boundaries. Fill tests compare exact native donors and directional anchors
+with standalone generated execution. A Pandas Parquet session checks filtering, Preview, Apply, Undo, Redo and retained
+source bytes. Existing object missingness, timezone compatibility and unsupported Fill refusals remain covered.
+
 Pandas engine tests load native Arrow dates from Parquet and check profiles, value selections, viewing and
 standalone Filter Rows/Sort Rows. Empty, missing and distant dates retain native storage, indices and source bytes.
 

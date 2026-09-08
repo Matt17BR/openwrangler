@@ -56,6 +56,7 @@ from .base import (
     bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
+    datetime_isoformat,
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
@@ -820,6 +821,9 @@ class PandasEngine(DataFrameEngine):
                     prepared = sliced.copy(deep=False)
                 prepared.isetitem(position, values)
         sliced = prepared
+        temporal_columns = [
+            _pandas_arrow_temporal_array(sliced.iloc[:, value_offset + index]) for index in range(len(positions))
+        ]
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
         row_axis = self.row_axis(df)
@@ -844,7 +848,15 @@ class PandasEngine(DataFrameEngine):
                         if row_axis["kind"] != "positional"
                         else {}
                     ),
-                    "values": [normalize_cell(row[value_offset + index]) for index in range(len(positions))],
+                    "values": [
+                        _pandas_temporal_cell(
+                            row[value_offset + index],
+                            temporal_columns[index][row_number - offset]
+                            if temporal_columns[index] is not None
+                            else None,
+                        )
+                        for index in range(len(positions))
+                    ],
                 }
             )
         return {
@@ -873,7 +885,17 @@ class PandasEngine(DataFrameEngine):
             series = _pandas_scalar_values(series)
             null_count, nan_count = _missing_value_counts(series)
             value_counts = _pandas_value_counts(series)
-            top_values = [{"value": str(index), "count": int(value)} for index, value in value_counts.head(10).items()]
+            top_counts = value_counts.head(10)
+            temporal_counts = _pandas_arrow_temporal_array(top_counts.index)
+            top_values = [
+                {
+                    "value": _pandas_temporal_text(
+                        index, temporal_counts[position] if temporal_counts is not None else None
+                    ),
+                    "count": int(value),
+                }
+                for position, (index, value) in enumerate(top_counts.items())
+            ]
             summary: dict[str, Any] = {
                 "columnId": column_id,
                 "column": str(column),
@@ -911,10 +933,21 @@ class PandasEngine(DataFrameEngine):
                 }
             elif semantic_type in {"datetime", "date"}:
                 values = series.dropna()
-                summary["visualization"] = datetime_visualization(
-                    values.min() if not values.empty else None,
-                    values.max() if not values.empty else None,
-                )
+                temporal_values = _pandas_arrow_temporal_array(values)
+                if temporal_values is not None and not values.empty:
+                    import pyarrow.compute as pc
+
+                    extrema = pc.call_function("min_max", [temporal_values])
+                    minimum, maximum = extrema["min"], extrema["max"]
+                    summary["visualization"] = datetime_visualization(
+                        _pandas_temporal_text(minimum.as_py(), minimum),
+                        _pandas_temporal_text(maximum.as_py(), maximum),
+                    )
+                else:
+                    summary["visualization"] = datetime_visualization(
+                        _pandas_temporal_text(values.min(), None) if not values.empty else None,
+                        _pandas_temporal_text(values.max(), None) if not values.empty else None,
+                    )
             else:
                 if semantic_type == "string":
                     summary["text"] = _pandas_text_summary(series)
@@ -970,6 +1003,8 @@ class PandasEngine(DataFrameEngine):
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
+        import pandas as pd
+
         df = self.normalize(frame)
         position = self._resolve_visible_position(df, column, "values")
         if position is None:
@@ -978,17 +1013,44 @@ class PandasEngine(DataFrameEngine):
         column_type = _pandas_semantic_type(series)
         dictionary_string = _pandas_dictionary_value_type(series) is not None and column_type == "string"
         series = _pandas_scalar_values(series).dropna()
+        temporal_values = _pandas_arrow_temporal_array(series)
         if search and not dictionary_string:
-            folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
+            labels = series.astype(str)
+            if (
+                temporal_values is not None
+                or pd.api.types.is_datetime64_any_dtype(series.dtype)
+                or pd.api.types.is_object_dtype(series.dtype)
+                or isinstance(series.dtype, pd.CategoricalDtype)
+            ):
+                for position, value in enumerate(series.array):
+                    scalar = temporal_values[position] if temporal_values is not None else None
+                    if (type(value) is pd.Timestamp and value.nanosecond) or (
+                        scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType"
+                    ):
+                        label = _pandas_temporal_text(value, scalar)
+                        if label != str(value):
+                            labels.iloc[position] = label
+            folded = labels.str.translate(_ASCII_TO_LOWER)
             series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
-        counts = _pandas_value_counts(series, sort=False).items()
+        value_counts = _pandas_value_counts(series, sort=False)
+        temporal_counts = _pandas_arrow_temporal_array(value_counts.index)
+        counts = [
+            (
+                index,
+                count,
+                _pandas_temporal_text(index, temporal_counts[position] if temporal_counts is not None else None),
+            )
+            for position, (index, count) in enumerate(value_counts.items())
+        ]
         if search and dictionary_string:
             needle = str(search).translate(_ASCII_TO_LOWER)
-            counts = [(value, count) for value, count in counts if needle in str(value).translate(_ASCII_TO_LOWER)]
-        counts = sorted(counts, key=lambda item: (-int(item[1]), str(item[0])))
+            counts = [
+                (value, count, label) for value, count, label in counts if needle in label.translate(_ASCII_TO_LOWER)
+            ]
+        counts = sorted(counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
-        for index, count in counts[:limit]:
-            item: dict[str, Any] = {"value": str(index), "count": int(count)}
+        for index, count, label in counts[:limit]:
+            item: dict[str, Any] = {"value": label, "count": int(count)}
             selection = typed_selection_value(index, column_type)
             if selection is not None:
                 item["selectionValue"] = selection
@@ -1687,6 +1749,19 @@ class PandasEngine(DataFrameEngine):
                 lines.extend(generated_view_value_helper_lines())
             lines.extend(
                 [
+                    "def _open_wrangler_arrow_temporal_array(series):",
+                    "    import pandas as pd",
+                    "",
+                    "    if not isinstance(series.dtype, pd.ArrowDtype):",
+                    "        return None",
+                    "    import pyarrow as pa",
+                    "",
+                    "    dtype = _open_wrangler_dictionary_value_type(series) or series.dtype.pyarrow_dtype",
+                    "    if not (pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype)):",
+                    "        return None",
+                    "    return _open_wrangler_dictionary_values(series).array.__arrow_array__()",
+                    "",
+                    "",
                     "def _open_wrangler_is_null(value):",
                     "    return value is None or type(value).__name__ in {'NAType', 'NaTType'}",
                     "",
@@ -1705,6 +1780,10 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_mask(series, predicate):",
+                    "    if predicate is _open_wrangler_is_null:",
+                    "        array = _open_wrangler_arrow_temporal_array(series)",
+                    "        if array is not None:",
+                    "            return pd.Series(array.is_null().to_numpy(), index=series.index, dtype=bool)",
                     (
                         "    return pd.Series([predicate(value) for value in series.array], "
                         "index=series.index, dtype=bool)"
@@ -5879,11 +5958,18 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
                 assignment.iloc[selected] = normalized
                 assignment = assignment.astype(result.dtype)
             if datetime_awareness is not None:
-                selected_values = candidate.iloc[selected].array
-                if not all(isinstance(value, datetime) for value in selected_values):
-                    raise TypeError("an ordered fallback contains a non-datetime selected value")
-                for value in selected_values:
-                    require_datetime_fill_awareness(value, datetime_awareness)
+                if isinstance(candidate.dtype, pd.ArrowDtype) and str(candidate.dtype.pyarrow_dtype).startswith(
+                    "timestamp"
+                ):
+                    if _pandas_datetime_awareness(candidate) != datetime_awareness:
+                        expected = "timezone-aware" if datetime_awareness else "timezone-naive"
+                        raise EngineError(f"The replacement datetime must be {expected} to match the selected column.")
+                else:
+                    selected_values = candidate.iloc[selected].array
+                    if not all(isinstance(value, datetime) for value in selected_values):
+                        raise TypeError("an ordered fallback contains a non-datetime selected value")
+                    for value in selected_values:
+                        require_datetime_fill_awareness(value, datetime_awareness)
                 assignment = assignment.astype(result.dtype)
             if isinstance(result.dtype, pd.CategoricalDtype):
                 if not bool(candidate.iloc[selected].isin(result.cat.categories).all()):
@@ -5956,6 +6042,7 @@ def _pandas_fill_missing_directional(
     series = _pandas_scalar_values(series)
     ordered = series.iloc[order].reset_index(drop=True)
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
+    ordered_temporal = _pandas_arrow_temporal_array(ordered)
     result = ordered.copy()
     filled = False
     cursor = 0
@@ -5971,7 +6058,9 @@ def _pandas_fill_missing_directional(
         anchor = start - 1 if direction == "forward" else end
         if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
             try:
-                result.iloc[start:end] = ordered.iloc[anchor]
+                result.iloc[start:end] = (
+                    ordered_temporal[anchor] if ordered_temporal is not None else ordered.iloc[anchor]
+                )
                 filled = True
             except (TypeError, ValueError, OverflowError) as error:
                 raise EngineError(
@@ -6827,16 +6916,27 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
         "                assignment.iloc[selected] = normalized",
         "                assignment = assignment.astype(result.dtype)",
         "            if datetime_awareness is not None:",
-        "                selected_values = candidate.iloc[selected].array",
-        "                if not all(isinstance(value, datetime) for value in selected_values):",
-        "                    raise TypeError('an ordered fallback contains a non-datetime selected value')",
-        "                for value in selected_values:",
-        "                    value_awareness = value.tzinfo is not None and value.utcoffset() is not None",
-        "                    if value_awareness != datetime_awareness:",
-        ("                        expected = 'timezone-aware' if datetime_awareness else 'timezone-naive'"),
         (
-            "                        raise ValueError(f'The replacement datetime must be {expected} to match "
-            "the selected column.')"
+            "                if isinstance(candidate.dtype, pd.ArrowDtype) and "
+            'str(candidate.dtype.pyarrow_dtype).startswith("timestamp"):'
+        ),
+        "                    if _open_wrangler_datetime_awareness(candidate) != datetime_awareness:",
+        '                        expected = "timezone-aware" if datetime_awareness else "timezone-naive"',
+        (
+            '                        raise ValueError(f"The replacement datetime must be '
+            '{expected} to match the selected column.")'
+        ),
+        "                else:",
+        "                    selected_values = candidate.iloc[selected].array",
+        "                    if not all(isinstance(value, datetime) for value in selected_values):",
+        "                        raise TypeError('an ordered fallback contains a non-datetime selected value')",
+        "                    for value in selected_values:",
+        "                        value_awareness = value.tzinfo is not None and value.utcoffset() is not None",
+        "                        if value_awareness != datetime_awareness:",
+        "                            expected = 'timezone-aware' if datetime_awareness else 'timezone-naive'",
+        (
+            "                            raise ValueError(f'The replacement datetime must be "
+            "{expected} to match the selected column.')"
         ),
         "                assignment = assignment.astype(result.dtype)",
         "            if isinstance(result.dtype, pd.CategoricalDtype):",
@@ -6905,6 +7005,7 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
             "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
             "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
         ),
+        "    ordered_temporal = _open_wrangler_arrow_temporal_array(ordered)",
         "    result = ordered.copy()",
         "    filled = False",
         "    cursor = 0",
@@ -6920,7 +7021,10 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        anchor = start - 1 if direction == 'forward' else end",
         "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
         "            try:",
-        "                result.iloc[start:end] = ordered.iloc[anchor]",
+        (
+            "                result.iloc[start:end] = ordered_temporal[anchor] if "
+            "ordered_temporal is not None else ordered.iloc[anchor]"
+        ),
         "                filled = True",
         "            except (TypeError, ValueError, OverflowError) as error:",
         (
@@ -7267,7 +7371,56 @@ def _generated_pandas_fill_helpers(strategies: set[str]) -> list[str]:
     return lines
 
 
+def _pandas_arrow_temporal_array(series: Any) -> Any:
+    import pandas as pd
+
+    if not isinstance(series.dtype, pd.ArrowDtype):
+        return None
+    import pyarrow as pa
+
+    dtype = _pandas_dictionary_value_type(series) or series.dtype.pyarrow_dtype
+    if not (pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype)):
+        return None
+    return _pandas_dictionary_values(series).array.__arrow_array__()
+
+
+def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
+    if scalar is None or type(value).__name__ != "NaTType":
+        return normalize_cell(value)
+    if not scalar.is_valid:
+        return normalize_cell(None)
+    import pyarrow as pa
+
+    scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[scalar.type.unit]
+    if pa.types.is_duration(scalar.type):
+        return {
+            "kind": "duration",
+            "raw": scalar.value / scale,
+            "display": f"{scalar.value} {scalar.type.unit}",
+            "isNull": False,
+            "isNaN": False,
+        }
+    seconds, remainder = divmod(scalar.value, scale)
+    coarse = pa.scalar(seconds, type=pa.timestamp("s", tz=scalar.type.tz)).as_py()
+    display = datetime_isoformat(coarse, nanoseconds=remainder * (1_000_000_000 // scale))
+    return {"kind": "datetime", "raw": display, "display": display, "isNull": False, "isNaN": False}
+
+
+def _pandas_temporal_text(value: Any, scalar: Any) -> str:
+    if scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType":
+        return str(_pandas_temporal_cell(value, scalar)["display"])
+    import pandas as pd
+
+    if type(value) is pd.Timestamp:
+        return datetime_isoformat(value, sep=" ")
+    return str(value)
+
+
 def _scalar_mask(series: Any, predicate: Any) -> Any:
+    if predicate is _is_null_value:
+        array = _pandas_arrow_temporal_array(series)
+        if array is not None:
+            return type(series)(array.is_null().to_numpy(), index=series.index, dtype=bool)
     return type(series)([predicate(value) for value in series.array], index=series.index, dtype=bool)
 
 

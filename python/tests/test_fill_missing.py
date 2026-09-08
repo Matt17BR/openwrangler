@@ -3602,3 +3602,46 @@ def test_pandas_mixed_numeric_grouped_fill_preserves_keys_through_custom_code():
         pd.testing.assert_series_equal(result["key"], source["key"])
         assert result.attrs == source.attrs
     pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize(
+    "dictionary,timezone,strategy",
+    [(False, None, "fallback"), (True, "UTC", "fallback"), (False, "UTC", "forward"), (True, None, "backward")],
+)
+def test_pandas_arrow_temporal_fill_preserves_present_minimum_donors_and_anchors(
+    dictionary: bool, timezone: str | None, strategy: str
+) -> None:
+    minimum = -(2**63)
+    arrow_type = pa.timestamp("ns", tz=timezone)
+
+    def temporal(values: list[int | None]) -> pd.Series:
+        if dictionary:
+            return _pandas_dictionary_fill_series(values, arrow_type)
+        return pd.Series(pa.array(values, type=arrow_type), dtype=pd.ArrowDtype(arrow_type))
+
+    ticks = (
+        [minimum, None, 0]
+        if strategy == "fallback"
+        else [minimum, None, None]
+        if strategy == "forward"
+        else [None, None, minimum]
+    )
+    source = pd.DataFrame({"value": temporal(ticks), "order": [0, 1, 2], "donor": temporal([0, minimum, 1])})
+    source.index = pd.Index(["same", "same", "last"], name="original")
+    source.attrs["origin"] = "preserved"
+    replacement: dict[str, Any] = (
+        {"kind": "fallbackColumns", "columns": [{"id": "c:source:2", "name": "donor"}]}
+        if strategy == "fallback"
+        else {
+            "kind": "directional",
+            "direction": strategy,
+            "orderBy": [{"column": {"id": "c:source:1", "name": "order"}, "direction": "asc", "nulls": "last"}],
+        }
+    )
+    expected = [minimum, minimum, 0] if strategy == "fallback" else [minimum] * 3
+    for actual in _pandas_fill_public_outputs(source, replacement):
+        native = cast(pd.arrays.ArrowExtensionArray, actual["value"].array).__arrow_array__()
+        assert native.cast(pa.int64()).to_pylist() == expected
+        assert native.is_null().to_pylist() == [False] * 3
+        assert native.type == arrow_type
+        assert actual.attrs == source.attrs

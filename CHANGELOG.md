@@ -20,6 +20,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Pandas timestamps retain nanosecond fractions and time-zone offset seconds in grid cells, nested values, profiles
+  and value choices. Searching the corrected labels preserves ordinary value counts and representations.
+- Pandas keeps present Arrow timestamps and durations distinct from missing values in filters, pages and profiles.
+  Fill Missing Values preserves valid timestamps in target cells and when using them as donors or directional anchors.
 - Pandas Drop Duplicates and dataset duplicate counts retain distinct nullable Arrow integers, timestamps and
   durations, including exact nanosecond differences. Retained rows keep their original values and types.
   Sparse integer duplicate counts also retain exact neighboring values.

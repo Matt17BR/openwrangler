@@ -1321,3 +1321,105 @@ def test_pandas_object_numpy_integer_by_example_boxes_before_checked_arithmetic(
 
     for result in (engine.apply_transform(frame, operation), _execute_pandas_generated(engine, frame, operation)):
         assert result["result"].tolist() == [int(source_value) + 1]
+
+
+def test_pandas_arrow_temporal_parquet_preserves_validity_through_public_history(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    import pyarrow as pa
+
+    minimum = -(2**63)
+    dtype = pd.ArrowDtype(pa.timestamp("ns", tz="UTC"))
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(pa.array([minimum, None], type=dtype.pyarrow_dtype), dtype=dtype),
+            "donor": pd.Series(pa.array([1_000_000_000, 2_000_000_000], type=dtype.pyarrow_dtype), dtype=dtype),
+        }
+    )
+    source_path = tmp_path / "temporal.parquet"
+    source.to_parquet(source_path)
+    source_bytes = source_path.read_bytes()
+    expected_text = "1677-09-21T00:12:43.145224192+00:00"
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(source_path), "label": source_path.name}, backend="pandas", page_size=2
+        )
+        session_id = opened["metadata"]["sessionId"]
+        schema = opened["metadata"]["schema"]
+        assert schema[0]["type"] == "datetime" and schema[0]["rawType"] == str(dtype)
+        assert opened["page"]["rows"][0]["values"][0]["raw"] == expected_text
+        viewing = {
+            "filters": [
+                {"column": "value", "type": "datetime", "predicates": [{"kind": "predicate", "operator": "isNull"}]}
+            ],
+            "sort": [],
+        }
+        nulls = manager.get_page(session_id, 0, 0, 2, viewing)
+        assert nulls["page"]["totalRows"] == 1 and nulls["page"]["rows"][0]["id"] == opened["page"]["rows"][1]["id"]
+        manager.get_page(session_id, 0, 0, 2, {"filters": [], "sort": []})
+        operation = {
+            "id": "fill",
+            "kind": "fillMissingValues",
+            "params": {
+                "column": {"id": schema[0]["id"], "name": "value"},
+                "replacement": {"kind": "fallbackColumns", "columns": [{"id": schema[1]["id"], "name": "donor"}]},
+            },
+        }
+        preview = manager.preview_step(session_id, 0, operation, 0, 2)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 2)
+        assert [row["values"][0]["raw"] for row in applied["page"]["rows"]] == [
+            expected_text,
+            "1970-01-01T00:00:02+00:00",
+        ]
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        undone = manager.undo_step(session_id, applied["revision"], 0, 2)
+        assert undone["page"]["rows"] == opened["page"]["rows"]
+        redone = manager.redo_step(session_id, undone["revision"], 0, 2)
+        assert redone["page"]["rows"] == applied["page"]["rows"] and redone["code"] == applied["code"]
+        with pytest.raises(EngineError, match="column"):
+            manager.preview_step(
+                session_id,
+                redone["revision"],
+                {
+                    **operation,
+                    "id": "stale",
+                    "params": {**operation["params"], "column": {"id": schema[0]["id"], "name": "stale"}},
+                },
+                0,
+                2,
+            )
+        confirmed = manager.get_page(session_id, redone["revision"], 0, 2, {"filters": [], "sort": []})
+        assert confirmed["page"]["rows"] == redone["page"]["rows"]
+        generated_path = tmp_path / "clean.py"
+        generated_path.write_text(redone["code"], encoding="utf-8")
+        result_path = tmp_path / "generated.parquet"
+        subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                (
+                    "import sys\nfrom pathlib import Path\nimport pandas as pd\n"
+                    "scope = {}\nexec(Path(sys.argv[1]).read_text(encoding='utf-8'), scope)\n"
+                    "scope['clean_data'](pd.read_parquet(sys.argv[2])).to_parquet(sys.argv[3])\n"
+                    "assert not any(name.startswith('openwrangler_runtime') for name in sys.modules)\n"
+                ),
+                str(generated_path),
+                str(source_path),
+                str(result_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        generated = PandasEngine().read_file(str(result_path))
+        assert pa.array(generated["value"]).cast(pa.int64()).to_pylist() == [minimum, 2_000_000_000]
+        assert pa.array(generated["value"]).is_null().to_pylist() == [False, False]
+        assert generated["value"].dtype == dtype
+        pd.testing.assert_series_equal(generated["donor"], source["donor"])
+        json.dumps([opened, nulls, preview, applied, undone, redone, confirmed], allow_nan=False)
+    finally:
+        manager.close_all()
+    assert source_path.read_bytes() == source_bytes
