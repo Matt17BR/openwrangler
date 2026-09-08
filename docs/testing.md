@@ -59,6 +59,11 @@ the same incomplete ledger still blocks stable qualification. Release requiremen
 editor processes sharing one private profile. Seed checks same-process close/reopen state and cleanup; verification
 checks persistence after editor restart, rendered recovery, and the remaining file and notebook journeys.
 
+The persistence store, response committer and coordinator persistence owners control storage ordering to exercise
+presentation saves during publication, late queued saves, rollback and recovery. The existing installed quick-sort
+journey records bounded sort and owner state only on failure; its DOM observation stays pinned to the original
+session and renderer and has a separate one-second diagnostic limit.
+
 Installed Pandas journeys with duplicate or non-string column labels execute emitted value, row, structural,
 By Example and Group By plans in fresh namespaces. They compare complete values, physical labels, dtypes and native
 indexes, while retaining source, input, stable-reference and replay assertions.

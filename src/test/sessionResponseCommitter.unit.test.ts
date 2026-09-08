@@ -41,6 +41,65 @@ const step: TransformStep = {
 };
 
 describe("SessionResponseCommitter", () => {
+  it.each(["current", "runtime", "delegate", "open request", "source", "backend"] as const)(
+    "rejects a queued presentation when its original %s owner changes",
+    async (changedOwner) => {
+      const session = responseState();
+      const source = session.openRequest.source;
+      const otherSource = { ...source, path: "/workspace/presentation-blocker.csv" };
+      let stored: Record<string, unknown> = {};
+      let release!: () => void;
+      let entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const persistence = new SessionPersistenceStore(
+        memento(
+          () => stored,
+          async (_key, value) => {
+            stored = value;
+            if (value[persistenceKey(otherSource, "polars")]) {
+              entered();
+              await held;
+            }
+          }
+        )
+      );
+      const committer = new SessionResponseCommitter(persistence);
+      let current = true;
+      await committer.persistSession(session, () => current);
+      const previous = structuredClone(stored[persistenceKey(source, "polars")]);
+      const blocker = persistence.save(otherSource, "polars", () => ({
+        backend: "polars",
+        cleaning: { steps: [] },
+        view: session.viewState
+      }));
+      try {
+        await started;
+        const save = committer.persistSession(session, () => current);
+        if (changedOwner === "current") current = false;
+        if (changedOwner === "runtime") session.runtimeId = "replacement-runtime";
+        if (changedOwner === "delegate") session.delegate = { request: vi.fn() };
+        if (changedOwner === "open request") session.openRequest = { ...session.openRequest };
+        if (changedOwner === "source") session.openRequest.source = { ...source };
+        if (changedOwner === "backend") session.metadata = { ...session.metadata, backend: "duckdb" };
+        release();
+        await blocker;
+        await expect(save).resolves.toEqual({ kind: "stale" });
+        expect(stored[persistenceKey(source, "polars")]).toEqual(previous);
+      } finally {
+        release();
+        await blocker;
+        committer.releaseSession(session.publicId);
+        await persistence.releaseOwner(session.publicId);
+      }
+      expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
+    }
+  );
+
   it("clears only the matching confirmed empty Redo history without persisting it", async () => {
     const committer = new SessionResponseCommitter(new SessionPersistenceStore());
     const request: Extract<SessionBoundRequest, { kind: "redoStep" }> = {

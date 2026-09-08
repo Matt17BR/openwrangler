@@ -606,6 +606,12 @@ saved operations. A later import-options change may select again only when the r
 Persistence contains no dataframe bytes, runtime session IDs, profiles, or statistics, and debounced presentation
 state flushes before a webview disappears.
 
+Queued presentation writes read the originating live session when their storage work begins. They cannot replace
+an active transaction's candidate or its previously confirmed cleaning and filter state. Publication combines the
+new result with current compatible selection, widths and horizontal position; a changed viewing query still resets
+the row position to the returned page. Rollback retains the presentation accepted before publication. A completed
+transaction's recovery marker does not prevent later successful saves from restoring durable recovery state.
+
 A runtime crash rejects pending work and invalidates internal runtime identities. Recovery opens a private replacement
 on the same source and backend, replays the confirmed cleaning and viewing sections independently, regenerates code
 and draft metadata, and publishes only the complete correlated result. The source remains the authority; captured
