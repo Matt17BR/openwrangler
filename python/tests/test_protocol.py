@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 
 import pytest
 
@@ -145,6 +146,78 @@ def test_open_session_accepts_supported_backends_and_scopes_pyspark_to_live_note
     envelope["request"]["backend"] = "sqlite"
     with pytest.raises(ProtocolError, match="pandas, polars, duckdb, or pyspark"):
         decode_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("priority", []),
+        ("priority", {}),
+        ("source.kind", []),
+        ("source.kind", {}),
+        ("backend", []),
+        ("backend", {}),
+        ("backend", None),
+        ("mode", []),
+        ("mode", {}),
+        ("mode", None),
+        ("pyspark-mode", []),
+        ("pyspark-mode", {}),
+        ("pyspark-mode", None),
+        ("cloneFrom", None),
+        ("cloneFrom-with-id", None),
+    ],
+)
+def test_request_session_options_reject_containers_and_explicit_null(field: str, value: object) -> None:
+    source: dict[str, Any] = {"kind": "file", "label": "sample.csv", "path": "/tmp/sample.csv"}
+    request: dict[str, Any] = {
+        "kind": "openSession",
+        "source": source,
+        "pageSize": 20,
+        "columnOffset": 0,
+        "columnLimit": 2,
+    }
+    envelope: dict[str, Any] = {
+        "protocolVersion": 2,
+        "requestId": "invalid-session-option",
+        "priority": "interactive",
+        "request": request,
+    }
+    if field == "priority":
+        envelope["priority"] = value
+    elif field == "source.kind":
+        source["kind"] = value
+    elif field == "pyspark-mode":
+        request.update(backend="pyspark", mode=value)
+        request["source"] = {"kind": "notebookVariable", "label": "frame", "variableName": "frame"}
+    elif field == "cloneFrom-with-id":
+        request.update(cloneFrom=value, requestedSessionId="candidate-session")
+    else:
+        request[field] = value
+    with pytest.raises(ProtocolError):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize("backend", [None, "pandas", "polars", "duckdb", "pyspark"])
+@pytest.mark.parametrize("mode", [None, "viewing", "editing"])
+def test_request_session_options_preserve_omission_and_supported_values(backend: str | None, mode: str | None) -> None:
+    request: dict[str, Any] = {
+        "kind": "openSession",
+        "source": {"kind": "notebookVariable", "label": "frame", "variableName": "frame"},
+        "pageSize": 20,
+        "columnOffset": 0,
+        "columnLimit": 2,
+    }
+    if backend is not None:
+        request["backend"] = backend
+    if mode is not None:
+        request["mode"] = mode
+    envelope = {"protocolVersion": 2, "requestId": "valid-options", "priority": "background", "request": request}
+    if backend == "pyspark" and mode == "editing":
+        with pytest.raises(ProtocolError, match="only viewing mode"):
+            decode_envelope(envelope)
+    else:
+        assert decode_envelope(envelope) == ("valid-options", "background", request)
 
 
 def _open_session_envelope_with_import_options(

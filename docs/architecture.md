@@ -91,6 +91,10 @@ needed to correlate it to a request and session. Python bridges implement that b
 validates and translates between it and native R's private transport and frame contracts. Public transform parameters
 never contain private bound positions. Unknown fields, malformed unions, invalid limits, stale identities, and schema
 inconsistencies fail before adapter dispatch or UI publication.
+Python request enums require string values before membership checks. Present `backend`, `mode` and `cloneFrom`
+options must satisfy their existing schemas; explicit null is not an omitted option. Malformed values return the
+existing `invalid_request` classification. Omitted options retain their defaults. Failures raised after decoding
+keep their existing `engine_error` or `runtime_error` classifications.
 
 Runtime work has three relevant classes:
 

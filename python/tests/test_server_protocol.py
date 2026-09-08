@@ -414,6 +414,86 @@ def test_stdio_opaque_operand_refusal_keeps_the_same_process_usable(tmp_path: Pa
     assert output.stderr_tail() == ""
 
 
+def test_stdio_request_session_options_refuse_and_keep_the_same_process_usable(tmp_path: Path) -> None:
+    path = tmp_path / "session-options.csv"
+    source = "value\n1\n3\n"
+    path.write_text(source, encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        open_request = {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": path.name, "path": str(path)},
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 1,
+        }
+        # Omitted backend/mode remain valid and use the runtime's native defaults.
+        opened = _send_server_request(process, output, "options-open", open_request, timeout=60.0)
+        assert opened["kind"] == "sessionOpened"
+        session_id = opened["metadata"]["sessionId"]
+        valid = {
+            "kind": "getPage",
+            "sessionId": session_id,
+            "revision": 0,
+            "viewRequestId": "options-recovery",
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 1,
+            "filterModel": {"filters": [], "sort": []},
+        }
+        for field in ("priority", "backend", "mode", "cloneFrom"):
+            envelope: dict[str, Any] = {
+                "protocolVersion": 2,
+                "requestId": f"invalid-option-{field}",
+                "priority": "interactive",
+                "request": dict(open_request),
+            }
+            if field == "priority":
+                envelope["priority"] = []
+            else:
+                envelope["request"][field] = None
+            refused = _send_server_envelope(process, output, envelope, timeout=30.0)
+            assert refused["requestId"] == envelope["requestId"]
+            assert refused["response"]["kind"] == "error" and refused["response"]["code"] == "invalid_request"
+            assert refused["response"]["recoverable"] is False
+            assert "detail" not in refused["response"]
+            recovered = _send_server_request(process, output, f"valid-option-{field}", valid, timeout=30.0)
+            assert recovered["page"] == opened["page"]
+            assert recovered["metadata"] == opened["metadata"]
+            assert process.poll() is None
+        closed = _send_server_request(
+            process,
+            output,
+            "options-close",
+            {"kind": "closeSession", "sessionId": session_id, "revision": 0},
+            timeout=30.0,
+        )
+        assert closed == {"kind": "sessionClosed", "sessionId": session_id}
+        assert path.read_text(encoding="utf-8") == source
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+    assert return_code == 0, output.stderr_tail()
+    assert output.stderr_tail() == ""
+
+
 def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native_steps(tmp_path: Path) -> None:
     required_modules = ("pandas", "polars", "duckdb")
     if any(find_spec(module_name) is None for module_name in required_modules):
