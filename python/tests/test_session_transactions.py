@@ -709,6 +709,8 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "uint64-negative-column-subtract",
         "uint64-mixed-column-add",
         "uint64-mixed-column-subtract",
+        "uint64-reversed-column-add",
+        "uint64-reversed-column-overflow-add",
         "decimal-multiply",
         "decimal-divide",
     ],
@@ -726,7 +728,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     unsigned = family.startswith("uint64")
     negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract"}
     negative_column = family in {"uint64-negative-column-add", "uint64-negative-column-subtract"}
-    mixed_column = family in {"uint64-mixed-column-add", "uint64-mixed-column-subtract"}
+    signed_left = family.startswith("uint64-reversed-column-")
+    mixed_column = family in {"uint64-mixed-column-add", "uint64-mixed-column-subtract"} or signed_left
     column_operand = negative_column or mixed_column
     unsigned_values = [3, 2**64 - 1, None]
     if family == "uint64-negative-add":
@@ -737,6 +740,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         unsigned_values = [2**64 - 1, 2, None] if family.endswith("add") else [3, 2**64 - 3, None]
     elif mixed_column:
         unsigned_values = [2**64 - 1, 0, None] if family.endswith("add") else [2**64 - 2, 2**64 - 1, None]
+        if family == "uint64-reversed-column-overflow-add":
+            unsigned_values = [0, 2**64 - 1, None]
     series = (
         pd.Series(unsigned_values, dtype="uint64[pyarrow]")
         if unsigned
@@ -749,6 +754,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     elif mixed_column:
         frame["divisor"] = pd.Series([-1, 1, 2], dtype="int64[pyarrow]")
         frame["unsafeAdjustment"] = pd.Series([-1, -1, 2], dtype="int64[pyarrow]")
+        if family == "uint64-reversed-column-overflow-add":
+            frame["divisor"] = pd.Series([1, -1, 2], dtype="int64[pyarrow]")
+            frame["unsafeAdjustment"] = pd.Series([1, 1, 2], dtype="int64[pyarrow]")
     frame.index = pd.Index(["same", "same", "last"], name="source row")
     frame.attrs = {"source": "retained"}
     original = frame.copy(deep=True)
@@ -776,6 +784,11 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             operation["params"].pop("value")
             operation["params"]["operator"] = "add" if family.endswith("add") else "subtract"
             operation["params"]["rightColumn"] = {"id": columns[1]["id"], "name": columns[1]["name"]}
+            if signed_left:
+                operation["params"]["leftColumn"], operation["params"]["rightColumn"] = (
+                    operation["params"]["rightColumn"],
+                    operation["params"]["leftColumn"],
+                )
         unsigned_expected = [1, 2**64 - 3, None]
         if family == "uint64-negative-add":
             unsigned_expected = [2**64 - 2, 0, None]
@@ -785,6 +798,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             unsigned_expected = [2**64 - 2, 0, None] if family.endswith("add") else [4, 2**64 - 1, None]
         elif mixed_column:
             unsigned_expected = [2**64 - 2, 1, None] if family.endswith("add") else [2**64 - 1, 2**64 - 2, None]
+            if family == "uint64-reversed-column-overflow-add":
+                unsigned_expected = [1, 2**64 - 2, None]
         expected = pd.Series(
             unsigned_expected
             if unsigned
@@ -839,7 +854,12 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         elif column_operand:
             invalid["params"].pop("value")
             invalid["params"]["operator"] = operation["params"]["operator"]
-            invalid["params"]["rightColumn"] = {"id": columns[2]["id"], "name": columns[2]["name"]}
+            invalid["params"]["leftColumn" if signed_left else "rightColumn"] = {
+                "id": columns[2]["id"],
+                "name": columns[2]["name"],
+            }
+            if signed_left:
+                invalid["params"]["rightColumn"] = operation["params"]["rightColumn"]
         with pytest.raises(pa.ArrowInvalid, match="(?i)overflow|divide by zero"):
             manager.preview_step(session_id, session.revision, invalid, 0, 1)
         assert session_state(session) == before
@@ -880,6 +900,11 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         pd.testing.assert_index_equal(reopened.index, frame.index)
         pd.testing.assert_frame_equal(frame, original)
         assert frame.attrs == original.attrs
+        if signed_left:
+            redone = manager.redo_step(session_id, session.revision, 0, 1)
+            assert redone["action"] == "redo"
+            assert session.plan == [operation, history]
+            pd.testing.assert_series_equal(session.committed["result"], expected)
     finally:
         manager.close_all()
 

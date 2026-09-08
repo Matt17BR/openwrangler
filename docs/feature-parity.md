@@ -132,9 +132,9 @@ the confirmed plan. Other Formula arithmetic repairs eligible UInt64 operand-inf
 Decimal128 operations to Decimal256, retaining native precision and scale. UInt64 addition and subtraction also accept
 negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. A UInt64 left column
 also accepts signed right columns, including mixed positive and negative adjustments and signed 64-bit minimum,
-when every repaired result fits UInt64. Missing operands remain missing. Existing native successes remain unchanged.
-Reversed negative-column operands, negative multiply/power and widest or negative-scale Decimal capacity gaps remain
-tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
+when every repaired result fits UInt64. Addition accepts these columns in either order. Missing operands remain missing.
+Existing native successes remain unchanged. Reversed negative-column subtraction, negative multiply/power and widest
+or negative-scale Decimal capacity gaps remain tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
