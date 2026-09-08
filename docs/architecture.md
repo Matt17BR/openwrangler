@@ -546,8 +546,16 @@ Holding an earlier descriptor does not authorize reopening an unchecked pathname
 the writer truncates the file.
 DuckDB Parquet export projects top-level HUGEINT and UHUGEINT fields through native DECIMAL(38,0), preserving
 exact values within that type's range. Native overflow rejects the export before publication. Nested 128-bit integer
-fields are refused by their native type metadata; other fields keep their native writer behavior. The host-owned
-temporary remains the publication boundary even if a failed native writer produced partial bytes.
+fields are refused by their native type metadata. Interval time components must contain whole milliseconds and fit
+Parquet's unsigned 32-bit millisecond field; native checks still reject negative components. Export checks affected
+interval leaves inside containers and returns the original values, without reconstructing them or scanning the table
+separately.
+On DuckDB 1.5.4, top-level TIMETZ values with nonzero offsets are converted to UTC before writing; already-UTC values
+retain the native path. Its nested nonzero-offset values require explicit conversion. Newer writers retain native
+UTC normalization for scalar and nested values. TIMETZ leaves in map keys are refused whenever that writer would
+change their native identity, including the newer writer's normalization of `24:00+00` to `00:00+00`. Compatible keys
+and other native fields retain their behavior. The host-owned temporary remains the publication boundary even if a failed native writer
+produced partial bytes.
 
 After the applicable writer closes, the host revalidates the temporary, source, destination, parent mapping, and
 remote authority and performs one atomic rename. A runtime may use an additional private engine artifact internally,

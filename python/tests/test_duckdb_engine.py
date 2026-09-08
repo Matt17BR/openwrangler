@@ -2201,6 +2201,116 @@ def test_duckdb_grouped_integer_export_matches_generated_code_and_refuses_hidden
         manager.close_all()
 
 
+@pytest.mark.parametrize("invalid", ["interval", "map_key"])
+def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(tmp_path: Path, invalid: str) -> None:
+    source = tmp_path / "temporal.csv"
+    original = b"row,micros,clock\n1,1000,12:00:00+02\n2,1,10:00:00+00\n3,,\n"
+    source.write_bytes(original)
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    opened = manager.open_session(
+        {"kind": "file", "label": source.name, "path": str(source)}, backend="duckdb", page_size=1
+    )
+    session_id = opened["metadata"]["sessionId"]
+    try:
+        expression = (
+            'row, to_microseconds(micros * 1000) AS "elapsed ""exact""", '
+            'clock::TIMETZ AS clock, 9007199254740993::HUGEINT AS "wide integer"'
+        )
+        preview = manager.preview_step(
+            session_id, 0, step("customCode", code=f"result = df.project({expression!r})"), 0, 1
+        )
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        engine = manager.sessions[session_id].engine
+        namespace: dict[str, Any] = {}
+        exec(compile(applied["code"], "<temporal-cleaning-plan>", "exec"), namespace, namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        text_projection = 'row, "elapsed ""exact"""::VARCHAR, clock::VARCHAR, "wide integer"::VARCHAR'
+        before = generated.project(text_projection).fetchall()
+        assert before == [
+            (1, "00:00:01", "12:00:00+02", "9007199254740993"),
+            (2, "00:00:00.001", "10:00:00+00", "9007199254740993"),
+            (3, None, None, "9007199254740993"),
+        ]
+        confirmed = manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []})
+        for mode in ("live", "generated"):
+            destination = tmp_path / f"{mode}.parquet"
+            identity = reserve_export_target(destination)
+            if mode == "live":
+                assert (
+                    manager.export_data(
+                        session_id, applied["revision"], str(destination), export_options("parquet"), identity
+                    )["kind"]
+                    == "dataExported"
+                )
+            else:
+                with ExportTarget(
+                    destination, int(identity["device"]), int(identity["inode"])
+                ).pinned_writer_path() as writer:
+                    engine.export_data(generated, writer, export_options("parquet"))
+            loaded = duckdb.read_parquet(str(destination))
+            assert loaded.project(text_projection).fetchall() == [
+                (1, "00:00:01", "10:00:00+00", "9007199254740993"),
+                (2, "00:00:00.001", "10:00:00+00", "9007199254740993"),
+                (3, None, None, "9007199254740993"),
+            ]
+            assert [str(dtype) for dtype in loaded.types] == [
+                "BIGINT",
+                "INTERVAL",
+                "TIME WITH TIME ZONE",
+                "DECIMAL(38,0)",
+            ]
+            assert [column["name"] for column in engine.schema(engine.read_file(str(destination)))] == generated.columns
+        assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
+        assert generated.project(text_projection).fetchall() == before
+
+        # Only a later committed row is unsafe; preview and Apply show the valid first row.
+        bad_value = (
+            "CASE WHEN row = 2 THEN [INTERVAL '1 microsecond'] ELSE [INTERVAL '1 millisecond'] END"
+            if invalid == "interval"
+            else "CASE WHEN row = 2 THEN MAP(['12:00:00+02'::TIMETZ, '10:00:00+00'::TIMETZ], ['a','b']) "
+            "ELSE MAP(['10:00:00+00'::TIMETZ], ['safe']) END"
+        )
+        expression = f"*, {bad_value} AS nested"
+        hidden_step = step("customCode", code=f"result = df.project({expression!r})")
+        hidden_step["id"] = "temporal-hidden-loss"
+        preview = manager.preview_step(session_id, applied["revision"], hidden_step, 0, 1)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        confirmed = manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []})
+        namespace = {}
+        exec(compile(applied["code"], "<temporal-cleaning-plan>", "exec"), namespace, namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        if invalid == "map_key":
+            assert generated.filter("row = 2").project(
+                "map_extract_value(nested,'12:00:00+02'::TIMETZ), map_extract_value(nested,'10:00:00+00'::TIMETZ)"
+            ).fetchall() == [("a", "b")]
+        for mode in ("live", "generated"):
+            destination = tmp_path / f"unpublished-{mode}.parquet"
+            identity = reserve_export_target(destination)
+            with pytest.raises(EngineError, match="cannot preserve.*temporal"):
+                if mode == "live":
+                    manager.export_data(
+                        session_id, applied["revision"], str(destination), export_options("parquet"), identity
+                    )
+                else:
+                    with ExportTarget(
+                        destination, int(identity["device"]), int(identity["inode"])
+                    ).pinned_writer_path() as writer:
+                        engine.export_data(generated, writer, export_options("parquet"))
+            assert _regular_file_identity(destination) == (int(identity["device"]), int(identity["inode"]))
+        assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
+        fallback = tmp_path / "exact.csv"
+        assert (
+            manager.export_data(
+                session_id, applied["revision"], str(fallback), export_options("csv"), reserve_export_target(fallback)
+            )["kind"]
+            == "dataExported"
+        )
+        assert ("00:00:00.000001" if invalid == "interval" else "12:00:00+02") in fallback.read_text()
+        assert source.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
 def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion_or_sql_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -549,6 +549,146 @@ def test_duckdb_parquet_retains_other_native_types_and_same_spelling_names(tmp_p
         engine.close()
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "INTERVAL '1 microsecond'",
+        "to_microseconds(4294967296000::BIGINT)",
+        "[INTERVAL '1 microsecond', NULL]",
+        "[INTERVAL '1 millisecond', INTERVAL '1001 microseconds']::INTERVAL[2]",
+        '[struct_pack("_ow_nested_1" := [struct_pack("quote\' -> ""name" := INTERVAL \'1 microsecond\')])]',
+        "MAP(['a'], [INTERVAL '1 microsecond'])",
+        "MAP([INTERVAL '1 microsecond', INTERVAL '2 microseconds'], ['a', 'b'])",
+        "union_value(value := INTERVAL '1 microsecond')::UNION(value INTERVAL, other VARCHAR)",
+        "MAP(['12:00:00+02'::TIMETZ], ['value'])",
+        "MAP([[struct_pack(clock := '12:00:00+02'::TIMETZ)]], ['value'])",
+    ],
+)
+def test_duckdb_parquet_refuses_altered_temporal_values(tmp_path: Path, expression: str) -> None:
+    source = duckdb.sql(f'SELECT {expression} AS "_ow_nested_0", 42 AS "_ow_nested_1"')
+    before = source.project('"_ow_nested_0"::VARCHAR, "_ow_nested_1"').fetchall()
+    types, columns = source.types, source.columns
+    destination = tmp_path / "unpublished.parquet"
+    destination.touch()
+    identity = _regular_file_identity(destination)
+    engine = DuckDBEngine()
+    try:
+        with (
+            ExportTarget(destination, *identity).pinned_writer_path() as writer,
+            pytest.raises(EngineError, match="cannot preserve.*temporal"),
+        ):
+            engine.export_data(source, writer, {"format": "parquet"})
+        assert _regular_file_identity(destination) == identity
+        assert source.project('"_ow_nested_0"::VARCHAR, "_ow_nested_1"').fetchall() == before
+        assert source.types == types and source.columns == columns
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "expression, legacy_refuses_values",
+    [
+        ("[INTERVAL '1 month 2 days 3 milliseconds', NULL]", False),
+        ("[INTERVAL '1 millisecond', NULL]::INTERVAL[2]", False),
+        ("struct_pack(value := to_microseconds(4294967295000::BIGINT), other := 'TIMETZ')", False),
+        ("MAP([INTERVAL '1 month', INTERVAL '2 months'], ['a', 'b'])", False),
+        ("union_value(value := INTERVAL '1 millisecond')::UNION(value INTERVAL, other VARCHAR)", False),
+        ("[]::INTERVAL[]", False),
+        ("MAP([]::TIMETZ[], []::VARCHAR[])", False),
+        ("MAP(['10:00:00+00'::TIMETZ], ['value'])", False),
+        ("['12:00:00+02'::TIMETZ, NULL]", True),
+        ("['12:00:00+02'::TIMETZ, NULL]::TIMETZ[2]", True),
+        ("struct_pack(clock := '12:00:00+02'::TIMETZ)", True),
+        ("MAP(['a'], ['12:00:00+02'::TIMETZ])", True),
+        ("union_value(clock := '12:00:00+02'::TIMETZ)::UNION(clock TIMETZ, other VARCHAR)", True),
+        ("union_value(other := 'ordinary')::UNION(clock TIMETZ, value INTERVAL, other VARCHAR)", False),
+    ],
+)
+def test_duckdb_parquet_preserves_supported_nested_temporal_values(
+    tmp_path: Path, expression: str, legacy_refuses_values: bool
+) -> None:
+    source = duckdb.sql(f"SELECT {expression} AS \"value 'quoted'\" UNION ALL SELECT NULL")
+    before = source.project("\"value 'quoted'\"::VARCHAR").fetchall()
+    engine = DuckDBEngine()
+    try:
+        for shape, selected in (
+            ("values", source),
+            ("null", source.filter("\"value 'quoted'\" IS NULL")),
+            ("empty", source.limit(0)),
+        ):
+            native = tmp_path / f"native-{shape}.parquet"
+            selected.write_parquet(str(native))
+            destination = tmp_path / f"owned-{shape}.parquet"
+            destination.touch()
+            identity = _regular_file_identity(destination)
+            refuses = legacy_refuses_values and duckdb.__version__ == "1.5.4" and shape == "values"
+            with (
+                ExportTarget(destination, *identity).pinned_writer_path() as writer,
+                pytest.raises(EngineError, match="cannot preserve.*temporal") if refuses else nullcontext(),
+            ):
+                engine.export_data(selected, writer, {"format": "parquet"})
+            if not refuses:
+                loaded, expected = duckdb.read_parquet(str(destination)), duckdb.read_parquet(str(native))
+                assert (
+                    loaded.project("\"value 'quoted'\"::VARCHAR").fetchall()
+                    == expected.project("\"value 'quoted'\"::VARCHAR").fetchall()
+                )
+                assert loaded.types == expected.types and loaded.columns == expected.columns
+            assert _regular_file_identity(destination) == identity
+        assert source.project("\"value 'quoted'\"::VARCHAR").fetchall() == before
+    finally:
+        engine.close()
+
+
+def test_duckdb_parquet_top_level_timetz_preserves_native_utc_and_corrects_offsets(tmp_path: Path) -> None:
+    source = duckdb.sql(
+        "SELECT clock::TIMETZ AS clock FROM (VALUES ('12:34:56.123456+02'), "
+        "('00:01:00+14'), ('24:00:00+00'), (NULL)) AS clocks(clock)"
+    )
+    before = source.project("clock::VARCHAR").fetchall()
+    expected = duckdb.sql(
+        "SELECT clock::TIMETZ AS clock FROM (VALUES ('10:34:56.123456+00'), "
+        "('10:01:00+00'), ('24:00:00+00'), (NULL)) AS clocks(clock)"
+    )
+    native = tmp_path / "native-utc.parquet"
+    expected.write_parquet(str(native))
+    destination = tmp_path / "clocks.parquet"
+    destination.touch()
+    engine = DuckDBEngine()
+    try:
+        with ExportTarget(destination, *_regular_file_identity(destination)).pinned_writer_path() as writer:
+            engine.export_data(source, writer, {"format": "parquet"})
+        loaded, control = duckdb.read_parquet(str(destination)), duckdb.read_parquet(str(native))
+        assert loaded.project("clock::VARCHAR").fetchall() == control.project("clock::VARCHAR").fetchall()
+        assert loaded.types == control.types == source.types
+        assert source.project("clock::VARCHAR").fetchall() == before
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("key", ["'24:00:00+00'::TIMETZ", "struct_pack(clock := '24:00:00+00'::TIMETZ)"])
+def test_duckdb_parquet_map_keys_retain_native_midnight_identity(tmp_path: Path, key: str) -> None:
+    source = duckdb.sql(f"SELECT MAP([{key}], ['value']) AS value")
+    lookup = f"map_extract_value(value, {key})"
+    assert source.project(lookup).fetchall() == [("value",)]
+    destination = tmp_path / "keys.parquet"
+    destination.touch()
+    engine = DuckDBEngine()
+    try:
+        with (
+            ExportTarget(destination, *_regular_file_identity(destination)).pinned_writer_path() as writer,
+            nullcontext()
+            if duckdb.__version__ == "1.5.4"
+            else pytest.raises(EngineError, match="cannot preserve.*temporal"),
+        ):
+            engine.export_data(source, writer, {"format": "parquet"})
+        if duckdb.__version__ == "1.5.4":
+            assert duckdb.read_parquet(str(destination)).project(lookup).fetchall() == [("value",)]
+        assert source.project(lookup).fetchall() == [("value",)]
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 def test_native_exports_write_the_host_pinned_target(
     tmp_path: Path, native_export: tuple[Any, Any, str], format_name: str

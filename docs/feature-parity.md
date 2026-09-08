@@ -261,7 +261,10 @@ DuckDB file sessions remain native and connection-scoped. They do not convert th
 extension auto-install, autoload, and external-file caching stay disabled.
 Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with up to 38 digits, preserving nulls.
 Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
-with Decimal storage. CSV retains its native text output.
+with Decimal storage. Parquet also refuses interval precision or capacity loss and time-zone map-key changes.
+Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit conversion for nested nonzero offsets.
+Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
+output.
 
 | Surface                                      | Availability       | Status  | Current evidence                               | Limit or missing proof                              |
 | -------------------------------------------- | ------------------ | ------- | ---------------------------------------------- | --------------------------------------------------- |
