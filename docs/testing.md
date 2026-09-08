@@ -206,6 +206,7 @@ capacity, signedness changes, nulls, eager/lazy frames and ordinary numeric cont
 protocol-validation and state-restoration tests own text entry, canonical bounds and retained public plans.
 Native R kernel and host transport owners check exact string retention, scalar precision refusal and actual generated
 R under changed display options, including the finite 309-digit endpoint. Existing scalar API controls remain separate.
+The kernel Formula missing-power case owns the exact captured native vector, wire cell kinds and generated result.
 
 `python/tests/test_polars_engine.py` also owns ordinary integer Formula checks for paired operands, conversion loss,
 power limits and retained native output types. Boolean/integer cases cover native capacity and saved CSV plans

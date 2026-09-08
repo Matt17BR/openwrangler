@@ -6596,6 +6596,11 @@ assert_identical(
   c("null", "null", "number", "number"),
   "live R Formula changed missing, NaN, or infinity power semantics"
 )
+assert_identical(
+  get("snapshot", envir = latest_full_capture, inherits = FALSE)[["missing power"]],
+  c(NA_real_, NA_real_, 1, 1),
+  "live R Formula changed exact missing-power values or type"
+)
 formula_missing_power_apply <- dispatch(
   "applyDraft",
   list(sessionId = formula_missing_power_session_id, revision = 1L, page = page_window())

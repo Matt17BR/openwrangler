@@ -2399,20 +2399,6 @@ if (!is.null(formula_cold_status) && formula_cold_status != 0L) {
 }
 unlink(c(formula_cold_script, formula_cold_rds))
 
-formula_missing_power <- openwrangler_r_frame_contract$formula_column_at(
-  data.frame(left = c(NA_real_, 1, NaN, Inf), right = c(0, NA_real_, 0, 0)),
-  1L,
-  "left",
-  "power",
-  "missing power",
-  right_position = 2L,
-  right_name = "right"
-)
-assert_identical(
-  formula_missing_power$`missing power`,
-  c(NA_real_, NA_real_, 1, 1),
-  "formula changed missing, NaN, or infinity power semantics"
-)
 assert_error(
   openwrangler_r_frame_contract$formula_column_at(
     data.frame(value = bit64::as.integer64("9223372036854775807")),
