@@ -3626,8 +3626,10 @@ def _generated_helper_source() -> str:
 
 _GENERATED_HELPERS = r"""import math
 import re
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
+from uuid import uuid4
 
 import duckdb
 
@@ -3719,7 +3721,54 @@ def _ow_query(df, query):
         sql = "WITH ow AS (" + df.sql_query() + "), " + stripped[5:]
     else:
         sql = "WITH ow AS (" + df.sql_query() + ") " + query
-    return duckdb.sql(sql)
+    # The SQL never references this alias: it only selects the input connection.
+    alias = "__open_wrangler_query_" + uuid4().hex
+    literal = "'" + alias + "'"
+    metadata = None
+    view_oid = None
+
+    def catalog_scalar(statement):
+        relation = metadata if metadata is not None else df
+        return relation.limit(0).aggregate("system.main.count(*), (" + statement + ")").fetchone()[1]
+
+    def current_view_oid():
+        return catalog_scalar(
+            "SELECT view_oid FROM system.main.duckdb_views() "
+            "WHERE database_name = 'temp' AND schema_name = 'main' AND temporary "
+            "AND system.main.lower(view_name) = " + literal
+        )
+
+    def cleanup():
+        if metadata is not None and view_oid is not None and current_view_oid() == view_oid:
+            # Preserve observed replacements; check and DROP are not atomic
+            # against arbitrary concurrent caller DDL.
+            metadata.query(alias, "DROP VIEW temp.main." + _ow_ident(alias))
+
+    try:
+        if catalog_scalar(
+            "SELECT system.main.count(*) FROM ("
+            "SELECT table_name AS name FROM system.main.duckdb_tables() UNION ALL "
+            "SELECT view_name AS name FROM system.main.duckdb_views()) "
+            "WHERE system.main.lower(name) = " + literal
+        ):
+            raise ValueError("The generated DuckDB query alias already exists.")
+        # Keep an independent metadata relation until cleanup, so a lost source
+        # binding cannot turn removal into an unsafe name-only operation.
+        metadata = df.query(alias, "SELECT 0 AS owner_metadata")
+        view_oid = current_view_oid()
+        try:
+            result = df.query(alias, sql)
+        except BaseException:
+            with suppress(BaseException):
+                view_oid = current_view_oid()
+            raise
+        view_oid = current_view_oid()
+    except BaseException:
+        with suppress(BaseException):
+            cleanup()
+        raise
+    cleanup()
+    return result
 
 
 def _ow_check_addressability(df):

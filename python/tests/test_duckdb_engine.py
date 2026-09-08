@@ -701,6 +701,226 @@ def test_duckdb_generated_rename_results_use_the_private_connection(
             engine.close()
 
 
+@pytest.mark.parametrize("source_kind", ["table", "quoted_cte", "csv"])
+def test_duckdb_public_generated_query_uses_the_input_connection(tmp_path: Path, source_kind: str) -> None:
+    source_path = tmp_path / "query-owner.csv"
+    source_path.write_text("key\n2\n3\n", encoding="utf-8")
+    source_bytes = source_path.read_bytes()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    duckdb.sql("CREATE TEMP TABLE generated_query_source AS SELECT 900::BIGINT AS key")
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="duckdb"
+        )
+        session_id = opened["metadata"]["sessionId"]
+        preview = manager.preview_step(
+            session_id,
+            0,
+            step("formula", leftColumn={"id": "c:source:0", "name": "key"}, operator="add", value=1, newColumn="plus"),
+            0,
+            10,
+        )
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 10)
+        namespace: dict[str, Any] = {}
+        assert "openwrangler_runtime" not in applied["code"]
+        exec(compile(applied["code"], "<public-generated-query>", "exec"), namespace)
+        with duckdb.connect(config={"python_enable_replacements": False}) as connection:
+            connection.execute("CREATE TABLE generated_query_source AS SELECT * FROM (VALUES (2::BIGINT), (3)) t(key)")
+            connection.execute("CREATE TEMP VIEW ow AS SELECT 99 AS sentinel")
+            catalog = connection.sql("SELECT view_name, view_oid FROM duckdb_views() WHERE NOT internal").fetchall()
+            if source_kind == "csv":
+                frame = connection.read_csv(str(source_path), header=True)
+            elif source_kind == "quoted_cte":
+                frame = connection.sql(
+                    'WITH prior AS (SELECT key, 17 AS "quote""field" FROM generated_query_source) SELECT * FROM prior'
+                )
+            else:
+                frame = connection.table("generated_query_source")
+            expected = [(2, 17, 3), (3, 17, 4)] if source_kind == "quoted_cte" else [(2, 3), (3, 4)]
+            result = namespace["clean_data"](frame)
+            assert result.fetchall() == expected
+            assert str(result.types[-1]) == "BIGINT"
+            later = namespace["_ow_query"](
+                result, "WITH next AS (SELECT *, plus + 1 AS later FROM ow) SELECT * FROM next"
+            )
+            assert later.fetchall() == [(*row, row[-1] + 1) for row in expected]
+            del later
+            assert result.fetchall() == expected
+            assert (
+                connection.sql("SELECT view_name, view_oid FROM duckdb_views() WHERE NOT internal").fetchall()
+                == catalog
+            )
+            assert connection.sql("SELECT * FROM ow").fetchall() == [(99,)]
+            assert frame.fetchall() == [row[:-1] for row in expected]
+        assert duckdb.sql("SELECT * FROM generated_query_source").fetchall() == [(900,)]
+        assert source_path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+        duckdb.sql("DROP TABLE generated_query_source")
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_duckdb_generated_query_preserves_the_custom_module_namespace(mixed: bool) -> None:
+    engine = DuckDBEngine()
+    custom = step(
+        "customCode",
+        code="assert isinstance(df, duckdb.DuckDBPyRelation)\n"
+        "assert 'uuid4' not in globals() and 'suppress' not in globals()\n"
+        "assert df.columns == ['key']\nresult = df.project('key + 1 AS key')",
+    )
+    plan = [custom]
+    if mixed:
+        plan.append(
+            bound_step(
+                "formula", leftColumn=bound_ref("c:source:0", "key", 0), operator="add", value=1, newColumn="plus"
+            )
+        )
+    try:
+        with duckdb.connect() as connection:
+            connection.execute(
+                "CREATE TABLE generated_custom_source AS SELECT key, key AS __open_wrangler_internal_row_id_test "
+                "FROM (VALUES (2::BIGINT), (3)) t(key)"
+            )
+            frame = connection.table("generated_custom_source")
+            generated = execute_generated(engine, frame, plan)
+            assert generated.fetchall() == ([(3, 4), (4, 5)] if mixed else [(3,), (4,)])
+            assert generated.types == ([BIGINT, BIGINT] if mixed else [BIGINT])
+            assert frame.fetchall() == [(2, 2), (3, 3)]
+            assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+    finally:
+        engine.close()
+
+
+def test_duckdb_generated_query_catalog_work_does_not_evaluate_source_rows() -> None:
+    engine = DuckDBEngine()
+    namespace: dict[str, Any] = {}
+    plan = [
+        bound_step("formula", leftColumn=bound_ref("c:source:0", "key", 0), operator="add", value=1, newColumn="plus")
+    ]
+    try:
+        exec(engine.compile_plan(plan), namespace)
+        with duckdb.connect() as connection:
+            calls: list[int] = []
+
+            def observed(value: int) -> int:
+                calls.append(value)
+                return value + 100
+
+            connection.create_function("generated_query_observed", observed, [BIGINT], BIGINT, side_effects=True)
+            frame = connection.sql("SELECT generated_query_observed(i) AS key FROM range(2, 4) t(i)")
+            connection.execute("CREATE MACRO lower(value) AS 'wrong'")
+            connection.execute("CREATE MACRO count(value) AS 0")
+            direct = namespace["_ow_query"](frame, "SELECT * FROM ow")
+            assert calls == []
+            result = namespace["clean_data"](frame)
+            assert calls == [2, 3]
+            calls.clear()
+            assert result.fetchall() == [(102, 103), (103, 104)]
+            assert calls == [2, 3]
+            calls.clear()
+            with pytest.raises(duckdb.BinderException, match="absent"):
+                namespace["_ow_query"](frame, "SELECT absent FROM ow")
+            assert calls == []
+            assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+            assert direct.fetchall() == [(102,), (103,)]
+            assert calls == [2, 3]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("object_kind", "uppercase"),
+    [("TABLE", False), ("VIEW", False), ("TEMP TABLE", False), ("TEMP VIEW", False), ("TEMP VIEW", True)],
+)
+def test_duckdb_generated_query_alias_collision_preserves_caller_object(object_kind: str, uppercase: bool) -> None:
+    from uuid import UUID
+
+    engine = DuckDBEngine()
+    namespace: dict[str, Any] = {}
+    try:
+        exec(engine.compile_plan([bound_step("customCode", code="result = df")]), namespace)
+        namespace["uuid4"] = lambda: UUID(int=1)
+        alias = "__open_wrangler_query_" + UUID(int=1).hex
+        existing = alias.upper() if uppercase else alias
+        with duckdb.connect() as connection:
+            connection.execute(f'CREATE {object_kind} "{existing}" AS SELECT 99 AS sentinel')
+            before = connection.sql("SELECT view_name, view_oid FROM duckdb_views() WHERE NOT internal").fetchall()
+            frame = connection.sql("SELECT 7 AS key")
+            with pytest.raises(ValueError, match="already exists"):
+                namespace["_ow_query"](frame, "SELECT * FROM ow")
+            assert connection.sql(f'SELECT * FROM "{existing}"').fetchall() == [(99,)]
+            assert (
+                connection.sql("SELECT view_name, view_oid FROM duckdb_views() WHERE NOT internal").fetchall() == before
+            )
+            assert frame.fetchall() == [(7,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("mode", ["replacement", "source_removed", "primary_error"])
+def test_duckdb_generated_query_cleanup_observes_native_lifetime_boundaries(mode: str) -> None:
+    engine = DuckDBEngine()
+    namespace: dict[str, Any] = {}
+    try:
+        exec(engine.compile_plan([bound_step("customCode", code="result = df")]), namespace)
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE generated_lifetime_source AS SELECT 7 AS key")
+            source = connection.table("generated_lifetime_source")
+            aliases: list[str] = []
+            original_error = KeyboardInterrupt("owned primary failure")
+
+            # These wrappers only schedule native DDL/errors between metadata observations.
+            class MetadataBoundary:
+                def __init__(self, relation: Any) -> None:
+                    self.relation = relation
+                    self.reads = 0
+
+                def limit(self, count: int) -> Any:
+                    self.reads += 1
+                    if mode == "replacement" and self.reads == 3:
+                        connection.execute(f'CREATE OR REPLACE TEMP VIEW "{aliases[0]}" AS SELECT 99 AS sentinel')
+                    return self.relation.limit(count)
+
+                def query(self, alias: str, sql: str) -> Any:
+                    return self.relation.query(alias, sql)
+
+            class InputBoundary:
+                def sql_query(self) -> str:
+                    return source.sql_query()
+
+                def limit(self, count: int) -> Any:
+                    return source.limit(count)
+
+                def query(self, alias: str, sql: str) -> Any:
+                    aliases.append(alias)
+                    result = source.query(alias, sql)
+                    if sql == "SELECT 0 AS owner_metadata":
+                        return MetadataBoundary(result)
+                    if mode == "primary_error":
+                        connection.close()
+                        raise original_error
+                    if mode == "source_removed":
+                        connection.execute("DROP TABLE generated_lifetime_source")
+                    return result
+
+            if mode == "primary_error":
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    namespace["_ow_query"](InputBoundary(), "SELECT * FROM ow")
+                assert caught.value is original_error
+            else:
+                result = namespace["_ow_query"](InputBoundary(), "SELECT * FROM ow")
+                assert aliases
+                if mode == "replacement":
+                    assert connection.sql(f'SELECT * FROM "{aliases[0]}"').fetchall() == [(99,)]
+                    assert result.fetchall() == [(7,)]
+                else:
+                    assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+                    with pytest.raises(duckdb.CatalogException, match="generated_lifetime_source"):
+                        result.fetchall()
+    finally:
+        engine.close()
+
+
 def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
     engine = DuckDBEngine()
     plain_plan = [
@@ -2521,7 +2741,12 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     assert preview["diff"]["addedColumns"] == ["score"]
     applied = manager.apply_draft(session_id, 1, 0, 10)
     assert applied["revision"] == 2
-    assert "import duckdb" in applied["code"]
+    namespace: dict[str, Any] = {}
+    exec(compile(applied["code"], "<public-file-generated-plan>", "exec"), namespace)
+    with duckdb.connect() as connection:
+        generated = namespace["clean_data"](connection.read_csv(str(source), header=True))
+        assert generated.fetchall() == [("a", 1, 10), ("a", 2, 20), ("b", 3, 30)]
+        assert [str(dtype) for dtype in generated.types] == ["VARCHAR", "BIGINT", "BIGINT"]
     summary = manager.get_summary(
         session_id,
         2,

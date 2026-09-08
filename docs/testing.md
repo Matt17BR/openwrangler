@@ -196,6 +196,9 @@ successful correction. Native complex-value and empty-result controls keep the r
 Mark Duplicates and private Rename controls count each readiness query and later result retrieval separately, requiring
 one source evaluation per query. Grouped Fill controls distinguish lazy plan construction from refusal during live
 result validation or generated execution.
+The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
+and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
+while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.
 
 Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
 dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day

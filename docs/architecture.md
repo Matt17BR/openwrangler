@@ -206,7 +206,7 @@ unrelated extra columns remain valid. Pandas compares displayed names while reta
 Polars inspects lazy schema metadata. For nonempty plans, generated DuckDB checks its input and each intermediate
 schema for case-insensitive name collisions before another step can read an ambiguous column. This includes categorical outputs
 and Custom Code. Case-only Rename remains valid. Optional outputs replace the selected source only when the name matches exactly.
-Plans containing only DuckDB Rename steps retain the input relation's connection. Existing operation-specific output
+Generated DuckDB query helpers use the input relation's connection. Existing operation-specific output
 guards keep their stronger validation. Scalar destination guards reuse the step's output-name literal; the retained-plan
 and generated-code limits remain unchanged.
 
@@ -460,6 +460,16 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+Generated queries execute their composed SQL on the input relation's connection, so a same-named table or function
+on the module's default connection cannot substitute different data. Each call removes its unused query view before
+returning the native lazy result; earlier returned results remain independent of subsequent helper calls.
+Generated queries and notebook requests check the native catalog before creating an alias and remove only the last
+observed view identity. They preserve observed caller replacements. A constant native relation retains the connection
+during the call so cleanup can inspect ownership even if the source table disappears. These metadata queries add
+catalog work without evaluating source rows. A failed ownership lookup prevents removal and preserves an existing
+error; without an earlier error, the cleanup failure propagates. The identity check and removal are separate native
+operations and do not promise atomicity against arbitrary concurrent caller DDL.
+
 Before publishing a newly computed cleaning step, DuckDB evaluates every physical output column across all result
 rows. This includes Custom Code and errors outside the requested page or column window. The existing transformation
 validation hook executes a native aggregate and discards its single scalar result; it does not retain a materialized
@@ -485,13 +495,8 @@ CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalo
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
-Each terminal request removes its temporary query view after consuming the results, including when the query fails. Native
-catalog checks reject existing aliases and preserve observed caller replacements. A constant native relation retains
-the connection only during that request so cleanup still works if the source table disappears. These metadata queries
-add catalog work without evaluating source rows. The notebook lock serializes Open Wrangler requests; it does not
-make catalog checks and view removal atomic against arbitrary concurrent caller DDL.
-A failed ownership lookup prevents removal and preserves an existing error; without an earlier error, the cleanup
-failure propagates.
+Each terminal request removes its temporary query view after consuming the results, including when the query fails,
+under the catalog ownership rules above. The notebook lock serializes Open Wrangler requests.
 
 Drop Duplicates materializes its numbered input once, computes membership by row ordinal, and returns values from
 the selected original rows. Native partitioning cannot replace those values with a normalized key or another

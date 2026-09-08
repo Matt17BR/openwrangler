@@ -402,10 +402,21 @@ def test_dense_rank_uses_current_cleaning_order_and_standalone_helper_dependenci
     namespace: dict[str, Any] = {}
     code = adapter.compile_plan(plan)
     exec(code, namespace)
-    for result in (adapter.apply_transform(reordered, step), namespace["clean_data"](source)):
-        assert values_of(result, "__ow_rank_order") == [3, 2, 1, 0]
-        assert values_of(result, TARGET) == ([3, 2, 1, 2] if direction == "asc" else [1, 2, 3, 2])
-    assert "openwrangler_runtime" not in code
+    generated_connection: duckdb.DuckDBPyConnection | None = None
+    try:
+        generated_source = source
+        if isinstance(adapter, DuckDBEngine):
+            generated_connection = duckdb.connect()
+            generated_source = generated_connection.sql(source.sql_query())
+            assert generated_source.columns == source.columns
+            assert [str(dtype) for dtype in generated_source.types] == source.types
+        for result in (adapter.apply_transform(reordered, step), namespace["clean_data"](generated_source)):
+            assert values_of(result, "__ow_rank_order") == [3, 2, 1, 0]
+            assert values_of(result, TARGET) == ([3, 2, 1, 2] if direction == "asc" else [1, 2, 3, 2])
+        assert "openwrangler_runtime" not in code
+    finally:
+        if generated_connection is not None:
+            generated_connection.close()
 
 
 @pytest.mark.parametrize("failure", ["stale-id", "stale-name", "collision", "nonnumeric"])
