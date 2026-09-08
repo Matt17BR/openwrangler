@@ -869,18 +869,16 @@ describe("PythonBridge process lifecycle", () => {
   });
 
   it("does not start a replacement until the preceding shutdown settles", async () => {
-    const { internals } = createLifecycleHarness();
-    const stopping = deferred<void>();
-    internals.process = undefined;
-    internals.processStop = stopping.promise;
+    const { bridge, internals, process } = createLifecycleHarness();
+    bridge.onIdle();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
 
     const starting = internals.ensureProcess(initializeRequest);
     await Promise.resolve();
     expect(internals.spawnProcess).not.toHaveBeenCalled();
 
-    internals.runtimeEpoch += 1;
-    stopping.resolve(undefined);
+    bridge.restart();
+    process.emit("exit", 0, null);
     await expect(starting).rejects.toThrow("runtime start was cancelled");
     expect(internals.spawnProcess).not.toHaveBeenCalled();
   });
@@ -4277,9 +4275,9 @@ async function cacheDependencyProbe(
 
 interface LifecycleBridgeInternals {
   process: ChildProcessWithoutNullStreams | undefined;
-  processStop: Promise<void> | undefined;
+  readonly processStop: Promise<void> | undefined;
   disposed: boolean;
-  runtimeEpoch: number;
+  readonly runtimeEpoch: number;
   readonly runtime: TestRuntimeSlot;
   readonly selection: TestEnvironmentSelection;
   spawnProcess: ReturnType<typeof vi.fn>;
@@ -4381,9 +4379,6 @@ function createLifecycleHarness(): {
     get processStop() {
       return runtime.processStop;
     },
-    set processStop(value) {
-      runtime.processStop = value;
-    },
     get disposed() {
       return raw.disposed;
     },
@@ -4392,9 +4387,6 @@ function createLifecycleHarness(): {
     },
     get runtimeEpoch() {
       return runtime.runtimeEpoch;
-    },
-    set runtimeEpoch(value) {
-      runtime.runtimeEpoch = value;
     },
     runtime,
     selection,
