@@ -45,6 +45,45 @@ import {
 
 afterEach(resetKernelBridgeTestState);
 
+it("refuses Redo on an already bootstrapped kernel when workspace trust is lost", async () => {
+  const requests: string[] = [];
+  const controlled = controlledFakeKernel((request) => {
+    requests.push(request.kind);
+    return initializedResponse;
+  });
+  mockKernel(controlled.kernel);
+  const bridge = createKernelBridge();
+  try {
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, writable: true, value: false });
+    await expect(
+      bridge.request({
+        kind: "redoStep",
+        sessionId: "redo-session",
+        revision: 0,
+        viewRequestId: "kernel-trust",
+        offset: 0,
+        limit: 25,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "workspace_untrusted",
+      sessionId: "redo-session",
+      viewRequestId: "kernel-trust"
+    });
+    expect(requests).toEqual(["initialize"]);
+    expect(controlled.bootstrapExecutionCount()).toBe(1);
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, writable: true, value: true });
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+    expect(controlled.bootstrapExecutionCount()).toBe(1);
+  } finally {
+    Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, writable: true, value: true });
+    bridge.dispose();
+  }
+});
+
 describe("discovered Python variable kernel binding", () => {
   it("retiring an unconfirmed discovery during bootstrap cannot execute a replacement kernel", async () => {
     const started = deferred<void>();

@@ -54,6 +54,7 @@ export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "page_too_large",
   "profile_too_large",
   "runtime_error",
+  "redo_unavailable",
   "stale_column",
   "stale_revision",
   "unknown_session",
@@ -648,6 +649,17 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
+      kind: "redoStep";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        expectedStepId: string;
+        page: RKernelPageWindow;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
       kind: "applyDraft" | "discardDraft" | "undoStep";
       payload: Readonly<{
         sessionId: string;
@@ -770,6 +782,14 @@ export type RKernelResponse =
       retainedStep?: RKernelRetainedByExampleStep;
       effectiveView?: RKernelViewQuery;
     }>
+  | Readonly<
+      RKernelStepPreviewResult & {
+        transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+        requestId: string;
+        kind: "planUpdated";
+        action: "redo";
+      }
+    >
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
@@ -1008,7 +1028,7 @@ export function decodeRKernelResponseJson(
       ...(candidate.sampleSize === undefined ? {} : { sampleSize: candidate.sampleSize })
     });
   }
-  if (kind === "stepPreview") {
+  if (kind === "stepPreview" || (kind === "planUpdated" && value.action === "redo")) {
     const expectedPreviewStep = context.previewStep;
     const expectsRetainedStep = expectedPreviewStep?.kind === "byExample";
     const expectsEffectiveView = expectedPreviewStep?.kind === "customCode";
@@ -1023,6 +1043,7 @@ export function decodeRKernelResponseJson(
         "page",
         "diff",
         "code",
+        ...(kind === "planUpdated" ? ["action"] : []),
         ...(expectsRetainedStep ? (["retainedStep"] as const) : []),
         ...(expectsEffectiveView ? (["effectiveView"] as const) : [])
       ],
@@ -1038,7 +1059,9 @@ export function decodeRKernelResponseJson(
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
-      kind: "stepPreview" as const,
+      ...(kind === "stepPreview"
+        ? { kind: "stepPreview" as const }
+        : { kind: "planUpdated" as const, action: "redo" as const }),
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page,
@@ -1317,6 +1340,18 @@ function validateRequest(request: RKernelRequest): void {
     if (payload.replaceStepId !== undefined) {
       boundedText(payload.replaceStepId, "request.payload.replaceStepId", maximumStepIdBytes, false);
     }
+    validatePage(payload.page);
+    return;
+  }
+  if (record.kind === "redoStep") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "expectedStepId", "page"],
+      "R kernel redo payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    boundedText(payload.expectedStepId, "request.payload.expectedStepId", maximumStepIdBytes, false);
     validatePage(payload.page);
     return;
   }

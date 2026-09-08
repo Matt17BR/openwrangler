@@ -450,6 +450,91 @@ describe("PythonBridge transport validation and timeout isolation", () => {
 });
 
 describe("PythonBridge process-slot routing", () => {
+  it("retains Redo correlation when cancelled before finding its process", async () => {
+    const harness = createMultiScopeHarness();
+    const cancellation = new ManualCancellation();
+    cancellation.cancel();
+    await expect(
+      harness.bridge.request(
+        {
+          kind: "redoStep",
+          sessionId: "redo-session",
+          revision: 0,
+          viewRequestId: "early-cancel",
+          offset: 0,
+          limit: 25,
+          columnOffset: 0,
+          columnLimit: 16
+        },
+        { cancellation }
+      )
+    ).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "not-started",
+      viewRequestId: "early-cancel"
+    });
+    expect(harness.writes("first")).toEqual([]);
+    expect(harness.writes("second")).toEqual([]);
+    expect(harness.restartRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(["trust", "cancellation"] as const)(
+    "refuses Redo after an owned process wait encounters %s and releases its request lease",
+    async (reason) => {
+      setWorkspaceTrust(true);
+      const harness = createMultiScopeHarness();
+      const open = { ...openSessionRequest(remoteSourceAt("/first/data.csv")), requestedSessionId: "redo-session" };
+      const opening = harness.bridge.request(open);
+      await harness.waitForWrites("first", 1);
+      harness.respond("first", harness.writes("first")[0].requestId, openedFor(open, "redo-session"));
+      await opening;
+      const processReady = deferred<ChildProcessWithoutNullStreams>();
+      harness.runtimes.first.process = undefined;
+      harness.runtimes.first.processStart = processReady.promise;
+      const leaseBefore = harness.runtimes.first.leaseCount;
+      const cancellation = new ManualCancellation();
+      const redo = harness.bridge.request(
+        {
+          kind: "redoStep",
+          sessionId: "redo-session",
+          revision: 0,
+          viewRequestId: "process-trust",
+          offset: 0,
+          limit: 25,
+          columnOffset: 0,
+          columnLimit: 16
+        },
+        { cancellation }
+      );
+      try {
+        expect(harness.runtimes.first.leaseCount).toBe(leaseBefore + 1);
+        if (reason === "trust") setWorkspaceTrust(false);
+        else cancellation.cancel();
+        processReady.resolve(harness.processes.first);
+        await expect(redo).resolves.toMatchObject(
+          reason === "trust"
+            ? {
+                kind: "error",
+                code: "workspace_untrusted",
+                sessionId: "redo-session",
+                viewRequestId: "process-trust"
+              }
+            : { kind: "cancelled", targetRequestId: "not-started", viewRequestId: "process-trust" }
+        );
+        expect(harness.writes("first")).toHaveLength(1);
+        expect(harness.runtimes.first.pendingIds.size).toBe(0);
+        expect(harness.runtimes.first.leaseCount).toBe(leaseBefore);
+        expect(harness.sessionOwnership.confirmedOwner("redo-session")).toBe(harness.runtimes.first);
+        expect(harness.restartRuntime).not.toHaveBeenCalled();
+      } finally {
+        setWorkspaceTrust(true);
+        processReady.resolve(harness.processes.first);
+        harness.runtimes.first.processStart = undefined;
+        harness.runtimes.first.process = harness.processes.first;
+      }
+    }
+  );
+
   it("keeps independent workspace sessions on their owning process even with the same interpreter", async () => {
     const harness = createMultiScopeHarness();
     const firstRequest = {

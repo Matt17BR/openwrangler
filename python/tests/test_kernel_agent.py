@@ -1265,7 +1265,8 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
     assert len(encoded.encode("utf-8")) < 512
 
 
-def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) -> None:
+@pytest.mark.parametrize("kind", ["getPage", "redoStep"])
+def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch, kind: str) -> None:
     def cancel(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
         raise CancelledError
 
@@ -1274,7 +1275,7 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) ->
         kernel_agent.dispatch_json(
             _envelope(
                 {
-                    "kind": "getPage",
+                    "kind": kind,
                     "sessionId": "session",
                     "revision": 0,
                     "viewRequestId": "view-cancelled",
@@ -1282,7 +1283,7 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) ->
                     "limit": 20,
                     "columnOffset": 0,
                     "columnLimit": 64,
-                    "filterModel": EMPTY_FILTER,
+                    **({"filterModel": EMPTY_FILTER} if kind == "getPage" else {}),
                 },
                 request_id="cancelled-request",
             )
@@ -1808,3 +1809,54 @@ def test_notebook_registry_does_not_serialize_existing_dispatch_admission(
         "kind": "initialized",
         "runtimeVersion": "first-request",
     }
+
+
+def test_kernel_redo_correlates_empty_stale_and_successful_attempts(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "kernel-redo.csv"
+    source = "value\n1\n2\n"
+    path.write_text(source)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+
+    def send(request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+        assert result["requestId"] == request_id
+        return result["response"]
+
+    try:
+        opened = send(
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "path": str(path), "label": path.name},
+                "backend": "pandas",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+            "redo-open",
+        )
+        sid = opened["metadata"]["sessionId"]
+        window = {"offset": 0, "limit": 2, "columnOffset": 0, "columnLimit": 2}
+        request = {"kind": "redoStep", "sessionId": sid, "revision": 0, **window, "viewRequestId": "empty-attempt"}
+        empty = send(request, "redo-empty")
+        assert empty["code"] == "redo_unavailable" and empty["viewRequestId"] == "empty-attempt"
+        assert empty["sessionId"] == sid
+        step = {
+            "id": "saved",
+            "kind": "cloneColumn",
+            "params": {"column": {"id": "c:source:0", "name": "value"}, "newName": "copy"},
+        }
+        send({"kind": "previewStep", "sessionId": sid, "revision": 0, **window, "step": step}, "redo-preview")
+        applied = send({"kind": "applyDraft", "sessionId": sid, "revision": 1, **window}, "redo-apply")
+        undone = send({"kind": "undoStep", "sessionId": sid, "revision": 2, **window}, "redo-undo")
+        assert undone["metadata"]["canRedo"] is True
+        stale = send({**request, "viewRequestId": "stale-attempt"}, "redo-stale")
+        assert stale["code"] == "engine_error" and stale["viewRequestId"] == "stale-attempt"
+        assert manager.sessions[sid].revision == 3 and manager.sessions[sid].undone_steps == [step]
+        redone = send({**request, "revision": 3, "viewRequestId": "success-attempt"}, "redo-success")
+        assert redone["action"] == "redo" and redone["viewRequestId"] == "success-attempt"
+        assert redone["revision"] == 4 and redone["metadata"]["canRedo"] is False
+        assert redone["page"] == applied["page"] and redone["code"] == applied["code"]
+        assert path.read_text() == source
+    finally:
+        manager.close_all()

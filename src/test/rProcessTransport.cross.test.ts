@@ -212,7 +212,25 @@ describe.skipIf(!enabled)("plain R process transport", () => {
         effectiveView: { filters: [], sorts: [] },
         page: { shape: { rows: 4, columns: 1 } }
       });
-      await transport.discardDraft(customSessionId, custom.revision, pageWindow());
+      await transport.applyDraft(customSessionId, custom.revision, pageWindow());
+      await transport.undoStep(customSessionId, 2, pageWindow());
+      const redoneCustom = await transport.redoStep(
+        customSessionId,
+        3,
+        { id: "custom-process-step", kind: "customCode", params: { code: "result <- df\n" } },
+        pageWindow(),
+        customOpened.page.schema
+      );
+      expect(redoneCustom).toEqual({ ...custom, revision: 4 });
+      await expect(
+        transport.redoStep(
+          customSessionId,
+          4,
+          { id: "custom-process-step", kind: "customCode", params: { code: "result <- df\n" } },
+          pageWindow(),
+          customOpened.page.schema
+        )
+      ).rejects.toMatchObject({ diagnostic: { code: "redo_unavailable" } });
 
       const byExampleOpened = await transport.open("frame", pageWindow(), {
         requestedSessionId: byExampleSessionId
@@ -247,6 +265,17 @@ describe.skipIf(!enabled)("plain R process transport", () => {
           }
         }
       });
+      await transport.applyDraft(byExampleSessionId, 1, pageWindow());
+      await transport.undoStep(byExampleSessionId, 2, pageWindow());
+      if (!byExample.retainedStep) throw new Error("Expected a retained R By Example command.");
+      const redoneExample = await transport.redoStep(
+        byExampleSessionId,
+        3,
+        byExample.retainedStep,
+        pageWindow(),
+        byExampleOpened.page.schema
+      );
+      expect(redoneExample).toEqual({ ...byExample, revision: 4 });
       await transport.close(customSessionId);
       await transport.close(byExampleSessionId);
     } finally {

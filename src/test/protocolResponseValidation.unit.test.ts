@@ -21,6 +21,22 @@ import {
 } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 response validation", () => {
+  it("admits optional Redo availability and requires success correlation only for Redo", () => {
+    const applied = responses.find((response) => response.kind === "planUpdated");
+    if (!applied) throw new Error("Expected the canonical plan response.");
+    const check = (response: unknown, valid: boolean): void => {
+      expect(isOpenWranglerResponse(response)).toBe(valid);
+      expect(validateTransportSchema({ protocolVersion: 2, requestId: "wire-redo", response })).toBe(valid);
+    };
+    check(applied, true);
+    for (const canRedo of [true, false]) check({ ...applied, metadata: { ...metadata, canRedo } }, true);
+    for (const canRedo of [null, "true", 1, []]) check({ ...applied, metadata: { ...metadata, canRedo } }, false);
+    check({ ...applied, action: "redo", viewRequestId: "redo-current" }, true);
+    check({ ...applied, action: "redo" }, false);
+    check({ ...applied, action: "redo", viewRequestId: "" }, false);
+    for (const action of ["apply", "discard", "undo"]) check({ ...applied, action, viewRequestId: "redo-old" }, false);
+  });
+
   it.each(responses.map((response) => [response.kind, response] as const))(
     "accepts a structurally complete %s response",
     (_kind, response) => {

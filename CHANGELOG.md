@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Redo re-executes the latest undone cleaning command in the current runtime session. It preserves saved settings
+  and command order, and is available from the workbench or Command Palette. Closing or recovering the runtime,
+  or committing a new plan branch, clears this history.
+
 - Generated Polars and native R Fill Missing Values scripts omit unused helpers while retaining dependencies for mixed plans.
 - Multi-column cleaning forms support column search while retaining selections hidden by the search.
 - Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
@@ -13,6 +17,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Python requests cancelled before dispatch retain their request ID, avoiding unnecessary runtime recovery.
 - DuckDB Parquet exports refuse interval truncation and time-zone map-key changes. Supported top-level time-zone
   values retain their UTC time on the minimum runtime too.
 - DuckDB Parquet exports preserve top-level 128-bit integers within Decimal's 38-digit range. Larger values and

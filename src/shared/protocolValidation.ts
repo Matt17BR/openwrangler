@@ -193,7 +193,9 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     case "applyDraft":
     case "discardDraft":
     case "undoStep":
+    case "redoStep":
       return (
+        (candidate.kind !== "redoStep" || isNonEmptyString(candidate.viewRequestId)) &&
         isSessionRequest(candidate) &&
         isNonNegativeInteger(candidate.offset) &&
         isBoundedPageSize(candidate.limit) &&
@@ -408,7 +410,8 @@ function isStepInspectionResponse(candidate: UnknownRecord): boolean {
 
 function isPlanUpdatedResponse(candidate: UnknownRecord): boolean {
   return (
-    isOneOf(candidate.action, ["apply", "discard", "undo"]) &&
+    isOneOf(candidate.action, ["apply", "discard", "undo", "redo"]) &&
+    (candidate.action === "redo" ? isNonEmptyString(candidate.viewRequestId) : candidate.viewRequestId === undefined) &&
     isNonNegativeInteger(candidate.revision) &&
     isSessionMetadata(candidate.metadata) &&
     isGridPageForRowAxis(candidate.page, candidate.metadata.schema, candidate.metadata.rowAxis) &&
@@ -461,7 +464,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       "filterModel",
       "steps"
     ],
-    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis"]
+    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis", "canRedo"]
   );
   return (
     candidate !== undefined &&
@@ -495,6 +498,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     Array.isArray(candidate.steps) &&
     candidate.steps.every(isRetainedTransformStep) &&
     (candidate.steps.length === 0 || Object.prototype.hasOwnProperty.call(candidate, "latestStepInputSchema")) &&
+    optional(candidate, "canRedo", isBoolean) &&
     optional(candidate, "latestStepInputSchema", isColumnSchemaArray) &&
     optional(candidate, "draftStep", isRetainedTransformStep) &&
     optional(candidate, "draftReplacesStepId", isString) &&

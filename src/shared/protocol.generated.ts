@@ -18,6 +18,7 @@ export type OpenWranglerRequest =
   | ApplyDraftRequest
   | DiscardDraftRequest
   | UndoStepRequest
+  | RedoStepRequest
   | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
@@ -1160,6 +1161,16 @@ export interface UndoStepRequest {
   columnOffset: number;
   columnLimit: number;
 }
+export interface RedoStepRequest {
+  kind: "redoStep";
+  sessionId: string;
+  revision: number;
+  offset: number;
+  limit: number;
+  columnOffset: number;
+  columnLimit: number;
+  viewRequestId: string;
+}
 export interface ExportDataRequest {
   kind: "exportData";
   sessionId: string;
@@ -1258,6 +1269,10 @@ export interface SessionMetadata {
   draftStep?: RetainedTransformStep;
   draftReplacesStepId?: string;
   stats?: DatasetStats;
+  /**
+   * Last-confirmed availability of an undone command in this runtime session. Absence means unavailable.
+   */
+  canRedo?: boolean;
 }
 /**
  * Live-session shape. A null row count means the backend deliberately has not run a full count.
@@ -1446,11 +1461,12 @@ export interface StepInspectionResponse {
 }
 export interface PlanUpdatedResponse {
   kind: "planUpdated";
-  action: "apply" | "discard" | "undo";
+  action: "apply" | "discard" | "undo" | "redo";
   revision: number;
   metadata: SessionMetadata;
   page: GridPage;
   code: string;
+  viewRequestId?: string;
 }
 export interface DataExportedResponse {
   kind: "dataExported";
@@ -1605,6 +1621,20 @@ export const openWranglerRequestShapes = Object.freeze([
     optional: Object.freeze([])
   }),
   Object.freeze({
+    kind: "redoStep",
+    required: Object.freeze([
+      "kind",
+      "sessionId",
+      "revision",
+      "offset",
+      "limit",
+      "columnOffset",
+      "columnLimit",
+      "viewRequestId"
+    ]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "exportData",
     required: Object.freeze(["kind", "sessionId", "revision", "path", "options"]),
     optional: Object.freeze(["targetIdentity"])
@@ -1684,7 +1714,7 @@ export const openWranglerResponseShapes = Object.freeze([
   Object.freeze({
     kind: "planUpdated",
     required: Object.freeze(["kind", "action", "revision", "metadata", "page", "code"]),
-    optional: Object.freeze([])
+    optional: Object.freeze(["viewRequestId"])
   }),
   Object.freeze({
     kind: "dataExported",

@@ -1022,6 +1022,7 @@ function registerNativeViewsTransactional(
       }
     }),
     registerCommand("openWrangler.undoStep", () => OpenWranglerPanel.sendEditorAction({ action: "undoStep" })),
+    registerCommand("openWrangler.redoStep", () => OpenWranglerPanel.sendEditorAction({ action: "redoStep" })),
     registerCommand("openWrangler.copyCode", async () => {
       const acquired = await codePreview.acquireCodeForAction();
       if (acquired.kind !== "available") return reportCodePreviewActionFailure(acquired, "copying");

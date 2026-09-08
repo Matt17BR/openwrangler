@@ -1225,6 +1225,17 @@ export class OpenWranglerPanel {
       });
       return;
     }
+    if (request.kind === "redoStep" && !vscode.workspace.isTrusted) {
+      await this.post({
+        kind: "error",
+        code: "workspace_untrusted",
+        message: "Trust this workspace before redoing a cleaning step.",
+        recoverable: true,
+        sessionId: request.sessionId,
+        viewRequestId: request.viewRequestId
+      });
+      return;
+    }
     const ephemeralPage = request.kind === "getPage" && requestOptions?.ephemeralPage === true;
     if (request.kind === "getPage" && !ephemeralPage) this.latestPageViewRequestId = request.viewRequestId;
     try {
@@ -1261,6 +1272,18 @@ export class OpenWranglerPanel {
           );
         }
         return;
+      }
+      if (
+        request.kind === "redoStep" &&
+        response.kind === "error" &&
+        response.code === "redo_unavailable" &&
+        response.sessionId === request.sessionId &&
+        response.viewRequestId === request.viewRequestId &&
+        this.snapshot?.metadata.sessionId === request.sessionId &&
+        this.snapshot.metadata.revision === request.revision
+      ) {
+        this.invalidateRendererSynchronization();
+        this.snapshot = { ...this.snapshot, metadata: { ...this.snapshot.metadata, canRedo: false } };
       }
       if (request.kind === "openSession") {
         this.openResponse = response;
@@ -1743,7 +1766,8 @@ type NonSortEditorAction =
   | "openFilters"
   | "applyDraft"
   | "discardDraft"
-  | "undoStep";
+  | "undoStep"
+  | "redoStep";
 
 export type EditorActionMessage =
   | {

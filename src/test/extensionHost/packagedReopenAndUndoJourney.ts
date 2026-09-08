@@ -353,6 +353,28 @@ export function createPackagedReopenAndUndoJourney(
       sourceBytes,
       "Replaying the edited step must preserve the first-use source bytes."
     );
+    const readPage = async (session: NonNullable<ReturnType<TestApi["activeSession"]>>, viewRequestId: string) => {
+      const response = await testing.request(
+        {
+          kind: "getPage",
+          sessionId: session.sessionId,
+          revision: session.metadata.revision,
+          viewRequestId,
+          offset: 0,
+          limit: 3,
+          columnOffset: 0,
+          columnLimit: session.metadata.schema.length,
+          filterModel: session.viewState.filterModel
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(response.kind, "page", "The file Undo/Redo check requires a bounded confirmed page.");
+      if (response.kind !== "page") throw new Error("The file Undo/Redo check did not receive a page.");
+      assert.equal(response.metadata.sessionId, session.sessionId);
+      assert.equal(response.revision, session.metadata.revision);
+      return response.page;
+    };
+    const replayedPage = await readPage(replayed, "platform-smoke-before-undo");
     const replayedApp = await synchronizedSessionApp(
       workbench,
       testing,
@@ -371,7 +393,9 @@ export function createPackagedReopenAndUndoJourney(
       () => {
         const active = testing.activeSession();
         return (
-          active?.metadata.steps.length === 0 &&
+          active?.sessionId === replayed.sessionId &&
+          active.metadata.revision === replayed.metadata.revision + 1 &&
+          active.metadata.steps.length === 0 &&
           active.metadata.draftStep === undefined &&
           active.metadata.schema.some((column) => column.name === "market") &&
           !active.metadata.schema.some((column) => column.name === "market_upper") &&
@@ -381,17 +405,87 @@ export function createPackagedReopenAndUndoJourney(
       30_000,
       "Undo to restore the original schema"
     );
-    const reopenedCleaningPlan = replayedApp.getByRole("group", { name: "Cleaning plan" });
-    await reopenedCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
-    assert.equal(
-      await reopenedCleaningPlan.count(),
-      0,
-      "Undoing the only applied step must remove the empty cleaning-plan group."
+    const undone = testing.activeSession();
+    assert.ok(undone, "Undo must retain the exact file session.");
+    assert.equal(undone.metadata.canRedo, true);
+    const undonePage = await readPage(undone, "platform-smoke-after-undo");
+    const undoneApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      replayed.sessionId,
+      "The last Undo must leave its Redo action in the acknowledged renderer."
     );
+    const reopenedCleaningPlan = undoneApp.getByRole("group", { name: "Cleaning plan" });
+    await reopenedCleaningPlan
+      .getByText("0 applied steps", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await reopenedCleaningPlan.getByRole("button", { name: "Redo", exact: true }).waitFor({ state: "visible" });
+    assert.equal(await reopenedCleaningPlan.getByRole("button", { name: "Undo", exact: true }).count(), 0);
+    assert.equal(await reopenedCleaningPlan.getByRole("button", { name: "Edit latest", exact: true }).count(), 0);
     assertExactBytes(
       await vscode.workspace.fs.readFile(fixture),
       sourceBytes,
       "Undoing the replayed step must preserve the first-use source bytes."
+    );
+
+    recordAcceptanceProgress("platform-smoke:redo");
+    await reopenedCleaningPlan.getByRole("button", { name: "Redo", exact: true }).click({ trial: true });
+    await vscode.commands.executeCommand("openWrangler.redoStep");
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === replayed.sessionId &&
+          active.metadata.revision === undone.metadata.revision + 1 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          active.metadata.steps[0]?.id === replacementStep.id
+        );
+      },
+      30_000,
+      "the registered Redo command to restore the edited file step once"
+    );
+    const redone = testing.activeSession();
+    assert.ok(redone, "Redo must retain the exact file session.");
+    assert.equal(redone.metadata.canRedo, false);
+    assert.deepEqual(redone.metadata.steps, replayed.metadata.steps);
+    assert.deepEqual(redone.metadata.schema, replayed.metadata.schema);
+    assert.deepEqual(redone.metadata.source, replayed.metadata.source);
+    assert.equal(redone.code, replayed.code);
+    assert.deepEqual(await readPage(redone, "platform-smoke-after-redo"), replayedPage);
+    assertExactBytes(await vscode.workspace.fs.readFile(fixture), sourceBytes, "Redo must preserve the source bytes.");
+
+    const redoneApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      replayed.sessionId,
+      "The redone file step must reach its renderer before the final Undo."
+    );
+    await redoneApp.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === replayed.sessionId &&
+          active.metadata.revision === redone.metadata.revision + 1 &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined
+        );
+      },
+      30_000,
+      "Undo to restore the file journey's original final state"
+    );
+    const final = testing.activeSession();
+    assert.ok(final);
+    assert.equal(final.metadata.canRedo, true);
+    assert.deepEqual(final.metadata.schema, undone.metadata.schema);
+    assert.deepEqual(final.metadata.source, undone.metadata.source);
+    assert.equal(final.code, undone.code);
+    assert.deepEqual(await readPage(final, "platform-smoke-final-undo"), undonePage);
+    assertExactBytes(
+      await vscode.workspace.fs.readFile(fixture),
+      sourceBytes,
+      "The final Undo must preserve its source."
     );
   }
 

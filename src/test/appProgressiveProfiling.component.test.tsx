@@ -867,6 +867,42 @@ describe("App progressive profiling and view correlation", () => {
     }
   });
 
+  it("lets an immediate non-cancellable Redo run before post-Undo profiling restarts", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: rCloneAppliedMetadata, page: clonePage, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
+    await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onlyRequest("undoStep")).toBeDefined();
+    vi.useFakeTimers();
+    try {
+      postMessage.mockClear();
+      dispatch({
+        kind: "planUpdated",
+        action: "undo",
+        revision: 3,
+        metadata: {
+          ...rCloneAppliedMetadata,
+          revision: 3,
+          steps: [],
+          canRedo: true,
+          schema: metadata.schema,
+          shape: metadata.shape,
+          filteredShape: metadata.filteredShape
+        },
+        page,
+        code: "identity"
+      });
+      expect(requestsOfKind("getSummary")).toHaveLength(0);
+      fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+      expect(onlyRequest("redoStep")).toMatchObject({ viewRequestId: expect.any(String) });
+      act(() => vi.runOnlyPendingTimers());
+      expect(requestsOfKind("getSummary")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an explicit selected-column profile immediate during the post-mutation quiet period", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });

@@ -475,6 +475,27 @@ export async function exerciseReleasedRCoreEditingCatalog(
     outputDirectory
   );
   const coreScreenshot = { insertedRCellIndex, generatedCode };
+  const readRenamePage = async (session: ActiveSession, viewRequestId: string) => {
+    const response = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId,
+        revision: session.metadata.revision,
+        viewRequestId,
+        offset: 0,
+        limit: 1,
+        filterModel: session.viewState.filterModel
+      },
+      { ephemeralPage: true }
+    );
+    assert.equal(response.kind, "page", "The native R rename check requires its bounded confirmed page.");
+    if (response.kind !== "page") throw new Error("The native R rename check did not return a page.");
+    assert.equal(response.metadata.sessionId, sessionId);
+    assert.equal(response.revision, session.metadata.revision);
+    return response;
+  };
+  const reappliedPage = await readRenamePage(reapplied, `${phase}-editing-before-undo-page`);
 
   recordAcceptanceProgress(`${phase}:editing:undo`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before undo");
@@ -484,6 +505,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
       const active = testing.activeSession();
       return (
         active?.sessionId === sessionId &&
+        active.metadata.revision === reapplied.metadata.revision + 1 &&
         active.metadata.steps.length === 0 &&
         active.metadata.draftStep === undefined &&
         active.metadata.schema[0]?.name === "row_id" &&
@@ -495,20 +517,61 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
   const restored = testing.activeSession();
   assert.ok(restored, "Undoing the R rename must retain the session.");
-  const restoredPage = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    sessionId,
-    revision: restored.metadata.revision,
-    viewRequestId: `${phase}-editing-restored-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: restored.viewState.filterModel
-  });
-  assert.equal(restoredPage.kind, "page");
-  if (restoredPage.kind !== "page") throw new Error("The undone R session did not return its original page.");
+  assert.equal(restored.metadata.canRedo, true);
+  const restoredPage = await readRenamePage(restored, `${phase}-editing-restored-page`);
   assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
   assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
+
+  recordAcceptanceProgress(`${phase}:editing:redo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the undone native R rename before Redo");
+  assert.equal(await app.getByRole("button", { name: "Undo", exact: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Edit latest", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Redo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.revision === restored.metadata.revision + 1 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.steps[0]?.id === previewed.stepId
+      );
+    },
+    30_000,
+    "Redo to restore the edited native R rename once"
+  );
+  const redone = testing.activeSession();
+  assert.ok(redone, "Redo must retain the native R session.");
+  assert.equal(redone.metadata.canRedo, false);
+  assert.deepEqual(redone.metadata.steps, reapplied.metadata.steps);
+  assert.deepEqual(redone.metadata.schema, reapplied.metadata.schema);
+  assert.deepEqual(redone.metadata.source, reapplied.metadata.source);
+  assert.equal(redone.code, generatedCode, "Redo must restore the same copied, saved and inserted native R plan.");
+  assert.deepEqual((await readRenamePage(redone, `${phase}-editing-redone-page`)).page, reappliedPage.page);
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the redone native R rename before final Undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.revision === redone.metadata.revision + 1 &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined
+      );
+    },
+    30_000,
+    "Undo to restore the native R core journey before Drop Columns"
+  );
+  const final = testing.activeSession();
+  assert.ok(final);
+  assert.equal(final.metadata.canRedo, true);
+  assert.deepEqual(final.metadata.schema, restored.metadata.schema);
+  assert.deepEqual(final.metadata.source, restored.metadata.source);
+  assert.equal(final.code, restored.code);
+  assert.deepEqual((await readRenamePage(final, `${phase}-editing-final-undo-page`)).page, restoredPage.page);
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");

@@ -30,6 +30,7 @@ export interface FakeRTransport extends RKernelBridgeTransport {
   queuePreview(result: RKernelStepPreviewResult): void;
   applyDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["applyDraft"]>>;
   discardDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["discardDraft"]>>;
+  redoStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["redoStep"]>>;
   undoStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["undoStep"]>>;
   inspectStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["inspectStep"]>>;
   close: ReturnType<typeof vi.fn<RKernelBridgeTransport["close"]>>;
@@ -162,6 +163,9 @@ export function fakeRKernelTransport(
     }),
     discardDraft: vi.fn(async () => {
       throw new Error("Unexpected R draft discard.");
+    }),
+    redoStep: vi.fn(async () => {
+      throw new Error("Unexpected R redo.");
     }),
     undoStep: vi.fn(async () => {
       throw new Error("Unexpected R undo.");

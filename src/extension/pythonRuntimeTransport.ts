@@ -253,7 +253,11 @@ export class PythonRuntimeTransport<Runtime extends PythonRuntimeTransportSlot> 
       const cancelled = this.takePending(targetRequestId);
       if (cancelled) {
         this.hooks.sessionOwnership.releasePendingForRequest(cancelled.request, cancelled.requestId, cancelled.runtime);
-        cancelled.resolve({ kind: "cancelled", targetRequestId: "not-started" });
+        cancelled.resolve({
+          kind: "cancelled",
+          targetRequestId: "not-started",
+          ...("viewRequestId" in cancelled.request ? { viewRequestId: cancelled.request.viewRequestId } : {})
+        });
         this.hooks.stopRuntimeIfIdle(cancelled.runtime);
       }
       return;

@@ -2059,6 +2059,162 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
+  it.each([
+    ["redo_unavailable", false],
+    ["engine_error", true]
+  ] as const)("retains Redo availability %s across snapshot pulls and renderer remounts", async (code, canRedo) => {
+    const initial: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...metadata, canRedo: true }
+    };
+    const failure: OpenWranglerResponse = {
+      kind: "error",
+      code,
+      message: "The saved command could not be executed.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: "redo-current"
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => failure);
+    const harness = createPanelHarness({ request }, { openResponse: initial });
+    await harness.open();
+    harness.posted.length = 0;
+
+    await harness.receive(redoMessage("redo-current"));
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      { ...redoMessage("redo-current").request, sessionId: metadata.sessionId, revision: metadata.revision },
+      undefined
+    );
+    expect(harness.posted).toContainEqual(failure);
+    for (const kind of ["requestSessionSnapshot", "ready"] as const) {
+      harness.posted.length = 0;
+      await harness.receive({ kind });
+      const retained = harness.posted.find(isSessionOpenedResponse);
+      expect(retained).toEqual({ ...initial, metadata: { ...initial.metadata, canRedo } });
+      expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+    }
+  });
+
+  it.each(["session identity", "request identity", "newer revision"] as const)(
+    "does not clear Redo availability for a stale %s refusal",
+    async (mismatch) => {
+      const retainedStep = { id: "confirmed", kind: "customCode", params: { code: "result = df" } } as const;
+      const initial: SessionOpenedResponse = {
+        ...openedResponse,
+        metadata: { ...metadata, steps: [retainedStep], latestStepInputSchema: metadata.schema, canRedo: true }
+      };
+      const delayed = deferred<OpenWranglerResponse>();
+      const nextMetadata: SessionMetadata = { ...metadata, revision: 1, canRedo: true };
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "redoStep") return delayed.promise;
+        if (candidate.kind === "undoStep") {
+          return { kind: "planUpdated", action: "undo", revision: 1, metadata: nextMetadata, page, code: "" };
+        }
+        throw new Error(`Unexpected request ${candidate.kind}`);
+      });
+      const harness = createPanelHarness({ request }, { openResponse: initial });
+      await harness.open();
+      const pending = harness.receive(redoMessage("redo-old"));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+      if (mismatch === "newer revision") {
+        const { viewRequestId: _viewRequestId, ...position } = redoMessage("unused").request;
+        await harness.receive({ kind: "runtimeRequest", request: { ...position, kind: "undoStep" } });
+      }
+      delayed.resolve({
+        kind: "error",
+        code: "redo_unavailable",
+        message: "The old runtime has no saved command.",
+        recoverable: true,
+        sessionId: mismatch === "session identity" ? "other-session" : metadata.sessionId,
+        viewRequestId: mismatch === "request identity" ? "other-request" : "redo-old"
+      });
+      await pending;
+      harness.posted.length = 0;
+      await harness.receive({ kind: "requestSessionSnapshot" });
+
+      const retained = harness.posted.find(isSessionOpenedResponse);
+      expect(retained?.metadata).toEqual(mismatch === "newer revision" ? nextMetadata : initial.metadata);
+      expect(retained?.page).toEqual(page);
+      expect(request).toHaveBeenCalledTimes(mismatch === "newer revision" ? 2 : 1);
+    }
+  );
+
+  it("keeps a confirmed unavailable fact while a second same-revision Redo waits", async () => {
+    const initial: SessionOpenedResponse = { ...openedResponse, metadata: { ...metadata, canRedo: true } };
+    const first = deferred<OpenWranglerResponse>();
+    const second = deferred<OpenWranglerResponse>();
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind !== "redoStep") throw new Error(`Unexpected request ${candidate.kind}`);
+      return candidate.viewRequestId === "redo-first" ? first.promise : second.promise;
+    });
+    const harness = createPanelHarness({ request }, { openResponse: initial });
+    await harness.open();
+    const firstPending = harness.receive(redoMessage("redo-first"));
+    const secondPending = harness.receive(redoMessage("redo-second"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    first.resolve({
+      kind: "error",
+      code: "redo_unavailable",
+      message: "There is no saved command.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: "redo-first"
+    });
+    await firstPending;
+    harness.posted.length = 0;
+    await harness.receive({ kind: "requestSessionSnapshot" });
+    expect(harness.posted.find(isSessionOpenedResponse)?.metadata.canRedo).toBe(false);
+
+    second.resolve({
+      kind: "error",
+      code: "engine_error",
+      message: "A later ordinary failure does not recreate history.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: "redo-second"
+    });
+    await secondPending;
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted.find(isSessionOpenedResponse)?.metadata).toEqual({ ...initial.metadata, canRedo: false });
+  });
+
+  it("refuses untrusted Redo before bridge work and retains its correlated availability", async () => {
+    const initial: SessionOpenedResponse = { ...openedResponse, metadata: { ...metadata, canRedo: true } };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => {
+      throw new Error("An untrusted Redo must not reach the bridge.");
+    });
+    const harness = createPanelHarness({ request }, { openResponse: initial });
+    await harness.open();
+    harness.posted.length = 0;
+    const trustDescriptor = Object.getOwnPropertyDescriptor(workspace, "isTrusted");
+    try {
+      Object.defineProperty(workspace, "isTrusted", { configurable: true, value: false });
+      await harness.receive(redoMessage("redo-untrusted"));
+      expect(request).not.toHaveBeenCalled();
+      expect(harness.posted).toEqual([
+        {
+          kind: "error",
+          code: "workspace_untrusted",
+          message: "Trust this workspace before redoing a cleaning step.",
+          recoverable: true,
+          sessionId: metadata.sessionId,
+          viewRequestId: "redo-untrusted"
+        }
+      ]);
+      harness.posted.length = 0;
+      await harness.receive({ kind: "requestSessionSnapshot" });
+      expect(harness.posted.find(isSessionOpenedResponse)?.metadata).toEqual(initial.metadata);
+    } finally {
+      if (trustDescriptor) Object.defineProperty(workspace, "isTrusted", trustDescriptor);
+      else delete (workspace as unknown as { isTrusted?: unknown }).isTrusted;
+    }
+  });
+
   it("does not let a pre-draft page replace the retained preview snapshot", async () => {
     const oldPage = deferred<OpenWranglerResponse>();
     const draft = {
@@ -5544,6 +5700,13 @@ function deferred<T>(): {
       resolvePromise(value);
     }
   };
+}
+
+function redoMessage(viewRequestId: string) {
+  return {
+    kind: "runtimeRequest",
+    request: { kind: "redoStep", viewRequestId, offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
+  } as const;
 }
 
 function pageMessage(viewRequestId: string, viewContextId: string) {

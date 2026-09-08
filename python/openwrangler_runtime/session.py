@@ -60,6 +60,14 @@ class UnknownSessionError(EngineError):
         super().__init__(f"Unknown session: {session_id}")
 
 
+class RedoUnavailableError(EngineError):
+    """The current runtime session no longer has a removed command to redo."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__("There is no removed step to redo in this runtime session.")
+
+
 class PySparkConnectUnavailableError(EngineError):
     """A Spark Connect request exhausted its transport retries."""
 
@@ -104,6 +112,7 @@ class Session:
     filter_model: dict[str, Any]
     filtered_shape: SessionDataShape
     plan: list[dict[str, Any]]
+    undone_steps: list[dict[str, Any]]
     bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
@@ -180,6 +189,7 @@ class _SessionMutationSnapshot:
     filter_model: dict[str, Any]
     filtered_shape: SessionDataShape
     plan: list[dict[str, Any]]
+    undone_steps: list[dict[str, Any]]
     bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
@@ -213,6 +223,7 @@ class _SessionMutationSnapshot:
             filter_model=deepcopy(session.filter_model),
             filtered_shape=deepcopy(session.filtered_shape),
             plan=deepcopy(session.plan),
+            undone_steps=deepcopy(session.undone_steps),
             bound_plan=deepcopy(session.bound_plan),
             plan_input_schemas=deepcopy(session.plan_input_schemas),
             committed_lineage=deepcopy(session.committed_lineage),
@@ -247,6 +258,7 @@ class _SessionMutationSnapshot:
         session.filter_model = self.filter_model
         session.filtered_shape = self.filtered_shape
         session.plan = self.plan
+        session.undone_steps = self.undone_steps
         session.bound_plan = self.bound_plan
         session.plan_input_schemas = self.plan_input_schemas
         session.committed_lineage = self.committed_lineage
@@ -443,6 +455,7 @@ class SessionManager:
                 filter_model=filter_model,
                 filtered_shape=source_shape,
                 plan=[],
+                undone_steps=[],
                 bound_plan=[],
                 plan_input_schemas=[],
                 committed_lineage=initial_lineage,
@@ -980,6 +993,7 @@ class SessionManager:
             session.committed_lineage = session.draft_lineage
             session.committed_shape = session.draft_shape
             session.committed_schema = session.draft_schema
+            session.undone_steps.clear()
             self._clear_draft(session)
             response = self._finish_plan_change(
                 session,
@@ -1083,12 +1097,11 @@ class SessionManager:
                 and restore.after == session.filter_model
                 else None
             )
-            candidate_plan = session.plan[:-1]
             candidate_bound_plan = session.bound_plan[:-1]
-            preflight_retained_plan(candidate_plan)
+            preflight_retained_plan([*session.plan, *reversed(session.undone_steps)])
             generated_code = compile_plan_with_limits(session.engine, candidate_bound_plan)
             previous_schema = session.committed_schema
-            session.plan.pop()
+            session.undone_steps.append(session.plan.pop())
             session.bound_plan.pop()
             session.plan_input_schemas.pop()
             (
@@ -1109,6 +1122,67 @@ class SessionManager:
                 previous_schema=None if restore_filter_model is not None else previous_schema,
             )
             session.last_applied_view_restore = None
+            return self._preflight_mutation_response(response, response_preflight)
+
+    def redo_step(
+        self,
+        session_id: str,
+        revision: int,
+        offset: int,
+        limit: int,
+        column_offset: int = 0,
+        column_limit: int = MAX_COLUMN_LIMIT,
+        *,
+        response_preflight: MutationResponsePreflight | None = None,
+    ) -> dict[str, Any]:
+        session = self._session(session_id)
+        with self._atomic_session_read(session):
+            self._assert_revision(session, revision)
+            self._assert_editable(session)
+            self._assert_bound_history(session)
+            if session.draft_step is not None:
+                raise EngineError("Discard the draft step before redoing a removed step.")
+            if not session.undone_steps:
+                raise RedoUnavailableError(session_id)
+            step = session.undone_steps[-1]
+            if any(applied["id"] == step["id"] for applied in session.plan):
+                raise EngineError("The removed cleaning-step history contains an applied step identity.")
+            preflight_retained_plan([*session.plan, *reversed(session.undone_steps)])
+            input_schema = schema_with_lineage(session.committed_schema, session.committed_lineage)
+            try:
+                bound_step = bind_step(step, session.committed_schema, session.committed_lineage)
+            except ColumnBindingError as error:
+                raise EngineError(str(error)) from error
+            generated_code = compile_plan_with_limits(session.engine, [*session.bound_plan, bound_step])
+            previous_schema = session.committed_schema
+            filter_model_before = deepcopy(session.filter_model)
+            frame = self._apply_transform_with_row_ids(session, session.committed, bound_step, session.committed_shape)
+            schema = self._schema_after_transform(session.engine.schema(frame), bound_step)
+            lineage = derive_lineage(session.committed_lineage, schema, bound_step)
+            shape = session.engine.shape(frame)
+            session.plan.append(session.undone_steps.pop())
+            session.bound_plan.append(bound_step)
+            session.plan_input_schemas.append(input_schema)
+            session.committed = frame
+            session.committed_schema = schema
+            session.committed_lineage = lineage
+            session.committed_shape = shape
+            response = self._finish_plan_change(
+                session,
+                "redo",
+                offset,
+                limit,
+                column_offset,
+                column_limit,
+                generated_code=generated_code,
+                previous_schema=previous_schema,
+            )
+            session.last_applied_view_restore = _AppliedViewRestore(
+                step_id=step["id"],
+                before=filter_model_before,
+                after=deepcopy(session.filter_model),
+                view_change_epoch=session.view_change_epoch,
+            )
             return self._preflight_mutation_response(response, response_preflight)
 
     def export_data(
@@ -1379,6 +1453,7 @@ class SessionManager:
             "schema": schema_with_lineage(session.display_schema, display_lineage),
             "filterModel": session.filter_model,
             "steps": session.plan,
+            "canRedo": bool(session.undone_steps),
         }
         if session.backend == "pandas":
             metadata["rowAxis"] = session.engine.row_axis(session.display_frame)

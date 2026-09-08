@@ -884,6 +884,7 @@ def test_lazy_file_request_scope_defers_source_validation_until_session_admissio
         "apply",
         "discard",
         "undo",
+        "redo",
         "export",
     ],
 )
@@ -894,10 +895,13 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
     session_id = opened["metadata"]["sessionId"]
     revision = 0
 
-    if request_kind in {"apply", "discard", "undo"}:
+    if request_kind in {"apply", "discard", "undo", "redo"}:
         revision = manager.preview_step(session_id, revision, formula_step("double"), 0, 2)["revision"]
-    if request_kind == "undo":
+    if request_kind in {"undo", "redo"}:
         revision = manager.apply_draft(session_id, revision, 0, 2)["revision"]
+
+    if request_kind == "redo":
+        revision = manager.undo_step(session_id, revision, 0, 2)["revision"]
 
     replace_source_atomically(path, "city,value\nrow-0,0\nrow-1,1\nrow-2,2\n")
     empty_filter = {"logic": "and", "filters": [], "sort": []}
@@ -919,6 +923,8 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
             return manager.discard_draft(session_id, revision, 0, 2)
         if request_kind == "undo":
             return manager.undo_step(session_id, revision, 0, 2)
+        if request_kind == "redo":
+            return manager.redo_step(session_id, revision, 0, 2)
         return manager.export_data(
             session_id,
             revision,
@@ -928,6 +934,10 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
 
     with pytest.raises(EngineError, match=r"Reopen the file"):
         make_request()
+    if request_kind == "redo":
+        session = manager.sessions[session_id]
+        assert session.revision == revision and session.plan == []
+        assert [item["id"] for item in session.undone_steps] == ["double"]
     assert not (tmp_path / "cleaned.csv").exists()
     manager.close_session(session_id, revision)
 

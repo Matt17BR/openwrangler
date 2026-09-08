@@ -123,7 +123,7 @@ blocks restored by a foreground candidate. It does not join request admission or
 Spark owns a page-only scope for its continuation anchors. A rejected candidate therefore cannot prevent the prior
 view from continuing after a cached page, and background profile failure cannot roll back newer foreground paging.
 
-Mutation state crosses the runtime and webview boundary atomically. Preview, apply, discard, undo, import replacement,
+Mutation state crosses the runtime and webview boundary atomically. Preview, apply, discard, undo, redo, import replacement,
 and recovery either publish a complete confirmed snapshot or restore the prior revision, plan, draft, metadata, page
 cache, code, selected column, and profiling ownership. No layer constructs a plausible partial result after an
 ambiguous response.
@@ -132,6 +132,29 @@ A failed or cancelled operation preview reports its error inside the dialog that
 inputs. The mutation snapshot owns that dialog context and operation kind; unrelated actions keep their workspace
 errors. Error text and code settle together, and changing the operation, closing the dialog or replacing the session
 clears its preview error.
+
+Redo retains the commands removed by Undo in the exact runtime session. It binds the next saved command to the
+current confirmed input and executes that step once; it does not replay the preceding plan or retain old dataframe
+results. Already-synthesized By Example programs remain part of the saved command. Stable column IDs, captured
+names and the existing operation-specific type checks still decide whether a command can bind. Generated code
+contains only the active plan. Custom Code can produce a different result when re-executed.
+
+Active and undone commands share the existing native plan bounds. Preview, Discard, viewing changes and failures
+that leave the same runtime intact preserve the undone suffix. A successful new Apply or plan rewrite clears it.
+Close, import/backend/source replacement and runtime recovery end this history; persistence stores only the active
+plan and draft. Renderer remounts preserve history while that runtime remains alive. Redo uses the existing single
+view-restoration receipt for a following Undo, including its guard against replacing newer user filters.
+
+`canRedo` is optional last-confirmed metadata; absence means unavailable. Draft, mode, pending-work and Workspace
+Trust checks still gate execution. A Redo request and its success, error or cancellation carry the same
+`viewRequestId`. Only a matching `redo_unavailable` refusal clears retained availability without a new revision,
+including the panel snapshot used for renderer synchronization. Other errors retain it. Runtime loss can leave the
+last displayed availability stale until a fresh metadata response or the first Redo refusal. No automatic replay
+reconstructs an undone command in a replacement runtime.
+
+Redo rechecks Workspace Trust after queued work, before native dispatch and between recovery awaits. Python retains
+request correlation when cancellation arrives before dispatch, including during listener registration, so an
+undispatched cancellation does not trigger ambiguous-mutation recovery.
 
 ## Runtime ownership
 

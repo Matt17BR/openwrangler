@@ -8,6 +8,7 @@ import type {
   PivotLongerTransformStep,
   PivotWiderTransformStep
 } from "../shared/protocol";
+import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
 import {
@@ -20,6 +21,7 @@ import {
   rKernelOpenRequest as openRequest,
   rKernelPlanRequest as planRequest,
   rKernelReplaceColumnSemantics as replaceColumnSemantics,
+  rKernelRenameContract as renameContract,
   rKernelRenameDiff as renameDiff
 } from "./rKernelBridgeTestFixtures";
 
@@ -366,6 +368,91 @@ describe("canonical R kernel bridge", () => {
     expect(source).toEqual(frameContract());
   });
 
+  it("previews and redoes the next R command while retaining an applied prefix", async () => {
+    const source = frameContract();
+    const amount = renameContract(source, "r:c:0", "amount");
+    const total = renameContract(amount, "r:c:0", "total");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const first = {
+      id: "first",
+      kind: "renameColumn" as const,
+      params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
+    };
+    const second = {
+      id: "second",
+      kind: "renameColumn" as const,
+      params: { column: { id: "r:c:0", name: "amount" }, newName: "total" }
+    };
+    for (const [step, page, revision] of [
+      [first, amount, 0],
+      [second, total, 2]
+    ] as const) {
+      transport.queuePreview({ sessionId, revision: revision + 1, page, diff: renameDiff(), code: "owned code" });
+      await expect(
+        bridge.request({ ...planRequest("undoStep", revision), kind: "previewStep", step })
+      ).resolves.toMatchObject({ kind: "stepPreview" });
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: revision + 2,
+        page,
+        code: "owned code"
+      });
+      await expect(bridge.request(planRequest("applyDraft", revision + 1))).resolves.toMatchObject({
+        kind: "planUpdated",
+        metadata: { canRedo: false }
+      });
+    }
+    transport.undoStep.mockResolvedValueOnce({
+      sessionId,
+      action: "undo",
+      revision: 5,
+      page: amount,
+      code: "owned code"
+    });
+    await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: { steps: [first], canRedo: true }
+    });
+    transport.redoStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 6,
+      page: total,
+      diff: renameDiff(),
+      code: "owned code"
+    });
+    await expect(
+      bridge.request({ ...planRequest("undoStep", 5), kind: "redoStep", viewRequestId: "second-redo" })
+    ).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "redo",
+      revision: 6,
+      viewRequestId: "second-redo",
+      metadata: { steps: [first, second], canRedo: false }
+    });
+    expect(transport.redoStep).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      5,
+      second,
+      expect.any(Object),
+      amount.schema,
+      expect.any(Object)
+    );
+    expect(transport.previewStep).toHaveBeenCalledTimes(2);
+    expect(transport.applyDraft).toHaveBeenCalledTimes(2);
+    await expect(
+      bridge.request({
+        ...planRequest("undoStep", 6),
+        kind: "previewStep",
+        step: { ...second, params: { column: { id: "r:c:0", name: "total" }, newName: "ignored" } }
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_request", message: "Applied R step IDs must be unique." });
+    expect(transport.previewStep).toHaveBeenCalledTimes(2);
+    await bridge.dispose();
+  });
+
   it("publishes arbitrary custom R schemas with name-pooled lineage and exact code persistence", async () => {
     const source = frameContract();
     const step: CustomCodeTransformStep = {
@@ -458,8 +545,93 @@ describe("canonical R kernel bridge", () => {
     await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
       kind: "planUpdated",
       action: "undo",
-      metadata: { shape: { rows: 1, columns: 8 }, steps: [] }
+      metadata: { shape: { rows: 1, columns: 8 }, steps: [], canRedo: true }
     });
+    const changed = customCodeContract(source, step.id, [{ name: "fresh", sourcePosition: 5 }], {
+      rows: 3,
+      rowNames: "explicit"
+    });
+    const redoRequest = { ...planRequest("undoStep", 3), kind: "redoStep" as const, viewRequestId: "redo-dynamic" };
+    transport.redoStep.mockRejectedValueOnce(
+      new RKernelDiagnosticError({
+        transportVersion: 14,
+        requestId: sessionId,
+        kind: "error",
+        code: "invalid_request",
+        message: "owned failure",
+        recoverable: true
+      })
+    );
+    await expect(bridge.request(redoRequest)).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_request",
+      viewRequestId: "redo-dynamic"
+    });
+    transport.redoStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 4,
+      page: changed,
+      diff: customCodeDiff(source, changed),
+      code: "open_wrangler_result <- local({ ... })\n",
+      effectiveView: { filters: [], sorts: [] }
+    });
+    const redone = await bridge.request(redoRequest);
+    expect(redone).toMatchObject({
+      kind: "planUpdated",
+      action: "redo",
+      revision: 4,
+      viewRequestId: "redo-dynamic",
+      metadata: {
+        steps: [step],
+        canRedo: false,
+        shape: { rows: 3, columns: 1 },
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "value" })])
+      }
+    });
+    if (redone.kind !== "planUpdated") throw new Error("Expected atomic R redo.");
+    expect(redone.metadata.draftStep).toBeUndefined();
+    expect(transport.redoStep).toHaveBeenLastCalledWith(
+      sessionId,
+      3,
+      step,
+      expect.any(Object),
+      source.schema,
+      expect.any(Object)
+    );
+    expect(transport.previewStep).toHaveBeenCalledTimes(1);
+    expect(transport.applyDraft).toHaveBeenCalledTimes(1);
+    await expect(bridge.request({ ...redoRequest, revision: 4 })).resolves.toMatchObject({
+      kind: "error",
+      code: "redo_unavailable",
+      viewRequestId: "redo-dynamic"
+    });
+    expect(transport.redoStep).toHaveBeenCalledTimes(2);
+    // Undo uses the freshly confirmed input contract, not the prior dynamic output.
+    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 5, page: source, code: "" });
+    await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: { steps: [], canRedo: true, shape: { rows: 1, columns: 8 } }
+    });
+    transport.redoStep.mockRejectedValueOnce(
+      new RKernelDiagnosticError({
+        transportVersion: 14,
+        requestId: sessionId,
+        kind: "error",
+        code: "redo_unavailable",
+        message: "No runtime suffix",
+        recoverable: true
+      })
+    );
+    await expect(bridge.request({ ...redoRequest, revision: 5 })).resolves.toMatchObject({
+      kind: "error",
+      code: "redo_unavailable",
+      viewRequestId: "redo-dynamic"
+    });
+    await expect(bridge.request({ ...redoRequest, revision: 5 })).resolves.toMatchObject({
+      kind: "error",
+      code: "redo_unavailable"
+    });
+    expect(transport.redoStep).toHaveBeenCalledTimes(3);
   });
 
   it("accepts the exact effective view after custom R code prunes missing viewed columns", async () => {

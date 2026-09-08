@@ -7,6 +7,9 @@ import {
   rKernelBridgeSessionId as sessionId,
   rKernelFrameContract as frameContract,
   rKernelOpenRequest as openRequest,
+  rKernelRenameContract as renameContract,
+  rKernelRenameDiff as renameDiff,
+  rKernelPlanRequest as planRequest,
   rKernelRenamePreviewRequest as renamePreviewRequest
 } from "./rKernelBridgeTestFixtures";
 
@@ -51,48 +54,74 @@ describe("R kernel bridge lifecycle", () => {
     expect(transport.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["timeout", "cancellation"] as const)(
-    "closes the mapped R session after a detached %s mutation settles",
-    async (reason) => {
-      const source = frameContract();
-      const transport = fakeTransport(source);
-      const bridge = createBridge(transport);
-      await bridge.request(openRequest("editing"));
-      const lateMutation = deferred<void>();
-      transport.previewStep.mockRejectedValueOnce(
-        new DetachedBridgeRequestError(`R mutation detached after ${reason}.`, reason, true, lateMutation.promise)
-      );
-
-      await expect(bridge.request(renamePreviewRequest(0))).rejects.toMatchObject({
-        name: "DetachedBridgeRequestError",
-        reason,
-        dispatched: true
+  it.each([
+    ["timeout", "previewStep"],
+    ["cancellation", "previewStep"],
+    ["timeout", "redoStep"],
+    ["cancellation", "redoStep"]
+  ] as const)("closes the mapped R session after a detached %s %s settles", async (reason, kind) => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    let revision = 0;
+    if (kind === "redoStep") {
+      const renamed = renameContract(source, "r:c:0", "amount");
+      transport.queuePreview({ sessionId, revision: 1, page: renamed, diff: renameDiff(), code: "" });
+      await expect(bridge.request(renamePreviewRequest(0))).resolves.toMatchObject({ kind: "stepPreview" });
+      transport.applyDraft.mockResolvedValueOnce({ sessionId, action: "apply", revision: 2, page: renamed, code: "" });
+      await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({ kind: "planUpdated" });
+      transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 3, page: source, code: "" });
+      await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
+        kind: "planUpdated",
+        metadata: { canRedo: true }
       });
-      await expect(
-        bridge.request({
-          kind: "getPage",
-          sessionId,
-          revision: 0,
-          viewRequestId: `after-detached-${reason}`,
-          offset: 0,
-          limit: 20,
-          columnOffset: 0,
-          columnLimit: 8,
-          filterModel: { filters: [], sort: [] }
-        })
-      ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
-
-      lateMutation.resolve();
-      await lateMutation.promise;
-      const close = { kind: "closeSession", sessionId, revision: 0 } as const;
-      await expect(bridge.request(close)).resolves.toEqual({ kind: "sessionClosed", sessionId });
-      expect(transport.close).toHaveBeenCalledTimes(1);
-      expect(transport.close).toHaveBeenCalledWith(sessionId, {
-        timeoutMs: undefined,
-        cancellation: undefined
-      });
+      revision = 3;
     }
-  );
+    const lateMutation = deferred<void>();
+    transport[kind].mockRejectedValueOnce(
+      new DetachedBridgeRequestError(`R mutation detached after ${reason}.`, reason, true, lateMutation.promise)
+    );
+
+    await expect(
+      bridge.request(
+        kind === "previewStep"
+          ? renamePreviewRequest(0)
+          : {
+              ...planRequest("undoStep", revision),
+              kind: "redoStep",
+              viewRequestId: "detached-redo"
+            }
+      )
+    ).rejects.toMatchObject({
+      name: "DetachedBridgeRequestError",
+      reason,
+      dispatched: true
+    });
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision,
+        viewRequestId: `after-detached-${reason}`,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
+
+    lateMutation.resolve();
+    await lateMutation.promise;
+    const close = { kind: "closeSession", sessionId, revision } as const;
+    await expect(bridge.request(close)).resolves.toEqual({ kind: "sessionClosed", sessionId });
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(transport.close).toHaveBeenCalledWith(sessionId, {
+      timeoutMs: undefined,
+      cancellation: undefined
+    });
+  });
 
   it("dispatches at most one close for concurrent requests", async () => {
     const transport = fakeTransport(frameContract());

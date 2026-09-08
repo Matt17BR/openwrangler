@@ -80,6 +80,7 @@ export interface RBridgeSession {
   keyColumnIds: readonly string[];
   customRowIdentities: RCustomRowIdentityConstraint | undefined;
   steps: readonly RetainedTransformStep[];
+  redoSteps: readonly RTransformStep[];
   planInputSchemas: readonly (readonly ColumnSchema[])[];
   planInputRSchemas: readonly (readonly RColumnSchema[])[];
   planInputRows: readonly number[];
@@ -191,6 +192,7 @@ export function sessionFromContract(
     revision: 0,
     filterModel: emptyFilterModel(),
     steps: Object.freeze([]),
+    redoSteps: Object.freeze([]),
     planInputSchemas: Object.freeze([]),
     planInputRSchemas: Object.freeze([]),
     planInputRows: Object.freeze([]),
@@ -227,6 +229,7 @@ export function metadataFor(session: RBridgeSession, filteredRows: number = sess
     schema: copySchema(session.schema),
     filterModel: copyFilterModel(session.filterModel),
     steps: session.steps.map(copyRetainedStep),
+    canRedo: session.redoSteps.length > 0,
     ...(inputSchemaIndex >= 0
       ? { latestStepInputSchema: copySchema(session.planInputSchemas[inputSchemaIndex] as readonly ColumnSchema[]) }
       : {}),

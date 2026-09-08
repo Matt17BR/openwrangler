@@ -262,6 +262,19 @@ def _dispatch(
             int(request["columnLimit"]),
             response_preflight=response_preflight,
         )
+    if kind == "redoStep":
+        return _with_view_request_id(
+            manager.redo_step(
+                request["sessionId"],
+                int(request["revision"]),
+                int(request["offset"]),
+                int(request["limit"]),
+                int(request["columnOffset"]),
+                int(request["columnLimit"]),
+                response_preflight=_state_response_preflight(request_id, request["viewRequestId"]),
+            ),
+            request,
+        )
     if kind == "exportData":
         return manager.export_data(
             request["sessionId"],

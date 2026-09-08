@@ -1030,3 +1030,190 @@ def test_by_example_requires_warning_preview_before_apply(tmp_path, backend):
     assert [row["values"][1]["display"] for row in preview["page"]["rows"]] == ["A", "B"]
     applied = manager.apply_draft(opened["metadata"]["sessionId"], 1, 0, 10)
     assert applied["metadata"]["steps"][0]["params"]["program"]["kind"] == "case"
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_redo_restores_removed_commands_in_order_and_generated_results(tmp_path: Path, backend: str) -> None:
+    import duckdb
+    import pandas as pd
+
+    path = tmp_path / "redo.csv"
+    source = "name,value\na,1\nb,\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend, page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        assert opened["metadata"]["canRedo"] is False
+        steps = [
+            transform("clone", "cloneColumn", column=source_ref(1, "value"), newName="copy"),
+            transform("rename", "renameColumn", column={"id": "c:step:clone:0", "name": "copy"}, newName="score"),
+            transform(
+                "formula",
+                "formula",
+                leftColumn={"id": "c:step:clone:0", "name": "score"},
+                operator="multiply",
+                value=2,
+                newColumn="doubled",
+            ),
+        ]
+        applications = []
+        for step in steps:
+            manager.preview_step(sid, session.revision, step, 0, 10)
+            applications.append(manager.apply_draft(sid, session.revision, 0, 10))
+        complete = applications[-1]
+        removals = []
+        for _ in steps:
+            removals.append(manager.undo_step(sid, session.revision, 0, 10))
+            assert removals[-1]["metadata"]["canRedo"] is True
+        undone = removals[-1]
+        assert session.plan == [] and undone["code"] == ""
+        assert session.undone_steps == list(reversed(steps))
+        restorations = []
+        for index, _step in enumerate(steps):
+            revision = session.revision
+            redone = manager.redo_step(sid, revision, 0, 10)
+            restorations.append(redone)
+            assert redone["revision"] == revision + 1 and redone["action"] == "redo"
+            assert redone["metadata"]["steps"] == steps[: index + 1]
+            assert redone["metadata"]["canRedo"] is (index < len(steps) - 1)
+            assert session.draft_frame is None and "draftStep" not in redone["metadata"]
+        redone = restorations[-1]
+        assert redone["page"] == complete["page"]
+        assert redone["metadata"]["schema"] == complete["metadata"]["schema"]
+        assert redone["code"] == complete["code"]
+        namespace = {}
+        exec(redone["code"], namespace)
+        names = [column["name"] for column in session.committed_schema]
+        if backend == "pandas":
+            result = namespace["clean_data"](pd.read_csv(path))
+            pd.testing.assert_frame_equal(result, session.committed[names])
+        elif backend == "polars":
+            result = namespace["clean_data"](pl.read_csv(path))
+            expected = session.committed.select(names)
+            assert result.equals(expected.collect() if isinstance(expected, pl.LazyFrame) else expected)
+        else:
+            result = namespace["clean_data"](duckdb.read_csv(str(path)))
+            assert result.fetchall() == [("a", 1, 1, 2), ("b", None, None, None), ("c", 3, 3, 6)]
+        assert path.read_text() == source
+        with pytest.raises(EngineError, match="no removed step"):
+            manager.redo_step(sid, session.revision, 0, 10)
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_redo_history_survives_drafts_views_and_failures_until_apply(tmp_path: Path, replace: bool) -> None:
+    from copy import deepcopy
+
+    path = tmp_path / "redo-branch.csv"
+    source = "name,value\na,1\nb,2\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="pandas", page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        for name in ["kept", "removed"]:
+            step = transform(name, "cloneColumn", column=source_ref(1, "value"), newName=name)
+            manager.preview_step(sid, session.revision, step, 0, 10)
+            manager.apply_draft(sid, session.revision, 0, 10)
+        manager.undo_step(sid, session.revision, 0, 10)
+        history = deepcopy(session.undone_steps)
+        view = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}],
+                }
+            ],
+            "sort": [{"column": "value", "direction": "desc"}],
+        }
+        page = manager.get_page(sid, session.revision, 0, 10, view)
+        assert page["metadata"]["canRedo"] is True
+        with pytest.raises(EngineError, match="Stale session revision"):
+            manager.redo_step(sid, session.revision - 1, 0, 10)
+        invalid = transform("invalid", "cloneColumn", column=source_ref(9, "gone"), newName="invalid")
+        with pytest.raises(EngineError, match="stale column identity"):
+            manager.preview_step(sid, session.revision, invalid, 0, 10)
+        step = transform(
+            "kept" if replace else "branch", "cloneColumn", column=source_ref(1, "value"), newName="branch"
+        )
+        replace_step_id = "kept" if replace else None
+        manager.preview_step(sid, session.revision, step, 0, 10, replace_step_id=replace_step_id)
+        with pytest.raises(EngineError, match="Discard the draft"):
+            manager.redo_step(sid, session.revision, 0, 10)
+        discarded = manager.discard_draft(sid, session.revision, 0, 10)
+        assert discarded["metadata"]["canRedo"] is True and session.undone_steps == history
+        assert session.filter_model == view
+        redone = manager.redo_step(sid, session.revision, 0, 10)
+        assert [row["values"][1]["display"] for row in redone["page"]["rows"]] == ["3", "2"]
+        manager.undo_step(sid, session.revision, 0, 10)
+        manager.preview_step(sid, session.revision, step, 0, 10, replace_step_id=replace_step_id)
+        applied = manager.apply_draft(sid, session.revision, 0, 10)
+        assert applied["metadata"]["canRedo"] is False and session.undone_steps == []
+        manager.undo_step(sid, session.revision, 0, 10)
+        clone = manager.open_session(
+            {"kind": "file", "path": str(path)},
+            backend="pandas",
+            requested_session_id="redo-new-owner",
+            clone_from={"sessionId": sid, "revision": session.revision},
+        )
+        assert clone["metadata"]["canRedo"] is False
+        manager.close_session(sid, session.revision)
+        assert sid not in manager.sessions
+        assert path.read_text() == source
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_redo_undo_restores_current_view_without_replacing_a_newer_filter(tmp_path: Path, backend: str) -> None:
+    path = tmp_path / "redo-view.csv"
+    source = "name,value\na,1\nb,2\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend, page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        view = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}],
+                }
+            ],
+            "sort": [{"column": "value", "direction": "desc"}],
+        }
+        original = manager.get_page(sid, 0, 0, 10, view)["page"]
+        manager.preview_step(sid, 0, transform("drop", "dropColumns", columns=[source_ref(1, "value")]), 0, 10)
+        manager.apply_draft(sid, 1, 0, 10)
+        assert manager.undo_step(sid, 2, 0, 10)["page"] == original
+        redone = manager.redo_step(sid, 3, 0, 10)
+        assert redone["page"]["totalRows"] == 3 and session.filter_model["filters"] == []
+        assert manager.undo_step(sid, 4, 0, 10)["page"] == original
+        manager.redo_step(sid, 5, 0, 10)
+        newer = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "name",
+                    "type": "string",
+                    "predicates": [{"kind": "predicate", "operator": "equals", "value": "a"}],
+                }
+            ],
+            "sort": [],
+        }
+        manager.get_page(sid, 6, 0, 10, newer)
+        undone = manager.undo_step(sid, 6, 0, 10)
+        assert session.filter_model == newer
+        assert [[cell["raw"] for cell in row["values"]] for row in undone["page"]["rows"]] == [["a", 1]]
+        assert path.read_text() == source
+    finally:
+        manager.close_all()

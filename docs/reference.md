@@ -36,6 +36,7 @@
 | `openWrangler.deleteSelectedStep`             | Open Wrangler: Delete Selected Step                            |
 | `openWrangler.selectStep`                     | Open Wrangler: Inspect Applied Step                            |
 | `openWrangler.undoStep`                       | Open Wrangler: Undo Latest Step                                |
+| `openWrangler.redoStep`                       | Open Wrangler: Redo Latest Undone Step                         |
 | `openWrangler.openViewSort`                   | Open Wrangler: Edit View Sorts                                 |
 | `openWrangler.moveViewSortUp`                 | Open Wrangler: Move View Sort Up                               |
 | `openWrangler.moveViewSortDown`               | Open Wrangler: Move View Sort Down                             |
@@ -133,6 +134,7 @@ Canonical schema: `protocol/openwrangler.v2.schema.json`. Protocol version: `2`.
 | Request   | `ApplyDraftRequest`      | `applyDraft`      |
 | Request   | `DiscardDraftRequest`    | `discardDraft`    |
 | Request   | `UndoStepRequest`        | `undoStep`        |
+| Request   | `RedoStepRequest`        | `redoStep`        |
 | Request   | `ExportDataRequest`      | `exportData`      |
 | Request   | `CloseSessionRequest`    | `closeSession`    |
 | Request   | `CancelRequest`          | `cancelRequest`   |

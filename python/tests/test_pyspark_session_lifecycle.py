@@ -237,6 +237,10 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     assert [row["rowNumber"] for row in middle_again["page"]["rows"]] == [2, 3]
 
     with pytest.raises(EngineError, match="viewing mode"):
+        manager.redo_step(metadata["sessionId"], metadata["revision"], 0, 10)
+    assert metadata["canRedo"] is False
+
+    with pytest.raises(EngineError, match="viewing mode"):
         manager.preview_step(
             metadata["sessionId"],
             metadata["revision"],

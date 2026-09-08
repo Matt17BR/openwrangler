@@ -70,6 +70,156 @@ const page: GridPage = {
 describe("App cleaning-plan keyboard shortcuts", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it("keeps Redo available after the last Undo and restores owned focus after the last Redo", async () => {
+    const renamed: SessionMetadata = {
+      ...appliedMetadata,
+      steps: [
+        { id: "rename-city", kind: "renameColumn", params: { column: { id: "c:0", name: "city" }, newName: "place" } }
+      ],
+      schema: metadata.schema.map((column) => (column.id === "c:0" ? { ...column, name: "place" } : column)),
+      latestStepInputSchema: metadata.schema
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: renamed, page, summaries: [] });
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    undo.focus();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      fireEvent.click(undo);
+      dispatch({
+        kind: "planUpdated",
+        action: "undo",
+        revision: 2,
+        metadata: { ...metadataWithoutDraft, revision: 2, canRedo: true },
+        page,
+        code: "def clean_data(df):\n    return df"
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
+      expect(screen.getByRole("group", { name: "Cleaning plan" })).toHaveTextContent("0 applied steps");
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+      const redo = screen.getByRole("button", { name: "Redo" });
+      expect(redo).toBeEnabled();
+      expect(redo).not.toHaveAttribute("aria-keyshortcuts");
+      redo.focus();
+      fireEvent.click(redo);
+      const request = latestRedoRequest();
+      expect(request).toMatchObject({ offset: 0, limit: 200, columnOffset: 0, columnLimit: 3 });
+      dispatch({
+        kind: "planUpdated",
+        action: "redo",
+        revision: 3,
+        viewRequestId: request.viewRequestId,
+        metadata: { ...renamed, revision: 3, canRedo: false },
+        page,
+        code: "def clean_data(df):\n    return df"
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
+      expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+      expect(redo).toBeDisabled();
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("does not dispatch unavailable or draft Redo and leaves editable-field shortcuts alone", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    expect(await screen.findByRole("button", { name: "Redo" })).toBeDisabled();
+    dispatch({ kind: "editorAction", action: "redoStep" });
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+    dispatch({ kind: "sessionOpened", metadata: { ...appliedMetadata, canRedo: true }, page, summaries: [] });
+    const search = screen.getByPlaceholderText("Search columns");
+    search.focus();
+    for (const shortcut of [
+      { key: "y", ctrlKey: true },
+      { key: "z", ctrlKey: true, shiftKey: true }
+    ]) {
+      expect(fireEvent.keyDown(search, shortcut)).toBe(true);
+    }
+    expect(search).toHaveFocus();
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+    dispatch({ kind: "importOptionsState", busy: true });
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+    dispatch({ kind: "editorAction", action: "redoStep" });
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+    dispatch({ kind: "importOptionsState", busy: false });
+    dispatch({ kind: "sessionOpened", metadata: { ...metadata, canRedo: true }, page, summaries: [] });
+    expect(screen.queryByRole("button", { name: "Redo" })).toBeNull();
+    dispatch({ kind: "editorAction", action: "redoStep" });
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+    dispatch({ kind: "sessionOpened", metadata: metadataWithoutDraft, page, summaries: [] });
+    expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
+    dispatch({
+      kind: "sessionOpened",
+      metadata: {
+        ...appliedMetadata,
+        mode: "viewing",
+        canRedo: true,
+        capabilities: { ...appliedMetadata.capabilities, editable: false }
+      },
+      page,
+      summaries: []
+    });
+    expect(screen.queryByRole("button", { name: "Redo" })).toBeNull();
+    dispatch({ kind: "editorAction", action: "redoStep" });
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+  });
+
+  it("checks the command's session and revision before Redo and leaves command focus owned by its caller", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: { ...appliedMetadata, canRedo: true }, page, summaries: [] });
+    const search = await screen.findByPlaceholderText("Search columns");
+    search.focus();
+    dispatch({ kind: "editorAction", action: "redoStep", expectedSessionId: "previous", expectedRevision: 1 });
+    dispatch({ kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 0 });
+    expect(runtimeRequestKinds()).not.toContain("redoStep");
+    dispatch({ kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 1 });
+    const request = latestRedoRequest();
+    dispatch({
+      kind: "planUpdated",
+      action: "redo",
+      revision: 2,
+      viewRequestId: request.viewRequestId,
+      metadata: { ...appliedMetadata, revision: 2, canRedo: false },
+      page,
+      code: "def clean_data(df):\n    return df"
+    });
+    expect(search).toHaveFocus();
+  });
+
+  it("does not reclaim newer focus while an unavailable Redo removes the final plan control", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: { ...metadataWithoutDraft, canRedo: true }, page, summaries: [] });
+    const redo = await screen.findByRole("button", { name: "Redo" });
+    redo.focus();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      fireEvent.click(redo);
+      dispatch({
+        kind: "error",
+        code: "redo_unavailable",
+        message: "Redo history was lost when the runtime restarted.",
+        recoverable: true,
+        sessionId: metadata.sessionId,
+        viewRequestId: latestRedoRequest().viewRequestId
+      });
+      expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
+      expect(screen.getByRole("alert")).toHaveTextContent("Redo history was lost");
+      const search = screen.getByPlaceholderText("Search columns");
+      search.focus();
+      act(() => frames.forEach((frame) => frame(performance.now())));
+      expect(search).toHaveFocus();
+    } finally {
+      requestFrame.mockRestore();
+      hasFocus.mockRestore();
+    }
+  });
+
   it("applies, discards, edits, and undoes without stealing editable-field undo", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -281,4 +431,13 @@ function runtimeRequestKinds(): string[] {
     .map(([message]) => message)
     .filter((message) => message?.kind === "runtimeRequest")
     .map((message) => message.request.kind);
+}
+
+function latestRedoRequest(): { viewRequestId: string } {
+  const request = postMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => message?.kind === "runtimeRequest" && message.request.kind === "redoStep")
+    .at(-1)?.request;
+  expect(request?.viewRequestId).toEqual(expect.any(String));
+  return request;
 }

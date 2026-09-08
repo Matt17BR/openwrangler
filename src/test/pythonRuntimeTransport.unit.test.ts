@@ -162,33 +162,63 @@ describe("PythonRuntimeTransport", () => {
     expect(harness.runtime.pendingIds.size).toBe(0);
   });
 
-  it("handles synchronous cancellation subscription without dispatching or leaking the listener", async () => {
-    const dispose = vi.fn();
-    const cancellation: CancellationTokenLike = {
-      isCancellationRequested: false,
-      onCancellationRequested: (listener) => {
-        listener();
-        return { dispose };
-      }
-    };
-    const harness = createHarness();
+  it.each<OpenWranglerRequest>([
+    initializeRequest,
+    {
+      kind: "redoStep",
+      sessionId: "session",
+      revision: 0,
+      viewRequestId: "redo-subscription",
+      offset: 0,
+      limit: 25,
+      columnOffset: 0,
+      columnLimit: 16
+    },
+    {
+      kind: "getPage",
+      sessionId: "session",
+      revision: 0,
+      viewRequestId: "page-subscription",
+      filterModel: { filters: [], sort: [] },
+      offset: 0,
+      limit: 25,
+      columnOffset: 0,
+      columnLimit: 16
+    }
+  ])(
+    "handles synchronous cancellation of $kind without dispatching or leaking its listener or correlation",
+    async (request) => {
+      const dispose = vi.fn();
+      const cancellation: CancellationTokenLike = {
+        isCancellationRequested: false,
+        onCancellationRequested: (listener) => {
+          listener();
+          return { dispose };
+        }
+      };
+      const harness = createHarness();
 
-    await expect(
-      harness.transport.dispatch(
-        harness.runtime,
-        harness.runtime.process!,
-        initializeRequest,
-        {
-          cancellation,
-          timeoutMs: 5_000
-        },
-        vi.fn()
-      )
-    ).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
-    expect(harness.writes()).toEqual([]);
-    expect(dispose).toHaveBeenCalledOnce();
-    expect(harness.runtime.pendingIds.size).toBe(0);
-  });
+      await expect(
+        harness.transport.dispatch(
+          harness.runtime,
+          harness.runtime.process!,
+          request,
+          {
+            cancellation,
+            timeoutMs: 5_000
+          },
+          vi.fn()
+        )
+      ).resolves.toEqual({
+        kind: "cancelled",
+        targetRequestId: "not-started",
+        ...("viewRequestId" in request ? { viewRequestId: request.viewRequestId } : {})
+      });
+      expect(harness.writes()).toEqual([]);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(harness.runtime.pendingIds.size).toBe(0);
+    }
+  );
 
   it("ignores a malformed correlated response until a valid response arrives", async () => {
     const harness = createHarness();

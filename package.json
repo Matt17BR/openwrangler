@@ -168,6 +168,7 @@
     "onCommand:openWrangler.deleteSelectedStep",
     "onCommand:openWrangler.selectStep",
     "onCommand:openWrangler.undoStep",
+    "onCommand:openWrangler.redoStep",
     "onCommand:openWrangler.openViewSort",
     "onCommand:openWrangler.moveViewSortUp",
     "onCommand:openWrangler.moveViewSortDown",
@@ -376,6 +377,11 @@
         "command": "openWrangler.undoStep",
         "title": "Open Wrangler: Undo Latest Step",
         "icon": "$(discard)"
+      },
+      {
+        "command": "openWrangler.redoStep",
+        "title": "Open Wrangler: Redo Latest Undone Step",
+        "icon": "$(redo)"
       },
       {
         "command": "openWrangler.openViewSort",

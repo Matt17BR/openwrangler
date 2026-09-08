@@ -13247,6 +13247,7 @@ agent$dispose()
 }
 
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
+source("r/tests/kernel_agent_redo.R", local = FALSE)
 closed <- dispatch("closeSession", list(sessionId = session_id))
 assert_identical(closed$kind, "closed", "the R agent did not close its session")
 assert_identical(closed$sessionId, session_id, "the close response changed session identity")

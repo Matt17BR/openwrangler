@@ -55,6 +55,12 @@ filter. Spark also retains the prior view's continuation anchors when a replacem
 
 The operation catalog search exposes its accessible name before and after entering a query.
 
+Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
+their command order; a new committed branch clears them. History lasts only for the current runtime session,
+including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
+The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
+keyboard shortcut overrides text-field editing.
+
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed

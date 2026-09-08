@@ -84,6 +84,174 @@ describe("App draft state boundaries", () => {
     dataGridProps.mockClear();
   });
 
+  it("retains Redo after ordinary failures and clears only its correlated unavailable history", async () => {
+    const confirmed = { ...metadata, canRedo: true };
+    const mounted = render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: confirmed, page, summaries: [] });
+    const redo = await screen.findByRole("button", { name: "Redo" });
+    fireEvent.click(redo);
+    const first = latestRedoRequestId();
+    fireEvent.click(redo);
+    expect(redoRequestIds()).toEqual([first]);
+    dispatch({
+      kind: "error",
+      code: "engine_error",
+      message: "The saved command failed.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: first
+    });
+    expect(redo).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("The saved command failed.");
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: confirmed, page });
+
+    fireEvent.click(redo);
+    const second = latestRedoRequestId();
+    expect(second).not.toBe(first);
+    dispatch({ kind: "error", code: "engine_error", message: "Uncorrelated old error.", recoverable: true });
+    dispatch({
+      kind: "error",
+      code: "redo_unavailable",
+      message: "Another session has no history.",
+      recoverable: true,
+      sessionId: "other-session",
+      viewRequestId: second
+    });
+    dispatch({
+      kind: "error",
+      code: "redo_unavailable",
+      message: "Obsolete attempt has no history.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: first
+    });
+    expect(redo).toBeDisabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    dispatch({ kind: "cancelled", targetRequestId: "redo", viewRequestId: second });
+    expect(redo).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("The cleaning operation was cancelled.");
+
+    fireEvent.click(redo);
+    const third = latestRedoRequestId();
+    dispatch({
+      kind: "error",
+      code: "redo_unavailable",
+      message: "Redo is no longer available in this runtime.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: third
+    });
+    expect(redo).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Redo is no longer available in this runtime.");
+    const unavailable = { ...confirmed, canRedo: false };
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: unavailable, page });
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    dispatch({ kind: "error", code: "engine_error", message: "Undo failed.", recoverable: true });
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: unavailable, page });
+    expect(redo).toBeDisabled();
+    mounted.unmount();
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: unavailable, page, summaries: [] });
+    expect(await screen.findByRole("button", { name: "Redo" })).toBeDisabled();
+  });
+
+  it.each(["session", "revision"])("ignores stale Redo errors after a newer %s starts another Redo", async (change) => {
+    const confirmed = { ...metadata, canRedo: true };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: confirmed, page, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Redo" }));
+    const obsolete = latestRedoRequestId();
+    const next = {
+      ...confirmed,
+      ...(change === "session" ? { sessionId: "replacement" } : { revision: metadata.revision + 1 })
+    };
+    dispatch({ kind: "sessionOpened", metadata: next, page, summaries: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    const current = latestRedoRequestId();
+    expect(current).not.toBe(obsolete);
+    dispatch({
+      kind: "error",
+      code: "redo_unavailable",
+      message: "Old history was unavailable.",
+      recoverable: true,
+      sessionId: metadata.sessionId,
+      viewRequestId: obsolete
+    });
+    dispatch({ kind: "cancelled", targetRequestId: "old-redo", viewRequestId: obsolete });
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: next, page });
+    dispatch({ kind: "cancelled", targetRequestId: "current-redo", viewRequestId: current });
+    expect(screen.getByRole("button", { name: "Redo" })).toBeEnabled();
+  });
+
+  it("accepts a Redo result only for its pending attempt, session and next revision", async () => {
+    const confirmed = { ...metadata, canRedo: true };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: confirmed, page, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Redo" }));
+    const viewRequestId = latestRedoRequestId();
+    const completed = { ...confirmed, revision: metadata.revision + 1, canRedo: false };
+    const result = {
+      kind: "planUpdated",
+      action: "redo",
+      revision: completed.revision,
+      metadata: completed,
+      page,
+      code: "def clean_data(df):\n    return df",
+      viewRequestId
+    };
+    for (const stale of [
+      { ...result, viewRequestId: "obsolete-attempt" },
+      { ...result, metadata: { ...completed, sessionId: "other-session" } },
+      { ...result, metadata: { ...completed, revision: metadata.revision } },
+      { ...result, revision: completed.revision + 1, metadata: { ...completed, revision: completed.revision + 1 } }
+    ]) {
+      dispatch(stale);
+      expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+      expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: confirmed, page });
+    }
+    dispatch(result);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Redo" })).toBeDisabled();
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: completed, page });
+  });
+
+  it("waits for the current column projection before dispatching Redo", async () => {
+    const confirmed = { ...metadata, canRedo: true };
+    const partialPage = {
+      ...page,
+      columnIds: page.columnIds.slice(0, 1),
+      rows: page.rows.map((row) => ({ ...row, values: row.values.slice(0, 1) }))
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: confirmed, page: partialPage, summaries: [] });
+    const redo = await screen.findByRole("button", { name: "Redo" });
+    const grid = dataGridProps.mock.calls.at(-1)?.[0] as {
+      onVisibleColumnRangeChange(range: { start: number; end: number }): void;
+    };
+    act(() => grid.onVisibleColumnRangeChange({ start: 0, end: 1 }));
+    const projection = postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "runtimeRequest" && message.request.kind === "getPage")
+      .at(-1)?.request;
+    expect(projection).toBeDefined();
+    expect(redo).toBeDisabled();
+    dispatch({ kind: "editorAction", action: "redoStep" });
+    expect(redoRequestIds()).toEqual([]);
+    dispatch({
+      kind: "page",
+      revision: metadata.revision,
+      viewRequestId: projection.viewRequestId,
+      metadata: confirmed,
+      page
+    });
+    expect(redo).toBeEnabled();
+    fireEvent.click(redo);
+    expect(redoRequestIds()).toHaveLength(1);
+  });
+
   it.each([
     {
       backend: "r" as const,
@@ -862,6 +1030,21 @@ function latestGridProps(): {
       viewport: { firstVisibleRow: number; scrollLeft: number };
     };
   };
+}
+
+function redoRequestIds(): string[] {
+  return postMessage.mock.calls.flatMap(([message]) => {
+    if (message?.kind !== "runtimeRequest" || message.request.kind !== "redoStep") return [];
+    expect(message.request.viewRequestId).toEqual(expect.any(String));
+    expect(message.request.viewRequestId).not.toBe("");
+    return [String(message.request.viewRequestId)];
+  });
+}
+
+function latestRedoRequestId(): string {
+  const id = redoRequestIds().at(-1);
+  if (!id) throw new Error("Expected a correlated Redo request.");
+  return id;
 }
 
 function emptyDiff() {
