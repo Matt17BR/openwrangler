@@ -207,6 +207,12 @@ Custom Code owner checks Series normalization and scalar refusal.
 The Decimal operation owner checks live and generated readiness under caller-configured streaming without changing
 that setting, alongside exact output capacity and null checks. This does not qualify later streaming retrieval.
 
+`python/tests/test_custom_code_scope.py` owns Pandas/Polars Custom result admission in live sessions and complete
+generated programs, including retained conditional plans reused on another input and a later step that could hide
+an invalid zero-column result. It preserves typed empty results, Series and first-column creation. The existing
+plan-size owner checks the shared emitter's exact byte contribution; zero-column viewing and row-operation owners
+retain their separate contracts.
+
 Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
 dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day
 nanoseconds and ordinary object missing-value distinctions. Present minimum temporal storage values remain distinct
