@@ -177,9 +177,57 @@ describe("DataGrid column resizing", () => {
     fireEvent.pointerMove(window, pointerEvent(23, 200));
     expect(onViewStateChange.mock.calls.at(-1)?.[0]).toBe(latest);
   });
+
+  it.each(["restore", "view", "disabled"] as const)("cancels an active resize when %s replaces its owner", (change) => {
+    const onViewStateChange = vi.fn();
+    const rendered = render(<GridHarness onViewStateChange={onViewStateChange} />);
+    const resize = screen.getByRole("button", { name: "Resize prototype column" });
+    fireEvent.pointerDown(resize, pointerEvent(29, 100));
+    fireEvent.pointerMove(window, pointerEvent(29, 120));
+    expect(onViewStateChange.mock.lastCall?.[0].columnWidths.get("__proto__")).toBe(210);
+
+    rendered.rerender(
+      <GridHarness
+        onViewStateChange={onViewStateChange}
+        viewContextId={change === "view" ? "replacement-view" : undefined}
+        viewControlsDisabled={change === "disabled"}
+        viewStateRestoreVersion={change === "restore" ? 1 : 0}
+        restoredViewState={
+          change === "restore"
+            ? {
+                columnWidths: new Map([["__proto__", 500]]),
+                viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+              }
+            : undefined
+        }
+      />
+    );
+    const callsAfterChange = onViewStateChange.mock.calls.length;
+    fireEvent.pointerMove(window, pointerEvent(29, 130));
+    expect(onViewStateChange).toHaveBeenCalledTimes(callsAfterChange);
+    expect(releasePointerCapture).toHaveBeenCalledWith(29);
+    if (change === "restore") {
+      expect(document.querySelectorAll("col")[1]).toHaveStyle({ width: "500px" });
+      fireEvent.pointerDown(resize, pointerEvent(31, 130));
+      fireEvent.pointerMove(window, pointerEvent(31, 140));
+      expect(onViewStateChange.mock.lastCall?.[0].columnWidths.get("__proto__")).toBe(510);
+    }
+  });
 });
 
-function GridHarness({ onViewStateChange }: { onViewStateChange(state: GridViewState): void }) {
+function GridHarness({
+  onViewStateChange,
+  viewContextId,
+  viewControlsDisabled,
+  viewStateRestoreVersion,
+  restoredViewState
+}: {
+  onViewStateChange(state: GridViewState): void;
+  viewContextId?: string;
+  viewControlsDisabled?: boolean;
+  viewStateRestoreVersion?: number;
+  restoredViewState?: GridViewState;
+}) {
   const [viewState, setViewState] = useState<GridViewState>({
     columnWidths: new Map(),
     viewport: { firstVisibleRow: 0, scrollLeft: 0 }
@@ -192,11 +240,18 @@ function GridHarness({ onViewStateChange }: { onViewStateChange(state: GridViewS
       pageSize={1}
       defaultColumnWidth={190}
       insightsOnOpen={false}
-      viewState={viewState}
-      onViewStateChange={(next) => {
-        onViewStateChange(next);
-        setViewState(next);
-      }}
+      viewState={restoredViewState ?? viewState}
+      viewContextId={viewContextId}
+      viewControlsDisabled={viewControlsDisabled}
+      viewStateRestoreVersion={viewStateRestoreVersion}
+      onViewStateChange={
+        viewControlsDisabled
+          ? () => undefined
+          : (next) => {
+              onViewStateChange(next);
+              setViewState(next);
+            }
+      }
       onPage={() => undefined}
       onSortColumn={() => undefined}
       onOpenFilter={() => undefined}

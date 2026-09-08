@@ -215,6 +215,33 @@ describe("App column projection", () => {
     expect(await screen.findByRole("cell", { name: "value-20-row-200" })).toBeVisible();
   });
 
+  it.each(["header", "resize"] as const)("retains newer %s focus when a correlated row page settles", async (owner) => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
+      await screen.findByRole("cell", { name: "value-0-row-0" });
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const request = await onlyRuntimeRequest("getPage");
+      const target =
+        owner === "header"
+          ? screen.getByRole("columnheader", { name: "column-0" })
+          : screen.getByRole("button", { name: "Resize column-0 column" });
+      act(() => target.focus());
+      if (owner === "resize") fireEvent.keyDown(target, { key: "ArrowRight" });
+      fireEvent.scroll(screen.getByTestId("data-grid-scroller"));
+
+      dispatch(pageResponse(request, metadata, projectedPage(200, 0)));
+      await screen.findByRole("cell", { name: "value-0-row-200" });
+      expect(document.activeElement).toBe(target);
+      expect(runtimeRequests("getPage")).toHaveLength(1);
+      if (owner === "resize") expect(document.querySelectorAll("col")[1]).toHaveStyle({ width: "200px" });
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
   it("reconciles the current page after a pending mutation fails during horizontal scrolling", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });

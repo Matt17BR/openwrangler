@@ -167,7 +167,7 @@ export function DataGrid({
     continueToRow: continuePointerDragToRow,
     isActive: pointerDragIsActive
   } = useGridPointerDragLifecycle(scrollerRef);
-  const beginColumnResize = useColumnResizeLifecycle();
+  const { begin: beginColumnResize, cancel: cancelColumnResize } = useColumnResizeLifecycle();
   const gridSelectionInstructionsId = useId();
   const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
@@ -193,6 +193,19 @@ export function DataGrid({
     reportViewState: ignoreViewStateChange,
     totalRows: logicalRowExtent
   });
+  useEffect(() => {
+    const supersedePendingFocus = () => {
+      focusRequested.current = false;
+      preserveGridFocusAfterScroll.current = false;
+      pointerSelectionFocusRequest.current = undefined;
+    };
+    // Bubble after cell onFocus consumes any pointer-selection restoration.
+    document.addEventListener("focusin", supersedePendingFocus);
+    return () => document.removeEventListener("focusin", supersedePendingFocus);
+  }, []);
+  useLayoutEffect(() => {
+    if (viewControlsDisabled) cancelColumnResize();
+  }, [cancelColumnResize, viewControlsDisabled]);
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
@@ -282,6 +295,7 @@ export function DataGrid({
     if (previousViewContext.current === logicalViewContext) return;
     previousViewContext.current = logicalViewContext;
     cancelPointerDrag(undefined, false);
+    cancelColumnResize();
     requestedOffset.current = page.offset;
     focusRequested.current = false;
     pointerSelectionFocusRequest.current = undefined;
@@ -326,6 +340,7 @@ export function DataGrid({
       viewport: { firstVisibleRow: page.offset, scrollLeft }
     });
   }, [
+    cancelColumnResize,
     cancelPointerDrag,
     logicalViewContext,
     resetGridClipboardSelection,
@@ -354,6 +369,7 @@ export function DataGrid({
     preserveGridFocusAfterScroll.current = false;
     dismissCellActionMenu();
     cancelPointerDrag(undefined, false);
+    cancelColumnResize();
     setFocusedCell({ row, column });
     resetGridClipboardSelectionRef.current({ row, column });
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
@@ -367,7 +383,13 @@ export function DataGrid({
       height: scroller.clientHeight
     });
     appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
-  }, [cancelPointerDrag, dismissCellActionMenu, viewStateRestoreVersion, writeProgrammaticViewport]);
+  }, [
+    cancelColumnResize,
+    cancelPointerDrag,
+    dismissCellActionMenu,
+    viewStateRestoreVersion,
+    writeProgrammaticViewport
+  ]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -515,7 +537,10 @@ export function DataGrid({
       });
       return;
     }
-    const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
+    const gridOwnsFocus =
+      document.hasFocus() &&
+      scroller.contains(document.activeElement) &&
+      document.activeElement?.matches("[data-grid-row][data-grid-column]") === true;
     preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
     const requestBlockForRow = (row: number): void => {
       if (terminalPageOverlapsViewport(currentOffset, currentRowCount, totalRows, row, scroller.clientHeight)) {

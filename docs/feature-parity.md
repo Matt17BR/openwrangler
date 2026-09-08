@@ -80,6 +80,9 @@ R terminal discovery can start before R's first prompt; short command lines avoi
 Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view. The file,
 lazy-provider, and native-view owner tests cover cancellation during loading and file preflight.
 
+Delayed grid navigation preserves newer header and control focus. Column drags stop after host view restoration,
+a logical-view change or disabled controls. Existing App, clipboard and resize component owners cover these changes.
+
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
 engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
 `r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before

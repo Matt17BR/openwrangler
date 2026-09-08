@@ -13,7 +13,7 @@ interface ActiveColumnResize {
 }
 
 /** Owns the one permitted column-resize drag for a grid instance. */
-export function useColumnResizeLifecycle(): BeginColumnResize {
+export function useColumnResizeLifecycle(): { begin: BeginColumnResize; cancel(): void } {
   const active = useRef<ActiveColumnResize | undefined>(undefined);
 
   const cancelActive = useCallback(() => {
@@ -24,7 +24,7 @@ export function useColumnResizeLifecycle(): BeginColumnResize {
 
   useEffect(() => cancelActive, [cancelActive]);
 
-  return useCallback(
+  const begin: BeginColumnResize = useCallback(
     (event, initialWidth, onResize) => {
       event.preventDefault();
       cancelActive();
@@ -73,4 +73,5 @@ export function useColumnResizeLifecycle(): BeginColumnResize {
     },
     [cancelActive]
   );
+  return { begin, cancel: cancelActive };
 }
