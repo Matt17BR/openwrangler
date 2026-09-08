@@ -74,7 +74,7 @@ export function NumericHistogram({
 
   const moveFocusedBin = (direction: "first" | "last" | "previous" | "next") => {
     setFocusedBin((focused) => {
-      const currentIndex = focused?.view === view ? focused.index : (hoveredBinIndex ?? 0);
+      const currentIndex = hoveredBinIndex ?? (focused?.view === view ? focused.index : 0);
       let nextIndex: number;
       if (direction === "first") nextIndex = 0;
       else if (direction === "last") nextIndex = Math.max(0, visualization.bins.length - 1);

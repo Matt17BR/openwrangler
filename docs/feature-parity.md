@@ -57,6 +57,7 @@ Concurrent grid presentation saves preserve current sort publication and newer f
 
 The operation catalog search exposes its accessible name before and after entering a query.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
+Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,
