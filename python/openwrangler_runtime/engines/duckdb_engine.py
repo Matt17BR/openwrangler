@@ -2159,13 +2159,16 @@ class DuckDBEngine(DataFrameEngine):
         partition = _identifier_list(selected)
         direction = "DESC" if keep == "last" else "ASC"
         predicate = f"{_quote_ident(count_name)} = 1" if keep == "none" else f"{_quote_ident(rank_name)} = 1"
+        # Window keys may normalize source values. Select original captured rows
+        # by ordinal instead of publishing values from the comparison window.
         query = (
-            f"WITH numbered AS (SELECT *, row_number() OVER () AS {_quote_ident(order_name)} FROM ow), "
-            f"ranked AS (SELECT *, row_number() OVER (PARTITION BY {partition} "
+            f"WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS {_quote_ident(order_name)} FROM ow), "
+            f"ranked AS (SELECT {_quote_ident(order_name)}, row_number() OVER (PARTITION BY {partition} "
             f"ORDER BY {_quote_ident(order_name)} {direction}) AS {_quote_ident(rank_name)}, "
             f"count(*) OVER (PARTITION BY {partition}) AS {_quote_ident(count_name)} FROM numbered) "
-            f"SELECT * EXCLUDE ({_identifier_list([order_name, rank_name, count_name])}) FROM ranked "
-            f"WHERE {predicate} ORDER BY {_quote_ident(order_name)}"
+            f"SELECT n.* EXCLUDE ({_quote_ident(order_name)}) FROM numbered AS n SEMI JOIN "
+            f"(SELECT {_quote_ident(order_name)} FROM ranked WHERE {predicate}) AS kept "
+            f"USING ({_quote_ident(order_name)}) ORDER BY n.{_quote_ident(order_name)}"
         )
         return self._relation(frame, query)
 
@@ -4408,13 +4411,15 @@ def _ow_drop_duplicates(df, columns, keep):
     partition = _ow_identifiers(selected)
     direction = "DESC" if keep == "last" else "ASC"
     predicate = _ow_ident(count_name) + " = 1" if keep == "none" else _ow_ident(rank_name) + " = 1"
+    # Publish original captured rows, not the window's normalized comparison keys.
     query = (
-        "WITH numbered AS (SELECT *, row_number() OVER () AS " + _ow_ident(order_name) + " FROM ow), "
-        "ranked AS (SELECT *, row_number() OVER (PARTITION BY " + partition + " ORDER BY "
+        "WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS " + _ow_ident(order_name) + " FROM ow), "
+        "ranked AS (SELECT " + _ow_ident(order_name) + ", row_number() OVER (PARTITION BY " + partition + " ORDER BY "
         + _ow_ident(order_name) + " " + direction + ") AS " + _ow_ident(rank_name)
         + ", count(*) OVER (PARTITION BY " + partition + ") AS " + _ow_ident(count_name)
-        + " FROM numbered) SELECT * EXCLUDE (" + _ow_identifiers([order_name, rank_name, count_name])
-        + ") FROM ranked WHERE " + predicate + " ORDER BY " + _ow_ident(order_name)
+        + " FROM numbered) SELECT n.* EXCLUDE (" + _ow_ident(order_name) + ") FROM numbered AS n SEMI JOIN "
+        + "(SELECT " + _ow_ident(order_name) + " FROM ranked WHERE " + predicate + ") AS kept USING ("
+        + _ow_ident(order_name) + ") ORDER BY n." + _ow_ident(order_name)
     )
     return _ow_query(df, query)
 

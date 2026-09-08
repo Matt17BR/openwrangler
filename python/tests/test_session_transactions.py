@@ -910,6 +910,89 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         manager.close_all()
 
 
+@pytest.mark.parametrize(
+    ("keep", "expected_positions"),
+    [("first", [0, 2, 4, 5]), ("last", [1, 3, 4, 5]), ("none", [4, 5])],
+)
+def test_duckdb_duplicates_preserve_source_values_through_history_and_export(
+    tmp_path: Path, keep: str, expected_positions: list[int]
+) -> None:
+    import duckdb
+
+    from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
+
+    path = tmp_path / "duplicate-zeros.csv"
+    original = b"key,category,seq\n-0.0,a,0\n0.0,a,1\n0.0,b,2\n-0.0,b,3\n-0.0,unique,4\n1.0,other,5\n"
+    path.write_bytes(original)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="duckdb", page_size=1
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        assert isinstance(session.engine, DuckDBEngine)
+        original_rows = manager.get_page(sid, 0, 0, 10, {"filters": [], "sort": []})["page"]["rows"]
+        original_ids = {row["values"][2]["raw"]: row["id"] for row in original_rows}
+        original_hex = {row["values"][2]["raw"]: float(row["values"][0]["raw"]).hex() for row in original_rows}
+        view = {
+            "filters": [
+                {
+                    "column": "seq",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}],
+                }
+            ],
+            "sort": [{"column": "seq", "direction": "desc", "nulls": "last"}],
+        }
+        manager.get_page(sid, 0, 0, 1, view)
+        columns = [{"id": column["id"], "name": column["name"]} for column in opened["metadata"]["schema"][:2]]
+        operation = {"id": "exact-duplicates", "kind": "dropDuplicates", "params": {"columns": columns, "keep": keep}}
+        preview = manager.preview_step(sid, 0, operation, 0, 1)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 1)
+        page = manager.get_page(sid, session.revision, 0, 10, view)["page"]
+        visible_positions = [position for position in reversed(expected_positions) if position >= 2]
+        assert [row["values"][2]["raw"] for row in page["rows"]] == visible_positions
+        for row in page["rows"]:
+            position = row["values"][2]["raw"]
+            assert row["id"] == original_ids[position]
+            assert float(row["values"][0]["raw"]).hex() == original_hex[position]
+        native_rows = session.engine._terminal_rows(session.committed, "SELECT key, category, seq FROM ow")
+        assert [row[2] for row in native_rows] == expected_positions
+        assert [row[0].hex() for row in native_rows] == [original_hex[position] for position in expected_positions]
+
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(path)))
+        assert [(row[2], row[0].hex()) for row in generated.fetchall()] == [
+            (position, original_hex[position]) for position in expected_positions
+        ]
+        destination = tmp_path / "duplicates.parquet"
+        destination.touch()
+        device, inode = _regular_file_identity(destination)
+        manager.export_data(
+            sid, session.revision, str(destination), {"format": "parquet"}, {"device": str(device), "inode": str(inode)}
+        )
+        generated_destination = tmp_path / "generated-duplicates.parquet"
+        generated.write_parquet(str(generated_destination))
+        for exported in (destination, generated_destination):
+            reopened = duckdb.read_parquet(str(exported))
+            assert str(reopened.types[0]) == "DOUBLE"
+            assert [(row[2], row[0].hex()) for row in reopened.fetchall()] == [
+                (position, original_hex[position]) for position in expected_positions
+            ]
+        manager.undo_step(sid, session.revision, 0, 1)
+        restored = session.engine._terminal_rows(session.committed, "SELECT key, seq FROM ow")
+        assert [(row[1], row[0].hex()) for row in restored] == list(original_hex.items())
+        redone = manager.redo_step(sid, session.revision, 0, 1)
+        assert redone["code"] == applied["code"]
+        repeated = manager.get_page(sid, session.revision, 0, 10, view)["page"]
+        assert repeated["rows"] == page["rows"]
+        assert path.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
 def test_extended_float_pages_and_preview_preserve_confirmed_source(monkeypatch: pytest.MonkeyPatch) -> None:
     import numpy as np
     import pandas as pd

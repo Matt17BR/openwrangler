@@ -171,6 +171,13 @@ only when all selected columns are missing. Drop Duplicates compares selected co
 specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,
 stable row identities, explicit row names, and compatible data-table keys.
 
+Base dataframes and tibbles compare integer64 keys through exact decimal text in a temporary frame. Other columns
+retain their native duplicate equality, including distinct `NA` and `NaN` groups. Data tables keep their existing
+native comparison. Row reduction and dataset duplicate statistics share this owner. The original frame remains
+native, and profile sampling retains the bounds above.
+Generated Drop Duplicates uses the same helper and includes its guarded integer64 conversion dependency only when
+the selected keys require it.
+
 Fill Missing Values offers a typed value, an exact numeric median, the mean of a double column, or the most common
 non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
 columns and takes the first present value from each row. Directional fills use an explicit stable sort, restore the

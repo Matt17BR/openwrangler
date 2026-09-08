@@ -404,6 +404,11 @@ generated code. DuckDB file editing remains experimental. Excel and database bro
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
 
+Drop Duplicates materializes its numbered input once, computes membership by row ordinal, and returns values from
+the selected original rows. Native partitioning cannot replace those values with a normalized key or another
+representative's payload. Scalar and nested floating values retain the sign of zero; null and NaN remain distinct
+duplicate groups in live and generated code.
+
 ### PySpark
 
 Open Wrangler supports local PySpark 4.2.x Classic and Connect dataframes as live-notebook, viewing-only sources.
@@ -425,6 +430,10 @@ Native R sessions operate directly on R `data.frame`, tibble, and `data.table` f
 R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
+
+Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. Base dataframes and
+tibbles use temporary decimal text keys; data tables retain their native comparison. Original values and metadata
+remain intact, and generated row reduction uses the same rule.
 
 Native R response encoding stays inside the correlated request error boundary. Oversized ASCII string expansion is
 refused before assembling the escaped response, and the final serialized output retains its complete transport cap.

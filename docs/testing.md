@@ -148,6 +148,14 @@ apply, and inspection code must preserve complete live results and source frames
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
 
+Native R frame tests own exact integer64 duplicate masks and bounded profile counts. The existing row kernel owner
+checks single and composite keys through Preview, Apply, inspection, Undo/Redo and standalone generated execution,
+including original row identities, frame metadata and integer64 helper admission.
+
+DuckDB engine tests compare retained scalar and nested values, zero signs and native types for every duplicate keep mode
+in live and generated results. Session transactions own the corresponding preview/history and source-preservation
+assertions.
+
 Native R frame and catalog owners cover constructor and subset forms of empty tables, operations and Custom Code
 that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
 the same structural assertions.

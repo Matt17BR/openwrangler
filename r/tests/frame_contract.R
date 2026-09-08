@@ -5740,6 +5740,25 @@ duplicate_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_sta
 assert_identical(duplicate_profile_stats$missingCells, 2, "all-null counts changed")
 assert_identical(duplicate_profile_stats$missingRows, 1L, "all-null row count changed")
 assert_identical(duplicate_profile_stats$duplicateRows, 1L, "duplicate-row count changed")
+# Dataset duplicates compare integer64 payloads exactly, without an ordinal key.
+for (wide_profile_flavor in c("base", "tibble", "data.table")) {
+  wide_profile_frame <- data.frame(
+    key = bit64::as.integer64(c("9223372036854775807", "9223372036854775807", "9223372036854775806")),
+    key = factor(rep("same", 3L)),
+    key = as.Date(rep("2026-01-01", 3L)),
+    check.names = FALSE
+  )
+  if (identical(wide_profile_flavor, "tibble")) wide_profile_frame <- tibble::as_tibble(wide_profile_frame, .name_repair = "minimal")
+  if (identical(wide_profile_flavor, "data.table")) wide_profile_frame <- data.table::as.data.table(wide_profile_frame)
+  wide_profile_before <- serialize(wide_profile_frame, NULL, version = 3L)
+  wide_profile_capture <- openwrangler_r_frame_contract$capture_frame(wide_profile_frame)
+  wide_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(wide_profile_capture)$stats
+  assert_identical(wide_profile_stats$duplicateRows, 1L, "Dataset profiling merged adjacent integer64 values")
+  assert_identical(wide_profile_stats$missingCells, 0, "Exact duplicate comparison changed missing counts")
+  assert_true(is.null(wide_profile_stats$duplicateRowsSampleSize), "A full duplicate count was labeled sampled")
+  assert_identical(serialize(wide_profile_frame, NULL, version = 3L), wide_profile_before, "Duplicate profiling changed its source")
+}
+
 all_null_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(NA_character_, NA_character_)))
 all_null_summary <- openwrangler_r_frame_contract$materialize_summaries(
   all_null_capture,
@@ -6827,6 +6846,46 @@ assert_identical(
   "committed data.table sorting changed row order or missing placement"
 )
 assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
+
+# Comparison-only integer64 keys retain the ordinary NA/NaN distinction.
+wide_missing_frame <- data.frame(
+  key = bit64::as.integer64(rep("9223372036854775807", 5L)),
+  key = c(NA_real_, NaN, NA_real_, NaN, 1),
+  check.names = FALSE,
+  row.names = letters[1:5]
+)
+wide_missing_before <- serialize(wide_missing_frame, NULL, version = 3L)
+wide_missing_expected <- list(first = c(1L, 2L, 5L), last = c(3L, 4L, 5L), none = 5L)
+for (wide_missing_mode in names(wide_missing_expected)) {
+  wide_missing_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+    wide_missing_frame, 1:2, c("key", "key"), wide_missing_mode
+  )
+  assert_identical(wide_missing_result$sourcePositions, wide_missing_expected[[wide_missing_mode]], "Integer64 duplicate keys collapsed NA and NaN")
+  assert_identical(row.names(wide_missing_result$frame), letters[wide_missing_expected[[wide_missing_mode]]], "Integer64 comparison changed row labels")
+}
+assert_identical(serialize(wide_missing_frame, NULL, version = 3L), wide_missing_before, "Integer64 duplicate comparison mutated source values")
+for (wide_missing_count in c(0L, 3L)) {
+  wide_all_missing <- data.frame(key = bit64::as.integer64(rep(NA_character_, wide_missing_count)))
+  for (wide_missing_mode in c("first", "last", "none")) {
+    wide_missing_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(wide_all_missing, 1L, "key", wide_missing_mode)
+    wide_expected <- if (wide_missing_count == 0L || identical(wide_missing_mode, "none")) integer() else if (identical(wide_missing_mode, "first")) 1L else wide_missing_count
+    assert_identical(wide_missing_result$sourcePositions, wide_expected, "Empty or all-missing integer64 duplicates changed")
+    assert_identical(class(wide_missing_result$frame[[1L]]), "integer64", "Empty duplicate output lost integer64 storage")
+  }
+}
+
+# data.table retains its own comparison policy for ordinary companion columns.
+invisible(local({
+  previous_rounding <- data.table::getNumericRounding()
+  on.exit(data.table::setNumericRounding(previous_rounding), add = TRUE)
+  data.table::setNumericRounding(2L)
+  rounded_keys <- data.table::data.table(
+    wide = bit64::as.integer64(rep("9223372036854775807", 2L)),
+    amount = c(1, 1 + 1e-15)
+  )
+  rounded_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(rounded_keys, 1:2, c("wide", "amount"), "none")
+  assert_identical(rounded_result$sourcePositions, integer(), "Integer64 comparison replaced data.table numeric-rounding semantics")
+}))
 
 row_reduction_frame <- data.frame(
   duplicate = c("a", "a", "b", "b", "c", NA, NA, "z"),

@@ -265,6 +265,9 @@ standalone runtime. A smaller page remains available; opening and mutation respo
 Large R profiles retain exact cheap statistics but sample histograms, categories, and duplicate populations with
 explicit sample labels.
 
+Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys.
+All three keep modes preserve original values and native frame metadata.
+
 The complete current operation set has direct native live, generated-code, and replay contracts. The exact names and
 parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with
 double-quote syntax. Parquet export additionally requires `nanoparquet` 0.5.1 or newer in the selected R environment,
@@ -276,6 +279,10 @@ in the [Native R ADR](decisions/0001-native-r-runtime.md).
 
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
 extension auto-install, autoload, and external-file caching stay disabled.
+
+Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
+generated code.
+
 Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with up to 38 digits, preserving nulls.
 Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
 with Decimal storage. Parquet also refuses interval precision or capacity loss and time-zone map-key changes.

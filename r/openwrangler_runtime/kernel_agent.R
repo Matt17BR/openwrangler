@@ -4425,7 +4425,8 @@ openwrangler_r_kernel_agent <- local({
         list(
           id = schema[[position]]$id,
           position = as.integer(position),
-          name = schema[[position]]$name
+          name = schema[[position]]$name,
+          semanticsKind = schema[[position]]$semantics$kind
         )
       })
     } else {
@@ -4437,7 +4438,8 @@ openwrangler_r_kernel_agent <- local({
         list(
           id = reference$id,
           position = as.integer(matches[[1L]]),
-          name = reference$name
+          name = reference$name,
+          semanticsKind = schema[[matches[[1L]]]]$semantics$kind
         )
       })
     }
@@ -6061,14 +6063,11 @@ openwrangler_r_kernel_agent <- local({
         lines,
         "  .ow_compared <- if (inherits(.ow_result, \"data.table\")) .ow_result[, .ow_row_columns, with = FALSE] else .ow_result[.ow_row_columns]",
         sprintf(
-          "  .ow_duplicate <- %s",
-          if (identical(step$mode, "first")) {
-            "duplicated(.ow_compared)"
-          } else if (identical(step$mode, "last")) {
-            "duplicated(.ow_compared, fromLast = TRUE)"
-          } else {
-            "duplicated(.ow_compared) | duplicated(.ow_compared, fromLast = TRUE)"
-          }
+          "  .ow_duplicate <- .ow_duplicate_row_mask(.ow_compared, %s, %s)",
+          r_string(step$mode),
+          if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) {
+            ".ow_duplicate_integer64_text"
+          } else "NULL"
         ),
         "  .ow_rows <- which(!.ow_duplicate)"
       )
@@ -7625,7 +7624,8 @@ openwrangler_r_kernel_agent <- local({
     safe_float_midpoint,
     round_coarse_helpers,
     fill_directional_values,
-    dense_rank_values
+    dense_rank_values,
+    duplicate_row_mask
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7923,7 +7923,7 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) identical(step$kind, "minMaxScale"), logical(1L)))) {
       lines <- c(lines, min_max_scale_code_helper_lines())
     }
-    if (any(vapply(
+    needs_integer64_arithmetic <- any(vapply(
       bound_plan,
       function(step) {
         if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
@@ -7938,9 +7938,14 @@ openwrangler_r_kernel_agent <- local({
           (!is.null(step$right) && identical(step$right$semanticKind, "integer64"))
       },
       logical(1L)
-    ))) {
-      lines <- c(
-        lines,
+    ))
+    needs_integer64_duplicates <- any(vapply(bound_plan, function(step) {
+      identical(step$kind, "dropDuplicates") && any(vapply(
+        step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)
+      ))
+    }, logical(1L)))
+    if (needs_integer64_arithmetic || needs_integer64_duplicates) {
+      integer64_registration_lines <- c(
         "  if (!base::requireNamespace(\"bit64\", quietly = TRUE)) base::stop(\"bit64 is required for integer64 Formula\", call. = FALSE)",
         "  .ow_integer64_namespace <- base::asNamespace(\"bit64\")",
         "  .ow_integer64_namespace_dlls <- base::getNamespaceInfo(.ow_integer64_namespace, \"DLLs\")",
@@ -7964,22 +7969,45 @@ openwrangler_r_kernel_agent <- local({
         "      if (base::is.list(.ow_other_primitive)) { .ow_other_fields <- base::unclass(.ow_other_primitive); if (!base::is.null(base::.subset2(.ow_other_fields, \"address\")) && base::identical(base::.subset2(.ow_primitive_fields, \"address\"), base::.subset2(.ow_other_fields, \"address\"))) base::stop(\"bit64 has replaced integer64 Formula primitive addresses\", call. = FALSE) }",
         "    }",
         "    .ow_canonical",
-        "  }",
-        "  .ow_integer64_as_integer <- .ow_integer64_binding(\"C_as_integer64_integer\", \"as_integer64_integer\", 2L)",
-        "  .ow_integer64_as_double <- .ow_integer64_binding(\"C_as_double_integer64\", \"as_double_integer64\", 2L)",
-        "  .ow_integer64_as_character <- .ow_integer64_binding(\"C_as_character_integer64\", \"as_character_integer64\", 2L)",
-        "  .ow_integer64_is_na <- .ow_integer64_binding(\"C_isna_integer64\", \"isna_integer64\", 2L)",
-        "  .ow_integer64_add <- .ow_integer64_binding(\"C_plus_integer64\", \"plus_integer64\", 3L)",
-        "  .ow_integer64_subtract <- .ow_integer64_binding(\"C_minus_integer64\", \"minus_integer64\", 3L)",
-        "  .ow_integer64_multiply <- .ow_integer64_binding(\"C_times_integer64_integer64\", \"times_integer64_integer64\", 3L)",
-        "  .ow_integer64_modulo <- .ow_integer64_binding(\"C_mod_integer64\", \"mod_integer64\", 3L)",
-        "  .ow_integer64_from_integer <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_integer, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
-        "  .ow_integer64_to_double <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_double, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); if (!base::is.null(.ow_names)) base::attr(.ow_output, \"names\") <- .ow_names; .ow_output }",
-        "  .ow_integer64_missing_mask <- function(.ow_values) base::.Call(.ow_integer64_is_na, .ow_values, base::logical(.ow_storage_length(.ow_values)))",
-        "  .ow_integer64_binary <- function(.ow_primitive, .ow_left, .ow_right) { if (!base::inherits(.ow_left, \"integer64\")) .ow_left <- .ow_integer64_from_integer(.ow_left); if (!base::inherits(.ow_right, \"integer64\")) .ow_right <- .ow_integer64_from_integer(.ow_right); .ow_left_length <- .ow_storage_length(.ow_left); .ow_right_length <- .ow_storage_length(.ow_right); .ow_length <- if (.ow_left_length == 0L || .ow_right_length == 0L) 0L else base::max(.ow_left_length, .ow_right_length); .ow_output <- base::.Call(.ow_primitive, .ow_left, .ow_right, base::double(.ow_length)); .ow_names <- if (.ow_left_length == .ow_length && !base::is.null(base::attr(.ow_left, \"names\", exact = TRUE))) base::attr(.ow_left, \"names\", exact = TRUE) else if (.ow_right_length == .ow_length && !base::is.null(base::attr(.ow_right, \"names\", exact = TRUE))) base::attr(.ow_right, \"names\", exact = TRUE) else NULL; base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
-        "  .ow_integer64_missing <- .ow_integer64_from_integer(NA_integer_)",
-        "  .ow_integer64_force_missing <- function(.ow_values, .ow_missing) { .ow_storage <- base::unclass(.ow_values); .ow_storage[.ow_missing] <- base::unclass(.ow_integer64_missing)[[1L]]; .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_storage) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_storage }"
+        "  }"
       )
+      if (!needs_integer64_arithmetic) {
+        integer64_registration_lines <- sub("integer64 Formula", "integer64 Drop Duplicates", integer64_registration_lines, fixed = TRUE)
+      }
+      lines <- c(lines, integer64_registration_lines)
+      if (needs_integer64_arithmetic) {
+        lines <- c(
+          lines,
+          "  .ow_integer64_as_integer <- .ow_integer64_binding(\"C_as_integer64_integer\", \"as_integer64_integer\", 2L)",
+          "  .ow_integer64_as_double <- .ow_integer64_binding(\"C_as_double_integer64\", \"as_double_integer64\", 2L)",
+          "  .ow_integer64_as_character <- .ow_integer64_binding(\"C_as_character_integer64\", \"as_character_integer64\", 2L)",
+          "  .ow_integer64_is_na <- .ow_integer64_binding(\"C_isna_integer64\", \"isna_integer64\", 2L)",
+          "  .ow_integer64_add <- .ow_integer64_binding(\"C_plus_integer64\", \"plus_integer64\", 3L)",
+          "  .ow_integer64_subtract <- .ow_integer64_binding(\"C_minus_integer64\", \"minus_integer64\", 3L)",
+          "  .ow_integer64_multiply <- .ow_integer64_binding(\"C_times_integer64_integer64\", \"times_integer64_integer64\", 3L)",
+          "  .ow_integer64_modulo <- .ow_integer64_binding(\"C_mod_integer64\", \"mod_integer64\", 3L)",
+          "  .ow_integer64_from_integer <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_integer, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
+          "  .ow_integer64_to_double <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_double, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); if (!base::is.null(.ow_names)) base::attr(.ow_output, \"names\") <- .ow_names; .ow_output }",
+          "  .ow_integer64_missing_mask <- function(.ow_values) base::.Call(.ow_integer64_is_na, .ow_values, base::logical(.ow_storage_length(.ow_values)))",
+          "  .ow_integer64_binary <- function(.ow_primitive, .ow_left, .ow_right) { if (!base::inherits(.ow_left, \"integer64\")) .ow_left <- .ow_integer64_from_integer(.ow_left); if (!base::inherits(.ow_right, \"integer64\")) .ow_right <- .ow_integer64_from_integer(.ow_right); .ow_left_length <- .ow_storage_length(.ow_left); .ow_right_length <- .ow_storage_length(.ow_right); .ow_length <- if (.ow_left_length == 0L || .ow_right_length == 0L) 0L else base::max(.ow_left_length, .ow_right_length); .ow_output <- base::.Call(.ow_primitive, .ow_left, .ow_right, base::double(.ow_length)); .ow_names <- if (.ow_left_length == .ow_length && !base::is.null(base::attr(.ow_left, \"names\", exact = TRUE))) base::attr(.ow_left, \"names\", exact = TRUE) else if (.ow_right_length == .ow_length && !base::is.null(base::attr(.ow_right, \"names\", exact = TRUE))) base::attr(.ow_right, \"names\", exact = TRUE) else NULL; base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
+          "  .ow_integer64_missing <- .ow_integer64_from_integer(NA_integer_)",
+          "  .ow_integer64_force_missing <- function(.ow_values, .ow_missing) { .ow_storage <- base::unclass(.ow_values); .ow_storage[.ow_missing] <- base::unclass(.ow_integer64_missing)[[1L]]; .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_storage) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_storage }"
+        )
+      } else {
+        lines <- c(lines,
+          "  .ow_integer64_as_character <- .ow_integer64_binding(\"C_as_character_integer64\", \"as_character_integer64\", 2L)"
+        )
+      }
+    }
+    if (needs_integer64_duplicates) {
+      lines <- c(lines,
+        "  .ow_duplicate_integer64_text <- function(values) base::.Call(.ow_integer64_as_character, values, base::rep.int(NA_character_, .ow_storage_length(values)))"
+      )
+    }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "dropDuplicates"), logical(1L)))) {
+      duplicate_lines <- deparse(duplicate_row_mask, width.cutoff = 500L)
+      duplicate_lines[[1L]] <- paste0(".ow_duplicate_row_mask <- ", duplicate_lines[[1L]])
+      lines <- c(lines, paste0("  ", duplicate_lines))
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "denseRank"), logical(1L)))) {
       rank_lines <- deparse(dense_rank_values, width.cutoff = 500L)
@@ -9740,7 +9768,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$safe_float_midpoint,
         frame_contract$round_coarse_helpers,
         frame_contract$fill_directional_values,
-        frame_contract$dense_rank_values
+        frame_contract$dense_rank_values,
+        frame_contract$duplicate_row_mask
       )
     )
   }
@@ -10077,7 +10106,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
-            frame_contract$dense_rank_values
+            frame_contract$dense_rank_values,
+            frame_contract$duplicate_row_mask
           )
         } else {
           NULL
@@ -10132,7 +10162,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
-            frame_contract$dense_rank_values
+            frame_contract$dense_rank_values,
+            frame_contract$duplicate_row_mask
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10208,7 +10239,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$safe_float_midpoint,
               frame_contract$round_coarse_helpers,
               frame_contract$fill_directional_values,
-              frame_contract$dense_rank_values
+              frame_contract$dense_rank_values,
+              frame_contract$duplicate_row_mask
             )
           ))
         }

@@ -1901,6 +1901,91 @@ def test_duckdb_column_values_break_equal_counts_by_display_text() -> None:
         engine.close()
 
 
+@pytest.mark.parametrize("raw_type", ["FLOAT", "DOUBLE"])
+@pytest.mark.parametrize(
+    ("keep", "expected_positions"),
+    [
+        ("first", [10, 9, 8, 6, 4, 3, 1]),
+        ("last", [10, 9, 7, 5, 4, 2, 0]),
+        ("none", [10, 9, 4]),
+    ],
+)
+def test_duckdb_duplicates_preserve_original_float_bits(
+    raw_type: str, keep: str, expected_positions: list[int]
+) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        f"SELECT * FROM (VALUES (-0.0::{raw_type}, 'a', 0), (0.0::{raw_type}, 'a', 1), "
+        f"(0.0::{raw_type}, 'b', 2), (-0.0::{raw_type}, 'b', 3), (-0.0::{raw_type}, 'unique', 4), "
+        f"('NaN'::{raw_type}, 'nan', 5), ('NaN'::{raw_type}, 'nan', 6), "
+        f"(NULL::{raw_type}, 'null', 7), (NULL::{raw_type}, 'null', 8), "
+        f"('Infinity'::{raw_type}, 'infinity', 9), ('-Infinity'::{raw_type}, 'infinity', 10)) "
+        'AS source("key""quoted", category, __ow_dupe_order)'
+    ).order('"__ow_dupe_order" DESC')
+    before = source.fetchall()
+    original_by_position = {row[2]: row for row in before}
+    operation = bound_step(
+        "dropDuplicates",
+        columns=[bound_ref("c:source:0", 'key"quoted', 0), bound_ref("c:source:1", "category", 1)],
+        keep=keep,
+    )
+    try:
+        for result in (engine.apply_transform(source, operation), execute_generated(engine, source, [operation])):
+            actual = rows(result)
+            assert [row[2] for row in actual] == expected_positions
+            assert list(result.columns) == list(source.columns)
+            assert list(map(str, result.types)) == list(map(str, source.types))
+            for row in actual:
+                expected = original_by_position[row[2]]
+                assert row[1:] == expected[1:]
+                assert (row[0].hex() if isinstance(row[0], float) else row[0]) == (
+                    expected[0].hex() if isinstance(expected[0], float) else expected[0]
+                )
+        empty = source.limit(0)
+        empty_live = engine.apply_transform(empty, operation)
+        empty_generated = execute_generated(engine, empty, [operation])
+        assert rows(empty_live) == rows(empty_generated) == []
+        assert list(map(str, empty_live.types)) == list(map(str, source.types))
+        assert list(map(str, empty_generated.types)) == list(map(str, source.types))
+        assert repr(source.fetchall()) == repr(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("container", ["list", "struct"])
+@pytest.mark.parametrize(
+    ("keep", "expected_positions"),
+    [("first", [0, 2, 3, 5, 7, 9, 10]), ("last", [1, 2, 4, 6, 8, 9, 10]), ("none", [2, 9, 10])],
+)
+def test_duckdb_duplicates_preserve_selected_nested_values(
+    container: str, keep: str, expected_positions: list[int]
+) -> None:
+    engine = DuckDBEngine()
+    expression = "[value]" if container == "list" else "{'item': value}"
+    source = duckdb.sql(
+        f"SELECT CASE WHEN seq IN (3, 4) THEN NULL ELSE {expression} END AS key, "
+        "seq AS __ow_dupe_rank, -0.0::DOUBLE AS __ow_dupe_count FROM (VALUES "
+        "(-0.0::DOUBLE, 0), (0.0::DOUBLE, 1), (1.0::DOUBLE, 2), (NULL::DOUBLE, 3), "
+        "(NULL::DOUBLE, 4), (NULL::DOUBLE, 5), (NULL::DOUBLE, 6), ('NaN'::DOUBLE, 7), "
+        "('NaN'::DOUBLE, 8), ('Infinity'::DOUBLE, 9), ('-Infinity'::DOUBLE, 10)) AS source(value, seq)"
+    )
+    before = source.fetchall()
+    operation = bound_step("dropDuplicates", columns=[bound_ref("c:source:0", "key", 0)], keep=keep)
+    try:
+        for result in (engine.apply_transform(source, operation), execute_generated(engine, source, [operation])):
+            actual = rows(result)
+            assert [row[1] for row in actual] == expected_positions
+            assert list(result.columns) == list(source.columns)
+            assert list(map(str, result.types)) == list(map(str, source.types))
+            for row in actual:
+                expected = before[row[1]]
+                assert repr(row[0]) == repr(expected[0])
+                assert row[2].hex() == expected[2].hex()
+        assert repr(source.fetchall()) == repr(before)
+    finally:
+        engine.close()
+
+
 def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
     engine = DuckDBEngine()
     missing = duckdb.sql(
