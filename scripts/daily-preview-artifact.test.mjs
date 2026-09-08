@@ -92,6 +92,44 @@ for (const scenario of [
   });
 }
 
+for (const scenario of [
+  { name: "first attempt", attempt: "1", allowed: true },
+  { name: "second attempt", attempt: "2" },
+  { name: "later attempt", attempt: "9" },
+  { name: "missing attempt" },
+  { name: "empty attempt", attempt: "" },
+  { name: "noncanonical attempt", attempt: "01" },
+  { name: "malformed attempt", attempt: "1x" }
+]) {
+  test(`preview package admission: ${scenario.name}`, { skip: process.platform === "win32" }, () => {
+    const workflow = parseYaml(readFileSync(join(fixtureRoot, ".github/workflows/preview-release.yml"), "utf8"));
+    const steps = workflow.jobs.package.steps;
+    const checkoutIndex = steps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
+    assert.notEqual(checkoutIndex, -1);
+    const script = steps
+      .slice(0, checkoutIndex)
+      .map((step) => step.run ?? "")
+      .join("\n");
+    const environment = { ...process.env };
+    delete environment.RUN_ATTEMPT;
+    if (scenario.attempt !== undefined) environment.RUN_ATTEMPT = scenario.attempt;
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", script], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: environment
+    });
+    assert.ifError(result.error);
+    if (scenario.allowed) {
+      assert.equal(result.status, 0, result.stderr);
+    } else {
+      assert.notEqual(result.status, 0, "Packaging must refuse this attempt before checkout or installation.");
+    }
+    assert.ok(checkoutIndex > 0, "The attempt guard must precede checkout.");
+    assert.equal(typeof steps[0].run, "string");
+    assert.equal(steps[0].env.RUN_ATTEMPT, "${{ github.run_attempt }}");
+  });
+}
+
 function git(root, args) {
   return execFileSync("git", args, {
     cwd: root,

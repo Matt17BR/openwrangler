@@ -78,6 +78,10 @@ jobs:
       preview-date: ${{ steps.daily_source.outputs.preview_date }}
       release-tag: ${{ steps.daily_source.outputs.release_tag || inputs.release_tag }}
     steps:
+      - name: Require first preview package attempt
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: test "$RUN_ATTEMPT" = "1"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
