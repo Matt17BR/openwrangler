@@ -53,6 +53,8 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 A failed Python viewing page retains the last confirmed query, so later Apply and Discard do not use an unseen
 filter. Spark also retains the prior view's continuation anchors when a replacement page fails.
 
+The operation catalog search exposes its accessible name before and after entering a query.
+
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed

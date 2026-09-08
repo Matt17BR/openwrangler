@@ -47,6 +47,14 @@ describe("OperationBuilder", () => {
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
+
+    const search = screen.getByRole("textbox", { name: "Search operations" });
+    search.focus();
+    fireEvent.change(search, { target: { value: "formula" } });
+    expect(screen.getByRole("textbox", { name: "Search operations" })).toHaveValue("formula");
+    expect(search).toHaveFocus();
+    expect(screen.getByText("Formula column", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Rename column", { selector: "strong" })).not.toBeInTheDocument();
   });
 
   it("shows only operations advertised by the active dataframe", () => {
@@ -195,7 +203,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("status")).toHaveTextContent("Previewing changes…");
     expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
-    expect(screen.getByPlaceholderText("Search operations")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Search operations" })).toBeDisabled();
     expect(screen.getByText("Select columns", { selector: "strong" }).closest("button")).toBeDisabled();
     expect(screen.getByRole("searchbox", { name: "Search columns to keep" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "city" })).toBeDisabled();
