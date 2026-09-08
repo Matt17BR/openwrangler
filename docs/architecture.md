@@ -160,6 +160,11 @@ also distinguishes JSON objects from arrays before list conversion and validates
 Filter Rows decoder preserves explicit null logic for rejection. Empty viewing lists and backend-specific operand
 semantics remain valid under their existing contracts.
 
+Python viewing operands follow the shared JSON depth and finite-number rules without coercing accepted integers
+or opaque containers. Python also requires UTF-8-valid strings and keys for response publication; lone surrogates
+are refused before native work even though the shared syntax guard accepts them. The primitive-string limit applies
+only at the operand root, and request framing retains its existing byte bound.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.

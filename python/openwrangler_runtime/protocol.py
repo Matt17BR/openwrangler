@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import traceback
 from collections.abc import Mapping
+from math import isfinite
 from typing import Any
 
 from .custom_code_output import redact_diagnostic
@@ -554,7 +555,7 @@ def _validate_view_filter_model(model: Mapping[str, Any]) -> None:
                 raise ProtocolError(f"{predicate_label}.secondValue is required.")
             for key in ("value", "secondValue"):
                 if key in predicate:
-                    _validate_view_value_text(predicate[key], f"{predicate_label}.{key}")
+                    _validate_view_value(predicate[key], f"{predicate_label}.{key}")
         if "valueFilter" not in column_filter:
             continue
         value_filter = _mapping(column_filter["valueFilter"], f"{label}.valueFilter")
@@ -577,12 +578,46 @@ def _validate_view_filter_model(model: Mapping[str, Any]) -> None:
         if "search" in value_filter and not isinstance(value_filter["search"], str):
             raise ProtocolError(f"{label}.valueFilter.search must be a string.")
         for value_index, selected_value in enumerate(selected_values):
-            _validate_view_value_text(selected_value, f"{label}.valueFilter.selectedValues[{value_index}]")
+            _validate_view_value(selected_value, f"{label}.valueFilter.selectedValues[{value_index}]")
 
 
-def _validate_view_value_text(value: Any, label: str) -> None:
-    if isinstance(value, str) and len(value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
-        raise ProtocolError(f"{label} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points.")
+def _validate_view_value(value: Any, label: str, depth: int = 0) -> None:
+    if depth > 64:
+        raise ProtocolError(f"{label} exceeds the JSON depth limit of 64.")
+    value_type = type(value)
+    if value is None or value_type is bool:
+        return
+    if value_type is str:
+        if depth == 0 and len(value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
+            raise ProtocolError(f"{label} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points.")
+        try:
+            _bounded_utf8_length(value, 4 * len(value))
+        except RequestFrameError:
+            raise ProtocolError(f"{label} must contain valid UTF-8 text.") from None
+        return
+    if value_type is int or value_type is float:
+        try:
+            finite = isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ProtocolError(f"{label} must contain only finite transport numbers.")
+        return
+    if value_type is list:
+        for child in value:
+            _validate_view_value(child, label, depth + 1)
+        return
+    if value_type is dict:
+        for key, child in value.items():
+            if type(key) is not str:
+                raise ProtocolError(f"{label} must contain only string object keys.")
+            try:
+                _bounded_utf8_length(key, 4 * len(key))
+            except RequestFrameError:
+                raise ProtocolError(f"{label} must contain valid UTF-8 object keys.") from None
+            _validate_view_value(child, label, depth + 1)
+        return
+    raise ProtocolError(f"{label} must contain only JSON values.")
 
 
 def _is_non_negative_integer(value: Any) -> bool:

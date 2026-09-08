@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import CancelledError
+from copy import deepcopy
 from io import StringIO
 from typing import Any
 
@@ -932,6 +933,91 @@ def test_malformed_view_is_rejected_before_native_work_and_preserves_session(kin
     recovery = json.loads(kernel_agent.dispatch_json(_envelope(_view_request("getPage", session_id, "valid-view"))))
     assert recovery["response"]["page"] == opened["page"]
     manager.close_session(session_id, 0)
+
+
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+def test_opaque_operand_refusal_preserves_populated_session_and_pending_draft(kind, tmp_path, monkeypatch) -> None:
+    path = tmp_path / "opaque-admission.csv"
+    source = "value\n1\n3\n"
+    path.write_text(source, encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", mode="editing", page_size=20
+    )
+    session_id = opened["metadata"]["sessionId"]
+    column_id = opened["metadata"]["schema"][0]["id"]
+    for old, new, revision in [("value", "base", 0), ("base", "pending", 2)]:
+        manager.preview_step(
+            session_id,
+            revision,
+            {"id": new, "kind": "renameColumn", "params": {"column": {"id": column_id, "name": old}, "newName": new}},
+            0,
+            20,
+        )
+        if revision == 0:
+            manager.apply_draft(session_id, 1, 0, 20)
+    query = {"filters": [], "sort": [{"column": "pending", "direction": "desc", "nulls": "last"}]}
+    page_before = manager.get_page(session_id, 3, 0, 20, query)["page"]
+    session = manager.sessions[session_id]
+    frames = (session.original, session.committed, session.draft_frame)
+    state = deepcopy(
+        (session.plan, session.draft_step, session.revision, session.filter_model, session.view_change_epoch)
+    )
+    deep: object = 0
+    for _ in range(129):
+        deep = [deep]
+    invalid_values = {
+        "getPage": deep,
+        "getSummary": {"nested": float("inf")},
+        "getDatasetStats": {"\ud800": 0},
+        "getColumnValues": 10**309,
+    }
+    request = _view_request(kind, session_id, "opaque-invalid-view")
+    request.update(
+        revision=3,
+        filterModel={
+            "filters": [
+                {
+                    "column": "pending",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "isNotNull", "value": invalid_values[kind]}],
+                }
+            ],
+            "sort": [],
+        },
+    )
+    if kind == "getColumnValues":
+        request.update(column="pending", limit=3)
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    with monkeypatch.context() as guarded:
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("Invalid opaque operand reached the native engine")
+
+        guarded.setattr(session.engine, "apply_filter_model", forbidden)
+        guarded.setattr(session.engine, "column_values", forbidden)
+        response = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id="opaque-refusal")))
+    assert response["requestId"] == "opaque-refusal"
+    assert response["response"]["code"] == "invalid_request"
+    assert response["response"]["viewRequestId"] == "opaque-invalid-view"
+    assert all(
+        actual is expected
+        for actual, expected in zip((session.original, session.committed, session.draft_frame), frames, strict=True)
+    )
+    assert (
+        session.plan,
+        session.draft_step,
+        session.revision,
+        session.filter_model,
+        session.view_change_epoch,
+    ) == state
+    recovery = _view_request("getPage", session_id, "opaque-valid-view")
+    recovery.update(revision=3, filterModel=query)
+    assert json.loads(kernel_agent.dispatch_json(_envelope(recovery)))["response"]["page"] == page_before
+    applied = manager.apply_draft(session_id, 3, 0, 20)
+    assert applied["page"] == page_before
+    assert path.read_text(encoding="utf-8") == source
+    manager.close_session(session_id, 4)
 
 
 def test_malformed_json_still_returns_a_canonical_envelope() -> None:

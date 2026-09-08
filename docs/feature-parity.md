@@ -175,6 +175,8 @@ checked beside their corresponding typed values. Saved Filter Rows steps accept 
 without dropping the cleaning plan during replay.
 Python and native R reject malformed viewing structures before execution. Native R applies the same array and
 logic admission checks to Filter Rows drafts; valid empty filters and existing native operand behavior remain.
+Python also rejects over-nested, non-finite or invalid-UTF-8 viewing operands before query work, preserving the
+runtime for a valid follow-up. Exact wide integers and supported opaque JSON values retain their representation.
 
 Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates,
 One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;
