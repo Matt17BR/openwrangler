@@ -13,7 +13,20 @@
     { "type": "duration", "value": "-1.25" },
     { "type": "duration", "value": "86399999999999.999999" },
     { "type": "duration", "value": "-86399999913600" },
-    { "type": "duration", "value": "1 day, 02:03:04.5" }
+    { "type": "duration", "value": "1 day, 02:03:04.5" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.1Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.12Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.123Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.1234Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.12345Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.123456Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58+0230" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58-0230" },
+    { "type": "datetime", "value": "2024-01-31 23:59:58.12" },
+    { "type": "datetime", "value": "2024-01-31T23:59+0000" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58+0000" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58-00:00" },
+    { "type": "datetime", "value": "2024-01-31 23:59:58.1234+0230" }
   ],
   "rejected": [
     { "type": "integer", "value": "1_000" },
@@ -42,6 +55,16 @@
     { "type": "duration", "value": "-86399999913600.000001" },
     { "type": "duration", "value": "1000000000 days, 00:00:00" },
     { "type": "duration", "value": "0.0000001" },
-    { "type": "duration", "value": "1e3" }
+    { "type": "duration", "value": "1e3" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58+00:60" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58-00:60" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58+0060" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58-0060" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58-2400" },
+    { "type": "datetime", "value": "2024-02-30T23:59:58Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58.1234567Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58+00:53:28" },
+    { "type": "datetime", "value": "2024-01-31T23:60:00Z" },
+    { "type": "datetime", "value": "2024-01-31T23:59:60Z" }
   ]
 }

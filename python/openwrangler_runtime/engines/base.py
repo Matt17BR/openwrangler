@@ -279,6 +279,11 @@ def coerce_typed_view_value(value: Any, column_type: str | None, *, preserve_flo
                 or (len(text) >= 19 and text[16] == ":" and int(text[17:19]) > 59)
             ):
                 raise ValueError("datetime hours, minutes, or seconds are outside their portable range")
+            offset = re.search(r"[+-](\d{2}):?(\d{2})$", text)
+            if offset and (int(offset.group(1)) > 23 or int(offset.group(2)) > 59):
+                raise ValueError("datetime offset hours or minutes are outside their portable range")
+            text = re.sub(r"\.(\d{1,6})", lambda match: "." + match.group(1).ljust(6, "0"), text)
+            text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
             return datetime.fromisoformat(text.replace("Z", "+00:00"))
         if column_type == "duration":
             if isinstance(value, timedelta):
@@ -338,7 +343,8 @@ def generated_fill_replacement_expression(replacement: Mapping[str, Any]) -> str
     if kind == "date":
         return f"date.fromisoformat({value!r})"
     if kind == "datetime":
-        return f"datetime.fromisoformat({value!r}.replace('Z', '+00:00'))"
+        canonical = decode_fill_replacement(replacement).isoformat()
+        return f"datetime.fromisoformat({canonical!r})"
     raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
 
 
@@ -632,6 +638,11 @@ def generated_view_value_helper_lines() -> list[str]:
             "(len(text) >= 19 and text[16] == ':' and int(text[17:19]) > 59)):"
         ),
         "            raise ValueError('Datetime components are outside their portable range.')",
+        "        offset = re.search(r'[+-](\\d{2}):?(\\d{2})$', text)",
+        "        if offset and (int(offset.group(1)) > 23 or int(offset.group(2)) > 59):",
+        "            raise ValueError('Datetime offset components are outside their portable range.')",
+        "        text = re.sub(r'\\.(\\d{1,6})', lambda match: '.' + match.group(1).ljust(6, '0'), text)",
+        "        text = re.sub(r'([+-]\\d{2})(\\d{2})$', r'\\1:\\2', text)",
         "        return datetime.fromisoformat(text.replace('Z', '+00:00'))",
         "    if column_type == 'duration':",
         "        if isinstance(value, timedelta):",

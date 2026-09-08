@@ -366,9 +366,13 @@ component tests own checkbox membership, saved scalar selections, and unnamed-co
 browser suite owns rendered tab hover contrast. Release-script tests distinguish interrupted fetches and response
 bodies from fatal package validation errors.
 
-The shared `fixtures/view-literal-contract.json` owns portable filter spellings. Persistence tests retain old bound
-Filter Rows steps while rejecting obsolete viewing payloads; Python filter and native R catalog tests execute the
-historical infinity selections through live and generated code.
+The shared `fixtures/view-literal-contract.json` owns filter spellings supported by Python and native R, including
+short datetime fractions, compact timezone offsets and malformed-component refusals. Existing Python filter and Fill
+owners compare exact instants with independently constructed values through live and standalone generated execution,
+including Python 3.10. Python-specific extreme offsets remain in those owners because native R retains its parser's
+offset limits. The existing Spark grid-query owner checks portable datetime selections without local conversion.
+Persistence tests retain old bound Filter Rows steps while rejecting obsolete viewing payloads; Python filter and
+native R catalog tests execute the historical infinity selections through live and generated code.
 
 ## Pull-request CI
 

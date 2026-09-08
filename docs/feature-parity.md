@@ -152,6 +152,10 @@ Pandas timestamps preserve nanosecond fractions and time-zone offsets that inclu
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
 corrected labels while retaining ordinary value counts. Filter inputs retain microsecond precision and minute-resolution offsets.
 
+Python datetime filters and explicitly entered Fill values accept fractions up to six digits and timezone offsets
+with or without a colon. These spellings behave consistently on Python 3.10 and newer; malformed offset components
+are rejected.
+
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
 follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
