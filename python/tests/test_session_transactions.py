@@ -686,6 +686,81 @@ def test_duckdb_unsigned_round_refusal_keeps_the_confirmed_plan(tmp_path: Path) 
         manager.close_all()
 
 
+@pytest.mark.parametrize(
+    "kind, scale", [("floorNumber", 38), ("ceilNumber", 38), ("roundNumber", 1), ("roundNumber", 38)]
+)
+def test_polars_decimal_file_steps_preserve_public_pages_generated_results_and_undo(
+    tmp_path: Path, kind: str, scale: int
+) -> None:
+    from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Context, Decimal
+
+    import polars as pl
+    from polars.testing import assert_frame_equal
+
+    boundary = 10**38 - 5 * 10 ** (scale - 1)
+    coefficients = [0, boundary - 1, boundary, boundary + 1, 1 - boundary, -boundary, -boundary - 1]
+    values = [Decimal((int(c < 0), tuple(map(int, str(abs(c)))), -scale)) for c in coefficients] + [None]
+    source = pl.DataFrame({"value": pl.Series(values, dtype=pl.Decimal(38, scale)), "pos": range(len(values))})
+    path = tmp_path / "decimal.parquet"
+    source.write_parquet(path)
+    source_bytes = path.read_bytes()
+    rounding = {"floorNumber": ROUND_FLOOR, "ceilNumber": ROUND_CEILING, "roundNumber": ROUND_HALF_EVEN}[kind]
+    reference = Context(prec=80, rounding=rounding)
+    expected = [None if value is None else value.quantize(Decimal(1), context=reference) for value in values]
+    manager = SessionManager()
+    try:
+        with pl.Config(engine_affinity="streaming"):
+            configuration = pl.Config.state()
+            opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", page_size=1)
+            sid = opened["metadata"]["sessionId"]
+            session = manager.sessions[sid]
+            initial = manager.get_page(sid, 0, 0, len(values), {"filters": [], "sort": []})["page"]
+            operation = {
+                "id": "decimal",
+                "kind": kind,
+                "params": {
+                    "column": {"id": "c:source:0", "name": "value"},
+                    "newColumn": "result",
+                    **({"decimals": 0} if kind == "roundNumber" else {}),
+                },
+            }
+            preview = manager.preview_step(sid, 0, operation, 0, 1, column_limit=1)
+            applied = manager.apply_draft(sid, preview["revision"], 0, 1, column_limit=1)
+            for response in [preview, applied]:
+                assert response["page"]["totalRows"] == len(values)
+                assert len(response["page"]["rows"]) == 1
+                assert len(response["page"]["rows"][0]["values"]) == 1
+            page = manager.get_page(
+                sid, applied["revision"], 0, len(values), {"filters": [], "sort": []}, column_limit=3
+            )["page"]
+            assert [row["id"] for row in page["rows"]] == [row["id"] for row in initial["rows"]]
+            assert [row["values"][:2] for row in page["rows"]] == [row["values"] for row in initial["rows"]]
+            cells = [row["values"][2]["raw"] for row in page["rows"]]
+            assert [None if value is None else Decimal(str(value)) for value in cells] == expected
+            namespace: dict[str, Any] = {}
+            exec(applied["code"], namespace)
+            generated = namespace["clean_data"](pl.scan_parquet(path))
+            assert isinstance(generated, pl.LazyFrame)
+            actual = generated.collect(engine="streaming")
+            assert actual["result"].to_list() == expected
+            assert actual["result"].dtype == pl.Decimal(38, 0)
+            actual["result"].to_arrow().validate(full=True)
+            assert_frame_equal(actual.select(source.columns), source, check_exact=True)
+            assert generated.select(pl.all().count()).collect(engine="streaming").rows() == [(7, 8, 7)]
+            assert isinstance(session.committed, pl.LazyFrame)
+            assert_frame_equal(
+                session.committed.select(actual.columns).collect(engine="streaming"), actual, check_exact=True
+            )
+            undone = manager.undo_step(sid, applied["revision"], 0, len(values))
+            assert undone["page"]["rows"] == initial["rows"]
+            assert not session.plan and session.committed is session.original
+            assert pl.Config.state() == configuration
+        assert path.read_bytes() == source_bytes
+        assert_frame_equal(pl.read_parquet(path), source, check_exact=True)
+    finally:
+        manager.close_all()
+
+
 def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(tmp_path: Path) -> None:
     path = tmp_path / "lazy-source.csv"
     path.write_text("name,value\na,1\nb,2\nc,3\n", encoding="utf-8")

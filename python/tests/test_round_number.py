@@ -735,3 +735,62 @@ def test_round_exact_native_empty_and_missing(engine, empty: bool, exact_type: s
             values = values_for(result, "rounded")
             assert len(values) == (0 if empty else 2)
             assert all(pd.isna(value) for value in values)
+
+
+@pytest.mark.parametrize(
+    "precision, scale, decimals, population",
+    [
+        (37, 1, 0, "values"),
+        (38, 1, 0, "values"),
+        (38, 38, 0, "values"),
+        (38, 38, 37, "values"),
+        (38, 38, 0, "empty"),
+        (38, 38, 0, "null"),
+    ],
+)
+def test_polars_round_masks_only_decimal_carries_before_native_round(
+    tmp_path, precision: int, scale: int, decimals: int, population: str
+) -> None:
+    from decimal import Context
+
+    from polars.testing import assert_frame_equal
+
+    boundary = 10**precision - 5 * 10 ** (scale - decimals - 1)
+    positive = [boundary - 1, boundary, boundary + 1, 10**precision - 1]
+    coefficients = [*positive, *[-value for value in positive], 0]
+    values = [Decimal((int(c < 0), tuple(map(int, str(abs(c)))), -scale)) for c in coefficients] + [None]
+    if population != "values":
+        values = [] if population == "empty" else [None, None]
+    frame = pl.DataFrame({"value": pl.Series(values, dtype=pl.Decimal(precision, scale)), "kept": range(len(values))})
+    before = frame.clone()
+    reference = Context(prec=80, rounding=ROUND_HALF_EVEN)
+    expected = [
+        None if value is None else value.quantize(Decimal((0, (1,), -decimals)), context=reference) for value in values
+    ]
+    if (precision, scale, decimals, population) == (38, 38, 0, "values"):
+        assert values[1] == Decimal("0.5") and values[5] == Decimal("-0.5")
+        assert expected[1] == expected[5] == 0
+    path = tmp_path / "round.parquet"
+    frame.write_parquet(path)
+    source_bytes = path.read_bytes()
+    with localcontext() as context:
+        context.prec = 2
+        context.rounding = "ROUND_DOWN"
+        for signal in context.traps:
+            context.traps[signal] = True
+        previous = str(context)
+        for source in [frame, frame.lazy(), pl.scan_parquet(path)]:
+            for result in rounded_frames(PolarsEngine(), source, decimals):
+                for mode in ("streaming", "in-memory"):
+                    actual = pl.collect_all([result], engine=mode)[0] if isinstance(result, pl.LazyFrame) else result
+                    assert actual["rounded"].to_list() == expected
+                    assert actual["rounded"].dtype == pl.Decimal(38, decimals)
+                    actual["rounded"].to_arrow().validate(full=True)
+                    assert_frame_equal(actual.select(frame.columns), before, check_exact=True)
+                    if isinstance(result, pl.LazyFrame):
+                        counts = pl.collect_all([result.select(pl.all().count())], engine=mode)[0]
+                        present = sum(value is not None for value in values)
+                        assert counts.rows() == [(present, len(values), present)]
+        assert str(context) == previous
+    assert path.read_bytes() == source_bytes
+    assert_frame_equal(frame, before, check_exact=True)
