@@ -3163,6 +3163,11 @@ async function exerciseReleasedJupyterExtension(
       polarsFrame.sessionId,
       "The ordinary Polars Formula preview must reach its renderer before apply."
     );
+    const ordinaryApplyDiagnostics = await prepareVisibleApplyDiagnostics(testing, reviewApp, {
+      sessionId: polarsFrame.sessionId,
+      revision: preview.metadata.revision,
+      stepId: "released-jupyter-double"
+    });
     await reviewApp
       .getByRole("region", { name: "Draft review" })
       .getByRole("button", { name: "Apply step", exact: true })
@@ -3179,7 +3184,8 @@ async function exerciseReleasedJupyterExtension(
         );
       },
       30_000,
-      "the visible ordinary Polars Formula apply"
+      "the visible ordinary Polars Formula apply",
+      ordinaryApplyDiagnostics
     );
     const applied = testing.activeSession();
     assert.ok(applied, "The applied Polars Formula must retain its session.");
@@ -3313,6 +3319,11 @@ async function exerciseReleasedJupyterExtension(
       polarsFrame.sessionId,
       "The exact Polars Formula preview must reach its renderer before apply."
     );
+    const literalApplyDiagnostics = await prepareVisibleApplyDiagnostics(testing, literalReviewApp, {
+      sessionId: polarsFrame.sessionId,
+      revision: literalPreview.metadata.revision,
+      stepId: literalStepId
+    });
     await literalReviewApp
       .getByRole("region", { name: "Draft review" })
       .getByRole("button", { name: "Apply step", exact: true })
@@ -3327,7 +3338,8 @@ async function exerciseReleasedJupyterExtension(
         );
       },
       30_000,
-      "the visible Polars integer-literal apply"
+      "the visible Polars integer-literal apply",
+      literalApplyDiagnostics
     );
     const literalApplied = testing.activeSession();
     assert.ok(literalApplied);
@@ -19121,17 +19133,107 @@ function tsvSource(uri: vscode.Uri): SessionSource {
   };
 }
 
+async function prepareVisibleApplyDiagnostics(
+  testing: TestApi,
+  app: Locator,
+  expected: Readonly<{ sessionId: string; revision: number; stepId: string }>
+): Promise<() => Promise<string>> {
+  const pinnedRenderer = testing.panelSynchronizationReceipt(expected.sessionId);
+  assert.ok(pinnedRenderer, "Visible Apply requires its acknowledged renderer.");
+  assert.equal(pinnedRenderer.sessionId === expected.sessionId, true, "Visible Apply must retain the exact session.");
+  assert.equal(pinnedRenderer.revision, expected.revision, "Visible Apply must retain the exact draft revision.");
+  const observe = (timeoutMs: number) =>
+    withAcceptanceOperationDeadline(
+      app.evaluateAll(
+        (elements, identity) => {
+          const root = elements.length === 1 ? elements[0] : undefined;
+          const apply = root?.querySelector('[aria-label="Draft review"] button[data-operation-focus-fallback]');
+          return {
+            appCount: elements.length,
+            appConnected: root?.isConnected === true,
+            appSessionMatches: root?.getAttribute("data-session-id") === identity.sessionId,
+            appRendererMatches: root?.getAttribute("data-renderer-sync-id") === identity.syncId,
+            alertPresent: [...(root?.querySelectorAll('[role="alert"]') ?? [])].some(
+              (alert) => !alert.closest('[hidden], [aria-hidden="true"], [inert]')
+            ),
+            applyPresent: apply !== undefined && apply !== null,
+            applyEnabled: apply !== undefined && apply !== null && !apply.matches(":disabled")
+          };
+        },
+        { sessionId: expected.sessionId, syncId: pinnedRenderer.syncId }
+      ),
+      timeoutMs,
+      "one observation of the original visible Apply app"
+    );
+  assert.deepEqual(
+    await observe(WORKBENCH_OPERATION_TIMEOUT_MS),
+    {
+      appCount: 1,
+      appConnected: true,
+      appSessionMatches: true,
+      appRendererMatches: true,
+      alertPresent: false,
+      applyPresent: true,
+      applyEnabled: true
+    },
+    "Visible Apply requires an enabled button and no existing scoped alert in its exact app."
+  );
+  return async () => {
+    const active = testing.activeSession();
+    const current = testing.sessionSnapshot(expected.sessionId);
+    const renderer = testing.panelSynchronizationReceipt(expected.sessionId);
+    const scheduler = testing.sessionSchedulerState(expected.sessionId);
+    const revision = (value: number | undefined) =>
+      value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const state = {
+      expectedRevision: revision(expected.revision),
+      activeSessionMatches: active?.sessionId === expected.sessionId,
+      sessionPresent: current !== undefined,
+      currentRevision: revision(current?.metadata.revision),
+      currentHasDraft: current?.metadata.draftStep !== undefined,
+      currentDraftMatches: current?.metadata.draftStep?.id === expected.stepId,
+      committedStepCount: current?.metadata.steps.length ?? null,
+      committedStepMatches: current?.metadata.steps.at(-1)?.id === expected.stepId,
+      panelHydrated: testing.panelHydrated(expected.sessionId),
+      panelSynchronizable: testing.panelSynchronizable(expected.sessionId),
+      rendererReceiptPresent: renderer !== undefined,
+      rendererSessionMatches: renderer?.sessionId === expected.sessionId,
+      rendererStillPinned: renderer?.syncId === pinnedRenderer.syncId,
+      rendererRevision: revision(renderer?.revision),
+      rendererMatchesHostRevision: renderer !== undefined && renderer.revision === current?.metadata.revision,
+      layoutTransitionPending: renderer?.layoutTransitionPending ?? null,
+      schedulerPresent: scheduler !== undefined,
+      schedulerQuiescent: scheduler?.quiescent ?? null,
+      foregroundActive: scheduler?.activeForegroundOperation ?? null
+    };
+    // Keep the original frame/session/renderer selector. A retired app is not
+    // replaced with whichever panel is active, and alert text is never read.
+    try {
+      return JSON.stringify({ ...state, domAvailable: true, dom: await observe(1_000) });
+    } catch {
+      return JSON.stringify({ ...state, domAvailable: false });
+    }
+  };
+}
+
 async function waitFor(
   predicate: () => boolean,
   timeoutMs: number,
   expectation: string,
-  diagnostics?: () => string
+  diagnostics?: () => string | Promise<string>
 ): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
     if (Date.now() - started > timeoutMs) {
-      const detail = diagnostics ? ` Last state: ${diagnostics()}.` : "";
-      throw new Error(`Timed out waiting for ${expectation}.${detail}`);
+      const failure = new Error(`Timed out waiting for ${expectation}.`);
+      if (diagnostics) {
+        try {
+          failure.message += ` Last state: ${await diagnostics()}.`;
+        } catch {
+          // Failure diagnostics must not replace the original wait error.
+        }
+      }
+      throw failure;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
