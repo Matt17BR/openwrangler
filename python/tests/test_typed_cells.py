@@ -277,12 +277,19 @@ def test_timestamp_cells_preserve_fraction_offset_and_instant(zone, clock, offse
     expected = clock + (f".{nanoseconds:09d}" if nanoseconds else "") + offset
     cell = normalize_cell(value)
     assert cell == {"kind": "datetime", "raw": expected, "display": expected, "isNull": False, "isNaN": False}
-    parsed = datetime.fromisoformat(cell["raw"])
+    # Python 3.10 parses microseconds; retain the remaining output digits for the exact instant check.
+    clock_text, separator, fraction_and_offset = cell["raw"].partition(".")
+    submicrosecond = 0
+    microsecond_text = cell["raw"]
+    if separator:
+        microsecond_text = f"{clock_text}.{fraction_and_offset[:6]}{fraction_and_offset[9:]}"
+        submicrosecond = int(fraction_and_offset[6:9])
+    parsed = datetime.fromisoformat(microsecond_text)
     assert parsed.utcoffset() == value.utcoffset()
     delta = parsed - datetime(1970, 1, 1, tzinfo=timezone.utc)
     assert (
         delta.days * 86_400 + delta.seconds
-    ) * 1_000_000_000 + delta.microseconds * 1_000 + nanoseconds % 1_000 == value.value
+    ) * 1_000_000_000 + delta.microseconds * 1_000 + submicrosecond == value.value
     nested = normalize_cell({"when": value, "values": [value, pd.NaT]})
     assert nested["raw"] == {"when": expected, "values": [expected, None]}
     json.dumps(nested, allow_nan=False)
