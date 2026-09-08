@@ -691,7 +691,16 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
 
 
 @pytest.mark.parametrize(
-    "family", ["uint64", "uint64-negative-add", "uint64-negative-subtract", "decimal-multiply", "decimal-divide"]
+    "family",
+    [
+        "uint64",
+        "uint64-negative-add",
+        "uint64-negative-subtract",
+        "uint64-negative-column-add",
+        "uint64-negative-column-subtract",
+        "decimal-multiply",
+        "decimal-divide",
+    ],
 )
 def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
@@ -705,17 +714,23 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     pq = pytest.importorskip("pyarrow.parquet")
     unsigned = family.startswith("uint64")
     negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract"}
+    negative_column = family in {"uint64-negative-column-add", "uint64-negative-column-subtract"}
     unsigned_values = [3, 2**64 - 1, None]
     if family == "uint64-negative-add":
         unsigned_values = [2**64 - 1, 1, None]
     elif family == "uint64-negative-subtract":
         unsigned_values = [3, 2**64 - 2, None]
+    elif negative_column:
+        unsigned_values = [2**64 - 1, 2, None] if family.endswith("add") else [3, 2**64 - 3, None]
     series = (
         pd.Series(unsigned_values, dtype="uint64[pyarrow]")
         if unsigned
         else pd.Series([Decimal("1.125"), Decimal("-2.500"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
     )
     frame = pd.DataFrame({"value": series, "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]")})
+    if negative_column:
+        frame["divisor"] = pd.Series([-1, -2, None], dtype="int64[pyarrow]")
+        frame["unsafeAdjustment"] = pd.Series([-1, -4, None], dtype="int64[pyarrow]")
     frame.index = pd.Index(["same", "same", "last"], name="source row")
     frame.attrs = {"source": "retained"}
     original = frame.copy(deep=True)
@@ -739,11 +754,17 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if negative_literal:
             operation["params"]["operator"] = "add" if family == "uint64-negative-add" else "subtract"
             operation["params"]["value"] = "-1"
+        elif negative_column:
+            operation["params"].pop("value")
+            operation["params"]["operator"] = "add" if family.endswith("add") else "subtract"
+            operation["params"]["rightColumn"] = {"id": columns[1]["id"], "name": columns[1]["name"]}
         unsigned_expected = [1, 2**64 - 3, None]
         if family == "uint64-negative-add":
             unsigned_expected = [2**64 - 2, 0, None]
         elif family == "uint64-negative-subtract":
             unsigned_expected = [4, 2**64 - 1, None]
+        elif negative_column:
+            unsigned_expected = [2**64 - 2, 0, None] if family.endswith("add") else [4, 2**64 - 1, None]
         expected = pd.Series(
             unsigned_expected
             if unsigned
@@ -769,7 +790,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         exec(confirmed["code"], namespace)
         generated = namespace["clean_data"](frame)
         pd.testing.assert_series_equal(generated["result"], expected)
-        pd.testing.assert_frame_equal(generated.iloc[:, :2], original)
+        pd.testing.assert_frame_equal(generated.loc[:, original.columns], original)
 
         before = session_state(session)
         invalid = {
@@ -785,6 +806,10 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if negative_literal:
             invalid["params"]["operator"] = operation["params"]["operator"]
             invalid["params"]["value"] = "-2"
+        elif negative_column:
+            invalid["params"].pop("value")
+            invalid["params"]["operator"] = operation["params"]["operator"]
+            invalid["params"]["rightColumn"] = {"id": columns[2]["id"], "name": columns[2]["name"]}
         with pytest.raises(pa.ArrowInvalid, match="(?i)overflow|divide by zero"):
             manager.preview_step(session_id, confirmed["revision"], invalid, 0, 1)
         assert session_state(session) == before

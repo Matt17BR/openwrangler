@@ -76,8 +76,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Formula modulo works on Pandas Arrow integer columns, including signed and unsigned extrema. Live and generated
   execution preserve nulls and refuse present zero divisors without changing the confirmed plan.
 - Pandas Formula accepts exact UInt64 arithmetic blocked by signed operand inference and widens eligible Decimal128
-  arithmetic to Decimal256. UInt64 addition and subtraction also accept negative integer literals when the unsigned
-  result fits. Existing successful native results retain their types, precision and scale.
+  arithmetic to Decimal256. UInt64 addition and subtraction also accept negative integer literals and nonpositive
+  signed adjustment columns when the unsigned result fits. Existing successful native results retain their types,
+  precision and scale.
 - Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
 - Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
   DuckDB arrays remain containers in schema and generated-code checks.
