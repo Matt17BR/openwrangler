@@ -978,7 +978,7 @@
           "default": 30000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Maximum duration for runtime requests other than session opening before recovery restarts and replays the session."
+          "description": "Maximum time Open Wrangler waits for a runtime request other than session opening. Notebook execution may continue after this wait expires."
         }
       }
     }
