@@ -332,6 +332,8 @@ Actual generated Python controls check quiet and noisy notebook-open paths befor
 For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.
+The two Polars Formula Apply checks retain their original app identity and add bounded host and renderer state
+to timeout diagnostics, without recording cell values, code or alert text.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
