@@ -334,6 +334,7 @@ export function createReleasedRJupyterExtensionJourney({
 
       if (coverage.kernelLifecycle) {
         recordReleasedRAcceptanceSection(phase, coverage, "restart", "start");
+        await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
         await exerciseReleasedRKernelLifecycle(testing, workbench, notebook, setup, kernelTarget, phase);
         recordReleasedRAcceptanceSection(phase, coverage, "restart", "complete");
       }

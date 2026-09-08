@@ -124,6 +124,11 @@ export function createReleasedRKernelLifecycle({
       },
       "the R restart session"
     );
+    assert.equal(
+      openedBeforeRestart.metadata.mode,
+      "editing",
+      "The R restart lifecycle must open in Editing mode before its scalar step."
+    );
     recordReleasedRKernelLifecycleCheckpoint(phase, "session-receipt:complete");
     recordReleasedRKernelLifecycleCheckpoint(phase, "scalar-step:start");
     const groupColumn = openedBeforeRestart.metadata.schema.find((column) => column.name === "group");

@@ -63,6 +63,9 @@ Installed Pandas journeys with duplicate or non-string column labels execute emi
 By Example and Group By plans in fresh namespaces. They compare complete values, physical labels, dtypes and native
 indexes, while retaining source, input, stable-reference and replay assertions.
 
+R kernel-restart journeys open an editing session before committing the step whose restart behavior they check.
+Their enclosing configuration owner restores the prior notebook setting on exit.
+
 For Native R changes, run the full contract suite or the relevant group:
 
 ```bash
