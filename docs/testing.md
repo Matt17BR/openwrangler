@@ -154,6 +154,17 @@ Undo and Redo. Decoder tests distinguish an explicit empty schema from missing c
 Native kernel owners compare live and generated first-column results and zero-column row reductions while retaining
 the nonempty Custom Code output requirement and stale-reference and maximum-width refusals.
 
+`python/tests/test_dense_rank.py` owns exact live/generated numeric ranks across the Python editing engines.
+It covers ties, direction, missingness, native integer/decimal boundaries, source and index preservation, and
+DuckDB's current input order. Existing session owners cover stable output identity, viewing-independent population,
+preview/apply, Undo/Redo, retained history after refusal and export/reopen. Native R frame, kernel and process owners
+cover its integer result contract, supported frame flavors, exact integer64 values and a rank-first generated plan.
+Operation-builder and shared-validator owners check duplicate-label selection, direction, saved-step compatibility
+and malformed public parameters through the existing form and admission paths.
+The installed operation-group journey checks ranks after a cleaning sort and runtime replay in each Python engine.
+The default comprehensive R notebook journey's core catalog submits the visible rank form and checks bounded pages
+across its full input before Undo. The focused `core-operations` selector retains its separate Clone lifecycle scope.
+
 `python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in

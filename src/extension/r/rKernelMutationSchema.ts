@@ -297,6 +297,24 @@ export function schemaAfterRStep(
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "groupBy") return schemaAfterGroupBy(inputSchema, step);
+  if (step.kind === "denseRank") {
+    const appended = schemaAfterClone(inputSchema, {
+      id: step.id,
+      kind: "cloneColumn",
+      params: { column: step.params.column, newName: step.params.newColumn }
+    });
+    const source = requireTransformColumn(step.params.column, inputSchema, "Dense Rank");
+    if (source.rawType !== "integer" && source.rawType !== "double" && source.rawType !== "integer64") {
+      throw new TypeError("Dense Rank requires a supported R numeric column.");
+    }
+    return Object.freeze(
+      appended.map((column, index) =>
+        index === inputSchema.length
+          ? Object.freeze({ ...column, rawType: "integer", type: "integer" as const, nullable: false })
+          : column
+      )
+    );
+  }
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "formula") return schemaAfterFormula(inputSchema, step);
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);

@@ -1281,6 +1281,12 @@ class PolarsEngine(DataFrameEngine):
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
             return df.with_columns(pl.col(column).cast(pl.String).str.len_chars().alias(params["newColumn"]))
+        if kind == "denseRank":
+            column = bound_column_name(params["column"], kind)
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            return df.with_columns(
+                _polars_dense_rank(pl.col(column), schema[column], params["direction"]).alias(params["newColumn"])
+            )
         if kind == "oneHotEncode":
             # The generated output columns depend on every observed category.
             # Previewing this operation is therefore an explicit user-requested
@@ -1579,6 +1585,23 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(_generated_polars_round_helpers())
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend(_generated_polars_min_max_helpers())
+        if any(step["kind"] == "denseRank" for step in plan):
+            lines.extend(
+                [
+                    "def _ow_polars_dense_rank(df, column, direction, target):",
+                    "    schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                    "    dtype = schema[column]",
+                    "    if not dtype.is_numeric():",
+                    "        raise ValueError('Dense rank requires a numeric column.')",
+                    "    values = pl.col(column)",
+                    "    if dtype.is_float():",
+                    "        values = values.fill_nan(None)",
+                    "    return df.with_columns("
+                    "values.rank(method='dense', descending=direction == 'desc').alias(target))",
+                    "",
+                    "",
+                ]
+            )
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
         if needs_fill_helpers:
@@ -2117,6 +2140,11 @@ class PolarsEngine(DataFrameEngine):
                     f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
                     f".str.len_chars().alias({params['newColumn']!r}))"
                 )
+            ]
+        if kind == "denseRank":
+            column = bound_column_name(params["column"], kind)
+            return [
+                f"{prefix}df = _ow_polars_dense_rank(df, {column!r}, {params['direction']!r}, {params['newColumn']!r})"
             ]
         if kind == "oneHotEncode":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
@@ -2773,6 +2801,14 @@ def _polars_round(expression: Any, decimals: int) -> Any:
     # also avoids false decimal ties introduced by floating division/modulo.
     result = pl.when(eligible).then(expression).otherwise(None).map_elements(rounded, return_dtype=pl.Float64)
     return pl.when(eligible).then(result).when(small).then(expression * 0.0).otherwise(expression)
+
+
+def _polars_dense_rank(values: Any, dtype: Any, direction: str) -> Any:
+    if not dtype.is_numeric():
+        raise EngineError("Dense rank requires a numeric column.")
+    if dtype.is_float():
+        values = values.fill_nan(None)
+    return values.rank(method="dense", descending=direction == "desc")
 
 
 def _generated_polars_round_helpers() -> list[str]:

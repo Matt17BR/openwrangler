@@ -386,6 +386,54 @@ def _pandas_numeric_key(series: Any) -> Any:
     return pd.Series(converted, index=series.index, name=series.name, dtype=object, copy=False)
 
 
+def _pandas_dense_rank(series: Any, direction: str) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    logical = _pandas_dictionary_values(series)
+    if pd.api.types.is_bool_dtype(logical.dtype) or not (
+        pd.api.types.is_numeric_dtype(logical.dtype) or pd.api.types.is_object_dtype(logical.dtype)
+    ):
+        raise EngineError("Dense rank requires a numeric column.")
+    if isinstance(logical.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(logical.dtype):
+        logical = _pandas_row_key(logical)
+    native = (isinstance(logical.dtype, np.dtype) and logical.dtype.kind in "iuf") or type(logical.array) in (
+        pd.arrays.IntegerArray,
+        pd.arrays.FloatingArray,
+        pd.arrays.ArrowExtensionArray,
+    )
+    if native:
+        keys = _pandas_numeric_key(logical)
+        if isinstance(keys.dtype, pd.ArrowDtype):
+            import pyarrow as pa
+
+            if pa.types.is_float16(keys.dtype.pyarrow_dtype):
+                keys = keys.astype(pd.ArrowDtype(pa.float32()))
+        if pd.api.types.is_float_dtype(keys.dtype):
+            keys = _pandas_prepare_float_group_key(keys)
+    else:
+        missing = logical.isna().to_numpy(dtype=bool)
+        values = logical.to_numpy(dtype=object, copy=True)
+        # Logical missing sentinels must not reach precision checks or custom
+        # comparison methods. Validate and normalize present keys in one pass.
+        for position, value in enumerate(values):
+            if missing[position]:
+                values[position] = None
+                continue
+            if not (
+                type(value) in (int, float, Decimal)
+                or _pandas_is_numpy_numeric_key_scalar(value)
+                and not isinstance(value, np.bool_)
+            ):
+                raise EngineError("Dense rank requires ordinary numeric scalar values.")
+            values[position] = None if type(value) is Decimal and value.is_nan() else _pandas_numeric_key_value(value)
+        keys = pd.Series(values, dtype=object, copy=False)
+    codes, distinct = pd.factorize(keys, sort=True, use_na_sentinel=True)
+    ranks = pd.arrays.IntegerArray(codes.astype(np.int64, copy=False), codes < 0)
+    values = ranks + 1 if direction == "asc" else len(distinct) - ranks
+    return pd.Series(values, index=series.index, dtype="Int64")
+
+
 def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
     import pandas as pd
 
@@ -1055,6 +1103,10 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             result = _pandas_scalar_values(df.iloc[:, position]).astype("string").str.len()
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
+        if kind == "denseRank":
+            position = self._bound_frame_position(df, params["column"], kind)
+            result = _pandas_dense_rank(df.iloc[:, position], params["direction"])
+            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             names = [bound_column_name(column, kind) for column in params["columns"]]
@@ -1415,6 +1467,7 @@ class PandasEngine(DataFrameEngine):
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
+        needs_rank_helpers = any(step["kind"] == "denseRank" for step in plan)
         needs_pivot_longer_helpers = any(step["kind"] == "pivotLonger" for step in plan)
         needs_pivot_wider_helpers = any(step["kind"] == "pivotWider" for step in plan)
         needs_counter = any(
@@ -1435,7 +1488,7 @@ class PandasEngine(DataFrameEngine):
             lines.append("from copy import deepcopy")
         if needs_missing_helpers:
             lines.append("from datetime import date, datetime, timedelta")
-        if needs_nullable_result_helpers or needs_missing_helpers:
+        if needs_nullable_result_helpers or needs_missing_helpers or needs_rank_helpers:
             decimal_imports = ["Decimal"]
             if needs_group_helpers:
                 decimal_imports.extend(["MAX_EMAX", "MIN_EMIN", "localcontext"])
@@ -1460,6 +1513,11 @@ class PandasEngine(DataFrameEngine):
                     "    return pd.Series(codes, index=series.index, name=series.name), uniques",
                     "",
                     "",
+                ]
+            )
+        if needs_nullable_result_helpers or "grouped" in fill_strategies or needs_rank_helpers:
+            lines.extend(
+                [
                     "def _open_wrangler_prepare_float_group_key(series):",
                     "    _open_wrangler_validate_query_values(series)",
                     "    nan_mask = (np.isnan(series) & series.notna()).fillna(False)",
@@ -1478,7 +1536,7 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        if needs_row_queries or needs_nullable_result_helpers or "grouped" in fill_strategies:
+        if needs_row_queries or needs_nullable_result_helpers or "grouped" in fill_strategies or needs_rank_helpers:
             lines.extend(_generated_pandas_numeric_key_helpers())
         needs_scalar_values = any(
             step["kind"]
@@ -1506,14 +1564,16 @@ class PandasEngine(DataFrameEngine):
             step["kind"] in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "formatDatetime"}
             for step in plan
         )
-        if needs_row_queries or needs_dictionary_values:
+        if needs_row_queries or needs_dictionary_values or needs_rank_helpers:
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
-        if needs_row_queries or needs_scalar_values:
+        if needs_row_queries or needs_scalar_values or needs_rank_helpers:
             lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
             lines.extend(_generated_pandas_numeric_filter_helpers())
-        if needs_row_queries:
-            lines.extend(_generated_pandas_row_query_helpers())
+        if needs_row_queries or needs_rank_helpers:
+            lines.extend(_generated_pandas_row_query_helpers(include_queries=needs_row_queries))
+        if needs_rank_helpers:
+            lines.extend(_generated_pandas_dense_rank_helpers())
         if any(step["kind"] == "formula" and step["params"]["operator"] == "modulo" for step in plan):
             lines.extend(_generated_pandas_modulo_helpers())
         if any(step["kind"] == "formula" and step["params"]["operator"] != "modulo" for step in plan):
@@ -2108,6 +2168,12 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}df = pd.concat([df, _open_wrangler_scalar_values(df.iloc[:, {position}])"
                 ".astype('string').str.len()"
                 f".rename({params['newColumn']!r})], axis=1)"
+            ]
+        if kind == "denseRank":
+            position = bound_column_position(params["column"], kind)
+            return [
+                f"{prefix}df = pd.concat([df, _open_wrangler_dense_rank(df.iloc[:, {position}], "
+                f"{params['direction']!r}).rename({params['newColumn']!r})], axis=1)"
             ]
         if kind == "oneHotEncode":
             positions = [bound_column_position(column, kind) for column in params["columns"]]
@@ -5234,6 +5300,61 @@ def _generated_pandas_modulo_helpers() -> list[str]:
     ]
 
 
+def _generated_pandas_dense_rank_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_dense_rank(series, direction):",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "",
+        "    logical = _open_wrangler_dictionary_values(series)",
+        "    if pd.api.types.is_bool_dtype(logical.dtype) or not (",
+        "        pd.api.types.is_numeric_dtype(logical.dtype) or pd.api.types.is_object_dtype(logical.dtype)",
+        "    ):",
+        '        raise ValueError("Dense rank requires a numeric column.")',
+        "    if isinstance(logical.dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(logical.dtype):",
+        "        logical = _open_wrangler_row_key(logical)",
+        '    native = (isinstance(logical.dtype, np.dtype) and logical.dtype.kind in "iuf") '
+        "or type(logical.array) in (",
+        "        pd.arrays.IntegerArray,",
+        "        pd.arrays.FloatingArray,",
+        "        pd.arrays.ArrowExtensionArray,",
+        "    )",
+        "    if native:",
+        "        keys = _open_wrangler_numeric_key(logical)",
+        "        if isinstance(keys.dtype, pd.ArrowDtype):",
+        "            import pyarrow as pa",
+        "",
+        "            if pa.types.is_float16(keys.dtype.pyarrow_dtype):",
+        "                keys = keys.astype(pd.ArrowDtype(pa.float32()))",
+        "        if pd.api.types.is_float_dtype(keys.dtype):",
+        "            keys = _open_wrangler_prepare_float_group_key(keys)",
+        "    else:",
+        "        missing = logical.isna().to_numpy(dtype=bool)",
+        "        values = logical.to_numpy(dtype=object, copy=True)",
+        "        # Logical missing sentinels must not reach precision checks or custom",
+        "        # comparison methods. Validate and normalize present keys in one pass.",
+        "        for position, value in enumerate(values):",
+        "            if missing[position]:",
+        "                values[position] = None",
+        "                continue",
+        "            if not (",
+        "                type(value) in (int, float, Decimal)",
+        "                or _open_wrangler_numpy_numeric_key_scalar(value) and not isinstance(value, np.bool_)",
+        "            ):",
+        '                raise ValueError("Dense rank requires ordinary numeric scalar values.")',
+        "            values[position] = (",
+        "                None if type(value) is Decimal and value.is_nan() "
+        "else _open_wrangler_numeric_key_value(value)",
+        "            )",
+        "        keys = pd.Series(values, dtype=object, copy=False)",
+        "    codes, distinct = pd.factorize(keys, sort=True, use_na_sentinel=True)",
+        "    ranks = pd.arrays.IntegerArray(codes.astype(np.int64, copy=False), codes < 0)",
+        '    values = ranks + 1 if direction == "asc" else len(distinct) - ranks',
+        '    return pd.Series(values, index=series.index, dtype="Int64")',
+        "",
+    ]
+
+
 def _generated_pandas_numeric_key_helpers() -> list[str]:
     return [
         "def _open_wrangler_validate_numpy_float(value):",
@@ -5399,8 +5520,8 @@ def _generated_pandas_numeric_filter_helpers() -> list[str]:
     ]
 
 
-def _generated_pandas_row_query_helpers() -> list[str]:
-    return [
+def _generated_pandas_row_query_helpers(*, include_queries: bool = True) -> list[str]:
+    take_rows = [
         "def _open_wrangler_take_rows(frame, positions):",
         "    frame = _open_wrangler_prepare_dictionary_rows(frame)",
         "",
@@ -5421,6 +5542,8 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "    return result",
         "",
         "",
+    ]
+    row_key = [
         "def _open_wrangler_row_key(series):",
         "    series = _open_wrangler_numeric_key(_open_wrangler_scalar_values(series))",
         "",
@@ -5439,12 +5562,15 @@ def _generated_pandas_row_query_helpers() -> list[str]:
         "    return key",
         "",
         "",
+    ]
+    sort_order = [
         "def _open_wrangler_sort_order(series, ascending, nulls):",
         "    key = _open_wrangler_row_key(series)",
         '    return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()',
         "",
         "",
     ]
+    return take_rows + row_key + sort_order if include_queries else row_key
 
 
 def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:

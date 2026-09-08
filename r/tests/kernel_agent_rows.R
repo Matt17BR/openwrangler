@@ -1,5 +1,69 @@
 # Row-operation kernel-agent contract cases.
 
+# The frame owner covers scalar ordering; this owner binds ranks to real session
+# captures and standalone plans across the three supported frame flavors.
+for (rank_flavor in c("base", "tibble", "data.table")) {
+  for (rank_direction in c("asc", "desc")) {
+    rank_environment <- new.env(parent = baseenv())
+    rank_values <- if (identical(rank_flavor, "data.table")) {
+      bit64::as.integer64(c("9223372036854775807", "9007199254740993", "9223372036854775807", NA))
+    } else c(20, 10, 20, NA_real_)
+    rank_frame <- data.frame(key = 1:4, value = rank_values, row.names = letters[1:4])
+    if (identical(rank_flavor, "tibble")) rank_frame <- tibble::as_tibble(rank_frame)
+    if (identical(rank_flavor, "data.table")) {
+      rank_frame <- data.table::as.data.table(rank_frame)
+      data.table::setkeyv(rank_frame, "key")
+    }
+    rank_environment$frame <- rank_frame
+    rank_before <- serialize(rank_environment$frame, NULL, version = 3L)
+    rank_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, rank_environment)
+    rank_session <- "73737373-7373-4373-8373-737373737373"
+    rank_open <- dispatch_with(rank_agent, "openSession", list(sessionId = rank_session, variableName = "frame", page = page_window()))
+    rank_step <- list(id = "rank", kind = "denseRank", params = list(column = list(id = "r:c:1", name = "value"), direction = rank_direction, newColumn = "rank"))
+    latest_full_capture <<- NULL
+    rank_preview <- dispatch_with(rank_agent, "previewStep", list(sessionId = rank_session, revision = 0L, step = rank_step, page = page_window()))
+    assert_identical(rank_preview$kind, "stepPreview", "Dense Rank did not preview through native admission")
+    rank_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+    rank_expected <- if (identical(rank_direction, "asc")) c(2L, 1L, 2L, NA_integer_) else c(1L, 2L, 1L, NA_integer_)
+    assert_identical(rank_live[["rank"]], rank_expected, "Native Dense Rank changed exact ranks")
+    assert_identical(rank_preview$page$schema[[3L]]$id, "c:step:rank:0", "Dense Rank lost its appended identity")
+    assert_identical(rank_preview$page$schema[[3L]]$rawType, "integer", "Dense Rank did not publish native integers")
+    assert_identical(rank_preview$page$schema[[3L]]$nullable, TRUE, "Dense Rank lost actual missingness")
+    assert_identical(rank_preview$page$schema[1:2], rank_open$page$schema, "Dense Rank changed source schema identities")
+    assert_identical(rank_preview$page$frameSemantics, rank_open$page$frameSemantics, "Dense Rank changed row or key metadata")
+    rank_apply <- dispatch_with(rank_agent, "applyDraft", list(sessionId = rank_session, revision = 1L, page = page_window()))
+    assert_identical(rank_apply$page, rank_preview$page, "Dense Rank Apply changed its confirmed page")
+    rank_generated <- new.env(parent = baseenv())
+    rank_generated$frame <- unserialize(rank_before)
+    eval(parse(text = rank_apply$code), envir = rank_generated)
+    assert_identical(lapply(rank_generated$open_wrangler_result, identity), lapply(rank_live, identity), "Generated Dense Rank differs from native values or attributes")
+    assert_identical(class(rank_generated$open_wrangler_result), class(rank_live), "Generated Dense Rank changed frame flavor")
+    assert_identical(attr(rank_generated$open_wrangler_result, "sorted"), attr(rank_live, "sorted"), "Generated Dense Rank lost the data.table key")
+    assert_identical(row.names(rank_generated$open_wrangler_result), row.names(rank_live), "Generated Dense Rank changed row labels")
+    assert_identical(serialize(rank_generated$frame, NULL, version = 3L), rank_before, "Generated Dense Rank mutated its source")
+    assert_identical(serialize(rank_environment$frame, NULL, version = 3L), rank_before, "Native Dense Rank mutated its source")
+    if (identical(rank_flavor, "base") && identical(rank_direction, "asc")) {
+      rank_sort <- list(id = "rank-sort", kind = "sortRows", params = list(rules = I(list(
+        list(column = list(id = "r:c:0", name = "key"), direction = "desc", nulls = "last")
+      ))))
+      rank_sorted <- dispatch_with(rank_agent, "previewStep", list(sessionId = rank_session, revision = 2L, step = rank_sort, page = page_window()))
+      assert_identical(rank_sorted$kind, "stepPreview", "The rank mixed plan did not sort")
+      invisible(dispatch_with(rank_agent, "applyDraft", list(sessionId = rank_session, revision = 3L, page = page_window())))
+      rank_next <- list(id = "rank-next", kind = "denseRank", params = list(column = list(id = "c:step:rank:0", name = "rank"), direction = "desc", newColumn = "next rank"))
+      rank_next_preview <- dispatch_with(rank_agent, "previewStep", list(sessionId = rank_session, revision = 4L, step = rank_next, page = page_window()))
+      assert_identical(rank_next_preview$kind, "stepPreview", "Dense Rank did not bind a derived current-input identity")
+      rank_mixed <- dispatch_with(rank_agent, "applyDraft", list(sessionId = rank_session, revision = 5L, page = page_window()))
+      eval(parse(text = rank_mixed$code), envir = rank_generated)
+      assert_identical(rank_generated$open_wrangler_result$key, 4:1, "Dense Rank reordered a prior cleaning sort")
+      assert_identical(rank_generated$open_wrangler_result[["next rank"]], c(NA_integer_, 1L, 2L, 1L), "Mixed generated rank lost current-input values")
+      assert_identical(length(gregexpr(".ow_dense_rank <- function", rank_mixed$code, fixed = TRUE)[[1L]]), 1L, "Dense Rank repeated its standalone helper")
+      assert_identical(serialize(rank_generated$frame, NULL, version = 3L), rank_before, "Mixed generated rank mutated its source")
+    }
+    invisible(dispatch_with(rank_agent, "closeSession", list(sessionId = rank_session)))
+    rank_agent$dispose()
+  }
+}
+
 row_sort_rule <- function(id, name, direction = "asc", nulls = "last") {
   list(column = list(id = id, name = name), direction = direction, nulls = nulls)
 }

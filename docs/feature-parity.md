@@ -21,7 +21,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Dataset summary and quick insights                  |    Yes |     Yes | Done    | Native profiles, exact sums, typed extrema, and accessible charts; test:src/test/numericSummary.component.test.tsx; record:docs/testing.md                                                                |
 | Basic and advanced viewing filters                  |    Yes |     Yes | Done    | Typed values, predicates, AND/OR composition, and filter history; test:python/tests/test_filter_logic.py; test:src/test/filterPanel.component.test.tsx                                                    |
 | Multi-column viewing sorts                          |    Yes |     Yes | Done    | Ordered priorities and stable native execution; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py                                                                          |
-| Editing mode and operation catalog                  |    Yes |     Yes | Done    | All 32 generated catalog operations and the installed picker; test:python/tests/test_operations.py; test:src/test/operations.unit.test.ts; record:docs/testing.md                                         |
+| Editing mode and operation catalog                  |    Yes |     Yes | Done    | All generated catalog operations and the installed picker; test:python/tests/test_operations.py; test:src/test/operations.unit.test.ts; record:docs/testing.md                                            |
 | Draft preview and data diff                         |    Yes |     Yes | Done    | Typed identity diff plus preview/apply rollback; test:src/test/dataGridDiff.component.test.tsx; record:docs/testing.md                                                                                    |
 | Cleaning-step history, edit, discard, undo          |    Yes |     Yes | Done    | Latest and earlier step edit/delete, suffix replay, discard, and undo; test:src/test/sessionCoordinator.planRewrite.unit.test.ts; record:docs/testing.md                                                  |
 | Generated code preview and editing                  |    Yes |     Yes | Done    | Editable native code and runtime-equivalent execution; test:src/test/codePreviewSynchronization.unit.test.ts; record:docs/testing.md                                                                      |
@@ -31,7 +31,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Fill missing values                                 |    Yes |     Yes | Done    | Typed global, fallback, directional, grouped, and interpolation methods; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                |
 | One-hot and multi-label binarization                |    Yes |     Yes | Done    | Null, blank, collision, and generated-code parity; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                                      |
 | Find/replace/strip/split/case transforms            |    Yes |     Yes | Done    | Text transforms, multi-output split, and portable regex extraction; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                     |
-| Scale/round/floor/ceiling/datetime format           |    Yes |     Yes | Done    | Live/generated numeric boundaries and datetime contracts; test:python/tests/test_round_number.py; test:python/tests/test_operation_edges.py; record:docs/testing.md                                       |
+| Scale/rank/round/floor/ceiling/datetime format      |    Yes |     Yes | Done    | Live/generated numeric and datetime contracts; test:python/tests/test_dense_rank.py; test:python/tests/test_round_number.py; record:docs/testing.md                                                       |
 | Group and aggregate                                 |    Yes |     Yes | Done    | Ordered groups and normalized numeric aggregation; test:python/tests/test_group_numeric_parity.py; record:docs/testing.md                                                                                 |
 | Custom engine-native code                           |    Yes |     Yes | Done    | Trusted isolated input, output validation, and executable native code; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py                                                   |
 | String/datetime/new-column by example               |    Yes |     Yes | Done    | Bounded deterministic synthesis and native execution; test:python/tests/test_by_example.py; record:docs/testing.md                                                                                        |
@@ -93,6 +93,11 @@ lazy-provider, and native-view owner tests cover cancellation during loading and
 
 Delayed grid navigation preserves newer header and control focus. Column drags stop after host view restoration,
 a logical-view change or disabled controls. Existing App, clipboard and resize component owners cover these changes.
+
+Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
+are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
+filters and sorts. Pandas, Polars, DuckDB file sessions and native R support the same value rules; native integer
+storage and capacity limits remain engine-specific. General window and partitioned ranking operations remain planned.
 
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
 engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
@@ -198,10 +203,8 @@ operation-builder tests verify the exact submitted references, saved selections,
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 
-The catalog contains 32 operations: five row/order, seven column/type, ten categorical/text, five numeric/datetime,
-two reshape, Group and aggregate, Transform by example, and Custom code. The exact names and parameters are in the
-[generated catalog](reference.md#transformation-operations). Transpose, explode, and unnest are not hidden catalog
-entries.
+The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
+Transpose, explode, and unnest are not hidden catalog entries.
 
 ## Release rule
 
@@ -290,7 +293,7 @@ output.
 | Notebook variables and inline MIME rendering | Viewing only       | Partial | Native relation package slices                 | No cleaning, code insertion, or data export         |
 | Grid pages, typed cells, filters, and sorts  | Yes                | Partial | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix    |
 | Summaries, statistics, and distinct values   | Yes                | Partial | Native fixed-size profile contracts            | Repeated large-data resource evidence               |
-| Complete 32-operation catalog                | File sessions only | Partial | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix |
+| Complete operation catalog                   | File sessions only | Partial | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix |
 | Draft preview, diff, apply, and history      | File sessions only | Partial | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix       |
 | Executable generated DuckDB code             | File sessions only | Partial | Direct equality and packaged copy/script slice | Edited-code execution acceptance                    |
 | CSV and Parquet cleaned-data export          | File sessions only | Partial | Native export and publication failure tests    | Cross-platform installed destination matrix         |

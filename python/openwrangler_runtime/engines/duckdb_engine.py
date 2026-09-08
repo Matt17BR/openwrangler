@@ -845,6 +845,9 @@ class DuckDBEngine(DataFrameEngine):
                 params["newColumn"],
                 f"length(CAST({_quote_ident(column)} AS VARCHAR))",
             )
+        if kind == "denseRank":
+            column = bound_column_name(params["column"], kind)
+            return self._dense_rank(frame, column, params["direction"], params["newColumn"])
         if kind == "oneHotEncode":
             native_params = {
                 **params,
@@ -1295,6 +1298,9 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, "
                 f"'length(CAST(' + _ow_ident({column!r}) + ' AS VARCHAR))')"
             ]
+        if kind == "denseRank":
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _ow_dense_rank(df, {column!r}, {params['direction']!r}, {params['newColumn']!r})"]
         if kind == "oneHotEncode":
             native_params = {
                 **params,
@@ -2267,6 +2273,28 @@ class DuckDBEngine(DataFrameEngine):
         for index, name in enumerate(output_names, start=1):
             result = self._assign(result, name, f"string_split({value}, {delimiter})[{index}]")
         return result
+
+    def _dense_rank(self, frame: Any, column: str, direction: str, target: str) -> Any:
+        columns = self._columns(frame)
+        _ensure_duckdb_output_columns_available(columns, [target], "Dense rank")
+        raw_type = str(frame.types[columns.index(column)])
+        if not (_is_integer_type(raw_type) or _is_float_type(raw_type) or raw_type.upper().startswith("DECIMAL")):
+            raise EngineError("Dense rank requires a numeric column.")
+        order_name = _unique_internal([*columns, target], "__ow_rank_order")
+        value_name = _unique_internal([*columns, target, order_name], "__ow_rank_value")
+        order, value, source = map(_quote_ident, (order_name, value_name, column))
+        prepared = f"CASE WHEN {_valid_predicate(source, raw_type)} THEN {source} ELSE NULL END"
+        sort_direction = "ASC" if direction == "asc" else "DESC"
+        rank = (
+            f"CASE WHEN {value} IS NULL THEN NULL ELSE "
+            f"dense_rank() OVER (ORDER BY {value} {sort_direction} NULLS LAST) END"
+        )
+        # Number the current cleaning input before the rank window reorders it.
+        return self._relation(
+            frame,
+            f"SELECT * EXCLUDE ({order}, {value}), {rank} AS {_quote_ident(target)} "
+            f"FROM (SELECT *, row_number() OVER () AS {order}, {prepared} AS {value} FROM ow) ORDER BY {order}",
+        )
 
     def _min_max(self, frame: Any, column: str, target: str) -> Any:
         value_name = _unique_internal(self._columns(frame), "__ow_scale_value")
@@ -4722,6 +4750,30 @@ def _ow_pivot_wider(df, params):
         + _ow_ident(source_order)
     )
     return _ow_query(df, query)
+
+
+def _ow_dense_rank(df, column, direction, target):
+    columns = _ow_columns(df)
+    _ow_check_outputs(columns, [target], "Dense rank")
+    raw_type = str(df.types[columns.index(column)])
+    if not (_ow_is_integer(raw_type) or _ow_is_float(raw_type) or raw_type.upper().startswith("DECIMAL")):
+        raise ValueError("Dense rank requires a numeric column.")
+    order_name = _ow_unique([*columns, target], "__ow_rank_order")
+    value_name = _ow_unique([*columns, target, order_name], "__ow_rank_value")
+    order, value, source = map(_ow_ident, (order_name, value_name, column))
+    prepared = "CASE WHEN " + _ow_valid(source, raw_type) + " THEN " + source + " ELSE NULL END"
+    sort_direction = "ASC" if direction == "asc" else "DESC"
+    rank = (
+        "CASE WHEN " + value + " IS NULL THEN NULL ELSE dense_rank() OVER (ORDER BY "
+        + value + " " + sort_direction + " NULLS LAST) END"
+    )
+    # Capture current input order, independently of historical row IDs.
+    return _ow_query(
+        df,
+        "SELECT * EXCLUDE (" + order + ", " + value + "), " + rank + " AS " + _ow_ident(target)
+        + " FROM (SELECT *, row_number() OVER () AS " + order + ", " + prepared + " AS " + value
+        + " FROM ow) ORDER BY " + order,
+    )
 
 
 def _ow_min_max(df, column, target):

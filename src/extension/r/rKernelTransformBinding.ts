@@ -8,6 +8,7 @@ import type {
   CloneColumnTransformStep,
   ColumnSchema,
   CustomCodeTransformStep,
+  DenseRankTransformStep,
   DropColumnsTransformStep,
   DropDuplicatesTransformStep,
   DropMissingRowsTransformStep,
@@ -77,6 +78,7 @@ export type RTransformStepWithoutByExample =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
+  | DenseRankTransformStep
   | MinMaxScaleTransformStep
   | RoundNumberTransformStep
   | FloorNumberTransformStep
@@ -780,6 +782,17 @@ export function rTransformStep(
           ? { decimals: step.params.decimals }
           : {}),
         ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "denseRank") {
+    return Object.freeze({
+      id: step.id,
+      kind: "denseRank" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        direction: step.params.direction,
+        newColumn: step.params.newColumn
       })
     });
   }

@@ -234,6 +234,15 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze(["newColumn"])
   }),
   Object.freeze({
+    kind: "denseRank",
+    title: "Dense rank",
+    description: "Give equal numeric values equal ranks with no gaps, preserving row order.",
+    group: "Numeric / datetime",
+    icon: "symbol-numeric",
+    required: Object.freeze(["column", "direction", "newColumn"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "minMaxScale",
     title: "Min-max scale",
     description: "Scale numeric values into the zero-to-one range.",

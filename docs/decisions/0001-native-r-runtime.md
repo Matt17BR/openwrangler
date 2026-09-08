@@ -229,6 +229,13 @@ at or below -309 turns finite doubles into signed zero. A correctly rounded doub
 infinity; `integer64` retains its existing range-error behavior. Live and generated execution share the coarse helper
 and do not depend on the session's number-display options.
 
+Dense Rank accepts ordinary integer, double and `integer64` columns and appends an ordinary integer result. It
+preserves row order, existing column identities and compatible data-table keys. `NA` and `NaN` yield missing ranks;
+signed zeros tie, while infinities remain present. The existing frame row limit keeps every rank representable as
+an R integer. Exact `integer64` comparison loads the bit64 namespace before missing detection, including when Rank
+is the first generated step. Live execution and generated code share the same value helper. Rank has its own
+integer-result capture contract instead of using the double-valued numeric-transform contract.
+
 IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
 opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
 not rediscover the notebook from the active editor after an await.

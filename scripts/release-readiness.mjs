@@ -66,7 +66,7 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Fill missing values", "Yes", "Yes"],
   ["One-hot and multi-label binarization", "Yes", "Yes"],
   ["Find/replace/strip/split/case transforms", "Yes", "Yes"],
-  ["Scale/round/floor/ceiling/datetime format", "Yes", "Yes"],
+  ["Scale/rank/round/floor/ceiling/datetime format", "Yes", "Yes"],
   ["Group and aggregate", "Yes", "Yes"],
   ["Custom engine-native code", "Yes", "Yes"],
   ["String/datetime/new-column by example", "Yes", "Yes"],

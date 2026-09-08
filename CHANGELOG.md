@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Dense Rank appends numeric ranks in Pandas, Polars, DuckDB and native R. Ascending and descending ranks preserve
+  ties, missing values and input row order, and generate matching native code.
+
 - Redo re-executes the latest undone cleaning command in the current runtime session. It preserves saved settings
   and command order, and is available from the workbench or Command Palette. Closing or recovering the runtime,
   or committing a new plan branch, clears this history.

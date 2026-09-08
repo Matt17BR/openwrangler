@@ -11,6 +11,59 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v2 operation request validation", () => {
+  it("admits only the closed Dense Rank reference, direction and output contract", () => {
+    const valid = { column: valueReference, direction: "asc", newColumn: "rank" };
+    const admission = (params: unknown) => {
+      const step = { id: "rank", kind: "denseRank", params };
+      const request = {
+        kind: "previewStep",
+        sessionId: "session",
+        revision: 0,
+        offset: 0,
+        limit: 4,
+        columnOffset: 0,
+        columnLimit: 8,
+        step
+      };
+      const envelope = { protocolVersion: 2, requestId: "rank-preview", priority: "interactive", request };
+      return [
+        isTransformStep(step),
+        isOpenWranglerRequest(request),
+        isRuntimeRequestEnvelope(envelope),
+        validateTransportSchema(envelope)
+      ];
+    };
+    for (const direction of ["asc", "desc"]) {
+      expect(admission({ ...valid, direction })).toEqual([true, true, true, true]);
+      expect(admission({ ...valid, direction, column: { id: "column:2", name: "" } })).toEqual([
+        true,
+        true,
+        true,
+        true
+      ]);
+    }
+    for (const params of [
+      null,
+      [],
+      {},
+      { direction: "asc", newColumn: "rank" },
+      { column: valueReference, newColumn: "rank" },
+      { column: valueReference, direction: "asc" },
+      { ...valid, direction: "ascending" },
+      { ...valid, direction: "ASC" },
+      { ...valid, direction: true },
+      { ...valid, newColumn: "" },
+      { ...valid, newColumn: null },
+      { ...valid, column: "value" },
+      { ...valid, column: { id: "", name: "value" } },
+      { ...valid, column: { ...valueReference, position: 0 } },
+      { ...valid, partitionBy: [] },
+      { ...valid, filterModel: { filters: [], sort: [] } }
+    ]) {
+      expect(admission(params), JSON.stringify(params)).toEqual([false, false, false, false]);
+    }
+  });
+
   it("accepts bounded canonical Formula integers without changing legacy numeric values", () => {
     const step = (value: unknown) => ({
       id: "literal",
@@ -731,6 +784,7 @@ describe("protocol-v2 operation request validation", () => {
         params: { leftColumn: valueReference, operator: "multiply", value: 2, newColumn: "doubled" }
       },
       { id: "lower", kind: "lowerText", params: { column: valueReference, newColumn: "lower" } },
+      { id: "rank", kind: "denseRank", params: { column: valueReference, direction: "desc", newColumn: "rank" } },
       {
         id: "example",
         kind: "byExample",

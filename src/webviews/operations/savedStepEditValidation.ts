@@ -221,6 +221,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
     case "capitalizeText":
     case "lowerText":
     case "upperText":
+    case "denseRank":
     case "minMaxScale":
     case "roundNumber":
     case "floorNumber":
@@ -407,6 +408,7 @@ function savedOperationTypeError(
         operationColumnTypes(step.kind),
         "this text operation requires a string column"
       );
+    case "denseRank":
     case "minMaxScale":
     case "roundNumber":
     case "floorNumber":

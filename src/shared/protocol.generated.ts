@@ -71,6 +71,7 @@ export type TransformStep =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
+  | DenseRankTransformStep
   | MinMaxScaleTransformStep
   | RoundNumberTransformStep
   | FloorNumberTransformStep
@@ -109,6 +110,7 @@ export type OperationKind =
   | "capitalizeText"
   | "lowerText"
   | "upperText"
+  | "denseRank"
   | "minMaxScale"
   | "roundNumber"
   | "floorNumber"
@@ -308,6 +310,11 @@ export type LowerTextTransformStep = TransformStepTemplate & {
 export type UpperTextTransformStep = TransformStepTemplate & {
   kind: "upperText";
   params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type DenseRankTransformStep = TransformStepTemplate & {
+  kind: "denseRank";
+  params: DenseRankParams;
   [k: string]: unknown;
 };
 export type MinMaxScaleTransformStep = TransformStepTemplate & {
@@ -750,6 +757,11 @@ export interface ExtractRegexGroupParams {
 export interface ColumnOptionalOutputParams {
   column: ColumnReference;
   newColumn?: string;
+}
+export interface DenseRankParams {
+  column: ColumnReference;
+  direction: "asc" | "desc";
+  newColumn: string;
 }
 export interface RoundNumberParams {
   column: ColumnReference;

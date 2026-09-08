@@ -2650,6 +2650,7 @@ openwrangler_r_frame_contract <- local({
     text_transform_positions = NULL,
     numeric_transform_positions = NULL,
     min_max_scale_positions = NULL,
+    dense_rank_positions = NULL,
     datetime_format_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
@@ -2684,6 +2685,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(text_transform_positions) ||
             !is.null(numeric_transform_positions) ||
             !is.null(min_max_scale_positions) ||
+            !is.null(dense_rank_positions) ||
             !is.null(datetime_format_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
@@ -2710,6 +2712,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(formula_right_source_positions) && is.null(formula_positions)) {
       abort("internal-error", "R formula right operands require formula output positions")
+    }
+    if (!is.null(dense_rank_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R dense-rank outputs require explicit source mappings and identities")
     }
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
@@ -2904,6 +2909,22 @@ openwrangler_r_frame_contract <- local({
         }
         formula_right_source_positions <- as.integer(formula_right_source_positions)
       }
+      if (is.null(dense_rank_positions)) {
+        dense_rank_positions <- integer()
+      } else {
+        if (
+          !is.numeric(dense_rank_positions) ||
+            anyNA(dense_rank_positions) ||
+            any(!is.finite(dense_rank_positions)) ||
+            any(dense_rank_positions != floor(dense_rank_positions)) ||
+            any(dense_rank_positions < 1L) ||
+            any(dense_rank_positions > length(output_schema)) ||
+            anyDuplicated(dense_rank_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid dense-rank output positions")
+        }
+        dense_rank_positions <- as.integer(dense_rank_positions)
+      }
       if (is.null(text_length_positions)) {
         text_length_positions <- integer()
       } else {
@@ -3045,6 +3066,7 @@ openwrangler_r_frame_contract <- local({
         text_transform_positions,
         numeric_transform_positions,
         min_max_scale_positions,
+        dense_rank_positions,
         datetime_format_positions,
         fill_missing_positions,
         fallback_fill_positions,
@@ -3200,6 +3222,23 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid formula output")
           }
+        } else if (index %in% dense_rank_positions) {
+          input_values <- read_capture_frame(nullability_source, validated = TRUE)[[source_positions[[index]]]]
+          output_values <- snapshot[[index]]
+          input_missing <- if (identical(source_column$semantics$kind, "integer64")) {
+            integer64_missing_mask(input_values)
+          } else {
+            is.na(input_values)
+          }
+          if (
+            !source_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              !identical(output_column$semantics$kind, "integer") ||
+              identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              !identical(unname(is.na(output_values)), unname(input_missing)) ||
+              any(output_values[!input_missing] < 1L | output_values[!input_missing] > storage_length(output_values))
+          ) {
+            abort("internal-error", "a derived R frame has an invalid dense-rank output")
+          }
         } else if (index %in% text_length_positions) {
           if (
             !source_column$semantics$kind %in% c("character", "factor") ||
@@ -3304,7 +3343,7 @@ openwrangler_r_frame_contract <- local({
         output_schema[[index]]$id <- output_ids[[index]]
         output_schema[[index]]$nullable <- if (index %in% categorical_positions) {
           FALSE
-        } else if (index %in% by_example_positions) {
+        } else if (index %in% c(by_example_positions, dense_rank_positions)) {
           column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% formula_positions) {
           formula_index <- match(index, formula_positions)
@@ -3672,6 +3711,43 @@ openwrangler_r_frame_contract <- local({
       columns <- unclass(result)
       columns[[storage_length(columns) + 1L]] <- .subset2(columns, position)
       frame_attributes[["names"]] <- c(frame_names, new_name)
+      attributes(columns) <- frame_attributes
+      result <- columns
+    }
+    result
+  }
+
+  dense_rank_values <- function(values, direction) {
+    integer64 <- base::is.double(values) && base::identical(base::class(values), "integer64")
+    if (!integer64 && !((base::is.integer(values) || base::is.double(values)) && !base::is.object(values))) {
+      base::stop("Dense Rank requires a supported numeric column", call. = FALSE)
+    }
+    if (!base::identical(direction, "asc") && !base::identical(direction, "desc")) {
+      base::stop("Dense Rank direction must be asc or desc", call. = FALSE)
+    }
+    # Serialized integer64 sources need their native methods before missing detection.
+    if (integer64 && !base::requireNamespace("bit64", quietly = TRUE)) {
+      base::stop("Dense Rank integer64 requires bit64", call. = FALSE)
+    }
+    result <- base::rep.int(NA_integer_, base::length(values))
+    present <- base::which(!base::is.na(values))
+    if (base::length(present) != 0L) {
+      levels <- base::sort(base::unique(values[present]), decreasing = base::identical(direction, "desc"), na.last = NA, method = "radix")
+      result[present] <- base::match(values[present], levels)
+    }
+    result
+  }
+
+  dense_rank_column_at <- function(value, position, old_name, new_name, direction) {
+    result <- clone_column_at(value, position, old_name, new_name)
+    ranks <- dense_rank_values(.subset2(result, position), direction)
+    if (identical(frame_flavor(result), "r.data.table")) {
+      data.table::set(result, j = new_name, value = ranks)
+    } else {
+      frame_attributes <- attributes(result)
+      frame_attributes[["row.names"]] <- .row_names_info(result, type = 0L)
+      columns <- unclass(result)
+      columns[[storage_length(columns)]] <- ranks
       attributes(columns) <- frame_attributes
       result <- columns
     }
@@ -9484,6 +9560,8 @@ openwrangler_r_frame_contract <- local({
     isolate_custom_code_input = isolate_custom_code_input,
     rename_column_at = rename_column_at,
     clone_column_at = clone_column_at,
+    dense_rank_values = dense_rank_values,
+    dense_rank_column_at = dense_rank_column_at,
     by_example_column_at = by_example_column_at,
     one_hot_encode_columns_at = one_hot_encode_columns_at,
     multi_label_binarize_column_at = multi_label_binarize_column_at,

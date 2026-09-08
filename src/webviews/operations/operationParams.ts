@@ -108,6 +108,8 @@ export function buildParams(
     }
     case "textLength":
       return { column: columnReference("column"), newColumn: value("newColumn") };
+    case "denseRank":
+      return { column: columnReference("column"), direction: value("direction"), newColumn: value("newColumn") };
     case "multiLabelBinarize": {
       const params: Record<string, unknown> = {
         column: columnReference("column"),

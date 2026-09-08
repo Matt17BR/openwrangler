@@ -302,7 +302,7 @@ export class RKernelMutationLifecycle {
                     : `c:step:${step.id}:0`,
                 mode: "mayAdd"
               }
-            : step.kind === "splitText"
+            : step.kind === "splitText" || step.kind === "denseRank"
               ? { columnId: `c:step:${step.id}:0`, mode: "mayAdd" }
               : step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
                 ? { columnId: step.params.column.id, mode: "mayRemove" }

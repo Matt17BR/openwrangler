@@ -1016,6 +1016,12 @@ export function isTransformStep(value: unknown): value is TransformStep {
     }
     case "textLength":
       return isColumnReference(params.column) && isNonEmptyString(params.newColumn);
+    case "denseRank":
+      return (
+        isColumnReference(params.column) &&
+        isOneOf(params.direction, ["asc", "desc"]) &&
+        isNonEmptyString(params.newColumn)
+      );
     case "oneHotEncode": {
       return (
         isUniqueColumnReferenceArray(params.columns, false) &&

@@ -24,6 +24,31 @@ import {
 } from "../extension/r/rKernelMutationSchema";
 
 describe("R kernel mutation schema", () => {
+  it("predicts an appended integer rank with independent missingness and rejects stale/colliding outputs", () => {
+    const step = {
+      id: "rank",
+      kind: "denseRank",
+      params: { column: reference(1), direction: "asc", newColumn: "rank" }
+    } as const;
+    const expected: readonly ColumnSchema[] = [
+      ...schema,
+      { id: "c:step:rank:0", name: "rank", position: 2, rawType: "integer", type: "integer", nullable: false }
+    ];
+    expect(schemaAfterRStep(schema, step, ["b"])).toEqual(expected);
+    expect(keyColumnsAfterRStep(["b"], expected, step)).toEqual(["b"]);
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+      "already exists"
+    );
+    expect(() =>
+      schemaAfterRStep(schema, { ...step, params: { ...step.params, column: { id: "missing", name: "count" } } }, [])
+    ).toThrow("no longer matches");
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, column: reference(0) } }, [])).toThrow(
+      "numeric"
+    );
+    expect(() => schemaAfterRStep(expected, { ...step, params: { ...step.params, newColumn: "second" } }, [])).toThrow(
+      "identity already exists"
+    );
+  });
   it("routes static schema changes and owns row/key transitions", () => {
     const renamed = schemaAfterRStep(
       schema,

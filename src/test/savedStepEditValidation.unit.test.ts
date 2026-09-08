@@ -105,6 +105,7 @@ const validSteps = {
   capitalizeText: step("capitalizeText", { column: text }),
   lowerText: step("lowerText", { column: text }),
   upperText: step("upperText", { column: text }),
+  denseRank: step("denseRank", { column: value, direction: "desc", newColumn: "rank" }),
   minMaxScale: step("minMaxScale", { column: value }),
   roundNumber: step("roundNumber", { column: value, decimals: 2 }),
   floorNumber: step("floorNumber", { column: value }),
@@ -212,6 +213,7 @@ describe("savedStepEditError", () => {
       "interpolation coordinate"
     ],
     ["single input columns", step("renameColumn", { column: missing, newName: "renamed" }), "input column"],
+    ["rank input", step("denseRank", { column: missing, direction: "asc", newColumn: "rank" }), "input column"],
     [
       "group keys",
       step("groupBy", {
