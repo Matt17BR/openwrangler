@@ -239,6 +239,8 @@ plain R once in a dedicated environment. Relative reads and `source()` therefore
 while console output stays separate from the file-based request channel. The process owns every discovered dataframe
 session and is stopped when its final panel closes. Generated code is inserted with one `WorkspaceEdit` only after the
 same document object and version are rechecked; success requires the complete resulting text to match.
+The process retains a stdin error listener through shutdown. A failed request write rejects through its callback,
+while actual child exit and the existing stop owner retain invalidation and cleanup authority.
 
 For `.Rmd` and `.qmd`, the command accepts top-level backtick-fenced `{r}` cells and a bounded first-line YAML block.
 It blanks prose for display diagnostics but sends each enabled cell to R as a separate source unit. The process reads

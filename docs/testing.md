@@ -132,6 +132,8 @@ generated code with its existing value, dtype, label and index comparator.
 Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
 retain cancellation correlation before dispatch, including synchronous listener registration, without losing
 request leases or treating unstarted work as an ambiguous mutation.
+Bridge and process transport owners exercise actual Writable error events after failed writes. They check request
+rejection, authoritative Python cancellation responses, late retired-stream errors and exact process cleanup.
 The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
 before continuing its existing preview, apply and undo assertions.
 

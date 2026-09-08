@@ -1891,6 +1891,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       shell: false,
       windowsHide: true
     });
+    // Write callbacks and bounded shutdown own failures; retain this listener for queued errors after retirement.
+    proc.stdin.on("error", () => undefined);
     this.generation += 1;
     this.output.appendLine(
       `Starting protocol v2 runtime with ${pythonPath} (Python ${environment.version}, ${environment.source}, generation ${this.generation}, scope ${runtime.key}).`

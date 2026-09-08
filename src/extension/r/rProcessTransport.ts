@@ -941,6 +941,8 @@ function createOwnedProcess(
     resolveClosed = resolve;
   });
   const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed, rootCleanupSafe: true };
+  // Write callbacks settle writes; queued stream errors can outlive shutdown.
+  child.stdin.on("error", () => undefined);
   child.on("error", (error) => {
     owned.spawnError = error;
     if (child.pid === undefined && !owned.closeState) {
