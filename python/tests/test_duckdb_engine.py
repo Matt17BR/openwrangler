@@ -5,6 +5,7 @@ import os
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
+from decimal import Decimal
 from math import isnan
 from pathlib import Path
 from threading import Event
@@ -19,7 +20,7 @@ from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
-from openwrangler_runtime.export_target import _regular_file_identity
+from openwrangler_runtime.export_target import ExportTarget, _regular_file_identity
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
@@ -2092,6 +2093,112 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     assert manager.close_session(session_id, 2) == {"kind": "sessionClosed", "sessionId": session_id}
     assert manager.sessions == {}
     manager.close_all()
+
+
+def test_duckdb_grouped_integer_export_matches_generated_code_and_refuses_hidden_overflow(tmp_path: Path) -> None:
+    source = tmp_path / "source.csv"
+    original = b"group key,value\ng,9007199254740992\ng,1\nh,9007199254740992\nh,2\nmissing,\n"
+    source.write_bytes(original)
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    opened = manager.open_session(
+        {"kind": "file", "label": source.name, "path": str(source)}, backend="duckdb", page_size=1
+    )
+    session_id = opened["metadata"]["sessionId"]
+    try:
+        preview = manager.preview_step(
+            session_id,
+            0,
+            step(
+                "groupBy",
+                keys=[{"id": "c:source:0", "name": "group key"}],
+                aggregations=[
+                    {
+                        "column": {"id": "c:source:1", "name": "value"},
+                        "operation": "sum",
+                        "alias": 'total "exact"',
+                    }
+                ],
+            ),
+            0,
+            1,
+        )
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        engine = manager.sessions[session_id].engine
+        expected = [("g", 2**53 + 1), ("h", 2**53 + 2), ("missing", 0)]
+        namespace: dict[str, Any] = {}
+        exec(compile(applied["code"], "<exported-cleaning-plan>", "exec"), namespace, namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        assert generated.fetchall() == expected
+        assert [str(dtype) for dtype in generated.types] == ["VARCHAR", "HUGEINT"]
+        confirmed = manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []})
+        for format_name in ("csv", "parquet"):
+            live_path = tmp_path / f"live.{format_name}"
+            result = manager.export_data(
+                session_id,
+                applied["revision"],
+                str(live_path),
+                export_options(format_name),
+                reserve_export_target(live_path),
+            )
+            assert result["kind"] == "dataExported"
+            generated_path = tmp_path / f"generated.{format_name}"
+            identity = reserve_export_target(generated_path)
+            with ExportTarget(
+                generated_path, int(identity["device"]), int(identity["inode"])
+            ).pinned_writer_path() as writer:
+                engine.export_data(generated, writer, export_options(format_name))
+            for destination in (live_path, generated_path):
+                loaded = engine.read_file(str(destination))
+                assert rows(loaded) == expected
+                assert [column["name"] for column in engine.schema(loaded)] == ["group key", 'total "exact"']
+                if format_name == "parquet":
+                    assert engine.schema(loaded)[1]["rawType"] == "DECIMAL(38,0)"
+                    assert all(isinstance(row[1], Decimal) for row in rows(loaded))
+        assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
+
+        # The first preview row is valid; a later committed row exceeds Parquet Decimal capacity.
+        expression = (
+            '"group key", CASE WHEN "group key" = \'h\' '
+            f'THEN \'{2**127 - 1}\'::HUGEINT ELSE "total ""exact""" END AS value'
+        )
+        preview = manager.preview_step(
+            session_id, applied["revision"], step("customCode", code=f"result = df.project({expression!r})"), 0, 1
+        )
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        confirmed = manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []})
+        rejected_path = tmp_path / "unpublished.parquet"
+        with pytest.raises(EngineError, match="DECIMAL"):
+            manager.export_data(
+                session_id,
+                applied["revision"],
+                str(rejected_path),
+                export_options("parquet"),
+                reserve_export_target(rejected_path),
+            )
+        namespace = {}
+        exec(compile(applied["code"], "<exported-cleaning-plan>", "exec"), namespace, namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        rejected_generated = tmp_path / "unpublished-generated.parquet"
+        identity = reserve_export_target(rejected_generated)
+        with (
+            ExportTarget(
+                rejected_generated, int(identity["device"]), int(identity["inode"])
+            ).pinned_writer_path() as writer,
+            pytest.raises(EngineError, match="DECIMAL"),
+        ):
+            engine.export_data(generated, writer, export_options("parquet"))
+        assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
+        fallback = tmp_path / "exact.csv"
+        assert (
+            manager.export_data(
+                session_id, applied["revision"], str(fallback), export_options("csv"), reserve_export_target(fallback)
+            )["kind"]
+            == "dataExported"
+        )
+        assert str(2**127 - 1) in fallback.read_text()
+        assert source.read_bytes() == original
+    finally:
+        manager.close_all()
 
 
 def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion_or_sql_replay(

@@ -146,6 +146,9 @@ The existing atomic-file tests retain destination and temporary
 identity checks; runtime writers retain their separate output-handle contracts.
 The export-target owner also reserves a file through Node and passes its actual identity receipt to the Python pinned
 writer, checking both writing the reserved file and refusal of a mismatched receipt on each platform.
+DuckDB Parquet owners cover exact 128-bit integer conversion, native overflow, nested-type refusal, null/empty
+inputs and unchanged ordinary fields. The file-session Group By journey exports both committed data and the
+actual generated cleaning result, then checks native readback and source/session preservation.
 The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
 owned process root when the session closes.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.

@@ -544,6 +544,10 @@ the host writes generated-script bytes itself.
 Pandas and both eager and lazy Polars pass the validated binary writer to their native CSV and Parquet writers.
 Holding an earlier descriptor does not authorize reopening an unchecked pathname: identity must be checked before
 the writer truncates the file.
+DuckDB Parquet export projects top-level HUGEINT and UHUGEINT fields through native DECIMAL(38,0), preserving
+exact values within that type's range. Native overflow rejects the export before publication. Nested 128-bit integer
+fields are refused by their native type metadata; other fields keep their native writer behavior. The host-owned
+temporary remains the publication boundary even if a failed native writer produced partial bytes.
 
 After the applicable writer closes, the host revalidates the temporary, source, destination, parent mapping, and
 remote authority and performs one atomic rename. A runtime may use an additional private engine artifact internally,

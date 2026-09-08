@@ -434,6 +434,121 @@ def native_export(request: pytest.FixtureRequest) -> tuple[Any, Any, str]:
     return engine, engine.ensure_row_ids(frame, "pinned-export"), str(request.param)
 
 
+@pytest.mark.parametrize(
+    "dtype, values",
+    [
+        ("HUGEINT", [2**53 + 1, -(2**53 + 1), 10**38 - 1, -(10**38 - 1), None]),
+        ("UHUGEINT", [2**53 + 1, 10**38 - 1, None]),
+        ("HUGEINT", [None, None]),
+        ("UHUGEINT", []),
+    ],
+)
+def test_duckdb_parquet_preserves_exact_128_bit_columns(tmp_path: Path, dtype: str, values: list[int | None]) -> None:
+    query = (
+        " UNION ALL ".join(
+            f"SELECT {repr(str(value)) if value is not None else 'NULL'}::{dtype} AS value" for value in values
+        )
+        if values
+        else f"SELECT NULL::{dtype} AS value WHERE FALSE"
+    )
+    source = duckdb.sql(query).project('value AS "exact "" amount"')
+    before, types, columns = source.fetchall(), source.types, source.columns
+    destination = tmp_path / "integers.parquet"
+    destination.touch()
+    identity = _regular_file_identity(destination)
+    engine = DuckDBEngine()
+    try:
+        with ExportTarget(destination, *identity).pinned_writer_path() as writer:
+            engine.export_data(source, writer, {"format": "parquet"})
+        loaded = duckdb.read_parquet(str(destination))
+        assert loaded.fetchall() == before
+        assert loaded.columns == columns
+        assert [str(dtype) for dtype in loaded.types] == ["DECIMAL(38,0)"]
+        assert all(isinstance(row[0], Decimal) for row in loaded.fetchall() if row[0] is not None)
+        assert _regular_file_identity(destination) == identity
+        assert source.fetchall() == before and source.types == types and source.columns == columns
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("dtype, outside", [("HUGEINT", 10**38), ("HUGEINT", -(10**38)), ("UHUGEINT", 2**128 - 1)])
+def test_duckdb_parquet_refuses_out_of_capacity_after_a_valid_row(tmp_path: Path, dtype: str, outside: int) -> None:
+    source = duckdb.sql(f"SELECT '1'::{dtype} AS value UNION ALL SELECT '{outside}'::{dtype}")
+    before, types = source.fetchall(), source.types
+    destination = tmp_path / "unpublished.parquet"
+    destination.touch()
+    identity = _regular_file_identity(destination)
+    engine = DuckDBEngine()
+    try:
+        with (
+            ExportTarget(destination, *identity).pinned_writer_path() as writer,
+            pytest.raises(EngineError, match="DECIMAL"),
+        ):
+            engine.export_data(source, writer, {"format": "parquet"})
+        # A native write may leave partial unpublished bytes; publication requires success.
+        assert _regular_file_identity(destination) == identity
+        assert source.fetchall() == before and source.types == types
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "{'outer': [{'inner': 9007199254740993::HUGEINT}]}",
+        "[9007199254740993::UHUGEINT, NULL]",
+        "[9007199254740993::HUGEINT, NULL]::HUGEINT[2]",
+        "MAP([9007199254740993::HUGEINT], [1])",
+        "MAP(['a'], [{'value': 9007199254740993::UHUGEINT}])",
+        "union_value(value := 9007199254740993::HUGEINT)",
+    ],
+)
+def test_duckdb_parquet_refuses_nested_128_bit_types_before_opening_writer(tmp_path: Path, expression: str) -> None:
+    source = duckdb.sql(f"SELECT {expression} AS nested")
+    before, types = source.fetchall(), source.types
+    destination = tmp_path / "unpublished.parquet"
+    destination.write_bytes(b"host reserved")
+    identity = _regular_file_identity(destination)
+    engine = DuckDBEngine()
+    try:
+        with (
+            ExportTarget(destination, *identity).pinned_writer_path() as writer,
+            pytest.raises(EngineError, match="nested 128-bit integers"),
+        ):
+            engine.export_data(source, writer, {"format": "parquet"})
+        assert destination.read_bytes() == b"host reserved"
+        assert _regular_file_identity(destination) == identity
+        assert source.fetchall() == before and source.types == types
+    finally:
+        engine.close()
+
+
+def test_duckdb_parquet_retains_other_native_types_and_same_spelling_names(tmp_path: Path) -> None:
+    source = duckdb.sql(
+        "SELECT 9007199254740993::BIGINT AS HUGEINT, 18446744073709551615::UBIGINT AS UHUGEINT, "
+        "'12345678901234567890.123'::DECIMAL(38,3) AS amount, 0.5::DOUBLE AS fraction, "
+        "{'HUGEINT': [9007199254740993::BIGINT, NULL]} AS nested, "
+        "'HUGEINT'::ENUM('HUGEINT', 'UHUGEINT') AS category"
+    )
+    before, types = source.fetchall(), source.types
+    native = tmp_path / "native.parquet"
+    source.write_parquet(str(native))
+    destination = tmp_path / "owned.parquet"
+    destination.touch()
+    identity = _regular_file_identity(destination)
+    engine = DuckDBEngine()
+    try:
+        with ExportTarget(destination, *identity).pinned_writer_path() as writer:
+            engine.export_data(source, writer, {"format": "parquet"})
+        loaded, expected = duckdb.read_parquet(str(destination)), duckdb.read_parquet(str(native))
+        assert loaded.fetchall() == expected.fetchall() == before
+        # Parquet's existing Enum-to-VARCHAR behavior remains native.
+        assert loaded.types == expected.types and loaded.columns == expected.columns
+        assert source.fetchall() == before and source.types == types
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 def test_native_exports_write_the_host_pinned_target(
     tmp_path: Path, native_export: tuple[Any, Any, str], format_name: str
