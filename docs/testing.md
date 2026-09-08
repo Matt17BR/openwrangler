@@ -94,6 +94,10 @@ coverage; timing and retirement behavior is owned by the renderer lifecycle test
 contracts execute generated code for midpoint edge cases alongside live execution.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
 ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
+Native R child fixtures retain the caller's temporary-directory settings. Private Spark notebook fixtures use
+Python's selected temporary directory for native Spark storage too; Java's default may otherwise select a full
+filesystem. Spark fixtures refuse temporary paths containing commas, which Spark interprets as separate roots.
+The editor environment allowlist and native cleanup owners remain unchanged.
 
 Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
 column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag

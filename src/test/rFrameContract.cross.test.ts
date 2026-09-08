@@ -17,6 +17,9 @@ function emitFrame(flavor: "data.frame" | "tibble" | "readr-tibble" | "data.tabl
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
       R_LIBS_USER: process.env.R_LIBS_USER,
       R_LIBS_SITE: process.env.R_LIBS_SITE,
       OPEN_WRANGLER_R_CONTRACT_OWNER: process.env.OPEN_WRANGLER_R_CONTRACT_OWNER,
