@@ -9,6 +9,7 @@ import type {
   ColumnSchema,
   CustomCodeTransformStep,
   DenseRankTransformStep,
+  MarkDuplicatesTransformStep,
   DropColumnsTransformStep,
   DropDuplicatesTransformStep,
   DropMissingRowsTransformStep,
@@ -78,6 +79,7 @@ export type RTransformStepWithoutByExample =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
+  | MarkDuplicatesTransformStep
   | DenseRankTransformStep
   | MinMaxScaleTransformStep
   | RoundNumberTransformStep
@@ -785,6 +787,21 @@ export function rTransformStep(
       })
     });
   }
+  if (step.kind === "markDuplicates") {
+    const columns = resolveRowReductionColumns(step.params.columns, inputSchema, "Mark duplicates", false);
+    if (!columns?.[0]) throw new TypeError("Mark duplicates requires a non-empty R column selection.");
+    return Object.freeze({
+      id: step.id,
+      kind: "markDuplicates" as const,
+      params: Object.freeze({
+        columns: Object.freeze([columns[0], ...columns.slice(1)]) as readonly [
+          RKernelColumnReference,
+          ...RKernelColumnReference[]
+        ],
+        newColumn: step.params.newColumn
+      })
+    });
+  }
   if (step.kind === "denseRank") {
     return Object.freeze({
       id: step.id,
@@ -827,7 +844,7 @@ export function rTransformStep(
 function resolveRowReductionColumns(
   columns: readonly RKernelColumnReference[] | undefined,
   inputSchema: readonly ColumnSchema[],
-  operation: "Drop missing rows" | "Drop duplicates",
+  operation: "Drop missing rows" | "Drop duplicates" | "Mark duplicates",
   allowEmpty: boolean
 ): readonly RKernelColumnReference[] | undefined {
   if (columns === undefined) return undefined;

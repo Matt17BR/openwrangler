@@ -50,6 +50,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=("columns", "keep"),
     ),
     OperationDefinition(
+        kind="markDuplicates",
+        title="Mark duplicates",
+        group="Rows / order",
+        required=("columns", "newColumn"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="selectColumns",
         title="Select columns",
         group="Columns / types",

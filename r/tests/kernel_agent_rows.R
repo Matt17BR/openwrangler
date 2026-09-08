@@ -1,3 +1,81 @@
+# Append/capture and emitted metadata are distinct from duplicate-mask arithmetic.
+for (mark_flavor in c("base", "tibble", "data.table")) {
+  for (mark_case in c("special", "wide-composite", "empty")) {
+    mark_environment <- new.env(parent = baseenv())
+    mark_values <- if (identical(mark_case, "wide-composite")) {
+      bit64::as.integer64(c("9007199254740993", "9007199254740993", "9007199254740992", "9007199254740992", NA, NA, "-9223372036854775807", "9223372036854775807"))
+    } else c(-0, 0, NA_real_, NA_real_, NaN, NaN, Inf, -Inf)
+    mark_frame <- data.frame(key = seq_along(mark_values), value = mark_values,
+      category = factor(c("a", "a", "a", "b", "a", "a", "a", "a")), row.names = letters[seq_along(mark_values)])
+    if (identical(mark_case, "empty")) mark_frame <- mark_frame[integer(), , drop = FALSE]
+    if (identical(mark_flavor, "tibble")) mark_frame <- tibble::as_tibble(mark_frame)
+    if (identical(mark_flavor, "data.table")) {
+      mark_frame <- data.table::as.data.table(mark_frame)
+      data.table::setkeyv(mark_frame, "key")
+    }
+    mark_environment$frame <- mark_frame
+    mark_before <- serialize(mark_environment$frame, NULL, version = 3L)
+    mark_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, mark_environment)
+    mark_session <- "74747474-7474-4474-8474-747474747474"
+    mark_open <- dispatch_with(mark_agent, "openSession", list(sessionId = mark_session, variableName = "frame", page = page_window()))
+    mark_columns <- list(list(id = "r:c:1", name = "value"))
+    if (identical(mark_case, "wide-composite")) mark_columns <- c(mark_columns, list(list(id = "r:c:2", name = "category")))
+    mark_step <- list(id = "mark", kind = "markDuplicates", params = list(columns = I(mark_columns), newColumn = "duplicate flag"))
+    latest_full_capture <<- NULL
+    mark_preview <- dispatch_with(mark_agent, "previewStep", list(sessionId = mark_session, revision = 0L, step = mark_step, page = page_window()))
+    assert_identical(mark_preview$kind, "stepPreview", "Mark Duplicates failed native admission")
+    mark_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+    mark_expected <- switch(mark_case, special = c(TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE),
+      `wide-composite` = c(TRUE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE), empty = logical())
+    assert_identical(mark_live[["duplicate flag"]], mark_expected, "Mark Duplicates changed native equality or logical flags")
+    assert_identical(mark_preview$page$schema[1:3], mark_open$page$schema, "Mark Duplicates changed original column identities/types")
+    assert_identical(mark_preview$page$schema[[4L]]$rawType, "logical", "Mark Duplicates did not publish logical storage")
+    assert_identical(mark_preview$page$schema[[4L]]$nullable, FALSE, "Mark Duplicates published missing flags")
+    assert_identical(mark_preview$page$frameSemantics, mark_open$page$frameSemantics, "Mark Duplicates changed row/key metadata")
+    assert_identical(lapply(mark_preview$page$page$rows, `[[`, "id"), lapply(mark_open$page$page$rows, `[[`, "id"), "Mark Duplicates changed row identities")
+    mark_apply <- dispatch_with(mark_agent, "applyDraft", list(sessionId = mark_session, revision = 1L, page = page_window()))
+    assert_identical(mark_apply$page, mark_preview$page, "Mark Duplicates Apply changed its page")
+    mark_generated <- new.env(parent = baseenv()); mark_generated$frame <- unserialize(mark_before)
+    eval(parse(text = mark_apply$code), envir = mark_generated)
+    assert_identical(lapply(mark_generated$open_wrangler_result, identity), lapply(mark_live, identity), "Generated Mark Duplicates changed values or element metadata")
+    assert_identical(class(mark_generated$open_wrangler_result), class(mark_live), "Generated Mark Duplicates changed flavor")
+    assert_identical(row.names(mark_generated$open_wrangler_result), row.names(mark_live), "Generated Mark Duplicates changed row names")
+    assert_identical(attr(mark_generated$open_wrangler_result, "sorted"), attr(mark_live, "sorted"), "Generated Mark Duplicates changed keys")
+    assert_identical(serialize(mark_generated$frame, NULL, version = 3L), mark_before, "Generated Mark Duplicates mutated source")
+    assert_identical(serialize(mark_environment$frame, NULL, version = 3L), mark_before, "Native Mark Duplicates mutated source")
+    if (identical(mark_flavor, "base") && identical(mark_case, "wide-composite")) {
+      mark_cold_bundle <- tempfile(fileext = ".rds")
+      mark_cold_script <- tempfile(fileext = ".R")
+      tryCatch({
+        saveRDS(list(frame = unserialize(mark_before), code = mark_apply$code, expected = mark_expected), mark_cold_bundle, version = 3L)
+        writeLines(c(
+          "bundle <- readRDS(commandArgs(TRUE)[[1L]])",
+          "stopifnot(!isNamespaceLoaded(\"bit64\"))",
+          "before <- serialize(bundle$frame, NULL, version = 3L)",
+          "generated <- new.env(parent = baseenv()); generated$frame <- bundle$frame",
+          "eval(parse(text = bundle$code), envir = generated)",
+          "stopifnot(identical(generated$open_wrangler_result[[\"duplicate flag\"]], bundle$expected))",
+          "stopifnot(identical(serialize(generated$frame, NULL, version = 3L), before))"
+        ), mark_cold_script, useBytes = TRUE)
+        mark_cold_output <- system2(file.path(R.home("bin"), "Rscript"), c("--vanilla", shQuote(mark_cold_script), shQuote(mark_cold_bundle)), stdout = TRUE, stderr = TRUE)
+        mark_cold_status <- attr(mark_cold_output, "status", exact = TRUE)
+        assert_identical(is.null(mark_cold_status) || identical(mark_cold_status, 0L), TRUE, "Cold Mark Duplicates failed")
+        assert_identical(mark_cold_output, character(), "Cold Mark Duplicates emitted a diagnostic")
+      }, finally = unlink(c(mark_cold_bundle, mark_cold_script)))
+    }
+    if (identical(mark_flavor, "base") && identical(mark_case, "special")) {
+      mark_drop <- list(id = "drop-flags", kind = "dropDuplicates", params = list(columns = I(list(list(id = "c:step:mark:0", name = "duplicate flag"))), keep = "first"))
+      mark_next <- dispatch_with(mark_agent, "previewStep", list(sessionId = mark_session, revision = 2L, step = mark_drop, page = page_window()))
+      assert_identical(mark_next$kind, "stepPreview", "Drop Duplicates did not bind a derived logical flag")
+      mark_next_apply <- dispatch_with(mark_agent, "applyDraft", list(sessionId = mark_session, revision = 3L, page = page_window()))
+      eval(parse(text = mark_next_apply$code), envir = mark_generated)
+      assert_identical(mark_generated$open_wrangler_result$key, c(1L, 7L), "Mixed mark/drop plan lost current-row membership")
+      assert_identical(length(gregexpr(".ow_duplicate_row_mask <- function", mark_next_apply$code, fixed = TRUE)[[1L]]), 1L, "Mixed plan repeated its duplicate helper")
+    }
+    invisible(dispatch_with(mark_agent, "closeSession", list(sessionId = mark_session)))
+  }
+}
+
 # Row-operation kernel-agent contract cases.
 
 # The frame owner covers scalar ordering; this owner binds ranks to real session

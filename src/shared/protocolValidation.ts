@@ -990,6 +990,8 @@ export function isTransformStep(value: unknown): value is TransformStep {
         optional(params, "keep", (keep) => isOneOf(keep, ["first", "last", "none"]))
       );
     }
+    case "markDuplicates":
+      return isUniqueColumnReferenceArray(params.columns, false) && isNonEmptyString(params.newColumn);
     case "selectColumns":
     case "dropColumns":
       return isUniqueColumnReferenceArray(params.columns, false);

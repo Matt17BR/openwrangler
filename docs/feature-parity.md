@@ -28,6 +28,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Sort/filter cleaning steps                          |    Yes |     Yes | Done    | Stable-reference live and generated contracts; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                                          |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |     Yes | Done    | Stable lineage, duplicate-label handling, and generated parity; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                         |
 | Drop missing/duplicate rows                         |    Yes |     Yes | Done    | All public row-reduction modes and generated parity; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                                    |
+| Mark duplicate groups                               |    Yes |     Yes | Done    | Retained-row flags with native equality and generated parity; test:python/tests/test_mark_duplicates.py; record:docs/testing.md                                                                           |
 | Fill missing values                                 |    Yes |     Yes | Done    | Typed global, fallback, directional, grouped, and interpolation methods; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                |
 | One-hot and multi-label binarization                |    Yes |     Yes | Done    | Null, blank, collision, and generated-code parity; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                                      |
 | Find/replace/strip/split/case transforms            |    Yes |     Yes | Done    | Text transforms, multi-output split, and portable regex extraction; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                     |
@@ -102,6 +103,11 @@ Dense Rank appends ranks from a numeric column without reordering rows. For `[20
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
 filters and sorts. Pandas, Polars, DuckDB file sessions and native R support the same value rules; native integer
 storage and capacity limits remain engine-specific. General window and partitioned ranking operations remain planned.
+
+Mark Duplicates adds a Boolean column for reviewing repeated selected keys without removing any records. For keys
+`[a, a, b]`, it produces `[true, true, false]`. Hidden matching rows still count because the operation uses the complete
+cleaning input. Pandas, Polars, DuckDB file sessions and native R preserve their existing duplicate-key semantics,
+including supported missing and classed values. Select at least one comparison column and a fresh output name.
 
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
 engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
@@ -215,7 +221,7 @@ logic admission checks to Filter Rows drafts; valid empty filters and existing n
 Python also rejects over-nested, non-finite or invalid-UTF-8 viewing operands before query work, preserving the
 runtime for a valid follow-up. Exact wide integers and supported opaque JSON values retain their representation.
 
-Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates,
+Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates, Mark duplicates,
 One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;
 operation-builder tests verify the exact submitted references, saved selections, and optional full-schema defaults.
 

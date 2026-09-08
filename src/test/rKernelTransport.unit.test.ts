@@ -53,6 +53,34 @@ afterEach(() => {
 });
 
 describe("native R kernel runtime bundle", () => {
+  it("admits only explicit nonempty duplicate comparisons and a fresh-name field", () => {
+    const step = {
+      id: "mark",
+      kind: "markDuplicates",
+      params: { columns: [{ id: "r:c:0", name: "value" }], newColumn: "flag" }
+    } as const;
+    const request = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    } as const;
+    expect(JSON.parse(encodeRKernelRequest(request)).payload.step).toEqual(step);
+    for (const params of [
+      { newColumn: "flag" },
+      { ...step.params, columns: [] },
+      { ...step.params, columns: [...step.params.columns, ...step.params.columns] },
+      { ...step.params, newColumn: "" },
+      { ...step.params, keep: "first" }
+    ]) {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, step: { ...step, params } }
+        } as unknown as RKernelRequest)
+      ).toThrow();
+    }
+  });
   it("admits only closed Dense Rank payloads with an explicit direction and output", () => {
     const step = {
       id: "rank",

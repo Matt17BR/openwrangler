@@ -62,7 +62,7 @@ column, and Drop Missing Rows and Drop Duplicates may retain the zero-column fra
 the same boundary; operation-specific column checks and the nonempty Custom Code output requirement still apply.
 
 Cleaning follows native `data.table` copy semantics for column-element names: ordinary operations drop this inert
-metadata. Clone and Custom Code explicitly retain named inputs for their own execution. Generated code applies the
+metadata. Clone, Dense Rank, Mark Duplicates and Custom Code explicitly retain named inputs. Generated code applies the
 same rule at each step, including when a later Custom Code step inspects the resulting attributes. Row labels and
 stable column identity are separate from these element names.
 Transform by Example validates names on its derived values before the final capture removes that metadata.
@@ -180,6 +180,11 @@ When data.table column labels repeat, the isolated comparison uses unique positi
 columns remain distinct; returned column names and stable identities are unchanged.
 Generated Drop Duplicates uses the same helper and includes its guarded integer64 conversion dependency only when
 the selected keys require it.
+
+Mark Duplicates uses the same comparison owner to flag every member of each repeated selected-key group. It requires
+at least one key and appends a fresh logical column with no missing flags. It preserves all input rows, values,
+identities, element names, row labels and compatible data-table keys. Capture validates the derived logical output
+separately from its selected input types; generated append behavior preserves the same metadata.
 
 Fill Missing Values offers a typed value, an exact numeric median, the mean of a double column, or the most common
 non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback

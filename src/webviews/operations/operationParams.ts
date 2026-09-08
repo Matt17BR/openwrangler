@@ -80,6 +80,11 @@ export function buildParams(
       if (columns.length) params.columns = columns;
       return params;
     }
+    case "markDuplicates":
+      return {
+        columns: requiredColumnReferences("columns", "Mark duplicates"),
+        newColumn: value("newColumn")
+      };
     case "selectColumns":
     case "dropColumns":
       return {

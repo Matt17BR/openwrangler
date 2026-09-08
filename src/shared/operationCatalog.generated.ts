@@ -79,6 +79,15 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze(["columns", "keep"])
   }),
   Object.freeze({
+    kind: "markDuplicates",
+    title: "Mark duplicates",
+    description: "Flag every row whose selected values match another row.",
+    group: "Rows / order",
+    icon: "checklist",
+    required: Object.freeze(["columns", "newColumn"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "selectColumns",
     title: "Select columns",
     description: "Keep selected columns in the chosen order.",

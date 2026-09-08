@@ -67,6 +67,7 @@ Mode.
   applied or discarded, and applied steps can be inspected, edited, deleted, or undone. Redo restores an undone
   command while its runtime session remains open.
 - Add Dense Rank from a numeric column, with ascending or descending order, tied ranks and missing values preserved.
+- Mark repeated groups with a Boolean column while retaining every record for review or export.
 - Keep executable code for the selected engine beside the preview. Viewing filters and sorts remain separate from
   the cleaning plan and exported result.
 - Open delimited text, Parquet, JSON Lines, and Excel files, or continue from live notebook and interactive dataframes.

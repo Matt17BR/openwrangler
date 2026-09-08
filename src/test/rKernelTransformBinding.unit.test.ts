@@ -3,6 +3,7 @@ import type {
   ByExampleTransformStep,
   ColumnSchema,
   DenseRankTransformStep,
+  MarkDuplicatesTransformStep,
   FillMissingReplacement,
   FillMissingValuesTransformStep,
   FilterRowsTransformStep,
@@ -20,6 +21,29 @@ import {
 import { copyRetainedStep, copyRTransformStep } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform binding", () => {
+  it("binds duplicate comparisons by exact identity and copies the command independently", () => {
+    const step: MarkDuplicatesTransformStep = {
+      id: "mark",
+      kind: "markDuplicates",
+      params: { columns: [reference(0), reference(1)], newColumn: "flag" }
+    };
+    const bound = rTransformStep(step, schema);
+    const retained = copyRetainedStep(step);
+    expect(bound).toEqual(step);
+    expect(retained).toEqual(step);
+    expect(copyRTransformStep(step)).toEqual(step);
+    expect(bound.params).not.toBe(step.params);
+    if (bound.kind !== "markDuplicates" || retained.kind !== "markDuplicates") throw new Error("wrong operation");
+    expect(bound.params.columns[0]).not.toBe(step.params.columns[0]);
+    expect(retained.params.columns).not.toBe(step.params.columns);
+    expect(Object.isFrozen(bound.params.columns[0])).toBe(true);
+    expect(() =>
+      rTransformStep({ ...step, params: { ...step.params, columns: [reference(0), reference(0)] } }, schema)
+    ).toThrow();
+    expect(() =>
+      rTransformStep({ ...step, params: { ...step.params, columns: [{ id: reference(0).id, name: "stale" }] } }, schema)
+    ).toThrow();
+  });
   it("retains a Dense Rank command and its exact reference in independent immutable copies", () => {
     const step: DenseRankTransformStep = {
       id: "rank",

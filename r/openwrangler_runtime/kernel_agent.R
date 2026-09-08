@@ -3209,6 +3209,22 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (identical(kind, "markDuplicates")) {
+      params <- exact_record(step$params, c("columns", "newColumn"), "request.payload.step.params")
+      if (!is.list(params$columns) || is.object(params$columns) || !is.null(names(params$columns)) ||
+          length(params$columns) == 0L || length(params$columns) > limits$columns) {
+        abort("invalid_request", "request.payload.step.params.columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(params$columns), function(index) decode_column_reference(
+        params$columns[[index]], sprintf("request.payload.step.params.columns[%d]", index), limits$columnIdBytes))
+      if (anyDuplicated(vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE))) {
+        abort("invalid_request", "request.payload.step.params.columns contains a repeated column identity")
+      }
+      new_column <- bounded_text(params$newColumn, "request.payload.step.params.newColumn", maximum_variable_name_bytes)
+      if (identical(new_column, "")) abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+      return(list(id = step_id, kind = kind, params = list(columns = columns, newColumn = new_column),
+        outputId = bounded_text(paste0("c:step:", step_id, ":0"), "the derived R duplicate-flag column identity", limits$columnIdBytes)))
+    }
     if (identical(kind, "denseRank")) {
       params <- exact_record(step$params, c("column", "direction", "newColumn"), "request.payload.step.params")
       column <- decode_column_reference(params$column, "request.payload.step.params.column", limits$columnIdBytes)
@@ -3459,6 +3475,7 @@ openwrangler_r_kernel_agent <- local({
       "extractRegexGroup",
       "findReplace",
       "denseRank",
+      "markDuplicates",
       "minMaxScale",
       "roundNumber",
       "floorNumber",
@@ -4442,6 +4459,15 @@ openwrangler_r_kernel_agent <- local({
           semanticsKind = schema[[matches[[1L]]]]$semantics$kind
         )
       })
+    }
+    if (identical(step$kind, "markDuplicates")) {
+      if (step$params$newColumn %in% vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE) ||
+          step$outputId %in% schema_ids) {
+        abort("invalid_request", "The duplicate-flag output column already exists", TRUE)
+      }
+      return(list(id = step$id, kind = step$kind, columns = columns,
+        position = columns[[1L]]$position, oldName = columns[[1L]]$name,
+        newName = step$params$newColumn, outputId = step$outputId))
     }
     list(
       id = step$id,
@@ -5456,6 +5482,20 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (identical(step$kind, "markDuplicates")) {
+      bound <- bind_row_reduction_step(capture, step)
+      result <- frame_contract$mark_duplicate_rows_at(source,
+        vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+        vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE), bound$newName)
+      return(list(capture = frame_contract$capture_frame(
+        result, nullability_source = capture,
+        source_positions = c(seq_along(capture$descriptor$schema), bound$position),
+        output_ids = c(vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE), bound$outputId),
+        mark_duplicate_positions = length(capture$descriptor$schema) + 1L,
+        preserve_data_table_element_names = TRUE
+      ), bound = bound))
+    }
+
     if (identical(step$kind, "denseRank")) {
       bound <- bind_numeric_transform_step(capture, step)
       result <- frame_contract$dense_rank_column_at(source, bound$position, bound$oldName, bound$newName, bound$direction)
@@ -7944,7 +7984,7 @@ openwrangler_r_kernel_agent <- local({
       logical(1L)
     ))
     needs_integer64_duplicates <- any(vapply(bound_plan, function(step) {
-      identical(step$kind, "dropDuplicates") && any(vapply(
+      step$kind %in% c("dropDuplicates", "markDuplicates") && any(vapply(
         step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)
       ))
     }, logical(1L)))
@@ -8013,7 +8053,7 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_duplicate_integer64_text <- function(values) base::.Call(.ow_integer64_as_character, values, base::rep.int(NA_character_, .ow_storage_length(values)))"
       )
     }
-    if (any(vapply(bound_plan, function(step) identical(step$kind, "dropDuplicates"), logical(1L)))) {
+    if (any(vapply(bound_plan, function(step) step$kind %in% c("dropDuplicates", "markDuplicates"), logical(1L)))) {
       duplicate_lines <- deparse(duplicate_row_mask, width.cutoff = 500L)
       duplicate_lines[[1L]] <- paste0(".ow_duplicate_row_mask <- ", duplicate_lines[[1L]])
       lines <- c(lines, paste0("  ", duplicate_lines))
@@ -8030,9 +8070,9 @@ openwrangler_r_kernel_agent <- local({
     )
     for (step in bound_plan) {
       # Match native copy metadata without copying the already-owned values.
-      # Clone, Dense Rank and Custom Code preserve names. By Example validates named
+      # Clone, Dense Rank, Mark Duplicates and Custom Code preserve names. By Example validates named
       # intermediates before its public result capture removes them.
-      if (!step$kind %in% c("cloneColumn", "denseRank", "customCode", "byExample")) {
+      if (!step$kind %in% c("cloneColumn", "denseRank", "markDuplicates", "customCode", "byExample")) {
         lines <- c(lines, data_table_copy_metadata_lines)
       }
       if (identical(step$kind, "sortRows")) {
@@ -8117,7 +8157,7 @@ openwrangler_r_kernel_agent <- local({
             r_string(step$newName)
           )
         )
-      } else if (step$kind %in% c("cloneColumn", "denseRank")) {
+      } else if (step$kind %in% c("cloneColumn", "denseRank", "markDuplicates")) {
         lines <- c(
           lines,
           sprintf("  .ow_clone_position <- %dL", step$position),
@@ -8133,6 +8173,17 @@ openwrangler_r_kernel_agent <- local({
           if (identical(step$kind, "denseRank")) exact_formula_datetime_type_guard("base::.subset2(.ow_result, .ow_clone_position)", step) else character(),
           if (identical(step$kind, "denseRank")) {
             sprintf("  .ow_clone_values <- .ow_dense_rank(base::.subset2(.ow_result, .ow_clone_position), %s)", r_string(step$direction))
+          } else if (identical(step$kind, "markDuplicates")) {
+            positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+            compared_names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+            c(
+              sprintf("  .ow_mark_positions <- c(%s)", paste(sprintf("%dL", positions), collapse = ", ")),
+              sprintf("  .ow_mark_names <- %s", r_character_vector(compared_names)),
+              "  if (base::any(.ow_mark_positions > ncol(.ow_result)) || !base::identical(.ow_clone_frame_names[.ow_mark_positions], .ow_mark_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+              "  .ow_compared <- if (inherits(.ow_result, \"data.table\")) .ow_result[, .ow_mark_positions, with = FALSE] else .ow_result[.ow_mark_positions]",
+              sprintf("  .ow_clone_values <- .ow_duplicate_row_mask(.ow_compared, \"none\", %s)",
+                if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) ".ow_duplicate_integer64_text" else "NULL")
+            )
           } else "  .ow_clone_values <- base::.subset2(.ow_result, .ow_clone_position)",
           "  .ow_clone_element_names <- base::attr(.ow_clone_values, \"names\", exact = TRUE)",
           "  if (inherits(.ow_result, \"data.table\")) {",
@@ -9401,7 +9452,7 @@ openwrangler_r_kernel_agent <- local({
     } else if (identical(bound$kind, "splitTextColumns")) {
       bound$newNames
     } else if (
-      bound$kind %in% c("cloneColumn", "denseRank", "formula", "textLength", "byExample", "extractRegexGroup") ||
+      bound$kind %in% c("cloneColumn", "denseRank", "markDuplicates", "formula", "textLength", "byExample", "extractRegexGroup") ||
         (
           bound$kind %in% c(
             "lowerText",

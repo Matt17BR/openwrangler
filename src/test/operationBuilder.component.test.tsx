@@ -882,6 +882,76 @@ describe("OperationBuilder", () => {
     expect(onPreview).not.toHaveBeenCalled();
   });
 
+  it("marks exact selected columns without narrowing native key types or copying viewing filters", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { ...metadata.schema[0], name: "value", type: "unknown", rawType: "Null" },
+      { ...metadata.schema[1], name: "value" },
+      { ...metadata.schema[0], id: "c:2", name: "nested", position: 2, type: "list", rawType: "List(String)" },
+      { ...metadata.schema[0], id: "c:3", name: "flag", position: 3, type: "boolean", rawType: "Boolean" }
+    ] satisfies SessionMetadata["schema"];
+    const filterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc" as const, nulls: "last" as const }]
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: columns,
+          shape: { rows: 2, columns: 4 },
+          filteredShape: { rows: 2, columns: 4 },
+          filterModel
+        }}
+        filterModel={filterModel}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Search operations" }), {
+      target: { value: "mark duplicates" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Mark duplicates/ }));
+    expect(screen.getByRole("group", { name: "Compare columns" })).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox").map((input) => (input as HTMLInputElement).value)).toEqual([
+      "c:0",
+      "c:1",
+      "c:2",
+      "c:3"
+    ]);
+    expect(screen.queryByRole("combobox", { name: "Keep" })).not.toBeInTheDocument();
+    const output = screen.getByRole("textbox", { name: "New column" });
+    expect(output).toHaveValue("is_duplicate");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Mark duplicates requires at least one compatible column.");
+    const search = screen.getByRole("searchbox", { name: "Search compared columns" });
+    fireEvent.change(search, { target: { value: "column 2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "value, column 2" }));
+    fireEvent.change(search, { target: { value: "nested" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "nested" }));
+    fireEvent.change(search, { target: { value: "no matching column" } });
+    fireEvent.change(output, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(output, { target: { value: "duplicate_group" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      {
+        id: expect.any(String),
+        kind: "markDuplicates",
+        params: {
+          columns: [
+            { id: "c:1", name: "value" },
+            { id: "c:2", name: "nested" }
+          ],
+          newColumn: "duplicate_group"
+        }
+      },
+      undefined
+    );
+  });
+
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [

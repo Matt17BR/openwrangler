@@ -18968,7 +18968,9 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       let revision = opened.metadata.revision;
       let stepCount = 0;
       let sortedPage: GridPage | undefined;
+      let rankedPage: LiveGridPage | undefined;
       const rankId = `c:step:${backend}-rank:0`;
+      const duplicateId = `c:step:${backend}-duplicates:0`;
       const assertRankPage = (metadata: SessionMetadata, page: LiveGridPage, replay: boolean): void => {
         const expected = replay && backend === "duckdb" ? [2, 3, 3] : [2, 3, 3, 1];
         const rank = metadata.schema.find((column) => column.id === rankId);
@@ -19003,6 +19005,38 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           "Dense Rank must retain source bytes."
         );
       };
+      const assertDuplicatePage = (metadata: SessionMetadata, page: LiveGridPage, replay: boolean): void => {
+        const expected = replay && backend === "duckdb" ? [false, true, true] : [false, true, true, false];
+        const output = metadata.schema.find((column) => column.id === duplicateId);
+        assert.ok(output, `${backend} must retain the duplicate flag's stable identity.`);
+        assert.equal(output.name, "repeated_year");
+        assert.equal(output.position, opened.metadata.schema.length + 1);
+        assert.equal(output.type, "boolean");
+        assert.equal(page.totalRows, expected.length);
+        assert.equal(page.rows.length, expected.length);
+        const position = page.columnIds.indexOf(duplicateId);
+        assert.ok(position >= 0);
+        const flags = page.rows.map((row) => row.values[position]);
+        assert.ok(flags.every((cell) => cell?.kind === "boolean" && cell.isNull === false && cell.isNaN === false));
+        assert.deepEqual(
+          flags.map((cell) => cell.raw),
+          expected
+        );
+        if (!replay) {
+          assert.ok(rankedPage, "Duplicate marking must follow the confirmed rank step.");
+          const retainedPositions = rankedPage.columnIds.map((id) => page.columnIds.indexOf(id));
+          assert.ok(retainedPositions.every((index) => index >= 0));
+          assert.deepEqual(
+            page.rows.map((row) => ({ ...row, values: retainedPositions.map((index) => row.values[index]) })),
+            rankedPage.rows
+          );
+        }
+        assertExactBytes(
+          readFileSync(sourcePath),
+          Buffer.from(original, "utf8"),
+          "Duplicate marking must retain source bytes."
+        );
+      };
       const steps: TransformStep[] = [
         {
           id: `${backend}-sort`,
@@ -19013,6 +19047,11 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           id: `${backend}-rank`,
           kind: "denseRank",
           params: { column: columnReference(opened.metadata, "year"), direction: "asc", newColumn: "year_rank" }
+        },
+        {
+          id: `${backend}-duplicates`,
+          kind: "markDuplicates",
+          params: { columns: [columnReference(opened.metadata, "year")], newColumn: "repeated_year" }
         },
         {
           id: `${backend}-formula`,
@@ -19101,6 +19140,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           assert.deepEqual(preview.metadata.draftStep, step);
           assertRankPage(preview.metadata, preview.page, false);
         }
+        if (step.kind === "markDuplicates") {
+          assert.deepEqual(preview.metadata.draftStep, step);
+          assertDuplicatePage(preview.metadata, preview.page, false);
+        }
 
         revision = preview.revision;
         const applied = await testing.request({
@@ -19129,6 +19172,13 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           assertRankPage(applied.metadata, applied.page, false);
           assert.deepEqual(applied.page, preview.page);
           assert.equal(applied.code, preview.code);
+          rankedPage = structuredClone(applied.page);
+        }
+        if (step.kind === "markDuplicates") {
+          assert.deepEqual(applied.metadata.steps.at(-1), step);
+          assertDuplicatePage(applied.metadata, applied.page, false);
+          assert.deepEqual(applied.page, preview.page);
+          assert.equal(applied.code, preview.code);
         }
 
         if (step.kind === "customCode") {
@@ -19149,6 +19199,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           if (replayed.kind === "page") {
             revision = replayed.revision;
             assertRankPage(replayed.metadata, replayed.page, true);
+            assertDuplicatePage(replayed.metadata, replayed.page, true);
             assert.deepEqual(replayed.metadata.steps, applied.metadata.steps);
             assert.deepEqual(replayed.metadata.schema, applied.metadata.schema);
             assert.deepEqual(

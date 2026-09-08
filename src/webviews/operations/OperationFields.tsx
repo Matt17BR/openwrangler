@@ -218,6 +218,20 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       </>
     );
   }
+  if (kind === "markDuplicates") {
+    return (
+      <>
+        <ColumnReferencesSelect
+          name="columns"
+          label="Compare columns"
+          searchLabel="Search compared columns"
+          columns={columns}
+          defaultValue={initialColumnReferences("columns")}
+        />
+        <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "is_duplicate")} required />
+      </>
+    );
+  }
   if (kind === "selectColumns" || kind === "dropColumns") {
     return (
       <ColumnReferencesSelect

@@ -380,6 +380,16 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "markDuplicates") {
+    return {
+      id: step.id,
+      kind: "markDuplicates",
+      params: {
+        columns: [{ ...step.params.columns[0] }, ...step.params.columns.slice(1).map((column) => ({ ...column }))],
+        newColumn: step.params.newColumn
+      }
+    };
+  }
   if (step.kind === "denseRank") {
     return {
       id: step.id,
@@ -461,6 +471,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&
+    step.kind !== "markDuplicates" &&
     step.kind !== "denseRank" &&
     step.kind !== "minMaxScale" &&
     step.kind !== "roundNumber" &&

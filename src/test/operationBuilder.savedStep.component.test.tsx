@@ -183,6 +183,52 @@ describe("OperationBuilder saved-step forms", () => {
     expect(onPreview).toHaveBeenCalledWith(savedStep, savedStep.id);
   });
 
+  it("edits duplicate marking against the saved input without selecting its derived flag", () => {
+    const onPreview = vi.fn();
+    const savedStep = {
+      id: "saved-mark",
+      kind: "markDuplicates",
+      params: { columns: [{ id: "c:1", name: "value" }], newColumn: "is_duplicate" }
+    } satisfies TransformStep;
+    const outputSchema = [
+      ...columns,
+      {
+        id: "c:step:saved-mark:0",
+        name: "is_duplicate",
+        position: 3,
+        rawType: "Boolean",
+        type: "boolean",
+        nullable: false
+      }
+    ] satisfies SessionMetadata["schema"];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: outputSchema,
+          shape: { rows: 2, columns: 4 },
+          filteredShape: { rows: 2, columns: 4 },
+          latestStepInputSchema: columns,
+          steps: [savedStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={savedStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.getByRole("checkbox", { name: "value, column 2" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "value, column 1" })).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "is_duplicate" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "New column" })).toHaveValue("is_duplicate");
+    fireEvent.change(screen.getByRole("textbox", { name: "New column" }), { target: { value: "conflict" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      { ...savedStep, params: { ...savedStep.params, newColumn: "conflict" } },
+      savedStep.id
+    );
+  });
+
   it("restores saved group references from the recorded input schema", () => {
     const onPreview = vi.fn();
     const savedStep = {

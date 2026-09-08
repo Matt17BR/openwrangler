@@ -2651,6 +2651,7 @@ openwrangler_r_frame_contract <- local({
     numeric_transform_positions = NULL,
     min_max_scale_positions = NULL,
     dense_rank_positions = NULL,
+    mark_duplicate_positions = NULL,
     datetime_format_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
@@ -2686,6 +2687,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(numeric_transform_positions) ||
             !is.null(min_max_scale_positions) ||
             !is.null(dense_rank_positions) ||
+            !is.null(mark_duplicate_positions) ||
             !is.null(datetime_format_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
@@ -2715,6 +2717,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(dense_rank_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R dense-rank outputs require explicit source mappings and identities")
+    }
+    if (!is.null(mark_duplicate_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R mark-duplicate outputs require explicit source mappings and identities")
     }
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
@@ -2925,6 +2930,22 @@ openwrangler_r_frame_contract <- local({
         }
         dense_rank_positions <- as.integer(dense_rank_positions)
       }
+      if (is.null(mark_duplicate_positions)) {
+        mark_duplicate_positions <- integer()
+      } else {
+        if (
+          !is.numeric(mark_duplicate_positions) ||
+            anyNA(mark_duplicate_positions) ||
+            any(!is.finite(mark_duplicate_positions)) ||
+            any(mark_duplicate_positions != floor(mark_duplicate_positions)) ||
+            any(mark_duplicate_positions < 1L) ||
+            any(mark_duplicate_positions > length(output_schema)) ||
+            anyDuplicated(mark_duplicate_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid mark-duplicate output positions")
+        }
+        mark_duplicate_positions <- as.integer(mark_duplicate_positions)
+      }
       if (is.null(text_length_positions)) {
         text_length_positions <- integer()
       } else {
@@ -3067,6 +3088,7 @@ openwrangler_r_frame_contract <- local({
         numeric_transform_positions,
         min_max_scale_positions,
         dense_rank_positions,
+        mark_duplicate_positions,
         datetime_format_positions,
         fill_missing_positions,
         fallback_fill_positions,
@@ -3222,6 +3244,16 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid formula output")
           }
+        } else if (index %in% mark_duplicate_positions) {
+          output_values <- snapshot[[index]]
+          if (
+            !identical(output_column$semantics$kind, "logical") ||
+              !is.logical(output_values) || !is.null(attributes(output_values)) ||
+              anyNA(output_values) ||
+              identical(output_ids[[index]], mapped_source_ids[[index]])
+          ) {
+            abort("internal-error", "a derived R frame has an invalid mark-duplicate output")
+          }
         } else if (index %in% dense_rank_positions) {
           input_values <- read_capture_frame(nullability_source, validated = TRUE)[[source_positions[[index]]]]
           output_values <- snapshot[[index]]
@@ -3341,7 +3373,7 @@ openwrangler_r_frame_contract <- local({
           }
         }
         output_schema[[index]]$id <- output_ids[[index]]
-        output_schema[[index]]$nullable <- if (index %in% categorical_positions) {
+        output_schema[[index]]$nullable <- if (index %in% c(categorical_positions, mark_duplicate_positions)) {
           FALSE
         } else if (index %in% c(by_example_positions, dense_rank_positions)) {
           column_has_missing(snapshot[[index]], output_column$semantics)
@@ -8531,6 +8563,31 @@ openwrangler_r_frame_contract <- local({
     }
   }
 
+  mark_duplicate_rows_at <- function(value, positions, expected_names, new_name) {
+    resolved <- resolve_row_operation_columns(value, positions, expected_names, "mark-duplicates")
+    if (length(resolved$positions) == 0L) {
+      abort("invalid-view-query", "markDuplicates requires a non-empty column selection")
+    }
+    result <- clone_column_at(value, resolved$positions[[1L]], expected_names[[1L]], new_name)
+    compared <- if (identical(resolved$inspected$flavor, "r.data.table")) {
+      result[, resolved$positions, with = FALSE]
+    } else {
+      result[resolved$positions]
+    }
+    flags <- duplicate_row_mask(compared, "none", integer64_as_character)
+    if (identical(resolved$inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = flags)
+    } else {
+      frame_attributes <- attributes(result)
+      frame_attributes[["row.names"]] <- .row_names_info(result, type = 0L)
+      columns <- unclass(result)
+      columns[[storage_length(columns)]] <- flags
+      attributes(columns) <- frame_attributes
+      result <- columns
+    }
+    result
+  }
+
   drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first") {
     resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-duplicates")
     if (!is.character(keep) || length(keep) != 1L || is.na(keep) || !keep %in% c("first", "last", "none")) {
@@ -9586,6 +9643,7 @@ openwrangler_r_frame_contract <- local({
     clone_column_at = clone_column_at,
     dense_rank_values = dense_rank_values,
     duplicate_row_mask = duplicate_row_mask,
+    mark_duplicate_rows_at = mark_duplicate_rows_at,
     dense_rank_column_at = dense_rank_column_at,
     by_example_column_at = by_example_column_at,
     one_hot_encode_columns_at = one_hot_encode_columns_at,

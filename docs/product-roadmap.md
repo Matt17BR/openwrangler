@@ -43,10 +43,10 @@ code when it removes a demonstrated ownership problem or duplicate behavior; mod
 
 ### Deterministic transforms and validation
 
-Dense Rank covers numeric ranking into a new column. Add broader window operations, more typed formulas, and schema
-or data-quality checks with clear results. Transpose, explode, and unnest need engine-native type and lineage rules.
-Joins and merge remain deferred until source identity,
-lifecycle, persistence, and immutability rules are defined.
+Dense Rank covers numeric ranking, and Mark Duplicates retains conflicting records for review. Add broader window
+operations, more typed formulas, and schema or data-quality checks with clear results. Transpose, explode, and unnest
+need engine-native type and lineage rules. Joins and merge remain deferred until source identity, lifecycle, persistence,
+and immutability rules are defined.
 
 Every new editing operation must work both live and in executable generated code for every editing engine. Cleaning
 steps cannot be reordered until lineage, dependencies, and conflicts can be preserved. Editing and deleting a step do

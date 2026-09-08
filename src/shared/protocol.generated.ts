@@ -54,6 +54,7 @@ export type TransformStep =
   | DropMissingRowsTransformStep
   | FillMissingValuesTransformStep
   | DropDuplicatesTransformStep
+  | MarkDuplicatesTransformStep
   | SelectColumnsTransformStep
   | DropColumnsTransformStep
   | RenameColumnTransformStep
@@ -93,6 +94,7 @@ export type OperationKind =
   | "dropMissingRows"
   | "fillMissingValues"
   | "dropDuplicates"
+  | "markDuplicates"
   | "selectColumns"
   | "dropColumns"
   | "renameColumn"
@@ -211,6 +213,11 @@ export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[
 export type DropDuplicatesTransformStep = TransformStepTemplate & {
   kind: "dropDuplicates";
   params: DropDuplicatesParams;
+  [k: string]: unknown;
+};
+export type MarkDuplicatesTransformStep = TransformStepTemplate & {
+  kind: "markDuplicates";
+  params: MarkDuplicatesParams;
   [k: string]: unknown;
 };
 export type SelectColumnsTransformStep = TransformStepTemplate & {
@@ -680,6 +687,10 @@ export interface FillMissingParams {
 export interface DropDuplicatesParams {
   columns?: NonEmptyColumnReferenceArray;
   keep?: "first" | "last" | "none";
+}
+export interface MarkDuplicatesParams {
+  columns: NonEmptyColumnReferenceArray;
+  newColumn: string;
 }
 export interface ColumnsParams {
   columns: NonEmptyColumnReferenceArray;

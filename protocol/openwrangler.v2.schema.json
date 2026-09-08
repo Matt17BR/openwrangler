@@ -47,6 +47,13 @@
       "icon": "copy"
     },
     {
+      "kind": "markDuplicates",
+      "title": "Mark duplicates",
+      "description": "Flag every row whose selected values match another row.",
+      "group": "Rows / order",
+      "icon": "checklist"
+    },
+    {
       "kind": "selectColumns",
       "title": "Select columns",
       "description": "Keep selected columns in the chosen order.",
@@ -948,6 +955,7 @@
         "dropMissingRows",
         "fillMissingValues",
         "dropDuplicates",
+        "markDuplicates",
         "selectColumns",
         "dropColumns",
         "renameColumn",
@@ -1195,6 +1203,15 @@
       "properties": {
         "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
         "keep": { "type": "string", "enum": ["first", "last", "none"] }
+      }
+    },
+    "MarkDuplicatesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "newColumn"],
+      "properties": {
+        "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
+        "newColumn": { "type": "string", "minLength": 1 }
       }
     },
     "ColumnsParams": {
@@ -1656,6 +1673,7 @@
         { "$ref": "#/definitions/DropMissingRowsTransformStep" },
         { "$ref": "#/definitions/FillMissingValuesTransformStep" },
         { "$ref": "#/definitions/DropDuplicatesTransformStep" },
+        { "$ref": "#/definitions/MarkDuplicatesTransformStep" },
         { "$ref": "#/definitions/SelectColumnsTransformStep" },
         { "$ref": "#/definitions/DropColumnsTransformStep" },
         { "$ref": "#/definitions/RenameColumnTransformStep" },
@@ -1745,6 +1763,18 @@
           "properties": {
             "kind": { "const": "dropDuplicates" },
             "params": { "$ref": "#/definitions/DropDuplicatesParams" }
+          }
+        }
+      ]
+    },
+    "MarkDuplicatesTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "markDuplicates" },
+            "params": { "$ref": "#/definitions/MarkDuplicatesParams" }
           }
         }
       ]

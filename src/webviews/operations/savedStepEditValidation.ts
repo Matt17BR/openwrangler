@@ -174,6 +174,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
       ];
     case "selectColumns":
     case "dropColumns":
+    case "markDuplicates":
     case "oneHotEncode":
       return [
         {
@@ -491,6 +492,7 @@ function savedOperationTypeError(
     case "filterRows":
     case "dropMissingRows":
     case "dropDuplicates":
+    case "markDuplicates":
     case "selectColumns":
     case "dropColumns":
     case "renameColumn":
