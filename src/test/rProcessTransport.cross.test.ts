@@ -1,9 +1,10 @@
+import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
@@ -17,6 +18,76 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("contains stdin error events while rejecting the write and retaining exact process cleanup", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-stdin-error-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "frame <- data.frame(value = 7L, process = Sys.getpid())"
+    });
+    const childEvents = vi.spyOn(ChildProcess.prototype, "emit");
+    try {
+      const sessionId = randomUUID();
+      const opened = await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
+      const spawned = childEvents.mock.calls.flatMap(([event], index) =>
+        event === "spawn" ? [childEvents.mock.contexts[index]] : []
+      );
+      expect(spawned).toHaveLength(1);
+      const child = spawned[0];
+      if (!(child instanceof ChildProcess) || !child.stdin) {
+        throw new Error("The R process did not expose its owned stdin.");
+      }
+      const stdin = child.stdin;
+      expect(opened.page.page.rows[0]?.values[1]?.raw).toBe(String(child.pid));
+      const exited = vi.fn();
+      const closed = new Promise<void>((resolveClosed) => {
+        child.once("exit", () => {
+          exited();
+          resolveClosed();
+        });
+      });
+      const invalidated = vi.fn(() => {
+        expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      });
+      const invalidationSubscription = transport.onDidInvalidateKernel(invalidated);
+      const writeError = Object.assign(new Error("controlled stdin write failure"), { code: "EPIPE" });
+      const emitted = vi.spyOn(stdin, "emit");
+      // Let Node's Writable implementation deliver both the write callback and
+      // its separate error event, without depending on native process-exit timing.
+      const write = vi.spyOn(stdin, "_write").mockImplementationOnce((_chunk, _encoding, callback) => {
+        if (typeof callback !== "function") throw new Error("The stdin write callback is missing.");
+        callback(writeError);
+      });
+      try {
+        await expect(transport.getPage(sessionId, pageWindow())).rejects.toBe(writeError);
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(emitted).toHaveBeenCalledWith("error", writeError);
+        await closed;
+        expect(exited).toHaveBeenCalledTimes(1);
+        expect(invalidated).toHaveBeenCalledTimes(1);
+        await Promise.all([transport.dispose(), transport.dispose()]);
+        expect(await readdir(temporaryParent)).toEqual([]);
+        expect(() => stdin.emit("error", new Error("late stdin error"))).not.toThrow();
+        expect(exited).toHaveBeenCalledTimes(1);
+        expect(invalidated).toHaveBeenCalledTimes(1);
+      } finally {
+        invalidationSubscription.dispose();
+        write.mockRestore();
+        emitted.mockRestore();
+      }
+    } finally {
+      try {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+      } finally {
+        childEvents.mockRestore();
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("retains the exact R process after aggregate ASCII response expansion is refused", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-response-bound-test-"));
     const transport = new RProcessSessionTransport({

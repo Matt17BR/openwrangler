@@ -27,14 +27,17 @@ function createHarness(): {
 }
 
 class FramingChildProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
+
+  constructor(readonly stdin = new PassThrough()) {
+    super();
+  }
 }
 
-function createBridgeFramingHarness() {
+function createBridgeFramingHarness(firstStdin = new PassThrough()) {
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
-  const first = new FramingChildProcess();
+  const first = new FramingChildProcess(firstStdin);
   const second = new FramingChildProcess();
   const spawnProcess = vi
     .fn<() => ChildProcessWithoutNullStreams>()
@@ -270,6 +273,70 @@ describe("BoundedPythonStdoutLineFramer", () => {
         ["retired child diagnostic\n"],
         ["current child diagnostic\n"]
       ]);
+      await expect(harness.start(1)).resolves.toBe(harness.second);
+      expect(harness.spawnProcess).toHaveBeenCalledTimes(2);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("handles a stdin stream error while allowing the current stdout response to arrive", async () => {
+    const harness = createBridgeFramingHarness();
+    const error = new Error("synthetic closed stdin");
+    const emitted = vi.spyOn(harness.first.stdin, "emit");
+    try {
+      await harness.start(0);
+      harness.first.stdin.destroy(error);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const errorIndex = emitted.mock.calls.findIndex(([event]) => event === "error");
+      expect(emitted.mock.calls[errorIndex]).toEqual(["error", error]);
+      expect(emitted.mock.results[errorIndex]).toEqual({ type: "return", value: true });
+      expect(harness.restartRuntime).not.toHaveBeenCalled();
+      expect(harness.runtime.process).toBe(harness.first);
+      harness.first.stdout.write(Buffer.from('{"kind":"authoritative-response"}\n'));
+      expect(harness.handleLine).toHaveBeenCalledWith(
+        harness.runtime,
+        harness.first,
+        '{"kind":"authoritative-response"}'
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("keeps a queued stdin error handled after its process exits and a replacement starts", async () => {
+    let finishDestroy: (() => void) | undefined;
+    const stdin = new PassThrough({
+      destroy(error, callback) {
+        finishDestroy = () => callback(error);
+      }
+    });
+    const harness = createBridgeFramingHarness(stdin);
+    const error = new Error("synthetic retired stdin");
+    const emitted = vi.spyOn(stdin, "emit");
+    const pendingRejection = expect(harness.pending).rejects.toThrow("controlled replacement");
+    try {
+      await harness.start(0);
+      stdin.destroy(error);
+      expect(finishDestroy).toBeTypeOf("function");
+      harness.restartRuntime(harness.runtime, "controlled replacement");
+      harness.first.emit("exit", 0, null);
+      await pendingRejection;
+      await harness.start(1);
+      finishDestroy!();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const errorIndex = emitted.mock.calls.findIndex(([event]) => event === "error");
+      expect(emitted.mock.calls[errorIndex]).toEqual(["error", error]);
+      expect(emitted.mock.results[errorIndex]).toEqual({ type: "return", value: true });
+      expect(harness.restartRuntime).toHaveBeenCalledOnce();
+      harness.second.stdout.write(Buffer.from('{"kind":"replacement-response"}\n'));
+      expect(harness.handleLine).toHaveBeenCalledWith(
+        harness.runtime,
+        harness.second,
+        '{"kind":"replacement-response"}'
+      );
       await expect(harness.start(1)).resolves.toBe(harness.second);
       expect(harness.spawnProcess).toHaveBeenCalledTimes(2);
     } finally {

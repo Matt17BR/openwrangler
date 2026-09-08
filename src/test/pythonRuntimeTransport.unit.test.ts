@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type {
   OpenWranglerRequest,
@@ -53,10 +54,10 @@ interface TransportHarness {
   respondRaw(value: unknown): void;
 }
 
-function createHarness(): TransportHarness {
+function createHarness(stdin?: Writable): TransportHarness {
   const rawWrites: string[] = [];
   const process = {
-    stdin: {
+    stdin: stdin ?? {
       destroyed: false,
       writable: true,
       write: vi.fn((value: string, callback?: (error?: Error | null) => void) => {
@@ -105,6 +106,88 @@ function createHarness(): TransportHarness {
 }
 
 describe("PythonRuntimeTransport", () => {
+  it("rejects a failed Writable dispatch once through its write callback", async () => {
+    const failure = new Error("synthetic closed stdin");
+    const errors: Error[] = [];
+    const stdin = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback(failure);
+      }
+    });
+    stdin.on("error", (error) => errors.push(error));
+    const harness = createHarness(stdin);
+    const releaseLease = vi.fn();
+    try {
+      await expect(
+        harness.transport.dispatch(harness.runtime, harness.runtime.process!, initializeRequest, {}, releaseLease)
+      ).rejects.toBe(failure);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(errors).toEqual([failure]);
+      expect(releaseLease).toHaveBeenCalledOnce();
+      expect(harness.releasePendingForRequest).toHaveBeenCalledOnce();
+      expect(harness.stopRuntimeIfIdle).toHaveBeenCalledOnce();
+      expect(harness.restartRuntime).not.toHaveBeenCalled();
+      expect(harness.runtime.pendingIds.size).toBe(0);
+      expect(harness.transport.hasOwnership(harness.runtime)).toBe(false);
+    } finally {
+      harness.transport.rejectRuntime(harness.runtime, new Error("test cleanup"));
+      stdin.destroy();
+    }
+  });
+
+  it("accepts the authoritative response after a cancellation write emits a stream error", async () => {
+    const failure = new Error("synthetic cancellation pipe failure");
+    const writes: RuntimeRequestEnvelope[] = [];
+    const errors: Error[] = [];
+    const stdin = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        writes.push(JSON.parse(chunk.toString()) as RuntimeRequestEnvelope);
+        callback(writes.length === 2 ? failure : undefined);
+      }
+    });
+    stdin.on("error", (error) => errors.push(error));
+    const token = new ManualCancellation();
+    const harness = createHarness(stdin);
+    try {
+      const response = harness.transport.dispatch(
+        harness.runtime,
+        harness.runtime.process!,
+        initializeRequest,
+        { cancellation: token },
+        vi.fn()
+      );
+      const original = writes[0]!;
+      const settled = vi.fn();
+      void response.then(settled, settled);
+      token.cancel();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(writes[1]!.request).toEqual({ kind: "cancelRequest", targetRequestId: original.requestId });
+      expect(errors).toEqual([failure]);
+      expect(harness.diagnostics).toEqual([
+        `Open Wrangler could not request cancellation for ${original.requestId}: ${failure.message}. Waiting for the authoritative result.`
+      ]);
+      expect(settled).not.toHaveBeenCalled();
+      expect(token.dispose).not.toHaveBeenCalled();
+      expect(harness.releasePendingForRequest).not.toHaveBeenCalled();
+      expect(harness.stopRuntimeIfIdle).not.toHaveBeenCalled();
+      expect(harness.restartRuntime).not.toHaveBeenCalled();
+      expect(harness.runtime.pendingIds.size).toBe(1);
+
+      harness.respond(original.requestId, initializedResponse);
+      await expect(response).resolves.toEqual(initializedResponse);
+      expect(settled).toHaveBeenCalledOnce();
+      expect(token.dispose).toHaveBeenCalledOnce();
+      expect(harness.stopRuntimeIfIdle).toHaveBeenCalledOnce();
+      expect(harness.runtime.pendingIds.size).toBe(0);
+      expect(harness.transport.hasOwnership(harness.runtime)).toBe(false);
+    } finally {
+      harness.transport.rejectRuntime(harness.runtime, new Error("test cleanup"));
+      stdin.destroy();
+    }
+  });
+
   it.each([
     {
       name: "the runtime cannot cancel running work",

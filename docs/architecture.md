@@ -167,6 +167,10 @@ shutdown bound.
 The bounded Python stderr buffer belongs to the current process. A retired process's late stderr remains in the
 output channel history but cannot enter a replacement process's error details.
 
+Python and native R child processes retain a stdin error listener through shutdown and retirement. Failed write
+callbacks own request rejection; the separate stream error cannot escape into the extension host or change
+cancellation, restart, or exit handling. A failed Python cancellation write still awaits the original response.
+
 A requested session ID is provisional until the exact still-pending tuple of session ID, open request ID, and Python
 scope receives its correlated open response. While provisional, it may route only `closeSession` terminal cleanup;
 ordinary work routes only through confirmed ownership. A late, ambiguous, or mismatched promotion restarts that scope
