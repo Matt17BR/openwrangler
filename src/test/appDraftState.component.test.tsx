@@ -346,6 +346,139 @@ describe("App draft state boundaries", () => {
     expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(fixture);
   });
 
+  it.each([false, true])("closes a removed saved-step editor after Undo (remaining step=%s)", async (remaining) => {
+    const fixture = formulaPreviewFixture("polars", true);
+    const original = formulaPreviewFixture("polars", false);
+    const retained: TransformStep = {
+      id: "retained",
+      kind: "selectColumns",
+      params: { columns: [{ id: "c:source:0", name: "input" }] }
+    };
+    const confirmed = {
+      ...fixture.metadata,
+      revision: 2,
+      steps: [...(remaining ? [retained] : []), ...fixture.metadata.steps]
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: confirmed, page: fixture.page, summaries: [] });
+    const returnTarget = await screen.findByRole("button", { name: "Add step" });
+    returnTarget.focus();
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "editLatest" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit cleaning step" });
+    const value = within(dialog).getByLabelText("Numeric value", { exact: true });
+    fireEvent.change(value, { target: { value: "7" } });
+    value.focus();
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    dispatch({ kind: "error", code: "engine_error", message: "Undo failed", recoverable: true });
+    expect(value).toHaveDisplayValue("7");
+    expect(dialog).toHaveAttribute("aria-busy", "false");
+    expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: confirmed, page: fixture.page });
+
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    expect(dialog).toBeInTheDocument();
+    const next = { ...original.metadata, revision: 3, steps: remaining ? [retained] : [], canRedo: true };
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      dispatch({
+        kind: "planUpdated",
+        action: "undo",
+        revision: 3,
+        metadata: next,
+        page: original.page,
+        code: "# retained plan"
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: next, page: original.page });
+      await waitFor(() => expect(returnTarget).toHaveFocus());
+      expect(postMessage.mock.calls.map(([message]) => message.kind)).not.toContain("ready");
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it.each(["earlier edit", "new operation"])("retains a %s and its typed input after Undo", async (kind) => {
+    const fixture = formulaPreviewFixture("polars", true);
+    const original = formulaPreviewFixture("polars", false);
+    const saved = fixture.metadata.steps[0];
+    const suffix: TransformStep = {
+      id: "suffix",
+      kind: "selectColumns",
+      params: {
+        columns: [
+          { id: "c:source:0", name: "input" },
+          { id: "c:step:saved:0", name: "saved_result" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: {
+        ...fixture.metadata,
+        revision: 2,
+        steps: [saved, suffix],
+        latestStepInputSchema: fixture.metadata.schema
+      },
+      page: fixture.page,
+      summaries: []
+    });
+    if (kind === "earlier edit") {
+      dispatch({ kind: "editorAction", action: "selectStep", stepId: saved.id });
+      dispatch({
+        kind: "stepInspectionResult",
+        stepId: saved.id,
+        offset: 0,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 2,
+        response: {
+          kind: "stepInspection",
+          revision: 2,
+          stepId: saved.id,
+          stepIndex: 0,
+          inputRowAxis: { kind: "positional", levelNames: [] },
+          outputRowAxis: { kind: "positional", levelNames: [] },
+          inputSchema: original.metadata.schema,
+          outputSchema: fixture.metadata.schema,
+          inputPage: original.page,
+          outputPage: fixture.page,
+          diff: emptyDiff(),
+          code: "# saved Formula"
+        }
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Edit step" }));
+    } else {
+      dispatch({ kind: "editorAction", action: "openOperation", operationKind: "formula" });
+    }
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Numeric value", { exact: true }), { target: { value: "7" } });
+    fireEvent.change(within(dialog).getByLabelText("New column", { exact: true }), { target: { value: "new_result" } });
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 3,
+      metadata: { ...fixture.metadata, revision: 3, canRedo: true },
+      page: fixture.page,
+      code: "# saved Formula"
+    });
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(within(dialog).getByLabelText("Numeric value", { exact: true })).toHaveDisplayValue("7");
+    expect(within(dialog).getByLabelText("New column", { exact: true })).toHaveValue("new_result");
+    const preview = within(dialog).getByRole("button", { name: "Preview changes" });
+    expect(preview).toBeEnabled();
+    fireEvent.click(preview);
+    const request = onlyPreviewRequest();
+    expect(request.replaceStepId).toBe(kind === "earlier edit" ? saved.id : undefined);
+    expect(request.step).toMatchObject({ kind: "formula", params: { value: 7, newColumn: "new_result" } });
+    expect(postMessage.mock.calls.map(([message]) => message.kind)).not.toContain("ready");
+  });
+
   it("clears a refused form on session replacement without carrying its error", async () => {
     const fixture = formulaPreviewFixture("polars", false);
     render(<App />);

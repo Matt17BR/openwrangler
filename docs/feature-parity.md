@@ -64,6 +64,7 @@ Numeric histogram arrows use the highlighted bin as their starting point after p
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,
 including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
+Undo closes the editor for a removed step. Failed Undo and editors whose target remains in the plan retain typed input.
 The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
 keyboard shortcut overrides text-field editing.
 

@@ -64,5 +64,11 @@ export function useOperationDialogLifecycle({
 
   const closeDialog = useCallback(() => setDialog(undefined), []);
 
-  return { dialog, openDialog, closeDialog };
+  const reconcileEditingStep = useCallback((steps: readonly TransformStep[]) => {
+    setDialog((current) =>
+      current?.editingStep && !steps.some((step) => step.id === current.editingStep?.id) ? undefined : current
+    );
+  }, []);
+
+  return { dialog, openDialog, closeDialog, reconcileEditingStep };
 }

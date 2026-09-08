@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Undo closes the editor for a removed cleaning step, preventing Preview from submitting a deleted step ID.
 - Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.
 - Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
 - Failed recovery-storage writes keep the current grid selection, widths and viewport. A later refresh no longer
