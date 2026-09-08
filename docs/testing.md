@@ -294,6 +294,12 @@ Decimal paths free of row scans.
 The same owner checks minimum-version UInt128 column-kernel refusal before eager or lazy publication, including
 correlated notebook errors, confirmed-state recovery and working scalar and current-runtime controls.
 
+Ordinary Pandas integer Formula cases in the operation-edge owner compare live and standalone generated results
+against exact integer arithmetic. They check wraparound, lossy and exact promotions, selected operand pairs,
+Boolean companions, Sparse storage, missing-power identities and bounded power validation. Controls preserve
+By Example and existing noninteger behavior. The session-transaction owner checks failures beyond the previewed
+page, unchanged confirmed state and source bytes, retained Redo history, and a successful correction afterward.
+
 Formula modulo cases in the operation-edge owner compare exact signed/unsigned Arrow results with executed
 standalone code. They cover integer widths, nulls, present and masked zero divisors, extrema and existing native
 refusals. The session-transaction owner previews and applies a wide-integer result, filters it, reads back a pinned
