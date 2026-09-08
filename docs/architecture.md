@@ -96,6 +96,12 @@ options must satisfy their existing schemas; explicit null is not an omitted opt
 existing `invalid_request` classification. Omitted options retain their defaults. Failures raised after decoding
 keep their existing `engine_error` or `runtime_error` classifications.
 
+Python's standalone and notebook request handlers return a bounded, correlated `runtime_error` for a recognized
+Polars `PanicException` after the operation unwinds. Recognition requires identical public and already-loaded native
+exception exports; error handling does not import an optional engine. Missing or divergent exports retain ordinary
+`Exception` handling. Caller interrupts, exits and other `BaseException` subclasses keep their existing propagation.
+This does not retry the operation, restart the runtime or cover native process crashes.
+
 Runtime work has three relevant classes:
 
 - mutations and exports are exclusive;

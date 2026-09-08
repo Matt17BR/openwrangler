@@ -11,6 +11,7 @@ from .protocol import (
     decode_request_payload,
     encode_response_envelope,
     error_response,
+    request_error_types,
     request_id_for_payload,
     response_for_error,
     view_request_id_for_payload,
@@ -149,7 +150,7 @@ def dispatch_json(payload: str) -> str:
                 "The runtime response could not be encoded as strict JSON.",
                 code="response_encoding_failed",
             )
-        except Exception as error:
+        except request_error_types() as error:
             response = response_for_error(error)
         if view_request_id:
             response["viewRequestId"] = view_request_id

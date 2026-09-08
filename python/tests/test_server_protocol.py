@@ -2003,3 +2003,127 @@ def test_stdio_redo_refusal_and_recovery_keep_one_correlated_process(tmp_path: P
         _join_and_close_server_output(process, output)
     assert return_code == 0, output.stderr_tail()
     assert path.read_text() == source
+
+
+def test_stdio_native_panic_settles_preview_and_preserves_followup(tmp_path: Path) -> None:
+    path = tmp_path / "native-panic.csv"
+    original = b"value\n2\n3\n"
+    path.write_bytes(original)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+
+    def send(request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return _send_server_request(process, output, request_id, request, timeout=5.0)
+
+    window = {"offset": 0, "limit": 2, "columnOffset": 0, "columnLimit": 1}
+    try:
+        opened = send(
+            "panic-open",
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "path": str(path), "label": path.name},
+                "backend": "polars",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 1,
+            },
+        )
+        assert opened["kind"] == "sessionOpened"
+        session_id = opened["metadata"]["sessionId"]
+        # Use the real native exception class without depending on an upstream arithmetic bug.
+        failed = send(
+            "panic-preview",
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                **window,
+                "step": {
+                    "id": "native-panic",
+                    "kind": "customCode",
+                    "params": {"code": "raise pl.exceptions.PanicException('password=panic-secret ' + 'é' * 5000)"},
+                },
+            },
+        )
+        assert failed["kind"] == "error" and failed["code"] == "runtime_error"
+        assert failed["recoverable"] is True
+        assert "panic-secret" not in failed["message"] and "panic-secret" not in failed["detail"]
+        assert "password=<redacted>" in failed["message"]
+        assert len(failed["message"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_BYTES
+        assert len(failed["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
+        page = send(
+            "panic-followup",
+            {
+                "kind": "getPage",
+                "sessionId": session_id,
+                "revision": 0,
+                "viewRequestId": "unchanged-view",
+                "filterModel": {"filters": [], "sort": []},
+                **window,
+            },
+        )
+        assert page["kind"] == "page" and page["viewRequestId"] == "unchanged-view"
+        assert page["revision"] == 0 and page["metadata"]["steps"] == []
+        assert page["page"] == opened["page"]
+        corrected = send(
+            "panic-correction",
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                **window,
+                "step": {
+                    "id": "safe",
+                    "kind": "renameColumn",
+                    "params": {"column": {"id": "c:source:0", "name": "value"}, "newName": "renamed"},
+                },
+            },
+        )
+        assert corrected["kind"] == "stepPreview" and corrected["revision"] == 1
+        assert send("panic-close", {"kind": "closeSession", "sessionId": session_id, "revision": 1}) == {
+            "kind": "sessionClosed",
+            "sessionId": session_id,
+        }
+        assert process.stdin is not None
+        process.stdin.close()
+        assert process.wait(timeout=10) == 0
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+        assert path.read_bytes() == original
+    assert "Exception in worker" not in output.stderr_tail()
+
+
+def test_native_panic_error_boundary_does_not_import_optional_polars() -> None:
+    script = "\n".join(
+        [
+            "import builtins, json, sys",
+            "original_import = builtins.__import__",
+            "def guarded_import(name, *args, **kwargs):",
+            "    if name == 'polars' or name.startswith('polars.'):",
+            "        raise AssertionError('error handling imported optional Polars')",
+            "    return original_import(name, *args, **kwargs)",
+            "builtins.__import__ = guarded_import",
+            "from openwrangler_runtime import kernel_agent, server",
+            "payload = {'protocolVersion': 2, 'requestId': 'cold', 'priority': 'interactive',",
+            "           'request': {'kind': 'closeSession', 'sessionId': 'missing', 'revision': 0}}",
+            "response = json.loads(kernel_agent.dispatch_json(json.dumps(payload)))",
+            "assert response['requestId'] == 'cold'",
+            "assert response['response']['code'] == 'unknown_session'",
+            "assert not any(name == 'polars' or name.startswith('polars.') for name in sys.modules)",
+            "kernel_agent._manager.close_all()",
+        ]
+    )
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10, check=False)
+    assert completed.returncode == 0, completed.stderr

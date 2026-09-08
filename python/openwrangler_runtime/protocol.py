@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import traceback
 from collections.abc import Mapping
 from math import isfinite
@@ -426,8 +427,18 @@ def error_response(
     return response
 
 
+def request_error_types() -> tuple[type[BaseException], ...]:
+    """Recognize loaded native panics without importing an optional engine."""
+    polars_exceptions = sys.modules.get("polars.exceptions")
+    panic_error = getattr(polars_exceptions, "PanicException", None)
+    native_error = getattr(sys.modules.get("polars._plr"), "PanicException", None)
+    if panic_error is native_error and isinstance(panic_error, type) and issubclass(panic_error, BaseException):
+        return (Exception, panic_error)
+    return (Exception,)
+
+
 def response_for_error(
-    error: Exception,
+    error: BaseException,
     *,
     maximum_message_bytes: int = MAX_DIAGNOSTIC_BYTES,
     maximum_detail_bytes: int = MAX_DIAGNOSTIC_DETAIL_BYTES,

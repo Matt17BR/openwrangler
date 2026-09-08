@@ -240,6 +240,8 @@ Python and native R reject malformed viewing structures before execution. Native
 logic admission checks to Filter Rows drafts; valid empty filters and existing native operand behavior remain.
 Python also rejects over-nested, non-finite or invalid-UTF-8 viewing operands before query work, preserving the
 runtime for a valid follow-up. Exact wide integers and supported opaque JSON values retain their representation.
+Recognized Polars panic exceptions return a request error in standalone and notebook sessions, preserving the prior
+confirmed state for a follow-up request. This does not recover a native process crash.
 
 Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates, Mark duplicates,
 One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;

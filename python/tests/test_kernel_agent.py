@@ -1950,3 +1950,136 @@ def test_kernel_redo_correlates_empty_stale_and_successful_attempts(tmp_path, mo
         assert path.read_text() == source
     finally:
         manager.close_all()
+
+
+def test_kernel_native_panic_settles_preview_and_preserves_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polars as pl
+    from polars.testing import assert_frame_equal
+
+    import __main__
+
+    frame = pl.DataFrame({"value": [2, 3]}).lazy()
+    monkeypatch.setattr(__main__, "native_panic_frame", frame, raising=False)
+    manager = SessionManager()
+    registry = kernel_agent._NotebookRequestRegistry()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+
+    def send(request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+        assert result["requestId"] == request_id
+        return result["response"]
+
+    window = {"offset": 0, "limit": 2, "columnOffset": 0, "columnLimit": 1}
+    try:
+        opened = send(
+            "native-open",
+            {
+                "kind": "openSession",
+                "source": {"kind": "notebookVariable", "variableName": "native_panic_frame", "label": "frame"},
+                "backend": "polars",
+                "mode": "editing",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 1,
+            },
+        )
+        assert opened["kind"] == "sessionOpened"
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        committed = session.committed
+        failed = send(
+            "native-preview",
+            {
+                "kind": "previewStep",
+                "sessionId": session_id,
+                "revision": 0,
+                **window,
+                "step": {
+                    "id": "native-panic",
+                    "kind": "customCode",
+                    "params": {"code": "raise pl.exceptions.PanicException('native operation failed')"},
+                },
+            },
+        )
+        assert failed["kind"] == "error" and failed["code"] == "runtime_error"
+        assert failed["message"] == "native operation failed"
+        assert registry.state("native-preview") == "completed"
+        assert session.revision == 0 and session.plan == []
+        assert session.committed is committed and session.draft_frame is None and session.draft_step is None
+        page = send(
+            "native-followup",
+            {
+                "kind": "getPage",
+                "sessionId": session_id,
+                "revision": 0,
+                "viewRequestId": "native-view",
+                "filterModel": EMPTY_FILTER,
+                **window,
+            },
+        )
+        assert page["kind"] == "page" and page["viewRequestId"] == "native-view"
+        assert page["page"] == opened["page"] and page["metadata"]["steps"] == []
+        assert __main__.native_panic_frame is frame
+        assert_frame_equal(frame.collect(), pl.DataFrame({"value": [2, 3]}), check_exact=True)
+        assert send("native-close", {"kind": "closeSession", "sessionId": session_id, "revision": 0}) == {
+            "kind": "sessionClosed",
+            "sessionId": session_id,
+        }
+        assert registry.state("native-close") == "completed" and manager.sessions == {}
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize(
+    ("error_name", "public_binding"),
+    [
+        ("system-exit", "unchanged"),
+        ("keyboard", "unchanged"),
+        ("generator", "unchanged"),
+        ("base", "unchanged"),
+        ("lookalike", "unchanged"),
+        ("keyboard", "base"),
+        ("keyboard", "keyboard"),
+        ("lookalike", "lookalike"),
+        ("native", "absent"),
+        ("native", "native-missing"),
+        ("native", "lookalike"),
+    ],
+)
+def test_kernel_native_panic_identity_preserves_lifecycle_exceptions(
+    monkeypatch: pytest.MonkeyPatch, error_name: str, public_binding: str
+) -> None:
+    import sys
+
+    import polars as pl
+
+    lookalike = type("PanicException", (BaseException,), {"__module__": "pyo3_runtime"})
+    classes = {
+        "system-exit": SystemExit,
+        "keyboard": KeyboardInterrupt,
+        "generator": GeneratorExit,
+        "base": BaseException,
+        "lookalike": lookalike,
+        "native": pl.exceptions.PanicException,
+    }
+    error = classes[error_name]("preserve this exact exception")
+    if public_binding == "absent":
+        monkeypatch.delattr(pl.exceptions, "PanicException")
+    elif public_binding == "native-missing":
+        monkeypatch.delitem(sys.modules, "polars._plr")
+    elif public_binding != "unchanged":
+        monkeypatch.setattr(pl.exceptions, "PanicException", classes[public_binding])
+
+    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+        raise error
+
+    registry = kernel_agent._NotebookRequestRegistry()
+    monkeypatch.setattr(kernel_agent, "_request_registry", registry)
+    monkeypatch.setattr(kernel_agent, "dispatch", fail)
+    with pytest.raises(type(error)) as caught:
+        kernel_agent.dispatch_json(
+            _envelope(_view_request("getPage", "unused", "lifecycle-view"), request_id="lifecycle")
+        )
+    assert caught.value is error
+    assert registry.state("lifecycle") == "completed"
