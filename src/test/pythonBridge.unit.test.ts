@@ -275,7 +275,10 @@ describe("PythonBridge cancellation", () => {
 
   it("does not abort or evict a confirmed environment when cancellation arrives later", async () => {
     const token = new ManualCancellation();
+    const subscribe = vi.spyOn(token, "onCancellationRequested");
     const source = remoteSourceAt("/resolution/confirmed.csv");
+    const probeStarted = deferred<void>();
+    const probe = deferred<{ missing: string[]; available: string[] }>();
     const confirmedEnvironment: pythonEnvironment.PythonEnvironment = {
       executable: testPythonExecutablePath("/env/bin/python"),
       executableIdentity: TEST_EXECUTABLE_IDENTITY,
@@ -285,24 +288,48 @@ describe("PythonBridge cancellation", () => {
       source: "configuration"
     };
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset().mockResolvedValue(confirmedEnvironment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockReset()
+      .mockImplementationOnce(() => {
+        probeStarted.resolve();
+        return probe.promise;
+      })
+      .mockResolvedValue({
+        missing: requiredDependencies("pandas", source).map((dependency) => dependency.installSpec),
+        available: []
+      });
     const bridge = new PythonBridge(testExtensionContext());
-    const raw = bridge as unknown as RawBridgeInternals;
-    const confirmed = await raw.processSelectionFor(openSessionRequest(source));
-    await vi.waitFor(() => expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment));
+    const generation = bridge.runtimeGeneration;
+    try {
+      const opening = bridge.request(openSessionRequest(source), { cancellation: token });
+      await probeStarted.promise;
+      const signal = vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[3]?.signal;
+      expect(signal).toBeDefined();
+      expect(signal?.aborted).toBe(false);
+      expect(subscribe).toHaveBeenCalledOnce();
+      expect(token.dispose).not.toHaveBeenCalled();
 
-    token.cancel();
-    await expect(bridge.request(openSessionRequest(source), { cancellation: token })).resolves.toEqual({
-      kind: "cancelled",
-      targetRequestId: "not-started"
-    });
+      token.cancel();
+      const remainedUnaborted = signal?.aborted === false;
+      probe.resolve({ missing: [], available: ["polars"] });
+      await expect(opening).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
+      expect(token.dispose).toHaveBeenCalledOnce();
+      expect(bridge.runtimeRunning).toBe(false);
+      expect(bridge.runtimeGeneration).toBe(generation);
 
-    expect(confirmed.selection.resolutionController.signal.aborted).toBe(false);
-    expect(raw.environmentSelections.get(source.uri!)).toBe(confirmed.selection);
-    expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment);
-    await bridge.shutdown();
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
-    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+      await expect(bridge.request({ ...openSessionRequest(source), backend: "pandas" })).resolves.toMatchObject({
+        kind: "error",
+        code: "missing_dependencies"
+      });
+      expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce();
+      expect(remainedUnaborted).toBe(true);
+    } finally {
+      probe.resolve({ missing: [], available: ["polars"] });
+      await bridge.shutdown();
+      subscribe.mockRestore();
+      vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+      vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+    }
   });
 
   it.each<SessionBoundRequest>([
