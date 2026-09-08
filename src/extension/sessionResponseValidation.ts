@@ -94,12 +94,22 @@ export function responseMismatch(
       );
     case "applyDraft":
     case "discardDraft":
-    case "undoStep": {
+    case "undoStep":
+    case "redoStep": {
       if (response.kind !== "planUpdated") return `runtime returned ${response.kind}`;
       const expectedAction =
-        request.kind === "applyDraft" ? "apply" : request.kind === "discardDraft" ? "discard" : "undo";
+        request.kind === "applyDraft"
+          ? "apply"
+          : request.kind === "discardDraft"
+            ? "discard"
+            : request.kind === "redoStep"
+              ? "redo"
+              : "undo";
       if (response.action !== expectedAction) {
         return `runtime reported ${response.action} instead of ${expectedAction}`;
+      }
+      if (request.kind === "redoStep" && response.viewRequestId !== request.viewRequestId) {
+        return "runtime reported a different Redo request identity";
       }
       if (response.revision !== request.revision + 1) {
         return `plan revision ${response.revision} did not follow ${request.revision}`;

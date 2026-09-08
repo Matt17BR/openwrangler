@@ -1418,65 +1418,84 @@ describe("interactive R session transport", () => {
     }
   );
 
-  it("forwards custom effective views and retained by-example steps through the interactive transport", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-preview-fields-unit-"));
-    const sessionId = "12121212-1212-4212-8212-121212121212";
-    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
-      temporaryParent,
-      runSelection: async (code) => {
-        const { requestPath, responsePath } = mailboxPaths(code);
-        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
-        const response =
-          request.kind === "openSession"
-            ? openResponse(request.requestId, sessionId)
-            : request.kind === "previewStep"
-              ? previewResponse(request, sessionId)
-              : interactiveResponse(request);
-        await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
-      }
-    });
-    try {
-      const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
-      const customStep = {
-        id: "custom-step",
-        kind: "customCode",
-        params: { code: "result <- df\n" }
-      } as const;
-      await expect(
-        transport.previewStep(sessionId, 0, customStep, pageWindow(), opened.page.schema)
-      ).resolves.toMatchObject({
-        revision: 1,
-        effectiveView: { filters: [], sorts: [] }
+  it.each(["previewStep", "redoStep"] as const)(
+    "forwards custom effective views and retained by-example steps through interactive %s",
+    async (kind) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-preview-fields-unit-"));
+      const sessionId = "12121212-1212-4212-8212-121212121212";
+      let expectedStep: NonNullable<NonNullable<KernelRequestRecord["payload"]>["step"]> | undefined;
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        runSelection: async (code) => {
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+          if (request.kind === "redoStep") {
+            expect(request.payload?.expectedStepId).toBe(expectedStep?.id);
+            expect(request.payload?.step).toBeUndefined();
+            if (!expectedStep) throw new Error("Missing exact expected R command.");
+            const decoded = JSON.parse(
+              previewResponse({ ...request, payload: { ...request.payload, step: expectedStep } }, sessionId)
+            ) as Record<string, unknown>;
+            await writeFile(responsePath, JSON.stringify({ ...decoded, kind: "planUpdated", action: "redo" }), {
+              flag: "wx",
+              mode: 0o600
+            });
+            return;
+          }
+          const response =
+            request.kind === "openSession"
+              ? openResponse(request.requestId, sessionId)
+              : request.kind === "previewStep"
+                ? previewResponse(request, sessionId)
+                : interactiveResponse(request);
+          await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+        }
       });
+      try {
+        const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+        const customStep = {
+          id: "custom-step",
+          kind: "customCode",
+          params: { code: "result <- df\n" }
+        } as const;
+        expectedStep = customStep;
+        await expect(
+          transport[kind](sessionId, 0, customStep, pageWindow(), opened.page.schema)
+        ).resolves.toMatchObject({
+          revision: 1,
+          effectiveView: { filters: [], sorts: [] }
+        });
 
-      const byExampleStep = {
-        id: "by-example-step",
-        kind: "byExample",
-        params: {
-          sourceColumns: [{ id: "r:c:0", name: "value" }],
-          newColumn: "derived value",
-          examples: [
-            { inputs: ["A"], output: "A" },
-            { inputs: ["B"], output: "B" }
-          ]
-        }
-      } as const;
-      await expect(
-        transport.previewStep(sessionId, 0, byExampleStep, pageWindow(), opened.page.schema)
-      ).resolves.toMatchObject({
-        revision: 1,
-        retainedStep: {
-          id: byExampleStep.id,
+        const byExampleStep = {
+          id: "by-example-step",
           kind: "byExample",
-          params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
-        }
-      });
-    } finally {
-      await transport.dispose();
-      expect(await readdir(temporaryParent)).toEqual([]);
-      await rm(temporaryParent, { recursive: true, force: true });
+          params: {
+            sourceColumns: [{ id: "r:c:0", name: "value" }],
+            newColumn: "derived value",
+            examples: [
+              { inputs: ["A"], output: "A" },
+              { inputs: ["B"], output: "B" }
+            ]
+          }
+        } as const;
+        expectedStep = byExampleStep;
+        await expect(
+          transport[kind](sessionId, 0, byExampleStep, pageWindow(), opened.page.schema)
+        ).resolves.toMatchObject({
+          revision: 1,
+          retainedStep: {
+            id: byExampleStep.id,
+            kind: "byExample",
+            params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
+          }
+        });
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it.each(["missing-custom-effective-view", "extra-noncustom-effective-view"] as const)(
     "rejects %s through the interactive preview decoder",
@@ -1611,6 +1630,7 @@ interface KernelRequestRecord {
     format?: "csv" | "parquet";
     offset?: number;
     limit?: number;
+    expectedStepId?: string;
     step?: Readonly<{ id: string; kind: string; params: Readonly<Record<string, unknown>> }>;
   }>;
 }

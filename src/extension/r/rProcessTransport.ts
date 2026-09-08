@@ -399,7 +399,31 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     throw cleanupError;
   }
 
-  async previewStep(
+  previewStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelTransformStep,
+    page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    replaceStepId?: string,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepPreviewResult> {
+    return this.executeStep("previewStep", sessionId, revision, step, page, inputSchema, replaceStepId, options);
+  }
+
+  redoStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelTransformStep,
+    page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepPreviewResult> {
+    return this.executeStep("redoStep", sessionId, revision, step, page, inputSchema, undefined, options);
+  }
+
+  private async executeStep(
+    kind: "previewStep" | "redoStep",
     sessionId: string,
     revision: number,
     step: RKernelTransformStep,
@@ -409,18 +433,24 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     options: RKernelRequestOptions = {}
   ): Promise<RKernelStepPreviewResult> {
     const response = await this.executeMapped(
-      this.request("previewStep", {
+      this.request(kind, {
         sessionId,
         revision,
-        step,
-        page,
-        ...(replaceStepId === undefined ? {} : { replaceStepId })
+        ...(kind === "redoStep"
+          ? { expectedStepId: step.id }
+          : { step, ...(replaceStepId === undefined ? {} : { replaceStepId }) }),
+        page
       }),
       options,
       { inputSchema, previewStep: step }
     );
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
-    if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
+    if (
+      (response.kind !== "stepPreview" && !(response.kind === "planUpdated" && response.action === "redo")) ||
+      (kind === "previewStep" ? response.kind !== "stepPreview" : response.kind !== "planUpdated") ||
+      response.sessionId !== sessionId ||
+      response.revision !== revision + 1
+    ) {
       throw new Error("The R process returned a mismatched step preview.");
     }
     return Object.freeze({

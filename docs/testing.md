@@ -117,6 +117,19 @@ receipt after layout settles and retain its session, revision, and DOM marker ch
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
+The same UI owners check Redo after the last Undo, focus ownership, draft/projection gates and exact attempt
+correlation before success or failure can settle a mutation. Panel controls verify that an empty-history refusal
+also clears the snapshot used on remount. Native session and transaction owners check ordered re-execution,
+branch clearing, draft retention, current viewing state, stable column binding, generated results and response
+preflight rollback. R's kernel and bridge owners additionally check host/native step identity and fresh dynamic
+output contracts. Runtime replacement is tested separately from failures that retain the original session.
+The existing file reopen journey exercises the registered Redo command after the last Undo. Live Python Formula
+and native R core-editing journeys use the visible button and compare the restored plan, schema, code and bounded
+page before returning to their original final state. The Pandas By Example owner also executes the redone plan's
+generated code with its existing value, dtype, label and index comparator.
+Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
+retain cancellation correlation before dispatch, including synchronous listener registration, without losing
+request leases or treating unstarted work as an ambiguous mutation.
 The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
 before continuing its existing preview, apply and undo assertions.
 

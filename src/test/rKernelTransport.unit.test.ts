@@ -819,139 +819,192 @@ describe("native R kernel protocol", () => {
     }
   });
 
-  it("requires an exact runtime-normalized retained step for native R by-example previews", () => {
-    const step = byExampleStep();
-    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+  it("bounds exact R redo identities and requires fresh redo-only result fields", () => {
+    const step = { id: "saved-custom", kind: "customCode", params: { code: "result <- df\n" } } as const;
+    const request: Extract<RKernelRequest, { kind: "redoStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: previewRequestId,
-      kind: "previewStep",
-      payload: { sessionId, revision: 0, step, page: pageWindow() }
+      kind: "redoStep",
+      payload: { sessionId, revision: 3, expectedStepId: step.id, page: pageWindow() }
     };
     expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
-    expect(() =>
-      encodeRKernelRequest({
-        ...request,
-        payload: {
-          ...request.payload,
-          step: { ...step, params: { ...step.params, newColumn: "derived\u0000truncated" } }
-        }
-      })
-    ).toThrow("U+0000");
-    expect(() =>
-      encodeRKernelRequest({
-        ...request,
-        payload: {
-          ...request.payload,
-          step: {
-            ...step,
-            params: {
-              ...step.params,
-              examples: [{ inputs: [-0], output: 0 }, step.params.examples[1]]
-            }
-          }
-        }
-      })
-    ).toThrow("malformed or exceed");
-    const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
-
-    const retainedStep = {
-      ...step,
-      params: {
-        ...step.params,
-        program: { kind: "column", column: { id: "r:c:0", name: "value" } },
-        warnings: [],
-        candidateCount: 1
-      }
-    } as const;
+    for (const expectedStepId of ["", "x".repeat(R_FRAME_CONTRACT_LIMITS.stepIdBytes + 1), "wrong\u0000id"]) {
+      expect(() => encodeRKernelRequest({ ...request, payload: { ...request.payload, expectedStepId } })).toThrow();
+    }
+    expect(() => encodeRKernelRequest({ ...request, payload: { ...request.payload, step } } as RKernelRequest)).toThrow(
+      "invalid fields"
+    );
     const response = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: previewRequestId,
-      kind: "stepPreview",
+      kind: "planUpdated",
+      action: "redo",
       sessionId,
-      revision: 1,
-      page: minimalByExampleFramePage(),
-      diff: {
-        ...minimalRenameDiff(),
-        addedColumns: ["derived value"]
-      },
-      code: "frame[['derived value']] <- frame[['value']]\n",
-      retainedStep
-    } as const;
-    const context = { inputSchema: minimalFramePage().schema, previewStep: step } as const;
-    expect(decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, context)).toMatchObject({
-      kind: "stepPreview",
-      retainedStep: {
-        id: "by-example-step",
-        params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
-      }
-    });
-
-    const { retainedStep: _retainedStep, ...missingRetainedStep } = response;
-    expect(() => decodeRKernelResponseJson(JSON.stringify(missingRetainedStep), previewRequestId, context)).toThrow(
-      "invalid fields"
-    );
+      revision: 4,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), addedRows: 1, removedRows: 1 },
+      effectiveView: { filters: [], sorts: [] },
+      code: "open_wrangler_result <- frame\n"
+    };
+    const context = { inputSchema: minimalFramePage().schema, previewStep: step };
+    expect(decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, context)).toMatchObject(response);
+    expect(() => decodeRKernelResponseJson(JSON.stringify(response), previewRequestId)).toThrow();
+    for (const field of ["diff", "effectiveView"]) {
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify({ ...response, [field]: undefined }), previewRequestId, context)
+      ).toThrow("invalid fields");
+    }
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify({ ...response, action: "undo" }), previewRequestId, context)
+    ).toThrow("invalid fields");
     expect(() =>
       decodeRKernelResponseJson(
-        JSON.stringify({
-          ...response,
-          retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: undefined } }
-        }),
+        JSON.stringify({ ...response, diff: { ...response.diff, addedRows: -1 } }),
         previewRequestId,
         context
       )
     ).toThrow();
     expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          ...response,
-          retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: ["bad\u0000warning"] } }
-        }),
-        previewRequestId,
-        context
-      )
-    ).toThrow("U+0000");
-    expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          ...response,
-          retainedStep: {
-            ...retainedStep,
-            params: { ...retainedStep.params, candidateCount: unsafeInteger }
-          }
-        }),
-        previewRequestId,
-        context
-      )
-    ).toThrow("valid retained by-example step");
-    expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          ...response,
-          retainedStep: {
-            ...retainedStep,
-            params: { ...retainedStep.params, examples: [{ inputs: [9], output: 9 }, step.params.examples[1]] }
-          }
-        }),
-        previewRequestId,
-        context
-      )
-    ).toThrow("does not match the exact preview request");
-
-    const saved = { ...step, params: { ...step.params, program: retainedStep.params.program } } as const;
-    expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          ...response,
-          retainedStep: {
-            ...retainedStep,
-            params: { ...retainedStep.params, program: { kind: "literal", value: 1 } }
-          }
-        }),
-        previewRequestId,
-        { inputSchema: minimalFramePage().schema, previewStep: saved }
-      )
-    ).toThrow("changed a saved by-example program");
+      decodeRKernelResponseJson(JSON.stringify({ ...response, revision: 4.5 }), previewRequestId, context)
+    ).toThrow();
   });
+
+  it.each(["stepPreview", "redo"] as const)(
+    "requires an exact runtime-normalized retained step for native R by-example %s",
+    (kind) => {
+      const step = byExampleStep();
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: {
+            ...request.payload,
+            step: { ...step, params: { ...step.params, newColumn: "derived\u0000truncated" } }
+          }
+        })
+      ).toThrow("U+0000");
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: {
+            ...request.payload,
+            step: {
+              ...step,
+              params: {
+                ...step.params,
+                examples: [{ inputs: [-0], output: 0 }, step.params.examples[1]]
+              }
+            }
+          }
+        })
+      ).toThrow("malformed or exceed");
+      const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+
+      const retainedStep = {
+        ...step,
+        params: {
+          ...step.params,
+          program: { kind: "column", column: { id: "r:c:0", name: "value" } },
+          warnings: [],
+          candidateCount: 1
+        }
+      } as const;
+      const response = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        ...(kind === "redo" ? { kind: "planUpdated", action: "redo" } : { kind: "stepPreview" }),
+        sessionId,
+        revision: 1,
+        page: minimalByExampleFramePage(),
+        diff: {
+          ...minimalRenameDiff(),
+          addedColumns: ["derived value"]
+        },
+        code: "frame[['derived value']] <- frame[['value']]\n",
+        retainedStep
+      } as const;
+      const context = { inputSchema: minimalFramePage().schema, previewStep: step } as const;
+      expect(decodeRKernelResponseJson(JSON.stringify(response), previewRequestId, context)).toMatchObject({
+        kind: kind === "redo" ? "planUpdated" : "stepPreview",
+        retainedStep: {
+          id: "by-example-step",
+          params: { program: { kind: "column" }, warnings: [], candidateCount: 1 }
+        }
+      });
+
+      const { retainedStep: _retainedStep, ...missingRetainedStep } = response;
+      expect(() => decodeRKernelResponseJson(JSON.stringify(missingRetainedStep), previewRequestId, context)).toThrow(
+        "invalid fields"
+      );
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            ...response,
+            retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: undefined } }
+          }),
+          previewRequestId,
+          context
+        )
+      ).toThrow();
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            ...response,
+            retainedStep: { ...retainedStep, params: { ...retainedStep.params, warnings: ["bad\u0000warning"] } }
+          }),
+          previewRequestId,
+          context
+        )
+      ).toThrow("U+0000");
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            ...response,
+            retainedStep: {
+              ...retainedStep,
+              params: { ...retainedStep.params, candidateCount: unsafeInteger }
+            }
+          }),
+          previewRequestId,
+          context
+        )
+      ).toThrow("valid retained by-example step");
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            ...response,
+            retainedStep: {
+              ...retainedStep,
+              params: { ...retainedStep.params, examples: [{ inputs: [9], output: 9 }, step.params.examples[1]] }
+            }
+          }),
+          previewRequestId,
+          context
+        )
+      ).toThrow("does not match the exact preview request");
+
+      const saved = { ...step, params: { ...step.params, program: retainedStep.params.program } } as const;
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            ...response,
+            retainedStep: {
+              ...retainedStep,
+              params: { ...retainedStep.params, program: { kind: "literal", value: 1 } }
+            }
+          }),
+          previewRequestId,
+          { inputSchema: minimalFramePage().schema, previewStep: saved }
+        )
+      ).toThrow("changed a saved by-example program");
+    }
+  );
 
   it("bounds custom R source and requires an exact custom-only effective view", () => {
     const step = { id: "custom-step", kind: "customCode", params: { code: "result <- df\n" } } as const;
@@ -3413,44 +3466,48 @@ describe("exact IRkernel session transport", () => {
     ]);
   });
 
-  it("returns a correlated mutation without a post-response kernel lookup", async () => {
-    let kernelLookups = 0;
-    const controller = controlledRKernel(async (request) => {
-      if (request.kind === "previewStep") {
-        return response(request, {
-          kind: "stepPreview",
-          sessionId,
-          revision: 1,
-          page: minimalFramePage(),
-          diff: minimalRenameDiff(),
-          code: "open_wrangler_result <- frame\n"
-        });
-      }
-      if (request.kind === "closeSession") {
-        return response(request, { kind: "closed", sessionId });
-      }
-      return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
-    });
-    mockKernel(controller.kernel, async () => {
-      kernelLookups += 1;
-      if (kernelLookups > 6) throw new Error("unexpected post-response kernel lookup");
-      return controller.kernel;
-    });
-    const document = notebookDocument();
-    setOpenNotebookDocuments(document);
-    const transport = createTransport(document, [sessionId, openRequestId, previewRequestId, closeRequestId]);
+  it.each(["previewStep", "redoStep"] as const)(
+    "returns a correlated %s without a post-response kernel lookup",
+    async (kind) => {
+      let kernelLookups = 0;
+      const controller = controlledRKernel(async (request) => {
+        if (request.kind === "previewStep" || request.kind === "redoStep") {
+          if (request.kind === "redoStep") expect(request.payload.expectedStepId).toBe(renameStep().id);
+          return response(request, {
+            ...(request.kind === "redoStep" ? { kind: "planUpdated", action: "redo" } : { kind: "stepPreview" }),
+            sessionId,
+            revision: 1,
+            page: minimalFramePage(),
+            diff: minimalRenameDiff(),
+            code: "open_wrangler_result <- frame\n"
+          });
+        }
+        if (request.kind === "closeSession") {
+          return response(request, { kind: "closed", sessionId });
+        }
+        return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
+      });
+      mockKernel(controller.kernel, async () => {
+        kernelLookups += 1;
+        if (kernelLookups > 6) throw new Error("unexpected post-response kernel lookup");
+        return controller.kernel;
+      });
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
+      const transport = createTransport(document, [sessionId, openRequestId, previewRequestId, closeRequestId]);
 
-    await transport.open("frame", pageWindow());
-    await expect(
-      transport.previewStep(sessionId, 0, renameStep(), pageWindow(), minimalFramePage().schema)
-    ).resolves.toMatchObject({
-      sessionId,
-      revision: 1
-    });
-    expect(kernelLookups).toBe(6);
-    await transport.close(sessionId);
-    await transport.dispose();
-  });
+      await transport.open("frame", pageWindow());
+      await expect(
+        transport[kind](sessionId, 0, renameStep(), pageWindow(), minimalFramePage().schema)
+      ).resolves.toMatchObject({
+        sessionId,
+        revision: 1
+      });
+      expect(kernelLookups).toBe(6);
+      await transport.close(sessionId);
+      await transport.dispose();
+    }
+  );
 
   it("invalidates mapped sessions when the exact IRkernel restarts", async () => {
     const controller = controlledRKernel(async (request) =>

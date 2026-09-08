@@ -112,6 +112,19 @@ function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HT
   );
 }
 
+function restoreCleaningPlanFocus(target: HTMLButtonElement | null): void {
+  if (
+    !target ||
+    !document.hasFocus() ||
+    (document.activeElement !== target && document.activeElement !== document.body)
+  )
+    return;
+  scheduleWebviewFocusRestoration(() => {
+    if (document.activeElement !== target && document.activeElement !== document.body) return;
+    document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
+  });
+}
+
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<LiveGridPage | undefined>();
@@ -217,12 +230,14 @@ export function App() {
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
-  const mutationSnapshot = useRef<{ view: ConfirmedViewState; form?: OperationPreviewContext } | undefined>(undefined);
+  const mutationSnapshot = useRef<
+    { view: ConfirmedViewState; form?: OperationPreviewContext; redoViewRequestId?: string } | undefined
+  >(undefined);
   const importOptionsUiBusyRef = useRef(true);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
-  const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
+  const planActionReturnFocus = useRef<HTMLButtonElement | null>(null);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
@@ -579,7 +594,7 @@ export function App() {
   );
 
   const beginMutation = useCallback(
-    (form?: OperationPreviewContext): boolean => {
+    (form?: OperationPreviewContext, redoViewRequestId?: string): boolean => {
       if (isImportOptionsPending()) {
         setForegroundError({ message: "Wait for the current import-options change to finish." });
         return false;
@@ -605,7 +620,11 @@ export function App() {
       }
       clearStepInspection(false, false);
       flushGridViewState();
-      mutationSnapshot.current = { view: previous, ...(form ? { form } : {}) };
+      mutationSnapshot.current = {
+        view: previous,
+        ...(form ? { form } : {}),
+        ...(redoViewRequestId ? { redoViewRequestId } : {})
+      };
       setQueuedOperationIntent(undefined);
       resetViewProfiling();
       storeMetadata(withoutDatasetStats(previous.metadata));
@@ -627,6 +646,51 @@ export function App() {
       storeFailedPageRequest,
       storeMetadata
     ]
+  );
+
+  const sendPlanAction = useCallback(
+    (action: "applyDraft" | "discardDraft" | "undoStep" | "redoStep", returnTarget?: HTMLButtonElement) => {
+      const current = metadataRef.current;
+      if (action === "redoStep" && (current?.mode !== "editing" || current.draftStep || current.canRedo !== true))
+        return;
+      const redoViewRequestId = action === "redoStep" ? nextViewRequestId() : undefined;
+      if (!beginMutation(undefined, redoViewRequestId)) return;
+      planActionReturnFocus.current =
+        (action === "redoStep" ||
+          (action === "undoStep" && current?.steps.length === 1 && current.draftStep === undefined)) &&
+        returnTarget !== undefined &&
+        document.hasFocus() &&
+        document.activeElement === returnTarget
+          ? returnTarget
+          : null;
+      const columnWindow = desiredColumnWindow.current;
+      const draftTarget = metadataRef.current?.draftReplacesStepId;
+      const latestStepId = metadataRef.current?.steps.at(-1)?.id;
+      if (action === "applyDraft" && draftTarget !== undefined && draftTarget !== latestStepId) {
+        vscode.postMessage({
+          kind: "rewriteCleaningPlan",
+          action,
+          stepId: draftTarget,
+          offset: 0,
+          limit: pageSize,
+          columnOffset: columnWindow.offset,
+          columnLimit: columnWindow.limit
+        });
+        return;
+      }
+      vscode.postMessage({
+        kind: "runtimeRequest",
+        request: {
+          kind: action,
+          ...(redoViewRequestId ? { viewRequestId: redoViewRequestId } : {}),
+          offset: 0,
+          limit: pageSize,
+          columnOffset: columnWindow.offset,
+          columnLimit: columnWindow.limit
+        }
+      });
+    },
+    [beginMutation, nextViewRequestId]
   );
 
   const deleteStep = useCallback(
@@ -923,6 +987,15 @@ export function App() {
             expectedSortModelSignature: response.expectedSortModelSignature,
             expectedSortIndex: response.expectedSortIndex
           });
+        } else if (response.action === "redoStep") {
+          const current = metadataRef.current;
+          if (
+            !current ||
+            (response.expectedSessionId !== undefined && response.expectedSessionId !== current.sessionId) ||
+            (response.expectedRevision !== undefined && response.expectedRevision !== current.revision)
+          )
+            return;
+          sendPlanAction("redoStep");
         } else {
           if (!beginMutation()) return;
           const columnWindow = desiredColumnWindow.current;
@@ -940,8 +1013,36 @@ export function App() {
         return;
       }
 
+      const redoSnapshot =
+        foregroundRequest.current === "mutation" && mutationSnapshot.current?.redoViewRequestId
+          ? mutationSnapshot.current
+          : undefined;
+      const currentMetadata = metadataRef.current;
+      const matchesRedoResponse = Boolean(
+        redoSnapshot &&
+        "viewRequestId" in response &&
+        response.viewRequestId === redoSnapshot.redoViewRequestId &&
+        currentMetadata?.sessionId === redoSnapshot.view.metadata.sessionId &&
+        currentMetadata.revision === redoSnapshot.view.metadata.revision &&
+        ((response.kind === "error" &&
+          (response.sessionId === undefined || response.sessionId === currentMetadata.sessionId)) ||
+          response.kind === "cancelled" ||
+          (response.kind === "planUpdated" &&
+            response.action === "redo" &&
+            response.metadata.sessionId === currentMetadata.sessionId &&
+            response.metadata.revision === response.revision &&
+            response.revision === currentMetadata.revision + 1))
+      );
+      if (
+        ((response.kind === "planUpdated" && response.action === "redo") ||
+          (response.kind === "error" && response.code === "redo_unavailable")) &&
+        !matchesRedoResponse
+      )
+        return;
+
       if (response.kind === "error") {
-        if (response.viewRequestId) {
+        if (redoSnapshot && !response.viewRequestId) return;
+        if (response.viewRequestId && !matchesRedoResponse) {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
             latestPageRequest.current = undefined;
@@ -968,13 +1069,21 @@ export function App() {
         const shouldRestoreMutation = foregroundRequest.current === "mutation";
         const previous = shouldRestoreMutation ? mutationSnapshot.current : undefined;
         if (shouldRestoreMutation) {
-          undoPlanReturnFocus.current = null;
+          const returnTarget = planActionReturnFocus.current;
+          planActionReturnFocus.current = null;
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
           setMutationPending(false);
           setLoading(isImportOptionsPending());
           setProjectionLoading(false);
-          if (previous) restoreConfirmedViewState(previous.view);
+          if (previous) {
+            const restored =
+              matchesRedoResponse && response.code === "redo_unavailable"
+                ? { ...previous.view, metadata: { ...previous.view.metadata, canRedo: false } }
+                : previous.view;
+            restoreConfirmedViewState(restored);
+            if (matchesRedoResponse && response.code === "redo_unavailable") restoreCleaningPlanFocus(returnTarget);
+          }
         } else if (isImportOptionsPending()) {
           setForegroundError({ message: response.message, code: response.code });
           return;
@@ -994,7 +1103,8 @@ export function App() {
       }
 
       if (response.kind === "cancelled") {
-        if (!response.viewRequestId) {
+        if (redoSnapshot && !response.viewRequestId) return;
+        if (!response.viewRequestId || matchesRedoResponse) {
           if (
             isImportOptionsPending() &&
             (response.targetRequestId === "change-import-options" ||
@@ -1004,7 +1114,7 @@ export function App() {
           }
           const shouldRestoreMutation = foregroundRequest.current === "mutation";
           if (shouldRestoreMutation) {
-            undoPlanReturnFocus.current = null;
+            planActionReturnFocus.current = null;
             const previous = mutationSnapshot.current;
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
@@ -1055,7 +1165,7 @@ export function App() {
         }
         const preservesOpenOperation =
           current?.sessionId === response.metadata.sessionId && current.revision === response.metadata.revision;
-        undoPlanReturnFocus.current = null;
+        planActionReturnFocus.current = null;
         clearSynchronization();
         setImportOptionsRequestPending(false);
         if (!preservesOpenOperation) {
@@ -1175,8 +1285,9 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
-        const undoReturnTarget = undoPlanReturnFocus.current;
-        undoPlanReturnFocus.current = null;
+        if (redoSnapshot && !matchesRedoResponse) return;
+        const planReturnTarget = planActionReturnFocus.current;
+        planActionReturnFocus.current = null;
         clearSynchronization();
         const previous = mutationSnapshot.current?.view;
         latestPageRequest.current = undefined;
@@ -1191,15 +1302,11 @@ export function App() {
         resetConfirmedFilterHistory();
         resetViewProfiling();
         const nextMetadata = withoutDatasetStats(response.metadata);
-        const undoFocusOriginIsActive =
-          undoReturnTarget !== null &&
-          (document.activeElement === undoReturnTarget || document.activeElement === document.body);
-        const shouldRestoreUndoFocus =
+        const shouldRestorePlanFocus =
           response.kind === "planUpdated" &&
-          nextMetadata.steps.length === 0 &&
-          nextMetadata.draftStep === undefined &&
-          document.hasFocus() &&
-          undoFocusOriginIsActive;
+          ((response.action === "undo" && nextMetadata.steps.length === 0) ||
+            (response.action === "redo" && nextMetadata.canRedo !== true)) &&
+          nextMetadata.draftStep === undefined;
         confirmView(nextMetadata, nextViewRequestId());
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
@@ -1243,10 +1350,8 @@ export function App() {
         if (response.kind === "stepPreview") closeOperationDialog();
         else clearStepInspection(false, false);
         restartProfilingAfterMutation(nextMetadata);
-        if (shouldRestoreUndoFocus) {
-          scheduleWebviewFocusRestoration(() => {
-            document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
-          });
+        if (shouldRestorePlanFocus) {
+          restoreCleaningPlanFocus(planReturnTarget);
         }
         return;
       }
@@ -1296,6 +1401,7 @@ export function App() {
     restoreViewAfterPageFailure,
     resetViewProfiling,
     settleProfileMessage,
+    sendPlanAction,
     storeConfirmedFilterHistory,
     storeFailedPageRequest,
     storeFilterModel,
@@ -1674,44 +1780,6 @@ export function App() {
     });
   };
 
-  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep", undoReturnTarget?: HTMLButtonElement) => {
-    if (!beginMutation()) return;
-    undoPlanReturnFocus.current =
-      action === "undoStep" &&
-      metadataRef.current?.steps.length === 1 &&
-      metadataRef.current.draftStep === undefined &&
-      undoReturnTarget !== undefined &&
-      document.hasFocus() &&
-      document.activeElement === undoReturnTarget
-        ? undoReturnTarget
-        : null;
-    const columnWindow = desiredColumnWindow.current;
-    const draftTarget = metadataRef.current?.draftReplacesStepId;
-    const latestStepId = metadataRef.current?.steps.at(-1)?.id;
-    if (action === "applyDraft" && draftTarget !== undefined && draftTarget !== latestStepId) {
-      vscode.postMessage({
-        kind: "rewriteCleaningPlan",
-        action,
-        stepId: draftTarget,
-        offset: 0,
-        limit: pageSize,
-        columnOffset: columnWindow.offset,
-        columnLimit: columnWindow.limit
-      });
-      return;
-    }
-    vscode.postMessage({
-      kind: "runtimeRequest",
-      request: {
-        kind: action,
-        offset: 0,
-        limit: pageSize,
-        columnOffset: columnWindow.offset,
-        columnLimit: columnWindow.limit
-      }
-    });
-  };
-
   const deleteInspectedStep = () => {
     const target = stepInspectionTargetRef.current;
     if (target) deleteStep(target.stepId);
@@ -1778,11 +1846,11 @@ export function App() {
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
         const activeElement = document.activeElement;
-        const undoReturnTarget =
+        const planReturnTarget =
           activeElement instanceof HTMLButtonElement && activeElement.hasAttribute("data-cleaning-plan-undo")
             ? activeElement
             : undefined;
-        sendPlanAction("undoStep", undoReturnTarget);
+        sendPlanAction("undoStep", planReturnTarget);
         handled = true;
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
@@ -1948,39 +2016,55 @@ export function App() {
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
               )}
-              {metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
-                <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
-                  <span className="toolbarPlanStatus">
-                    <span className="codicon codicon-layers" aria-hidden="true" />
-                    <span>
-                      {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+              {metadata.mode === "editing" &&
+                (metadata.steps.length > 0 || metadata.canRedo === true) &&
+                !metadata.draftStep && (
+                  <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
+                    <span className="toolbarPlanStatus">
+                      <span className="codicon codicon-layers" aria-hidden="true" />
+                      <span>
+                        {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                    onClick={() => requestOperationIntent({ action: "editLatest" })}
-                  >
-                    Edit latest
-                  </button>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    data-cleaning-plan-undo
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                    onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
-                  >
-                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
-                  </button>
-                </div>
-              )}
+                    {metadata.steps.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="secondaryButton"
+                          disabled={loading || projectionLoading || importOptionsPending}
+                          aria-describedby={projectionStatusId}
+                          aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                          title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                          onClick={() => requestOperationIntent({ action: "editLatest" })}
+                        >
+                          Edit latest
+                        </button>
+                        <button
+                          type="button"
+                          className="secondaryButton"
+                          data-cleaning-plan-undo
+                          disabled={loading || projectionLoading || importOptionsPending}
+                          aria-describedby={projectionStatusId}
+                          aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                          title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                          onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
+                        >
+                          <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="secondaryButton"
+                      disabled={loading || projectionLoading || importOptionsPending || metadata.canRedo !== true}
+                      aria-describedby={projectionStatusId}
+                      title={projectionActionTitle ?? "Redo the next undone step"}
+                      onClick={(event) => sendPlanAction("redoStep", event.currentTarget)}
+                    >
+                      <span className="codicon codicon-redo" aria-hidden="true" /> Redo
+                    </button>
+                  </div>
+                )}
               {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
                 <button
                   type="button"

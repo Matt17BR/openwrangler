@@ -46,6 +46,14 @@ export interface RKernelBridgeTransport {
     replaceStepId?: string,
     options?: RKernelRequestOptions
   ): Promise<RKernelStepPreviewResult>;
+  redoStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelTransformStep,
+    page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    options?: RKernelRequestOptions
+  ): Promise<RKernelStepPreviewResult>;
   applyDraft(
     sessionId: string,
     revision: number,

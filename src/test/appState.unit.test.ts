@@ -46,6 +46,13 @@ const filtered: FilterModel = {
 };
 
 describe("App view-state model", () => {
+  it("decodes the Redo editor action with checked session and revision fields", () => {
+    const action = { kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 3 };
+    expect(decodeAppHostMessage(action)).toEqual(action);
+    expect(decodeAppHostMessage({ ...action, expectedRevision: -1 })).toBeUndefined();
+    expect(decodeAppHostMessage({ ...action, expectedSessionId: 4 })).toBeUndefined();
+  });
+
   it("rejects forged PySpark metadata with an editing file source", () => {
     expect(
       decodeAppHostMessage({

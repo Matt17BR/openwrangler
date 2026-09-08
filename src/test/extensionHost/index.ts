@@ -3348,16 +3348,76 @@ async function exerciseReleasedJupyterExtension(
     assert.ok(literalStep?.kind === "formula");
     assert.equal(literalStep.params.value, literal);
     await assertLiteralPage(literalApplied.metadata.revision, "released-jupyter-polars-literal-applied");
+    const literalUndoApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The applied exact Polars Formula must reach its renderer before Undo."
+    );
+    await literalUndoApp.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === polarsFrame.sessionId &&
+          active.metadata.revision === literalApplied.metadata.revision + 1 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1
+        );
+      },
+      30_000,
+      "Undo of the exact Polars Formula before Redo"
+    );
+    const literalUndone = testing.activeSession();
+    assert.ok(literalUndone);
+    assert.equal(literalUndone.metadata.canRedo, true);
+    assert.deepEqual(literalUndone.metadata.steps, applied.metadata.steps);
+    assert.deepEqual(literalUndone.metadata.schema, applied.metadata.schema);
+    assert.equal(literalUndone.code, applied.code);
+
+    recordAcceptanceProgress(`${phase}:polars-exact-formula:redo`);
+    const literalRedoApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The undone exact Polars Formula must expose Redo in its acknowledged renderer."
+    );
+    await literalRedoApp.getByRole("button", { name: "Redo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === polarsFrame.sessionId &&
+          active.metadata.revision === literalUndone.metadata.revision + 1 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 2 &&
+          active.metadata.steps.at(-1)?.id === literalStepId
+        );
+      },
+      30_000,
+      "Redo of the exact Polars Formula in the live kernel"
+    );
+    const literalRedone = testing.activeSession();
+    assert.ok(literalRedone);
+    assert.equal(literalRedone.metadata.canRedo, false);
+    assert.deepEqual(literalRedone.metadata.steps, literalApplied.metadata.steps);
+    assert.deepEqual(literalRedone.metadata.schema, literalApplied.metadata.schema);
+    assert.deepEqual(literalRedone.metadata.source, literalApplied.metadata.source);
+    assert.equal(literalRedone.code, literalApplied.code);
+    await assertLiteralPage(literalRedone.metadata.revision, "released-jupyter-polars-literal-redone");
+
     const restoredPolars = await testing.request({
       kind: "undoStep",
       ...GRID_COLUMN_WINDOW,
       sessionId: polarsFrame.sessionId,
-      revision: literalApplied.metadata.revision,
+      revision: literalRedone.metadata.revision,
       offset: 0,
       limit: 10
     });
     assert.equal(restoredPolars.kind, "planUpdated");
     if (restoredPolars.kind !== "planUpdated") throw new Error("The exact Polars Formula did not undo.");
+    assert.equal(restoredPolars.revision, literalRedone.metadata.revision + 1);
+    assert.equal(restoredPolars.metadata.canRedo, true);
     assert.deepEqual(restoredPolars.metadata.steps, applied.metadata.steps);
     assert.deepEqual(restoredPolars.metadata.schema, applied.metadata.schema);
     assert.deepEqual(restoredPolars.metadata.source, polarsFrame.metadata.source);
@@ -14335,7 +14395,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
 
     const assertGeneratedPandasPreview = async (
-      preview: Extract<OpenWranglerResponse, { kind: "stepPreview" }>,
+      preview: Pick<Extract<OpenWranglerResponse, { kind: "stepPreview" }>, "code" | "metadata" | "page">,
       sourceName: "duplicate_frame" | "structural_frame" | "identity_frame",
       integerLabelId: string,
       rowPositions: readonly number[] | null = null
@@ -14380,7 +14440,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       assert.equal(
         output.trim(),
         "PANDAS_DUPLICATE_GENERATED_OK",
-        "The complete emitted Pandas plan must match its live preview."
+        "The complete emitted Pandas plan must match its live result."
       );
     };
 
@@ -15142,12 +15202,52 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       throw new Error("Stable-reference by-example apply did not resolve.");
     }
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:by-example-redo");
+    const identityExampleUndone = await testing.request({
+      kind: "undoStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: identityExampleApplied.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(identityExampleUndone.kind, "planUpdated");
+    if (identityExampleUndone.kind !== "planUpdated")
+      throw new Error("Stable-reference by-example Undo did not resolve.");
+    assert.equal(identityExampleUndone.revision, identityExampleApplied.revision + 1);
+    assert.equal(identityExampleUndone.metadata.steps.length, 0);
+    assert.equal(identityExampleUndone.metadata.draftStep, undefined);
+    assert.equal(identityExampleUndone.metadata.canRedo, true);
+    const identityExampleRedone = await testing.request({
+      kind: "redoStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: identitySessionId,
+      revision: identityExampleUndone.revision,
+      viewRequestId: "notebook-pandas-by-example-redo",
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(identityExampleRedone.kind, "planUpdated");
+    if (identityExampleRedone.kind !== "planUpdated")
+      throw new Error("Stable-reference by-example Redo did not resolve.");
+    assert.equal(identityExampleRedone.action, "redo");
+    assert.equal(identityExampleRedone.viewRequestId, "notebook-pandas-by-example-redo");
+    assert.equal(identityExampleRedone.revision, identityExampleUndone.revision + 1);
+    assert.equal(identityExampleRedone.metadata.canRedo, false);
+    assert.equal(identityExampleRedone.metadata.draftStep, undefined);
+    assert.deepEqual(identityExampleRedone.metadata.steps, identityExampleApplied.metadata.steps);
+    assert.deepEqual(identityExampleRedone.metadata.schema, identityExampleApplied.metadata.schema);
+    assert.deepEqual(identityExampleRedone.metadata.source, identityExampleApplied.metadata.source);
+    assert.deepEqual(identityExampleRedone.page, identityExampleApplied.page);
+    assert.equal(identityExampleRedone.code, identityExampleApplied.code);
+    await assertGeneratedPandasPreview(identityExampleRedone, "identity_frame", identityIntegerLabel.id);
+
     recordAcceptanceProgress("verify:notebook:pandas-by-example-group:group-preview");
     const identityGroupPreview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
       sessionId: identitySessionId,
-      revision: identityExampleApplied.revision,
+      revision: identityExampleRedone.revision,
       step: {
         id: "duplicate-group-stable-references",
         kind: "groupBy",

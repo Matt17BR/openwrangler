@@ -62,6 +62,38 @@ const page: GridPage = {
 };
 
 describe("session response validation", () => {
+  it("binds a Redo success to its exact attempt and one next revision", () => {
+    const request: SessionBoundRequest = {
+      kind: "redoStep",
+      sessionId: runtimeSessionId,
+      revision: 4,
+      viewRequestId: "redo-current",
+      offset: 0,
+      limit: 10,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const response: OpenWranglerResponse = {
+      kind: "planUpdated",
+      action: "redo",
+      viewRequestId: "redo-current",
+      revision: 5,
+      metadata: { ...metadata, revision: 5, canRedo: false },
+      page,
+      code: "cleaned"
+    };
+    expect(responseMismatch(request, response, runtimeSessionId, schema)).toBeUndefined();
+    expect(responseMismatch(request, { ...response, viewRequestId: "redo-old" }, runtimeSessionId, schema)).toBe(
+      "runtime reported a different Redo request identity"
+    );
+    expect(responseMismatch(request, { ...response, action: "undo" }, runtimeSessionId, schema)).toBe(
+      "runtime reported undo instead of redo"
+    );
+    expect(responseMismatch(request, { ...response, revision: 6 }, runtimeSessionId, schema)).toBe(
+      "plan revision 6 did not follow 4"
+    );
+  });
+
   it("accepts one exact page and rejects every independent projection/correlation boundary", () => {
     const request = pageRequest();
     const response = pageResponse();

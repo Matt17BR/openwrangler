@@ -74,6 +74,7 @@ def session_state(session: Session) -> dict[str, Any]:
         "filterModel": deepcopy(session.filter_model),
         "filteredShape": deepcopy(session.filtered_shape),
         "plan": deepcopy(session.plan),
+        "undoneSteps": deepcopy(session.undone_steps),
         "boundPlan": deepcopy(session.bound_plan),
         "planInputSchemas": deepcopy(session.plan_input_schemas),
         "committedLineage": deepcopy(session.committed_lineage),
@@ -428,7 +429,7 @@ def test_preview_preflight_restores_every_state_owner_for_each_response_field(
     assert observe_session(manager, session_id, 0) == expected_observation
 
 
-@pytest.mark.parametrize("operation", ["preview", "apply", "discard", "undo", "replace"])
+@pytest.mark.parametrize("operation", ["preview", "apply", "discard", "undo", "redo", "replace"])
 def test_every_mutation_path_rolls_back_when_the_correlated_response_preflight_fails(
     tmp_path: Path,
     operation: str,
@@ -441,15 +442,23 @@ def test_every_mutation_path_rolls_back_when_the_correlated_response_preflight_f
     if operation == "preview":
         arguments = (session_id, revision, formula_step("preview"), 0, 2)
     elif operation in {"apply", "discard"}:
+        manager.preview_step(session_id, 0, formula_step("removed"), 0, 2)
+        manager.apply_draft(session_id, 1, 0, 2)
+        manager.undo_step(session_id, 2, 0, 2)
+        revision = 3
         manager.preview_step(session_id, revision, formula_step(operation), 0, 2)
-        revision = 1
+        revision += 1
         mutation = manager.apply_draft if operation == "apply" else manager.discard_draft
         arguments = (session_id, revision, 0, 2)
-    elif operation == "undo":
+    elif operation in {"undo", "redo"}:
         manager.preview_step(session_id, revision, formula_step("undo"), 0, 2)
         manager.apply_draft(session_id, 1, 0, 2)
         revision = 2
         mutation = manager.undo_step
+        if operation == "redo":
+            manager.undo_step(session_id, revision, 0, 2)
+            revision += 1
+            mutation = manager.redo_step
         arguments = (session_id, revision, 0, 2)
     else:
         manager.preview_step(session_id, revision, formula_step("replace"), 0, 2)
@@ -904,5 +913,109 @@ def test_extended_float_pages_and_preview_preserve_confirmed_source(monkeypatch:
             manager.preview_step(sid, 0, operation, 0, 1)
         assert session_state(session) == before
         pd.testing.assert_frame_equal(source, original)
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("operation", ["undo", "redo"])
+def test_active_and_undone_commands_share_the_retained_plan_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    manager, sid = open_pandas_session(tmp_path)
+    try:
+        session = manager.sessions[sid]
+        for name in ["one", "two", "three"]:
+            manager.preview_step(sid, session.revision, formula_step(name, name), 0, 2)
+            manager.apply_draft(sid, session.revision, 0, 2)
+        total = strict_json_byte_length(session.plan, MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES)
+        manager.undo_step(sid, session.revision, 0, 2)
+        before = session_state(session)
+        monkeypatch.setattr(session_plan_runtime, "MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES", total - 1)
+
+        def unexpected(*_args: Any) -> Any:
+            raise AssertionError("over-budget history must fail before native execution")
+
+        monkeypatch.setattr(session.engine, "apply_transform", unexpected)
+        with pytest.raises(EngineError, match="retained cleaning plan"):
+            (manager.undo_step if operation == "undo" else manager.redo_step)(sid, session.revision, 0, 2)
+        assert session_state(session) == before
+    finally:
+        manager.close_all()
+
+
+def test_redo_correlated_success_token_is_preflighted_before_history_is_consumed(tmp_path: Path, monkeypatch) -> None:
+    from openwrangler_runtime.protocol import response_envelope
+
+    manager, sid = open_pandas_session(tmp_path)
+    try:
+        manager.preview_step(sid, 0, formula_step("saved"), 0, 2)
+        manager.apply_draft(sid, 1, 0, 2)
+        manager.undo_step(sid, 2, 0, 2)
+        session = manager.sessions[sid]
+        captured: dict[str, Any] = {}
+
+        def reject(response: dict[str, Any]) -> None:
+            captured.update(response)
+            raise ResponsePayloadError("measure without publishing", "response_encoding_failed")
+
+        with pytest.raises(ResponsePayloadError, match="measure without publishing"):
+            manager.redo_step(sid, 3, 0, 2, response_preflight=reject)
+        request_id = "redo-margin"
+        size = strict_json_byte_length(response_envelope(request_id, captured), 1_000_000) + 1
+        monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", size + 1)
+        before = session_state(session)
+        with pytest.raises(ResponsePayloadError, match="transport frame"):
+            server.dispatch(
+                manager,
+                {
+                    "kind": "redoStep",
+                    "sessionId": sid,
+                    "revision": 3,
+                    "viewRequestId": "é" * 100,
+                    "offset": 0,
+                    "limit": 2,
+                    "columnOffset": 0,
+                    "columnLimit": 256,
+                },
+                request_id,
+            )
+        assert session_state(session) == before
+    finally:
+        manager.close_all()
+
+
+def test_redo_dynamic_custom_result_and_hidden_failure_preserve_current_state(tmp_path: Path, monkeypatch) -> None:
+    import builtins
+
+    import pandas as pd
+
+    state = {"invalid": False}
+    monkeypatch.setattr(builtins, "_ow_redo_result_state", state, raising=False)
+    manager, sid = open_pandas_session(tmp_path)
+    try:
+        code = (
+            "import builtins\nresult = df[['value']].copy()\n"
+            "if builtins._ow_redo_result_state['invalid']:\n"
+            "    result['bad'] = ['1', '2', 'invalid']\n    result['bad'] = result['bad'].astype('int64')\n"
+            "else:\n    result = result.iloc[:2].assign(changed=5)"
+        )
+        manager.preview_step(sid, 0, custom_step("dynamic", code), 0, 1)
+        manager.apply_draft(sid, 1, 0, 1)
+        manager.undo_step(sid, 2, 0, 1)
+        session = manager.sessions[sid]
+        before = session_state(session)
+        state["invalid"] = True
+        with pytest.raises(EngineError):
+            manager.redo_step(sid, 3, 0, 1)
+        assert session_state(session) == before
+        state["invalid"] = False
+        redone = manager.redo_step(sid, 3, 0, 1)
+        assert redone["metadata"]["shape"] == {"rows": 2, "columns": 2}
+        namespace: dict[str, Any] = {}
+        exec(redone["code"], namespace)
+        pd.testing.assert_frame_equal(
+            namespace["clean_data"](pd.read_csv(tmp_path / "transactions.csv")), session.committed[["value", "changed"]]
+        )
+        assert (tmp_path / "transactions.csv").read_text() == "name,value\na,1\nb,2\nc,3\n"
     finally:
         manager.close_all()

@@ -6,6 +6,8 @@ import {
   type OpenWranglerRequest,
   type OpenWranglerResponse,
   type PreviewStepRequest,
+  type RedoStepRequest,
+  type TransformStep,
   type RetainedTransformStep
 } from "../../shared/protocol";
 import type { BridgeRequestOptions } from "../dataBridge";
@@ -70,7 +72,32 @@ export class RKernelMutationLifecycle {
     private readonly sessions: Map<string, RBridgeSession>
   ) {}
 
-  async previewStep(request: PreviewStepRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+  previewStep(request: PreviewStepRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    return this.executeStep(request, request.step, options);
+  }
+
+  async redoStep(request: RedoStepRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    const invalid = validateMutationRequest(session, request.revision, request);
+    const saved = session?.redoSteps.at(-1);
+    const result =
+      invalid ??
+      (saved
+        ? await this.executeStep(request, saved, options)
+        : errorResponse("redo_unavailable", "There is no R step to redo in this session.", true, request.sessionId));
+    if (result.kind === "error") {
+      if (result.code === "redo_unavailable" && session) session.redoSteps = [];
+      return { ...result, viewRequestId: request.viewRequestId };
+    }
+    return result;
+  }
+
+  private async executeStep(
+    request: PreviewStepRequest | RedoStepRequest,
+    step: TransformStep,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const replaceStepId = request.kind === "previewStep" ? request.replaceStepId : undefined;
     const session = this.sessions.get(request.sessionId);
     const invalid = validateMutationRequest(session, request.revision, request);
     if (invalid) return invalid;
@@ -83,10 +110,10 @@ export class RKernelMutationLifecycle {
         request.sessionId
       );
     }
-    if (!operationKinds.includes(request.step.kind)) {
+    if (!operationKinds.includes(step.kind)) {
       return errorResponse(
         "unsupported_operation",
-        `The native R runtime does not support ${request.step.kind}.`,
+        `The native R runtime does not support ${step.kind}.`,
         true,
         request.sessionId
       );
@@ -99,9 +126,9 @@ export class RKernelMutationLifecycle {
     let inputKeyColumnIds: readonly string[];
     let inputRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     let inputCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
-    if (request.replaceStepId !== undefined) {
-      const matches = confirmed.steps.flatMap((step, index) => (step.id === request.replaceStepId ? [index] : []));
-      if (matches.length !== 1 || request.step.id !== request.replaceStepId) {
+    if (replaceStepId !== undefined) {
+      const matches = confirmed.steps.flatMap((step, index) => (step.id === replaceStepId ? [index] : []));
+      if (matches.length !== 1 || step.id !== replaceStepId) {
         return errorResponse(
           "invalid_request",
           matches.length === 0
@@ -122,7 +149,7 @@ export class RKernelMutationLifecycle {
       inputRowNames = confirmed.planInputRowNames[replaceIndex] ?? confirmed.sourceRowNames;
       inputCustomRowIdentities = confirmed.planInputCustomRowIdentities[replaceIndex];
     } else {
-      if (confirmed.steps.some((step) => step.id === request.step.id)) {
+      if (confirmed.steps.some((applied) => applied.id === step.id)) {
         return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
       }
       inputSchema = confirmed.committedSchema;
@@ -143,25 +170,25 @@ export class RKernelMutationLifecycle {
     let targetRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     try {
       targetSchema =
-        request.step.kind === "byExample" || request.step.kind === "customCode"
+        step.kind === "byExample" || step.kind === "customCode"
           ? Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })))
-          : isRCategoricalTransformStep(request.step)
-            ? categoricalRetainedSchema(inputSchema, request.step)
-            : schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
-      if (request.step.kind === "pivotLonger") {
-        assertRPivotLongerPreflight(request.step, inputSchema, inputRSchema, inputRows);
+          : isRCategoricalTransformStep(step)
+            ? categoricalRetainedSchema(inputSchema, step)
+            : schemaAfterRStep(inputSchema, step, inputKeyColumnIds);
+      if (step.kind === "pivotLonger") {
+        assertRPivotLongerPreflight(step, inputSchema, inputRSchema, inputRows);
       }
-      if (request.step.kind === "pivotWider") {
-        assertRPivotWiderPreflight(request.step, inputSchema, inputRSchema, inputRows);
+      if (step.kind === "pivotWider") {
+        assertRPivotWiderPreflight(step, inputSchema, inputRSchema, inputRows);
       }
-      targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
-      rStep = rTransformStep(request.step, inputSchema);
-      targetRowNames = rowNamesAfterRStep(inputRowNames, request.step);
+      targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, step);
+      rStep = rTransformStep(step, inputSchema);
+      targetRowNames = rowNamesAfterRStep(inputRowNames, step);
       nextFilterModel =
-        request.step.kind === "customCode"
+        step.kind === "customCode"
           ? copyFilterModel(confirmed.filterModel)
           : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
-      view = resolveViewQuery(nextFilterModel, request.step.kind === "customCode" ? confirmed.schema : targetSchema);
+      view = resolveViewQuery(nextFilterModel, step.kind === "customCode" ? confirmed.schema : targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
     } catch (error) {
       return errorResponse(
@@ -177,15 +204,25 @@ export class RKernelMutationLifecycle {
     const draftBaseFilterModel = copyFilterModel(confirmed.filterModel);
     const draftBaseViewChangeEpoch = confirmed.viewChangeEpoch;
     try {
-      const result = await this.transport.previewStep(
-        request.sessionId,
-        expectedRevision,
-        rStep,
-        pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
-        inputRSchema,
-        request.replaceStepId,
-        transportOptions(options)
-      );
+      const page = pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view);
+      const result = await (request.kind === "redoStep"
+        ? this.transport.redoStep(
+            request.sessionId,
+            expectedRevision,
+            rStep,
+            page,
+            inputRSchema,
+            transportOptions(options)
+          )
+        : this.transport.previewStep(
+            request.sessionId,
+            expectedRevision,
+            rStep,
+            page,
+            inputRSchema,
+            replaceStepId,
+            transportOptions(options)
+          ));
       if (confirmed.invalidated) return kernelChangedError(request.sessionId);
       if (result.sessionId !== request.sessionId || result.revision !== expectedRevision + 1) {
         throw new Error("The R kernel returned a mismatched step preview.");
@@ -194,18 +231,18 @@ export class RKernelMutationLifecycle {
         confirmed.invalidated = true;
         return staleResponseError(request.sessionId);
       }
-      if ((request.step.kind === "customCode") !== (result.effectiveView !== undefined)) {
+      if ((step.kind === "customCode") !== (result.effectiveView !== undefined)) {
         throw new Error("The R kernel returned an effective view for the wrong draft operation.");
       }
-      if (isRCategoricalTransformStep(request.step)) {
-        targetSchema = dynamicCategoricalSchema(inputSchema, inputRSchema, request.step, result.page);
-        targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
+      if (isRCategoricalTransformStep(step)) {
+        targetSchema = dynamicCategoricalSchema(inputSchema, inputRSchema, step, result.page);
+        targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, step);
         const resolvedView = resolveViewQuery(nextFilterModel, targetSchema);
         if (!isDeepStrictEqual(resolvedView, view)) {
           throw new Error("The R categorical schema changed the pre-dispatch viewing query.");
         }
       }
-      if (request.step.kind === "customCode") {
+      if (step.kind === "customCode") {
         const effectiveView = result.effectiveView;
         if (effectiveView === undefined) {
           throw new Error("The R custom-code preview omitted its effective view.");
@@ -213,8 +250,8 @@ export class RKernelMutationLifecycle {
         if (result.retainedStep !== undefined) {
           throw new Error("The R kernel returned a retained step for the wrong draft operation.");
         }
-        retainedStep = copyRTransformStep(request.step);
-        targetSchema = dynamicCustomCodeSchema(inputSchema, request.step, result.page);
+        retainedStep = copyRTransformStep(step);
+        targetSchema = dynamicCustomCodeSchema(inputSchema, step, result.page);
         targetKeyColumnIds = Object.freeze([...result.page.frameSemantics.keyColumnIds]);
         targetRowNames = result.page.frameSemantics.rowNames;
         nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
@@ -223,7 +260,7 @@ export class RKernelMutationLifecycle {
           throw new Error("The R custom-code preview returned a mismatched effective view.");
         }
         view = effectiveView;
-      } else if (request.step.kind === "byExample") {
+      } else if (step.kind === "byExample") {
         retainedStep = acceptRetainedByExampleStep(result.retainedStep, rStep, inputSchema);
         targetSchema = dynamicByExampleSchema(inputSchema, inputRSchema, retainedStep, result.page);
         targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, retainedStep);
@@ -235,12 +272,12 @@ export class RKernelMutationLifecycle {
         if (result.retainedStep !== undefined) {
           throw new Error("The R kernel returned a retained step for the wrong draft operation.");
         }
-        retainedStep = copyRTransformStep(request.step);
+        retainedStep = copyRTransformStep(step);
       }
-      const targetRows = rowCountAfterRStep(request.step, inputRows, result.diff);
-      const targetIdentityRows = rowIdentityDomainAfterRStep(request.step, inputIdentityRows, targetRows);
+      const targetRows = rowCountAfterRStep(step, inputRows, result.diff);
+      const targetIdentityRows = rowIdentityDomainAfterRStep(step, inputIdentityRows, targetRows);
       const targetCustomRowIdentities = customRowIdentityConstraintAfterRStep(
-        request.step,
+        step,
         inputCustomRowIdentities,
         inputIdentityRows,
         targetRows
@@ -255,21 +292,20 @@ export class RKernelMutationLifecycle {
         targetKeyColumnIds,
         targetRowNames,
         view,
-        request.step.kind === "castColumn"
-          ? { columnId: request.step.params.column.id, mode: "mayAdd" }
-          : request.step.kind === "minMaxScale"
+        step.kind === "castColumn"
+          ? { columnId: step.params.column.id, mode: "mayAdd" }
+          : step.kind === "minMaxScale"
             ? {
                 columnId:
-                  request.step.params.newColumn === undefined ||
-                  request.step.params.newColumn === request.step.params.column.name
-                    ? request.step.params.column.id
-                    : `c:step:${request.step.id}:0`,
+                  step.params.newColumn === undefined || step.params.newColumn === step.params.column.name
+                    ? step.params.column.id
+                    : `c:step:${step.id}:0`,
                 mode: "mayAdd"
               }
-            : request.step.kind === "splitText"
-              ? { columnId: `c:step:${request.step.id}:0`, mode: "mayAdd" }
-              : request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
-                ? { columnId: request.step.params.column.id, mode: "mayRemove" }
+            : step.kind === "splitText"
+              ? { columnId: `c:step:${step.id}:0`, mode: "mayAdd" }
+              : step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
+                ? { columnId: step.params.column.id, mode: "mayRemove" }
                 : undefined
       );
       assertMutationDiff(
@@ -283,7 +319,7 @@ export class RKernelMutationLifecycle {
         view
       );
       assertCustomDerivedRowIdentities(result.page, targetCustomRowIdentities, view);
-      if ((request.step.kind === "fillMissingValues") !== (result.remainingMissingCells !== undefined)) {
+      if ((step.kind === "fillMissingValues") !== (result.remainingMissingCells !== undefined)) {
         throw new Error("The R kernel returned a missing-value count for the wrong draft operation.");
       }
       if (result.remainingMissingCells !== undefined && result.remainingMissingCells > targetRows) {
@@ -299,8 +335,44 @@ export class RKernelMutationLifecycle {
       confirmed.customRowIdentities = targetCustomRowIdentities;
       confirmed.rowNames = targetRowNames;
       confirmed.filterModel = nextFilterModel;
+      if (request.kind === "redoStep") {
+        confirmed.steps = [...confirmed.steps, copyRTransformStep(retainedStep)];
+        confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(inputSchema)];
+        confirmed.planInputRSchemas = [...confirmed.planInputRSchemas, inputRSchema];
+        confirmed.planInputRows = [...confirmed.planInputRows, inputRows];
+        confirmed.planInputIdentityRows = [...confirmed.planInputIdentityRows, inputIdentityRows];
+        confirmed.planInputKeyColumnIds = [...confirmed.planInputKeyColumnIds, Object.freeze([...inputKeyColumnIds])];
+        confirmed.planInputRowNames = [...confirmed.planInputRowNames, inputRowNames];
+        confirmed.planInputCustomRowIdentities = [...confirmed.planInputCustomRowIdentities, inputCustomRowIdentities];
+        confirmed.committedSchema = confirmed.schema;
+        confirmed.committedRSchema = confirmed.rSchema;
+        confirmed.committedRows = targetRows;
+        confirmed.committedIdentityRows = targetIdentityRows;
+        confirmed.committedKeyColumnIds = confirmed.keyColumnIds;
+        confirmed.committedRowNames = targetRowNames;
+        confirmed.committedCustomRowIdentities = targetCustomRowIdentities;
+        confirmed.redoSteps = confirmed.redoSteps.slice(0, -1);
+        confirmed.lastAppliedViewRestore =
+          confirmed.viewChangeEpoch === draftBaseViewChangeEpoch
+            ? {
+                stepId: retainedStep.id,
+                before: draftBaseFilterModel,
+                after: copyFilterModel(nextFilterModel),
+                viewChangeEpoch: confirmed.viewChangeEpoch
+              }
+            : undefined;
+        return {
+          kind: "planUpdated",
+          action: "redo",
+          revision: confirmed.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: metadataFor(confirmed, result.page.page.totalRows),
+          page: gridPageFromContract(result.page),
+          code: result.code
+        };
+      }
       confirmed.draftStep = copyRTransformStep(retainedStep);
-      confirmed.draftReplacesStepId = request.replaceStepId;
+      confirmed.draftReplacesStepId = replaceStepId;
       confirmed.draftInputSchema = copySchema(inputSchema);
       confirmed.draftInputRSchema = inputRSchema;
       confirmed.draftInputRows = inputRows;
@@ -311,8 +383,8 @@ export class RKernelMutationLifecycle {
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
       const fallbackFillTargetId =
-        request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
-          ? request.step.params.column.id
+        step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
+          ? step.params.column.id
           : undefined;
       return {
         kind: "stepPreview",
@@ -488,6 +560,7 @@ export class RKernelMutationLifecycle {
 
       const priorRestore = confirmed.lastAppliedViewRestore;
       if (request.kind === "applyDraft") {
+        confirmed.redoSteps = [];
         const draftStep = confirmed.draftStep as RTransformStep;
         const draftInputSchema = confirmed.draftInputSchema as readonly ColumnSchema[];
         const draftInputRSchema = confirmed.draftInputRSchema as readonly RColumnSchema[];
@@ -558,6 +631,7 @@ export class RKernelMutationLifecycle {
           confirmed.lastAppliedViewRestore = undefined;
         }
       } else if (request.kind === "undoStep") {
+        confirmed.redoSteps = [...confirmed.redoSteps, copyRTransformStep(confirmed.steps.at(-1) as RTransformStep)];
         confirmed.steps = confirmed.steps.slice(0, -1);
         confirmed.planInputSchemas = confirmed.planInputSchemas.slice(0, -1);
         confirmed.planInputRSchemas = confirmed.planInputRSchemas.slice(0, -1);

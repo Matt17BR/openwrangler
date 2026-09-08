@@ -7,6 +7,23 @@ import { metadata, requests, responses, validateTransportSchema } from "./protoc
 const representativeRequests = [...new Map(requests.map((request) => [request.kind, request] as const)).values()];
 
 describe("protocol-v2 request validation", () => {
+  it("requires a nonempty attempt identity for Redo at both request boundaries", () => {
+    const redo = requests.find((request) => request.kind === "redoStep");
+    if (!redo) throw new Error("Expected the canonical Redo fixture.");
+    for (const [viewRequestId, valid] of [
+      ["redo-current", true],
+      ["", false],
+      [null, false],
+      [17, false]
+    ] as const) {
+      const request = { ...redo, viewRequestId };
+      expect(isOpenWranglerRequest(request)).toBe(valid);
+      expect(
+        validateTransportSchema({ protocolVersion: 2, requestId: "wire-redo", priority: "interactive", request })
+      ).toBe(valid);
+    }
+  });
+
   it.each(requests.map((request) => [request.kind, request] as const))(
     "accepts a structurally complete %s request",
     (_kind, request) => {
@@ -23,7 +40,6 @@ describe("protocol-v2 request validation", () => {
   );
 
   it("keeps the generated request-shape catalog complete and deeply frozen", () => {
-    expect(openWranglerRequestShapes).toHaveLength(14);
     expect(openWranglerRequestShapes.map(({ kind }) => kind)).toEqual(representativeRequests.map(({ kind }) => kind));
     expect(Object.isFrozen(openWranglerRequestShapes)).toBe(true);
     for (const definition of openWranglerRequestShapes) {

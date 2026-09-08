@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import type { ColumnSchema, ErrorResponse, OpenWranglerResponse, SessionBoundRequest } from "../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions } from "./dataBridge";
 import { responseMismatch } from "./sessionResponseValidation";
@@ -23,7 +24,7 @@ export interface RuntimeRequestHooks {
   isCoordinatorAvailable(): boolean;
   waitForRuntimeSettlement(): Promise<void>;
   installRuntimeSettlement(settlement: Promise<void>): void;
-  replay(options: BridgeRequestOptions): Promise<boolean>;
+  replay(options: BridgeRequestOptions, isStillCurrent?: () => boolean): Promise<boolean>;
   replayAfterRuntimeLoss(
     failedRuntimeId: string,
     options: BridgeRequestOptions,
@@ -46,6 +47,15 @@ export class SessionRuntimeRequestExecutor {
     // A notebook deadline stops only the host wait. Later work stays behind
     // the exact detached request so it cannot overtake an ambiguous mutation.
     await hooks.waitForRuntimeSettlement();
+    const hasExecutionTrust = (): boolean => publicRequest.kind !== "redoStep" || vscode.workspace.isTrusted;
+    const untrustedResponse = (): ErrorResponse =>
+      protocolError(
+        "workspace_untrusted",
+        "Trust this workspace before redoing a cleaning step.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
     if (publicRequest.kind !== "closeSession" && publicRequest.revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
@@ -64,10 +74,16 @@ export class SessionRuntimeRequestExecutor {
         requestViewId(publicRequest)
       );
     }
+    if (!hasExecutionTrust()) return untrustedResponse();
     if (publicRequest.kind !== "closeSession" && session.recoveryRequired) {
       const recovered =
-        hooks.isCoordinatorAvailable() && !session.closing && (await hooks.replay(runtimeRecoveryOptions()));
+        hooks.isCoordinatorAvailable() &&
+        !session.closing &&
+        (await (publicRequest.kind === "redoStep"
+          ? hooks.replay(runtimeRecoveryOptions(), hasExecutionTrust)
+          : hooks.replay(runtimeRecoveryOptions())));
       if (!recovered) {
+        if (!hasExecutionTrust()) return untrustedResponse();
         return protocolError(
           "runtime_recovery_failed",
           "The prior runtime mutation had an ambiguous transport result and the confirmed session could not be restored.",
@@ -90,7 +106,10 @@ export class SessionRuntimeRequestExecutor {
     const rendererBackgroundReadIsCurrent = (): boolean =>
       rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const canRecoverUnknownSession = (): boolean =>
-      hooks.isCoordinatorAvailable() && !session.closing && (!isBackground || rendererBackgroundReadIsCurrent());
+      hasExecutionTrust() &&
+      hooks.isCoordinatorAvailable() &&
+      !session.closing &&
+      (!isBackground || rendererBackgroundReadIsCurrent());
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
     const liveSourceRecoveryIsCurrent = (): boolean => {
       if (requestWasCancelled()) return false;
@@ -110,7 +129,7 @@ export class SessionRuntimeRequestExecutor {
         ? publicRequest.revision === session.publicRevision
         : liveSourceRecoveryIsCurrent());
     const rKernelRecoveryCanPublish = (): boolean =>
-      hooks.isCoordinatorAvailable() && !session.closing && rKernelChangeResponseIsCurrent();
+      hasExecutionTrust() && hooks.isCoordinatorAvailable() && !session.closing && rKernelChangeResponseIsCurrent();
     const canRecoverRKernelChange = (): boolean =>
       rKernelRecoveryCanPublish() && (isRuntimeStateMutation(publicRequest) || isIdempotentReadRequest(publicRequest));
     const staleBackgroundResponse = (): OpenWranglerResponse =>
@@ -137,6 +156,7 @@ export class SessionRuntimeRequestExecutor {
       }) as SessionBoundRequest;
 
     if (publicRequest.kind === "closeSession") return hooks.close(options);
+    if (!hasExecutionTrust()) return untrustedResponse();
 
     let response: OpenWranglerResponse;
     try {
@@ -183,7 +203,15 @@ export class SessionRuntimeRequestExecutor {
       }
       const recovered =
         canRecoverUnknownSession() &&
-        (await hooks.replayAfterRuntimeLoss(requestRuntimeId, automaticRecoveryOptions(options)));
+        (await (publicRequest.kind === "redoStep"
+          ? hooks.replayAfterRuntimeLoss(
+              requestRuntimeId,
+              automaticRecoveryOptions(options),
+              undefined,
+              hasExecutionTrust
+            )
+          : hooks.replayAfterRuntimeLoss(requestRuntimeId, automaticRecoveryOptions(options))));
+      if (!recovered && !hasExecutionTrust()) return untrustedResponse();
       if (recovered) {
         if (rendererBackgroundRead && !rendererBackgroundReadIsCurrent()) {
           if (requestWasCancelled()) return { ...confirmedUnknownResponse, sessionId: session.publicId };
@@ -192,6 +220,7 @@ export class SessionRuntimeRequestExecutor {
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
+        if (!hasExecutionTrust()) return untrustedResponse();
         response = await session.delegate.request(runtimeRequest(), options);
       }
     }
@@ -305,7 +334,8 @@ export function isRuntimeStateMutation(request: SessionBoundRequest): boolean {
     request.kind === "previewStep" ||
     request.kind === "applyDraft" ||
     request.kind === "discardDraft" ||
-    request.kind === "undoStep"
+    request.kind === "undoStep" ||
+    request.kind === "redoStep"
   );
 }
 

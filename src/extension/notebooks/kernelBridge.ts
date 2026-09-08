@@ -485,6 +485,16 @@ export class KernelBridge implements OpenWranglerBridge {
           requestObservation = observation;
           try {
             if (hostDetachReason) throw new KernelRequestCancelledError();
+            if (runtimeRequest.kind === "redoStep" && !vscode.workspace.isTrusted) {
+              return {
+                kind: "error",
+                code: "workspace_untrusted",
+                message: "Trust this workspace before redoing a cleaning step.",
+                recoverable: true,
+                sessionId: runtimeRequest.sessionId,
+                viewRequestId: runtimeRequest.viewRequestId
+              };
+            }
             if (runtimeRequest.kind === "openSession") {
               this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
               openKernel = acquired.kernel;

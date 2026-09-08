@@ -2178,7 +2178,11 @@
         "latestStepInputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "draftStep": { "$ref": "#/definitions/RetainedTransformStep" },
         "draftReplacesStepId": { "type": "string" },
-        "stats": { "$ref": "#/definitions/DatasetStats" }
+        "stats": { "$ref": "#/definitions/DatasetStats" },
+        "canRedo": {
+          "description": "Last-confirmed availability of an undone command in this runtime session. Absence means unavailable.",
+          "type": "boolean"
+        }
       }
     },
     "InitializeRequest": {
@@ -2443,6 +2447,25 @@
         "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 }
       }
     },
+    "RedoStepRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit", "viewRequestId"],
+      "dependencies": {
+        "columnOffset": ["columnLimit"],
+        "columnLimit": ["columnOffset"]
+      },
+      "properties": {
+        "kind": { "const": "redoStep" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "columnOffset": { "type": "integer", "minimum": 0 },
+        "columnLimit": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "viewRequestId": { "type": "string", "minLength": 1 }
+      }
+    },
     "RowAxisExportPolicy": {
       "description": "Explicit Pandas CSV/Parquet export treatment for the dataframe index.",
       "type": "string",
@@ -2542,6 +2565,7 @@
         { "$ref": "#/definitions/ApplyDraftRequest" },
         { "$ref": "#/definitions/DiscardDraftRequest" },
         { "$ref": "#/definitions/UndoStepRequest" },
+        { "$ref": "#/definitions/RedoStepRequest" },
         { "$ref": "#/definitions/ExportDataRequest" },
         { "$ref": "#/definitions/CloseSessionRequest" },
         { "$ref": "#/definitions/CancelRequest" }
@@ -2670,11 +2694,18 @@
       "required": ["kind", "action", "revision", "metadata", "page", "code"],
       "properties": {
         "kind": { "const": "planUpdated" },
-        "action": { "type": "string", "enum": ["apply", "discard", "undo"] },
+        "action": { "type": "string", "enum": ["apply", "discard", "undo", "redo"] },
         "revision": { "type": "integer", "minimum": 0 },
         "metadata": { "$ref": "#/definitions/SessionMetadata" },
         "page": { "$ref": "#/definitions/GridPage" },
-        "code": { "type": "string" }
+        "code": { "type": "string" },
+        "viewRequestId": { "type": "string", "minLength": 1 }
+      },
+      "not": {
+        "anyOf": [
+          { "properties": { "action": { "const": "redo" } }, "not": { "required": ["viewRequestId"] } },
+          { "required": ["viewRequestId"], "properties": { "action": { "not": { "const": "redo" } } } }
+        ]
       }
     },
     "DataExportedResponse": {

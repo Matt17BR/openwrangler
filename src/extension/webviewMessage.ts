@@ -63,7 +63,8 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "previewStep",
   "applyDraft",
   "discardDraft",
-  "undoStep"
+  "undoStep",
+  "redoStep"
 ]);
 const MAX_WEBVIEW_VIEW_ID_CODE_UNITS = 256;
 const MAX_CANCEL_VIEW_REQUEST_IDS = 1_024;

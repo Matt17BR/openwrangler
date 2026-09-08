@@ -9817,6 +9817,7 @@ openwrangler_r_kernel_agent <- local({
           draftBound = NULL,
           replaceStepId = NULL,
           plan = list(),
+          redoPlan = list(),
           boundPlan = list(),
           revision = 0L,
           editing = FALSE
@@ -9929,12 +9930,13 @@ openwrangler_r_kernel_agent <- local({
         return(response)
       }
 
-      if (identical(kind, "previewStep")) {
+      if (kind %in% c("previewStep", "redoStep")) {
+        is_redo <- identical(kind, "redoStep")
         payload <- exact_record(
           request$payload,
-          c("sessionId", "revision", "step", "page"),
+          c("sessionId", "revision", if (is_redo) "expectedStepId" else "step", "page"),
           "request.payload",
-          optional_fields = "replaceStepId"
+          optional_fields = if (is_redo) character() else "replaceStepId"
         )
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
@@ -9946,7 +9948,26 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "Apply or discard the current R draft before previewing another step", TRUE)
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        step <- decode_transform_step(payload$step, frame_contract$limits)
+        step <- if (is_redo) {
+          expected_step_id <- bounded_text(
+            payload$expectedStepId,
+            "request.payload.expectedStepId",
+            maximum_step_id_bytes
+          )
+          if (identical(expected_step_id, "")) {
+            abort("invalid_request", "request.payload.expectedStepId may not be empty")
+          }
+          if (length(session$redoPlan) == 0L) {
+            abort("redo_unavailable", "There is no R step to redo in this session", TRUE)
+          }
+          saved <- session$redoPlan[[length(session$redoPlan)]]
+          if (!identical(saved$id, expected_step_id)) {
+            abort("invalid_request", "The requested R redo step does not match this session", TRUE)
+          }
+          saved
+        } else {
+          decode_transform_step(payload$step, frame_contract$limits)
+        }
         replace_step_id <- if ("replaceStepId" %in% names(payload)) {
           value <- bounded_text(payload$replaceStepId, "request.payload.replaceStepId", maximum_step_id_bytes)
           if (identical(value, "")) abort("invalid_request", "request.payload.replaceStepId may not be empty")
@@ -10089,6 +10110,18 @@ openwrangler_r_kernel_agent <- local({
           retained_step$params$warnings <- I(step$params$warnings)
           response$retainedStep <- retained_step
         }
+        if (is_redo) {
+          candidate$plan <- c(retained_plan, list(step))
+          candidate$boundPlan <- candidate_bound_plan
+          candidate$committed <- applied$capture
+          candidate$draft <- NULL
+          candidate$draftStep <- NULL
+          candidate$draftBound <- NULL
+          candidate$replaceStepId <- NULL
+          candidate$redoPlan <- session$redoPlan[-length(session$redoPlan)]
+          response$kind <- "planUpdated"
+          response$action <- "redo"
+        }
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
         return(response)
@@ -10203,6 +10236,7 @@ openwrangler_r_kernel_agent <- local({
           candidate$boundPlan[[length(candidate$boundPlan)]] <- session$draftBound
         }
         candidate$committed <- session$draft
+        candidate$redoPlan <- list()
         candidate$draft <- NULL
         candidate$draftStep <- NULL
         candidate$draftBound <- NULL
@@ -10261,6 +10295,7 @@ openwrangler_r_kernel_agent <- local({
         )
         candidate <- session
         candidate$plan <- retained_plan
+        candidate$redoPlan <- c(session$redoPlan, session$plan[length(session$plan)])
         candidate$boundPlan <- replayed$boundPlan
         candidate$committed <- replayed$capture
         candidate$editing <- TRUE

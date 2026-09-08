@@ -46,6 +46,7 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "applyDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
     "discardDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
     "undoStep": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
+    "redoStep": ("sessionId", "revision", "viewRequestId", "offset", "limit", "columnOffset", "columnLimit"),
     "exportData": ("sessionId", "revision", "path", "options"),
     "closeSession": ("sessionId", "revision"),
     "cancelRequest": ("targetRequestId",),
@@ -110,6 +111,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "applyDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
     "discardDraft": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
     "undoStep": {"kind", "sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"},
+    "redoStep": {"kind", "sessionId", "revision", "viewRequestId", "offset", "limit", "columnOffset", "columnLimit"},
     "exportData": {
         "kind",
         "sessionId",
@@ -428,6 +430,7 @@ def response_for_error(
     from .session import (
         PySparkConnectStateLostError,
         PySparkConnectUnavailableError,
+        RedoUnavailableError,
         ResponsePayloadError,
         SessionCleanupError,
         UnknownSessionError,
@@ -439,6 +442,8 @@ def response_for_error(
         return error_response(message, code="invalid_request", recoverable=False)
     if isinstance(error, UnknownSessionError):
         return error_response(message, code="unknown_session", session_id=error.session_id)
+    if isinstance(error, RedoUnavailableError):
+        return error_response(message, code="redo_unavailable", session_id=error.session_id)
     if isinstance(error, LiveSourceInvalidatedError):
         return error_response(message, code="live_source_invalidated", session_id=error.session_id)
     if isinstance(error, PySparkConnectUnavailableError):

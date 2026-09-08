@@ -33,6 +33,166 @@ import { nativeRKernelChangedResponse, type NativeRRecoveryBridge } from "./nati
 type RecoveryBridge = NativeRRecoveryBridge;
 
 describe("SessionCoordinator", () => {
+  it.each(["unknown session", "ambiguous prior mutation"] as const)(
+    "stops Redo recovery after trust changes during a replayed preview: %s",
+    async (loss) => {
+      const trustDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted");
+      Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: true });
+      const replayStarted = deferred<void>();
+      const releasePreview = deferred<void>();
+      const states = new Map<string, SessionMetadata>();
+      const afterTrustLoss: Array<{ kind: string; sessionId: string }> = [];
+      const closedRuntimeIds: string[] = [];
+      let openCount = 0;
+      let lost = false;
+      let replayPreviewSettled = false;
+      const steps: TransformStep[] = ["first", "second", "third"].map((id) => ({
+        id,
+        kind: "customCode",
+        params: { code: "result = df" }
+      }));
+      const delegate = {
+        request: async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (!vscode.workspace.isTrusted) {
+            afterTrustLoss.push({ kind: request.kind, sessionId: "sessionId" in request ? request.sessionId : "" });
+          }
+          if (request.kind === "openSession") {
+            const opened = openedResponse(`runtime-${++openCount}`);
+            states.set(opened.metadata.sessionId, opened.metadata);
+            return opened;
+          }
+          if (!("sessionId" in request)) throw new Error(`Unexpected request: ${request.kind}`);
+          const metadata = states.get(request.sessionId);
+          if (!metadata) throw new Error("Expected the exact candidate runtime.");
+          if (request.kind === "previewStep") {
+            const preview = stepPreviewResponse(request.revision + 1, request.step, request.sessionId);
+            preview.metadata.steps = metadata.steps;
+            preview.page.limit = request.limit;
+            states.set(request.sessionId, preview.metadata);
+            if (request.step.id === "ambiguous") throw new Error("The preview response was lost after execution.");
+            if (request.sessionId === "runtime-2" && request.step.id === "first") {
+              replayStarted.resolve();
+              await releasePreview.promise;
+              replayPreviewSettled = true;
+            }
+            return preview;
+          }
+          if (request.kind === "applyDraft") {
+            if (!metadata.draftStep) throw new Error("Expected a confirmed draft to apply.");
+            const applied = planUpdatedResponse(
+              request.revision + 1,
+              [...metadata.steps, metadata.draftStep],
+              request.sessionId
+            );
+            applied.page.limit = request.limit;
+            states.set(request.sessionId, applied.metadata);
+            return applied;
+          }
+          if (request.kind === "undoStep") {
+            const undone = planUpdatedResponse(request.revision + 1, metadata.steps.slice(0, -1), request.sessionId);
+            undone.action = "undo";
+            undone.metadata.canRedo = true;
+            undone.page.limit = request.limit;
+            states.set(request.sessionId, undone.metadata);
+            return undone;
+          }
+          if (request.kind === "redoStep" && lost) {
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Synthetic lost runtime",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          if (request.kind === "getPage") return pageResponseForMetadata(request, metadata);
+          if (request.kind === "closeSession") {
+            if (request.sessionId === "runtime-2") expect(replayPreviewSettled).toBe(true);
+            closedRuntimeIds.push(request.sessionId);
+            states.delete(request.sessionId);
+            return { kind: "sessionClosed", sessionId: request.sessionId };
+          }
+          throw new Error(`Unexpected request: ${request.kind}`);
+        }
+      };
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge(delegate);
+      try {
+        const opened = await bridge.request(openRequest);
+        if (opened.kind !== "sessionOpened") throw new Error("Expected the session to open.");
+        const sessionId = opened.metadata.sessionId;
+        let revision = opened.metadata.revision;
+        const window = { offset: 0, limit: 100, ...columnWindow };
+        for (const step of steps) {
+          const preview = await bridge.request({ kind: "previewStep", sessionId, revision, step, ...window });
+          if (preview.kind !== "stepPreview") throw new Error("Expected the draft to preview.");
+          const applied = await bridge.request({
+            kind: "applyDraft",
+            sessionId,
+            revision: preview.revision,
+            ...window
+          });
+          if (applied.kind !== "planUpdated") throw new Error("Expected the draft to apply.");
+          revision = applied.revision;
+        }
+        const undone = await bridge.request({ kind: "undoStep", sessionId, revision, ...window });
+        if (undone.kind !== "planUpdated") throw new Error("Expected the committed step to undo.");
+        expect(undone.metadata.canRedo).toBe(true);
+        revision = undone.revision;
+        const confirmed = structuredClone(coordinator.activeSession()?.metadata);
+        if (loss === "ambiguous prior mutation") {
+          await expect(
+            bridge.request({
+              kind: "previewStep",
+              sessionId,
+              revision,
+              step: { id: "ambiguous", kind: "customCode", params: { code: "result = df" } },
+              ...window
+            })
+          ).rejects.toThrow("The preview response was lost after execution.");
+        } else {
+          lost = true;
+        }
+        const redo = bridge.request({
+          kind: "redoStep",
+          sessionId,
+          revision,
+          viewRequestId: "recover-redo",
+          ...window
+        });
+        await replayStarted.promise;
+        Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: false });
+        expect(closedRuntimeIds).toEqual([]);
+        releasePreview.resolve();
+        await expect(redo).resolves.toMatchObject({
+          kind: "error",
+          code: "workspace_untrusted",
+          recoverable: true,
+          sessionId,
+          viewRequestId: "recover-redo"
+        });
+        expect(afterTrustLoss).toEqual([{ kind: "closeSession", sessionId: "runtime-2" }]);
+        expect(closedRuntimeIds).toEqual(["runtime-2"]);
+        expect([...states.keys()]).toEqual(["runtime-1"]);
+        expect(coordinator.activeSession()?.metadata).toEqual(confirmed);
+        expect(openCount).toBe(2);
+        Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value: true });
+        await expect(bridge.request({ kind: "closeSession", sessionId, revision })).resolves.toMatchObject({
+          kind: "sessionClosed",
+          sessionId
+        });
+        expect(closedRuntimeIds).toEqual(["runtime-2", "runtime-1"]);
+        expect(states.size).toBe(0);
+      } finally {
+        releasePreview.resolve();
+        if (trustDescriptor) Object.defineProperty(vscode.workspace, "isTrusted", trustDescriptor);
+        else Reflect.deleteProperty(vscode.workspace, "isTrusted");
+        await coordinator.dispose();
+      }
+    }
+  );
+
   it("stops replaying a confirmed plan when Close arrives during recovery", async () => {
     const replayStarted = deferred<void>();
     const releasePreview = deferred<void>();

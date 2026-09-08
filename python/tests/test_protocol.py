@@ -867,6 +867,7 @@ def test_page_column_windows_are_bounded_and_reject_booleans(field: str, value: 
         "applyDraft",
         "discardDraft",
         "undoStep",
+        "redoStep",
     ],
 )
 def test_protocol_result_windows_accept_10000_and_reject_10001(kind: str) -> None:
@@ -912,6 +913,8 @@ def test_protocol_result_windows_accept_10000_and_reject_10001(kind: str) -> Non
                 "kind": "renameColumn",
                 "params": {"column": {"id": "column:0", "name": "old"}, "newName": "new"},
             }
+        elif kind == "redoStep":
+            request["viewRequestId"] = "redo-attempt"
         elif kind == "inspectStep":
             request["stepId"] = "rename-1"
 
@@ -1341,3 +1344,25 @@ def test_protocol_v2_requires_the_host_owned_export_target_identity(identity) ->
 def test_protocol_v2_rejects_malformed_envelopes(envelope: object) -> None:
     with pytest.raises(ProtocolError):
         decode_envelope(envelope)
+
+
+@pytest.mark.parametrize("token", [None, False, "", "é" * 129, "\ud800"])
+def test_redo_requires_a_bounded_attempt_identity(token: object) -> None:
+    request = {
+        "kind": "redoStep",
+        "sessionId": "session",
+        "revision": 0,
+        "viewRequestId": token,
+        "offset": 0,
+        "limit": 2,
+        "columnOffset": 0,
+        "columnLimit": 2,
+    }
+    envelope = {"protocolVersion": 2, "requestId": "redo", "priority": "interactive", "request": request}
+    with pytest.raises(ProtocolError, match="viewRequestId"):
+        decode_envelope(envelope)
+    del request["viewRequestId"]
+    with pytest.raises(ProtocolError, match="missing required fields: viewRequestId"):
+        decode_envelope(envelope)
+    request["viewRequestId"] = "é" * 128
+    assert decode_envelope(envelope)[2] == request

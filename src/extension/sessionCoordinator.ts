@@ -1044,7 +1044,7 @@ export class SessionCoordinator implements vscode.Disposable {
         isCoordinatorAvailable: () => !this.disposed,
         waitForRuntimeSettlement: () => this.waitForRuntimeSettlement(session),
         installRuntimeSettlement: (settlement) => this.installRuntimeSettlementBarrier(session, settlement),
-        replay: (replayOptions) => this.replay(session, replayOptions),
+        replay: (replayOptions, isStillCurrent) => this.replay(session, replayOptions, isStillCurrent),
         replayAfterRuntimeLoss: (failedRuntimeId, replayOptions, requiredSchema, isStillCurrent) =>
           this.replayAfterRuntimeLoss(session, failedRuntimeId, replayOptions, requiredSchema, isStillCurrent),
         close: (closeOptions) => this.closeSession(session, closeOptions),
@@ -1201,16 +1201,28 @@ export class SessionCoordinator implements vscode.Disposable {
     this.pendingOpenWaiters.clear();
   }
 
-  private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+  private replay(
+    session: CoordinatedSession,
+    options?: BridgeRequestOptions,
+    isStillCurrent?: () => boolean
+  ): Promise<boolean> {
     const failedRuntimeId = session.runtimeId;
     const failedDelegate = session.delegate;
     return this.serializeSessionEstablishment(failedDelegate, async () => {
       await this.waitForRuntimeSettlement(session);
       if (!this.isLiveSession(session) || session.closing) return false;
+      if (isStillCurrent && !isStillCurrent()) return false;
       if (session.runtimeId !== failedRuntimeId || session.delegate !== failedDelegate || !session.recoveryRequired) {
         return true;
       }
-      return this.runtimeRecovery.replay(session, options, this.runtimeRecoveryHooks(session));
+      return this.runtimeRecovery.replay(
+        session,
+        options,
+        this.runtimeRecoveryHooks(session),
+        true,
+        undefined,
+        isStillCurrent
+      );
     });
   }
 

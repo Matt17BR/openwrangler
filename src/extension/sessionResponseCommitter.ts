@@ -174,6 +174,15 @@ export class SessionResponseCommitter {
       return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "error" && response.sessionId) {
+      if (
+        publicRequest.kind === "redoStep" &&
+        response.code === "redo_unavailable" &&
+        response.sessionId === session.runtimeId &&
+        response.viewRequestId === publicRequest.viewRequestId &&
+        publicRequest.revision === session.publicRevision
+      ) {
+        session.metadata = { ...session.metadata, canRedo: false };
+      }
       return { ...response, sessionId: session.publicId };
     }
     return response;

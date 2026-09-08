@@ -433,7 +433,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       throw new Error("Open Wrangler runtime bridge has been disposed.");
     }
     if (options.cancellation?.isCancellationRequested) {
-      return { kind: "cancelled", targetRequestId: "not-started" };
+      return {
+        kind: "cancelled",
+        targetRequestId: "not-started",
+        ...("viewRequestId" in request ? { viewRequestId: request.viewRequestId } : {})
+      };
     }
     let runtimeRequest = request;
     let runtime: RuntimeSlot;
@@ -592,9 +596,24 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (options.cancellation?.isCancellationRequested) {
       this.stopRuntimeIfIdle(runtime);
       releaseRequestLease();
-      return { kind: "cancelled", targetRequestId: "not-started" };
+      return {
+        kind: "cancelled",
+        targetRequestId: "not-started",
+        ...("viewRequestId" in runtimeRequest ? { viewRequestId: runtimeRequest.viewRequestId } : {})
+      };
     }
 
+    if (runtimeRequest.kind === "redoStep" && !vscode.workspace.isTrusted) {
+      releaseRequestLease();
+      return {
+        kind: "error",
+        code: "workspace_untrusted",
+        message: "Trust this workspace before redoing a cleaning step.",
+        recoverable: true,
+        sessionId: runtimeRequest.sessionId,
+        viewRequestId: runtimeRequest.viewRequestId
+      };
+    }
     return this.runtimeTransport.dispatch(runtime, proc, runtimeRequest, options, releaseRequestLease);
   }
 

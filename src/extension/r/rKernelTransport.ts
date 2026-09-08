@@ -427,7 +427,7 @@ export class RKernelSessionTransport {
     return result;
   }
 
-  async previewStep(
+  previewStep(
     sessionId: string,
     revision: number,
     step: RKernelTransformStep,
@@ -436,17 +436,47 @@ export class RKernelSessionTransport {
     replaceStepId?: string,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelStepPreviewResult> {
-    const request = this.request("previewStep", {
+    return this.executeStep("previewStep", sessionId, revision, step, page, inputSchema, replaceStepId, options);
+  }
+
+  redoStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelTransformStep,
+    page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepPreviewResult> {
+    return this.executeStep("redoStep", sessionId, revision, step, page, inputSchema, undefined, options);
+  }
+
+  private async executeStep(
+    kind: "previewStep" | "redoStep",
+    sessionId: string,
+    revision: number,
+    step: RKernelTransformStep,
+    page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    replaceStepId?: string,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepPreviewResult> {
+    const request = this.request(kind, {
       sessionId,
       revision,
-      step,
-      page,
-      ...(replaceStepId === undefined ? {} : { replaceStepId })
+      ...(kind === "redoStep"
+        ? { expectedStepId: step.id }
+        : { step, ...(replaceStepId === undefined ? {} : { replaceStepId }) }),
+      page
     });
     encodeRKernelRequest(request);
     const response = await this.executeMappedRequest(sessionId, request, options, { inputSchema, previewStep: step });
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
-    if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
+    if (
+      (response.kind !== "stepPreview" && !(response.kind === "planUpdated" && response.action === "redo")) ||
+      (kind === "previewStep" ? response.kind !== "stepPreview" : response.kind !== "planUpdated") ||
+      response.sessionId !== sessionId ||
+      response.revision !== revision + 1
+    ) {
       throw new Error("The R kernel returned a mismatched step preview.");
     }
     return Object.freeze({
@@ -593,6 +623,7 @@ export class RKernelSessionTransport {
           | "applyDraft"
           | "discardDraft"
           | "undoStep"
+          | "redoStep"
           | "inspectStepInfo"
           | "inspectStepPage"
           | "exportData"
@@ -1247,7 +1278,8 @@ function isRMutationRequest(request: RKernelRequest): boolean {
     request.kind === "previewStep" ||
     request.kind === "applyDraft" ||
     request.kind === "discardDraft" ||
-    request.kind === "undoStep"
+    request.kind === "undoStep" ||
+    request.kind === "redoStep"
   );
 }
 

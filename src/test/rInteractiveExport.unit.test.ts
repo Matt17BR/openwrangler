@@ -203,6 +203,7 @@ function activeExportTransport(contract: RFramePageContract): RKernelBridgeTrans
     applyDraft: vi.fn(unexpected),
     discardDraft: vi.fn(unexpected),
     undoStep: vi.fn(unexpected),
+    redoStep: vi.fn(unexpected),
     inspectStep: vi.fn(unexpected),
     exportData,
     close: vi.fn(async () => undefined),

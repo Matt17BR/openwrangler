@@ -41,6 +41,43 @@ const step: TransformStep = {
 };
 
 describe("SessionResponseCommitter", () => {
+  it("clears only the matching confirmed empty Redo history without persisting it", async () => {
+    const committer = new SessionResponseCommitter(new SessionPersistenceStore());
+    const request: Extract<SessionBoundRequest, { kind: "redoStep" }> = {
+      kind: "redoStep",
+      sessionId: "public-session",
+      revision: 0,
+      viewRequestId: "redo-current",
+      offset: 0,
+      limit: 10,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    const unavailable = {
+      kind: "error" as const,
+      code: "redo_unavailable",
+      message: "No undone step remains.",
+      recoverable: true,
+      sessionId: "runtime-session",
+      viewRequestId: "redo-current"
+    };
+    for (const [response, revision, cleared] of [
+      [unavailable, 0, true],
+      [{ ...unavailable, code: "engine_error" }, 0, false],
+      [{ ...unavailable, sessionId: "retired-runtime" }, 0, false],
+      [{ ...unavailable, viewRequestId: "redo-old" }, 0, false],
+      [unavailable, 1, false]
+    ] as const) {
+      const session = responseState({ metadata: metadata({ canRedo: true }), publicRevision: revision });
+      const callbacks = callbackSpies();
+      const result = await committer.commit(session, request, response, 0, emptyFilter, undefined, callbacks);
+      expect(result).toEqual({ ...response, sessionId: "public-session" });
+      expect(session.metadata.canRedo).toBe(!cleared);
+      expect(session.publicRevision).toBe(revision);
+      expect(callbacks.activate).not.toHaveBeenCalled();
+    }
+  });
+
   it("publishes only the current exactly indexed applied-step inspection", async () => {
     const session = responseState({ metadata: metadata({ steps: [step] }), publicRevision: 7 });
     const request: Extract<SessionBoundRequest, { kind: "inspectStep" }> = {

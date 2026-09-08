@@ -290,6 +290,16 @@ const requests: OpenWranglerRequest[] = [
     columnLimit: 16
   },
   {
+    kind: "redoStep",
+    sessionId: "session-1",
+    revision: 3,
+    viewRequestId: "redo-1",
+    offset: 0,
+    limit: 200,
+    columnOffset: 0,
+    columnLimit: 16
+  },
+  {
     kind: "exportData",
     sessionId: "session-1",
     revision: 3,

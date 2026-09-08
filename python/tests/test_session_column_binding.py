@@ -162,7 +162,11 @@ def test_group_and_by_example_bind_replay_inspect_and_undo_without_leaking_posit
     assert undone["revision"] == 6
     assert [column["name"] for column in undone["metadata"]["schema"]] == ["group", "value"]
     assert path.read_text(encoding="utf-8") == original
-    manager.close_session(session_id, 6)
+    redone = manager.redo_step(session_id, 6, 0, 10)
+    assert redone["page"] == applied["page"]
+    assert redone["code"] == applied["code"]
+    assert redone["metadata"]["steps"] == applied["metadata"]["steps"]
+    manager.close_session(session_id, 7)
     assert session_id not in manager.sessions
 
 
@@ -707,3 +711,104 @@ def test_duckdb_rejects_case_folded_output_collisions_atomically(tmp_path: Path,
     assert runtime.revision == 0
     assert runtime.draft_step is None
     assert runtime.page_cache == before_cache
+
+
+@pytest.mark.parametrize("change", ["reorder", "float", "nullable", "missing", "collision"])
+def test_redo_rebinds_saved_by_example_without_reexecuting_custom_prefix(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    import builtins
+
+    import __main__
+
+    source = pd.DataFrame({"left": pd.Series([10, 20], dtype="Int64"), "right": [90, 80]})
+    original = source.copy(deep=True)
+    state = {"changed": False, "calls": 0}
+    monkeypatch.setattr(builtins, "_ow_redo_binding_state", state, raising=False)
+    monkeypatch.setattr(__main__, "redo_binding_source", source, raising=False)
+    changes = {
+        "reorder": "result = result[['right', 'left']]",
+        "float": "result['left'] = result['left'].astype('Float64') + 0.5",
+        "nullable": "result['left'] = pd.Series([10, pd.NA], dtype='Int64')",
+        "missing": "result = result[['right']]",
+        "collision": "result['derived'] = 999",
+    }
+    code = (
+        "import builtins\nstate = builtins._ow_redo_binding_state\nstate['calls'] += 1\n"
+        f"result = df.copy()\nif state['changed']:\n    {changes[change]}"
+    )
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "redo_binding_source"}, backend="pandas", mode="editing"
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        manager.preview_step(sid, 0, step("prefix", "customCode", code=code), 0, 10)
+        manager.apply_draft(sid, 1, 0, 10)
+        example = step(
+            "saved",
+            "byExample",
+            sourceColumns=[ref("c:source:0", "left")],
+            newColumn="derived",
+            examples=[{"inputs": [10], "output": 11}, {"inputs": [20], "output": 21}],
+        )
+        manager.preview_step(sid, 2, example, 0, 10)
+        manager.apply_draft(sid, 3, 0, 10)
+        public = deepcopy(session.plan[-1])
+        state["changed"] = True
+        manager.undo_step(sid, 4, 0, 10)
+        assert state["calls"] == 2
+        before = session.committed
+        if change in {"missing", "collision"}:
+            with pytest.raises(EngineError, match="stale column identity|collides"):
+                manager.redo_step(sid, 5, 0, 10)
+            assert session.committed is before and session.revision == 5
+            assert session.undone_steps == [public] and state["calls"] == 2
+        else:
+            redone = manager.redo_step(sid, 5, 0, 10)
+            assert state["calls"] == 2 and session.plan[-1] == public
+            assert redone["revision"] == 6 and redone["metadata"]["canRedo"] is False
+            expected = [11.5, 21.5] if change == "float" else [11, None] if change == "nullable" else [11, 21]
+            assert session.committed["derived"].fillna(-1).tolist() == [
+                value if value is not None else -1 for value in expected
+            ]
+            if change == "reorder":
+                assert session.bound_plan[-1]["params"]["sourceColumns"][0]["position"] == 1
+            if change == "float":
+                assert session.bound_plan[-1]["params"]["program"]["_owLeftType"] == "float"
+            namespace: dict[str, Any] = {}
+            exec(redone["code"], namespace)
+            generated = namespace["clean_data"](source)
+            pd.testing.assert_frame_equal(generated, session.committed.loc[:, generated.columns])
+        pd.testing.assert_frame_equal(source, original)
+    finally:
+        manager.close_all()
+
+
+def test_redo_preserves_duplicate_occurrence_binding_and_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    import __main__
+
+    source = pd.DataFrame([[1, 10], [2, 20]], columns=["same", "same"], index=pd.Index(["x", "x"], name="rows"))
+    original = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "redo_duplicate_source", source, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "redo_duplicate_source"}, backend="pandas", mode="editing"
+        )
+        sid = opened["metadata"]["sessionId"]
+        manager.preview_step(
+            sid, 0, step("copy", "cloneColumn", column=ref("c:source:1", "same"), newName="selected"), 0, 10
+        )
+        manager.apply_draft(sid, 1, 0, 10)
+        manager.undo_step(sid, 2, 0, 10)
+        redone = manager.redo_step(sid, 3, 0, 10)
+        session = manager.sessions[sid]
+        assert session.committed["selected"].tolist() == [10, 20]
+        namespace: dict[str, Any] = {}
+        exec(redone["code"], namespace)
+        pd.testing.assert_frame_equal(namespace["clean_data"](source), source.assign(selected=[10, 20]))
+        pd.testing.assert_frame_equal(source, original)
+    finally:
+        manager.close_all()

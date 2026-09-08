@@ -1857,3 +1857,69 @@ def test_server_bounds_user_controlled_engine_diagnostics(monkeypatch: pytest.Mo
     assert response["message"].startswith(marker)
     assert response["message"].endswith("...[truncated]")
     assert len(response["message"].encode("utf-8")) <= server.MAX_DIAGNOSTIC_BYTES
+
+
+def test_stdio_redo_refusal_and_recovery_keep_one_correlated_process(tmp_path: Path) -> None:
+    path = tmp_path / "stdio-redo.csv"
+    source = "value\n1\n2\n"
+    path.write_text(source)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code = None
+
+    def send(request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return _send_server_request(process, output, request_id, request, timeout=30.0)
+
+    try:
+        opened = send(
+            "open",
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "path": str(path), "label": path.name},
+                "backend": "pandas",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+        )
+        sid = opened["metadata"]["sessionId"]
+        window = {"offset": 0, "limit": 2, "columnOffset": 0, "columnLimit": 2}
+        request = {"kind": "redoStep", "sessionId": sid, "revision": 0, **window}
+        missing = send("missing-token", request)
+        assert missing["code"] == "invalid_request"
+        empty = send("empty", {**request, "viewRequestId": "empty-attempt"})
+        assert empty["code"] == "redo_unavailable" and empty["viewRequestId"] == "empty-attempt"
+        assert empty["sessionId"] == sid
+        operation = {
+            "id": "saved",
+            "kind": "cloneColumn",
+            "params": {"column": {"id": "c:source:0", "name": "value"}, "newName": "copy"},
+        }
+        send("preview", {"kind": "previewStep", "sessionId": sid, "revision": 0, **window, "step": operation})
+        applied = send("apply", {"kind": "applyDraft", "sessionId": sid, "revision": 1, **window})
+        undone = send("undo", {"kind": "undoStep", "sessionId": sid, "revision": 2, **window})
+        assert undone["metadata"]["canRedo"] is True
+        redone = send("redo", {**request, "revision": 3, "viewRequestId": "success-attempt"})
+        assert redone["action"] == "redo" and redone["revision"] == 4
+        assert redone["viewRequestId"] == "success-attempt" and redone["metadata"]["canRedo"] is False
+        assert redone["page"] == applied["page"]
+        send("close", {"kind": "closeSession", "sessionId": sid, "revision": 4})
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+    assert return_code == 0, output.stderr_tail()
+    assert path.read_text() == source

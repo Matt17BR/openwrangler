@@ -272,6 +272,7 @@ function inertTransport(): RKernelBridgeTransport {
     applyDraft: unexpected,
     discardDraft: unexpected,
     undoStep: unexpected,
+    redoStep: unexpected,
     inspectStep: unexpected,
     close: vi.fn(async () => undefined),
     isSessionMapped: vi.fn(() => false),

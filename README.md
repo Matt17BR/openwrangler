@@ -64,7 +64,8 @@ Mode.
 - Explore a paged grid with column profiles, dataset summaries, typed filters, ordered sorts, full-schema search,
   rectangular selection, and copy.
 - Clean rows, columns, types, text, categories, numbers, dates, missing values, and reshaped data. Drafts can be
-  applied or discarded, and applied steps can be inspected, edited, deleted, or undone.
+  applied or discarded, and applied steps can be inspected, edited, deleted, or undone. Redo restores an undone
+  command while its runtime session remains open.
 - Keep executable code for the selected engine beside the preview. Viewing filters and sorts remain separate from
   the cleaning plan and exported result.
 - Open delimited text, Parquet, JSON Lines, and Excel files, or continue from live notebook and interactive dataframes.

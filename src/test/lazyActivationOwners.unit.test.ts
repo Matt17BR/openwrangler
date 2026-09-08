@@ -335,6 +335,7 @@ vi.mock("../extension/nativeViews", () => ({
         "openWrangler.deleteSelectedStep",
         "openWrangler.selectStep",
         "openWrangler.undoStep",
+        "openWrangler.redoStep",
         "openWrangler.copyCode",
         "openWrangler.exportCode",
         "openWrangler.insertRDocumentCode",

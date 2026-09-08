@@ -64,6 +64,7 @@ const NATIVE_VIEW_COMMANDS = [
   "openWrangler.deleteSelectedStep",
   "openWrangler.selectStep",
   "openWrangler.undoStep",
+  "openWrangler.redoStep",
   "openWrangler.copyCode",
   "openWrangler.exportCode",
   "openWrangler.insertRDocumentCode",

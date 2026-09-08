@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as vscode from "vscode";
 import type {
   FilterModel,
   OpenWranglerRequest,
@@ -29,6 +30,66 @@ const step: TransformStep = {
 };
 
 describe("SessionRuntimeRequestExecutor", () => {
+  it.each(["settlement", "recovery", "unknown-session"] as const)(
+    "refuses Redo when trust changes during %s without dispatching another mutation",
+    async (phase) => {
+      const setTrust = (value: boolean): void => {
+        Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, writable: true, value });
+      };
+      setTrust(true);
+      const request: SessionBoundRequest = {
+        kind: "redoStep",
+        sessionId: "public-session",
+        revision: 0,
+        viewRequestId: "redo-trust",
+        offset: 0,
+        limit: 25,
+        columnOffset: 0,
+        columnLimit: 16
+      };
+      const delegate = bridge(
+        requestMock(async () => ({
+          kind: "error",
+          code: "unknown_session",
+          message: "Runtime session was lost.",
+          recoverable: true,
+          sessionId: "runtime-session",
+          viewRequestId: "redo-trust"
+        }))
+      );
+      const session = runtimeSession(delegate, { recoveryRequired: phase !== "unknown-session" });
+      const requestHooks = hooks({
+        waitForRuntimeSettlement: vi.fn(async () => {
+          if (phase === "settlement") setTrust(false);
+        }),
+        replay: vi.fn(async () => {
+          setTrust(false);
+          return true;
+        }),
+        replayAfterRuntimeLoss: vi.fn(async () => {
+          replaceRuntime(session);
+          setTrust(false);
+          return true;
+        })
+      });
+      try {
+        await expect(runtimeExecutor().execute(session, request, undefined, requestHooks)).resolves.toMatchObject({
+          kind: "error",
+          code: "workspace_untrusted",
+          sessionId: "public-session",
+          viewRequestId: "redo-trust"
+        });
+        expect(delegate.request).toHaveBeenCalledTimes(phase === "unknown-session" ? 1 : 0);
+        expect(requestHooks.replay).toHaveBeenCalledTimes(phase === "recovery" ? 1 : 0);
+        expect(requestHooks.replayAfterRuntimeLoss).toHaveBeenCalledTimes(phase === "unknown-session" ? 1 : 0);
+        expect(requestHooks.installRuntimeSettlement).not.toHaveBeenCalled();
+        expect(session.recoveryRequired).toBe(phase === "settlement");
+      } finally {
+        setTrust(true);
+      }
+    }
+  );
+
   it("rejects stale queued and reconnect-blocked work before runtime dispatch", async () => {
     const request = statsRequest(0);
     const executor = runtimeExecutor();
