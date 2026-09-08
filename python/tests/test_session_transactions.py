@@ -1530,6 +1530,7 @@ def test_dense_rank_uses_cleaning_population_through_history_and_parquet(
     original = b"row,value\n0,20\n1,10\n2,20\n3,\n"
     path.write_bytes(original)
     manager = SessionManager()
+    generated_connection: Any = None
     try:
         opened = manager.open_session(
             {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=20
@@ -1569,7 +1570,15 @@ def test_dense_rank_uses_cleaning_population_through_history_and_parquet(
         assert rank_values(session.engine.page(session.committed, 0, 20)) == expected
         namespace: dict[str, Any] = {}
         exec(confirmed["code"], namespace)
-        generated = namespace["clean_data"](session.original)
+        generated_source = session.original
+        if backend == "duckdb":
+            import duckdb
+
+            generated_connection = duckdb.connect()
+            generated_source = generated_connection.sql(session.original.sql_query())
+            assert generated_source.columns == session.original.columns
+            assert [str(dtype) for dtype in generated_source.types] == session.original.types
+        generated = namespace["clean_data"](generated_source)
         assert rank_values(session.engine.page(generated, 0, 20)) == expected
         assert session.filter_model == view
         manager.undo_step(sid, session.revision, 0, 20)
@@ -1612,6 +1621,8 @@ def test_dense_rank_uses_cleaning_population_through_history_and_parquet(
         assert reopened["metadata"]["schema"][-1]["type"] == "integer"
         assert path.read_bytes() == original
     finally:
+        if generated_connection is not None:
+            generated_connection.close()
         manager.close_all()
 
 
@@ -1621,6 +1632,7 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
     original = b"row,key\n0,a\n1,b\n2,a\n3,\n4,\n"
     path.write_bytes(original)
     manager = SessionManager()
+    generated_connection: Any = None
     try:
         opened = manager.open_session(
             {"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=20
@@ -1663,7 +1675,15 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
         assert session.filter_model == view
         namespace: dict[str, Any] = {}
         exec(applied["code"], namespace)
-        assert flags(session.engine.page(namespace["clean_data"](session.original), 0, 20)) == flags(full)
+        generated_source = session.original
+        if backend == "duckdb":
+            import duckdb
+
+            generated_connection = duckdb.connect()
+            generated_source = generated_connection.sql(session.original.sql_query())
+            assert generated_source.columns == session.original.columns
+            assert [str(dtype) for dtype in generated_source.types] == session.original.types
+        assert flags(session.engine.page(namespace["clean_data"](generated_source), 0, 20)) == flags(full)
         manager.undo_step(sid, session.revision, 0, 20)
         assert session.undone_steps == [operation]
         before = session_state(session)
@@ -1715,7 +1735,7 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
         assert flags(session.engine.page(session.draft_frame, 0, 20)) == [False] * 5
         assert session.draft_lineage == [*refs, {"id": "c:step:mark:0", "name": "is_duplicate"}]
         exec(draft["code"], namespace)
-        generated = session.engine.page(namespace["clean_data"](session.original), 0, 20)
+        generated = session.engine.page(namespace["clean_data"](generated_source), 0, 20)
         assert flags(generated) == [False] * 5
         # The host owns suffix replay; native earlier-step preview cannot bypass that transaction.
         with pytest.raises(EngineError, match="host plan-rewrite transaction"):
@@ -1727,4 +1747,6 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
         assert [row["id"] for row in full["rows"]] == source_ids
         assert path.read_bytes() == original
     finally:
+        if generated_connection is not None:
+            generated_connection.close()
         manager.close_all()

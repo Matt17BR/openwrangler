@@ -72,6 +72,7 @@ def test_formula_integer_text_survives_public_apply_generated_execution_and_repl
     source_bytes = path.read_bytes()
     source = {"kind": "file", "path": str(path), "label": path.name}
     manager = SessionManager()
+    generated_connection: duckdb.DuckDBPyConnection | None = None
     try:
         opened = manager.open_session(source, backend=backend, mode="editing", page_size=3)
         session_id = opened["metadata"]["sessionId"]
@@ -85,7 +86,13 @@ def test_formula_integer_text_survives_public_apply_generated_execution_and_repl
         session = manager.sessions[session_id]
         namespace: dict[str, Any] = {}
         exec(applied["code"], namespace, namespace)
-        generated = namespace["clean_data"](session.original)
+        generated_source = session.original
+        if backend == "duckdb":
+            generated_connection = duckdb.connect()
+            generated_source = generated_connection.sql(session.original.sql_query())
+            assert generated_source.columns == session.original.columns
+            assert [str(dtype) for dtype in generated_source.types] == session.original.types
+        generated = namespace["clean_data"](generated_source)
         assert integer_result(session.engine.page(generated, 0, 3)) == expected
 
         reopened = manager.open_session(source, backend=backend, mode="editing", page_size=3)
@@ -106,6 +113,8 @@ def test_formula_integer_text_survives_public_apply_generated_execution_and_repl
         )
         assert path.read_bytes() == source_bytes
     finally:
+        if generated_connection is not None:
+            generated_connection.close()
         manager.close_all()
 
 
