@@ -2008,6 +2008,7 @@ async function exerciseReleasedREditingJourney(
         exerciseReleasedRFillMissingJourney,
         exerciseReleasedRPersistentRowsJourney,
         exerciseReleasedRRowReductionJourney,
+        openReleasedROperationPicker,
         previewReleasedRClone,
         previewReleasedRDrop,
         previewReleasedRRename,
@@ -18966,11 +18967,52 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
 
       let revision = opened.metadata.revision;
       let stepCount = 0;
+      let sortedPage: GridPage | undefined;
+      const rankId = `c:step:${backend}-rank:0`;
+      const assertRankPage = (metadata: SessionMetadata, page: LiveGridPage, replay: boolean): void => {
+        const expected = replay && backend === "duckdb" ? [2, 3, 3] : [2, 3, 3, 1];
+        const rank = metadata.schema.find((column) => column.id === rankId);
+        assert.ok(rank, `${backend} must retain the rank column's stable identity.`);
+        assert.equal(rank.name, "year_rank");
+        assert.equal(rank.position, opened.metadata.schema.length);
+        assert.equal(rank.type, "integer");
+        assert.equal(rank.rawType, { pandas: "Int64", polars: "UInt32", duckdb: "BIGINT" }[backend]);
+        assert.equal(rank.nullable, backend !== "pandas");
+        assert.ok(sortedPage, "Dense Rank must follow the confirmed sales sort.");
+        assert.equal(page.totalRows, expected.length);
+        assert.equal(page.rows.length, expected.length);
+        assert.equal(page.offset, 0);
+        const rankPosition = page.columnIds.indexOf(rankId);
+        assert.ok(rankPosition >= 0);
+        assert.deepEqual(
+          page.rows.map((row) => row.values[rankPosition]),
+          expected.map((raw) => ({ kind: "integer", raw, display: String(raw), isNull: false, isNaN: false }))
+        );
+        if (!replay) {
+          assert.deepEqual(metadata.schema.slice(0, opened.metadata.schema.length), opened.metadata.schema);
+          const sourcePositions = opened.page.columnIds.map((id) => page.columnIds.indexOf(id));
+          assert.ok(sourcePositions.every((position) => position >= 0));
+          assert.deepEqual(
+            page.rows.map((row) => ({ ...row, values: sourcePositions.map((position) => row.values[position]) })),
+            sortedPage.rows
+          );
+        }
+        assertExactBytes(
+          readFileSync(sourcePath),
+          Buffer.from(original, "utf8"),
+          "Dense Rank must retain source bytes."
+        );
+      };
       const steps: TransformStep[] = [
         {
           id: `${backend}-sort`,
           kind: "sortRows",
           params: { rules: [{ column: columnReference(opened.metadata, "sales"), direction: "desc", nulls: "last" }] }
+        },
+        {
+          id: `${backend}-rank`,
+          kind: "denseRank",
+          params: { column: columnReference(opened.metadata, "year"), direction: "asc", newColumn: "year_rank" }
         },
         {
           id: `${backend}-formula`,
@@ -19055,6 +19097,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         if (step.kind === "byExample") {
           assert.ok(preview.metadata.draftStep?.params.program, "By-example preview must resolve a program.");
         }
+        if (step.kind === "denseRank") {
+          assert.deepEqual(preview.metadata.draftStep, step);
+          assertRankPage(preview.metadata, preview.page, false);
+        }
 
         revision = preview.revision;
         const applied = await testing.request({
@@ -19070,6 +19116,20 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         stepCount += 1;
         revision = applied.revision;
         assert.equal(applied.metadata.steps.length, stepCount);
+        if (step.kind === "sortRows") {
+          sortedPage = structuredClone(applied.page);
+          const cityPosition = sortedPage.columnIds.indexOf(columnReference(opened.metadata, "city").id);
+          assert.deepEqual(
+            sortedPage.rows.map((row) => row.values[cityPosition]?.raw),
+            ["Berlin", "Milan", "Rome", "Paris"]
+          );
+        }
+        if (step.kind === "denseRank") {
+          assert.deepEqual(applied.metadata.steps.at(-1), step);
+          assertRankPage(applied.metadata, applied.page, false);
+          assert.deepEqual(applied.page, preview.page);
+          assert.equal(applied.code, preview.code);
+        }
 
         if (step.kind === "customCode") {
           const generation = testing.runtimeGeneration();
@@ -19086,7 +19146,17 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           });
           assert.equal(replayed.kind, "page", `${backend} custom-code plan must replay after restart.`);
           assert.equal(testing.runtimeGeneration(), generation + 1);
-          if (replayed.kind === "page") revision = replayed.revision;
+          if (replayed.kind === "page") {
+            revision = replayed.revision;
+            assertRankPage(replayed.metadata, replayed.page, true);
+            assert.deepEqual(replayed.metadata.steps, applied.metadata.steps);
+            assert.deepEqual(replayed.metadata.schema, applied.metadata.schema);
+            assert.deepEqual(
+              { ...replayed.page, rows: replayed.page.rows.map(({ id: _id, ...row }) => row) },
+              { ...applied.page, rows: applied.page.rows.map(({ id: _id, ...row }) => row) }
+            );
+            assert.equal(testing.activeSession()?.code, applied.code);
+          }
         }
       }
 

@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
-import type { FilterModel } from "../../shared/protocol";
+import type { DataRow, FilterModel } from "../../shared/protocol";
 import { assertExactBytes } from "./acceptanceSourceFixture";
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import type { TestApi } from "./extensionHostTestApi";
@@ -66,6 +66,11 @@ export interface ReleasedRCoreEditingDependencies {
     sessionId: string,
     phase: ReleasedRPhase
   ) => Promise<void>;
+  readonly openReleasedROperationPicker: (
+    testing: TestApi,
+    workbench: Page,
+    sessionId: string
+  ) => Promise<Readonly<{ app: Locator; dialog: Locator }>>;
   readonly previewReleasedRClone: (
     testing: TestApi,
     workbench: Page,
@@ -166,6 +171,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     exerciseReleasedRFillMissingJourney,
     exerciseReleasedRPersistentRowsJourney,
     exerciseReleasedRRowReductionJourney,
+    openReleasedROperationPicker,
     previewReleasedRClone,
     previewReleasedRDrop,
     previewReleasedRRename,
@@ -185,6 +191,163 @@ export async function exerciseReleasedRCoreEditingCatalog(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
     await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
+
+    recordAcceptanceProgress(`${phase}:editing:dense-rank-preview-apply-undo`);
+    const rankBase = testing.activeSession();
+    assert.ok(rankBase?.sessionId === sessionId);
+    assert.equal(rankBase.metadata.steps.length, 0);
+    assert.equal(rankBase.metadata.draftStep, undefined);
+    assert.deepEqual(rankBase.viewState.filterModel, { filters: [], sort: [] });
+    const rankSource = rankBase.metadata.schema.find((column) => column.name === "fractional_score");
+    assert.ok(rankSource, "The R rank fixture must expose fractional_score.");
+    const rankSourceBytes = readFileSync(notebookPath);
+    const rankNotebookVersion = notebook.version;
+    const rankNotebookDirty = notebook.isDirty;
+    const rankNotebookCells = notebook.getCells().map((cell) => cell.document.getText());
+    const readRankSample = async (
+      active: ActiveSession,
+      column: ActiveSession["metadata"]["schema"][number],
+      label: string
+    ): Promise<DataRow[]> => {
+      const rows: DataRow[] = [];
+      for (const [offset, limit] of [
+        [0, 2],
+        [602, 1],
+        [1204, 1]
+      ] as const) {
+        const response = await testing.request(
+          {
+            kind: "getPage",
+            sessionId,
+            revision: active.metadata.revision,
+            viewRequestId: `${phase}-rank-${label}-${offset}`,
+            offset,
+            limit,
+            filterModel: rankBase.viewState.filterModel,
+            columnOffset: column.position,
+            columnLimit: 1
+          },
+          { ephemeralPage: true }
+        );
+        assert.equal(response.kind, "page");
+        if (response.kind !== "page") throw new Error("The native R rank sample did not return a page.");
+        assert.equal(response.metadata.sessionId, sessionId);
+        assert.equal(response.revision, active.metadata.revision);
+        assert.equal(response.page.totalRows, 1205);
+        assert.equal(response.page.offset, offset);
+        assert.equal(response.page.rows.length, limit);
+        assert.deepEqual(response.page.columnIds, [column.id]);
+        rows.push(...response.page.rows);
+      }
+      return rows;
+    };
+    const sourceSample = await readRankSample(rankBase, rankSource, "source");
+    assert.deepEqual(
+      [sourceSample[0], sourceSample[1], sourceSample[3]].map((row) => row?.values[0]?.raw),
+      [1.25, -2.25, 1205.25]
+    );
+    assert.equal(sourceSample[2]?.values[0]?.isNull, true);
+    const rankPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    const rankDialog = rankPicker.dialog;
+    await rankDialog.getByPlaceholder("Search operations").fill("rank");
+    await rankDialog.getByRole("button", { name: /^Dense rank\b/u }).click();
+    await rankDialog.getByLabel("Numeric column", { exact: true }).selectOption(rankSource.id);
+    assert.equal(await rankDialog.getByLabel("Direction", { exact: true }).inputValue(), "asc");
+    await rankDialog.getByLabel("Direction", { exact: true }).selectOption("desc");
+    await rankDialog.getByLabel("New column", { exact: true }).fill("fractional_rank");
+    await rankDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () =>
+        testing.activeSession()?.sessionId === sessionId &&
+        testing.activeSession()?.metadata.draftStep?.kind === "denseRank",
+      30_000,
+      "previewing Dense Rank through the native R form"
+    );
+    const rankPreview = testing.activeSession();
+    assert.ok(rankPreview?.metadata.draftStep?.kind === "denseRank");
+    const rankStep = rankPreview.metadata.draftStep;
+    assert.deepEqual(rankStep.params, {
+      column: { id: rankSource.id, name: rankSource.name },
+      direction: "desc",
+      newColumn: "fractional_rank"
+    });
+    const rankOutput = rankPreview.metadata.schema.at(-1);
+    assert.ok(rankOutput);
+    assert.equal(rankOutput.id, `c:step:${rankStep.id}:0`);
+    assert.equal(rankOutput.position, rankBase.metadata.schema.length);
+    assert.equal(rankOutput.name, "fractional_rank");
+    assert.equal(rankOutput.type, "integer");
+    assert.equal(rankOutput.rawType, "integer");
+    assert.equal(rankOutput.nullable, true);
+    assert.deepEqual(rankPreview.metadata.schema.slice(0, -1), rankBase.metadata.schema);
+    assertReleasedRGeneratedCode(rankPreview.code ?? "", "fractional_rank");
+    const previewRanks = await readRankSample(rankPreview, rankOutput, "preview");
+    assert.deepEqual(
+      previewRanks.map((row) => row.values[0]),
+      ["602", "603", undefined, "1"].map((raw) =>
+        raw === undefined
+          ? sourceSample[2]?.values[0]
+          : { kind: "integer", raw, display: raw, isNull: false, isNaN: false }
+      )
+    );
+    assert.deepEqual(
+      previewRanks.map(({ values: _values, ...row }) => row),
+      sourceSample.map(({ values: _values, ...row }) => row)
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R rank draft must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Dense Rank draft");
+    const rankReview = app.getByRole("region", { name: "Draft review" });
+    await rankReview.getByText("Dense rank", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await rankReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          active.metadata.steps[0]?.id === rankStep.id
+        );
+      },
+      30_000,
+      "applying native R Dense Rank"
+    );
+    const rankApplied = testing.activeSession();
+    assert.ok(rankApplied);
+    assert.deepEqual(rankApplied.metadata.steps, [rankStep]);
+    assert.deepEqual(rankApplied.metadata.schema, rankPreview.metadata.schema);
+    assert.equal(rankApplied.code, rankPreview.code);
+    assert.deepEqual(await readRankSample(rankApplied, rankOutput, "applied"), previewRanks);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R rank must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Dense Rank session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 0 &&
+          !active.metadata.schema.some((column) => column.id === rankOutput.id)
+        );
+      },
+      30_000,
+      "undoing native R Dense Rank"
+    );
+    const rankRestored = testing.activeSession();
+    assert.ok(rankRestored);
+    assert.deepEqual(rankRestored.metadata.schema, rankBase.metadata.schema);
+    assert.equal(rankRestored.code ?? "", rankBase.code ?? "");
+    assert.deepEqual(rankRestored.viewState.filterModel, rankBase.viewState.filterModel);
+    assert.deepEqual(await readRankSample(rankRestored, rankSource, "restored"), sourceSample);
+    assert.equal(notebook.version, rankNotebookVersion);
+    assert.equal(notebook.isDirty, rankNotebookDirty);
+    assert.deepEqual(
+      notebook.getCells().map((cell) => cell.document.getText()),
+      rankNotebookCells
+    );
+    assertExactBytes(readFileSync(notebookPath), rankSourceBytes, "Dense Rank must preserve the source notebook.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Dense Rank");
   }
 
   recordAcceptanceProgress(`${phase}:editing:preview-discard`);
