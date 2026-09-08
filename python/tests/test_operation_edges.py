@@ -1893,12 +1893,16 @@ def test_pandas_arrow_formula_capacity_accepts_nonnegative_signed_columns(
 @pytest.mark.parametrize("bits", [8, 16, 32, 64])
 @pytest.mark.parametrize("storage", ["numpy", "nullable", "arrow"])
 @pytest.mark.parametrize("operator", ["add", "subtract"])
-def test_pandas_arrow_formula_capacity_accepts_nonpositive_signed_columns(
-    bits: int, storage: str, operator: str
+@pytest.mark.parametrize("mixed", [False, True])
+def test_pandas_arrow_formula_capacity_accepts_signed_adjustment_columns(
+    bits: int, storage: str, operator: str, mixed: bool
 ) -> None:
     pa = pytest.importorskip("pyarrow")
     minimum = -(2 ** (bits - 1))
     signed_values = [minimum, -1, 0, -2 if storage == "numpy" else None, -1]
+    if mixed:
+        signed_values[1] = -minimum - 1
+        signed_values.extend([1, 0 if storage == "numpy" else None, 0 if storage == "numpy" else None])
     signed_dtype = f"Int{bits}" if storage == "nullable" else f"int{bits}{'[pyarrow]' if storage == 'arrow' else ''}"
     signed = pd.Series(signed_values, dtype=signed_dtype)
     if storage == "arrow":
@@ -1913,7 +1917,10 @@ def test_pandas_arrow_formula_capacity_accepts_nonpositive_signed_columns(
             )
         )
     first = 2**64 - 1 if operator == "add" else 2**64 - 1 + minimum
-    frame = pd.DataFrame({"wide": pd.Series([first, 2, 7, 8, None], dtype="uint64[pyarrow]"), "signed": signed})
+    wide_values = [first, -minimum - 1 if mixed else 2, 7, 8, None]
+    if mixed:
+        wide_values.extend([None, None, 2**64 - 1])
+    frame = pd.DataFrame({"wide": pd.Series(wide_values, dtype="uint64[pyarrow]"), "signed": signed})
     frame.index = pd.MultiIndex.from_tuples([("same", 2)] * len(frame), names=["group", "row"])
     frame.attrs = {"source": "retained"}
     before = frame.copy(deep=True)
@@ -1930,6 +1937,9 @@ def test_pandas_arrow_formula_capacity_accepts_nonpositive_signed_columns(
         if operator == "add"
         else [2**64 - 1, 3, 7, 10 if storage == "numpy" else None, None]
     )
+    if mixed:
+        values[1] = 2 * (-minimum - 1) if operator == "add" else 0
+        values.extend([None, None, 2**64 - 1 if storage == "numpy" else None])
     expected = pd.Series(values, index=frame.index, name="result", dtype="uint64[pyarrow]")
     runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
     for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
@@ -2040,6 +2050,8 @@ def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_col
         "negative-column-subtract",
         "negative-column-empty",
         "negative-column-null",
+        "mixed-column-add",
+        "mixed-column-subtract",
     ],
 )
 def test_pandas_arrow_formula_capacity_preserves_successful_native_results(family: str) -> None:
@@ -2062,6 +2074,9 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         op = "add" if family == "decimal-add" else "power"
     if family.startswith("negative-column-"):
         operand = pd.Series([-1] * len(value), dtype="int64[pyarrow]")
+    elif family.startswith("mixed-column-"):
+        operand = pd.Series([-1, 1, None], dtype="int64[pyarrow]")
+        op = family.removeprefix("mixed-column-")
     native = {
         "add": operator.add,
         "subtract": operator.sub,
@@ -2104,8 +2119,8 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "negative-overflow",
         "negative-multiply",
         "negative-power",
-        "negative-column-mixed",
-        "negative-column-paired-null-positive",
+        "negative-column-mixed-underflow",
+        "negative-column-mixed-overflow",
         "negative-column-underflow",
         "negative-column-overflow",
         "negative-column-reversed",
@@ -2144,15 +2159,18 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
     frame = pd.DataFrame({"value": value})
     column_operand = family.startswith("negative-column-")
     if column_operand:
-        right = [-1, 1] if family == "negative-column-paired-null-positive" else [-1, None]
-        if family in {"negative-column-mixed", "negative-column-underflow", "negative-column-overflow"}:
+        right = [-1, None]
+        if family in {"negative-column-underflow", "negative-column-overflow"}:
             frame = pd.DataFrame({"value": pd.Series([2**64 - 1, 0, None], dtype="uint64[pyarrow]")})
-            right = [-1, 1 if family == "negative-column-mixed" else -1, None]
+            right = [-1, -1, None]
         if family == "negative-column-overflow":
             frame["value"] = pd.Series([0, 2**64 - 1, None], dtype="uint64[pyarrow]")
             op = "subtract"
         elif family in {"negative-column-multiply", "negative-column-power"}:
             op = family.removeprefix("negative-column-")
+        elif family in {"negative-column-mixed-underflow", "negative-column-mixed-overflow"}:
+            frame = pd.DataFrame({"value": pd.Series([2**64 - 2, 0, 2**64 - 1], dtype="uint64[pyarrow]")})
+            right = [1, -1, 1] if family.endswith("underflow") else [-1, 1, 1]
         frame["right"] = pd.Series(right, dtype="int64[pyarrow]")
         if family == "negative-column-sparse":
             frame["right"] = pd.Series([-1, -2], dtype=pd.SparseDtype("int64", 0))
@@ -2260,9 +2278,9 @@ def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extension
         pd.testing.assert_frame_equal(frame, before)
 
 
-@pytest.mark.parametrize("negative_column", [False, True])
+@pytest.mark.parametrize("operand", ["scalar", "nonpositive", "mixed"])
 def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_code_isolated(
-    negative_column: bool,
+    operand: str,
 ) -> None:
     pa = pytest.importorskip("pyarrow")
     dictionary = pa.DictionaryArray.from_arrays(pa.array([0, 1, None], type=pa.int8()), pa.array(["x", "y"]))
@@ -2273,8 +2291,10 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
         }
     )
     frame.index = pd.Index(["same"] * len(frame), name="source")
-    if negative_column:
-        frame["adjustment"] = pd.Series([-2, -2, None], index=frame.index, dtype="int64[pyarrow]")
+    if operand != "scalar":
+        frame["adjustment"] = pd.Series(
+            [-2, 1 if operand == "mixed" else -2, None], index=frame.index, dtype="int64[pyarrow]"
+        )
     frame.attrs = {"source": "unchanged"}
     before = frame.copy(deep=True)
     runtime = PandasEngine()
@@ -2289,7 +2309,7 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
                 "value": 2,
                 "newColumn": "repaired" if not plan else "again",
             }
-            if negative_column:
+            if operand != "scalar":
                 params.pop("value")
                 params.update({"operator": "add", "rightColumn": lineage[2]})
         elif kind == "customCode":
@@ -2317,6 +2337,8 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
     generated = namespace["clean_data"](frame)
     pd.testing.assert_frame_equal(generated, live)
     expected_inferred = frame["value"].astype(object)
+    if operand == "mixed":
+        expected_inferred.iloc[1] += 3
     assert isinstance(expected_inferred, pd.Series)
     expected_inferred = expected_inferred.rename("inferred")
     for actual in (live, generated):

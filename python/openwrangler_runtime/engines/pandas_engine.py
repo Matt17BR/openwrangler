@@ -4922,7 +4922,7 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
         left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None
         right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
 
-        def signed_column_has_sign(value: Any, nonpositive: bool = False) -> bool:
+        def is_signed_column(value: Any) -> bool:
             if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
                 return False
             if isinstance(value.dtype, pd.ArrowDtype):
@@ -4935,8 +4935,7 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                     dtype = cast(Any, dtype).numpy_dtype
                 if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:
                     return False
-            bound = value.max() if nonpositive else value.min()
-            return bool(pd.isna(bound) or (bound <= 0 if nonpositive else bound >= 0))
+            return True
 
         if operator in {"add", "subtract", "multiply", "power"}:
             if left_type == pa.uint64() and type(right) is int:
@@ -4947,22 +4946,34 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                         left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"
                     )
             if isinstance(error, pa.ArrowInvalid):
-                if left_type == pa.uint64() and isinstance(right, pd.Series):
-                    if signed_column_has_sign(right):
+                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):
+                    minimum = right.min()
+                    if pd.isna(minimum) or minimum >= 0:
                         return _pandas_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)
-                    if operator in {"add", "subtract"} and signed_column_has_sign(right, nonpositive=True):
+                    if operator in {"add", "subtract"}:
                         import pyarrow.compute as pc
 
                         array = cast(pd.arrays.ArrowExtensionArray, right.astype(pd.ArrowDtype(pa.int64())).array)
-                        # For signed x <= 0, modular unsigned negation is exactly -x,
-                        # including INT64_MIN. The requested arithmetic remains checked.
-                        magnitude = pc.call_function(
-                            "negate", [pc.cast(array.__arrow_array__(), pa.uint64(), safe=False)]
-                        )
+                        values = array.__arrow_array__()
+                        bits = pc.cast(values, pa.uint64(), safe=False)
+                        if right.max() > 0:
+                            negative = pc.call_function("less", [values, pa.scalar(0, type=pa.int64())])
+                            zero = pa.scalar(0, type=pa.uint64())
+                            positive = pc.call_function("if_else", [negative, zero, bits])
+                            bits = pc.call_function("if_else", [negative, bits, zero])
+                            positive = pd.Series(
+                                pd.arrays.ArrowExtensionArray(positive), index=right.index, name=right.name
+                            )
+                            left = _pandas_formula(left, positive, operator)
+                        # Selected signed x <= 0 becomes its exact unsigned magnitude,
+                        # including INT64_MIN. Both requested arithmetic calls are checked.
+                        magnitude = pc.call_function("negate", [bits])
                         right = pd.Series(pd.arrays.ArrowExtensionArray(magnitude), index=right.index, name=right.name)
                         return _pandas_formula(left, right, "subtract" if operator == "add" else "add")
-                if right_type == pa.uint64() and signed_column_has_sign(left):
-                    return _pandas_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
+                if right_type == pa.uint64() and is_signed_column(left):
+                    minimum = left.min()
+                    if pd.isna(minimum) or minimum >= 0:
+                        return _pandas_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
         if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:
             left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None
             right_decimal = right_type if right_type is not None and pa.types.is_decimal128(right_type) else None
@@ -5072,7 +5083,7 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), '
         "pd.ArrowDtype) else None",
         "",
-        "        def signed_column_has_sign(value, nonpositive=False):",
+        "        def is_signed_column(value):",
         "            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):",
         "                return False",
         "            if isinstance(value.dtype, pd.ArrowDtype):",
@@ -5085,8 +5096,7 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "                    dtype = dtype.numpy_dtype",
         '                if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:',
         "                    return False",
-        "            bound = value.max() if nonpositive else value.min()",
-        "            return bool(pd.isna(bound) or (bound <= 0 if nonpositive else bound >= 0))",
+        "            return True",
         "",
         '        if operator in {"add", "subtract", "multiply", "power"}:',
         "            if left_type == pa.uint64() and type(right) is int:",
@@ -5097,24 +5107,38 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"',
         "                    )",
         "            if isinstance(error, pa.ArrowInvalid):",
-        "                if left_type == pa.uint64() and isinstance(right, pd.Series):",
-        "                    if signed_column_has_sign(right):",
+        "                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):",
+        "                    minimum = right.min()",
+        "                    if pd.isna(minimum) or minimum >= 0:",
         "                        return _open_wrangler_formula("
         "left, right.astype(pd.ArrowDtype(pa.uint64())), operator)",
-        '                    if operator in {"add", "subtract"} and signed_column_has_sign(right, nonpositive=True):',
+        '                    if operator in {"add", "subtract"}:',
         "                        import pyarrow.compute as pc",
         "",
         "                        array = right.astype(pd.ArrowDtype(pa.int64())).array",
-        "                        # For signed x <= 0, modular unsigned negation is exactly -x,",
-        "                        # including INT64_MIN. The requested arithmetic remains checked.",
-        '                        magnitude = pc.call_function("negate", '
-        "[pc.cast(array.__arrow_array__(), pa.uint64(), safe=False)])",
+        "                        values = array.__arrow_array__()",
+        "                        bits = pc.cast(values, pa.uint64(), safe=False)",
+        "                        if right.max() > 0:",
+        '                            negative = pc.call_function("less", [values, pa.scalar(0, type=pa.int64())])',
+        "                            zero = pa.scalar(0, type=pa.uint64())",
+        '                            positive = pc.call_function("if_else", [negative, zero, bits])',
+        '                            bits = pc.call_function("if_else", [negative, bits, zero])',
+        "                            positive = pd.Series(",
+        "                                pd.arrays.ArrowExtensionArray(positive), index=right.index, name=right.name",
+        "                            )",
+        "                            left = _open_wrangler_formula(left, positive, operator)",
+        "                        # Selected signed x <= 0 becomes its exact unsigned magnitude,",
+        "                        # including INT64_MIN. Both requested arithmetic calls are checked.",
+        '                        magnitude = pc.call_function("negate", [bits])',
         "                        right = pd.Series(pd.arrays.ArrowExtensionArray(magnitude), "
         "index=right.index, name=right.name)",
         "                        return _open_wrangler_formula("
         'left, right, "subtract" if operator == "add" else "add")',
-        "                if right_type == pa.uint64() and signed_column_has_sign(left):",
-        "                    return _open_wrangler_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)",
+        "                if right_type == pa.uint64() and is_signed_column(left):",
+        "                    minimum = left.min()",
+        "                    if pd.isna(minimum) or minimum >= 0:",
+        "                        return _open_wrangler_formula("
+        "left.astype(pd.ArrowDtype(pa.uint64())), right, operator)",
         '        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:',
         "            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None",
         "            right_decimal = right_type if right_type is not None "
