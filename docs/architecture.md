@@ -544,6 +544,10 @@ Directional Fill uses the same native missing-run and donor-selection function i
 generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
 existing owners.
 
+Generated R Group By retains zero groups for empty inputs and preserves the live result's column types.
+It loads bit64 before grouping when a selected key or aggregation uses integer64, so missing detection,
+key comparison and subsetting retain native values even in a fresh R session.
+
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 

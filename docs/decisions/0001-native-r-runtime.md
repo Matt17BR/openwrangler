@@ -181,6 +181,11 @@ columns remain distinct; returned column names and stable identities are unchang
 Generated Drop Duplicates uses the same helper and includes its guarded integer64 conversion dependency only when
 the selected keys require it.
 
+Group By requires at least one key and aggregation. An empty input produces the same typed empty result in live
+and generated execution. Generated grouping loads the bit64 namespace before handling selected integer64 keys or
+aggregations; it preserves exact keys and classed outputs without relying on methods loaded earlier in the session.
+An unselected integer64 column does not trigger that dependency.
+
 Mark Duplicates uses the same comparison owner to flag every member of each repeated selected-key group. It requires
 at least one key and appends a fresh logical column with no missing flags. It preserves all input rows, values,
 identities, element names, row labels and compatible data-table keys. Capture validates the derived logical output
