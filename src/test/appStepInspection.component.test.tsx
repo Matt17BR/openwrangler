@@ -258,30 +258,80 @@ describe("App applied-step inspection", () => {
   });
 
   it("edits an inspected earlier step against its inspected input schema and stable ID", async () => {
-    const suffix: TransformStep = {
-      id: "clone-sales",
-      kind: "cloneColumn",
-      params: { column: { id: "c:sales", name: "sales" }, newName: "sales copy" }
+    const earlierStep: TransformStep = {
+      id: "rename-sales",
+      kind: "renameColumn",
+      params: { column: { id: "c:sales", name: "sales" }, newName: "revenue" }
     };
+    const suffix: TransformStep = {
+      id: "rename-city",
+      kind: "renameColumn",
+      params: { column: { id: "c:city", name: "city" }, newName: "location" }
+    };
+    const renamedSchema = schema.map((column) => (column.id === "c:sales" ? { ...column, name: "revenue" } : column));
+    const currentSchema = renamedSchema.map((column) =>
+      column.id === "c:city" ? { ...column, name: "location" } : column
+    );
     render(<App />);
     dispatch({
       kind: "sessionOpened",
-      metadata: { ...metadata, steps: [step, suffix] },
+      metadata: {
+        ...metadata,
+        schema: currentSchema,
+        latestStepInputSchema: renamedSchema,
+        filterModel: { filters: [], sort: [] },
+        steps: [earlierStep, suffix]
+      },
       page: confirmedPage,
       summaries: []
     });
-    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
-    dispatch(inspectionResult(step.id, 0, inspection()));
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: earlierStep.id });
+    dispatch(
+      inspectionResult(earlierStep.id, 0, {
+        ...inspection(),
+        stepId: earlierStep.id,
+        inputSchema: schema,
+        outputSchema: renamedSchema,
+        outputPage: confirmedPage,
+        diff: {
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        },
+        code: 'def clean_data(df):\n    return df.rename({"sales": "revenue"})\n'
+      })
+    );
     await screen.findByLabelText("Selected applied-step inspection");
 
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
     expect(postMessage).toHaveBeenCalledWith({ kind: "clearStepInspection" });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    expect(preview).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Column" })).toHaveValue("c:sales");
+    expect(screen.getByRole("option", { name: "sales" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "New name" })).toHaveValue("revenue");
+    fireEvent.change(screen.getByRole("textbox", { name: "New name" }), {
+      target: { value: "total_revenue" }
+    });
+    fireEvent.click(preview);
 
-    expect(onlyRuntimeRequest("previewStep")).toMatchObject({
-      replaceStepId: step.id,
-      step: { id: step.id, kind: step.kind }
+    expect(onlyRuntimeRequest("previewStep")).toEqual({
+      kind: "previewStep",
+      replaceStepId: earlierStep.id,
+      step: {
+        id: earlierStep.id,
+        kind: "renameColumn",
+        params: { column: { id: "c:sales", name: "sales" }, newName: "total_revenue" }
+      },
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
     });
   });
 
