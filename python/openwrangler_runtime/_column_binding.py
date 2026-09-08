@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from math import isfinite
@@ -487,6 +487,61 @@ class _BindingContext:
             raise ColumnBindingError(f"{label} collides with an existing column: {output_name}")
 
 
+def step_output_collision_checks(
+    step: Mapping[str, Any],
+) -> Iterator[tuple[Any, str, Mapping[str, Any] | None]]:
+    """Describe the existing static destination rules for binding and compilation."""
+    kind = str(step["kind"])
+    params = step["params"]
+    if kind == "renameColumn":
+        yield params.get("newName"), "renameColumn.newName", params["column"]
+    elif kind == "cloneColumn":
+        yield params.get("newName"), "cloneColumn.newName", None
+    elif kind in {"formula", "textLength", "denseRank", "byExample", "extractRegexGroup"}:
+        yield params.get("newColumn"), f"{kind}.newColumn", None
+    elif kind == "splitTextColumns":
+        for index, output_name in enumerate(params.get("newColumns", [])):
+            yield output_name, f"splitTextColumns.newColumns[{index}]", None
+    elif (
+        kind
+        in {
+            "multiLabelBinarize",
+            "findReplace",
+            "stripText",
+            "splitText",
+            "capitalizeText",
+            "lowerText",
+            "upperText",
+            "minMaxScale",
+            "roundNumber",
+            "floorNumber",
+            "ceilNumber",
+            "formatDatetime",
+        }
+        and "newColumn" in params
+    ):
+        yield params["newColumn"], f"{kind}.newColumn", params["column"]
+
+
+def compile_output_collision_guards(step: Mapping[str, Any], columns: str, index: int) -> tuple[list[str], str | None]:
+    """Share one scalar destination literal between its guard and native operation."""
+    if step["kind"] in {"splitTextColumns", "extractRegexGroup"}:
+        # These compilers already validate bounded destinations before native work.
+        return [], None
+    checks = list(step_output_collision_checks(step))
+    if len(checks) != 1:
+        # Existing multi-output and dynamic-output guards retain their owners.
+        return [], None
+    name, label, replacing = checks[0]
+    allowed = int(replacing is not None and replacing["name"] == name)
+    variable = f"_output_name_{index}"
+    return [
+        f"    {variable} = {name!r}",
+        f"    if sum(str(_output_name) == {variable} for _output_name in {columns}) > {allowed}:",
+        f"        raise ValueError({f'{label} collides with an existing column.'!r})",
+    ], variable
+
+
 def bind_step(
     step: Mapping[str, Any],
     schema: Sequence[Mapping[str, Any]],
@@ -648,7 +703,8 @@ def bind_step(
         if not isinstance(program, Mapping):
             raise ColumnBindingError("byExample.program must be an object after synthesis.")
         params["program"] = _bind_by_example_program(program, context, source_ids)
-        context.reject_output_collision(params.get("newColumn"), "byExample.newColumn")
+        for output_name, label, replacing in step_output_collision_checks(bound):
+            context.reject_output_collision(output_name, label, replacing=replacing)
         return bound
 
     if kind in {
@@ -734,49 +790,16 @@ def bind_step(
         )
         return bound
 
-    if kind == "renameColumn":
-        context.reject_output_collision(params.get("newName"), "renameColumn.newName", replacing=params["column"])
-    elif kind == "cloneColumn":
-        context.reject_output_collision(params.get("newName"), "cloneColumn.newName")
-    elif kind == "formula":
+    if kind == "formula":
         params["leftColumn"] = context.bind(params.get("leftColumn"), "formula.leftColumn")
         if "rightColumn" in params:
             params["rightColumn"] = context.bind(params.get("rightColumn"), "formula.rightColumn")
-        context.reject_output_collision(params.get("newColumn"), "formula.newColumn")
-    elif kind == "textLength":
-        context.reject_output_collision(params.get("newColumn"), "textLength.newColumn")
     elif kind == "denseRank":
         context.require_numeric_source(params["column"], "denseRank.column")
-        context.reject_output_collision(params.get("newColumn"), "denseRank.newColumn")
-    elif kind == "splitTextColumns":
-        for index, output_name in enumerate(params.get("newColumns", [])):
-            context.reject_output_collision(output_name, f"splitTextColumns.newColumns[{index}]")
     elif kind == "extractRegexGroup":
         context.require_text_source(params["column"], "extractRegexGroup.column")
-        context.reject_output_collision(params.get("newColumn"), "extractRegexGroup.newColumn")
-    elif (
-        kind
-        in {
-            "multiLabelBinarize",
-            "findReplace",
-            "stripText",
-            "splitText",
-            "capitalizeText",
-            "lowerText",
-            "upperText",
-            "minMaxScale",
-            "roundNumber",
-            "floorNumber",
-            "ceilNumber",
-            "formatDatetime",
-        }
-        and "newColumn" in params
-    ):
-        context.reject_output_collision(
-            params["newColumn"],
-            f"{kind}.newColumn",
-            replacing=params["column"],
-        )
+    for output_name, label, replacing in step_output_collision_checks(bound):
+        context.reject_output_collision(output_name, label, replacing=replacing)
 
     return bound
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
+from .._column_binding import compile_output_collision_guards
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
@@ -2052,7 +2053,9 @@ class PandasEngine(DataFrameEngine):
         lines.extend(["def clean_data(df):", "    df = df.copy()"])
         for index, step in enumerate(plan):
             lines.extend(self._compile_step_binding_guards(step, index))
-            lines.extend(self._compile_step(step, index))
+            output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
+            lines.extend(output_guards)
+            lines.extend(self._compile_step(step, index, output_name=output_name))
         lines.append("    return df")
         return "\n".join(lines) + "\n"
 
@@ -2087,7 +2090,7 @@ class PandasEngine(DataFrameEngine):
             f"{prefix}        raise ValueError({f'{kind} column binding no longer matches its input schema.'!r})",
         ]
 
-    def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
+    def _compile_step(self, step: Mapping[str, Any], index: int, *, output_name: str | None = None) -> list[str]:
         kind = str(step["kind"])
         params = step["params"]
         prefix = "    "
@@ -2232,12 +2235,15 @@ class PandasEngine(DataFrameEngine):
             columns = f"_columns_{index}"
             return [
                 f"{prefix}{columns} = list(df.columns)",
-                f"{prefix}{columns}[{position}] = {params['newName']!r}",
+                f"{prefix}{columns}[{position}] = {output_name or repr(params['newName'])}",
                 f"{prefix}df.columns = {columns}",
             ]
         if kind == "cloneColumn":
             position = bound_column_position(params["column"], kind)
-            return [f"{prefix}df = pd.concat([df, df.iloc[:, {position}].rename({params['newName']!r})], axis=1)"]
+            return [
+                f"{prefix}df = pd.concat([df, df.iloc[:, {position}]"
+                f".rename({output_name or repr(params['newName'])})], axis=1)"
+            ]
         if kind == "castColumn":
             position = bound_column_position(params["column"], kind)
             series = f"_open_wrangler_scalar_values(df.iloc[:, {position}])"
@@ -2263,19 +2269,21 @@ class PandasEngine(DataFrameEngine):
                 if params["operator"] == "modulo"
                 else f"_open_wrangler_formula_result({left}, {right}, {params['operator']!r})"
             )
-            return [f"{prefix}df = pd.concat([df, {expression}.rename({params['newColumn']!r})], axis=1)"]
+            return [
+                f"{prefix}df = pd.concat([df, {expression}.rename({output_name or repr(params['newColumn'])})], axis=1)"
+            ]
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
             return [
                 f"{prefix}df = pd.concat([df, _open_wrangler_scalar_values(df.iloc[:, {position}])"
                 ".astype('string').str.len()"
-                f".rename({params['newColumn']!r})], axis=1)"
+                f".rename({output_name or repr(params['newColumn'])})], axis=1)"
             ]
         if kind == "denseRank":
             position = bound_column_position(params["column"], kind)
             return [
                 f"{prefix}df = pd.concat([df, _open_wrangler_dense_rank(df.iloc[:, {position}], "
-                f"{params['direction']!r}).rename({params['newColumn']!r})], axis=1)"
+                f"{params['direction']!r}).rename({output_name or repr(params['newColumn'])})], axis=1)"
             ]
         if kind == "oneHotEncode":
             positions = [bound_column_position(column, kind) for column in params["columns"]]
@@ -2479,7 +2487,7 @@ class PandasEngine(DataFrameEngine):
                 )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
-            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({output_name or repr(target)})], axis=1)"]
         if kind == "minMaxScale":
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2491,7 +2499,7 @@ class PandasEngine(DataFrameEngine):
             ]
             if target is None or target == column:
                 return [*lines, f"{prefix}df.isetitem({position}, {result})"]
-            return [*lines, f"{prefix}df = pd.concat([df, {result}.rename({target!r})], axis=1)"]
+            return [*lines, f"{prefix}df = pd.concat([df, {result}.rename({output_name or repr(target)})], axis=1)"]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2504,7 +2512,7 @@ class PandasEngine(DataFrameEngine):
             )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
-            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({output_name or repr(target)})], axis=1)"]
         if kind == "pivotLonger":
             positions = [bound_column_position(column, kind) for column in params["columns"]]
             names = [bound_column_name(column, kind) for column in params["columns"]]
@@ -2535,7 +2543,7 @@ class PandasEngine(DataFrameEngine):
             )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
-            return [f"{prefix}df = pd.concat([df, ({expression}).rename({target!r})], axis=1)"]
+            return [f"{prefix}df = pd.concat([df, ({expression}).rename({output_name or repr(target)})], axis=1)"]
         if kind == "groupBy":
             key_positions = [bound_column_position(reference, kind) for reference in params["keys"]]
             aggregations = [
@@ -2775,7 +2783,7 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}{result} = {expression}",
                 f"{prefix}if not isinstance({result}, pd.Series):",
                 f"{prefix}    {result} = pd.Series({result}, index=df.index)",
-                f"{prefix}df = pd.concat([df, {result}.rename({params['newColumn']!r})], axis=1)",
+                f"{prefix}df = pd.concat([df, {result}.rename({output_name or repr(params['newColumn'])})], axis=1)",
             ]
         if kind == "customCode":
             return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)

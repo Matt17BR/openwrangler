@@ -194,6 +194,14 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
+Generated Python rechecks destinations for column appends, renames and optional replacements at each affected step.
+The shared column-binding policy distinguishes a fresh output from replacement of the selected source column;
+unrelated extra columns remain valid. Pandas compares displayed names while retaining positional input checks.
+Polars inspects lazy schema metadata.
+Plans containing only DuckDB Rename steps retain the input relation's connection. Existing operation-specific output
+guards keep their stronger validation. The new guards reuse the step's output-name literal instead of repeating it;
+the retained-plan and generated-code limits remain unchanged.
+
 Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only queries. A committed Filter Rows or Sort
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.

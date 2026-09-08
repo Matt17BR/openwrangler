@@ -11,6 +11,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from .._column_binding import compile_output_collision_guards
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
@@ -1541,7 +1542,11 @@ class PolarsEngine(DataFrameEngine):
         plan = list(steps)
         clean_data_lines = ["def clean_data(df):"]
         for index, step in enumerate(plan):
-            clean_data_lines.extend(self._compile_step(step, index))
+            output_guards, output_name = compile_output_collision_guards(
+                step, "(df.collect_schema().names() if isinstance(df, pl.LazyFrame) else df.columns)", index
+            )
+            clean_data_lines.extend(output_guards)
+            clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
@@ -1841,7 +1846,7 @@ class PolarsEngine(DataFrameEngine):
         lines.extend(["", "", clean_data])
         return "\n".join(lines) + "\n"
 
-    def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
+    def _compile_step(self, step: Mapping[str, Any], index: int, *, output_name: str | None = None) -> list[str]:
         kind = str(step["kind"])
         params = step["params"]
         prefix = "    "
@@ -2079,10 +2084,10 @@ class PolarsEngine(DataFrameEngine):
             return [f"{prefix}df = df.drop({columns!r})"]
         if kind == "renameColumn":
             column = bound_column_name(params["column"], kind)
-            return [f"{prefix}df = df.rename({{{column!r}: {params['newName']!r}}})"]
+            return [f"{prefix}df = df.rename({{{column!r}: {output_name or repr(params['newName'])}}})"]
         if kind == "cloneColumn":
             column = bound_column_name(params["column"], kind)
-            return [f"{prefix}df = df.with_columns(pl.col({column!r}).alias({params['newName']!r}))"]
+            return [f"{prefix}df = df.with_columns(pl.col({column!r}).alias({output_name or repr(params['newName'])}))"]
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
@@ -2120,31 +2125,33 @@ class PolarsEngine(DataFrameEngine):
                         ]
                     )
                 lines.append(
-                    f"{prefix}df = df.with_columns(({left_name} {symbol} {right_name}).alias({params['newColumn']!r}))"
+                    f"{prefix}df = df.with_columns(({left_name} {symbol} {right_name})"
+                    f".alias({output_name or repr(params['newColumn'])}))"
                 )
                 return lines
             expression = f"(pl.col({left_column!r}) {symbol} {right})"
             if params["operator"] == "divide":
-                return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
+                return [f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))"]
             return [
                 (
                     f"{prefix}_ow_polars_check_formula(df, pl.col({left_column!r}), {right}, "
                     f"{params['operator']!r}, {expression})"
                 ),
-                f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
+                f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))",
             ]
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
             return [
                 (
                     f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
-                    f".str.len_chars().alias({params['newColumn']!r}))"
+                    f".str.len_chars().alias({output_name or repr(params['newColumn'])}))"
                 )
             ]
         if kind == "denseRank":
             column = bound_column_name(params["column"], kind)
             return [
-                f"{prefix}df = _ow_polars_dense_rank(df, {column!r}, {params['direction']!r}, {params['newColumn']!r})"
+                f"{prefix}df = _ow_polars_dense_rank(df, {column!r}, {params['direction']!r}, "
+                f"{output_name or repr(params['newColumn'])})"
             ]
         if kind == "oneHotEncode":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
@@ -2414,7 +2421,7 @@ class PolarsEngine(DataFrameEngine):
                 expression = f"{base}.str.to_lowercase()"
             else:
                 expression = f"{base}.str.to_uppercase()"
-            return [f"{prefix}df = df.with_columns({expression}.alias({target!r}))"]
+            return [f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(target)}))"]
         if kind == "minMaxScale":
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
@@ -2422,7 +2429,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}_scale_schema_{index} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 (
                     f"{prefix}df = df.with_columns(_ow_polars_min_max_scale("
-                    f"pl.col({column!r}), _scale_schema_{index}[{column!r}]).alias({target!r}))"
+                    f"pl.col({column!r}), _scale_schema_{index}[{column!r}]).alias({output_name or repr(target)}))"
                 ),
             ]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
@@ -2436,7 +2443,7 @@ class PolarsEngine(DataFrameEngine):
                         f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) "
                         f"else df.schema)[{column!r}]"
                     ),
-                    f"{prefix}df = df.with_columns(({expression}).alias({target!r}))",
+                    f"{prefix}df = df.with_columns(({expression}).alias({output_name or repr(target)}))",
                 ]
             dtype = f"_integral_type_{index}"
             expression = f"_integral_{index}"
@@ -2450,7 +2457,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}    {expression} = {expression}.{method}()",
                 f"{prefix}    if {dtype}.base_type() == pl.Decimal:",
                 f"{prefix}        {expression} = {expression}.cast(pl.Decimal(38, 0))",
-                f"{prefix}df = df.with_columns({expression}.alias({target!r}))",
+                f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(target)}))",
             ]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
@@ -2462,7 +2469,10 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}{expression} = pl.col({column!r})",
                 f"{prefix}if {schema}[{column!r}].base_type() not in {{pl.Datetime, pl.Date}}:",
                 f"{prefix}    {expression} = {expression}.cast(pl.String).str.to_datetime(strict=False)",
-                (f"{prefix}df = df.with_columns({expression}.dt.strftime({params['format']!r}).alias({target!r}))"),
+                (
+                    f"{prefix}df = df.with_columns({expression}.dt.strftime({params['format']!r})"
+                    f".alias({output_name or repr(target)}))"
+                ),
             ]
         if kind == "groupBy":
             keys = [bound_column_name(reference, kind) for reference in params["keys"]]
@@ -2513,7 +2523,7 @@ class PolarsEngine(DataFrameEngine):
             program = params["program"]
             if not _polars_program_needs_checked_integer_helpers(program):
                 expression = _compile_polars_by_example(program)
-                return [f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))"]
+                return [f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))"]
             schema = f"_by_example_schema_{index}"
             scalar = f"_by_example_scalar_integer_{index}"
             expression = f"_by_example_expression_{index}"
@@ -2524,7 +2534,7 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 (f"{prefix}{scalar} = any({schema}[name] == pl.UInt128 for name in {column_names!r})"),
                 f"{prefix}{expression} = {scalar_expression} if {scalar} else {native_expression}",
-                f"{prefix}df = df.with_columns({expression}.alias({params['newColumn']!r}))",
+                f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))",
             ]
         if kind == "customCode":
             return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
