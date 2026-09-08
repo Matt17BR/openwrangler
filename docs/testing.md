@@ -210,7 +210,9 @@ refusals. The session-transaction owner previews and applies a wide-integer resu
 Parquet export, and verifies the complete confirmed state after a rejected zero-divisor preview.
 The same owners check UInt64 scalar and signed-companion inference, Decimal128-to-256 arithmetic, unchanged native
 successes, excluded custom integer extensions and exact physical export types. Negative UInt64 add/subtract literals
-cover native signed successes, exact unsigned results, empty/null inputs and hidden-row underflow or overflow.
+and nonpositive signed companion columns cover native signed successes, exact unsigned results, signed widths and
+storage, INT64_MIN, duplicate indexes, empty/null inputs and hidden-row underflow or overflow. Unsupported mixed-sign
+and paired-null positive companions still refuse after native arithmetic fails; existing native successes remain.
 Mixed Formula, By Example and Custom Code plans execute standalone output and check helper isolation. Session tests
 verify reported and replayed dtypes,
 rollback for errors beyond the displayed page and successful correction afterward.
