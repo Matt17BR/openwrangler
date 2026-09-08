@@ -215,6 +215,7 @@ export function OperationBuilder({
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
+                aria-label="Search operations"
                 placeholder="Search operations"
                 autoFocus
               />
