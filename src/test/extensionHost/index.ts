@@ -14336,7 +14336,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
 
     const assertGeneratedPandasPreview = async (
       preview: Extract<OpenWranglerResponse, { kind: "stepPreview" }>,
-      sourceName: "duplicate_frame" | "structural_frame",
+      sourceName: "duplicate_frame" | "structural_frame" | "identity_frame",
       integerLabelId: string,
       rowPositions: readonly number[] | null = null
     ): Promise<void> => {
@@ -15105,11 +15105,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (identityExamplePreview.kind !== "stepPreview") {
       throw new Error(`Stable-reference by-example preview did not resolve: ${JSON.stringify(identityExamplePreview)}`);
     }
-    assert.match(
-      identityExamplePreview.code,
-      /_open_wrangler_nullable_string_copy\(df\.iloc\[:, 2\]\)\.astype\('string'\)/u,
-      "By-example generated code must address the non-string-labelled source by position."
-    );
+    await assertGeneratedPandasPreview(identityExamplePreview, "identity_frame", identityIntegerLabel.id);
     assert.deepEqual(
       gridColumnDisplays(
         identityExamplePreview.page,
@@ -15171,16 +15167,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (identityGroupPreview.kind !== "stepPreview") {
       throw new Error(`Stable-reference group-by preview did not resolve: ${JSON.stringify(identityGroupPreview)}`);
     }
-    assert.match(
-      identityGroupPreview.code,
-      /_group_labels_1 = \[df\.columns\[position\] for position in \[2\]\]/u,
-      "Group-by generated code must bind the non-string-labelled key by position."
-    );
-    assert.match(
-      identityGroupPreview.code,
-      /pd\.concat\(\[df\.iloc\[:, position\] for position in \[2, 1\]\], axis=1\)/u,
-      "Group-by generated code must bind the exact second duplicate aggregation by position."
-    );
+    await assertGeneratedPandasPreview(identityGroupPreview, "identity_frame", identityIntegerLabel.id);
     assert.doesNotMatch(
       identityGroupPreview.code,
       /df\[['"]duplicate['"]\]/u,
