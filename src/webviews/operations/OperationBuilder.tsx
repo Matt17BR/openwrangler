@@ -233,7 +233,10 @@ export function OperationBuilder({
                       className={`operationChoice${selectedKind === operation.kind ? " selected" : ""}`}
                       aria-pressed={selectedKind === operation.kind}
                       onClick={() => {
-                        if (operation.kind !== selectedKind) onOperationChange?.();
+                        if (operation.kind !== selectedKind) {
+                          setFormError(undefined);
+                          onOperationChange?.();
+                        }
                         setSelectedKind(operation.kind);
                       }}
                     >

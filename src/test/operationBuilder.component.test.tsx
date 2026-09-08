@@ -528,6 +528,76 @@ describe("OperationBuilder", () => {
     expect(onPreview).not.toHaveBeenCalled();
   });
 
+  it("retires local validation errors when changing operations without reviving them on return", () => {
+    const onPreview = vi.fn();
+    const onOperationChange = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="markDuplicates"
+        onClose={() => undefined}
+        onPreview={onPreview}
+        onOperationChange={onOperationChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Mark duplicates requires at least one compatible column.");
+    expect(onPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Rename column/ }));
+    expect(screen.getByRole("heading", { name: "Rename column" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Mark duplicates/ }));
+    expect(screen.getByRole("heading", { name: "Mark duplicates" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onOperationChange).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Drop columns/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Drop columns requires at least one compatible column.");
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "sales" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      { id: expect.any(String), kind: "dropColumns", params: { columns: [{ id: "c:1", name: "sales" }] } },
+      undefined
+    );
+  });
+
+  it("retains the current operation's local error and fields through catalog search and same-kind selection", () => {
+    const onPreview = vi.fn();
+    const onOperationChange = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="markDuplicates"
+        onClose={() => undefined}
+        onPreview={onPreview}
+        onOperationChange={onOperationChange}
+      />
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "New column" }), { target: { value: "duplicate_flag" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    const search = screen.getByRole("textbox", { name: "Search operations" });
+    fireEvent.change(search, { target: { value: "rename" } });
+    expect(screen.queryByRole("button", { name: /^Mark duplicates/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Mark duplicates" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Mark duplicates requires at least one compatible column.");
+    expect(screen.getByRole("textbox", { name: "New column" })).toHaveValue("duplicate_flag");
+
+    fireEvent.change(search, { target: { value: "mark" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Mark duplicates/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Mark duplicates requires at least one compatible column.");
+    expect(screen.getByRole("textbox", { name: "New column" })).toHaveValue("duplicate_flag");
+    expect(onOperationChange).not.toHaveBeenCalled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
   it("uses stable duplicate-safe references when adding and editing row sorts", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [
