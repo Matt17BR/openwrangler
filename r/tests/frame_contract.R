@@ -4053,6 +4053,45 @@ assert_error(
 }))
 run_frame_contract_case("fill-missing", local({
 
+local({
+  tiny <- 2^-1074
+  midpoint_cases <- list(
+    positive_tie = c(tiny, 2 * tiny, 2 * tiny),
+    negative_tie = c(-2 * tiny, -tiny, -2 * tiny),
+    positive_zero = c(-tiny, 2 * tiny, 0),
+    negative_zero = c(-2 * tiny, tiny, -0.0),
+    normal_boundary = c(.Machine$double.xmin - tiny, .Machine$double.xmin, .Machine$double.xmin),
+    cancellation = c(-.Machine$double.xmax, .Machine$double.xmax, 0),
+    large = c(2^1022, 2^1023, 3 * 2^1021),
+    ordinary = c(1, 3, 2),
+    equal_negative_zero = c(-0.0, -0.0, -0.0),
+    equal_positive_infinity = c(Inf, Inf, Inf),
+    unequal_infinity = c(1, Inf, Inf)
+  )
+  for (label in names(midpoint_cases)) {
+    case <- midpoint_cases[[label]]
+    actual <- openwrangler_r_frame_contract$safe_float_midpoint(case[[1L]], case[[2L]])
+    assert_identical(sprintf("%a", actual), sprintf("%a", case[[3L]]), paste(label, "midpoint lost binary precision"))
+  }
+  assert_true(
+    is.nan(openwrangler_r_frame_contract$safe_float_midpoint(-Inf, Inf)),
+    "opposite infinite midpoint stopped being unresolved"
+  )
+
+  had_mean_method <- exists("mean.numeric", envir = .GlobalEnv, inherits = FALSE)
+  previous_mean_method <- if (had_mean_method) get("mean.numeric", envir = .GlobalEnv, inherits = FALSE) else NULL
+  on.exit({
+    if (had_mean_method) assign("mean.numeric", previous_mean_method, envir = .GlobalEnv)
+    else rm("mean.numeric", envir = .GlobalEnv)
+  }, add = TRUE)
+  assign("mean.numeric", function(...) 999, envir = .GlobalEnv)
+  assert_identical(base::mean(c(1, 3)), 999, "the midpoint S3 countercontrol did not dispatch")
+  assert_identical(
+    openwrangler_r_frame_contract$safe_float_midpoint(1, 3), 2,
+    "a user mean.numeric method changed the numeric midpoint"
+  )
+})
+
 fill_frame <- data.frame(
   duplicate = c(1L, NA_integer_, 3L),
   duplicate = c(1, NaN, NA_real_),

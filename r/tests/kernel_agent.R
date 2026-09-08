@@ -3717,6 +3717,103 @@ assert_identical(source_environment$linear_fill_frame, linear_fill_before, "live
 linear_fill_closed <- dispatch("closeSession", list(sessionId = linear_fill_session_id))
 assert_identical(linear_fill_closed$kind, "closed", "the R linear-interpolation session did not close")
 
+local({
+  tiny <- 2^-1074
+  cases <- list(
+    positive_tie = list(values = c(tiny, 2 * tiny), weight = 0.5, expected = 2 * tiny),
+    negative_zero = list(values = c(-2 * tiny, tiny), weight = 0.5, expected = -0.0),
+    nonmidpoint = list(values = c(-8 * tiny, -3 * tiny), weight = 0.1, expected = -7 * tiny)
+  )
+  constructors <- list(
+    data.frame = identity,
+    tibble = tibble::as_tibble,
+    data.table = function(frame) {
+      result <- data.table::as.data.table(frame)
+      data.table::setkeyv(result, "coordinate")
+      result
+    }
+  )
+  midpoint_source <- new.env(parent = baseenv())
+  midpoint_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, midpoint_source)
+  on.exit(midpoint_agent$dispose(), add = TRUE)
+  for (flavor in names(constructors)) for (case_name in names(cases)) {
+    case <- cases[[case_name]]
+    label <- paste(flavor, case_name, "interpolation")
+    before <- constructors[[flavor]](data.frame(
+      coordinate = c(0, case$weight, 1), target = c(case$values[[1L]], NA_real_, case$values[[2L]]),
+      row.names = c("left", "gap", "right")
+    ))
+    midpoint_source$midpoint_frame <- before
+    source_bytes <- serialize(before, NULL, version = 3L)
+    opened <- dispatch_with(midpoint_agent, "openSession", list(
+      sessionId = linear_fill_session_id, variableName = "midpoint_frame", page = page_window()
+    ))
+    assert_identical(opened$kind, "page", paste(label, "did not open"))
+    preview <- dispatch_with(midpoint_agent, "previewStep", list(
+      sessionId = linear_fill_session_id, revision = 0L,
+      step = fill_step("midpoint", "r:c:1", "target", list(
+        kind = "linearInterpolation", coordinate = list(id = "r:c:0", name = "coordinate")
+      )), page = page_window()
+    ))
+    assert_identical(preview$kind, "stepPreview", paste(label, "did not preview"))
+    live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+    expected <- c(case$values[[1L]], case$expected, case$values[[2L]])
+    assert_identical(sprintf("%a", live$target), sprintf("%a", expected), paste(label, "lost live precision"))
+    assert_identical(class(live), class(before), paste(label, "changed the live frame class"))
+    assert_identical(names(live), names(before), paste(label, "changed column names"))
+    assert_identical(row.names(live), row.names(before), paste(label, "changed row names"))
+    assert_identical(live$coordinate, before$coordinate, paste(label, "changed coordinates"))
+    if (inherits(before, "data.table")) {
+      assert_identical(data.table::key(live), data.table::key(before), paste(label, "changed the source key"))
+    }
+    assert_identical(
+      vapply(preview$page$page$rows, `[[`, character(1L), "id"),
+      vapply(opened$page$page$rows, `[[`, character(1L), "id"), paste(label, "changed row identities")
+    )
+    applied <- dispatch_with(midpoint_agent, "applyDraft", list(
+      sessionId = linear_fill_session_id, revision = 1L, page = page_window()
+    ))
+    assert_identical(applied$action, "apply", paste(label, "did not apply"))
+    assert_identical(applied$page$page, preview$page$page, paste(label, "changed the preview on Apply"))
+    standalone <- new.env(parent = baseenv())
+    standalone$midpoint_frame <- unserialize(source_bytes)
+    eval(parse(text = applied$code), envir = standalone)
+    generated <- standalone$open_wrangler_result
+    assert_identical(generated, live, paste(label, "changed generated values or metadata"))
+    assert_identical(sprintf("%a", generated$target), sprintf("%a", expected), paste(label, "lost generated precision"))
+    assert_identical(serialize(standalone$midpoint_frame, NULL, version = 3L), source_bytes, paste(label, "mutated generated source"))
+    if (identical(flavor, "data.frame") && identical(case_name, "positive_tie")) {
+      cold_bundle <- tempfile("midpoint-", fileext = ".rds")
+      cold_script <- tempfile("midpoint-", fileext = ".R")
+      on.exit(unlink(c(cold_bundle, cold_script)), add = TRUE)
+      saveRDS(list(code = applied$code, source = before, expected = expected), cold_bundle)
+      writeLines(c(
+        "options(warn = 2)",
+        "bundle <- readRDS(commandArgs(TRUE)[[1L]])",
+        "mean.numeric <- function(...) 999",
+        "stopifnot(identical(base::mean(c(1, 3)), 999))",
+        "midpoint_frame <- bundle$source",
+        "eval(parse(text = bundle$code), envir = .GlobalEnv)",
+        "stopifnot(identical(sprintf('%a', open_wrangler_result$target), sprintf('%a', bundle$expected)))",
+        "stopifnot(identical(midpoint_frame, bundle$source))"
+      ), cold_script)
+      cold_output <- system2(
+        file.path(R.home("bin"), "Rscript"), c("--vanilla", shQuote(cold_script), shQuote(cold_bundle)),
+        stdout = TRUE, stderr = TRUE
+      )
+      assert_identical(attr(cold_output, "status", exact = TRUE), NULL, paste("cold midpoint code failed", paste(cold_output, collapse = "\n")))
+      unlink(c(cold_bundle, cold_script))
+    }
+    undone <- dispatch_with(midpoint_agent, "undoStep", list(
+      sessionId = linear_fill_session_id, revision = 2L, page = page_window()
+    ))
+    assert_identical(undone$action, "undo", paste(label, "did not undo"))
+    assert_identical(undone$page$page, opened$page$page, paste(label, "did not restore the original page"))
+    assert_identical(serialize(midpoint_source$midpoint_frame, NULL, version = 3L), source_bytes, paste(label, "mutated live source"))
+    invisible(dispatch_with(midpoint_agent, "closeSession", list(sessionId = linear_fill_session_id)))
+  }
+})
+
 source_environment$grouped_fill_frame <- data.frame(
   group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3, 4, 4),
   wide = bit64::as.integer64(c(
@@ -3860,6 +3957,7 @@ assert_grouped_generated_case <- function(
     )
   )
   assert_identical(preview$kind, "stepPreview", sprintf("the %s grouped fill did not preview", variable_name))
+  assert_result(get("snapshot", envir = latest_full_capture, inherits = FALSE))
   applied <- dispatch(
     "applyDraft",
     list(sessionId = case_session_id, revision = 1L, page = page_window())
@@ -3911,7 +4009,10 @@ assert_grouped_generated_case(
   grouped_float_session_id,
   "grouped_float_frame",
   data.frame(
-    group = c("odd", "odd", "even", "even", "even", "infinite", "infinite", "infinite"),
+    group = c(
+      "odd", "odd", "even", "even", "even", "infinite", "infinite", "infinite",
+      rep("tiny-tie", 3L), rep("normal-boundary", 3L)
+    ),
     target = c(
       2^-1074,
       NA_real_,
@@ -3920,6 +4021,12 @@ assert_grouped_generated_case(
       NA_real_,
       -Inf,
       Inf,
+      NA_real_,
+      2^-1074,
+      2 * 2^-1074,
+      NA_real_,
+      .Machine$double.xmin - 2^-1074,
+      .Machine$double.xmin,
       NA_real_
     ),
     check.names = FALSE
@@ -3938,7 +4045,13 @@ assert_grouped_generated_case(
         expected_midpoint,
         -Inf,
         Inf,
-        NA_real_
+        NA_real_,
+        2^-1074,
+        2 * 2^-1074,
+        2 * 2^-1074,
+        .Machine$double.xmin - 2^-1074,
+        .Machine$double.xmin,
+        .Machine$double.xmin
       ),
       "generated grouped double median changed an exact, safe, or unresolved result"
     )
