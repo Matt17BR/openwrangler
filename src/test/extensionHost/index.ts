@@ -1739,17 +1739,20 @@ const exerciseReleasedRLiterateDocumentJourneys = createReleasedRLiterateDocumen
     withBoundedAcceptancePromise(promise, timeoutMs, description)
 });
 
-async function assertReleasedNativeREditorTooling(): Promise<boolean> {
-  return assertReleasedNativeREditorToolingOwner({
-    getExtension: (id) => vscode.extensions.getExtension(id),
-    getCommands: () => vscode.commands.getCommands(true),
-    getConfiguration: <T>(section: string, key: string) => vscode.workspace.getConfiguration(section).get<T>(key),
-    pathIsAbsolute: path.isAbsolute,
-    pathExists: existsSync,
-    quartoVersion: (executable) =>
-      execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
-    withBoundedPromise: withBoundedAcceptancePromise
-  });
+async function assertReleasedNativeREditorTooling(literateDocuments = true): Promise<boolean> {
+  return assertReleasedNativeREditorToolingOwner(
+    {
+      getExtension: (id) => vscode.extensions.getExtension(id),
+      getCommands: () => vscode.commands.getCommands(true),
+      getConfiguration: <T>(section: string, key: string) => vscode.workspace.getConfiguration(section).get<T>(key),
+      pathIsAbsolute: path.isAbsolute,
+      pathExists: existsSync,
+      quartoVersion: (executable) =>
+        execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
+      withBoundedPromise: withBoundedAcceptancePromise
+    },
+    literateDocuments
+  );
 }
 
 async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.Uri): Promise<() => Promise<void>> {

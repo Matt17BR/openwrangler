@@ -90,7 +90,7 @@ import {
   runPackagedPlatformSmokePhase
 } from "./packaged-platform-smoke-selector.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
-import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
+import { prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   remoteJupyterAcceptanceEnabled,
@@ -504,6 +504,7 @@ try {
                 "setup:prepare-r-editor-tooling"
               );
               rEditorTooling = await prepareREditorAcceptanceTooling(temporaryRoot, {
+                literateDocuments: rJupyterSelection.literateDocuments,
                 artifactPaths: {
                   rSyntax: process.env.OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX,
                   r: process.env.OPEN_WRANGLER_R_EXTENSION_VSIX,
@@ -920,24 +921,28 @@ try {
                         ? {
                             "files.associations": {
                               "*.R": "r",
-                              "*.Rmd": "rmd",
-                              "*.rmd": "rmd",
-                              "*.qmd": "quarto"
+                              ...(rJupyterSelection.literateDocuments
+                                ? { "*.Rmd": "rmd", "*.rmd": "rmd", "*.qmd": "quarto" }
+                                : {})
                             },
                             "r.rpath.linux": rAcceptanceEnvironment.rExecutable,
                             "r.rterm.linux": rAcceptanceEnvironment.rExecutable,
                             "r.libPaths": [rAcceptanceEnvironment.libraryDir],
-                            "r.rmarkdown.knit.useBackgroundProcess": true,
-                            "r.rmarkdown.knit.focusOutputChannel": false,
-                            "r.rmarkdown.knit.openOutputFile": false,
-                            "r.rmarkdown.knit.command": `local({ rmarkdown::find_pandoc(dir = ${JSON.stringify(
-                              rEditorTooling.pandocDirectory
-                            )}); rmarkdown::render })`,
-                            "quarto.path": rEditorTooling.quartoExecutable,
-                            "quarto.usePipQuarto": false,
-                            "quarto.render.previewType": "internal",
-                            "quarto.render.previewReveal": true,
-                            "quarto.render.renderOnSave": false
+                            ...(rJupyterSelection.literateDocuments
+                              ? {
+                                  "r.rmarkdown.knit.useBackgroundProcess": true,
+                                  "r.rmarkdown.knit.focusOutputChannel": false,
+                                  "r.rmarkdown.knit.openOutputFile": false,
+                                  "r.rmarkdown.knit.command": `local({ rmarkdown::find_pandoc(dir = ${JSON.stringify(
+                                    rEditorTooling.pandocDirectory
+                                  )}); rmarkdown::render })`,
+                                  "quarto.path": rEditorTooling.quartoExecutable,
+                                  "quarto.usePipQuarto": false,
+                                  "quarto.render.previewType": "internal",
+                                  "quarto.render.previewReveal": true,
+                                  "quarto.render.renderOnSave": false
+                                }
+                              : {})
                           }
                         : {})
                     });
@@ -1101,9 +1106,9 @@ try {
                       progressPaths.setup,
                       runIds.setup,
                       "setup",
-                      "setup:install-r-quarto-extensions"
+                      "setup:install-r-editor-extensions"
                     );
-                    for (const target of rEditorTooling.extensionVsixes) {
+                    for (const { vsix: target } of rEditorTooling.extensions) {
                       await runBoundedEditorCliCommand(
                         {
                           editor,
@@ -1271,11 +1276,7 @@ try {
                     EXPECTED_ACCEPTANCE_HARNESS,
                     PINNED_JUPYTER_EXTENSION_ID,
                     ...(acceptanceMode === "r-jupyter" && rJupyterSelection.nativeEditorTooling
-                      ? [
-                          R_EDITOR_ACCEPTANCE_TOOLING.rSyntax.id,
-                          R_EDITOR_ACCEPTANCE_TOOLING.r.id,
-                          R_EDITOR_ACCEPTANCE_TOOLING.quartoExtension.id
-                        ]
+                      ? rEditorTooling.extensions.map(({ id }) => id)
                       : [])
                   ]) {
                     if (!installedJupyterLines.includes(expected)) {
