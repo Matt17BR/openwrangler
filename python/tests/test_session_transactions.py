@@ -1750,3 +1750,48 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
         if generated_connection is not None:
             generated_connection.close()
         manager.close_all()
+
+
+def test_polars_hidden_result_error_preserves_public_state_and_allows_correction(tmp_path: Path) -> None:
+    import polars as pl
+
+    source_bytes = b"pos,value\n0,1\n1,bad\n2,\n"
+    path = tmp_path / "polars-readiness.csv"
+    path.write_bytes(source_bytes)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", page_size=1)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        original = session.original.collect(engine="streaming")
+        before = session_state(session)
+        code = 'result = df.with_columns(pl.col("value").cast(pl.Int64))'
+        with pytest.raises(pl.exceptions.InvalidOperationError):
+            manager.preview_step(sid, 0, custom_step("invalid", code), 0, 1, column_limit=1)
+        assert session_state(session) == before
+        with pytest.raises(EngineError, match="no draft step"):
+            manager.apply_draft(sid, 0, 0, 1, column_limit=1)
+        assert session_state(session) == before
+        assert session.original.collect(engine="streaming").equals(original)
+        assert path.read_bytes() == source_bytes
+
+        corrected = custom_step("corrected", code.replace("cast(pl.Int64)", "cast(pl.Int64, strict=False)"))
+        preview = manager.preview_step(sid, 0, corrected, 0, 1, column_limit=1)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 1, column_limit=1)
+        assert preview["kind"] == "stepPreview" and applied["kind"] == "planUpdated"
+        assert applied["revision"] == 2 and len(session.plan) == 1
+        output = session.committed.select("pos", "value").collect(engine="streaming")
+        assert output.schema == {"pos": pl.Int64, "value": pl.Int64}
+        assert output.rows() == [(0, 1), (1, None), (2, None)]
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](pl.scan_csv(path))
+        assert isinstance(generated, pl.LazyFrame)
+        assert generated.collect(engine="streaming").equals(output)
+        undone = manager.undo_step(sid, 2, 0, 1, column_limit=1)
+        assert undone["kind"] == "planUpdated" and session.plan == []
+        assert session.committed is session.original
+        assert session.original.collect(engine="streaming").equals(original)
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()

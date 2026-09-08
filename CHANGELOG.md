@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Polars rejects invalid lazy cleaning results before confirming a step, including errors outside the displayed
+  columns. Generated code checks each step before a later operation can hide the error.
 - Generated DuckDB queries use the input relation's connection, preventing same-named tables or functions on another
   connection from substituting different data.
 - DuckDB notebook queries and captures release their temporary views without closing the user's connection.

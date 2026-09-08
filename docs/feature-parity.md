@@ -78,7 +78,9 @@ or renaming a column. Harmless extra columns and valid in-place replacements rem
 Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
 results, before later expressions can read the wrong column. Case-only Rename remains supported.
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
-names; ordinary lazy operations stay lazy, while one-hot encoding, multi-label encoding, and custom code may materialize.
+names. Lazy cleaning results are evaluated before confirmation and after each generated step, then retained as
+LazyFrames. One-hot encoding, multi-label encoding and Custom Code may instead materialize their results.
+These checks catch deferred expression errors outside the displayed columns; they do not snapshot external inputs.
 Pandas accepts its supported text encodings
 and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte delimiter and quote syntax. Excel accepts
 exactly one sheet name or zero-based sheet index; delimited syntax characters are one Unicode scalar each. Import

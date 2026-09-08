@@ -428,6 +428,18 @@ existing paths; nonnumeric or prerelease version labels are conservatively refus
 Generated code performs the same checks. A caller-owned LazyFrame must keep its external inputs stable between
 these checks and later collection; the checks do not materialize or snapshot the frame.
 
+Before publishing a cleaning step, Polars evaluates every physical output column of a LazyFrame with a per-column
+count, using `pl.collect_all` for that single query with `engine="in-memory"`. This public API respects the selected
+engine on the minimum supported Polars version even when the caller configures streaming. Streaming execution can
+panic on valid high-precision Decimal intermediates. The native aggregate is discarded; the original LazyFrame
+remains the result. Generated code performs the same check after each step, so a later projection cannot remove an
+invalid intermediate expression. Existing type, visible-column and identity checks still apply. Eager results need no
+additional evaluation, and an empty generated plan remains an identity function.
+
+This evaluates the lazy plan before publication; later reads can evaluate it again. The small aggregate result does
+not bound in-memory execution or upstream intermediates, or snapshot mutable inputs or nondeterministic Custom Code.
+Viewing keeps its projected reads and does not run this cleaning validation.
+
 Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
 collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit
 cleaning exceptions: each materializes the complete lazy frame in Polars to derive its dynamic output columns. They do
