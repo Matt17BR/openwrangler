@@ -2449,6 +2449,16 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
             result = None
 
 
+def _parquet_type_contains_hugeint(dtype: Any) -> bool:
+    from duckdb.sqltypes import DuckDBPyType
+
+    if dtype.id in {"hugeint", "uhugeint"}:
+        return True
+    if dtype.id not in {"list", "array", "struct", "map", "union"}:
+        return False
+    return any(_parquet_type_contains_hugeint(child) for _, child in dtype.children if isinstance(child, DuckDBPyType))
+
+
 def _write_relation_export(
     connection: Any,
     sql: str,
@@ -2461,6 +2471,24 @@ def _write_relation_export(
     relation: Any = None
     try:
         relation = connection.sql(sql)
+        if format_name == "parquet":
+            expressions = []
+            changed = False
+            for name, dtype in zip(relation.columns, relation.types, strict=True):
+                column = _quote_ident(name)
+                if dtype.id in {"hugeint", "uhugeint"}:
+                    # DuckDB's Parquet writer otherwise stores these integers as doubles.
+                    expressions.append(f"CAST({column} AS DECIMAL(38,0)) AS {column}")
+                    changed = True
+                elif _parquet_type_contains_hugeint(dtype):
+                    raise EngineError(
+                        "DuckDB Parquet export cannot preserve nested 128-bit integers. "
+                        "Convert them explicitly or export CSV."
+                    )
+                else:
+                    expressions.append(column)
+            if changed:
+                relation = relation.project(", ".join(expressions))
         if isinstance(path, ExportWriterPath):
             from .duckdb_export_filesystem import registered_duckdb_export_writer
 

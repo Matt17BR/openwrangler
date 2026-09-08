@@ -259,6 +259,9 @@ in the [Native R ADR](decisions/0001-native-r-runtime.md).
 
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
 extension auto-install, autoload, and external-file caching stay disabled.
+Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with up to 38 digits, preserving nulls.
+Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
+with Decimal storage. CSV retains its native text output.
 
 | Surface                                      | Availability       | Status  | Current evidence                               | Limit or missing proof                              |
 | -------------------------------------------- | ------------------ | ------- | ---------------------------------------------- | --------------------------------------------------- |
