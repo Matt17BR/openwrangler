@@ -1777,13 +1777,18 @@ if isinstance(tree.body[-1], ast.Expr):
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
     expect(controller.executionTokens()).toHaveLength(4);
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+    const detached = await pending.catch((error: unknown) => error);
+    if (!(detached instanceof DetachedBridgeRequestError)) throw new Error("Expected a detached exact close.");
+    let settled = false;
+    const settlement = detached.settlement.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
     releaseClose.resolve();
     vi.useRealTimers();
-    await vi.waitFor(() =>
-      expect(
-        (bridge as unknown as { retiredSessionIds: ReadonlySet<string> }).retiredSessionIds.has("late-close")
-      ).toBe(true)
-    );
+    await settlement;
 
     await expect(bridge.request(openRequest("late-close", "pyspark"))).rejects.toThrow(
       "already retired kernel session late-close"
