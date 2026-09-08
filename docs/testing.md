@@ -71,6 +71,8 @@ npm run test:scripts:native
 
 The grouped commands keep real-R process tests serial while separating frame and interactive-transport, catalog and
 process-transport, and kernel-agent failures.
+Nested Rscript contract programs use the existing warning assertion inside the child process, so an unexpected
+warning fails even when the child handles a later error. Their fresh-process isolation and original assertions remain.
 
 The full R command first runs the native process contracts. `test:scripts:native` selects Linux cancellation or
 Windows Job Object behavior on the current platform; ordinary Source tests do not require this native owner.

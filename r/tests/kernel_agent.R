@@ -6250,6 +6250,8 @@ saveRDS(
   version = 3L
 )
 writeLines(c(
+  "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+  "invisible(assert_no_warning({",
   "local({",
   "  arguments <- commandArgs(trailingOnly = TRUE)",
   "  if (isNamespaceLoaded(\"bit64\")) stop(\"bit64 was already loaded in the cold generated-Formula child\", call. = FALSE)",
@@ -6275,7 +6277,8 @@ writeLines(c(
   "  poisoned <- get(\"open_wrangler_result\", envir = .GlobalEnv, inherits = FALSE)",
   "  safe_character <- get(\"as.character.integer64\", envir = asNamespace(\"bit64\"), inherits = FALSE)",
   "  if (!identical(unname(safe_character(poisoned$`exact sum`)), c(\"9007199254740995\", \"-9007199254740990\", NA_character_)) || !identical(attr(poisoned$`exact sum`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`poison-proof division`), c(4503599627370496, -4503599627370496, NA_real_)) || !identical(attr(poisoned$`poison-proof division`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`named power`), c(4, 9, 16)) || !identical(attr(poisoned$`named power`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`named mixed`), c(9007199254740992, -9007199254740992, NA_real_)) || !identical(attr(poisoned$`named mixed`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"generated integer64 Formula used poisoned S3 methods or lost names\", call. = FALSE)",
-  "})"
+  "})",
+  "}, \"cold generated integer64 Formula child\"))"
 ), formula_integer64_child_script, useBytes = TRUE)
 formula_integer64_child_output <- system2(
   file.path(R.home("bin"), "Rscript"),
@@ -8341,6 +8344,8 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_expo
 formula_datetime_s3_isolation_script <- tempfile(fileext = ".R")
 writeLines(
   c(
+    "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+    "invisible(assert_no_warning({",
     "formula_datetime_s3_isolation_child <-",
     deparse(formula_datetime_s3_isolation_child, width.cutoff = 500L),
     paste0(
@@ -8348,7 +8353,8 @@ writeLines(
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
       "commandArgs(trailingOnly = TRUE)[[2L]], ",
       "commandArgs(trailingOnly = TRUE)[[3L]])"
-    )
+    ),
+    "}, \"Formula and datetime S3-isolation child\"))"
   ),
   formula_datetime_s3_isolation_script,
   useBytes = TRUE
@@ -8723,6 +8729,8 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
 categorical_attributed_metadata_s3_script <- tempfile(fileext = ".R")
 writeLines(
   c(
+    "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+    "invisible(assert_no_warning({",
     "categorical_attributed_metadata_s3_child <-",
     deparse(categorical_attributed_metadata_s3_child, width.cutoff = 500L),
     paste0(
@@ -8730,7 +8738,8 @@ writeLines(
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
       "commandArgs(trailingOnly = TRUE)[[2L]], ",
       "commandArgs(trailingOnly = TRUE)[[3L]])"
-    )
+    ),
+    "}, \"categorical attributed metadata S3-isolation child\"))"
   ),
   categorical_attributed_metadata_s3_script,
   useBytes = TRUE
@@ -8937,6 +8946,8 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
 categorical_ascii_locale_script <- tempfile(fileext = ".R")
 writeLines(
   c(
+    "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+    "invisible(assert_no_warning({",
     "categorical_ascii_locale_child <-",
     deparse(categorical_ascii_locale_child, width.cutoff = 500L),
     paste0(
@@ -8944,7 +8955,8 @@ writeLines(
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
       "commandArgs(trailingOnly = TRUE)[[2L]], ",
       "commandArgs(trailingOnly = TRUE)[[3L]])"
-    )
+    ),
+    "}, \"categorical ASCII-locale child\"))"
   ),
   categorical_ascii_locale_script,
   useBytes = TRUE
@@ -11568,6 +11580,8 @@ by_example_utf8_locale_child <- function(frame_contract_path, kernel_exports_pat
 by_example_utf8_locale_script <- tempfile(fileext = ".R")
 writeLines(
   c(
+    "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+    "invisible(assert_no_warning({",
     "by_example_utf8_locale_child <-",
     deparse(by_example_utf8_locale_child, width.cutoff = 500L),
     paste0(
@@ -11575,7 +11589,8 @@ writeLines(
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
       "commandArgs(trailingOnly = TRUE)[[2L]], ",
       "commandArgs(trailingOnly = TRUE)[[3L]])"
-    )
+    ),
+    "}, \"By Example UTF-8 locale child\"))"
   ),
   by_example_utf8_locale_script,
   useBytes = TRUE
@@ -12040,6 +12055,8 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
 by_example_s3_script <- tempfile(fileext = ".R")
 writeLines(
   c(
+    "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
+    "invisible(assert_no_warning({",
     "by_example_s3_isolation_child <-",
     deparse(by_example_s3_isolation_child, width.cutoff = 500L),
     paste0(
@@ -12047,7 +12064,8 @@ writeLines(
       "commandArgs(trailingOnly = TRUE)[[1L]], ",
       "commandArgs(trailingOnly = TRUE)[[2L]], ",
       "commandArgs(trailingOnly = TRUE)[[3L]])"
-    )
+    ),
+    "}, \"By Example S3-isolation child\"))"
   ),
   by_example_s3_script,
   useBytes = TRUE
