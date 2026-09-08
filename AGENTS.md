@@ -44,9 +44,14 @@ Read the owning document before changing its boundary. Link to it rather than co
 
 ## Making changes
 
+- At each turn, reconsider whether the next action adds more burden than value. Before substantial implementation, compare leaving the code alone, correcting its existing owner, and adding a mechanism. Identify the demonstrated problem, the simplest sufficient change, and the state, execution cost and maintenance work it adds. If the benefit does not justify that cost, revise or abandon the approach while keeping the finding visible. Revisit this decision when scope grows or the proposed fix causes another failure.
 - Preserve unrelated changes. Give each commit one reviewable purpose, with its directly related tests and required documentation.
 - Reuse existing registries and validators instead of creating a second source of truth. Follow `docs/testing.md` for test ownership; do not add an overlapping end-to-end journey.
+- Measure material changes to scans, materialization, memory or latency against the existing path with representative inputs. Short code, small returned values and passing correctness tests do not establish acceptable execution cost.
+- Review the proposed scope and acceptance criteria as well as the implementation. A reviewer may reject a passing patch when a simpler approach preserves the required behavior with less burden. For material tradeoffs, put the benefit, added cost and rejected simpler alternative briefly in the existing task or PR description. Do not create a separate complexity report or scoring system.
+- When an implementation change breaks a mock or spy, identify the behavior or bound it protects before adapting it. Preserve meaningful assertions; consolidate overlapping coverage when a stronger owner already proves the same contract.
 - Use the narrowest existing check while iterating. Run broader source or installed-editor coverage only when the change crosses that boundary. Do not make deterministic failures green with retries or larger deadlines.
+- Keep evidence proportionate: use one concise finding and decision record, linking to the relevant tests and logs. Preserve required artifact provenance and failure evidence. Add another review, receipt, hash inventory or wrapper only to resolve a named uncertainty that existing evidence cannot settle. Routine self-checks need no ceremonial output.
 - Keep generated files generated. Run the owning generator and commit its output; do not patch generated output to hide drift.
 - Write public text as a maintainer describing a concrete result. Follow `docs/writing-style.md` and give the finished text an editorial read.
 
