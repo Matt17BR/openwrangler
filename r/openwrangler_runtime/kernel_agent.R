@@ -9504,8 +9504,11 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  ascii_json_scalar <- function(value) {
-    if (is.na(value)) return("null")
+  ascii_json_scalar <- function(value, spend) {
+    if (is.na(value)) {
+      spend(4L)
+      return("null")
+    }
     if (identical(Encoding(value), "bytes")) {
       abort("runtime_error", "The R kernel response contains invalid text")
     }
@@ -9519,12 +9522,18 @@ openwrangler_r_kernel_agent <- local({
       length(bytes) == 0L ||
         all(bytes >= 32L & bytes <= 126L & bytes != 34L & bytes != 92L)
     ) {
+      spend(length(bytes) + 2L)
       return(paste0("\"", converted, "\""))
     }
     codepoints <- utf8ToInt(converted)
     if (anyNA(codepoints) || any(codepoints < 0L) || any(codepoints > 1114111L)) {
       abort("runtime_error", "The R kernel response contains invalid text")
     }
+    spend(2 + sum(ifelse(
+      codepoints %in% c(34L, 92L, 8L, 9L, 10L, 12L, 13L),
+      2L,
+      ifelse(codepoints >= 32L & codepoints <= 126L, 1L, ifelse(codepoints <= 65535L, 6L, 12L))
+    )))
     escaped <- vapply(codepoints, function(codepoint) {
       if (codepoint == 34L) return("\\\"")
       if (codepoint == 92L) return("\\\\")
@@ -9544,9 +9553,9 @@ openwrangler_r_kernel_agent <- local({
     paste0("\"", paste0(escaped, collapse = ""), "\"")
   }
 
-  ascii_json_character <- function(value) {
+  ascii_json_character <- function(value, spend) {
     fragments <- vapply(seq_len(base::length(base::unclass(value))), function(index) {
-      ascii_json_scalar(base::.subset2(value, index))
+      ascii_json_scalar(base::.subset2(value, index), spend)
     }, character(1L), USE.NAMES = FALSE)
     fragment <- if (base::length(base::unclass(value)) == 1L && !inherits(value, "AsIs")) {
       base::.subset2(fragments, 1L)
@@ -9556,20 +9565,29 @@ openwrangler_r_kernel_agent <- local({
     structure(fragment, class = "json")
   }
 
-  ascii_json_response <- function(value) {
-    if (is.character(value)) return(ascii_json_character(value))
+  ascii_json_response <- function(value, spend) {
+    if (is.character(value)) return(ascii_json_character(value, spend))
     if (!is.list(value)) return(value)
     value_attributes <- attributes(value)
     result <- lapply(seq_len(base::length(base::unclass(value))), function(index) {
-      ascii_json_response(base::.subset2(value, index))
+      ascii_json_response(base::.subset2(value, index), spend)
     })
     attributes(result) <- value_attributes
     result
   }
 
   encode_response <- function(response) {
+    # String fragments are a lower bound; jsonlite's final check still owns keys,
+    # numbers and structure. Charge repeated values before expanding their text.
+    string_bytes <- 0
+    spend <- function(bytes) {
+      string_bytes <<- string_bytes + bytes
+      if (string_bytes > maximum_response_bytes) {
+        abort("runtime_error", "The R kernel response is too large")
+      }
+    }
     encoded <- jsonlite::toJSON(
-      ascii_json_response(response),
+      ascii_json_response(response, spend),
       auto_unbox = TRUE,
       digits = 17L,
       na = "null",
@@ -10376,7 +10394,7 @@ openwrangler_r_kernel_agent <- local({
 
     dispatch_json <- function(payload) {
       request_id <- ""
-      response <- tryCatch(
+      tryCatch(
         {
           if (!requireNamespace("jsonlite", quietly = TRUE)) {
             abort("missing_package", "The selected R kernel requires the jsonlite package")
@@ -10410,43 +10428,43 @@ openwrangler_r_kernel_agent <- local({
           ) {
             abort("invalid_request", "R by-example requests cannot contain negative zero")
           }
-          dispatch(request)
+          response <- dispatch(request)
+          encode_response(response)
         },
         openwrangler_r_kernel_error = function(error) {
           message <- diagnostic_message(error, "The R runtime request failed")
-          list(
+          encode_response(list(
             transportVersion = transport_version,
             requestId = request_id,
             kind = "error",
             code = error$code,
             message = message,
             recoverable = isTRUE(error$recoverable)
-          )
+          ))
         },
         openwrangler_r_frame_error = function(error) {
           diagnostic <- frame_diagnostic(error)
-          list(
+          encode_response(list(
             transportVersion = transport_version,
             requestId = request_id,
             kind = "error",
             code = diagnostic$code,
             message = diagnostic$message,
             recoverable = diagnostic$recoverable
-          )
+          ))
         },
         error = function(error) {
           message <- diagnostic_message(error, "The R runtime request failed")
-          list(
+          encode_response(list(
             transportVersion = transport_version,
             requestId = request_id,
             kind = "error",
             code = "runtime_error",
             message = message,
             recoverable = FALSE
-          )
+          ))
         }
       )
-      encode_response(response)
     }
 
     environment(dispatch_json) <- environment()

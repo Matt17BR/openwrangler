@@ -106,6 +106,14 @@ own failure and is never retried. Cancellation, stale ownership, or a superseded
 concurrent losses share the same replacement. An operation that never settles may detach from the UI, but its
 ownership record remains until the original kernel ends or the continuation can perform its close.
 
+All native R transports share the same ASCII response encoder. Its existing traversal charges the aggregate cost of
+escaped string fragments before building them, including values repeated in cell display and raw representations.
+This prevents string expansion from exceeding the 17 MiB transport limit after a page passed its separate 16 MiB
+native bound. It does not replace jsonlite's final exact-byte check for keys, numbers and JSON structure or claim an
+exact preallocation ceiling for every payload. Unicode validation and scalar versus explicit-array behavior remain.
+Encoder refusals produce a bounded correlated request error, allowing a standalone process to accept a smaller
+followup page. Open, preview and apply retain their full encoded-response preflight before session assignment.
+
 The current notebook viewer does not copy the complete dataframe when a session opens. It records the source binding
 and structural descriptor, then reads current values for pages, filters, sorts, value searches, and profiles without
 writing to the object. Column values return bounded counts and typed selections. Profiles and dataset statistics use

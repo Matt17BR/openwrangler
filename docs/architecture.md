@@ -379,6 +379,10 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
+Native R response encoding stays inside the correlated request error boundary. Oversized ASCII string expansion is
+refused before assembling the escaped response, and the final serialized output retains its complete transport cap.
+Opening and editing still preflight the complete encoded reply before publishing session state.
+
 R frame validation accepts native compact zero-row metadata while independently checking column lengths. Live and
 generated input/output validation apply the same rule, so native empty subsets do not become malformed frames.
 

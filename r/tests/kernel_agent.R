@@ -4452,6 +4452,47 @@ atomic_retry <- dispatch_with(
 assert_identical(atomic_retry$kind, "stepPreview", "an encoding failure committed hidden R mutation state")
 invisible(dispatch_with(atomic_agent, "closeSession", list(sessionId = atomic_rename_session_id)))
 
+# The real process owner exercises the unchanged 17 MiB limit. Scale only this
+# isolated encoder boundary so exact byte and early-expansion checks stay small.
+local({
+  encoder_environment <- environment(openwrangler_r_kernel_agent$new_agent)
+  encoder <- get("encode_response", envir = encoder_environment, inherits = FALSE)
+  previous_limit <- get("maximum_response_bytes", envir = encoder_environment, inherits = FALSE)
+  on.exit(assign("maximum_response_bytes", previous_limit, envir = encoder_environment), add = TRUE)
+  assign("maximum_response_bytes", 128L, envir = encoder_environment)
+
+  exact <- encoder(list(value = strrep("x", 116L)))
+  assert_identical(nchar(exact, type = "bytes"), 128L, "the exact R response byte limit changed")
+  assert_identical(
+    jsonlite::fromJSON(exact)$value,
+    strrep("x", 116L),
+    "the exact-bound R response changed its value"
+  )
+  overflow <- tryCatch(encoder(list(value = strrep("x", 117L))), error = identity)
+  assert_identical(
+    conditionMessage(overflow),
+    "The R kernel response is too large",
+    "the R encoder allowed one byte above its final response bound"
+  )
+  invalid_later <- rawToChar(as.raw(255L))
+  Encoding(invalid_later) <- "bytes"
+  aggregate <- tryCatch(
+    encoder(list(values = I(rep(strrep(intToUtf8(19968L), 4L), 5L)), later = invalid_later)),
+    error = identity
+  )
+  assert_identical(
+    conditionMessage(aggregate),
+    "The R kernel response is too large",
+    "aggregate ASCII expansion reached a later value before refusing its oversized fragments"
+  )
+  arrays <- list(single = I("a"), empty = I(character()), nulls = I(c(NA_character_, "b")))
+  assert_identical(
+    jsonlite::fromJSON(encoder(arrays), simplifyVector = FALSE),
+    list(single = list("a"), empty = list(), nulls = list(NULL, "b")),
+    "bounded ASCII serialization changed AsIs or missing character arrays"
+  )
+})
+
 source_environment$rename_tibble <- tibble::tibble(`tibble key` = 1:2, value = c("a", "b"))
 rename_tibble_before <- unserialize(serialize(source_environment$rename_tibble, NULL, version = 3L))
 tibble_applied <- assert_native_rename_isolated(

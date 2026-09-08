@@ -243,6 +243,8 @@ The accepted frame boundary is base `data.frame`, tibble, and `data.table`, incl
 unsupported attributes, and unsupported cell classes are rejected. Direct `.R`, `.Rmd`, and `.qmd` execution is
 limited to macOS and Linux; IRkernel remains cross-platform. R Markdown and Quarto support runs selected lexical
 cells, not document-render semantics. An active R terminal has no source document for generated-code insertion.
+An R page that exceeds the transport limit after ASCII escaping returns a request error without terminating the
+standalone runtime. A smaller page remains available; opening and mutation responses still validate before commit.
 Large R profiles retain exact cheap statistics but sample histograms, categories, and duplicate populations with
 explicit sample labels.
 
