@@ -321,6 +321,99 @@ def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) ->
     assert return_code == 0, output.stderr_tail()
 
 
+def test_stdio_opaque_operand_refusal_keeps_the_same_process_usable(tmp_path: Path) -> None:
+    path = tmp_path / "opaque-operand.csv"
+    source = "value\n1\n3\n"
+    path.write_text(source, encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        opened = _send_server_request(
+            process,
+            output,
+            "opaque-open",
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "label": path.name, "path": str(path)},
+                "backend": "pandas",
+                "pageSize": 20,
+                "columnOffset": 0,
+                "columnLimit": 1,
+            },
+            timeout=60.0,
+        )
+        assert opened["kind"] == "sessionOpened"
+        session_id = opened["metadata"]["sessionId"]
+        valid = {
+            "kind": "getPage",
+            "sessionId": session_id,
+            "revision": 0,
+            "viewRequestId": "opaque-recovery",
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 1,
+            "filterModel": {"filters": [], "sort": []},
+        }
+        deep: object = 0
+        for _ in range(129):
+            deep = [deep]
+        for index, value in enumerate([deep, {"nested": float("nan")}, 10**309, {"\ud800": 0}]):
+            request = {
+                **valid,
+                "viewRequestId": "opaque-invalid",
+                "filterModel": {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": "integer",
+                            "predicates": [{"kind": "predicate", "operator": "isNotNull", "value": value}],
+                        }
+                    ],
+                    "sort": [],
+                },
+            }
+            refused = _send_server_request(process, output, f"opaque-invalid-{index}", request, timeout=30.0)
+            assert refused["kind"] == "error" and refused["code"] == "invalid_request"
+            assert refused["viewRequestId"] == "opaque-invalid"
+            recovered = _send_server_request(process, output, f"opaque-valid-{index}", valid, timeout=30.0)
+            assert recovered["page"] == opened["page"]
+            assert process.poll() is None
+        closed = _send_server_request(
+            process,
+            output,
+            "opaque-close",
+            {
+                "kind": "closeSession",
+                "sessionId": session_id,
+                "revision": 0,
+            },
+            timeout=30.0,
+        )
+        assert closed == {"kind": "sessionClosed", "sessionId": session_id}
+        assert path.read_text(encoding="utf-8") == source
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+    assert return_code == 0, output.stderr_tail()
+    assert output.stderr_tail() == ""
+
+
 def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native_steps(tmp_path: Path) -> None:
     required_modules = ("pandas", "polars", "duckdb")
     if any(find_spec(module_name) is None for module_name in required_modules):

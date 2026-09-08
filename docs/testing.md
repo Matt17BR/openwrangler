@@ -152,6 +152,8 @@ Python protocol and kernel tests check malformed viewing structures before nativ
 errors, retained session state and valid follow-up requests. The native R viewing owner sends raw JSON to distinguish
 objects from arrays, retains a draft after malformed page input, and compares valid Filter Rows output with generated
 code. Python opaque operands and R nullable picker search keep their separate valid-input controls.
+Python operand cases cover depth boundaries, finite wide integers, non-finite numbers and Unicode in values and
+keys. The existing standalone protocol owner checks correlated refusal and a valid follow-up in the same process.
 
 Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
 exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.

@@ -6,7 +6,7 @@ import pytest
 
 from openwrangler_runtime import SessionManager, __version__
 from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
-from openwrangler_runtime.protocol import MAX_PAGE_LIMIT, ProtocolError, decode_envelope
+from openwrangler_runtime.protocol import MAX_PAGE_LIMIT, ProtocolError, decode_envelope, decode_request_payload
 
 
 def test_initialize_advertises_the_canonical_runtime_version() -> None:
@@ -595,6 +595,137 @@ def test_column_values_rejects_nontext_query_fields(field: str, value: object) -
     }
     with pytest.raises(ProtocolError, match=field):
         decode_envelope({"protocolVersion": 2, "requestId": "picker", "priority": "interactive", "request": request})
+
+
+def _opaque_view_envelope(value: object, placement: str = "value") -> dict:
+    predicate: dict[str, object] = {"kind": "predicate", "operator": "isNotNull"}
+    column_filter = {"column": "value", "type": "integer", "predicates": [predicate]}
+    if placement == "selectedValues":
+        column_filter["valueFilter"] = {
+            "kind": "values",
+            "selectedValues": [value],
+            "includeNulls": False,
+            "includeNaN": False,
+        }
+    else:
+        predicate[placement] = value
+    return {
+        "protocolVersion": 2,
+        "requestId": "opaque-operand",
+        "priority": "interactive",
+        "request": {
+            "kind": "getPage",
+            "sessionId": "session",
+            "revision": 0,
+            "viewRequestId": "opaque-view",
+            "offset": 0,
+            "limit": 3,
+            "columnOffset": 0,
+            "columnLimit": 1,
+            "filterModel": {"filters": [column_filter], "sort": []},
+        },
+    }
+
+
+@pytest.mark.parametrize("depth", [63, 64, 65])
+@pytest.mark.parametrize("leaf", [None, [], {}], ids=["scalar", "empty-array", "empty-object"])
+@pytest.mark.parametrize("container", [list, dict], ids=["array", "object"])
+def test_opaque_view_depth_counts_leaves_and_empty_containers(depth, leaf, container) -> None:
+    value = leaf
+    for _ in range(depth):
+        value = [value] if container is list else {"child": value}
+    envelope = _opaque_view_envelope(value)
+    if depth > 64:
+        with pytest.raises(ProtocolError, match="depth"):
+            decode_envelope(envelope)
+    else:
+        decoded = decode_envelope(envelope)[2]
+        assert decoded["filterModel"] is envelope["request"]["filterModel"]
+
+
+@pytest.mark.parametrize("placement", ["value", "secondValue", "selectedValues"])
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e400"])
+def test_opaque_nonfinite_wire_numbers_are_rejected_after_json_parsing(placement, literal) -> None:
+    import json
+
+    wire = json.dumps(_opaque_view_envelope("opaque-wire-value", placement)).replace('"opaque-wire-value"', literal)
+    parsed = decode_request_payload(wire, lf_terminated=False)
+    assert isinstance(parsed, dict)
+    assert parsed["requestId"] == "opaque-operand"
+    with pytest.raises(ProtocolError, match="finite"):
+        decode_envelope(parsed)
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_opaque_integer_range_matches_finite_transport_without_narrowing(sign: int, offset: int) -> None:
+    value = sign * (2**1024 - 2**970 + offset)
+    envelope = _opaque_view_envelope(value)
+    if offset >= 0:
+        with pytest.raises(ProtocolError, match="finite"):
+            decode_envelope(envelope)
+    else:
+        decoded = decode_envelope(envelope)[2]
+        actual = decoded["filterModel"]["filters"][0]["predicates"][0]["value"]
+        assert type(actual) is int and actual is value
+
+
+@pytest.mark.parametrize("value", ["\ud800", ["\udfff"], {"\ud800": 0}, ["x" * 65_537 + "\ud800"]])
+def test_opaque_text_rejects_lone_surrogates_at_every_position(value) -> None:
+    with pytest.raises(ProtocolError, match="UTF-8"):
+        decode_envelope(_opaque_view_envelope(value))
+
+
+def test_opaque_values_preserve_wide_flat_typed_and_unicode_data() -> None:
+    import json
+    import sys
+
+    shared = {"nested": "x" * (MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)}
+    values = [
+        None,
+        True,
+        False,
+        -0.0,
+        2**53 + 1,
+        10**308,
+        int(sys.float_info.max) + 1,
+        "Infinity",
+        "a\0b",
+        "\uffff\ufdd0",
+        "\U0001f642",
+        json.loads('"\\ud83d\\ude42"'),
+        [0] * 8192,
+        shared,
+        shared,
+        {"x" * (MAX_VIEW_VALUE_TEXT_CHARACTERS + 1): 0},
+        {
+            "kind": "typedSelection",
+            "version": 1,
+            "columnType": "integer",
+            "cell": {"kind": "integer", "raw": str(2**100), "display": str(2**100), "isNull": False, "isNaN": False},
+        },
+    ]
+    envelope = _opaque_view_envelope(values)
+    before = deepcopy(envelope)
+    decoded = decode_envelope(envelope)[2]
+    actual = decoded["filterModel"]["filters"][0]["predicates"][0]["value"]
+    assert envelope == before and actual is values and actual[13] is actual[14] is shared
+
+
+def test_opaque_direct_values_refuse_unsupported_kinds_without_custom_hooks() -> None:
+    class CustomString(str):
+        def __len__(self):
+            pytest.fail("Opaque admission invoked a string subclass hook")
+
+    class CustomInteger(int):
+        def __float__(self):
+            pytest.fail("Opaque admission invoked an integer subclass hook")
+
+    cycle = []
+    cycle.append(cycle)
+    for value in [CustomString("value"), CustomInteger(1), (1,), {1: "value"}, object(), cycle]:
+        with pytest.raises(ProtocolError):
+            decode_envelope(_opaque_view_envelope(value))
 
 
 def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() -> None:
