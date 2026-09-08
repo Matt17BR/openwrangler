@@ -134,6 +134,8 @@ Round retains exact integer and Decimal values in live and generated Python exec
 and negative precision. Pandas may retain large integers in object storage. Polars, DuckDB and Arrow Decimal output
 storage may widen or reduce scale; results beyond usable native capacity are rejected. Arrow Decimal results preserve
 existing CSV and Parquet export support.
+Polars Floor, Ceiling and Round support Decimal carries in streaming file previews and generated code, including
+values at the maximum precision.
 
 Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or
 multiplication producing UInt128. Earlier versions and nonnumeric or prerelease version labels refuse this combination

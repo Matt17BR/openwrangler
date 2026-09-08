@@ -205,7 +205,9 @@ preservation and successful correction. Complete generated programs refuse an in
 step drops its output. Native eager/lazy values, types, nulls and source preservation remain covered; the existing
 Custom Code owner checks Series normalization and scalar refusal.
 The Decimal operation owner checks live and generated readiness under caller-configured streaming without changing
-that setting, alongside exact output capacity and null checks. This does not qualify later streaming retrieval.
+that setting, alongside exact output capacity and null checks. Floor, Ceiling and Round owners also check exact
+Decimal coefficients and signed carry boundaries through eager and lazy streaming results. Session transactions
+cover file-backed Preview, Apply, returned-code execution, counts, stable row IDs and Undo with hidden or off-page values.
 
 `python/tests/test_custom_code_scope.py` owns Pandas/Polars Custom result admission in live sessions and complete
 generated programs, including retained conditional plans reused on another input and a later step that could hide

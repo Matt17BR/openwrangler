@@ -1498,6 +1498,44 @@ def test_polars_floor_ceil_decimal_output_has_valid_capacity(
     assert (source.collect() if isinstance(source, pl.LazyFrame) else source).equals(before)
 
 
+@pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
+@pytest.mark.parametrize(
+    "scale, population", [(0, "values"), (1, "values"), (38, "values"), (38, "empty"), (38, "null")]
+)
+def test_polars_floor_ceil_decimal_intermediates_remain_valid_in_file_queries(
+    tmp_path, kind: str, scale: int, population: str
+) -> None:
+    from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal
+
+    from polars.testing import assert_frame_equal
+
+    maximum = 10**38 - 1
+    coefficients = [maximum, -maximum, 1, -1, 0]
+    values = [Decimal((int(c < 0), tuple(map(int, str(abs(c)))), -scale)) for c in coefficients] + [None]
+    if population != "values":
+        values = [] if population == "empty" else [None, None]
+    frame = pl.DataFrame({"value": pl.Series(values, dtype=pl.Decimal(38, scale)), "kept": range(len(values))})
+    before = frame.clone()
+    context = Context(prec=80, rounding=ROUND_FLOOR if kind == "floorNumber" else ROUND_CEILING)
+    expected = [None if value is None else value.quantize(Decimal(1), context=context) for value in values]
+    if population == "values":
+        assert frame["value"].to_physical().dtype == pl.Int128
+        assert frame["value"].to_physical().to_list() == [*coefficients, None]
+    path = tmp_path / "integral.parquet"
+    frame.write_parquet(path)
+    source_bytes = path.read_bytes()
+    for source in [frame, frame.lazy(), pl.scan_parquet(path)]:
+        for result in floor_ceil_results(PolarsEngine(), source, kind, False):
+            for mode in ("streaming", "in-memory"):
+                actual = pl.collect_all([result], engine=mode)[0] if isinstance(result, pl.LazyFrame) else result
+                assert actual["integral"].to_list() == expected
+                assert actual["integral"].dtype == pl.Decimal(38, 0)
+                actual["integral"].to_arrow().validate(full=True)
+                assert_frame_equal(actual.select(frame.columns), before, check_exact=True)
+    assert path.read_bytes() == source_bytes
+    assert_frame_equal(frame, before, check_exact=True)
+
+
 def _dictionary_numeric_buffers(series: pd.Series) -> list[Any]:
     return [
         (

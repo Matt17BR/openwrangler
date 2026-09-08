@@ -1464,12 +1464,17 @@ class PolarsEngine(DataFrameEngine):
                 expression = _polars_round_exact(expression, dtype, int(params.get("decimals", 0)))
             else:
                 dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
-                if not dtype.is_integer():
-                    if dtype.base_type() != pl.Decimal:
-                        expression = expression.cast(pl.Float64, strict=False)
+                if dtype.base_type() == pl.Decimal:
+                    assert isinstance(dtype, pl.Decimal)
+                    coefficient = expression.to_physical()
+                    divisor = pl.lit(10**dtype.scale, dtype=pl.Int128)
+                    integral = coefficient // divisor
+                    if kind == "ceilNumber":
+                        integral = integral + (coefficient % divisor != 0).cast(pl.Int128)
+                    expression = integral.cast(pl.Decimal(38, 0))
+                elif not dtype.is_integer():
+                    expression = expression.cast(pl.Float64, strict=False)
                     expression = expression.floor() if kind == "floorNumber" else expression.ceil()
-                    if dtype.base_type() == pl.Decimal:
-                        expression = expression.cast(pl.Decimal(38, 0))
             return df.with_columns(expression.alias(params.get("newColumn", column)))
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
@@ -2473,12 +2478,22 @@ class PolarsEngine(DataFrameEngine):
             return [
                 f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[{column!r}]",
                 f"{prefix}{expression} = pl.col({column!r})",
-                f"{prefix}if not {dtype}.is_integer():",
-                f"{prefix}    if {dtype}.base_type() != pl.Decimal:",
-                f"{prefix}        {expression} = {expression}.cast(pl.Float64, strict=False)",
+                f"{prefix}if {dtype}.base_type() == pl.Decimal:",
+                f"{prefix}    _integral_coefficient_{index} = {expression}.to_physical()",
+                f"{prefix}    _integral_divisor_{index} = pl.lit(10**{dtype}.scale, dtype=pl.Int128)",
+                f"{prefix}    {expression} = _integral_coefficient_{index} // _integral_divisor_{index}",
+                *(
+                    [
+                        f"{prefix}    {expression} = {expression} + "
+                        f"(_integral_coefficient_{index} % _integral_divisor_{index} != 0).cast(pl.Int128)"
+                    ]
+                    if kind == "ceilNumber"
+                    else []
+                ),
+                f"{prefix}    {expression} = {expression}.cast(pl.Decimal(38, 0))",
+                f"{prefix}elif not {dtype}.is_integer():",
+                f"{prefix}    {expression} = {expression}.cast(pl.Float64, strict=False)",
                 f"{prefix}    {expression} = {expression}.{method}()",
-                f"{prefix}    if {dtype}.base_type() == pl.Decimal:",
-                f"{prefix}        {expression} = {expression}.cast(pl.Decimal(38, 0))",
                 f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(target)}))",
             ]
         if kind == "formatDatetime":
@@ -2793,7 +2808,25 @@ def _polars_round_exact(expression: Any, dtype: Any, decimals: int) -> Any:
         if decimals < -(dtype.precision - dtype.scale):
             return (expression * 0).cast(target)
         if decimals >= 0:
-            return expression.round(decimals).cast(target)
+            if dtype.precision < 38:
+                return expression.cast(pl.Decimal(38, dtype.scale)).round(decimals).cast(target)
+            coefficient = expression.to_physical()
+            limit = 10**38 - 5 * 10 ** (dtype.scale - decimals - 1) + int(dtype.scale == 38 and decimals == 0)
+            threshold = pl.lit(limit, dtype=pl.Int128)
+            negative_threshold = pl.lit(-limit, dtype=pl.Int128)
+            endpoint = pl.lit(10 ** (38 - dtype.scale), dtype=target)
+            negative_endpoint = pl.lit(-(10 ** (38 - dtype.scale)), dtype=target)
+            safe = (
+                pl.when((coefficient < threshold) & (coefficient > negative_threshold)).then(expression).otherwise(None)
+            )
+            rounded = safe.round(decimals).cast(target)
+            return (
+                pl.when(coefficient >= threshold)
+                .then(endpoint)
+                .when(coefficient <= negative_threshold)
+                .then(negative_endpoint)
+                .otherwise(rounded)
+            )
         from decimal import ROUND_HALF_EVEN, Context, Decimal
 
         context = Context(prec=dtype.precision + 1, rounding=ROUND_HALF_EVEN)
@@ -2886,7 +2919,23 @@ def _generated_polars_round_helpers() -> list[str]:
         "        if decimals < -(dtype.precision - dtype.scale):",
         "            return (expression * 0).cast(target)",
         "        if decimals >= 0:",
-        "            return expression.round(decimals).cast(target)",
+        "            if dtype.precision < 38:",
+        "                return expression.cast(pl.Decimal(38, dtype.scale)).round(decimals).cast(target)",
+        "            coefficient = expression.to_physical()",
+        "            limit = 10**38 - 5 * 10 ** (dtype.scale - decimals - 1) "
+        "+ int(dtype.scale == 38 and decimals == 0)",
+        "            threshold = pl.lit(limit, dtype=pl.Int128)",
+        "            negative_threshold = pl.lit(-limit, dtype=pl.Int128)",
+        "            endpoint = pl.lit(10 ** (38 - dtype.scale), dtype=target)",
+        "            negative_endpoint = pl.lit(-(10 ** (38 - dtype.scale)), dtype=target)",
+        "            safe = pl.when((coefficient < threshold) & (coefficient > negative_threshold))"
+        ".then(expression).otherwise(None)",
+        "            rounded = safe.round(decimals).cast(target)",
+        "            return (",
+        "                pl.when(coefficient >= threshold).then(endpoint)",
+        "                .when(coefficient <= negative_threshold).then(negative_endpoint)",
+        "                .otherwise(rounded)",
+        "            )",
         "        from decimal import ROUND_HALF_EVEN, Context, Decimal",
         "",
         "        context = Context(prec=dtype.precision + 1, rounding=ROUND_HALF_EVEN)",

@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Polars Floor, Ceiling and Round preserve valid Decimal results without overflowing an intermediate value,
+  including in file previews and generated code.
 - Polars rejects invalid lazy cleaning results before confirming a step, including errors outside the displayed
   columns. Generated code checks each step before a later operation can hide the error.
 - Generated Pandas and Polars Custom Code rejects zero-column results, matching live Preview when a plan runs on new input.

@@ -283,6 +283,14 @@ Floor and Ceiling preserve exact integer inputs and round Decimal values before 
 output storage may reduce fractional scale so an integral carry remains representable. Ordinary floating and text
 coercion retain their existing behavior, including separate Arrow null and valid-NaN states.
 
+Polars Decimal Floor and Ceiling divide the native Int128 coefficient by the source scale factor and return
+Decimal(38,0), avoiding an overflowing intermediate at the old scale. For Round with a nonnegative reduced scale,
+precision below 38 is widened before native rounding. At precision 38, rows whose rounded coefficient would exceed
+capacity are masked before rounding and receive exact target-typed endpoints. At zero decimal places, the half-even
+ties at ±0.5 still produce zero. Native expressions preserve nulls; negative-precision Round retains its existing local
+Decimal context. Live and generated paths agree. The physical coefficient mapping, also used by Min-max Scale, is
+checked on minimum and current Polars; `to_physical` does not promise representation stability across future versions.
+
 Dense Rank appends one integer column while preserving the cleaning input's row order, existing column identities
 and source values. Viewing filters and sorts do not define the rank population. Equal present values share a rank;
 ascending or descending ranks start at one without gaps. Missing inputs, including NaN, produce missing ranks;
