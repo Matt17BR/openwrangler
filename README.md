@@ -43,9 +43,9 @@ Wrangler** on its output or from the notebook toolbar.
 _Open a live notebook dataframe from its output and continue in the workbench._
 
 **2. Preview a transformation.** If your notebook session opens in Viewing mode and supports editing, choose
-**Switch to Editing** first. Choose **Add step**, select an operation, and configure it. Search multi-column lists to
-find fields; changing the search keeps your selections. Changed values and generated code appear as a draft. Filters
-and sorts affect only the current view; they do not become cleaning steps.
+**Switch to Editing** first. Choose **Add step**, select an operation, configure it, then choose **Preview changes**.
+Search multi-column lists to find fields; changing the search keeps your selections. Changed values and generated code
+appear as a draft. Filters and sorts affect only the current view; they do not become cleaning steps.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
@@ -74,13 +74,13 @@ Mode.
 
 ## View, edit, and export
 
-| User action                      | File sessions                                                                          | Notebook and interactive sessions                                                                            |
-| -------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel; Open Wrangler selects a compatible backend | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                               |
-| Filter, sort, profile, and copy  | Available                                                                              | Available                                                                                                    |
-| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                                    | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                       |
-| Copy, save, or insert code       | Copy or save generated Python code                                                     | Copy or save generated Python or R code; insert it only into the notebook or managed document that opened it |
-| Export cleaned data              | Write CSV or Parquet to a separate destination                                         | Available from supported editing sessions; view-only sessions cannot export                                  |
+| User action                      | File sessions                                                                          | Notebook and interactive sessions                                                                                                    |
+| -------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel; Open Wrangler selects a compatible backend | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                                                       |
+| Filter, sort, profile, and copy  | Available                                                                              | Available                                                                                                                            |
+| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                                    | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                                               |
+| Copy, save, or insert code       | Copy or save generated Python code                                                     | Sessions supporting cleaning: copy or save generated Python or R code; insert only into the originating notebook or managed document |
+| Export cleaned data              | Write CSV or Parquet to a separate destination                                         | Available from supported editing sessions; view-only sessions cannot export                                                          |
 
 The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every command,
 setting, operation, and supported parameter.
