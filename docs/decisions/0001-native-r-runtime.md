@@ -171,10 +171,13 @@ only when all selected columns are missing. Drop Duplicates compares selected co
 specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,
 stable row identities, explicit row names, and compatible data-table keys.
 
-Base dataframes and tibbles compare integer64 keys through exact decimal text in a temporary frame. Other columns
-retain their native duplicate equality, including distinct `NA` and `NaN` groups. Data tables keep their existing
-native comparison. Row reduction and dataset duplicate statistics share this owner. The original frame remains
-native, and profile sampling retains the bounds above.
+All three frame flavors compare integer64 keys through exact decimal text in a temporary frame. This distinguishes
+adjacent large values and both supported signed extrema. Other columns retain their native duplicate equality, including
+distinct `NA` and `NaN` groups. A data.table comparison keeps that frame flavor and its configured numeric rounding.
+Row reduction and dataset duplicate statistics share this owner. The original frame remains native, and profile
+sampling retains the bounds above.
+When data.table column labels repeat, the isolated comparison uses unique positional labels. The selected original
+columns remain distinct; returned column names and stable identities are unchanged.
 Generated Drop Duplicates uses the same helper and includes its guarded integer64 conversion dependency only when
 the selected keys require it.
 

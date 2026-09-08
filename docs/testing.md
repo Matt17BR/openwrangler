@@ -151,7 +151,10 @@ frame families. Mixed cleaning and Custom Code plans verify that metadata differ
 The existing scalar-categorical kernel case verifies that integer64 One-hot Encode omits unused arithmetic code,
 retains primitive validation, and includes the arithmetic dependencies needed by a later Formula's right operand.
 
-Native R frame tests own exact integer64 duplicate masks and bounded profile counts. The existing row kernel owner
+Native R frame tests own exact integer64 duplicate masks and bounded profile counts, including supported signed extrema mixed
+with adjacent large values and missing keys. Data.table controls distinguish repeated column labels and retain
+ordinary numeric rounding at settings 0 and 2.
+The existing row kernel owner
 checks single and composite keys through Preview, Apply, inspection, Undo/Redo and standalone generated execution,
 including original row identities, frame metadata and integer64 helper admission.
 

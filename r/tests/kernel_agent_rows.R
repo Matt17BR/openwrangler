@@ -111,15 +111,16 @@ row_reduction_step <- function(kind, id, columns, mode = NULL) {
 for (duplicate_flavor in c("base", "tibble", "data.table")) {
   for (duplicate_positions in list(1L, 1:3)) {
     for (duplicate_mode in c("first", "last", "none")) {
-      duplicate_text <- c("9223372036854775807", "9223372036854775807", "9223372036854775806", NA_character_, NA_character_)
+      duplicate_text <- c("9223372036854775807", "9223372036854775807", "9223372036854775806", NA_character_, NA_character_,
+        "-9223372036854775807", "9007199254740993", "9007199254740993", "9007199254740992", "9007199254740992")
       duplicate_environment <- new.env(parent = baseenv())
       duplicate_frame <- data.frame(
         key = bit64::as.integer64(duplicate_text),
-        key = factor(c("same", "same", "same", NA, NA)),
-        key = as.Date(c("2026-01-01", "2026-01-01", "2026-01-01", NA, NA)),
-        ordinal = 1:5,
+        key = factor(c("same", "same", "same", NA, NA, "same", "same", "same", "same", "different")),
+        key = as.Date(c("2026-01-01", "2026-01-01", "2026-01-01", NA, NA, rep("2026-01-01", 5L))),
+        ordinal = seq_along(duplicate_text),
         check.names = FALSE,
-        row.names = paste0("source-", 1:5)
+        row.names = paste0("source-", seq_along(duplicate_text))
       )
       if (identical(duplicate_flavor, "tibble")) duplicate_frame <- tibble::as_tibble(duplicate_frame, .name_repair = "minimal")
       if (identical(duplicate_flavor, "data.table")) {
@@ -138,10 +139,14 @@ for (duplicate_flavor in c("base", "tibble", "data.table")) {
       duplicate_preview <- dispatch_with(duplicate_agent, "previewStep", list(sessionId = duplicate_session, revision = 0L, step = duplicate_step, page = page_window()))
       assert_identical(duplicate_preview$kind, "stepPreview", "Integer64 Drop Duplicates did not preview")
       duplicate_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
-      duplicate_expected <- switch(duplicate_mode, first = c(1L, 3L, 4L), last = c(2L, 3L, 5L), none = 3L)
+      duplicate_expected <- if (identical(duplicate_positions, 1L)) {
+        switch(duplicate_mode, first = c(1L, 3L, 4L, 6L, 7L, 9L), last = c(2L, 3L, 5L, 6L, 8L, 10L), none = c(3L, 6L))
+      } else {
+        switch(duplicate_mode, first = c(1L, 3L, 4L, 6L, 7L, 9L, 10L), last = c(2L, 3L, 5L, 6L, 8L, 9L, 10L), none = c(3L, 6L, 9L, 10L))
+      }
       assert_identical(duplicate_live[[4L]], duplicate_expected, "Integer64 Drop Duplicates removed a distinct value or kept the wrong occurrence")
       assert_identical(as.character(duplicate_live[[1L]]), duplicate_text[duplicate_expected], "Native duplicate survivors lost exact integer64 values")
-      assert_identical(duplicate_preview$diff$removedRows, 5L - length(duplicate_expected), "Integer64 duplicate diff changed")
+      assert_identical(duplicate_preview$diff$removedRows, length(duplicate_text) - length(duplicate_expected), "Integer64 duplicate diff changed")
       assert_identical(vapply(duplicate_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE), paste0("r:r:", duplicate_expected - 1L), "Integer64 duplicate survivors lost source row IDs")
       assert_identical(duplicate_preview$page$schema, duplicate_open$page$schema, "Integer64 duplicate comparison changed schema or column identities")
       duplicate_apply <- dispatch_with(duplicate_agent, "applyDraft", list(sessionId = duplicate_session, revision = 1L, page = page_window()))
@@ -155,11 +160,12 @@ for (duplicate_flavor in c("base", "tibble", "data.table")) {
       assert_identical(attr(duplicate_generated$open_wrangler_result, "sorted"), attr(duplicate_live, "sorted"), "Generated duplicates lost the data.table key")
       assert_identical(row.names(duplicate_generated$open_wrangler_result), row.names(duplicate_live), "Generated duplicates changed row labels")
       assert_identical(serialize(duplicate_generated$frame, NULL, version = 3L), duplicate_before, "Generated duplicates mutated their source")
-      if (identical(duplicate_flavor, "base") && identical(duplicate_positions, 1:3) && identical(duplicate_mode, "none")) {
+      if (duplicate_flavor %in% c("base", "data.table") && identical(duplicate_positions, 1:3) && identical(duplicate_mode, "none")) {
         duplicate_cold_bundle <- tempfile(fileext = ".rds")
         duplicate_cold_script <- tempfile(fileext = ".R")
         tryCatch({
-          saveRDS(list(frame = unserialize(duplicate_before), code = duplicate_apply$code), duplicate_cold_bundle, version = 3L)
+          saveRDS(list(frame = unserialize(duplicate_before), code = duplicate_apply$code,
+            expected = duplicate_expected, text = duplicate_text[duplicate_expected]), duplicate_cold_bundle, version = 3L)
           writeLines(c(
             "source(\"r/tests/warning_contract_assertions.R\", local = FALSE)",
             "invisible(assert_no_warning({",
@@ -168,8 +174,8 @@ for (duplicate_flavor in c("base", "tibble", "data.table")) {
             "  source_before <- serialize(bundle$frame, NULL, version = 3L)",
             "  generated <- new.env(parent = baseenv()); generated$frame <- bundle$frame",
             "  eval(parse(text = bundle$code), envir = generated)",
-            "  stopifnot(identical(as.character(generated$open_wrangler_result[[1L]]), \"9223372036854775806\"))",
-            "  stopifnot(identical(generated$open_wrangler_result[[4L]], 3L))",
+            "  stopifnot(identical(as.character(generated$open_wrangler_result[[1L]]), bundle$text))",
+            "  stopifnot(identical(generated$open_wrangler_result[[4L]], bundle$expected))",
             "  stopifnot(identical(serialize(generated$frame, NULL, version = 3L), source_before))",
             "}, \"cold generated integer64 duplicates\"))"
           ), duplicate_cold_script, useBytes = TRUE)
@@ -197,8 +203,8 @@ for (duplicate_flavor in c("base", "tibble", "data.table")) {
         assert_identical(duplicate_formula_preview$kind, "stepPreview", "Formula did not bind the retained integer64 column")
         duplicate_formula_apply <- dispatch_with(duplicate_agent, "applyDraft", list(sessionId = duplicate_session, revision = 5L, page = page_window()))
         eval(parse(text = duplicate_formula_apply$code), envir = duplicate_generated)
-        assert_identical(as.character(duplicate_generated$open_wrangler_result$exact), "9223372036854775806", "Mixed duplicate and Formula helpers changed exact arithmetic")
-        assert_identical(duplicate_generated$open_wrangler_result[[4L]], 3L, "Mixed duplicate and Formula helpers changed row identity")
+        assert_identical(as.character(duplicate_generated$open_wrangler_result$exact), duplicate_text[duplicate_expected], "Mixed duplicate and Formula helpers changed exact arithmetic")
+        assert_identical(duplicate_generated$open_wrangler_result[[4L]], duplicate_expected, "Mixed duplicate and Formula helpers changed row identity")
       }
       assert_identical(serialize(duplicate_environment$frame, NULL, version = 3L), duplicate_before, "Native duplicates mutated their source")
       invisible(dispatch_with(duplicate_agent, "closeSession", list(sessionId = duplicate_session)))

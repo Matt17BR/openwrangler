@@ -265,8 +265,10 @@ standalone runtime. A smaller page remains available; opening and mutation respo
 Large R profiles retain exact cheap statistics but sample histograms, categories, and duplicate populations with
 explicit sample labels.
 
-Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys.
-All three keep modes preserve original values and native frame metadata.
+Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys,
+including both supported signed extrema. All three keep modes preserve original values and native frame metadata; data.table
+retains its configured comparison of ordinary numeric keys.
+Repeated data.table column labels do not merge distinct selected columns during comparison.
 
 The complete current operation set has direct native live, generated-code, and replay contracts. The exact names and
 parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with

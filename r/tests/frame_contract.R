@@ -5743,9 +5743,10 @@ assert_identical(duplicate_profile_stats$duplicateRows, 1L, "duplicate-row count
 # Dataset duplicates compare integer64 payloads exactly, without an ordinal key.
 for (wide_profile_flavor in c("base", "tibble", "data.table")) {
   wide_profile_frame <- data.frame(
-    key = bit64::as.integer64(c("9223372036854775807", "9223372036854775807", "9223372036854775806")),
-    key = factor(rep("same", 3L)),
-    key = as.Date(rep("2026-01-01", 3L)),
+    key = bit64::as.integer64(c("9223372036854775807", "9223372036854775807", "9223372036854775806",
+      "-9223372036854775807", "9007199254740993", "9007199254740992", NA_character_, NA_character_)),
+    key = factor(rep("same", 8L)),
+    key = as.Date(rep("2026-01-01", 8L)),
     check.names = FALSE
   )
   if (identical(wide_profile_flavor, "tibble")) wide_profile_frame <- tibble::as_tibble(wide_profile_frame, .name_repair = "minimal")
@@ -5753,8 +5754,8 @@ for (wide_profile_flavor in c("base", "tibble", "data.table")) {
   wide_profile_before <- serialize(wide_profile_frame, NULL, version = 3L)
   wide_profile_capture <- openwrangler_r_frame_contract$capture_frame(wide_profile_frame)
   wide_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(wide_profile_capture)$stats
-  assert_identical(wide_profile_stats$duplicateRows, 1L, "Dataset profiling merged adjacent integer64 values")
-  assert_identical(wide_profile_stats$missingCells, 0, "Exact duplicate comparison changed missing counts")
+  assert_identical(wide_profile_stats$duplicateRows, 2L, "Dataset profiling merged distinct integer64 values or missingness")
+  assert_identical(wide_profile_stats$missingCells, 2, "Exact duplicate comparison changed missing counts")
   assert_true(is.null(wide_profile_stats$duplicateRowsSampleSize), "A full duplicate count was labeled sampled")
   assert_identical(serialize(wide_profile_frame, NULL, version = 3L), wide_profile_before, "Duplicate profiling changed its source")
 }
@@ -6847,6 +6848,31 @@ assert_identical(
 )
 assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
 
+# Physical columns with repeated labels remain separate comparison keys.
+duplicate_label_frame <- data.table::data.table(rep(1L, 3L), factor(c("same", "same", "different")))
+data.table::setnames(duplicate_label_frame, c("same label", "same label"))
+duplicate_label_before <- serialize(duplicate_label_frame, NULL, version = 3L)
+for (duplicate_label_mode in c("first", "last", "none")) {
+  duplicate_label_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(duplicate_label_frame, 1:2, c("same label", "same label"), duplicate_label_mode)
+  duplicate_label_expected <- switch(duplicate_label_mode, first = c(1L, 3L), last = c(2L, 3L), none = 3L)
+  assert_identical(duplicate_label_result$sourcePositions, duplicate_label_expected, "Duplicate labels hid a selected physical column")
+  assert_identical(names(duplicate_label_result$frame), names(duplicate_label_frame), "Comparison labels escaped into the result")
+  assert_identical(duplicate_label_result$frame[[2L]], duplicate_label_frame[[2L]][duplicate_label_expected], "Duplicate comparison changed factor values or metadata")
+}
+assert_identical(serialize(duplicate_label_frame, NULL, version = 3L), duplicate_label_before, "Duplicate-label comparison changed its source")
+
+# A full signed range must not collapse to one data.table comparison group.
+wide_extrema_text <- c("-9223372036854775807", "9223372036854775807")
+wide_extrema_frame <- data.table::data.table(value = bit64::as.integer64(wide_extrema_text))
+wide_extrema_before <- serialize(wide_extrema_frame, NULL, version = 3L)
+for (wide_extrema_mode in c("first", "last", "none")) {
+  wide_extrema_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(wide_extrema_frame, 1L, "value", wide_extrema_mode)
+  assert_identical(wide_extrema_result$sourcePositions, 1:2, "Distinct integer64 extrema became duplicates")
+  assert_identical(as.character(wide_extrema_result$frame$value), wide_extrema_text, "Duplicate comparison changed retained extrema")
+  assert_identical(class(wide_extrema_result$frame$value), "integer64", "Duplicate comparison changed native integer64 storage")
+}
+assert_identical(serialize(wide_extrema_frame, NULL, version = 3L), wide_extrema_before, "Extrema comparison changed its source")
+
 # Comparison-only integer64 keys retain the ordinary NA/NaN distinction.
 wide_missing_frame <- data.frame(
   key = bit64::as.integer64(rep("9223372036854775807", 5L)),
@@ -6878,13 +6904,18 @@ for (wide_missing_count in c(0L, 3L)) {
 invisible(local({
   previous_rounding <- data.table::getNumericRounding()
   on.exit(data.table::setNumericRounding(previous_rounding), add = TRUE)
-  data.table::setNumericRounding(2L)
-  rounded_keys <- data.table::data.table(
-    wide = bit64::as.integer64(rep("9223372036854775807", 2L)),
-    amount = c(1, 1 + 1e-15)
-  )
-  rounded_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(rounded_keys, 1:2, c("wide", "amount"), "none")
-  assert_identical(rounded_result$sourcePositions, integer(), "Integer64 comparison replaced data.table numeric-rounding semantics")
+  for (rounding in c(0L, 2L)) {
+    data.table::setNumericRounding(rounding)
+    rounded_keys <- data.table::data.table(
+      wide = bit64::as.integer64(rep("9223372036854775807", 2L)),
+      amount = c(1, 1 + 1e-15)
+    )
+    rounded_before <- serialize(rounded_keys, NULL, version = 3L)
+    rounded_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(rounded_keys, 1:2, c("wide", "amount"), "none")
+    assert_identical(rounded_result$sourcePositions, if (rounding == 0L) 1:2 else integer(), "Integer64 comparison replaced data.table numeric-rounding semantics")
+    assert_identical(data.table::getNumericRounding(), rounding, "Duplicate comparison changed global numeric rounding")
+    assert_identical(serialize(rounded_keys, NULL, version = 3L), rounded_before, "Rounded comparison changed its source")
+  }
 }))
 
 row_reduction_frame <- data.frame(

@@ -8506,7 +8506,15 @@ openwrangler_r_frame_contract <- local({
     wide <- base::vapply(base::seq_along(value), function(position) {
       base::identical(base::class(base::.subset2(value, position)), "integer64")
     }, base::logical(1L), USE.NAMES = FALSE)
-    if (base::any(wide) && !base::inherits(value, "data.table")) {
+    if (base::inherits(value, "data.table") &&
+        (base::any(wide) || base::anyDuplicated(base::names(value)) > 0L)) {
+      value <- data.table::copy(value)
+      data.table::setnames(value, base::as.character(base::seq_along(value)))
+      for (position in base::which(wide)) {
+        data.table::set(value, j = position,
+          value = integer64_text(base::.subset2(value, position)))
+      }
+    } else if (base::any(wide)) {
       columns <- base::lapply(base::seq_along(value), function(position) {
         column <- base::.subset2(value, position)
         if (wide[[position]]) integer64_text(column) else column
