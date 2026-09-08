@@ -60,6 +60,61 @@ describe("NumericHistogram", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
+  it.each([
+    { focus: "Home", hovered: 2, key: "ArrowRight", expected: 3, repeated: 3 },
+    { focus: "End", hovered: 1, key: "ArrowLeft", expected: 0, repeated: 0 },
+    { focus: "End", hovered: 0, key: "ArrowRight", expected: 1, repeated: 2 }
+  ])(
+    "moves $key from hovered bin $hovered instead of remembered $focus focus",
+    ({ focus, hovered, key, expected, repeated }) => {
+      const distribution: NumericVisualization = {
+        kind: "numeric",
+        bins: [
+          { min: 0, max: 10, count: 1 },
+          { min: 10, max: 20, count: 1 },
+          { min: 20, max: 30, count: 1 },
+          { min: 30, max: 40, count: 1 }
+        ],
+        sampled: false
+      };
+      const onSelectBin = vi.fn();
+      const { container } = render(<NumericHistogram visualization={distribution} compact onSelectBin={onSelectBin} />);
+      const control = screen.getByRole("button");
+      const status = container.querySelector<HTMLElement>(".miniChartCaption");
+      const bars = [...container.querySelectorAll<SVGGElement>(".numericHistogramBin")];
+      Object.defineProperty(control, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ left: 0, right: 160, top: 0, bottom: 36, width: 160, height: 36, x: 0, y: 0 })
+      });
+      const expectActiveBin = (index: number) => {
+        const bin = distribution.bins[index];
+        expect(status).toHaveTextContent(`${bin.min}-${bin.max}: 1 row`);
+        expect(control).toHaveAccessibleName(
+          `${bin.min}-${bin.max}: 1 row (25%); ${index === 3 ? "both bounds included" : "lower bound included, upper bound excluded"}`
+        );
+        expect(bars.filter((bar) => bar.classList.contains("active"))).toEqual([bars[index]]);
+        expect(control).toHaveFocus();
+      };
+
+      act(() => control.focus());
+      fireEvent.keyDown(control, { key: focus });
+      expectActiveBin(focus === "Home" ? 0 : 3);
+      fireEvent.pointerMove(control, { clientX: (hovered + 0.5) * 40 });
+      expectActiveBin(hovered);
+
+      fireEvent.keyDown(control, { key });
+      expectActiveBin(expected);
+      fireEvent.keyDown(control, { key: "Enter" });
+      expect(onSelectBin).toHaveBeenNthCalledWith(1, distribution.bins[expected], expected);
+
+      fireEvent.keyDown(control, { key, repeat: true });
+      expectActiveBin(repeated);
+      fireEvent.keyDown(control, { key: "Enter" });
+      expect(onSelectBin).toHaveBeenNthCalledWith(2, distribution.bins[repeated], repeated);
+      expect(onSelectBin).toHaveBeenCalledTimes(2);
+    }
+  );
+
   it("keeps the visible caption aligned with the selected value mode and control label", () => {
     const { container, rerender } = render(
       <NumericHistogram

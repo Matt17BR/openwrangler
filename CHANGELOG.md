@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.
 - Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
 - Column-search arrow and page keys follow the displayed results after a cleaning action changes the schema.
 - Generated Python refuses an existing column when an operation requires a new output name.
