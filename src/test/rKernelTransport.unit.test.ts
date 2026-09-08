@@ -1196,6 +1196,109 @@ describe("native R kernel protocol", () => {
     ).toThrow("repeated identity");
   });
 
+  it("distinguishes known empty mutation schemas from missing context", () => {
+    const ordinary = minimalFramePage();
+    const empty = {
+      ...ordinary,
+      shape: { rows: 1, columns: 0 },
+      schema: [],
+      page: {
+        ...ordinary.page,
+        columnIds: [],
+        rows: ordinary.page.rows.map((row) => ({ ...row, values: [] }))
+      }
+    };
+    const preview = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: empty,
+      diff: minimalRenameDiff(),
+      code: "open_wrangler_result <- frame\n"
+    };
+    expect(decodeRKernelResponseJson(JSON.stringify(preview), previewRequestId, { inputSchema: [] })).toMatchObject({
+      kind: "stepPreview",
+      page: empty,
+      diff: minimalRenameDiff()
+    });
+    expect(() => decodeRKernelResponseJson(JSON.stringify(preview), previewRequestId)).toThrow(
+      "requires the exact host input schema"
+    );
+    const oversized = Array.from({ length: R_FRAME_CONTRACT_LIMITS.columns + 1 }, () => ordinary.schema[0]);
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(preview), previewRequestId, { inputSchema: oversized })
+    ).toThrow("requires the exact host input schema");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({ ...preview, page: { ...empty, shape: { rows: 1, columns: 1 } } }),
+        previewRequestId,
+        { inputSchema: [] }
+      )
+    ).toThrow("width");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...preview,
+          page: ordinary,
+          diff: {
+            ...minimalRenameDiff(),
+            addedColumns: ["value"],
+            changedCells: 1,
+            cells: [
+              {
+                rowNumber: 0,
+                columnId: "r:c:0",
+                column: "value",
+                before: ordinary.page.rows[0].values[0],
+                after: ordinary.page.rows[0].values[0]
+              }
+            ]
+          }
+        }),
+        previewRequestId,
+        { inputSchema: [] }
+      )
+    ).toThrow("before targets a column absent from the input schema");
+
+    for (const side of ["input", "output"] as const) {
+      const inspection = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: inspectRequestId,
+        kind: "stepInspectionPage",
+        sessionId,
+        revision: 2,
+        stepId: "empty-schema-step",
+        stepIndex: 0,
+        side,
+        page: inspectionWirePage(empty)
+      };
+      const context = { inputSchema: [], outputSchema: [], inspectionSide: side };
+      expect(decodeRKernelResponseJson(JSON.stringify(inspection), inspectRequestId, context)).toMatchObject({
+        kind: "stepInspectionPage",
+        side,
+        page: empty
+      });
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify(inspection), inspectRequestId, { inspectionSide: side })
+      ).toThrow(`requires the exact host ${side} schema`);
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify(inspection), inspectRequestId, {
+          ...context,
+          [side === "input" ? "inputSchema" : "outputSchema"]: oversized
+        })
+      ).toThrow(`requires the exact host ${side} schema`);
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({ ...inspection, page: inspectionWirePage(ordinary) }),
+          inspectRequestId,
+          context
+        )
+      ).toThrow("width");
+    }
+  });
+
   it("strictly validates native R rename lifecycle requests and responses", () => {
     const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

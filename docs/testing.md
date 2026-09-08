@@ -147,6 +147,11 @@ Native R frame and catalog owners cover constructor and subset forms of empty ta
 that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
 the same structural assertions.
 
+The existing R process export case also edits its zero-column source through first-column Custom Code, inspection,
+Undo and Redo. Decoder tests distinguish an explicit empty schema from missing context on both inspection sides.
+Native kernel owners compare live and generated first-column results and zero-column row reductions while retaining
+the nonempty Custom Code output requirement and stale-reference and maximum-width refusals.
+
 `python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
 integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
 double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in

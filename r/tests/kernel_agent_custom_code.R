@@ -49,6 +49,66 @@ custom_assert_true <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
 }
 
+zero_column_sources <- list(
+  data.frame(row.names = c("row-a", "row-b", "row-c")),
+  tibble::tibble(.rows = 0L),
+  data.table::data.table()
+)
+for (zero_column_source in zero_column_sources) {
+  zero_column_environment <- new.env(parent = baseenv())
+  zero_column_environment$frame <- zero_column_source
+  zero_column_before <- serialize(zero_column_source, NULL, version = 3L)
+  zero_column_expected <- unserialize(zero_column_before)
+  zero_column_expected[["created"]] <- seq_len(nrow(zero_column_expected))
+  zero_column_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, zero_column_environment)
+  zero_column_session <- "09090909-0909-4909-8909-090909090909"
+  zero_column_open <- dispatch_with(zero_column_agent, "openSession", list(
+    sessionId = zero_column_session, variableName = "frame", page = page_window()
+  ))
+  zero_column_preview <- dispatch_with(zero_column_agent, "previewStep", list(
+    sessionId = zero_column_session,
+    revision = 0L,
+    step = custom_step("first-column", 'result <- df; result[["created"]] <- seq_len(nrow(df))'),
+    page = page_window()
+  ))
+  assert_identical(zero_column_preview$kind, "stepPreview", "Custom Code did not preview its first column")
+  assert_identical(
+    lapply(zero_column_preview$page$schema, function(column) column[c("id", "name", "position", "rawType")]),
+    list(list(id = "c:step:first-column:0", name = "created", position = 0L, rawType = "integer")),
+    "Custom Code changed its first column schema"
+  )
+  assert_identical(zero_column_preview$page$dataframeFlavor, zero_column_open$page$dataframeFlavor, "Custom Code changed its frame flavor")
+  assert_identical(
+    lapply(zero_column_preview$page$page$rows, function(row) row$rowLabel),
+    lapply(zero_column_open$page$page$rows, function(row) row$rowLabel),
+    "Custom Code changed first-column row labels"
+  )
+  assert_identical(zero_column_preview$page$page$totalRows, nrow(zero_column_source), "Custom Code changed the active row count")
+  assert_identical(
+    lapply(zero_column_preview$page$page$rows, function(row) row$values[[1L]]$raw),
+    as.list(as.character(seq_len(nrow(zero_column_source)))),
+    "Custom Code changed first-column values"
+  )
+  zero_column_apply <- dispatch_with(zero_column_agent, "applyDraft", list(
+    sessionId = zero_column_session, revision = 1L, page = page_window()
+  ))
+  assert_identical(zero_column_apply$action, "apply", "Custom Code did not apply its first column")
+  zero_column_generated <- new.env(parent = baseenv())
+  zero_column_generated$frame <- unserialize(zero_column_before)
+  eval(parse(text = zero_column_apply$code), envir = zero_column_generated)
+  # data.table self-references are process-local; compare flavor and native frame contents.
+  assert_identical(class(zero_column_generated$open_wrangler_result), class(zero_column_expected), "generated first-column Custom Code changed flavor")
+  assert_identical(
+    as.data.frame(zero_column_generated$open_wrangler_result),
+    as.data.frame(zero_column_expected),
+    "generated first-column Custom Code changed the frame"
+  )
+  assert_identical(serialize(zero_column_generated$frame, NULL, version = 3L), zero_column_before, "generated first-column Custom Code mutated its source")
+  assert_identical(serialize(zero_column_environment$frame, NULL, version = 3L), zero_column_before, "live first-column Custom Code mutated its source")
+  invisible(dispatch_with(zero_column_agent, "closeSession", list(sessionId = zero_column_session)))
+  zero_column_agent$dispose()
+}
+
 custom_decoder_cases <- list(
   list(label = "blank Custom Code", step = custom_step("blank-custom", "  \n\t")),
   list(label = "comment-only Custom Code", step = custom_step("comment-custom", "# only a comment\n  # still a comment")),

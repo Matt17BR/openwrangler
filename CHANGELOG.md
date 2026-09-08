@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R Custom Code can create the first column of a zero-column source without losing the session. Generated R
+  accepts the same source, and step inspection preserves known empty schemas.
 - Python requests cancelled before dispatch retain their request ID, avoiding unnecessary runtime recovery.
 - DuckDB Parquet exports refuse interval truncation and time-zone map-key changes. Supported top-level time-zone
   values retain their UTC time on the minimum runtime too.

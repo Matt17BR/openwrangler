@@ -57,6 +57,10 @@ Native compact row names can encode zero rows, provided every column matches tha
 and empty cleaning or Custom Code results remain valid editing frames when their supported schema has at least one
 column. Inconsistent column lengths and malformed row-name counts are still rejected.
 
+A supported zero-column source is also valid, with its row count and labels intact. Custom Code may create its first
+column, and Drop Missing Rows and Drop Duplicates may retain the zero-column frame. Generated source validation follows
+the same boundary; operation-specific column checks and the nonempty Custom Code output requirement still apply.
+
 Cleaning follows native `data.table` copy semantics for column-element names: ordinary operations drop this inert
 metadata. Clone and Custom Code explicitly retain named inputs for their own execution. Generated code applies the
 same rule at each step, including when a later Custom Code step inspects the resulting attributes. Row labels and

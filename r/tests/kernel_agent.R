@@ -7106,7 +7106,7 @@ datetime_replay_empty_error <- tryCatch(
 )
 assert_identical(
   conditionMessage(datetime_replay_empty_error),
-  "Open Wrangler generated R requires between 1 and 2048 source columns",
+  "Open Wrangler column reference is stale",
   "generated in-place Format Datetime accepted a zero-column replay"
 )
 assert_identical(
@@ -7133,7 +7133,7 @@ datetime_replay_oversized_error <- tryCatch(
 )
 assert_identical(
   conditionMessage(datetime_replay_oversized_error),
-  "Open Wrangler generated R requires between 1 and 2048 source columns",
+  "Open Wrangler generated R supports at most 2048 source columns",
   "generated in-place Format Datetime accepted a 2049-column replay"
 )
 assert_identical(

@@ -2184,7 +2184,7 @@ function expectedMutationInputSchema(
   operation: "step preview" | "step inspection"
 ): readonly RColumnSchema[] {
   const schema = context.inputSchema;
-  if (!schema || schema.length === 0 || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
+  if (!schema || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
     fail(`R kernel ${operation} requires the exact host input schema.`);
   }
   return schema;
@@ -2195,7 +2195,7 @@ function expectedMutationOutputSchema(
   operation: "step inspection"
 ): readonly RColumnSchema[] {
   const schema = context.outputSchema;
-  if (!schema || schema.length === 0 || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
+  if (!schema || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
     fail(`R kernel ${operation} requires the exact host output schema.`);
   }
   return schema;
