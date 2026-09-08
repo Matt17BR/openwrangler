@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Closing a session during runtime recovery stops later cleaning and viewing requests after the active request settles.
 - Delayed grid navigation keeps newer header or control focus. Interrupted column drags no longer overwrite restored
   widths or continue after the view changes or controls become disabled.
 - Python refuses over-nested, non-finite and invalid-UTF-8 viewing operands before query work, so these requests no

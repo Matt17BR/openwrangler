@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { OpenWranglerRequest, PageResponse, SessionMetadata } from "../shared/protocol";
+import type { OpenWranglerRequest, PageResponse, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionRequestScheduler } from "../extension/sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "../extension/sessionRuntimeCleanup";
@@ -9,9 +9,143 @@ import {
   type RuntimeRecoverySession
 } from "../extension/sessionRuntimeRecovery";
 import { SessionRuntimeStateRestorer, initialViewingState } from "../extension/sessionRuntimeStateRestorer";
-import { openRequest, openedResponse, pageResponseForMetadata } from "./sessionCoordinatorTestFixtures";
+import {
+  openRequest,
+  openedResponse,
+  pageResponseForMetadata,
+  stepPreviewResponse,
+  planUpdatedResponse
+} from "./sessionCoordinatorTestFixtures";
 
 describe("SessionRuntimeRecovery", () => {
+  it.each([
+    { stage: "openSession", owner: "current", kinds: ["openSession", "closeSession"], closeRevision: 0 },
+    {
+      stage: "previewStep",
+      owner: "cancellation",
+      kinds: ["openSession", "previewStep", "closeSession"],
+      closeRevision: 0
+    },
+    {
+      stage: "applyDraft",
+      owner: "optional-current",
+      kinds: ["openSession", "previewStep", "applyDraft", "closeSession"],
+      closeRevision: 1
+    },
+    { stage: "getPage", owner: "origin", kinds: ["openSession", "getPage", "closeSession"], closeRevision: 0 }
+  ])(
+    "stops $owner recovery after $stage without dispatching a fallback",
+    async ({ stage, owner, kinds, closeRevision }) => {
+      let stale = false;
+      const cancellation = { isCancellationRequested: false, onCancellationRequested: vi.fn(() => ({ dispose() {} })) };
+      const requests: OpenWranglerRequest[] = [];
+      const step: TransformStep = { id: "saved", kind: "customCode", params: { code: "result = df" } };
+      const delegate = bridge(async (request) => {
+        requests.push(request);
+        if (request.kind === stage) {
+          stale = true;
+          if (owner === "cancellation") cancellation.isCancellationRequested = true;
+        }
+        if (request.kind === "openSession") return openedResponse("candidate");
+        if (request.kind === "previewStep") {
+          const response = stepPreviewResponse(request.revision + 1, request.step, "candidate");
+          response.page.limit = request.limit;
+          return response;
+        }
+        if (request.kind === "applyDraft") {
+          const response = planUpdatedResponse(request.revision + 1, [step], "candidate");
+          response.page.limit = request.limit;
+          return response;
+        }
+        if (request.kind === "getPage") throw new Error("Synthetic saved-view failure after origin changed");
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected request: ${request.kind}`);
+      });
+      const session = runtimeSession(delegate);
+      if (stage !== "getPage") session.metadata = { ...session.metadata, steps: [step] };
+      const original = { metadata: session.metadata, code: session.code, viewState: session.viewState };
+      const recoveryHooks = {
+        ...hooks(),
+        isCurrent: () => owner !== "current" || !stale,
+        originMismatch: () => (owner === "origin" && stale ? "Synthetic changed origin" : undefined)
+      };
+      const recovery = new SessionRuntimeRecovery(
+        new SessionRuntimeCleanup(() => true),
+        new SessionRuntimeStateRestorer()
+      );
+
+      await expect(
+        recovery.replay(
+          session,
+          { cancellation },
+          recoveryHooks,
+          true,
+          undefined,
+          () => owner !== "optional-current" || !stale
+        )
+      ).resolves.toBe(false);
+
+      expect(requests.map((request) => request.kind)).toEqual(kinds);
+      expect(requests.at(-1)).toEqual({ kind: "closeSession", sessionId: "candidate", revision: closeRevision });
+      expect(session.runtimeId).toBe("runtime-old");
+      expect(session.metadata).toBe(original.metadata);
+      expect(session.code).toBe(original.code);
+      expect(session.viewState).toBe(original.viewState);
+      expect(recoveryHooks.publishActive).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not open a runtime for an already cancelled recovery", async () => {
+    const request = vi.fn(async () => openedResponse("candidate"));
+    const recovery = new SessionRuntimeRecovery(
+      new SessionRuntimeCleanup(() => true),
+      new SessionRuntimeStateRestorer()
+    );
+    await expect(
+      recovery.replay(
+        runtimeSession({ request }),
+        {
+          cancellation: { isCancellationRequested: true, onCancellationRequested: vi.fn(() => ({ dispose() {} })) }
+        },
+        hooks()
+      )
+    ).resolves.toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("retains detached viewing settlement before stale candidate cleanup", async () => {
+    const settlement = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    let current = true;
+    const delegate = bridge(async (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse("candidate");
+      if (request.kind === "getPage") {
+        current = false;
+        throw new DetachedBridgeRequestError("Synthetic detached saved view", "cancellation", true, settlement.promise);
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected request: ${request.kind}`);
+    });
+    const session = runtimeSession(delegate);
+    const cleanup = new SessionRuntimeCleanup(() => true);
+    const recoveryHooks = { ...hooks(), isCurrent: () => current };
+    const recovery = new SessionRuntimeRecovery(cleanup, new SessionRuntimeStateRestorer());
+    try {
+      await expect(recovery.replay(session, undefined, recoveryHooks)).resolves.toBe(false);
+      expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage"]);
+      expect(recoveryHooks.installRuntimeSettlement).toHaveBeenCalledOnce();
+      settlement.resolve();
+      await cleanup.waitForTracked();
+      expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage", "closeSession"]);
+      expect(session.runtimeId).toBe("runtime-old");
+      expect(recoveryHooks.publishActive).not.toHaveBeenCalled();
+    } finally {
+      settlement.resolve();
+      await cleanup.waitForTracked();
+    }
+  });
+
   it("replays the pinned runtime contract and retires the replaced runtime", async () => {
     const requests: OpenWranglerRequest[] = [];
     const candidate = openedResponse("runtime-new", "polars");

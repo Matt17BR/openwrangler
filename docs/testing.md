@@ -139,7 +139,10 @@ double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export re
 
 Export owner tests use actual files to cover source renames and replacements before and during command awaits.
 Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
-including Python Interactive's originating document. The existing atomic-file tests retain destination and temporary
+including Python Interactive's originating document. Recovery and state-restorer owners check Close during replay,
+stale viewing fallback, and detached execution settling before candidate cleanup in recovery and initial saved-view
+restoration. Ordinary replay remains covered.
+The existing atomic-file tests retain destination and temporary
 identity checks; runtime writers retain their separate output-handle contracts.
 The export-target owner also reserves a file through Node and passes its actual identity receipt to the Python pinned
 writer, checking both writing the reserved file and refusal of a mismatched receipt on each platform.

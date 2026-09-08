@@ -11,6 +11,7 @@ import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersist
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
+  SessionMetadata,
   SessionOpenedResponse,
   TransformStep
 } from "../shared/protocol";
@@ -32,6 +33,110 @@ import { nativeRKernelChangedResponse, type NativeRRecoveryBridge } from "./nati
 type RecoveryBridge = NativeRRecoveryBridge;
 
 describe("SessionCoordinator", () => {
+  it("stops replaying a confirmed plan when Close arrives during recovery", async () => {
+    const replayStarted = deferred<void>();
+    const releasePreview = deferred<void>();
+    const states = new Map<string, SessionMetadata>();
+    const afterClose: string[] = [];
+    let openCount = 0;
+    let lost = false;
+    let closing = false;
+    const steps: TransformStep[] = ["first", "second"].map((id) => ({
+      id,
+      kind: "customCode",
+      params: { code: "result = df" }
+    }));
+    const delegate = {
+      request: async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (closing) afterClose.push(request.kind);
+        if (request.kind === "openSession") {
+          const opened = openedResponse(`runtime-${++openCount}`);
+          states.set(opened.metadata.sessionId, opened.metadata);
+          return opened;
+        }
+        if (!("sessionId" in request)) throw new Error(`Unexpected request: ${request.kind}`);
+        const metadata = states.get(request.sessionId);
+        if (!metadata) throw new Error("Expected the exact candidate runtime.");
+        if (request.kind === "previewStep") {
+          if (request.sessionId === "runtime-2" && request.step.id === "first") {
+            replayStarted.resolve();
+            await releasePreview.promise;
+          }
+          const preview = stepPreviewResponse(request.revision + 1, request.step, request.sessionId);
+          preview.metadata.steps = metadata.steps;
+          preview.page.limit = request.limit;
+          states.set(request.sessionId, preview.metadata);
+          return preview;
+        }
+        if (request.kind === "applyDraft") {
+          if (!metadata.draftStep) throw new Error("Expected a confirmed draft to apply.");
+          const applied = planUpdatedResponse(
+            request.revision + 1,
+            [...metadata.steps, metadata.draftStep],
+            request.sessionId
+          );
+          applied.page.limit = request.limit;
+          states.set(request.sessionId, applied.metadata);
+          return applied;
+        }
+        if (request.kind === "getPage") {
+          if (request.sessionId === "runtime-1" && lost)
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Synthetic lost runtime",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          return pageResponseForMetadata(request, metadata);
+        }
+        if (request.kind === "closeSession") {
+          states.delete(request.sessionId);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected request: ${request.kind}`);
+      }
+    };
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(delegate);
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the session to open.");
+    const sessionId = opened.metadata.sessionId;
+    let revision = opened.metadata.revision;
+    const window = { offset: 0, limit: 100, ...columnWindow };
+    try {
+      for (const step of steps) {
+        const preview = await bridge.request({ kind: "previewStep", sessionId, revision, step, ...window });
+        if (preview.kind !== "stepPreview") throw new Error("Expected the draft to preview.");
+        const applied = await bridge.request({ kind: "applyDraft", sessionId, revision: preview.revision, ...window });
+        if (applied.kind !== "planUpdated") throw new Error("Expected the draft to apply.");
+        revision = applied.revision;
+      }
+      lost = true;
+      const page = bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision,
+        viewRequestId: "recover",
+        filterModel: { filters: [], sort: [] },
+        ...window
+      });
+      await replayStarted.promise;
+      closing = true;
+      const closed = bridge.request({ kind: "closeSession", sessionId, revision });
+      releasePreview.resolve();
+      await expect(page).resolves.toMatchObject({ kind: "error", code: "unknown_session" });
+      await expect(closed).resolves.toMatchObject({ kind: "sessionClosed" });
+      expect(afterClose).toEqual(["closeSession", "closeSession"]);
+      expect(states.size).toBe(0);
+      expect(coordinator.activeSession()).toBeUndefined();
+    } finally {
+      releasePreview.resolve();
+      await coordinator.dispose();
+    }
+  });
+
   it("persists grid presentation separately and notifies native views only when column selection changes", async () => {
     let stored: Record<string, unknown> = {};
     const workspaceState = {
