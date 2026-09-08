@@ -148,6 +148,10 @@ R accepts only literals exactly representable by its existing numeric scalar typ
 retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
 this change cannot recover digits already lost.
 
+Pandas timestamps preserve nanosecond fractions and time-zone offsets that include seconds, such as historical
+Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
+corrected labels while retaining ordinary value counts. Filter inputs retain microsecond precision and minute-resolution offsets.
+
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
 follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
@@ -168,6 +172,9 @@ Nullable Arrow integers, timestamps and durations preserve exact duplicate membe
 differences, in live and generated row removal and dataset duplicate counts. Retained rows keep their original arrays.
 Sparse integer dataset duplicate counts agree with the existing exact row-removal comparison.
 Missing-cell totals agree with per-column counts for Sparse and mixed Dense/Sparse dataframes.
+Arrow timestamp and duration missing-value filters, pages and profiles preserve present nanosecond extrema.
+Supported Fill methods retain valid temporal values in targets, donors and directional anchors. The minimum
+nanosecond timestamp is displayed; using it as a filter value remains unsupported under the existing input precision.
 Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
 checks also cover encoded unsigned values.
 Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.

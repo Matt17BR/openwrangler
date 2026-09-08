@@ -17,7 +17,7 @@ from importlib import import_module
 from math import isfinite, isinf, isnan
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 ColumnType = Literal[
     "string",
@@ -1065,6 +1065,28 @@ def validate_numpy_float(value: Any) -> None:
         raise EngineError(NUMPY_FLOAT_PRECISION_MESSAGE)
 
 
+def datetime_isoformat(value: datetime, *, sep: Literal["T", " "] = "T", nanoseconds: int | None = None) -> str:
+    """Format datetime text, or supply a full nanosecond fraction for a whole-second value."""
+    if nanoseconds is None:
+        module = type(value).__module__
+        if (
+            isinstance(module, str)
+            and module.partition(".")[0] == "pandas"
+            and type(value) is import_module("pandas").Timestamp
+        ):
+            remainder = cast(Any, value).nanosecond
+            if remainder:
+                nanoseconds = value.microsecond * 1_000 + remainder
+        if nanoseconds is None:
+            return value.isoformat() if sep == "T" else value.isoformat(sep=sep)
+    if not nanoseconds:
+        return value.isoformat() if sep == "T" else value.isoformat(sep=sep)
+    # Timestamp's nanosecond formatter can mistake offset seconds for the time fraction.
+    text = value.isoformat(sep=sep, timespec="microseconds")
+    fraction = text.index(".")
+    return f"{text[:fraction]}.{nanoseconds:09d}{text[fraction + 7 :]}"
+
+
 def normalize_cell(value: Any) -> dict[str, Any]:
     type_name = type(value).__name__
     if _is_numpy_scalar_wrapper(value) and type_name not in {"datetime64", "timedelta64"}:
@@ -1124,7 +1146,7 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         raw = display
     elif isinstance(value, datetime):
         kind = "datetime"
-        display = value.isoformat()
+        display = datetime_isoformat(value)
         raw = display
     elif isinstance(value, date):
         kind = "date"
@@ -1419,7 +1441,9 @@ def _json_safe(value: Any) -> Any:
         if isinf(numeric_value):
             return "-Infinity" if numeric_value < 0 else "Infinity"
         return numeric_value
-    if isinstance(value, (date, datetime)):
+    if isinstance(value, datetime):
+        return datetime_isoformat(value)
+    if isinstance(value, date):
         return value.isoformat()
     if type_name == "Timedelta" and isinstance(getattr(value, "value", None), Integral):
         return int(value.value) / 1_000_000_000

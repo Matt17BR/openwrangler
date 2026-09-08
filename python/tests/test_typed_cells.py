@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, Literal, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -255,6 +257,233 @@ def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(pd.Timestamp("2026-07-15T12:30:00+02:00"))["raw"] == "2026-07-15T12:30:00+02:00"
     assert normalize_cell(timedelta(days=1))["raw"] == 86_400
     assert normalize_cell(pd.Timedelta(1, unit="ns"))["raw"] == 1e-9
+
+
+@pytest.mark.parametrize(
+    "zone,clock,offset",
+    [
+        (timezone.utc, "1890-01-01T00:00:00", "+00:00"),
+        (timezone(timedelta(seconds=3208)), "1890-01-01T00:53:28", "+00:53:28"),
+        (timezone(timedelta(seconds=-3208)), "1889-12-31T23:06:32", "-00:53:28"),
+        (timezone(timedelta(minutes=330)), "1890-01-01T05:30:00", "+05:30"),
+        (ZoneInfo("Europe/Berlin"), "1890-01-01T00:53:28", "+00:53:28"),
+    ],
+)
+@pytest.mark.parametrize("nanoseconds", [0, 123, 123456789])
+def test_timestamp_cells_preserve_fraction_offset_and_instant(zone, clock, offset, nanoseconds) -> None:
+    value = cast(
+        pd.Timestamp, pd.Timestamp("1890-01-01T00:00:00Z").tz_convert(zone) + pd.Timedelta(nanoseconds, unit="ns")
+    )
+    expected = clock + (f".{nanoseconds:09d}" if nanoseconds else "") + offset
+    cell = normalize_cell(value)
+    assert cell == {"kind": "datetime", "raw": expected, "display": expected, "isNull": False, "isNaN": False}
+    parsed = datetime.fromisoformat(cell["raw"])
+    assert parsed.utcoffset() == value.utcoffset()
+    delta = parsed - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert (
+        delta.days * 86_400 + delta.seconds
+    ) * 1_000_000_000 + delta.microseconds * 1_000 + nanoseconds % 1_000 == value.value
+    nested = normalize_cell({"when": value, "values": [value, pd.NaT]})
+    assert nested["raw"] == {"when": expected, "values": [expected, None]}
+    json.dumps(nested, allow_nan=False)
+    source = pd.DataFrame({"when": pd.Series([value, pd.NaT], dtype=object)})
+    source.index = pd.Index(["same", "same"], name="source row")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    page = PandasEngine().page(source, 0, 2, column_projection=[(0, "stable:when")])
+    assert page["columnIds"] == ["stable:when"]
+    assert [row["values"] for row in page["rows"]] == [[cell], [normalize_cell(pd.NaT)]]
+    assert [row["rowLabel"] for row in page["rows"]] == ["same", "same"]
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+    label = expected.replace("T", " ")
+    engine = PandasEngine()
+    summary = engine.summaries(source)[0]
+    assert summary["topValues"] == [{"value": label, "count": 1}]
+    assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
+    choices, more = engine.column_values(source, "when")
+    assert not more and len(choices) == 1
+    assert choices[0]["value"] == label and choices[0]["count"] == 1
+    assert choices[0].get("selectionValue") == typed_selection_value(value, "datetime")
+    assert engine.column_values(source, "when", search=label) == (choices, False)
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("unit,fraction", [("s", ""), ("ms", ".123000"), ("us", ".123456"), ("ns", ".123456789")])
+def test_timestamp_cells_retain_native_unit_precision(unit: Literal["s", "ms", "us", "ns"], fraction: str) -> None:
+    value = pd.Timestamp("2000-02-29T00:00:00.123456789Z").tz_convert(timezone(timedelta(seconds=-30))).as_unit(unit)
+    expected = "2000-02-28T23:59:30" + fraction + "-00:00:30"
+    assert normalize_cell(value)["raw"] == expected
+    assert normalize_cell([value])["raw"] == [expected]
+
+
+def test_datetime_subclasses_do_not_acquire_timestamp_metadata() -> None:
+    class TaggedDatetime(datetime):
+        nanosecond = 123
+
+    class Timestamp(datetime):
+        @property
+        def nanosecond(self):
+            raise AssertionError("An unrelated datetime property must not be read")
+
+    for cls in (
+        datetime,
+        TaggedDatetime,
+        Timestamp,
+        type("NoModuleDatetime", (datetime,), {"__module__": None}),
+        type("NumericModuleDatetime", (datetime,), {"__module__": 42}),
+    ):
+        value = cls(2020, 2, 29, 3, 4, 5, 123456, tzinfo=timezone(timedelta(seconds=-30, microseconds=-456789)))
+        expected = "2020-02-29T03:04:05.123456-00:00:30.456789"
+        assert normalize_cell(value)["raw"] == expected
+        assert normalize_cell({"when": value})["raw"] == {"when": expected}
+        source = pd.DataFrame({"when": pd.Series([value], dtype=object)})
+        assert PandasEngine().page(source, 0, 1)["rows"][0]["values"][0]["raw"] == expected
+
+
+@pytest.mark.parametrize("zone", ["Europe/Berlin", "UTC"])
+def test_timestamp_parquet_session_preserves_exact_page_text(tmp_path: Path, zone: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    ticks = pd.Timestamp("1890-01-01T00:00:00Z").value + 123
+    values = pa.array([ticks, None], type=pa.timestamp("ns", tz=zone))
+    path = tmp_path / "timestamp.parquet"
+    pq.write_table(pa.table({"when": values}), path)
+    original = path.read_bytes()
+    scalar = values[0].as_py()
+    # The minimum cohort's named Berlin zone has a minute-aligned historical
+    # offset. Preserve that producer's instant too; explicit ZoneInfo is above.
+    coarse = datetime(1890, 1, 1, tzinfo=timezone.utc).astimezone(scalar.tzinfo)
+    clock = (
+        f"{coarse.year:04d}-{coarse.month:02d}-{coarse.day:02d}T"
+        f"{coarse.hour:02d}:{coarse.minute:02d}:{coarse.second:02d}"
+    )
+    offset_seconds = int(cast(timedelta, coarse.utcoffset()).total_seconds())
+    hours, remainder = divmod(abs(offset_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    suffix = f"{'-' if offset_seconds < 0 else '+'}{hours:02d}:{minutes:02d}" + (f":{seconds:02d}" if seconds else "")
+    expected = clock + ".000000123" + suffix
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(path), "label": path.name}, backend="pandas", page_size=2
+        )
+        metadata = opened["metadata"]
+        cell = opened["page"]["rows"][0]["values"][0]
+        assert cell == {"kind": "datetime", "raw": expected, "display": expected, "isNull": False, "isNaN": False}
+        assert opened["page"]["rows"][1]["values"][0] == normalize_cell(None)
+        repeated = manager.get_page(metadata["sessionId"], metadata["revision"], 0, 2, {"filters": [], "sort": []})
+        assert repeated["page"] == opened["page"]
+        assert opened["page"]["columnIds"] == [metadata["schema"][0]["id"]]
+        query = {"filters": [], "sort": []}
+        label = expected.replace("T", " ")
+        summary = manager.get_summary(
+            metadata["sessionId"], metadata["revision"], query, [metadata["schema"][0]["id"]]
+        )["summaries"][0]
+        assert summary["topValues"] == [{"value": label, "count": 1}]
+        assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
+        choices = manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query)
+        assert choices["values"] == [{"value": label, "count": 1}]
+        assert (
+            manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query, search=label)[
+                "values"
+            ]
+            == choices["values"]
+        )
+        json.dumps(opened, allow_nan=False)
+    finally:
+        manager.close_all()
+    assert path.read_bytes() == original
+    assert pq.read_table(path)["when"].cast(pa.int64()).to_pylist() == [ticks, None]
+
+
+@pytest.mark.parametrize("dictionary", [False, True])
+@pytest.mark.parametrize("unit,fraction", [("ns", "000000001"), ("us", "000001")])
+def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit: str, fraction: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+    value_type = pa.duration(unit)
+    array = (
+        pa.DictionaryArray.from_arrays(pa.array([0, 1, 0, None], type=pa.int8()), pa.array([1, 2], type=value_type))
+        if dictionary
+        else pa.array([1, 2, 1, None], type=value_type)
+    )
+    source = pd.DataFrame({"value": pd.Series(array, dtype=pd.ArrowDtype(array.type))})
+    source.index = pd.Index(["same"] * 4, name="source row")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    first = {"value": f"0 days 00:00:00.{fraction}", "count": 2}
+    choices, more = engine.column_values(source, "value", limit=1)
+    assert choices == [first] and more
+    assert engine.column_values(source, "value", search="1") == ([first], False)
+    # Pandas 2 and 3 have different native vector text for Arrow durations.
+    # Search follows those original row representations, before counted values box as Timedelta.
+    native_text = pd.Series(pa.array([1], type=value_type), dtype=pd.ArrowDtype(value_type)).astype(str).iloc[0]
+    assert native_text in {"1 nanoseconds" if unit == "ns" else "1 microseconds", first["value"]}
+    for search in ("0", "days", "00:00"):
+        expected = ([first], True) if native_text == first["value"] else ([], False)
+        assert engine.column_values(source, "value", search=search, limit=1) == expected
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize(
+    "values,search,expected_value,count,column_type",
+    [
+        ([1, 1.0, True, 1.0], "1.0", 1.0, 2, "string"),
+        ([1, True, 1], "True", True, 1, "string"),
+        ([Decimal("1.00"), Decimal("1.0"), Decimal("1.00")], "1.00", Decimal("1.00"), 2, "decimal"),
+        (
+            [
+                pd.Timestamp("2020-01-01T00:00:00+00:00"),
+                pd.Timestamp("2020-01-01T01:00:00+01:00"),
+                pd.Timestamp("2020-01-01T00:00:00+00:00"),
+            ],
+            "+01:00",
+            pd.Timestamp("2020-01-01T01:00:00+01:00"),
+            1,
+            "datetime",
+        ),
+    ],
+)
+def test_pandas_value_search_filters_original_representations_before_counting(
+    values, search, expected_value, count, column_type
+) -> None:
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object)})
+    source.index = pd.Index(["same"] * len(values), name="source row")
+    before = source.copy(deep=True)
+    choices, more = PandasEngine().column_values(source, "value", search=search)
+    assert not more
+    assert choices == [
+        {
+            "value": str(expected_value),
+            "count": count,
+            "selectionValue": typed_selection_value(expected_value, column_type),
+        }
+    ]
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("include_fraction", [False, True])
+def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text(include_fraction: bool) -> None:
+    midnight = pd.Timestamp("2020-01-01")
+    other = pd.Timestamp("2020-01-01T00:00:00.000000123") if include_fraction else pd.Timestamp("2020-01-02")
+    source = pd.DataFrame({"value": [midnight, other]})
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    if include_fraction:
+        assert engine.column_values(source, "value", search=".000000000") == (
+            [
+                {
+                    "value": "2020-01-01 00:00:00",
+                    "count": 1,
+                    "selectionValue": typed_selection_value(midnight, "datetime"),
+                }
+            ],
+            False,
+        )
+    else:
+        assert engine.column_values(source, "value", search="00:00:00") == ([], False)
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
 def test_nested_typed_cells_are_strict_json_safe() -> None:
@@ -1653,3 +1882,103 @@ def test_non_numpy_transport_does_not_require_numpy(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(builtins, "__import__", without_numpy)
     assert [normalize_cell(value) for value in values] == expected
+
+
+@pytest.mark.parametrize("dictionary", [False, True])
+@pytest.mark.parametrize(
+    "family,expected_text",
+    [
+        ("timestamp", "1677-09-21T00:12:43.145224192"),
+        ("utc", "1677-09-21T00:12:43.145224192+00:00"),
+        ("berlin", "1677-09-21T01:06:11.145224192+00:53:28"),
+        ("duration", "-9223372036854775808 ns"),
+    ],
+)
+def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters(
+    dictionary: bool, family: str, expected_text: str
+) -> None:
+    import pyarrow as pa
+
+    minimum = -(2**63)
+    arrow_type = (
+        pa.duration("ns")
+        if family == "duration"
+        else pa.timestamp("ns", tz={"timestamp": None, "utc": "UTC", "berlin": "Europe/Berlin"}[family])
+    )
+    if dictionary:
+        encoded = pa.DictionaryArray.from_arrays(
+            pa.array([0, 1, None, 0, 2], type=pa.int8()), pa.array([minimum, None, 0], type=arrow_type)
+        )
+        array = pa.chunked_array([encoded.slice(0, 2), encoded.slice(2)])
+    else:
+        array = pa.chunked_array(
+            [pa.array([minimum, None], type=arrow_type), pa.array([None, minimum, 0], type=arrow_type)]
+        )
+    source = pd.DataFrame({"value": pd.Series(array, dtype=pd.ArrowDtype(array.type)), "row": range(5)})
+    source.index = pd.Index(["same", "same", "null", "same", "last"], name="original")
+    source.attrs["origin"] = "unchanged"
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    page = engine.page(source, 1, 3, column_projection=[(1, schema[1]["id"]), (0, schema[0]["id"])])
+    assert page["columnIds"] == [schema[1]["id"], schema[0]["id"]]
+    assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3]
+    assert [row["values"][0]["raw"] for row in page["rows"]] == [1, 2, 3]
+    cells = [row["values"][1] for row in page["rows"]]
+    assert [cell["isNull"] for cell in cells] == [True, True, False]
+    assert cells[-1] == {
+        "kind": "duration" if family == "duration" else "datetime",
+        "raw": minimum / 1_000_000_000 if family == "duration" else expected_text,
+        "display": expected_text,
+        "isNull": False,
+        "isNaN": False,
+    }
+    summary = engine.summaries(source, [(0, schema[0]["id"])])[0]
+    assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (2, 0, 2)
+    assert summary["topValues"][0] == {"value": expected_text, "count": 2}
+    if family != "duration":
+        assert summary["visualization"]["min"] == expected_text
+    choices, more = engine.column_values(source, "value", limit=1)
+    # The existing datetime selection decoder does not carry nanosecond precision.
+    assert choices == [{"value": expected_text, "count": 2}] and more
+    assert engine.column_values(source, "value", search=expected_text) == (choices, False)
+    for empty in [source.iloc[:0], source.iloc[[1, 2]]]:
+        assert engine.column_values(empty, "value") == ([], False)
+        assert engine.summaries(empty, [(0, schema[0]["id"])])[0]["nullCount"] == len(empty)
+    lineage = source_lineage(schema)
+    for operator, positions in [("isNull", [1, 2]), ("isNotNull", [0, 3, 4])]:
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "temporal-filter",
+                    "kind": "filterRows",
+                    "params": {
+                        "filterModel": {
+                            "filters": [
+                                {
+                                    "column": lineage[0],
+                                    "type": schema[0]["type"],
+                                    "predicates": [{"kind": "predicate", "operator": operator}],
+                                }
+                            ],
+                            "sort": [],
+                        }
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for actual in [engine.apply_transform(source, operation), namespace["clean_data"](source)]:
+            assert actual.index.equals(source.iloc[positions].index)
+            assert actual.columns.equals(source.columns) and actual.attrs == source.attrs
+            pd.testing.assert_series_equal(actual["row"], source["row"].iloc[positions])
+            native = cast(pd.arrays.ArrowExtensionArray, actual["value"].array).__arrow_array__()
+            assert native.type == array.type
+            # Existing row queries canonicalize dictionary entries referring to null.
+            expected_array = array.cast(arrow_type).take(pa.array(positions))
+            assert native.cast(arrow_type).equals(expected_array)
+    pd.testing.assert_frame_equal(source, before)
+    assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(array)
