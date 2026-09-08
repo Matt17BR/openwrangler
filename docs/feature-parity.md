@@ -253,8 +253,9 @@ preserve the empty schema; Custom Code results still require at least one column
 Value selections and numeric predicates retain adjacent R doubles and finite extrema in live and generated filtering.
 Typed temporal selections use the same exact numeric payloads. Invalid previews preserve the confirmed result.
 
-Native R live and generated medians use the same midpoint calculation for Group By and Fill Missing Values,
-including subnormal and extreme doubles. This correction does not expand the supported frame or transport scope.
+Native R Group By medians, median Fill and midpoint interpolation use R's native mean for unequal finite pairs
+in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.
+Interpolation at other weights still has a [known tiny-value rounding limit](https://github.com/Matt17BR/openwrangler/issues/1064).
 
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
 limits; none is a stable-release gate.

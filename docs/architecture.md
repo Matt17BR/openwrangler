@@ -495,6 +495,9 @@ with the preview.
 
 Generated Fill Missing Values code includes only the helper families used by the complete plan. Repeated and mixed
 steps retain each required family once, including scalar datetime and numeric midpoint dependencies.
+Median and exact-midpoint interpolation share the native R midpoint owner. Unequal finite pairs use
+`base::mean.default` directly, keeping user S3 methods out of the arithmetic; equal-value and non-finite behavior
+remain explicit in that owner.
 Directional Fill uses the same native missing-run and donor-selection function in live execution and standalone
 generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
 existing owners.

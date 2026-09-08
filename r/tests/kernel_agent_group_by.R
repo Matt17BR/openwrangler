@@ -626,6 +626,14 @@ assert_identical(group_by_overflow_closed$kind, "closed", "the failed R Group By
 local({
   tiny <- 2^-1074
   midpoint_cases <- list(
+    positive_tie = list(values = c(tiny, 2 * tiny), expected = 2 * tiny),
+    negative_tie = list(values = c(-2 * tiny, -tiny), expected = -2 * tiny),
+    positive_zero = list(values = c(-tiny, 2 * tiny), expected = 0),
+    negative_zero = list(values = c(-2 * tiny, tiny), expected = -0.0),
+    normal_boundary = list(
+      values = c(.Machine$double.xmin - tiny, .Machine$double.xmin), expected = .Machine$double.xmin
+    ),
+    equal_negative_zero = list(values = c(-0.0, -0.0), expected = -0.0),
     odd_subnormal = list(values = tiny, expected = tiny),
     equal_subnormal = list(values = c(tiny, tiny), expected = tiny),
     negative_subnormal = list(values = c(-tiny, -tiny), expected = -tiny),
@@ -692,13 +700,26 @@ local({
             filled
           }
           assert_identical(live[[2L]], expected, paste(label, "changed the live result"))
+          assert_identical(sprintf("%a", live[[2L]]), sprintf("%a", expected), paste(label, "changed live result bits"))
+          applied <- dispatch_with(midpoint_agent, "applyDraft", list(
+            sessionId = midpoint_session_id, revision = 1L, page = page_window()
+          ))
+          assert_identical(applied$action, "apply", paste(label, "did not apply"))
+          assert_identical(applied$page$page, preview$page$page, paste(label, "changed the preview on Apply"))
+          assert_identical(applied$code, preview$code, paste(label, "changed code on Apply"))
           standalone <- new.env(parent = baseenv())
           standalone$midpoint_frame <- if (inherits(before, "data.table")) data.table::copy(before) else before
-          assert_no_warning(eval(parse(text = preview$code), envir = standalone), paste("generated", label))
+          assert_no_warning(eval(parse(text = applied$code), envir = standalone), paste("generated", label))
           generated <- standalone$open_wrangler_result
           assert_identical(generated[[2L]], expected, paste(label, "changed the generated result"))
+          assert_identical(sprintf("%a", generated[[2L]]), sprintf("%a", expected), paste(label, "changed generated result bits"))
           assert_identical(class(generated), class(before), paste(label, "changed the dataframe flavor"))
           assert_identical(standalone$midpoint_frame, before, paste(label, "changed the generated source"))
+          undone <- dispatch_with(midpoint_agent, "undoStep", list(
+            sessionId = midpoint_session_id, revision = 2L, page = page_window()
+          ))
+          assert_identical(undone$action, "undo", paste(label, "did not undo"))
+          assert_identical(undone$page$page, opened$page$page, paste(label, "did not restore the source page"))
         }
         assert_identical(midpoint_source$midpoint_frame, before, paste(label, "changed the live source"))
         invisible(dispatch_with(midpoint_agent, "closeSession", list(sessionId = midpoint_session_id)))

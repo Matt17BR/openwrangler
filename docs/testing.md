@@ -105,7 +105,10 @@ notebook snapshots; the installed R terminal
 journey checks that closing the terminal restores the idle R action. The existing App component tests retain
 DOM-before-acknowledgement and mismatched-marker integration
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
-contracts execute generated code for midpoint edge cases alongside live execution.
+contracts execute generated code for midpoint edge cases alongside live execution. Their existing owners cover tiny
+ties, the normal/subnormal boundary, finite extremes, source preservation and Undo. Direct frame tests also check
+signed zero and bypassing user-defined S3 mean methods. Non-midpoint interpolation counterexamples stay
+separate from the midpoint guarantee.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
 ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
 Native R child fixtures retain the caller's temporary-directory settings. Private Spark notebook fixtures use

@@ -23,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R medians and midpoint interpolation preserve tiny numeric results in live and generated cleaning code.
+  They use R's native mean while retaining finite-overflow protection and existing equal-value behavior.
 - Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
 - Column-search arrow and page keys follow the displayed results after a cleaning action changes the schema.
 - Generated Python refuses an existing column when an operation requires a new output name.

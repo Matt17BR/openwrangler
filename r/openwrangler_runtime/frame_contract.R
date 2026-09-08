@@ -6388,8 +6388,7 @@ openwrangler_r_frame_contract <- local({
   safe_float_midpoint <- function(lower, upper) {
     if (lower == upper) return(lower)
     if (is.finite(lower) && is.finite(upper)) {
-      if ((lower < 0) == (upper < 0)) return(lower + ((upper - lower) / 2))
-      return((lower / 2) + (upper / 2))
+      return(base::mean.default(base::c(lower, upper)))
     }
     (lower + upper) / 2
   }
@@ -6983,7 +6982,9 @@ openwrangler_r_frame_contract <- local({
           if (!is.finite(weight) || weight <= 0 || weight >= 1) {
             abort("invalid-view-value", "interpolation coordinates cannot be represented safely")
           }
-          interpolated <- if (sign(left_value) == sign(right_value)) {
+          interpolated <- if (weight == 0.5) {
+            safe_float_midpoint(left_value, right_value)
+          } else if (sign(left_value) == sign(right_value)) {
             left_value + (right_value - left_value) * weight
           } else {
             left_value * (1 - weight) + right_value * weight
