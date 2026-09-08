@@ -699,19 +699,20 @@ def test_duckdb_grouped_fill_ignores_nocase_collation_for_public_exact_semantics
         engine.close()
 
 
-def test_duckdb_grouped_exact_median_defers_validation_to_the_single_lazy_query() -> None:
+def test_duckdb_grouped_exact_median_refuses_when_the_result_is_evaluated() -> None:
     engine = DuckDBEngine()
     source = grouped_exact_median_frame(engine, "integer", exact=False)
     operation = grouped_step("median", 1, [(0, "group")])
 
     try:
         live = engine.apply_transform(source, operation)
-        generated = execute_generated(engine, source, [operation])
         assert isinstance(live, DuckDBSqlPlan)
         with pytest.raises(duckdb.Error, match="represented exactly"):
             normalized_rows(live)
+        with pytest.raises(EngineError, match="represented exactly"):
+            engine.validate_transformation_result(live)
         with pytest.raises(duckdb.Error, match="represented exactly"):
-            normalized_rows(generated)
+            execute_generated(engine, source, [operation])
     finally:
         engine.close()
 

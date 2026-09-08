@@ -521,6 +521,61 @@ def test_server_preflights_the_complete_correlated_envelope_before_committing(
     assert observe_session(manager, session_id, 0) == expected_observation
 
 
+@pytest.mark.parametrize("outside_window", ["rows", "columns"])
+def test_duckdb_result_error_outside_the_page_preserves_state_and_allows_correction(
+    tmp_path: Path, outside_window: str
+) -> None:
+    import duckdb
+    from duckdb.sqltypes import BIGINT
+
+    from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
+
+    values = [0] * (201 if outside_window == "rows" else 1) + [2**63 - 1, None]
+    original_rows = list(enumerate(values))
+    source_bytes = (
+        "ow,value\n" + "".join(f"{index},{'' if value is None else value}\n" for index, value in original_rows)
+    ).encode()
+    path = tmp_path / "result-readiness.csv"
+    path.write_bytes(source_bytes)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="duckdb", page_size=200)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        assert isinstance(session.engine, DuckDBEngine)
+        original_native = session.engine._terminal_rows(session.original, "SELECT * FROM ow")
+        assert [row[:2] for row in original_native] == original_rows
+        before = session_state(session)
+        invalid = formula_step("overflow", "result")
+        invalid["params"].update(operator="add", value=1)
+        with pytest.raises(EngineError, match="Overflow in addition"):
+            manager.preview_step(sid, 0, invalid, 0, 200, column_limit=2 if outside_window == "columns" else 64)
+        assert session_state(session) == before
+        assert session.engine._terminal_rows(session.original, "SELECT * FROM ow") == original_native
+        assert path.read_bytes() == source_bytes
+
+        corrected = deepcopy(invalid)
+        corrected["params"]["value"] = 0
+        preview = manager.preview_step(sid, 0, corrected, 0, 200)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 200)
+        assert preview["kind"] == "stepPreview"
+        assert applied["kind"] == "planUpdated"
+        assert applied["revision"] == 2
+        expected = [(index, value, value) for index, value in original_rows]
+        assert session.engine._terminal_rows(session.committed, "SELECT ow, value, result FROM ow") == expected
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](duckdb.read_csv(str(path)))
+        assert generated.types == [BIGINT] * 3
+        assert generated.fetchall() == expected
+        manager.undo_step(sid, 2, 0, 200)
+        assert session.plan == []
+        assert session.engine._terminal_rows(session.committed, "SELECT ow, value FROM ow") == original_rows
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+
+
 def test_duckdb_unsigned_round_refusal_keeps_the_confirmed_plan(tmp_path: Path) -> None:
     maximum = 2**128 - 1
     path = tmp_path / "unsigned-round.csv"

@@ -179,7 +179,13 @@ including original row identities, frame metadata and integer64 helper admission
 
 DuckDB engine tests compare retained scalar and nested values, zero signs and native types for every duplicate keep mode
 in live and generated results. Session transactions own the corresponding preview/history and source-preservation
-assertions.
+assertions. The same DuckDB engine owner covers complete generated programs that refuse an erroneous intermediate
+before a later projection, preserve private-connection Rename plans, and leave empty plans unchanged. Session
+transactions cover native errors outside the requested row or column window, retained state after refusal and
+successful correction. Native complex-value and empty-result controls keep the result check compatible with valid frames.
+Mark Duplicates and private Rename controls count each readiness query and later result retrieval separately, requiring
+one source evaluation per query. Grouped Fill controls distinguish lazy plan construction from refusal during live
+result validation or generated execution.
 
 Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
 dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day

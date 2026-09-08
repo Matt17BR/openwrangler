@@ -460,6 +460,15 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+Before publishing a newly computed cleaning step, DuckDB evaluates every physical output column across all result
+rows. This includes Custom Code and errors outside the requested page or column window. The existing transformation
+validation hook executes a native aggregate and discards its single scalar result; it does not retain a materialized
+frame, connection or cache. Both functions resolve from DuckDB's built-in catalog, so user macros cannot
+replace the check. Generated code performs the same evaluation after each step, before later projections
+can remove an erroneous output, using that relation's connection. Empty plans remain no-ops.
+This adds work proportional to the evaluated result at each step, including replay. It verifies the current execution;
+it cannot guarantee that a later evaluation of nondeterministic Custom Code will succeed.
+
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
