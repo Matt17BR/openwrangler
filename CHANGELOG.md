@@ -17,6 +17,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Python runtime errors exclude late stderr from a retired process while keeping that text in the output history.
 - Native R Custom Code can create the first column of a zero-column source without losing the session. Generated R
   accepts the same source, and step inspection preserves known empty schemas.
 - Python requests cancelled before dispatch retain their request ID, avoiding unnecessary runtime recovery.

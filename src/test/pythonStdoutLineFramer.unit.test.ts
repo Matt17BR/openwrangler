@@ -40,6 +40,7 @@ function createBridgeFramingHarness() {
     .fn<() => ChildProcessWithoutNullStreams>()
     .mockReturnValueOnce(first as unknown as ChildProcessWithoutNullStreams)
     .mockReturnValueOnce(second as unknown as ChildProcessWithoutNullStreams);
+  const output = { append: vi.fn(), appendLine: vi.fn() };
   const handleLine = vi.fn();
   const runtime = {
     process: undefined as ChildProcessWithoutNullStreams | undefined,
@@ -74,7 +75,7 @@ function createBridgeFramingHarness() {
     context: { extensionPath: "/extension" },
     disposed: false,
     generation: 0,
-    output: { append: vi.fn(), appendLine: vi.fn() },
+    output,
     spawnProcess,
     runtimeTransport: { handleLine },
     assertDependencyEnvironmentAvailable: vi.fn(),
@@ -86,6 +87,7 @@ function createBridgeFramingHarness() {
   return {
     first,
     second,
+    output,
     handleLine,
     pending,
     restartRuntime,
@@ -248,6 +250,31 @@ describe("BoundedPythonStdoutLineFramer", () => {
     expect(harness.restartRuntime).toHaveBeenCalledOnce();
     expect(harness.runtime.process).toBeUndefined();
     harness.cleanup();
+  });
+
+  it("keeps retired stderr history without changing the replacement diagnostic buffer", async () => {
+    const harness = createBridgeFramingHarness();
+    const pendingRejection = expect(harness.pending).rejects.toThrow("controlled replacement");
+    try {
+      await harness.start(0);
+      harness.restartRuntime(harness.runtime, "controlled replacement");
+      await pendingRejection;
+      harness.first.emit("exit", 0, null);
+      await harness.start(1);
+
+      harness.first.stderr.write(Buffer.from("retired child diagnostic\n"));
+      harness.second.stderr.write(Buffer.from("current child diagnostic\n"));
+
+      expect(harness.runtime.stderrBuffer).toBe("current child diagnostic\n");
+      expect(harness.output.append.mock.calls).toEqual([
+        ["retired child diagnostic\n"],
+        ["current child diagnostic\n"]
+      ]);
+      await expect(harness.start(1)).resolves.toBe(harness.second);
+      expect(harness.spawnProcess).toHaveBeenCalledTimes(2);
+    } finally {
+      harness.cleanup();
+    }
   });
 
   it("suppresses all callbacks after disposal", () => {

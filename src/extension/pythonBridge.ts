@@ -1912,7 +1912,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     proc.stdout.on("error", () => stdout.streamError());
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      runtime.stderrBuffer = `${runtime.stderrBuffer}${text}`.slice(-8000);
+      if (runtime.process === proc) {
+        runtime.stderrBuffer = `${runtime.stderrBuffer}${text}`.slice(-8000);
+      }
       this.output.append(text);
     });
     proc.on("error", (error) =>
