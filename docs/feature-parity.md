@@ -367,6 +367,7 @@ DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote char
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
 identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
 only; closing releases Open Wrangler's reference and never closes the user's connection.
+Notebook queries and captures remove their temporary views after consuming results, including on failure.
 
 ## PySpark live-notebook viewing
 

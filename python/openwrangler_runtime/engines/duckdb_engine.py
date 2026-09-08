@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -136,7 +136,15 @@ class _DuckDBNotebookRelationOwner:
         with _DUCKDB_NOTEBOOK_RELATION_LOCK:
             if self._closed or self._relation is None:
                 raise EngineError("The live DuckDB notebook relation is closed.")
-            yield _DuckDBNotebookTerminal(self._relation, self.alias)
+            terminal = _DuckDBNotebookTerminal(self._relation, self.alias)
+            try:
+                yield terminal
+            except BaseException:
+                with suppress(BaseException):
+                    terminal.close()
+                raise
+            else:
+                terminal.close()
 
     def describe(self, sql: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         with self.terminal() as terminal:
@@ -166,14 +174,69 @@ class _DuckDBNotebookRelationOwner:
 
 class _DuckDBNotebookTerminal:
     def __init__(self, relation: Any, alias: str) -> None:
-        self._relation = relation
+        self._relation: Any | None = relation
         self._alias = alias
+        self._metadata: Any | None = None
+        self._view_oid: int | None = None
 
     def execute(self, sql: str) -> Any:
-        return self._relation.query(self._alias, sql)
+        relation = self._relation
+        if relation is None:
+            raise EngineError("The live DuckDB notebook terminal is closed.")
+        if self._metadata is None:
+            existing = self._catalog_scalar(
+                "SELECT system.main.count(*) FROM ("
+                "SELECT table_name AS name FROM system.main.duckdb_tables() UNION ALL "
+                "SELECT view_name AS name FROM system.main.duckdb_views()) "
+                f"WHERE system.main.lower(name) = {_sql_literal(self._alias.lower())}"
+            )
+            if existing:
+                raise EngineError("The live DuckDB notebook query alias already exists.")
+            # This constant relation retains only the exact connection. It can
+            # inspect and remove our view even if the source disappears later.
+            self._metadata = relation.query(self._alias, "SELECT 0 AS owner_metadata")
+            self._view_oid = self._current_view_oid()
+        elif self._current_view_oid() != self._view_oid:
+            raise EngineError("The live DuckDB notebook query view is no longer owned by this request.")
+        try:
+            result = relation.query(self._alias, sql)
+        except BaseException:
+            # query can register the view before a later binding failure.
+            with suppress(BaseException):
+                self._view_oid = self._current_view_oid()
+            raise
+        # Each query replaces the view. Observe its new identity before source
+        # execution, which could itself change the caller's catalog.
+        self._view_oid = self._current_view_oid()
+        return result
 
     def sql(self, sql: str) -> Any:
-        return self._relation.query(self._alias, sql)
+        return self.execute(sql)
+
+    def _catalog_scalar(self, query: str) -> Any:
+        relation = self._metadata if self._metadata is not None else self._relation
+        if relation is None:
+            raise EngineError("The live DuckDB notebook terminal is closed.")
+        row = relation.limit(0).aggregate(f"system.main.count(*), ({query})").fetchone()
+        return row[1]
+
+    def _current_view_oid(self) -> int | None:
+        return self._catalog_scalar(
+            "SELECT view_oid FROM system.main.duckdb_views() "
+            "WHERE database_name = 'temp' AND schema_name = 'main' AND temporary "
+            f"AND system.main.lower(view_name) = {_sql_literal(self._alias.lower())}"
+        )
+
+    def close(self) -> None:
+        try:
+            if self._metadata is not None and self._view_oid is not None and self._current_view_oid() == self._view_oid:
+                # Keep observed caller replacements. The existing notebook lock
+                # serializes our requests, not arbitrary concurrent caller DDL.
+                self._metadata.query(self._alias, f"DROP VIEW temp.main.{_quote_ident(self._alias)}")
+        finally:
+            self._metadata = None
+            self._relation = None
+            self._view_oid = None
 
 
 @dataclass(frozen=True, slots=True)

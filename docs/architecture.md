@@ -485,6 +485,13 @@ CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalo
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
+Each terminal request removes its temporary query view after consuming the results, including when the query fails. Native
+catalog checks reject existing aliases and preserve observed caller replacements. A constant native relation retains
+the connection only during that request so cleanup still works if the source table disappears. These metadata queries
+add catalog work without evaluating source rows. The notebook lock serializes Open Wrangler requests; it does not
+make catalog checks and view removal atomic against arbitrary concurrent caller DDL.
+A failed ownership lookup prevents removal and preserves an existing error; without an earlier error, the cleanup
+failure propagates.
 
 Drop Duplicates materializes its numbered input once, computes membership by row ordinal, and returns values from
 the selected original rows. Native partitioning cannot replace those values with a normalized key or another

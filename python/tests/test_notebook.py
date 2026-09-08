@@ -457,6 +457,32 @@ def test_duckdb_snapshot_uses_the_originating_connection_without_conversion(monk
         connection.close()
 
 
+@pytest.mark.parametrize("refused", [False, True])
+def test_duckdb_snapshot_releases_query_views_after_success_or_field_refusal(refused):
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE private_capture AS SELECT 7 AS value UNION ALL SELECT 11")
+        connection.execute("CREATE TEMP VIEW unrelated_capture AS SELECT 29 AS sentinel")
+        relation = connection.table("private_capture")
+        captured = relation.project('value AS "' + "v" * 513 + '"') if refused else relation
+        for _ in range(2):
+            if refused:
+                with pytest.raises(EngineError, match="at most 512"):
+                    notebook.build_payload(captured, label="capture", variable_name="captured")
+            else:
+                payload = notebook.build_payload(captured, label="capture", variable_name="captured")
+                assert payload["metadata"]["shape"] == {"rows": 2, "columns": 1}
+                assert [row["values"][0]["display"] for row in payload["page"]["rows"]] == ["7", "11"]
+            assert (
+                connection.execute(
+                    "SELECT view_name FROM duckdb_views() "
+                    "WHERE starts_with(view_name, '__open_wrangler_notebook_source_')"
+                ).fetchall()
+                == []
+            )
+            assert connection.execute("SELECT * FROM unrelated_capture").fetchall() == [(29,)]
+            assert relation.fetchall() == [(7,), (11,)]
+
+
 def test_pandas_mixed_object_snapshot_preserves_cell_kinds_under_string_semantics():
     payload = notebook.build_payload(pd.DataFrame({"value": pd.Series([1, "1"], dtype="object")}), backend="pandas")
 

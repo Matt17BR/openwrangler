@@ -2881,6 +2881,166 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         connection.close()
 
 
+@pytest.mark.parametrize("mode", ["rows", "metadata", "multiple", "binding_error", "execution_error", "source_removed"])
+def test_duckdb_notebook_terminal_releases_only_its_query_view(mode: str) -> None:
+    calls: list[int] = []
+    with duckdb.connect() as connection:
+
+        def observed(value: int) -> int:
+            calls.append(value)
+            if mode == "execution_error":
+                raise ValueError("owned source execution failed")
+            return value
+
+        connection.create_function("owned_observed", observed, [BIGINT], BIGINT, side_effects=True)
+        connection.execute("CREATE TABLE owned_source AS SELECT * FROM (VALUES (7::BIGINT), (11)) source(value)")
+        connection.execute("CREATE TEMP VIEW unrelated_view AS SELECT 29 AS sentinel")
+        relation = connection.sql("SELECT owned_observed(value) AS value FROM owned_source")
+        owner = duckdb_runtime._DuckDBNotebookRelationOwner(relation)
+        sql = f'SELECT * FROM "{owner.alias}"'
+        try:
+            with owner.terminal() as terminal:
+                if mode == "binding_error":
+                    with pytest.raises(duckdb.BinderException, match="absent"):
+                        terminal.execute(f'SELECT absent FROM "{owner.alias}"')
+                elif mode == "execution_error":
+                    with pytest.raises(duckdb.InvalidInputException, match="owned source execution failed"):
+                        terminal.execute(sql).fetchall()
+                elif mode == "metadata":
+                    result = terminal.sql(sql)
+                    assert result.columns == ["value"]
+                    assert [str(dtype) for dtype in result.types] == ["BIGINT"]
+                    result = None
+                else:
+                    assert terminal.execute(sql).fetchall() == [(7,), (11,)]
+                    if mode == "multiple":
+                        assert terminal.execute(f'SELECT sum(value) FROM "{owner.alias}"').fetchone() == (18,)
+                    if mode == "source_removed":
+                        connection.execute("DROP TABLE owned_source")
+            expected_calls = [] if mode in {"metadata", "binding_error"} else [7]
+            if mode not in {"metadata", "binding_error", "execution_error"}:
+                expected_calls = [7, 11] * (2 if mode == "multiple" else 1)
+            assert calls == expected_calls
+            assert (
+                connection.execute(
+                    "SELECT view_name FROM duckdb_views() "
+                    "WHERE starts_with(view_name, '__open_wrangler_notebook_source_')"
+                ).fetchall()
+                == []
+            )
+            assert connection.execute("SELECT * FROM unrelated_view").fetchall() == [(29,)]
+        finally:
+            owner.close()
+            owner.close()
+        assert owner.closed is True
+        assert calls == expected_calls
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("object_kind", "uppercase"),
+    [("TABLE", False), ("VIEW", False), ("TEMP TABLE", False), ("TEMP VIEW", False), ("TEMP VIEW", True)],
+)
+def test_duckdb_notebook_query_alias_collision_preserves_caller_object(
+    monkeypatch: pytest.MonkeyPatch, object_kind: str, uppercase: bool
+) -> None:
+    from uuid import UUID
+
+    monkeypatch.setattr(duckdb_runtime, "uuid4", lambda: UUID(int=1))
+    alias = "__open_wrangler_notebook_source_" + UUID(int=1).hex
+    existing_name = alias.upper() if uppercase else alias
+    with duckdb.connect() as connection:
+        connection.execute(f'CREATE {object_kind} "{existing_name}" AS SELECT 99 AS sentinel')
+        relation = connection.sql("SELECT 7 AS value")
+        engine = DuckDBEngine()
+        try:
+            with pytest.raises(EngineError, match="already exists"):
+                engine.normalize_notebook_relation(relation)
+            assert connection.execute(f'SELECT * FROM "{existing_name}"').fetchall() == [(99,)]
+            assert relation.fetchall() == [(7,)]
+        finally:
+            engine.close()
+            engine.close()
+        assert connection.execute(f'SELECT * FROM "{existing_name}"').fetchall() == [(99,)]
+
+
+@pytest.mark.parametrize("read_again", [False, True])
+def test_duckdb_notebook_query_view_replacement_is_not_overwritten_or_removed(read_again: bool) -> None:
+    with duckdb.connect() as connection:
+        relation = connection.sql("SELECT 7 AS value")
+        owner = duckdb_runtime._DuckDBNotebookRelationOwner(relation)
+        try:
+            with owner.terminal() as terminal:
+                assert terminal.execute(f'SELECT * FROM "{owner.alias}"').fetchall() == [(7,)]
+                original_oid = connection.execute(
+                    "SELECT view_oid FROM duckdb_views() WHERE view_name = ?", [owner.alias]
+                ).fetchone()
+                connection.execute(f'CREATE OR REPLACE TEMP VIEW "{owner.alias}" AS SELECT 99 AS sentinel')
+                replacement_oid = connection.execute(
+                    "SELECT view_oid FROM duckdb_views() WHERE view_name = ?", [owner.alias]
+                ).fetchone()
+                assert replacement_oid != original_oid
+                if read_again:
+                    with pytest.raises(EngineError, match="no longer owned"):
+                        terminal.execute(f'SELECT * FROM "{owner.alias}"')
+            assert connection.execute(f'SELECT * FROM "{owner.alias}"').fetchall() == [(99,)]
+            assert (
+                connection.execute("SELECT view_oid FROM duckdb_views() WHERE view_name = ?", [owner.alias]).fetchone()
+                == replacement_oid
+            )
+        finally:
+            owner.close()
+        assert relation.fetchall() == [(7,)]
+
+
+def test_duckdb_notebook_terminal_cleanup_does_not_replace_the_primary_error() -> None:
+    connection = duckdb.connect()
+    owner = duckdb_runtime._DuckDBNotebookRelationOwner(connection.sql("SELECT 7 AS value"))
+    try:
+        with pytest.raises(duckdb.BinderException, match="absent"), owner.terminal() as terminal:
+            try:
+                terminal.execute(f'SELECT absent FROM "{owner.alias}"')
+            except duckdb.BinderException:
+                connection.close()
+                raise
+    finally:
+        owner.close()
+        connection.close()
+    assert owner.closed is True
+
+
+def test_duckdb_notebook_session_close_does_not_leave_query_views(monkeypatch: pytest.MonkeyPatch) -> None:
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE private_values AS SELECT 7 AS value UNION ALL SELECT 11")
+        relation = connection.table("private_values")
+        monkeypatch.setattr(__main__, "owned_values", relation, raising=False)
+        manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+        try:
+            for _ in range(2):
+                opened = manager.open_session(
+                    {"kind": "notebookVariable", "label": "owned_values", "variableName": "owned_values"},
+                    backend="duckdb",
+                    page_size=2,
+                )
+                session_id = opened["metadata"]["sessionId"]
+                assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["7", "11"]
+                original = manager.sessions[session_id].original
+                assert isinstance(original, DuckDBNotebookPlan)
+                manager.close_session(session_id, opened["metadata"]["revision"])
+                assert original.owner.closed is True
+                assert (
+                    connection.execute(
+                        "SELECT view_name FROM duckdb_views() "
+                        "WHERE starts_with(view_name, '__open_wrangler_notebook_source_')"
+                    ).fetchall()
+                    == []
+                )
+                assert relation.fetchall() == [(7,), (11,)]
+        finally:
+            manager.close_all()
+            manager.close_all()
+
+
 @pytest.mark.parametrize("kind", ["floorNumber", "ceilNumber"])
 @pytest.mark.parametrize("replace", [False, True])
 @pytest.mark.parametrize("dtype,value", [("BIGINT", 2**53 + 1), ("UBIGINT", 2**64 - 1), ("HUGEINT", 2**100 + 1)])
