@@ -95,6 +95,10 @@ contracts execute generated code for midpoint edge cases alongside live executio
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
 ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
 
+Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
+column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
+publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
+
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
 changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
 receipt after layout settles and retain its session, revision, and DOM marker checks.

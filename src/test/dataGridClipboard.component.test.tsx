@@ -106,51 +106,74 @@ describe("DataGrid clipboard interactions", () => {
     expect(await screen.findByText("Copied row.")).toBeTruthy();
   });
 
-  it("keeps ArrowDown focus owned across a clipboard-result page refresh", async () => {
-    const onPage = vi.fn();
-    const pagedMetadata: SessionMetadata = {
-      ...metadata,
-      shape: { rows: 4, columns: 2 },
-      filteredShape: { rows: 4, columns: 2 }
-    };
-    const props = {
-      metadata: pagedMetadata,
-      summaries: [],
-      pageSize: 2,
-      defaultColumnWidth: 190,
-      insightsOnOpen: false,
-      viewContextId: "view-a",
-      onPage,
-      onSortColumn: () => undefined,
-      onOpenFilter: () => undefined,
-      onVisibleSummaryColumnsChange: () => undefined
-    };
-    const firstPage = { ...page, totalRows: 4 };
-    const rendered = render(<DataGrid {...props} page={firstPage} />);
-    const scroller = screen.getByTestId("data-grid-scroller");
-    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
-    const finalCell = screen.getByRole("cell", { name: "Paris" });
-    act(() => finalCell.focus());
+  it.each(["owned", "outside", "header-then-body"] as const)(
+    "respects %s focus across a clipboard-result page refresh",
+    async (owner) => {
+      const onPage = vi.fn();
+      const pagedMetadata: SessionMetadata = {
+        ...metadata,
+        shape: { rows: 4, columns: 2 },
+        filteredShape: { rows: 4, columns: 2 }
+      };
+      const props = {
+        metadata: pagedMetadata,
+        summaries: [],
+        pageSize: 2,
+        defaultColumnWidth: 190,
+        insightsOnOpen: false,
+        viewContextId: "view-a",
+        onPage,
+        onSortColumn: () => undefined,
+        onOpenFilter: () => undefined,
+        onVisibleSummaryColumnsChange: () => undefined
+      };
+      const firstPage = { ...page, totalRows: 4 };
+      const rendered = render(<DataGrid {...props} page={firstPage} />);
+      const scroller = screen.getByTestId("data-grid-scroller");
+      Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+      const finalCell = screen.getByRole("cell", { name: "Paris" });
+      act(() => finalCell.focus());
 
-    fireEvent.keyDown(finalCell, { key: "ArrowDown" });
-    expect(onPage).toHaveBeenCalledWith(2);
+      fireEvent.keyDown(finalCell, { key: "ArrowDown" });
+      expect(onPage).toHaveBeenCalledWith(2);
 
-    rendered.rerender(
-      <DataGrid
-        {...props}
-        page={{
-          ...firstPage,
-          offset: 2,
-          rows: firstPage.rows.map((row, index) => ({ ...row, id: `r:${index + 2}`, rowNumber: index + 2 }))
-        }}
-      />
-    );
+      let newerFocus: HTMLElement | undefined;
+      if (owner === "outside") {
+        newerFocus = document.createElement("input");
+        document.body.appendChild(newerFocus);
+        act(() => newerFocus?.focus());
+      } else if (owner === "header-then-body") {
+        const header = screen.getByRole("columnheader", { name: "sales" });
+        act(() => {
+          header.focus();
+          header.blur();
+        });
+        newerFocus = document.body;
+      }
 
-    await waitFor(() => {
-      expect(document.activeElement).toHaveAttribute("data-grid-row", "2");
-      expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
-    });
-  });
+      rendered.rerender(
+        <DataGrid
+          {...props}
+          page={{
+            ...firstPage,
+            offset: 2,
+            rows: firstPage.rows.map((row, index) => ({ ...row, id: `r:${index + 2}`, rowNumber: index + 2 }))
+          }}
+        />
+      );
+
+      try {
+        if (newerFocus) expect(document.activeElement).toBe(newerFocus);
+        else
+          await waitFor(() => {
+            expect(document.activeElement).toHaveAttribute("data-grid-row", "2");
+            expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
+          });
+      } finally {
+        if (owner === "outside") newerFocus?.remove();
+      }
+    }
+  );
 
   it("writes formula-neutralized strings and row labels while preserving a typed negative", async () => {
     const formulaPage: GridPage = {

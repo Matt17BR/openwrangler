@@ -535,6 +535,10 @@ high-contrast behavior. Virtualization changes what is rendered, not the accessi
 Editable-field undo remains owned by the field; state-scoped workbench shortcuts are mirrored in the webview and
 documented in the generated reference.
 
+Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
+original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the
+logical view changes, or its controls become disabled; its own width updates and viewport resizing retain the drag.
+
 ## Package and release identity
 
 The extension identity is `Matt17BR.openwrangler`; its commands and settings use `openWrangler.*`, the custom editor is
