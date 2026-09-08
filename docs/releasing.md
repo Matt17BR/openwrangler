@@ -82,11 +82,12 @@ The only manual `1.99.N` fallback is a dispatch of `.github/workflows/preview-re
 `release_tag` set to `v1.99.7`. With the default `publish: false`, the workflow packages and checks one VSIX without
 creating a release. Set `publish: true` only when that run should publish the checked bytes.
 
-If the GitHub **Publish preview** job fails, rerun only that job in the same workflow run while its stable-tag binding
-is still current. It reconstructs the same source and reuses the same artifact. If a newer stable tag is now
-reachable, discard the old candidate and run the workflow again. To recover an Azure Marketplace failure, run its
-pipeline from current protected `main` with `existingReleaseTag` set to the same tag. Recovery verifies the existing
-tag and GitHub files and never rebuilds or replaces them.
+Preview packaging runs only on the first attempt of a workflow run. If packaging fails, start a new run; rerunning
+the package job is refused before checkout or setup. If the GitHub **Publish preview** job fails, rerun only that job
+in the same workflow run while its stable-tag binding is still current. It reconstructs the same source and reuses
+the same artifact. If a newer stable tag is now reachable, discard the old candidate and run the workflow again.
+To recover an Azure Marketplace failure, run its pipeline from current protected `main` with `existingReleaseTag`
+set to the same tag. Recovery verifies the existing tag and GitHub files and never rebuilds or replaces them.
 
 ## Release candidate
 

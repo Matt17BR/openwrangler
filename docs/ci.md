@@ -76,6 +76,8 @@ The consolidated preview workflow owns both the automatic daily public train and
   triggers Azure Marketplace.
 - A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
   publication remains explicit through its `publish` input.
+- Packaging admits only a workflow run's first attempt, before checkout or setup. Package failures require a new run;
+  **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs.
 - Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
   suites. It validates stable metadata, packages once, audits published dependencies, runs pinned VS Code
   installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.

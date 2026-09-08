@@ -397,6 +397,8 @@ component tests own checkbox membership, saved scalar selections, unnamed-column
 ownership. Sort controls cover schema changes, permanent retirement across Undo, unaffected rules, confirmed-model
 resets, dirty empty orders and Clear/Discard behavior. The production browser suite owns rendered tab hover contrast.
 Release-script tests distinguish interrupted fetches and response bodies from fatal package validation errors.
+`scripts/daily-preview-artifact.test.mjs` executes the workflow's source-decision and package-attempt guards;
+publication recovery remains governed by the [release process](releasing.md).
 
 The shared `fixtures/view-literal-contract.json` owns filter spellings supported by Python and native R, including
 short datetime fractions, compact timezone offsets and malformed-component refusals. Existing Python filter and Fill
