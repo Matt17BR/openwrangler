@@ -525,7 +525,7 @@ export function createReleasedPySparkJupyterJourney({
       assert.match(changedSchema.message, /If its columns or types changed, reopen the variable instead\./u);
       const unchangedClassic = testing.sessionSnapshot(classic.sessionId);
       assert.ok(unchangedClassic, "A rejected PySpark schema replacement must retain the confirmed public session.");
-      assert.deepEqual(unchangedClassic, confirmedClassicSnapshot);
+      assert.deepEqual(structuredClone(unchangedClassic), confirmedClassicSnapshot);
       const changedSchemaDiagnostics = testing.diagnostics();
       assert.equal(changedSchemaDiagnostics.sessionCount, 1);
       assert.equal(changedSchemaDiagnostics.sessions.length, 1);
