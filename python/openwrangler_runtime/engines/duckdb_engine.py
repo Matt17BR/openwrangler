@@ -1158,7 +1158,9 @@ class DuckDBEngine(DataFrameEngine):
             helpers = select_generated_helpers(_generated_helper_source(), clean_data)
             return helpers + "\n\n" + clean_data + "\n"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
-        clean_data_lines = ["def clean_data(df):", "    _ow_check_addressability(df)"]
+        clean_data_lines = ["def clean_data(df):"]
+        if plan:
+            clean_data_lines.append("    _ow_check_addressability(df)")
         for index, step in enumerate(plan):
             if step["kind"] == "denseRank":
                 # The native rank helper already validates its fresh destination.

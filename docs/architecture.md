@@ -197,8 +197,8 @@ parameters are listed in the generated [transformation reference](reference.md#t
 Generated Python rechecks destinations for column appends, renames and optional replacements at each affected step.
 The shared column-binding policy distinguishes a fresh output from replacement of the selected source column;
 unrelated extra columns remain valid. Pandas compares displayed names while retaining positional input checks.
-Polars inspects lazy schema metadata. Generated DuckDB checks its input and each intermediate schema for
-case-insensitive name collisions before another step can read an ambiguous column. This includes categorical outputs
+Polars inspects lazy schema metadata. For nonempty plans, generated DuckDB checks its input and each intermediate
+schema for case-insensitive name collisions before another step can read an ambiguous column. This includes categorical outputs
 and Custom Code. Case-only Rename remains valid. Optional outputs replace the selected source only when the name matches exactly.
 Plans containing only DuckDB Rename steps retain the input relation's connection. Existing operation-specific output
 guards keep their stronger validation. Scalar destination guards reuse the step's output-name literal; the retained-plan

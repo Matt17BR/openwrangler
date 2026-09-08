@@ -358,7 +358,25 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
     ]
 
     try:
-        assert engine.compile_plan([]) == "def clean_data(df):\n    return df\n"
+        empty_code = engine.compile_plan([])
+        assert empty_code == "def clean_data(df):\n    return df\n"
+        with duckdb.connect() as connection:
+            calls: list[int] = []
+
+            def observed_empty_source(value: int) -> int:
+                calls.append(value)
+                return value
+
+            connection.create_function(
+                "observed_empty_source", observed_empty_source, ["BIGINT"], "BIGINT", side_effects=True
+            )
+            empty_source = connection.sql("SELECT observed_empty_source(99::BIGINT) AS KEY, 2 AS key")
+            namespace: dict[str, Any] = {}
+            exec(empty_code, namespace)
+            assert namespace["clean_data"](empty_source) is empty_source
+            assert calls == []
+            assert empty_source.fetchall() == [(99, 2)]
+            assert calls == [99]
         plain_code = engine.compile_plan(plain_plan)
         assert "from collections import Counter" not in plain_code
         assert plain_code.startswith("import math")
