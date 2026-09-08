@@ -1049,7 +1049,7 @@ class PandasEngine(DataFrameEngine):
                 if params.get("rightColumn")
                 else formula_scalar_value(params["value"])
             )
-            result = _pandas_formula(left, right, params["operator"])
+            result = _pandas_formula_result(left, right, params["operator"])
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "textLength":
             position = self._bound_frame_position(df, params["column"], kind)
@@ -1516,6 +1516,8 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_row_query_helpers())
         if any(step["kind"] == "formula" and step["params"]["operator"] == "modulo" for step in plan):
             lines.extend(_generated_pandas_modulo_helpers())
+        if any(step["kind"] == "formula" and step["params"]["operator"] != "modulo" for step in plan):
+            lines.extend(_generated_pandas_formula_helpers())
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
@@ -2093,14 +2095,11 @@ class PandasEngine(DataFrameEngine):
                 if params.get("rightColumn")
                 else repr(formula_scalar_value(params["value"]))
             )
-            symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%", "power": "**"}[
-                params["operator"]
-            ]
             left = f"_open_wrangler_dictionary_values(df.iloc[:, {left_position}])"
             expression = (
                 f"_open_wrangler_modulo({left}, {right})"
                 if params["operator"] == "modulo"
-                else f"({left} {symbol} {right})"
+                else f"_open_wrangler_formula_result({left}, {right}, {params['operator']!r})"
             )
             return [f"{prefix}df = pd.concat([df, {expression}.rename({params['newColumn']!r})], axis=1)"]
         if kind == "textLength":
@@ -4907,6 +4906,58 @@ def _pandas_formula(left: Any, right: Any, operator: str) -> Any:
     raise EngineError(f"Unsupported formula operator: {operator}")
 
 
+def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if operator == "modulo" or not any(
+        isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)
+    ):
+        return _pandas_formula(left, right, operator)
+    import pyarrow as pa
+
+    try:
+        return _pandas_formula(left, right, operator)
+    except (pa.ArrowInvalid, OverflowError) as error:
+        left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None
+        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
+
+        def nonnegative_signed_column(value: Any) -> bool:
+            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
+                return False
+            if isinstance(value.dtype, pd.ArrowDtype):
+                dtype = value.dtype.pyarrow_dtype
+                if not pa.types.is_signed_integer(dtype) or dtype.bit_width > 64:
+                    return False
+            else:
+                dtype = value.dtype
+                if type(dtype) in (pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype):
+                    dtype = cast(Any, dtype).numpy_dtype
+                if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:
+                    return False
+            minimum = value.min()
+            return bool(pd.isna(minimum) or minimum >= 0)
+
+        if operator in {"add", "subtract", "multiply", "power"}:
+            if left_type == pa.uint64() and type(right) is int and 0 <= right < 2**64:
+                return _pandas_formula(left, pa.scalar(right, type=pa.uint64()), operator)
+            if isinstance(error, pa.ArrowInvalid):
+                if left_type == pa.uint64() and isinstance(right, pd.Series) and nonnegative_signed_column(right):
+                    return _pandas_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)
+                if right_type == pa.uint64() and nonnegative_signed_column(left):
+                    return _pandas_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
+        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:
+            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None
+            right_decimal = right_type if right_type is not None and pa.types.is_decimal128(right_type) else None
+            if left_decimal is not None or right_decimal is not None:
+                if left_decimal is not None:
+                    left = left.astype(pd.ArrowDtype(pa.decimal256(left_decimal.precision, left_decimal.scale)))
+                if right_decimal is not None and isinstance(right, pd.Series):
+                    right = right.astype(pd.ArrowDtype(pa.decimal256(right_decimal.precision, right_decimal.scale)))
+                return _pandas_formula(left, right, operator)
+        raise
+
+
 def _pandas_modulo(left: Any, right: Any) -> Any:
     import numpy as np
     import pandas as pd
@@ -4969,6 +5020,82 @@ def _pandas_modulo(left: Any, right: Any) -> Any:
         remainder = np.where(right_negative, np.negative(remainder), remainder)
     values = pa.array(remainder, mask=missing, type=result_type)
     return pd.Series(pd.arrays.ArrowExtensionArray(values), index=left.index, name=left.name)
+
+
+def _generated_pandas_formula_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_formula(left, right, operator):",
+        '    if operator == "add":',
+        "        return left + right",
+        '    if operator == "subtract":',
+        "        return left - right",
+        '    if operator == "multiply":',
+        "        return left * right",
+        '    if operator == "divide":',
+        "        return left / right",
+        '    if operator == "power":',
+        "        return left**right",
+        '    raise ValueError(f"Unsupported formula operator: {operator}")',
+        "",
+        "",
+        "def _open_wrangler_formula_result(left, right, operator):",
+        "    import numpy as np",
+        "    import pandas as pd",
+        "",
+        "    if not any(",
+        '        isinstance(getattr(value, "dtype", None), pd.ArrowDtype) for value in (left, right)',
+        "    ):",
+        "        return _open_wrangler_formula(left, right, operator)",
+        "    import pyarrow as pa",
+        "",
+        "    try:",
+        "        return _open_wrangler_formula(left, right, operator)",
+        "    except (pa.ArrowInvalid, OverflowError) as error:",
+        "        left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None",
+        '        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), '
+        "pd.ArrowDtype) else None",
+        "",
+        "        def nonnegative_signed_column(value):",
+        "            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):",
+        "                return False",
+        "            if isinstance(value.dtype, pd.ArrowDtype):",
+        "                dtype = value.dtype.pyarrow_dtype",
+        "                if not pa.types.is_signed_integer(dtype) or dtype.bit_width > 64:",
+        "                    return False",
+        "            else:",
+        "                dtype = value.dtype",
+        "                if type(dtype) in (pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype):",
+        "                    dtype = dtype.numpy_dtype",
+        '                if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:',
+        "                    return False",
+        "            minimum = value.min()",
+        "            return bool(pd.isna(minimum) or minimum >= 0)",
+        "",
+        '        if operator in {"add", "subtract", "multiply", "power"}:',
+        "            if left_type == pa.uint64() and type(right) is int and 0 <= right < 2**64:",
+        "                return _open_wrangler_formula(left, pa.scalar(right, type=pa.uint64()), operator)",
+        "            if isinstance(error, pa.ArrowInvalid):",
+        "                if left_type == pa.uint64() and isinstance(right, pd.Series) "
+        "and nonnegative_signed_column(right):",
+        "                    return _open_wrangler_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)",
+        "                if right_type == pa.uint64() and nonnegative_signed_column(left):",
+        "                    return _open_wrangler_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)",
+        '        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:',
+        "            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None",
+        "            right_decimal = right_type if right_type is not None "
+        "and pa.types.is_decimal128(right_type) else None",
+        "            if left_decimal is not None or right_decimal is not None:",
+        "                if left_decimal is not None:",
+        "                    left = left.astype(pd.ArrowDtype("
+        "pa.decimal256(left_decimal.precision, left_decimal.scale)))",
+        "                if right_decimal is not None and isinstance(right, pd.Series):",
+        "                    right = right.astype(pd.ArrowDtype("
+        "pa.decimal256(right_decimal.precision, right_decimal.scale)))",
+        "                return _open_wrangler_formula(left, right, operator)",
+        "        raise",
+        "",
+        "",
+    ]
 
 
 def _generated_pandas_modulo_helpers() -> list[str]:
