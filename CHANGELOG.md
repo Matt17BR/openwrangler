@@ -25,6 +25,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.
 - Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
+- Failed recovery-storage writes keep the current grid selection, widths and viewport. A later refresh no longer
+  restores the previous selection; the existing warning explains that unsaved changes may be lost on restart.
 - Column-search arrow and page keys follow the displayed results after a cleaning action changes the schema.
 - Generated Python refuses an existing column when an operation requires a new output name.
   Harmless extra columns and valid in-place replacements remain supported. DuckDB also refuses ambiguous column names

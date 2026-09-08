@@ -612,6 +612,11 @@ new result with current compatible selection, widths and horizontal position; a 
 the row position to the returned page. Rollback retains the presentation accepted before publication. A completed
 transaction's recovery marker does not prevent later successful saves from restoring durable recovery state.
 
+A failed ordinary presentation save retains the latest live selection, widths and viewport, matching the webview.
+The existing storage warning explains that these changes may not survive restart. Reopening restores the last
+successfully saved state; a later successful save persists the current presentation and ends the degraded period.
+This policy does not change guarded rollback of a page or cleaning publication.
+
 A runtime crash rejects pending work and invalidates internal runtime identities. Recovery opens a private replacement
 on the same source and backend, replays the confirmed cleaning and viewing sections independently, regenerates code
 and draft metadata, and publishes only the complete correlated result. The source remains the authority; captured
