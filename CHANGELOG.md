@@ -28,7 +28,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Polars By Example accepts exact unsigned cancellation and multiplication by zero on the minimum runtime.
 - Multi-label binarization works across supported Polars versions without changing empty-label behavior.
 - Polars JSONL/NDJSON opens the selected Unix file instead of an encoded-name sibling. Windows paths containing
-  glob characters are explicitly refused; ordinary paths retain literal percent-looking text.
+  glob characters are explicitly refused; ordinary paths retain literal percent-looking text. Windows local-drive
+  verbatim prefixes are accepted when the remaining path contains no glob characters.
 - Pandas profiles and row queries use logical Arrow dictionary values, including null entries and repeated values
   across chunks. Row removal preserves encoded columns and exact Sparse integer payloads.
 - Pandas Arrow `bool8` and UUID columns display logical booleans and canonical UUID strings consistently with

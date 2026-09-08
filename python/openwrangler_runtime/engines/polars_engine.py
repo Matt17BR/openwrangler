@@ -229,7 +229,15 @@ class PolarsEngine(DataFrameEngine):
         if extension in {".jsonl", ".ndjson"}:
             path = str(Path(path).expanduser().absolute())
             if os.name == "nt":
-                if any(symbol in path for symbol in "*?["):
+                checked_path = path
+                if (
+                    path.startswith("\\\\?\\")
+                    and len(path) >= 7
+                    and path[4] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                    and path[5:7] == ":\\"
+                ):
+                    checked_path = path[7:]
+                if any(symbol in checked_path for symbol in "*?["):
                     raise EngineError(
                         "Polars cannot safely open this NDJSON path on Windows "
                         "because it contains glob characters (*, ?, [)."
