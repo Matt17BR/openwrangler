@@ -393,9 +393,10 @@ execution and that valid noisy responses still publish their correlated state.
 
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
-component tests own checkbox membership, saved scalar selections, and unnamed-column navigation; the production
-browser suite owns rendered tab hover contrast. Release-script tests distinguish interrupted fetches and response
-bodies from fatal package validation errors.
+component tests own checkbox membership, saved scalar selections, unnamed-column navigation and staged-sort column
+ownership. Sort controls cover schema changes, permanent retirement across Undo, unaffected rules, confirmed-model
+resets, dirty empty orders and Clear/Discard behavior. The production browser suite owns rendered tab hover contrast.
+Release-script tests distinguish interrupted fetches and response bodies from fatal package validation errors.
 
 The shared `fixtures/view-literal-contract.json` owns filter spellings supported by Python and native R, including
 short datetime fractions, compact timezone offsets and malformed-component refusals. Existing Python filter and Fill

@@ -1447,6 +1447,158 @@ describe("FilterPanel", () => {
     expect(onRequestValues).not.toHaveBeenCalled();
   });
 
+  it.each(["rename", "drop", "reuse", "type", "unsupported", "ambiguous", "unnamed"] as const)(
+    "retires a staged %s owner permanently while retaining unaffected sort priorities",
+    (change) => {
+      const onApply = vi.fn();
+      const model: FilterModel = { filters: [], sort: [] };
+      const initial: SessionMetadata = {
+        ...metadata,
+        schema: [
+          ...metadata.schema,
+          { id: "c:2", name: "units", position: 2, rawType: "Int64", type: "integer", nullable: false }
+        ]
+      };
+      const panel = (next: SessionMetadata) => (
+        <FilterPanel metadata={next} model={model} values={values} onApply={onApply} onRequestValues={vi.fn()} />
+      );
+      const { rerender } = render(panel(initial));
+      fireEvent.click(screen.getByText("SORTS"));
+      fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+      fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+      fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:2" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+      fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+      expect(within(screen.getByRole("list", { name: "Active sort order" })).getAllByRole("listitem")).toHaveLength(3);
+      const schema = initial.schema
+        .flatMap((column) => {
+          if (column.id !== "c:1") return [column];
+          if (change === "drop") return [];
+          if (change === "rename") return [{ ...column, name: "revenue" }];
+          if (change === "reuse") return [{ ...column, id: "c:replacement" }];
+          if (change === "type") return [{ ...column, type: "string" as const, rawType: "String" }];
+          if (change === "unsupported") return [{ ...column, type: "list" as const, rawType: "List" }];
+          if (change === "unnamed") return [{ ...column, name: "" }];
+          return [column, { ...column, id: "c:duplicate" }];
+        })
+        .map((column, position) => ({ ...column, position }));
+      rerender(panel({ ...initial, revision: 1, schema }));
+      const remaining = within(screen.getByRole("list", { name: "Active sort order" })).getAllByRole("listitem");
+      expect(remaining).toHaveLength(2);
+      expect(remaining[0]).toHaveTextContent("unitsascendingnulls last");
+      expect(remaining[1]).toHaveTextContent("citydescendingnulls first");
+      expect(onApply).not.toHaveBeenCalled();
+      rerender(panel({ ...initial, revision: 2 }));
+      expect(screen.queryByRole("button", { name: /Remove sort.*sales/u })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+      expect(onApply).toHaveBeenLastCalledWith({
+        filters: [],
+        sort: [
+          { column: "units", direction: "asc", nulls: "last" },
+          { column: "city", direction: "desc", nulls: "first" }
+        ]
+      });
+    }
+  );
+
+  it("uses confirmed sort authority while clean and binds inherited rules only in a dirty query", () => {
+    const onApply = vi.fn();
+    const model: FilterModel = { filters: [], sort: [{ column: "sales", direction: "asc", nulls: "last" }] };
+    const panel = (next: SessionMetadata) => (
+      <FilterPanel metadata={next} model={model} values={values} onApply={onApply} onRequestValues={vi.fn()} />
+    );
+    const { rerender } = render(panel(metadata));
+    const replaced = {
+      ...metadata,
+      schema: metadata.schema.map((column) => (column.name === "sales" ? { ...column, id: "c:new-sales" } : column))
+    };
+    rerender(panel(replaced));
+    expect(screen.getByRole("button", { name: "Remove sort 1, sales, ascending, nulls last" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeEnabled();
+    rerender(panel(metadata));
+    expect(screen.queryByRole("button", { name: /Remove sort.*sales/u })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [],
+      sort: [{ column: "city", direction: "asc", nulls: "last" }]
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Discard sort changes" }));
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove sort 1, sales, ascending, nulls last" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Clear all sorts" }));
+    rerender(panel(replaced));
+    expect(screen.getByText("No active sorts.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+  });
+
+  it.each([false, true])(
+    "resets staged sorts on authoritative model replacement (schema changed: %s)",
+    (changeSchema) => {
+      const onApply = vi.fn();
+      const model: FilterModel = { filters: [], sort: [{ column: "sales", direction: "asc", nulls: "last" }] };
+      const panel = (next: SessionMetadata, nextModel: FilterModel) => (
+        <FilterPanel metadata={next} model={nextModel} values={values} onApply={onApply} onRequestValues={vi.fn()} />
+      );
+      const { rerender } = render(panel(metadata, model));
+      fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+      const next = changeSchema
+        ? {
+            ...metadata,
+            schema: metadata.schema.map((column) => (column.name === "sales" ? { ...column, name: "revenue" } : column))
+          }
+        : metadata;
+      rerender(panel(next, { filters: [], sort: [] }));
+      expect(screen.getByText("No active sorts.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+      rerender(panel(metadata, model));
+      expect(screen.queryByRole("button", { name: /Remove sort.*city/u })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+      expect(onApply).not.toHaveBeenCalled();
+    }
+  );
+
+  it("preserves sibling drafts across Clear column's next model key and keeps sort input independent", () => {
+    const onApply = vi.fn();
+    const model: FilterModel = { filters: [], sort: [{ column: "city", direction: "asc", nulls: "last" }] };
+    const panel = (next: SessionMetadata, nextModel: FilterModel) => (
+      <FilterPanel metadata={next} model={nextModel} values={values} onApply={onApply} onRequestValues={vi.fn()} />
+    );
+    const { rerender } = render(panel(metadata, model));
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
+    expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+    rerender(panel(metadata, { filters: [], sort: [] }));
+    expect(screen.getByRole("button", { name: "Remove sort 1, sales, descending, nulls last" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "asc" } });
+    fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+    const renamed = {
+      ...metadata,
+      schema: metadata.schema.map((column) => (column.name === "sales" ? { ...column, name: "revenue" } : column))
+    };
+    rerender(panel(renamed, { filters: [], sort: [] }));
+    expect(screen.getByText("No active sorts.")).toBeVisible();
+    expect(screen.getByLabelText("Sort column")).toHaveDisplayValue("revenue");
+    expect(screen.getByLabelText("Sort direction")).toHaveValue("asc");
+    expect(screen.getByLabelText("Sort null placement")).toHaveValue("first");
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [],
+      sort: [{ column: "revenue", direction: "asc", nulls: "first" }]
+    });
+  });
+
   it("keeps a selected non-first column by schema ID through rename and emits its current name", async () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();

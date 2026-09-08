@@ -30,6 +30,11 @@ import {
   selectionValueKey
 } from "./filterPresentation";
 
+interface SortDraft {
+  modelKey: string;
+  rules: (FilterModel["sort"][number] & { columnId: string; columnType: ColumnType })[];
+}
+
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
@@ -72,11 +77,53 @@ export function FilterPanel({
     direction: SortDirection;
     nulls: "first" | "last";
   }>({ modelKey: modelSortKey, columnId: "", direction: "asc", nulls: "last" });
-  const [sortEditor, setSortEditor] = useState(() => ({ modelKey: modelSortKey, rules: model.sort }));
-  const draftSort = sortEditor.modelKey === modelSortKey ? sortEditor.rules : model.sort;
+  // Clear column can bind a sibling draft to the next model before the host confirms it.
+  const [sortEditor, setSortEditor] = useState<{ modelKey: string; draft?: SortDraft }>({ modelKey: modelSortKey });
   const [sortOpen, setSortOpen] = useState(model.sort.length > 0);
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
+  const reconciledSortDraft = useMemo(() => {
+    const draft = sortEditor.draft;
+    if (!draft || (sortEditor.modelKey !== modelSortKey && draft.modelKey !== modelSortKey)) return undefined;
+    const rules = draft.rules.filter(
+      (rule) =>
+        viewColumnNameCounts.get(rule.column) === 1 &&
+        metadata?.schema.some(
+          (column) =>
+            column.id === rule.columnId &&
+            column.name === rule.column &&
+            column.type === rule.columnType &&
+            column.name.length > 0 &&
+            supportsTypedViewComparison(column.type)
+        )
+    );
+    if (sortRulesKey(rules) === draft.modelKey) return undefined;
+    return rules.length === draft.rules.length ? draft : { ...draft, rules };
+  }, [sortEditor, modelSortKey, metadata?.schema, viewColumnNameCounts]);
+  if (sortEditor.modelKey !== modelSortKey || sortEditor.draft !== reconciledSortDraft) {
+    setSortEditor({ modelKey: modelSortKey, draft: reconciledSortDraft });
+  }
+  const draftSort =
+    reconciledSortDraft?.modelKey === modelSortKey
+      ? reconciledSortDraft.rules.map(({ column, direction, nulls }) => ({ column, direction, nulls }))
+      : model.sort;
+
+  const stageSort = (rules: FilterModel["sort"], confirmedSort = model.sort) => {
+    const modelKey = sortRulesKey(confirmedSort);
+    const boundRules = rules.flatMap((rule) => {
+      const column = metadata?.schema.find((item) => item.name === rule.column);
+      return column &&
+        column.name.length > 0 &&
+        viewColumnNameCounts.get(rule.column) === 1 &&
+        supportsTypedViewComparison(column.type)
+        ? [{ ...rule, columnId: column.id, columnType: column.type }]
+        : [];
+    });
+    setSortEditor({
+      modelKey: modelSortKey,
+      draft: sortRulesKey(boundRules) === modelKey ? undefined : { modelKey, rules: boundRules }
+    });
+  };
   const activeFilters = model.filters.filter(isActiveColumnFilter);
   const panelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
 
@@ -221,29 +268,27 @@ export function FilterPanel({
 
   const applySort = () => {
     if (sortControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
-    setSortEditor({
-      modelKey: modelSortKey,
-      rules: prioritizeSortRule(draftSort, {
+    stageSort(
+      prioritizeSortRule(draftSort, {
         column: activeColumn,
         direction: sortDirection,
         nulls: sortNulls
       })
-    });
+    );
   };
 
   const removeSort = (index: number) => {
     if (disabled || !sortSupported) return;
-    setSortEditor({ modelKey: modelSortKey, rules: draftSort.filter((_, ruleIndex) => ruleIndex !== index) });
+    stageSort(draftSort.filter((_, ruleIndex) => ruleIndex !== index));
   };
 
   const toggleSortDirection = (index: number) => {
     if (disabled || !sortSupported) return;
-    setSortEditor({
-      modelKey: modelSortKey,
-      rules: draftSort.map((rule, ruleIndex) =>
+    stageSort(
+      draftSort.map((rule, ruleIndex) =>
         ruleIndex === index ? { ...rule, direction: rule.direction === "asc" ? "desc" : "asc" } : rule
       )
-    });
+    );
     const rule = draftSort[index];
     if (rule?.column === activeColumn) {
       setSortInput({
@@ -257,12 +302,11 @@ export function FilterPanel({
 
   const toggleSortNulls = (index: number) => {
     if (disabled || !sortSupported) return;
-    setSortEditor({
-      modelKey: modelSortKey,
-      rules: draftSort.map((rule, ruleIndex) =>
+    stageSort(
+      draftSort.map((rule, ruleIndex) =>
         ruleIndex === index ? { ...rule, nulls: rule.nulls === "first" ? "last" : "first" } : rule
       )
-    });
+    );
     const rule = draftSort[index];
     if (rule?.column === activeColumn) {
       setSortInput({
@@ -284,7 +328,7 @@ export function FilterPanel({
     if (!current || !adjacent) return;
     rules[index] = adjacent;
     rules[nextIndex] = current;
-    setSortEditor({ modelKey: modelSortKey, rules });
+    stageSort(rules);
   };
   const sortDirty = !sameSortRules(draftSort, model.sort);
 
@@ -292,10 +336,10 @@ export function FilterPanel({
     if (disabled || !filterSupported || !columnSchema || !activeColumn) return;
     const nextSort = sortSupported ? model.sort.filter((rule) => rule.column !== activeColumn) : model.sort;
     const nextSortKey = sortRulesKey(nextSort);
-    setSortEditor({
-      modelKey: nextSortKey,
-      rules: draftSort.filter((rule) => rule.column !== activeColumn)
-    });
+    stageSort(
+      draftSort.filter((rule) => rule.column !== activeColumn),
+      nextSort
+    );
     if (sortInput.columnId === columnId) {
       setSortInput({ modelKey: nextSortKey, columnId: "", direction: "asc", nulls: "last" });
     }
@@ -310,7 +354,7 @@ export function FilterPanel({
     if (disabled || (!filterSupported && !sortSupported)) return;
     const nextSort: FilterModel["sort"] = sortSupported ? [] : model.sort;
     const nextSortKey = sortRulesKey(nextSort);
-    setSortEditor({ modelKey: nextSortKey, rules: nextSort });
+    setSortEditor({ modelKey: modelSortKey });
     setSortInput({ modelKey: nextSortKey, columnId: "", direction: "asc", nulls: "last" });
     onApply(
       filterSupported && sortSupported
@@ -610,7 +654,7 @@ export function FilterPanel({
             type="button"
             className="secondaryButton"
             disabled={disabled || draftSort.length === 0}
-            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: [] })}
+            onClick={() => stageSort([])}
           >
             Clear all sorts
           </button>
@@ -697,7 +741,7 @@ export function FilterPanel({
             className="secondaryButton"
             disabled={disabled || !sortDirty}
             onClick={() => {
-              setSortEditor({ modelKey: modelSortKey, rules: model.sort });
+              setSortEditor({ modelKey: modelSortKey });
               setSortInput({ modelKey: modelSortKey, columnId: "", direction: "asc", nulls: "last" });
             }}
           >

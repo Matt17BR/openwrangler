@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Staged viewing sorts discard rules whose column was renamed, removed or replaced, avoiding stale sort targets.
 - Undo closes the editor for a removed cleaning step, preventing Preview from submitting a deleted step ID.
 - Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.
 - Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
