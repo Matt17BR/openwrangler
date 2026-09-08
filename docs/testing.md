@@ -148,7 +148,10 @@ The export-target owner also reserves a file through Node and passes its actual 
 writer, checking both writing the reserved file and refusal of a mismatched receipt on each platform.
 DuckDB Parquet owners cover exact 128-bit integer conversion, native overflow, nested-type refusal, null/empty
 inputs and unchanged ordinary fields. The file-session Group By journey exports both committed data and the
-actual generated cleaning result, then checks native readback and source/session preservation.
+actual generated cleaning result, then checks native readback and source/session preservation. Temporal export
+cases cover interval precision/capacity, nested containers and TIMETZ map lookup identity through native writers at
+both dependency endpoints. They retain correct UTC and `24:00` cases where the selected writer supports them, and
+check refusal after a valid row alongside source, session and pinned-target identity preservation.
 The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
 owned process root when the session closes.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.

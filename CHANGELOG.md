@@ -13,6 +13,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- DuckDB Parquet exports refuse interval truncation and time-zone map-key changes. Supported top-level time-zone
+  values retain their UTC time on the minimum runtime too.
 - DuckDB Parquet exports preserve top-level 128-bit integers within Decimal's 38-digit range. Larger values and
   nested 128-bit fields are refused instead of silently rounding them to floating-point values.
 - Closing a session during runtime recovery stops later cleaning and viewing requests after the active request settles.

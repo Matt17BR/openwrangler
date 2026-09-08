@@ -2449,14 +2449,58 @@ def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
             result = None
 
 
-def _parquet_type_contains_hugeint(dtype: Any) -> bool:
+def _parquet_temporal_condition(
+    expression: str,
+    dtype: Any,
+    utc_timetz_writer: bool | None,
+    depth: int = 0,
+    map_key: bool = False,
+) -> str | None:
+    """Reject lossy leaves without reconstructing the original nested value."""
+
     from duckdb.sqltypes import DuckDBPyType
 
     if dtype.id in {"hugeint", "uhugeint"}:
-        return True
+        raise EngineError(
+            "DuckDB Parquet export cannot preserve nested 128-bit integers. Convert them explicitly or export CSV."
+        )
+    if dtype.id == "interval":
+        # These parts recover only the stored micros component, without folding in months or days.
+        micros = (
+            f"(datepart('hour', {expression}) * 3600000000 + "
+            f"datepart('minute', {expression}) * 60000000 + datepart('microsecond', {expression}))"
+        )
+        return f"datepart('microsecond', {expression}) % 1000 != 0 OR {micros} > 4294967295000"
+    if dtype.id == "time with time zone":
+        if utc_timetz_writer is None:
+            raise EngineError("DuckDB Parquet TIMETZ export requires a recognized stable DuckDB version.")
+        if map_key and utc_timetz_writer:
+            return f"{expression} IS DISTINCT FROM timezone('UTC', {expression})"
+        if map_key or not utc_timetz_writer:
+            return f"datepart('timezone', {expression}) != 0"
+        return None
     if dtype.id not in {"list", "array", "struct", "map", "union"}:
-        return False
-    return any(_parquet_type_contains_hugeint(child) for _, child in dtype.children if isinstance(child, DuckDBPyType))
+        return None
+    children = [(name, child) for name, child in dtype.children if isinstance(child, DuckDBPyType)]
+    item = _quote_ident(f"_ow_nested_{depth}")
+    if dtype.id in {"list", "array"}:
+        condition = _parquet_temporal_condition(item, children[0][1], utc_timetz_writer, depth + 1, map_key)
+        return f"list_bool_or(list_transform({expression}, {item} -> ({condition})))" if condition else None
+    conditions = []
+    for name, child in children:
+        if dtype.id == "map":
+            condition = _parquet_temporal_condition(item, child, utc_timetz_writer, depth + 1, map_key or name == "key")
+            if condition:
+                values = f"map_{'keys' if name == 'key' else 'values'}({expression})"
+                conditions.append(f"list_bool_or(list_transform({values}, {item} -> ({condition})))")
+        else:
+            field = (
+                f"{'union_extract' if dtype.id == 'union' else 'struct_extract'}({expression}, {_sql_literal(name)})"
+            )
+            condition = _parquet_temporal_condition(field, child, utc_timetz_writer, depth + 1, map_key)
+            if condition:
+                conditions.append(f"({condition})")
+    return " OR ".join(conditions) or None
 
 
 def _write_relation_export(
@@ -2472,6 +2516,16 @@ def _write_relation_export(
     try:
         relation = connection.sql(sql)
         if format_name == "parquet":
+            import duckdb
+
+            # The 1.5.4 writer drops TIMETZ offsets; later supported writers normalize to UTC.
+            parts = duckdb.__version__.split(".")
+            release = (
+                tuple(int(part) for part in parts)
+                if len(parts) == 3 and all(part.isdecimal() for part in parts)
+                else ()
+            )
+            utc_timetz_writer = False if release == (1, 5, 4) else True if release >= (1, 5, 5) else None
             expressions = []
             changed = False
             for name, dtype in zip(relation.columns, relation.types, strict=True):
@@ -2480,13 +2534,28 @@ def _write_relation_export(
                     # DuckDB's Parquet writer otherwise stores these integers as doubles.
                     expressions.append(f"CAST({column} AS DECIMAL(38,0)) AS {column}")
                     changed = True
-                elif _parquet_type_contains_hugeint(dtype):
-                    raise EngineError(
-                        "DuckDB Parquet export cannot preserve nested 128-bit integers. "
-                        "Convert them explicitly or export CSV."
-                    )
+                elif dtype.id == "time with time zone":
+                    if utc_timetz_writer is None:
+                        raise EngineError("DuckDB Parquet TIMETZ export requires a recognized stable DuckDB version.")
+                    if not utc_timetz_writer:
+                        # Preserve the legacy writer's already-correct UTC values, including 24:00.
+                        expressions.append(
+                            f"CASE WHEN datepart('timezone', {column}) != 0 THEN timezone('UTC', {column}) "
+                            f"ELSE {column} END AS {column}"
+                        )
+                        changed = True
+                    else:
+                        expressions.append(column)
                 else:
-                    expressions.append(column)
+                    condition = _parquet_temporal_condition(column, dtype, utc_timetz_writer)
+                    if condition:
+                        expressions.append(
+                            f"CASE WHEN ({condition}) THEN error('DuckDB Parquet export cannot preserve this "
+                            f"temporal value. Convert it explicitly or export CSV.') ELSE {column} END AS {column}"
+                        )
+                        changed = True
+                    else:
+                        expressions.append(column)
             if changed:
                 relation = relation.project(", ".join(expressions))
         if isinstance(path, ExportWriterPath):
