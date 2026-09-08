@@ -64,9 +64,11 @@ keyboard shortcut overrides text-field editing.
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed
-when duplicate or display-colliding labels are ambiguous. Pandas CSV and Parquet exports require an explicit
-preserve-or-omit index choice. Polars uses native string column names; ordinary lazy operations stay lazy, while
-one-hot encoding, multi-label encoding, and custom code may materialize. Pandas accepts its supported text encodings
+when duplicate or display-colliding labels are ambiguous. Generated Python checks destination names before appending
+or renaming a column. Harmless extra columns and valid in-place replacements remain supported, including after earlier steps.
+Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
+names; ordinary lazy operations stay lazy, while one-hot encoding, multi-label encoding, and custom code may materialize.
+Pandas accepts its supported text encodings
 and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte delimiter and quote syntax. Excel accepts
 exactly one sheet name or zero-based sheet index; delimited syntax characters are one Unicode scalar each. Import
 options may therefore make Pandas the only compatible backend. Direct pickle opening is unavailable; the trusted

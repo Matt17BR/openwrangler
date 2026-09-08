@@ -20,6 +20,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated Python refuses an existing column when an operation requires a new output name.
+  Harmless extra columns and valid in-place replacements remain supported.
 - Python 3.10 accepts short datetime fractions and compact timezone offsets in filters and Fill Missing Values,
   with matching generated code. Invalid offset hours or minutes are rejected.
 - Pandas timestamps retain nanosecond fractions and time-zone offset seconds in grid cells, nested values, profiles

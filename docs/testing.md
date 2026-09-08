@@ -132,6 +132,13 @@ The existing file reopen journey exercises the registered Redo command after the
 and native R core-editing journeys use the visible button and compare the restored plan, schema, code and bounded
 page before returning to their original final state. The Pandas By Example owner also executes the redone plan's
 generated code with its existing value, dtype, label and index comparator.
+
+`python/tests/test_generated_output_columns.py` owns static output-name agreement between public binding and
+standalone generated Python across Pandas, Polars and DuckDB. It checks occupied outputs, harmless extra columns,
+replacement of the selected source column, canonical Pandas labels, earlier steps and Custom Code, lazy metadata
+inspection, private-connection Rename chains and long-name code capacity. Existing Regex, Split and dynamic-output owners retain
+their stronger validation; session transaction tests retain exact generated-size and pre-transform rollback checks.
+
 Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
 retain cancellation correlation before dispatch, including synchronous listener registration, without losing
 request leases or treating unstarted work as an ambiguous mutation.

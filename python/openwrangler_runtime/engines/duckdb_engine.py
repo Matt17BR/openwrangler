@@ -13,6 +13,7 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+from .._column_binding import compile_output_collision_guards
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
@@ -1139,16 +1140,30 @@ class DuckDBEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         if plan and all(step["kind"] == "renameColumn" for step in plan):
-            query = "SELECT * FROM ow"
-            for step in plan:
+            lines = ["def clean_data(df):"]
+            for index, step in enumerate(plan):
                 params = step["params"]
                 column = bound_column_name(params["column"], "renameColumn")
-                query = f"SELECT * RENAME ({_quote_ident(column)} AS {_quote_ident(params['newName'])}) FROM ({query})"
-            return f"def clean_data(df):\n    return df.query('ow', {query!r})\n"
+                output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
+                lines.extend(output_guards)
+                projection = f'* RENAME ({_quote_ident(column)} AS "'
+                quote = '"'
+                lines.append(
+                    f"    df = df.project({projection!r} + {output_name}.replace({quote!r}, {quote * 2!r}) "
+                    f"+ {quote + ')'!r})"
+                )
+            lines.append("    return df")
+            return "\n".join(lines) + "\n"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
         clean_data_lines = ["def clean_data(df):"]
         for index, step in enumerate(plan):
-            clean_data_lines.extend(self._compile_step(step, index))
+            if step["kind"] == "denseRank":
+                # The native rank helper already validates its fresh destination.
+                output_guards, output_name = [], None
+            else:
+                output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
+            clean_data_lines.extend(output_guards)
+            clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
@@ -1196,7 +1211,7 @@ class DuckDBEngine(DataFrameEngine):
                     raise EngineError(f"DuckDB CSV export {field} must encode as exactly one UTF-8 byte.")
         return normalized
 
-    def _compile_step(self, step: Mapping[str, Any], index: int) -> list[str]:
+    def _compile_step(self, step: Mapping[str, Any], index: int, *, output_name: str | None = None) -> list[str]:
         kind = str(step["kind"])
         params = step["params"]
         prefix = "    "
@@ -1272,11 +1287,11 @@ class DuckDBEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return [
                 f"{prefix}df = _ow_query(df, 'SELECT * RENAME (' + _ow_ident({column!r}) "
-                f"+ ' AS ' + _ow_ident({params['newName']!r}) + ') FROM ow')"
+                f"+ ' AS ' + _ow_ident({output_name or repr(params['newName'])}) + ') FROM ow')"
             ]
         if kind == "cloneColumn":
             column = bound_column_name(params["column"], kind)
-            return [f"{prefix}df = _ow_assign(df, {params['newName']!r}, _ow_ident({column!r}))"]
+            return [f"{prefix}df = _ow_assign(df, {output_name or repr(params['newName'])}, _ow_ident({column!r}))"]
         if kind == "castColumn":
             target = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
@@ -1289,13 +1304,13 @@ class DuckDBEngine(DataFrameEngine):
             )
             left = bound_column_name(params["leftColumn"], kind)
             return [
-                f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, "
+                f"{prefix}df = _ow_assign(df, {output_name or repr(params['newColumn'])}, "
                 f"_ow_formula(_ow_ident({left!r}), {right}, {params['operator']!r}))"
             ]
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
             return [
-                f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, "
+                f"{prefix}df = _ow_assign(df, {output_name or repr(params['newColumn'])}, "
                 f"'length(CAST(' + _ow_ident({column!r}) + ' AS VARCHAR))')"
             ]
         if kind == "denseRank":
@@ -1362,28 +1377,41 @@ class DuckDBEngine(DataFrameEngine):
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
                 native_params["characters"] = DEFAULT_STRIP_CHARACTERS
-            return [f"{prefix}df = _ow_text(df, {kind!r}, {native_params!r})"]
+            if output_name is None:
+                rendered_params = repr(native_params)
+            else:
+                native_params.pop("newColumn")
+                rendered_params = f"{{**{native_params!r}, 'newColumn': {output_name}}}"
+            return [f"{prefix}df = _ow_text(df, {kind!r}, {rendered_params})"]
         if kind == "minMaxScale":
             column = bound_column_name(params["column"], kind)
-            return [f"{prefix}df = _ow_min_max(df, {column!r}, {params.get('newColumn', column)!r})"]
+            return [f"{prefix}df = _ow_min_max(df, {column!r}, {output_name or repr(params.get('newColumn', column))})"]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
             if kind != "roundNumber":
-                return [f"{prefix}df = _ow_floor_ceil(df, {column!r}, {target!r}, {kind == 'ceilNumber'!r})"]
+                return [
+                    f"{prefix}df = _ow_floor_ceil(df, {column!r}, {output_name or repr(target)}, "
+                    f"{kind == 'ceilNumber'!r})"
+                ]
             value = f"try_cast({_quote_ident(column)} AS DOUBLE)"
             decimals = int(params.get("decimals", 0))
             expression = _duckdb_round_expression(value, decimals)
-            return [f"{prefix}df = _ow_round(df, {column!r}, {target!r}, {decimals!r}, {expression!r})"]
+            return [
+                f"{prefix}df = _ow_round(df, {column!r}, {output_name or repr(target)}, {decimals!r}, {expression!r})"
+            ]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             expression = f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})"
-            return [f"{prefix}df = _ow_assign(df, {params.get('newColumn', column)!r}, {expression!r})"]
+            return [
+                f"{prefix}df = _ow_assign(df, {output_name or repr(params.get('newColumn', column))}, {expression!r})"
+            ]
         if kind == "groupBy":
             return [f"{prefix}df = _ow_group_by(df, {_bound_duckdb_group_params(params)!r})"]
         if kind == "byExample":
             return [
-                f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {_by_example_expression(params['program'])!r})"
+                f"{prefix}df = _ow_assign(df, {output_name or repr(params['newColumn'])}, "
+                f"{_by_example_expression(params['program'])!r})"
             ]
         if kind == "customCode":
             return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
