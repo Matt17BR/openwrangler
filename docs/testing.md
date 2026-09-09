@@ -165,6 +165,9 @@ The editor environment allowlist and native cleanup owners remain unchanged.
 Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
 column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
 publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
+Code Preview readiness uses its visible first line and published editor identity; offscreen generated functions
+may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only controls retain their assertions.
+The same owner checks Tab entry and exit, navigation to the end of a long read-only buffer, and keyboard edit refusal.
 App shortcut and grid clipboard cases cover column-menu Escape precedence, summary focus, and a pending copy that
 finishes after Escape and reopening the menu.
 

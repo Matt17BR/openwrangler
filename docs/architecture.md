@@ -954,6 +954,8 @@ high-contrast behavior. Virtualization changes what is rendered, not the accessi
 Editable-field undo remains owned by the field; state-scoped workbench shortcuts are mirrored in the webview and
 documented in the generated reference. An open column-actions popup consumes Escape and restores focus to its labelled
 summary before another Escape can reach the outer workbench shortcut.
+Code Preview keeps its labelled content in the tab order in both editable and read-only modes. Read-only buffers
+support keyboard navigation and selection while the editor's mutation guards remain active.
 
 Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
 original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the

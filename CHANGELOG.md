@@ -35,6 +35,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   Scalar numeric Fill also retains the same value in live and generated execution.
 - Generated native R Formula and By Example preserve finite numeric literals when platform decimal parsers differ.
 - Native R Mean Fill, Group By and numeric profiles retain finite means across cancellation and chunk boundaries.
+- Read-only Code Preview supports keyboard entry and navigation through long generated programs.
 - Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.
 - Python sessions return valid empty pages when recovery or cleaning leaves fewer rows than the requested position.
 - Runtime recovery refreshes stale profiles with the recovered grid and preserves the originating operation's error.
