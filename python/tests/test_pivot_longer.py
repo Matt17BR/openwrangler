@@ -543,12 +543,24 @@ def test_pandas_matching_category_metadata_preserves_value_dtype_live_and_genera
     assert generated["reading"].dtype == dtype
 
 
-def test_polars_enum_metadata_must_match_live_and_generated() -> None:
+@pytest.mark.parametrize(
+    ("left_dtype", "right_dtype"),
+    [
+        (pl.Enum(["a", "b"]), pl.Enum(["b", "a"])),
+        (pl.Categorical(pl.Categories.random()), pl.Categorical(pl.Categories.random())),
+        (
+            pl.Categorical(pl.Categories("pivot-physical", physical=pl.UInt8)),
+            pl.Categorical(pl.Categories("pivot-physical", physical=pl.UInt16)),
+        ),
+    ],
+    ids=["enum-order", "category-space", "category-physical"],
+)
+def test_polars_category_metadata_must_match_live_and_generated(left_dtype: Any, right_dtype: Any) -> None:
     frame = pl.DataFrame(
         {
             "keep": ["k1", "k2"],
-            "alpha": pl.Series(["a", "b"], dtype=pl.Enum(["a", "b"])),
-            "beta": pl.Series(["a", "b"], dtype=pl.Enum(["b", "a"])),
+            "alpha": pl.Series(["a", "b"], dtype=left_dtype),
+            "beta": pl.Series(["a", "b"], dtype=right_dtype),
         }
     )
     step = {
@@ -563,18 +575,38 @@ def test_polars_enum_metadata_must_match_live_and_generated() -> None:
     }
 
     with pytest.raises(EngineError, match="exactly compatible Polars dtype"):
+        PolarsEngine().validate_transform_preflight(frame, step, {"rows": 2, "columns": 3})
+    with pytest.raises(EngineError, match="exactly compatible Polars dtype"):
         PolarsEngine().apply_transform(frame, step)
     with pytest.raises(ValueError, match="exactly compatible Polars dtype"):
         execute_generated(PolarsEngine(), frame, step)
 
 
-def test_polars_matching_categorical_metadata_is_supported_live_and_generated() -> None:
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("execution", ["preflight", "live", "generated"])
+def test_polars_matching_categorical_metadata_is_supported_live_and_generated(lazy: bool, execution: str) -> None:
+    dtype = pl.Categorical(pl.Categories.random())
     frame = pl.DataFrame(
         {
             "keep": ["k1", "k2"],
-            "alpha": pl.Series(["a", "b"], dtype=pl.Categorical),
-            "beta": pl.Series(["b", "a"], dtype=pl.Categorical),
+            "alpha": ["a", None],
+            "beta": ["b", "c"],
         }
     )
-    step = bind(PolarsEngine(), frame)
-    assert rows(PolarsEngine().apply_transform(frame, step)) == rows(execute_generated(PolarsEngine(), frame, step))
+    source = (frame.lazy() if lazy else frame).with_columns(pl.col("alpha", "beta").cast(dtype))
+    engine = PolarsEngine()
+    step = bind(engine, source)
+    if execution == "preflight":
+        if isinstance(source, pl.LazyFrame):
+
+            def unexpected_evaluation(_batch: pl.DataFrame) -> pl.DataFrame:
+                raise AssertionError("Pivot dtype validation must not evaluate the lazy source.")
+
+            source = source.map_batches(unexpected_evaluation, schema=source.collect_schema())
+        engine.validate_transform_preflight(source, step, {"rows": 2, "columns": 3})
+        return
+    result = engine.apply_transform(source, step) if execution == "live" else execute_generated(engine, source, step)
+    result_schema = result.collect_schema() if isinstance(result, pl.LazyFrame) else result.schema
+    assert result_schema["reading"].is_(dtype)
+    assert rows(result) == [("k1", "alpha", "a"), ("k2", "alpha", None), ("k1", "beta", "b"), ("k2", "beta", "c")]
+    assert rows(source) == [("k1", "a", "b"), ("k2", None, "c")]

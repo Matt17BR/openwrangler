@@ -520,6 +520,10 @@ for that aggregation alone; keys, source storage and other aggregates retain the
 
 ### Polars
 
+Pivot Longer compares exact selected-column dtypes from the schema during preflight, live execution and generated
+execution. Category mapping identity and Enum order must match. Compatibility checks use schema metadata;
+row-count bounds and result validation retain their existing execution paths.
+
 Dataset statistics for nonempty LazyFrames with visible Object columns retain exact missing-value counts and report
 the duplicate count as unavailable. This path streams only the existing missing-metrics query; it does not build a
 unique query. Native streaming cannot compare these Object rows, while multi-column in-memory grouping can incur
