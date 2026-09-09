@@ -289,9 +289,9 @@ Transpose, explode, and unnest are not hidden catalog entries.
 ## Release rule
 
 A stable release requires every required Pandas and Polars row above to be **Done**, no known release-blocking defect,
-and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Preview,
-experimental, Partial, Planned, and Out-of-scope rows do not block stable publication when their public labels and
-limits remain accurate.
+and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Outside the required
+Pandas/Polars table, Preview, experimental, Partial, Planned, and Out-of-scope capabilities do not block stable
+publication when their public labels and limits remain accurate.
 
 Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
 columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
