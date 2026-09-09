@@ -4711,7 +4711,7 @@ def _ow_drop_duplicates(df, columns, keep):
     selected = list(columns) if columns else _ow_visible(df)
     if not selected:
         return df
-    order_name = _ow_unique(_ow_columns(df), "__ow_dupe_order")
+    order_name = _ow_unique([*_ow_columns(df), *selected], "__ow_dupe_order")
     rank_name = _ow_unique(_ow_columns(df) + [order_name], "__ow_dupe_rank")
     count_name = _ow_unique(_ow_columns(df) + [order_name, rank_name], "__ow_dupe_count")
     partition = _ow_identifiers(selected)
@@ -4735,7 +4735,7 @@ def _ow_mark_duplicates(df, columns, target):
     _ow_check_outputs(original, [target], "Mark duplicates")
     if target.casefold() in {name.casefold() for name in original}:
         raise ValueError("Mark duplicates would create DuckDB column names that differ only by case.")
-    order_name = _ow_unique([*original, target], "__ow_dupe_order")
+    order_name = _ow_unique([*original, *columns, target], "__ow_dupe_order")
     flag_name = _ow_unique([*original, target, order_name], "__ow_dupe_flag")
     order, flag = map(_ow_ident, (order_name, flag_name))
     # Publish original values, not the window's normalized comparison keys.

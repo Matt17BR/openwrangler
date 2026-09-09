@@ -2724,6 +2724,59 @@ def test_duckdb_duplicates_preserve_original_float_bits(
         engine.close()
 
 
+@pytest.mark.parametrize(
+    ("kind", "keep", "key", "occupied_ordinal"),
+    [
+        ("dropDuplicates", "first", "missing", False),
+        ("dropDuplicates", "first", "__ow_dupe_order", False),
+        ("dropDuplicates", "last", "__OW_DUPE_ORDER", False),
+        ("dropDuplicates", "none", "__ow_dupe_order_1", True),
+        ("markDuplicates", None, "missing", False),
+        ("markDuplicates", None, "__ow_dupe_order", False),
+        ("markDuplicates", None, "__OW_DUPE_ORDER_1", True),
+    ],
+)
+def test_duckdb_generated_duplicates_do_not_invent_missing_selected_keys(
+    kind: str, keep: str | None, key: str, occupied_ordinal: bool
+) -> None:
+    engine = DuckDBEngine()
+    extra = ', 77 AS "__ow_dupe_order"' if occupied_ordinal else ""
+    try:
+        with duckdb.connect(config={"python_enable_replacements": False}) as connection:
+            source = connection.sql(f'SELECT *{extra} FROM (VALUES (5, 20), (5, 10), (7, 30)) input("{key}", payload)')
+            before = source.fetchall()
+            schema = engine.schema(source)
+            lineage = source_lineage(schema)
+            public = step(
+                kind,
+                columns=[lineage[0]],
+                **({"keep": keep} if kind == "dropDuplicates" else {"newColumn": "duplicate"}),
+            )
+            operation = bind_step(public, schema, lineage)
+            namespace: dict[str, Any] = {}
+            exec(compile(engine.compile_plan([operation]), "<generated-duplicate-keys>", "exec"), namespace)
+            generated = namespace["clean_data"](source)
+            expected = (
+                [before[index] for index in {"first": [0, 2], "last": [1, 2], "none": [2]}[str(keep)]]
+                if kind == "dropDuplicates"
+                else [(*row, flag) for row, flag in zip(before, [True, True, False], strict=True)]
+            )
+            assert generated.fetchall() == expected
+            assert generated.columns == [*source.columns, *(["duplicate"] if kind == "markDuplicates" else [])]
+            assert list(map(str, generated.types)) == [
+                *map(str, source.types),
+                *(["BOOLEAN"] if kind == "markDuplicates" else []),
+            ]
+            rebound = connection.sql(f"SELECT *{extra} FROM (VALUES (20), (10), (30)) input(payload)")
+            rebound_before = rebound.fetchall()
+            with pytest.raises(duckdb.BinderException, match="Referenced column"):
+                namespace["clean_data"](rebound)
+            assert rebound.fetchall() == rebound_before
+            assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("container", ["list", "struct"])
 @pytest.mark.parametrize(
     ("keep", "expected_positions"),

@@ -200,9 +200,11 @@ checks single and composite keys through Preview, Apply, inspection, Undo/Redo a
 including original row identities, frame metadata and integer64 helper admission.
 
 DuckDB engine tests compare retained scalar and nested values, zero signs and native types for every duplicate keep mode
-in live and generated results. Session transactions own the corresponding preview/history and source-preservation
-assertions. The same DuckDB engine owner covers complete generated programs that refuse an erroneous intermediate
-before a later projection, preserve private-connection Rename plans, and leave empty plans unchanged. Session
+in live and generated results. Reused generated Drop Duplicates and Mark Duplicates programs must reject missing
+selected keys, including case and suffix variants of internal ordinals, while retaining valid helper-named keys.
+Session transactions own the corresponding preview/history and source-preservation assertions. The same DuckDB
+engine owner covers complete generated programs that refuse an erroneous intermediate before a later projection,
+preserve private-connection Rename plans, and leave empty plans unchanged. Session
 transactions cover native errors outside the requested row or column window, retained state after refusal and
 successful correction. Native complex-value and empty-result controls keep the result check compatible with valid frames.
 Mark Duplicates controls require one source evaluation per retained validation query and later retrieval. Private

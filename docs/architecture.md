@@ -494,9 +494,9 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
-Generated Sort Rows chooses its temporary row ordinal against the current input columns and requested sort keys.
-It preserves every user column, native case-insensitive key binding and input order within ties. A missing requested
-key is rejected; an internal ordinal cannot supply it.
+Generated Sort Rows, Drop Duplicates and Mark Duplicates reserve current input names and requested keys when choosing
+temporary row ordinals. Missing requested keys are rejected; an internal ordinal cannot supply them. Native
+case-insensitive key binding remains valid. Sort Rows preserves every user column and input order within ties.
 
 Generated queries execute their composed SQL on the input relation's connection, so a same-named table or function
 on the module's default connection cannot substitute different data. Each call removes its unused query view before
