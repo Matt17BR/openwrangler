@@ -25,6 +25,8 @@ npm run test:python
 
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
+The package owner checks in-place corruption and truncation after staging-name retirement, requiring byte mismatch
+refusal and owned cleanup. Successful publication retains the verified receipt and exact source-manifest bindings.
 The CI scope proof tests use real Git merges to cover exact commit binding, changed paths and modes, shallow history,
 and bounded output. They distinguish documentation-only omissions from native R's additional Python-source scope,
 and execute the required-result guards with failed proofs, malformed outputs, and skipped or canceled runtime execution.

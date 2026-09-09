@@ -257,6 +257,8 @@ test("packages preview and stable channels with exact locked VSCE options and ca
       assert.equal(lstatSync(fixture.outputPath).nlink, 1);
       assert.equal(isPortableHostPackageFileMode(lstatSync(fixture.outputPath, { bigint: true }).mode), true);
       assert.equal(result.path, fixture.outputPath);
+      assert.equal(result.bytes, CANONICAL_BYTES.length);
+      assert.equal(result.protocol, canonicalReceipt(CANONICAL_BYTES).protocol);
       assert.equal(result.sha256, sha256(CANONICAL_BYTES));
       assert.equal(result.packageSourceManifestProtocol, "test-package-source-manifest");
       assert.equal(result.packageSourceManifestEntries, 0);
@@ -269,7 +271,7 @@ test("packages preview and stable channels with exact locked VSCE options and ca
         entries: [],
         protocol: "test-package-source-manifest"
       });
-      assert.equal(fixture.calls.canonicalAssertions, 2, "staged and final bytes must both prove canonical form");
+      assert.equal(fixture.calls.canonicalAssertions, 1, "byte-identical publication must reuse its staged proof");
       assert.equal(fixture.calls.sourcePins, 4, "sources must be pinned before, after raw, after canonical, and final");
       assert.equal(fixture.calls.manifests, 1);
       assert.equal(fixture.calls.validations, 2);
@@ -563,6 +565,30 @@ test("final validation rejects any surviving hard-link alias and removes the req
     assert.equal(lstatSync(extraLink).nlink, 1);
   } finally {
     removeFixture(fixture);
+  }
+});
+
+test("final byte validation rejects corrupted or truncated output and cleans up its owned files", async () => {
+  for (const truncated of [false, true]) {
+    const changed = Buffer.from(CANONICAL_BYTES);
+    changed[Math.floor(changed.length / 2)] ^= 1;
+    const replacement = truncated ? CANONICAL_BYTES.subarray(0, -1) : changed;
+    const fixture = makeFixture({
+      hooks: {
+        afterStagingUnlink({ output }) {
+          // The final identity is captured after this write, so only byte
+          // validation can distinguish it from the verified staged snapshot.
+          writeFileSync(output, replacement);
+        }
+      }
+    });
+    try {
+      await assert.rejects(runFixture(fixture), /Published package output changed after atomic publication/u);
+      assertNoProducedOutput(fixture);
+      assert.deepEqual(readdirSync(fixture.repositoryRoot), ["source.txt"]);
+    } finally {
+      removeFixture(fixture);
+    }
   }
 });
 
