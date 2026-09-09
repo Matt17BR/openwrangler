@@ -9711,6 +9711,13 @@ openwrangler_r_frame_contract <- local({
     drop_columns_at = drop_columns_at,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
+    integer_sum_helpers = list(
+      compare_unsigned_decimal = compare_unsigned_decimal,
+      add_unsigned_decimal = add_unsigned_decimal,
+      subtract_unsigned_decimal = subtract_unsigned_decimal,
+      add_signed_decimal = add_signed_decimal,
+      exact_integer_sum_text = exact_integer_sum_text
+    ),
     safe_float_midpoint = safe_float_midpoint,
     capture_group_result = capture_group_result,
     drop_missing_rows_at = drop_missing_rows_at,

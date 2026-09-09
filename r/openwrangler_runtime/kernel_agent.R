@@ -7146,88 +7146,8 @@ openwrangler_r_kernel_agent <- local({
   }
 
   generated_group_by <- function(.ow_frame, .ow_key_specs, .ow_aggregation_specs) {
-    .ow_normalize_integer <- function(.ow_value) {
-      .ow_value <- as.character(.ow_value)
-      .ow_negative <- startsWith(.ow_value, "-")
-      .ow_digits <- if (.ow_negative) substring(.ow_value, 2L) else .ow_value
-      .ow_digits <- sub("^0+", "", .ow_digits)
-      if (identical(.ow_digits, "")) return("0")
-      if (.ow_negative) paste0("-", .ow_digits) else .ow_digits
-    }
-    .ow_abs_compare <- function(.ow_left, .ow_right) {
-      if (nchar(.ow_left) != nchar(.ow_right)) return(sign(nchar(.ow_left) - nchar(.ow_right)))
-      if (identical(.ow_left, .ow_right)) return(0L)
-      if (.ow_left > .ow_right) 1L else -1L
-    }
-    .ow_abs_add <- function(.ow_left, .ow_right) {
-      .ow_l <- rev(utf8ToInt(.ow_left) - 48L)
-      .ow_r <- rev(utf8ToInt(.ow_right) - 48L)
-      .ow_size <- max(length(.ow_l), length(.ow_r))
-      length(.ow_l) <- .ow_size
-      length(.ow_r) <- .ow_size
-      .ow_l[is.na(.ow_l)] <- 0L
-      .ow_r[is.na(.ow_r)] <- 0L
-      .ow_out <- integer(.ow_size + 1L)
-      .ow_carry <- 0L
-      for (.ow_index in seq_len(.ow_size)) {
-        .ow_total <- .ow_l[[.ow_index]] + .ow_r[[.ow_index]] + .ow_carry
-        .ow_out[[.ow_index]] <- .ow_total %% 10L
-        .ow_carry <- .ow_total %/% 10L
-      }
-      .ow_out[[.ow_size + 1L]] <- .ow_carry
-      while (length(.ow_out) > 1L && .ow_out[[length(.ow_out)]] == 0L) {
-        .ow_out <- .ow_out[-length(.ow_out)]
-      }
-      paste0(rev(.ow_out), collapse = "")
-    }
-    .ow_abs_subtract <- function(.ow_left, .ow_right) {
-      .ow_l <- rev(utf8ToInt(.ow_left) - 48L)
-      .ow_r <- rev(utf8ToInt(.ow_right) - 48L)
-      length(.ow_r) <- length(.ow_l)
-      .ow_r[is.na(.ow_r)] <- 0L
-      .ow_out <- integer(length(.ow_l))
-      .ow_borrow <- 0L
-      for (.ow_index in seq_along(.ow_l)) {
-        .ow_digit <- .ow_l[[.ow_index]] - .ow_r[[.ow_index]] - .ow_borrow
-        if (.ow_digit < 0L) {
-          .ow_digit <- .ow_digit + 10L
-          .ow_borrow <- 1L
-        } else {
-          .ow_borrow <- 0L
-        }
-        .ow_out[[.ow_index]] <- .ow_digit
-      }
-      while (length(.ow_out) > 1L && .ow_out[[length(.ow_out)]] == 0L) {
-        .ow_out <- .ow_out[-length(.ow_out)]
-      }
-      paste0(rev(.ow_out), collapse = "")
-    }
-    .ow_signed_add <- function(.ow_left, .ow_right) {
-      .ow_left <- .ow_normalize_integer(.ow_left)
-      .ow_right <- .ow_normalize_integer(.ow_right)
-      .ow_left_negative <- startsWith(.ow_left, "-")
-      .ow_right_negative <- startsWith(.ow_right, "-")
-      .ow_left_abs <- if (.ow_left_negative) substring(.ow_left, 2L) else .ow_left
-      .ow_right_abs <- if (.ow_right_negative) substring(.ow_right, 2L) else .ow_right
-      if (identical(.ow_left_negative, .ow_right_negative)) {
-        .ow_sum <- .ow_abs_add(.ow_left_abs, .ow_right_abs)
-        return(if (.ow_left_negative && !identical(.ow_sum, "0")) paste0("-", .ow_sum) else .ow_sum)
-      }
-      .ow_comparison <- .ow_abs_compare(.ow_left_abs, .ow_right_abs)
-      if (.ow_comparison == 0L) return("0")
-      if (.ow_comparison > 0L) {
-        .ow_difference <- .ow_abs_subtract(.ow_left_abs, .ow_right_abs)
-        if (.ow_left_negative) paste0("-", .ow_difference) else .ow_difference
-      } else {
-        .ow_difference <- .ow_abs_subtract(.ow_right_abs, .ow_left_abs)
-        if (.ow_right_negative) paste0("-", .ow_difference) else .ow_difference
-      }
-    }
-    .ow_exact_sum_text <- function(.ow_values) {
-      Reduce(.ow_signed_add, as.list(as.character(.ow_values)), init = "0")
-    }
     .ow_exact_sum <- function(.ow_values, .ow_kind) {
-      .ow_text <- .ow_exact_sum_text(.ow_values)
+      .ow_text <- exact_integer_sum_text(.ow_values, .ow_kind)
       .ow_negative <- startsWith(.ow_text, "-")
       .ow_magnitude <- if (.ow_negative) substring(.ow_text, 2L) else .ow_text
       .ow_limit <- if (identical(.ow_kind, "integer")) "2147483647" else "9223372036854775807"
@@ -7299,7 +7219,7 @@ openwrangler_r_kernel_agent <- local({
       }
       if (identical(.ow_operation, "mean")) {
         if (identical(.ow_kind, "integer64")) {
-          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_present))) / length(.ow_present))
+          return(suppressWarnings(as.double(exact_integer_sum_text(.ow_present, "integer64"))) / length(.ow_present))
         }
         .ow_numeric <- suppressWarnings(as.double(.ow_present))
         .ow_positive_infinity <- any(is.infinite(.ow_numeric) & .ow_numeric > 0)
@@ -7317,7 +7237,7 @@ openwrangler_r_kernel_agent <- local({
         if (.ow_count %% 2L == 1L) return(.ow_lower)
         if (identical(.ow_kind, "integer64")) {
           .ow_middle <- .ow_ordered[c((.ow_count + 1L) %/% 2L, (.ow_count + 2L) %/% 2L)]
-          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_middle))) / 2)
+          return(suppressWarnings(as.double(exact_integer_sum_text(.ow_middle, "integer64"))) / 2)
         }
         .ow_upper <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 2L) %/% 2L]]))
         return(.ow_safe_float_midpoint(.ow_lower, .ow_upper))
@@ -7670,7 +7590,8 @@ openwrangler_r_kernel_agent <- local({
     fill_directional_values,
     dense_rank_values,
     duplicate_row_mask,
-    prepare_find_replace_regex
+    prepare_find_replace_regex,
+    integer_sum_helpers
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7939,9 +7860,20 @@ openwrangler_r_kernel_agent <- local({
       fill_kinds <- vapply(fill_steps, function(step) step$replacement$kind, character(1L), USE.NAMES = FALSE)
       lines <- c(lines, fill_missing_code_helper_lines(fill_kinds, fill_directional_values))
     }
-    if (any(vapply(bound_plan, function(step) identical(step$kind, "groupBy"), logical(1L)))) {
-      lines <- c(lines, group_by_code_helper_lines())
+    group_steps <- Filter(function(step) identical(step$kind, "groupBy"), bound_plan)
+    needs_integer_sum <- any(vapply(group_steps, function(step) {
+      any(vapply(step$aggregations, function(specification) {
+        (identical(specification$semanticsKind, "integer") && identical(specification$operation, "sum")) ||
+          (identical(specification$semanticsKind, "integer64") && specification$operation %in% c("sum", "mean", "median"))
+      }, logical(1L)))
+    }, logical(1L)))
+    if (needs_integer_sum) {
+      for (name in names(integer_sum_helpers)) {
+        lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(integer_sum_helpers[[name]], width.cutoff = 500L)))
+      }
+      lines <- c(lines, '  abort <- function(code, message) stop(paste0("Open Wrangler ", message), call. = FALSE)')
     }
+    if (length(group_steps) > 0L) lines <- c(lines, group_by_code_helper_lines())
     if (any(vapply(bound_plan, function(step) identical(step$kind, "byExample"), logical(1L)))) {
       lines <- c(lines, by_example_code_helper_lines())
     }
@@ -7972,6 +7904,7 @@ openwrangler_r_kernel_agent <- local({
       identical(step$kind, "roundNumber") && !identical(step$semanticKind, "integer64") && step$decimals < -22
     }, logical(1L)))) {
       for (name in names(round_coarse_helpers)) {
+        if (needs_integer_sum && identical(name, "add_unsigned_decimal")) next
         lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(round_coarse_helpers[[name]], width.cutoff = 500L)))
       }
     }
@@ -9766,7 +9699,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$fill_directional_values,
         frame_contract$dense_rank_values,
         frame_contract$duplicate_row_mask,
-        frame_contract$prepare_find_replace_regex
+        frame_contract$prepare_find_replace_regex,
+        frame_contract$integer_sum_helpers
       )
     )
   }
@@ -10105,7 +10039,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$fill_directional_values,
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
-            frame_contract$prepare_find_replace_regex
+            frame_contract$prepare_find_replace_regex,
+            frame_contract$integer_sum_helpers
           )
         } else {
           NULL
@@ -10162,7 +10097,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$fill_directional_values,
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
-            frame_contract$prepare_find_replace_regex
+            frame_contract$prepare_find_replace_regex,
+            frame_contract$integer_sum_helpers
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10240,7 +10176,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$fill_directional_values,
               frame_contract$dense_rank_values,
               frame_contract$duplicate_row_mask,
-              frame_contract$prepare_find_replace_regex
+              frame_contract$prepare_find_replace_regex,
+              frame_contract$integer_sum_helpers
             )
           ))
         }

@@ -125,6 +125,9 @@ separate from the midpoint guarantee.
 The existing native R Group By owner compares typed empty results across base dataframes, tibbles and data.tables.
 It also executes complete generated programs in fresh R processes to check integer64 first/last outputs and exact
 wide keys without a preloaded bit64 namespace, retaining source and result-publication assertions.
+It also checks exact-sum helper admission and reuse across repeated Group By and coarse Round steps, with complete
+generated execution isolated from caller arithmetic. Existing frame and kernel owners verify signed cancellation
+across multiple integer batches; the profile owner covers the unchanged live consumer of those functions.
 The existing R Fill, Group By, profiling and Custom Code owners register and restore numeric mean methods to check
 built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
 Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain

@@ -284,6 +284,7 @@ in both live and generated execution. Tiny ties, finite extremes and existing si
 Interpolation at other weights still has a [known tiny-value rounding limit](https://github.com/Matt17BR/openwrangler/issues/1064).
 
 Generated native R Group By preserves typed empty results, integer64 keys and first/last values in a fresh R session.
+Generated integer sums also use the live batched calculation; integer and integer64 output limits remain unchanged.
 
 Registered R mean methods do not alter built-in Fill and Group By means or profile means and medians.
 Custom Code retains ordinary R dispatch; existing numeric precision limits remain documented in

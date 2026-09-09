@@ -623,6 +623,9 @@ existing owners; the shared calculation checks projected UTF-8 output size befor
 Generated R Group By retains zero groups for empty inputs and preserves the live result's column types.
 It loads bit64 before grouping when a selected key or aggregation uses integer64, so missing detection,
 key comparison and subsetting retain native values even in a fresh R session.
+Integer sums and integer64 sum, mean and median share the live exact-sum arithmetic. Generated plans include these
+functions once when needed, reusing unsigned addition if coarse Round also needs it. Ordinary integer sums retain
+bounded native batches; integer64 accumulation and existing result-range refusals remain unchanged.
 
 Built-in R means and profile medians use primitive numeric calculations that bypass registered S3 mean methods.
 Live operations and their generated programs agree; Custom Code retains the caller's ordinary R dispatch.
