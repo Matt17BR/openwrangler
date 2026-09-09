@@ -9,6 +9,7 @@ import pytest
 from python.tests.pyspark_connect_test_support import spark_session as _shared_spark_session
 
 from openwrangler_runtime.engines import PySparkEngine
+from openwrangler_runtime.session import Session
 from openwrangler_runtime.session_access import SessionRequestAdmission
 from openwrangler_runtime.session_source import SessionSource
 
@@ -164,6 +165,9 @@ class _ClosablePySparkSession:
 
 
 class _FailureClassifyingSession:
+    clear_page_cache = Session.clear_page_cache
+    invalidate_source_view = Session.invalidate_source_view
+
     def __init__(self, session_id: str, engine: PySparkEngine, live_value: Any | None = None) -> None:
         self.session_id = session_id
         self.engine = engine
@@ -177,9 +181,6 @@ class _FailureClassifyingSession:
             self.source.bind_loaded_value(engine, live_value)
         self.page_cache = {"confirmed": object()}
         self.page_cache_bytes = 128
+        self.spark_confirmed_view: object | None = object()
         self.disposed = False
         self.access = SessionRequestAdmission()
-
-    def clear_page_cache(self) -> None:
-        self.page_cache.clear()
-        self.page_cache_bytes = 0
