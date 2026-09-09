@@ -128,6 +128,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
         const undo = await bridge.request({ kind: "undoStep", sessionId, revision: 2, ...window });
         expect(undo.kind).toBe("planUpdated");
         if (undo.kind !== "planUpdated") throw new Error(JSON.stringify(undo));
+        expect(undo.page).toEqual(opened.page);
         expect(undo.metadata.canRedo).toBe(true);
         const invalidSteps: TransformStep[] = [
           step.kind === "markDuplicates"

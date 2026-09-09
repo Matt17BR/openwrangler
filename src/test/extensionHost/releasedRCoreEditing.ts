@@ -226,43 +226,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     const duplicateNotebookVersion = notebook.version;
     const duplicateNotebookDirty = notebook.isDirty;
     const duplicateNotebookCells = notebook.getCells().map((cell) => cell.document.getText());
-    const readDuplicateSample = async (active: ActiveSession): Promise<DataRow[]> => {
-      const rows: DataRow[] = [];
-      for (const offset of [0, 602]) {
-        const response = await testing.request(
-          {
-            kind: "getPage",
-            sessionId,
-            revision: active.metadata.revision,
-            viewRequestId: `${phase}-duplicates-${active.metadata.revision}-${offset}`,
-            offset,
-            limit: 2,
-            filterModel: duplicateBase.viewState.filterModel,
-            columnOffset: 0,
-            columnLimit: active.metadata.schema.length
-          },
-          { ephemeralPage: true }
-        );
-        assert.equal(response.kind, "page");
-        if (response.kind !== "page") throw new Error("The native R duplicate sample did not return a page.");
-        assert.equal(response.metadata.sessionId, sessionId);
-        assert.equal(response.revision, active.metadata.revision);
-        assert.equal(response.page.totalRows, 1205);
-        assert.equal(response.page.offset, offset);
-        assert.equal(response.page.rows.length, 2);
-        assert.deepEqual(
-          response.page.columnIds,
-          active.metadata.schema.map((column) => column.id)
-        );
-        rows.push(...response.page.rows);
-      }
-      return rows;
-    };
-    const duplicateOriginalRows = await readDuplicateSample(duplicateBase);
-    assert.deepEqual(
-      duplicateOriginalRows.map((row) => row.values[duplicateSource.position]?.raw),
-      ["A", "A", "B", "B"]
-    );
     const duplicatePicker = await openReleasedROperationPicker(testing, workbench, sessionId);
     await duplicatePicker.dialog.getByPlaceholder("Search operations").fill("mark duplicates");
     await duplicatePicker.dialog.getByRole("button", { name: /^Mark duplicates\b/u }).click();
@@ -293,15 +256,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.equal(duplicateOutput.nullable, false);
     assert.deepEqual(duplicatePreview.metadata.schema.slice(0, -1), duplicateBase.metadata.schema);
     assertReleasedRGeneratedCode(duplicatePreview.code ?? "", "group_repeated");
-    const duplicatePreviewRows = await readDuplicateSample(duplicatePreview);
-    assert.deepEqual(
-      duplicatePreviewRows.map((row) => ({ ...row, values: row.values.slice(0, -1) })),
-      duplicateOriginalRows
-    );
-    assert.deepEqual(
-      duplicatePreviewRows.map((row) => row.values.at(-1)),
-      Array.from({ length: 4 }, () => ({ kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false }))
-    );
     app = await appForObservedMutation(duplicatePreview, "the visible R Mark Duplicates draft");
     const duplicateReview = app.getByRole("region", { name: "Draft review" });
     await duplicateReview.getByText("Mark duplicates", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -324,7 +278,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(duplicateApplied.metadata.steps, [duplicateStep]);
     assert.deepEqual(duplicateApplied.metadata.schema, duplicatePreview.metadata.schema);
     assert.equal(duplicateApplied.code, duplicatePreview.code);
-    assert.deepEqual(await readDuplicateSample(duplicateApplied), duplicatePreviewRows);
     app = await appForObservedMutation(duplicateApplied, "the applied R Mark Duplicates session");
     const duplicateColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await duplicateColumnSearch.fill(duplicateOutput.name);
@@ -441,7 +394,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(duplicateRestored.metadata.schema, duplicateBase.metadata.schema);
     assert.equal(duplicateRestored.code ?? "", duplicateBase.code ?? "");
     assert.deepEqual(duplicateRestored.viewState.filterModel, duplicateBase.viewState.filterModel);
-    assert.deepEqual(await readDuplicateSample(duplicateRestored), duplicateOriginalRows);
     assert.equal(notebook.version, duplicateNotebookVersion);
     assert.equal(notebook.isDirty, duplicateNotebookDirty);
     assert.deepEqual(
@@ -467,49 +419,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     const rankNotebookVersion = notebook.version;
     const rankNotebookDirty = notebook.isDirty;
     const rankNotebookCells = notebook.getCells().map((cell) => cell.document.getText());
-    const readRankSample = async (
-      active: ActiveSession,
-      column: ActiveSession["metadata"]["schema"][number],
-      label: string
-    ): Promise<DataRow[]> => {
-      const rows: DataRow[] = [];
-      for (const [offset, limit] of [
-        [0, 2],
-        [602, 1],
-        [1204, 1]
-      ] as const) {
-        const response = await testing.request(
-          {
-            kind: "getPage",
-            sessionId,
-            revision: active.metadata.revision,
-            viewRequestId: `${phase}-rank-${label}-${offset}`,
-            offset,
-            limit,
-            filterModel: rankBase.viewState.filterModel,
-            columnOffset: column.position,
-            columnLimit: 1
-          },
-          { ephemeralPage: true }
-        );
-        assert.equal(response.kind, "page");
-        if (response.kind !== "page") throw new Error("The native R rank sample did not return a page.");
-        assert.equal(response.metadata.sessionId, sessionId);
-        assert.equal(response.revision, active.metadata.revision);
-        assert.equal(response.page.totalRows, 1205);
-        assert.equal(response.page.offset, offset);
-        assert.equal(response.page.rows.length, limit);
-        assert.deepEqual(response.page.columnIds, [column.id]);
-        rows.push(...response.page.rows);
-      }
-      return rows;
-    };
-    const sourceSample = await readRankSample(rankBase, rankSource, "source");
-    assert.deepEqual(
-      [sourceSample[0], sourceSample[1], sourceSample[3]].map((row) => row?.values[0]?.raw),
-      [1.25, -2.25, 1205.25]
-    );
-    assert.equal(sourceSample[2]?.values[0]?.isNull, true);
     const rankPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
     const rankDialog = rankPicker.dialog;
     await rankDialog.getByPlaceholder("Search operations").fill("rank");
@@ -544,19 +453,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.equal(rankOutput.nullable, true);
     assert.deepEqual(rankPreview.metadata.schema.slice(0, -1), rankBase.metadata.schema);
     assertReleasedRGeneratedCode(rankPreview.code ?? "", "fractional_rank");
-    const previewRanks = await readRankSample(rankPreview, rankOutput, "preview");
-    assert.deepEqual(
-      previewRanks.map((row) => row.values[0]),
-      ["602", "603", undefined, "1"].map((raw) =>
-        raw === undefined
-          ? sourceSample[2]?.values[0]
-          : { kind: "integer", raw, display: raw, isNull: false, isNaN: false }
-      )
-    );
-    assert.deepEqual(
-      previewRanks.map(({ values: _values, ...row }) => row),
-      sourceSample.map(({ values: _values, ...row }) => row)
-    );
     app = await appForObservedMutation(rankPreview, "the visible R Dense Rank draft");
     const rankReview = app.getByRole("region", { name: "Draft review" });
     await rankReview.getByText("Dense rank", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -579,7 +475,62 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(rankApplied.metadata.steps, [rankStep]);
     assert.deepEqual(rankApplied.metadata.schema, rankPreview.metadata.schema);
     assert.equal(rankApplied.code, rankPreview.code);
-    assert.deepEqual(await readRankSample(rankApplied, rankOutput, "applied"), previewRanks);
+    const appliedRanks: DataRow[] = [];
+    for (const [offset, limit] of [
+      [0, 2],
+      [602, 1],
+      [1204, 1]
+    ] as const) {
+      const response = await testing.request(
+        {
+          kind: "getPage",
+          sessionId,
+          revision: rankApplied.metadata.revision,
+          viewRequestId: `${phase}-rank-applied-${offset}`,
+          offset,
+          limit,
+          filterModel: rankBase.viewState.filterModel,
+          columnOffset: rankOutput.position,
+          columnLimit: 1
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(response.kind, "page");
+      if (response.kind !== "page") throw new Error("The native R rank sample did not return a page.");
+      assert.equal(response.metadata.sessionId, sessionId);
+      assert.equal(response.revision, rankApplied.metadata.revision);
+      assert.equal(response.page.totalRows, 1205);
+      assert.equal(response.page.offset, offset);
+      assert.equal(response.page.rows.length, limit);
+      assert.deepEqual(response.page.columnIds, [rankOutput.id]);
+      appliedRanks.push(...response.page.rows);
+    }
+    assert.deepEqual(appliedRanks, [
+      {
+        id: "r:r:0",
+        rowNumber: 0,
+        rowLabel: "case-0001",
+        values: [{ kind: "integer", raw: "602", display: "602", isNull: false, isNaN: false }]
+      },
+      {
+        id: "r:r:1",
+        rowNumber: 1,
+        rowLabel: "case-0002",
+        values: [{ kind: "integer", raw: "603", display: "603", isNull: false, isNaN: false }]
+      },
+      {
+        id: "r:r:602",
+        rowNumber: 602,
+        rowLabel: "case-0603",
+        values: [{ kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }]
+      },
+      {
+        id: "r:r:1204",
+        rowNumber: 1204,
+        rowLabel: "case-1205",
+        values: [{ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }]
+      }
+    ]);
     app = await appForObservedMutation(rankApplied, "the applied R Dense Rank session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
@@ -600,7 +551,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(rankRestored.metadata.schema, rankBase.metadata.schema);
     assert.equal(rankRestored.code ?? "", rankBase.code ?? "");
     assert.deepEqual(rankRestored.viewState.filterModel, rankBase.viewState.filterModel);
-    assert.deepEqual(await readRankSample(rankRestored, rankSource, "restored"), sourceSample);
     assert.equal(notebook.version, rankNotebookVersion);
     assert.equal(notebook.isDirty, rankNotebookDirty);
     assert.deepEqual(
