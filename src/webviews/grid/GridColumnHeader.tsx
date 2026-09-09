@@ -246,6 +246,13 @@ export function GridColumnHeader({
             <details
               ref={menuRef}
               className="columnMenu"
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || !event.currentTarget.open) return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeMenu();
+                event.currentTarget.querySelector("summary")?.focus();
+              }}
               onToggle={() => {
                 menuGenerationRef.current += 1;
               }}

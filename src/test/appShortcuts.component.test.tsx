@@ -70,6 +70,54 @@ const page: GridPage = {
 describe("App cleaning-plan keyboard shortcuts", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it.each(["draft", "drawer"])("closes the column menu before Escape reaches the outer %s shortcut", async (outer) => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({
+        kind: "sessionOpened",
+        metadata: outer === "draft" ? metadata : metadataWithoutDraft,
+        page,
+        summaries: []
+      });
+      if (outer === "drawer") {
+        fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+        expect(screen.getByRole("button", { name: "Close panel" })).toBeInTheDocument();
+      }
+      const summary = screen.getByLabelText("Column actions for sales");
+      const details = summary.closest("details") as HTMLDetailsElement;
+      fireEvent.click(summary);
+      expect(details.open).toBe(true);
+      const action = Array.from(details.querySelectorAll("button")).find(
+        (button) => button.textContent === "Sort ascending"
+      )!;
+      expect(action).toBeEnabled();
+      act(() => action.focus());
+      expect(action).toHaveFocus();
+      postMessage.mockClear();
+      fireEvent.keyDown(action, { key: "Escape", bubbles: true });
+      const observed = {
+        menuOpen: details.open,
+        focusAtSummary: document.activeElement === summary,
+        draftPresent: screen.queryByRole("button", { name: "Discard" }) !== null,
+        drawerPresent: screen.queryByRole("button", { name: "Close panel" }) !== null,
+        runtimeRequests: runtimeRequestKinds()
+      };
+      expect(observed).toEqual({
+        menuOpen: false,
+        focusAtSummary: true,
+        draftPresent: outer === "draft",
+        drawerPresent: outer === "drawer",
+        runtimeRequests: []
+      });
+      fireEvent.keyDown(summary, { key: "Escape", bubbles: true });
+      expect(runtimeRequestKinds()).toEqual(outer === "draft" ? ["discardDraft"] : []);
+      expect(screen.queryByRole("button", { name: "Close panel" })).not.toBeInTheDocument();
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
   it("keeps Redo available after the last Undo and restores owned focus after the last Redo", async () => {
     const renamed: SessionMetadata = {
       ...appliedMetadata,

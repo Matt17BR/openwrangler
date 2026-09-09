@@ -29,6 +29,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.
 - Python sessions return valid empty pages when recovery or cleaning leaves fewer rows than the requested position.
 - Runtime recovery refreshes stale profiles with the recovered grid and preserves the originating operation's error.
 - DuckDB file imports preserve the selected file when its path contains wildcard characters, and refuse native path forms that could select another file.

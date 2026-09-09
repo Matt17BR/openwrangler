@@ -934,7 +934,8 @@ UI colors, borders, focus states, and typography use VS Code theme tokens. The g
 names, full-schema row and column coordinates, keyboard navigation, focus restoration, and light, dark, and
 high-contrast behavior. Virtualization changes what is rendered, not the accessible schema or stable column identity.
 Editable-field undo remains owned by the field; state-scoped workbench shortcuts are mirrored in the webview and
-documented in the generated reference.
+documented in the generated reference. An open column-actions popup consumes Escape and restores focus to its labelled
+summary before another Escape can reach the outer workbench shortcut.
 
 Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
 original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the
