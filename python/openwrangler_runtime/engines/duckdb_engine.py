@@ -2344,14 +2344,14 @@ class DuckDBEngine(DataFrameEngine):
         column = params["column"]
         delimiter = params["delimiter"]
         prefix = params.get("prefix", f"{column}_")
-        identifier = _quote_ident(column)
+        identifier = "ow." + _quote_ident(column)
         labels = [
             str(row[0])
             for row in self._terminal_rows(
                 frame,
-                "SELECT DISTINCT label FROM ow, "
+                "SELECT DISTINCT values.label FROM ow, "
                 f"unnest(string_split(CAST({identifier} AS VARCHAR), {_sql_literal(delimiter)})) AS values(label) "
-                "WHERE label IS NOT NULL AND label <> '' ORDER BY label",
+                "WHERE values.label IS NOT NULL AND values.label <> '' ORDER BY values.label",
             )
         ]
         base_columns = [
@@ -4793,11 +4793,12 @@ def _ow_multi_label(df, params):
     column = params["column"]
     delimiter = params["delimiter"]
     prefix = params.get("prefix", column + "_")
-    identifier = _ow_ident(column)
+    identifier = "ow." + _ow_ident(column)
     rows = _ow_query(
         df,
-        "SELECT DISTINCT label FROM ow, unnest(string_split(CAST(" + identifier + " AS VARCHAR), "
-        + _ow_literal(delimiter) + ")) AS values(label) WHERE label IS NOT NULL AND label <> '' ORDER BY label",
+        "SELECT DISTINCT values.label FROM ow, unnest(string_split(CAST(" + identifier + " AS VARCHAR), "
+        + _ow_literal(delimiter) + ")) AS values(label) "
+        + "WHERE values.label IS NOT NULL AND values.label <> '' ORDER BY values.label",
     ).fetchall()
     labels = [str(row[0]) for row in rows]
     base = [name for name in _ow_columns(df) if not params.get("dropOriginal", False) or name != column]

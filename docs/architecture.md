@@ -501,6 +501,8 @@ case-insensitive key binding remains valid. Sort Rows preserves every user colum
 Pivot Longer and Pivot Wider reserve requested output names alongside input names when allocating temporary columns,
 in live and generated execution. Generated Pivot Wider also reserves its requested value-column name so a missing
 input cannot bind to a synthesized helper. These reservations use schema metadata without evaluating source rows.
+Multi-label discovery qualifies both the source column and the extracted label so their names cannot make the
+existing native query ambiguous.
 
 Generated queries execute their composed SQL on the input relation's connection, so a same-named table or function
 on the module's default connection cannot substitute different data. Each call removes its unused query view before

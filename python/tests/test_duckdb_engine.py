@@ -15,7 +15,7 @@ from typing import Any
 import duckdb
 import pytest
 from duckdb.func import FunctionNullHandling
-from duckdb.sqltypes import BIGINT, DOUBLE
+from duckdb.sqltypes import BIGINT, DOUBLE, TINYINT
 
 import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
@@ -2809,6 +2809,65 @@ def test_duckdb_duplicates_preserve_selected_nested_values(
         assert repr(source.fetchall()) == repr(before)
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("column,extra_label", [("label", False), ("Label", False), ("tags", True), ("tags", False)])
+@pytest.mark.parametrize("drop_original", [False, True])
+@pytest.mark.parametrize("generated", [False, True], ids=["live", "generated"])
+def test_duckdb_multi_label_discovery_uses_unnested_labels(
+    column: str, extra_label: bool, drop_original: bool, generated: bool
+) -> None:
+    engine = DuckDBEngine()
+    connection = duckdb.connect()
+    query = (
+        f'SELECT labels AS "{column}", pos'
+        + (", pos + 10 AS label" if extra_label else "")
+        + " FROM (VALUES ('b|a', 0), ('b', 1), (NULL, 2), ('', 3), ('a|a', 4)) source(labels, pos)"
+    )
+    live_source = duckdb.sql(query)
+    connection.execute("CREATE TABLE owned_source AS " + query)
+    private_source = connection.table("owned_source")
+    source = private_source if generated else live_source
+    before = (source.sql_query(), source.columns, source.types, source.fetchall())
+    try:
+        operation = bind_step(
+            step(
+                "multiLabelBinarize",
+                column={"id": "c:source:0", "name": column},
+                delimiter="|",
+                prefix="tag_",
+                dropOriginal=drop_original,
+            ),
+            engine.schema(source),
+            source_lineage(engine.schema(source)),
+        )
+        base_columns = [name for name in source.columns if not drop_original or name != column]
+        base_types = [dtype for name, dtype in zip(source.columns, source.types, strict=True) if name in base_columns]
+        flags = [(1, 1), (0, 1), (0, 0), (0, 0), (1, 0)]
+        for frame, expected_flags in ((source, flags), (source.limit(0), [])):
+            result = (
+                execute_generated(engine, frame, [operation]) if generated else engine.apply_transform(frame, operation)
+            )
+            expected_columns = base_columns + (["tag_a", "tag_b"] if expected_flags else [])
+            expected_types = base_types + ([TINYINT] * 2 if expected_flags else [])
+            expected_rows = [
+                tuple(value for name, value in zip(source.columns, row, strict=True) if name in base_columns) + flag
+                for row, flag in zip(frame.fetchall(), expected_flags, strict=True)
+            ]
+            assert result.columns == expected_columns
+            assert result.types == expected_types
+            assert rows(result) == expected_rows
+            if generated:
+                assert result.aggregate("count(*), (SELECT count(*) FROM owned_source)").fetchone() == (
+                    len(expected_flags),
+                    5,
+                )
+        assert (source.sql_query(), source.columns, source.types, source.fetchall()) == before
+        assert private_source.fetchall() == live_source.fetchall()
+        assert connection.sql("SHOW TABLES").fetchall() == [("owned_source",)]
+    finally:
+        engine.close()
+        connection.close()
 
 
 def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
