@@ -262,6 +262,10 @@ jobs:
         with:
           r-version: "4.5.2"
           use-public-rspm: true
+      - name: Install system ZeroMQ for IRkernel
+        run: brew install zeromq
+        env:
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
       - id: rscript
         name: Locate hosted Rscript
         shell: Rscript {0}

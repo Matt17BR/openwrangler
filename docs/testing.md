@@ -763,6 +763,11 @@ On macOS, collapse is built from the pinned source snapshot using two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
 
+The hosted macOS R job installs Homebrew's current `zeromq` formula before private R preparation. IRkernel's
+`pbdZMQ` dependency discovers that system library during its source build, avoiding bundled ZeroMQ compilation.
+This system dependency follows Homebrew updates; the R package pins stay unchanged. Local preparation keeps
+`pbdZMQ`'s default discovery and bundled fallback when no suitable system ZeroMQ is available.
+
 The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It omits the
 Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
 native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
