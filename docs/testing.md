@@ -196,9 +196,11 @@ assertions. The same DuckDB engine owner covers complete generated programs that
 before a later projection, preserve private-connection Rename plans, and leave empty plans unchanged. Session
 transactions cover native errors outside the requested row or column window, retained state after refusal and
 successful correction. Native complex-value and empty-result controls keep the result check compatible with valid frames.
-Mark Duplicates and private Rename controls count each readiness query and later result retrieval separately, requiring
-one source evaluation per query. Grouped Fill controls distinguish lazy plan construction from refusal during live
-result validation or generated execution.
+Mark Duplicates controls require one source evaluation per retained validation query and later retrieval. Private
+Rename, Select Columns and Drop Columns controls require no added result hash while preserving native values, types,
+source identities and connection ownership. Their session cases cover Preview, Apply, generated output and Undo;
+computed Formula and Custom errors must still refuse before a later Drop. Grouped Fill controls distinguish lazy plan
+construction from refusal during live result validation or generated execution.
 The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.

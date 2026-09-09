@@ -1568,7 +1568,7 @@ class SessionManager:
         transformed = session.engine.apply_transform(frame, step)
         session.engine.validate_internal_row_id_namespace(transformed, allowed_internal)
         session.engine.validate_column_addressability(transformed)
-        session.engine.validate_transformation_result(transformed)
+        session.engine.validate_transformation_result(transformed, operation_kind=kind)
         return session.engine.ensure_row_ids(transformed, f"{session.session_id}:{step['id']}")
 
     @staticmethod

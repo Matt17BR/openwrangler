@@ -338,8 +338,9 @@ DuckDB file sessions remain native and connection-scoped. They do not convert th
 extension auto-install, autoload, and external-file caching stay disabled.
 Generated queries use the input relation's connection, preserving private tables and functions even when the default
 connection has objects with the same names. Temporary helper views are removed before returning results.
-Cleaning evaluates each result before accepting it, so an error outside the visible rows or columns also refuses the
-step. Generated programs evaluate each intermediate result. This evaluation adds work across all result rows and columns.
+Computed cleaning results are checked beyond the displayed rows and columns before confirmation, in live and
+generated execution. Rename, Select Columns and Drop Columns avoid an additional full-result scan and retain native
+lazy input evaluation; later reads can still reveal inherited source errors.
 
 Formula rejects lossy DOUBLE promotion for addition, subtraction, multiplication and modulo on native integer types
 through 128 bits, retaining correct results and types. Live and generated checks use the same operand pair; explicit
