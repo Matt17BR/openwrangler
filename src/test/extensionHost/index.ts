@@ -1946,7 +1946,7 @@ async function exerciseReleasedREditingJourney(
   outputDirectory: string,
   phase: "jupyter-r" | "jupyter-r-remote",
   screenshotOutput?: string,
-  editingCatalog: "clone-lifecycle" | "core-catalog" | "value-operations" = "core-catalog"
+  editingCatalog: "clone-lifecycle" | "core-catalog" | "platform-lifecycle" | "value-operations" = "core-catalog"
 ): Promise<void> {
   recordAcceptanceProgress(`${phase}:editing:${editingCatalog}:open`);
   await requireFreshExactSessionPanelHydration(
@@ -1993,9 +1993,19 @@ async function exerciseReleasedREditingJourney(
   }
 
   let coreScreenshot: Readonly<{ insertedRCellIndex: number; generatedCode: string }> | undefined;
-  if (editingCatalog === "core-catalog") {
+  if (editingCatalog === "core-catalog" || editingCatalog === "platform-lifecycle") {
     const core = await exerciseReleasedRCoreEditingCatalog(
-      { testing, workbench, sessionId, notebook, notebookPath, outputDirectory, phase, initialApp: app },
+      {
+        testing,
+        workbench,
+        sessionId,
+        notebook,
+        notebookPath,
+        outputDirectory,
+        phase,
+        initialApp: app,
+        editingCatalog
+      },
       {
         GRID_COLUMN_WINDOW,
         QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
@@ -2111,7 +2121,11 @@ async function exerciseReleasedREditingJourney(
     );
   }
 
-  if (phase === "jupyter-r" && editingCatalog === "core-catalog" && screenshotOutput) {
+  if (
+    phase === "jupyter-r" &&
+    (editingCatalog === "core-catalog" || editingCatalog === "platform-lifecycle") &&
+    screenshotOutput
+  ) {
     assert.ok(coreScreenshot, "The core R editing catalog must retain its code-insertion screenshot receipt.");
     await captureReleasedJupyterCodeInsertion(
       workbench,

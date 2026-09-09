@@ -89,8 +89,10 @@ export const EDITOR_DOWNLOAD_RESULT_MAX_BYTES = 32 * 1024;
 const EDITOR_ACCEPTANCE_POLL_INTERVAL_MS = 100;
 // Live timing output uses only these fixed fixture labels from correlated progress.
 const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
-  ...["notebook", "grid", "document", "restart"].flatMap((section) =>
-    ["start", "complete"].map((boundary) => `jupyter-r:coverage:comprehensive:${section}:${boundary}`)
+  ...["comprehensive", "platform-lifecycle", "representative"].flatMap((profile) =>
+    ["notebook", "grid", "editing", "collapse-open", "native-viewing", "native-editing", "document", "restart"].flatMap(
+      (section) => ["start", "complete"].map((boundary) => `jupyter-r:coverage:${profile}:${section}:${boundary}`)
+    )
   ),
   ...[
     "switch",
@@ -114,51 +116,7 @@ const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
     "clone-preview-apply-inspect-edit-undo",
     "text-length-preview-discard",
     "text-length-preview-apply-inspect-undo"
-  ].map((stage) => `jupyter-r:editing:${stage}`),
-  ...[
-    "picker-open",
-    "operation-click",
-    "dialog-visible",
-    "source-visible",
-    "source-select",
-    "target-fill",
-    "preview-click",
-    "draft-confirmed",
-    "dialog-hidden",
-    "code-preview-visible",
-    "generated-code-reveal",
-    "panel-hydration",
-    "session-app"
-  ].flatMap((action) =>
-    ["start", "complete"].map((boundary) => `released-r:text-length-preview:${action}:${boundary}`)
-  ),
-  ...[
-    "restored-session-app",
-    "preview",
-    "apply-click",
-    "apply-confirmed",
-    "applied-session-app",
-    "column-search-fill",
-    "column-option-visible",
-    "column-search-enter",
-    "column-selected",
-    "selected-session-app",
-    "header-visible",
-    "header-position",
-    "cell-visible",
-    "cell-text",
-    "add-step-ready",
-    "inspection-command",
-    "inspection-confirmed",
-    "inspection-session-app",
-    "confirmed-data-click",
-    "confirmed-data-restored",
-    "undo-session-app",
-    "undo-lane-idle",
-    "undo-click",
-    "undo-dispatched",
-    "undo-confirmed"
-  ].flatMap((action) => ["start", "complete"].map((boundary) => `jupyter-r:editing:text-length:${action}:${boundary}`))
+  ].map((stage) => `jupyter-r:editing:${stage}`)
 ]);
 const EDITOR_COMMAND_TERMINATION_GRACE_MS = 2_000;
 const EDITOR_COMMAND_KILL_GRACE_MS = 5_000;

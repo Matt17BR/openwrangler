@@ -85,8 +85,8 @@ literate-documents lane. This tooling selection does not change the terminal lan
 
 The `macos-r` and `windows-r` released-Jupyter jobs run the canonical `kernel:numeric-portability` source case
 before opening the editor. It checks the platform-sensitive arithmetic, selections and generated programs without
-repeating the broad Linux operation and export suites. macOS keeps comprehensive installed coverage; Windows keeps
-its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for dependencies and execution bounds.
+repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
+keeps its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
 These local R jobs install only Jupyter's Python client and its dependencies for the kernel-readiness probe. Python
 dataframe engines and development tools remain with the jobs that execute them.
 

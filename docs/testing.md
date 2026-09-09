@@ -617,7 +617,7 @@ After editor and display ownership and private-root identity are verified, a fai
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
 separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
 phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
-launch. Text Length records the start and completion of its individual awaits. Polling may miss quick transitions;
+launch. These include editing, native-frame opening, document execution and restart. Polling may miss quick transitions;
 these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
 progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
 cleanup cost from editor execution. These diagnostics preserve the existing inactivity and absolute phase deadlines.
@@ -712,7 +712,7 @@ native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acc
 extension records drive installation and expected versions. Both tooling scopes keep the same private R package
 roots and IRkernel readiness checks.
 
-The manual macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
+The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
 Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
 in `r/tests/kernel_agent_numeric_portability.R`. Broad operation, export, cold-process and dataframe-class matrices
 remain in their existing source cases.
@@ -722,8 +722,18 @@ output. Its synthetic fixtures and operations do not launch subprocesses; ordina
 and does not qualify general process-tree cleanup. Preparation uses the existing private-library owner with pinned
 jsonlite, bit64 and nanoparquet roots, including version and namespace checks. Any preparation or test failure retains
 the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
-keeps its separate environment and lifetime. macOS retains comprehensive installed coverage, including the compact
-column reveal, and Windows retains its representative journey. The separate R 4.4 qualification remains unchanged.
+keeps its separate environment and lifetime. The separate R 4.4 qualification remains unchanged.
+
+The macOS default is `platform-lifecycle`. It keeps a paging round trip, Mark Duplicates and Dense Rank forms, compact
+column reveal and focus, and the full Rename lifecycle with inspection, Edit, Undo/Redo, all-row exports, source
+refusal, Save, clipboard and source-bound notebook insertion. It also retains all three collapse-frame opens, one
+operation per additional native frame flavor, direct-document execution and kernel restart/recovery. Requested
+code-insertion screenshots keep the same capture owner.
+
+The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
+native Viewing opens and both native-flavor operations. These repetitions are omitted on macOS; source and generated
+operation semantics remain covered by their R contract owners. Windows and Cursor retain their representative
+profiles. The editor phase has a 300-second absolute deadline; preparation and cleanup add to total wall time.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package

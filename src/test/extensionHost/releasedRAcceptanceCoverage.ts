@@ -8,11 +8,12 @@ export type ReleasedRAcceptanceCoverageProfile = Readonly<{
     | "kernel-restart"
     | "native-frames"
     | "comprehensive"
+    | "platform-lifecycle"
     | "representative";
   coreJourney: boolean;
   kernelLifecycle: boolean;
   gridPaging: "all-blocks" | "single-round-trip";
-  editing: "clone-lifecycle" | "core-catalog" | "rename-lifecycle";
+  editing: "clone-lifecycle" | "core-catalog" | "platform-lifecycle" | "rename-lifecycle";
   focusedEditing: "none" | "categorical-operations" | "value-operations" | "pivot-wider";
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
@@ -48,6 +49,13 @@ export const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProf
   openCollapseSessions: false,
   openNativeFramesInViewingMode: false,
   nativeFrameEditing: "one-operation-per-flavor"
+});
+
+export const RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+  name: "platform-lifecycle",
+  editing: "platform-lifecycle",
+  openCollapseSessions: true
 });
 
 export const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
@@ -86,6 +94,7 @@ export function releasedRCoreAcceptanceCoverageProfile(
   platform: NodeJS.Platform
 ): ReleasedRAcceptanceCoverageProfile {
   if (editor === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
+  if (platform === "darwin") return RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE;
   return platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 

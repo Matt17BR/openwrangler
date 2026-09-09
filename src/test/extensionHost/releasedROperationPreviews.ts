@@ -208,30 +208,15 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     newColumn: string,
     variableName = "orders_frame"
   ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-    recordAcceptanceProgress("released-r:text-length-preview:picker-open:start");
     const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
-    recordAcceptanceProgress("released-r:text-length-preview:picker-open:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:operation-click:start");
     await dialog.getByRole("button", { name: /^Text length/u }).click();
-    recordAcceptanceProgress("released-r:text-length-preview:operation-click:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:dialog-visible:start");
     await dialog.waitFor({ state: "visible", timeout: 10_000 });
-    recordAcceptanceProgress("released-r:text-length-preview:dialog-visible:complete");
     const column = dialog.getByLabel("Text column", { exact: true });
-    recordAcceptanceProgress("released-r:text-length-preview:source-visible:start");
     await column.waitFor({ state: "visible", timeout: 10_000 });
-    recordAcceptanceProgress("released-r:text-length-preview:source-visible:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:source-select:start");
     await column.selectOption({ label: sourceName });
-    recordAcceptanceProgress("released-r:text-length-preview:source-select:complete");
     const target = dialog.getByLabel("New column", { exact: true });
-    recordAcceptanceProgress("released-r:text-length-preview:target-fill:start");
     await target.fill(newColumn);
-    recordAcceptanceProgress("released-r:text-length-preview:target-fill:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:preview-click:start");
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
-    recordAcceptanceProgress("released-r:text-length-preview:preview-click:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:draft-confirmed:start");
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -252,10 +237,7 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       30_000,
       "the native R Text Length preview"
     );
-    recordAcceptanceProgress("released-r:text-length-preview:draft-confirmed:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:dialog-hidden:start");
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    recordAcceptanceProgress("released-r:text-length-preview:dialog-hidden:complete");
     const active = testing.activeSession();
     assert.ok(
       active?.metadata.draftStep?.kind === "textLength",
@@ -263,28 +245,22 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     );
     const stepId = active.metadata.draftStep.id;
     assertReleasedRTextLengthGeneratedCode(active.code ?? "", sourceName, newColumn, variableName);
-    recordAcceptanceProgress("released-r:text-length-preview:code-preview-visible:start");
     const codePreview = await waitForCodePreview(workbench, undefined, "R");
-    recordAcceptanceProgress("released-r:text-length-preview:code-preview-visible:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:generated-code-reveal:start");
     assertReleasedRTextLengthGeneratedCode(
       await revealCodePreviewText(codePreview, newColumn),
       sourceName,
       newColumn,
       variableName
     );
-    recordAcceptanceProgress("released-r:text-length-preview:generated-code-reveal:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:panel-hydration:start");
     await requireFreshExactSessionPanelHydration(
       testing,
       sessionId,
       "The native R Text Length preview must be acknowledged by its exact renderer."
     );
-    recordAcceptanceProgress("released-r:text-length-preview:panel-hydration:complete");
-    recordAcceptanceProgress("released-r:text-length-preview:session-app:start");
-    const app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview");
-    recordAcceptanceProgress("released-r:text-length-preview:session-app:complete");
-    return { app, stepId };
+    return {
+      app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
+      stepId
+    };
   }
 
   async function previewReleasedRFindReplace(
