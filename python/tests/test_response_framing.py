@@ -99,6 +99,8 @@ def test_response_frame_matches_canonical_json_escaping_and_numbers() -> None:
     shared = [1, -0.0, 1e30]
     payload = {
         "escaped": 'quote=" backslash=\\ line=\n tab=\t',
+        "emptyString": "",
+        "unescapedAscii": "/\x7f",
         "emptyObject": {},
         "emptyArray": [],
         "shared": [shared, shared],
@@ -247,12 +249,27 @@ def test_oversized_single_string_is_rejected_without_json_dumps(
     assert serializer_calls == 0
 
 
-def test_string_chunk_boundaries_match_canonical_json_escaping() -> None:
-    value = ("x" * (16 * 1024 - 1)) + '\n"\\\t\x01é' + ("z" * (16 * 1024 + 1))
+@pytest.mark.parametrize(
+    "value",
+    (
+        pytest.param("x" * (16 * 1024 - 1), id="ascii-before-chunk"),
+        pytest.param("x" * (16 * 1024), id="ascii-at-chunk"),
+        pytest.param("x" * (16 * 1024 + 1), id="ascii-after-chunk"),
+        pytest.param(
+            ("x" * (16 * 1024 - 1)) + '\n"\\\t\x01é' + ("z" * (16 * 1024 + 1)),
+            id="escaped-and-multibyte",
+        ),
+    ),
+)
+def test_string_chunk_boundaries_match_canonical_json_escaping(value: str) -> None:
     payload = {value: value}
     expected = json.dumps(payload, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
     assert encode_response_frame(payload, len(expected)) == expected
+    with pytest.raises(ResponseFrameTooLargeError):
+        encode_response_frame(payload, len(expected) - 1)
+    assert strict_json_byte_length(payload, len(expected) - 1) == len(expected) - 1
+    assert strict_json_byte_length(payload, len(expected) - 2) == len(expected) - 1
 
 
 def test_oversized_integer_is_rejected_before_decimal_serialization(

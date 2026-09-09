@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import TypeGuard, TypeVar
 
 MAX_STRICT_RESPONSE_PAYLOAD_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_FRAME_BYTES = 17 * 1024 * 1024
 MAX_STRICT_JSON_NESTING_DEPTH = 128
 _JSON_STRING_CHUNK_CHARACTERS = 16 * 1024
+_JSON_STRING_ESCAPE = re.compile(r'["\\\x00-\x1f]')
 _LOG10_2_LOWER_NUMERATOR = 3_010_299_956_639_811
 _LOG10_2_DENOMINATOR = 10_000_000_000_000_000
 
@@ -179,6 +181,10 @@ def _write_json_integer(value: int, writer: _StrictJsonWriter) -> None:
 
 def _write_json_string(value: str, writer: _StrictJsonWriter) -> None:
     writer.write('"')
+    if len(value) <= _JSON_STRING_CHUNK_CHARACTERS and value.isascii() and _JSON_STRING_ESCAPE.search(value) is None:
+        writer.write(value)
+        writer.write('"')
+        return
     run_start = 0
     for index, character in enumerate(value):
         codepoint = ord(character)

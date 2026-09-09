@@ -136,6 +136,8 @@ previous view remains authoritative until page construction, metadata, source va
 request scope succeed. Public page responses are checked with their real correlation fields before committing the
 candidate view. This preserves the separate page and complete-frame size limits. Failure preserves the previous
 query, epoch and frame identities; a changed or lost source still invalidates cached data.
+Python response sizing and encoding share a strict-JSON writer. It emits unescaped ASCII strings of at most 16 KiB
+in one bounded chunk; longer, escaped and non-ASCII strings retain chunked validation.
 Cache invalidation uses the same reentrant state lock, so a late background failure cannot have its invalidated
 blocks restored by a foreground candidate. It does not join request admission or wait for profiling leases.
 Python live pages with a known total clamp the requested row position to that total before the native slice.
