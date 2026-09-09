@@ -217,6 +217,10 @@ construction from refusal during live result validation or generated execution.
 Generated Sort Rows controls compare all columns, native types and stable ties with nulls, including helper-name
 collisions, case-insensitive keys, extra input columns and a preceding Rename. Missing ordinary or helper-named keys
 must fail. A public CSV case compares Preview, Apply and the returned program while preserving the source bytes.
+The Pivot Longer and Pivot Wider owners check requested outputs named like temporary columns, including case and
+occupied-suffix collisions, native types, nulls and row order. Their public CSV cases compare visible metadata and
+page cells through Preview, Apply, returned-code execution and Undo. Reused Pivot Wider programs must reject missing
+value columns across each helper-name family while preserving valid private-connection results and caller catalogs.
 The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.

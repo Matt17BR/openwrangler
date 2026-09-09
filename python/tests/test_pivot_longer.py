@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -65,6 +66,90 @@ def execute_generated(engine: Any, frame: Any, step: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace, namespace)
     return namespace["clean_data"](frame)
+
+
+@pytest.mark.parametrize(
+    ("output", "name", "occupied"),
+    [
+        ("label", "__ow_pivot_source_order", None),
+        ("value", "__ow_pivot_source_order", None),
+        ("label", "__ow_pivot_selected_order", None),
+        ("value", "__ow_pivot_selected_order", None),
+        ("label", "__OW_PIVOT_SOURCE_ORDER", None),
+        ("value", "__ow_pivot_selected_order_1", "__ow_pivot_selected_order"),
+    ],
+)
+def test_duckdb_pivot_longer_preserves_requested_auxiliary_output_names(output, name, occupied):
+    connection = duckdb.connect()
+    engine = DuckDBEngine()
+    try:
+        keep = occupied or "keep"
+        query = f"SELECT * FROM (VALUES ('k1', 10::BIGINT, 30::BIGINT), ('k2', NULL, 40)) t(\"{keep}\", alpha, beta)"
+        connection.execute("CREATE TABLE owned_source AS " + query)
+        source = connection.table("owned_source")
+        live_source = duckdb.sql(query)
+        assert source.fetchall() == live_source.fetchall()
+        assert source.columns == live_source.columns and source.types == live_source.types
+        before = (source.sql_query(), source.fetchall(), source.columns, list(map(str, source.types)))
+        label, value = (name, "reading") if output == "label" else ("metric", name)
+        operation = bind(engine, source, validate_step(public_step(label_column=label, value_column=value)))
+        expected = [("k1", "alpha", 10), ("k2", "alpha", None), ("k1", "beta", 30), ("k2", "beta", 40)]
+        live = engine.apply_transform(live_source, operation)
+        generated = execute_generated(engine, source, operation)
+        for result in (live, generated):
+            assert result.columns == [keep, label, value]
+            assert list(map(str, result.types)) == ["VARCHAR", "VARCHAR", "BIGINT"]
+        assert engine._terminal_rows(live, "SELECT * FROM ow") == expected
+        assert generated.fetchall() == expected
+        assert generated.aggregate("count(*), (SELECT count(*) FROM owned_source)").fetchone() == (4, 2)
+        assert before == (source.sql_query(), source.fetchall(), source.columns, list(map(str, source.types)))
+        assert live_source.fetchall() == source.fetchall()
+        assert connection.execute("SHOW TABLES").fetchall() == [("owned_source",)]
+    finally:
+        engine.close()
+        connection.close()
+
+
+def test_duckdb_pivot_longer_public_page_retains_declared_output_and_undo(tmp_path: Path):
+    path = tmp_path / "pivot.csv"
+    path.write_text("keep,alpha,beta\nk1,10,30\nk2,,40\n")
+    before = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="duckdb", mode="editing", page_size=10
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        assert isinstance(session.engine, DuckDBEngine)
+        original = session.engine._terminal_rows(session.original, "SELECT * FROM ow")
+        selected = [{"id": c["id"], "name": c["name"]} for c in opened["metadata"]["schema"][1:]]
+        operation = public_step(columns=selected, value_column="__ow_pivot_source_order")
+        preview = manager.preview_step(sid, session.revision, operation, 0, 10)
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        expected = [["k1", "alpha", 10], ["k2", "alpha", None], ["k1", "beta", 30], ["k2", "beta", 40]]
+        for response in (preview, applied):
+            assert [c["name"] for c in response["metadata"]["schema"]] == ["keep", "metric", "__ow_pivot_source_order"]
+            assert [[cell["raw"] for cell in row["values"]] for row in response["page"]["rows"]] == expected
+            assert len({row["id"] for row in response["page"]["rows"]}) == 4
+        with duckdb.connect() as connection:
+            source = connection.read_csv(str(path))
+            namespace: dict[str, Any] = {}
+            exec(applied["code"], namespace, namespace)
+            generated = namespace["clean_data"](source)
+            assert generated.columns == ["keep", "metric", "__ow_pivot_source_order"]
+            assert generated.fetchall() == [
+                ("k1", "alpha", 10),
+                ("k2", "alpha", None),
+                ("k1", "beta", 30),
+                ("k2", "beta", 40),
+            ]
+        undone = manager.undo_step(sid, session.revision, 0, 10)
+        assert undone["page"]["rows"] == opened["page"]["rows"]
+        assert session.engine._terminal_rows(session.original, "SELECT * FROM ow") == original
+        assert path.read_bytes() == before
+    finally:
+        manager.close_all()
 
 
 @pytest.mark.parametrize(
