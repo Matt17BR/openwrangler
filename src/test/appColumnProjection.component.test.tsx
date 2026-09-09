@@ -1,7 +1,16 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
+import type {
+  ColumnSummary,
+  GridPage,
+  OpenWranglerResponse,
+  PageResponse,
+  SessionMetadata,
+  TransformStep
+} from "../shared/protocol";
+
+import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -61,73 +70,119 @@ describe("App column projection", () => {
     expect(alignedColumnWindow({ start: 250, end: 270 }, 300, 256)).toEqual({ offset: 44, limit: 256 });
   });
 
-  it("preserves one aligned column window across rows, filters, mutations, and inspection", async () => {
-    render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
-    await screen.findByRole("cell", { name: "value-0-row-0" });
+  it.each(["ordinary", "recovered"] as const)(
+    "preserves one aligned column window across %s rows, filters, mutations, and inspection",
+    async (origin) => {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
+      await screen.findByRole("cell", { name: "value-0-row-0" });
+      let confirmedContext = (
+        postMessage.mock.calls.map(([message]) => message).find((message) => message.kind === "setViewContext") as {
+          viewContextId: string;
+        }
+      ).viewContextId;
+      const acceptPage = (
+        request: Record<string, unknown>,
+        nextMetadata: SessionMetadata,
+        nextPage: GridPage,
+        oldRow: number
+      ) => {
+        const result = pageResponse(request, nextMetadata, nextPage);
+        if (origin === "ordinary") {
+          dispatch(result);
+          return;
+        }
+        const offeredViewContextId = `recovery:${String(request.viewRequestId)}`;
+        dispatch({
+          kind: "sessionRecovered",
+          offeredViewContextId,
+          context: {
+            sessionId: metadata.sessionId,
+            revision: metadata.revision,
+            viewContextId: confirmedContext,
+            lastPageRequestId: String(request.viewRequestId),
+            request: { kind: "getPage", viewRequestId: String(request.viewRequestId) }
+          },
+          result,
+          presentation: { sessionId: nextMetadata.sessionId, revision: nextMetadata.revision },
+          viewState: { columnWidths: [], viewport: { firstVisibleRow: oldRow, scrollLeft: 0 } }
+        });
+        confirmedContext = offeredViewContextId;
+      };
 
-    postMessage.mockClear();
-    const scroller = screen.getByTestId("data-grid-scroller");
-    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
-    scroller.scrollLeft = 20 * 190;
-    fireEvent.scroll(scroller);
+      postMessage.mockClear();
+      const scroller = screen.getByTestId("data-grid-scroller");
+      Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
+      scroller.scrollLeft = 20 * 190;
+      fireEvent.scroll(scroller);
 
-    const projectionRequest = await onlyRuntimeRequest("getPage");
-    expect(projectionRequest).toMatchObject({ offset: 0, limit: 200, columnOffset: 16, columnLimit: 16 });
-    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: "Next block" })).toBeEnabled();
-    dispatch({
-      kind: "error",
-      code: "engine_error",
-      message: "Projection failed once",
-      recoverable: true,
-      viewRequestId: String(projectionRequest.viewRequestId)
-    });
-    expect(await screen.findByRole("button", { name: "Retry page" })).toBeVisible();
+      const projectionRequest = await onlyRuntimeRequest("getPage");
+      expect(projectionRequest).toMatchObject({ offset: 0, limit: 200, columnOffset: 16, columnLimit: 16 });
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("button", { name: "Next block" })).toBeEnabled();
+      dispatch({
+        kind: "error",
+        code: "engine_error",
+        message: "Projection failed once",
+        recoverable: true,
+        viewRequestId: String(projectionRequest.viewRequestId)
+      });
+      expect(await screen.findByRole("button", { name: "Retry page" })).toBeVisible();
 
-    postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Retry page" }));
-    const projectionRetry = await onlyRuntimeRequest("getPage");
-    expect(projectionRetry).toMatchObject({ offset: 0, limit: 200, columnOffset: 16, columnLimit: 16 });
-    expect(projectionRetry.viewRequestId).not.toBe(projectionRequest.viewRequestId);
-    dispatch(pageResponse(projectionRetry, metadata, projectedPage(0, 16)));
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Retry page" }));
+      const projectionRetry = await onlyRuntimeRequest("getPage");
+      expect(projectionRetry).toMatchObject({ offset: 0, limit: 200, columnOffset: 16, columnLimit: 16 });
+      expect(projectionRetry.viewRequestId).not.toBe(projectionRequest.viewRequestId);
+      scroller.scrollTop = 5 * 29;
+      fireEvent.scroll(scroller);
+      const withinBlockPage = {
+        ...projectedPage(0, 16),
+        rows: Array.from({ length: 16 }, (_, row) => projectedPage(row, 16).rows[0])
+      };
+      acceptPage(projectionRetry, metadata, withinBlockPage, 0);
+      expect(scroller.scrollTop).toBe(5 * 29);
+      expect(scroller.scrollLeft).toBe(20 * 190);
 
-    const projectedCell = await screen.findByRole("cell", { name: "value-20-row-0" });
-    expect(projectedCell).toHaveAttribute("aria-colindex", "22");
-    expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "41");
+      const projectedCell = await screen.findByRole("cell", { name: "value-20-row-0" });
+      expect(projectedCell).toHaveAttribute("aria-colindex", "22");
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "41");
 
-    postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
-    const rowRequest = await onlyRuntimeRequest("getPage");
-    expect(rowRequest).toMatchObject({ offset: 200, columnOffset: 16, columnLimit: 16 });
-    dispatch(pageResponse(rowRequest, metadata, projectedPage(200, 16)));
-    await screen.findByRole("cell", { name: "value-20-row-200" });
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const rowRequest = await onlyRuntimeRequest("getPage");
+      expect(rowRequest).toMatchObject({ offset: 200, columnOffset: 16, columnLimit: 16 });
+      dispatch(pageResponse(rowRequest, metadata, projectedPage(200, 16)));
+      await screen.findByRole("cell", { name: "value-20-row-200" });
 
-    postMessage.mockClear();
-    fireEvent.click(screen.getByLabelText("Column actions for column-20"));
-    const menu = screen.getByLabelText("Column actions for column-20").closest("details");
-    expect(menu).not.toBeNull();
-    fireEvent.click(within(menu!).getByRole("button", { name: "Sort ascending" }));
-    const filterRequest = await onlyRuntimeRequest("getPage");
-    expect(filterRequest).toMatchObject({ offset: 0, columnOffset: 16, columnLimit: 16 });
-    const sortedMetadata = {
-      ...metadata,
-      filterModel: { filters: [], sort: [{ column: "column-20", direction: "asc" as const, nulls: "last" as const }] }
-    };
-    dispatch(pageResponse(filterRequest, sortedMetadata, projectedPage(0, 16)));
-    await screen.findByRole("cell", { name: "value-20-row-0" });
+      postMessage.mockClear();
+      fireEvent.click(screen.getByLabelText("Column actions for column-20"));
+      const menu = screen.getByLabelText("Column actions for column-20").closest("details");
+      expect(menu).not.toBeNull();
+      fireEvent.click(within(menu!).getByRole("button", { name: "Sort ascending" }));
+      const filterRequest = await onlyRuntimeRequest("getPage");
+      expect(filterRequest).toMatchObject({ offset: 0, columnOffset: 16, columnLimit: 16 });
+      const sortedMetadata = {
+        ...metadata,
+        filterModel: { filters: [], sort: [{ column: "column-20", direction: "asc" as const, nulls: "last" as const }] }
+      };
+      acceptPage(filterRequest, sortedMetadata, projectedPage(0, 16), 200);
+      expect(scroller.scrollTop).toBe(0);
+      expect(scroller.scrollLeft).toBe(20 * 190);
+      await screen.findByRole("cell", { name: "value-20-row-0" });
 
-    postMessage.mockClear();
-    dispatch({ kind: "editorAction", action: "applyDraft" });
-    const mutationRequest = await onlyRuntimeRequest("applyDraft");
-    expect(mutationRequest).toMatchObject({ columnOffset: 16, columnLimit: 16 });
-    dispatch({ kind: "error", code: "engine_error", message: "Expected test failure", recoverable: true });
+      postMessage.mockClear();
+      dispatch({ kind: "editorAction", action: "applyDraft" });
+      const mutationRequest = await onlyRuntimeRequest("applyDraft");
+      expect(mutationRequest).toMatchObject({ columnOffset: 16, columnLimit: 16 });
+      dispatch({ kind: "error", code: "engine_error", message: "Expected test failure", recoverable: true });
 
-    postMessage.mockClear();
-    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
-    const inspectionRequest = await onlyRuntimeRequest("inspectStep");
-    expect(inspectionRequest).toMatchObject({ offset: 0, columnOffset: 16, columnLimit: 16 });
-  });
+      postMessage.mockClear();
+      dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+      const inspectionRequest = await onlyRuntimeRequest("inspectStep");
+      expect(inspectionRequest).toMatchObject({ offset: 0, columnOffset: 16, columnLimit: 16 });
+    }
+  );
 
   it("keeps successful integer profiles across horizontal projections out of warning diagnostics", async () => {
     const integerMetadata: SessionMetadata = {
@@ -618,7 +673,7 @@ function pageResponse(
   request: Record<string, unknown>,
   responseMetadata: SessionMetadata,
   page: GridPage
-): OpenWranglerResponse {
+): PageResponse {
   return {
     kind: "page",
     revision: responseMetadata.revision,
@@ -629,6 +684,7 @@ function pageResponse(
 }
 
 type HostMessage =
+  | SessionRecoveryMessage
   | OpenWranglerResponse
   | {
       kind: "viewState";

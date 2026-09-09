@@ -68,6 +68,89 @@ describe("RendererSynchronizationCoordinator", () => {
     vi.useRealTimers();
   });
 
+  it.each(["inspection", "open", "snapshot"] as const)(
+    "does not publish retired state when recovery begins during %s",
+    async (phase) => {
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const posted: unknown[] = [];
+      const harness = createHarness({
+        ...(phase === "open" ? { snapshot: undefined, openResponse: undefined } : {}),
+        postMessage: async (message) => {
+          posted.push(message);
+          await blocked;
+          return true;
+        }
+      });
+      if (phase === "open") harness.ensureSessionOpen.mockImplementation(() => blocked);
+      harness.coordinator.rendererStarted();
+      const synchronization = harness.coordinator.enqueueSynchronization(phase === "inspection");
+      harness.state.snapshotPending = true;
+      release();
+      await synchronization;
+      expect(posted).toEqual(
+        phase === "inspection"
+          ? [{ kind: "stepInspectionCleared", resumeProfiling: false }]
+          : phase === "snapshot"
+            ? [snapshot]
+            : []
+      );
+      harness.coordinator.scheduleStartupRecovery();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.replaceRenderer).not.toHaveBeenCalled();
+      expect(harness.ensureSessionOpen).toHaveBeenCalledTimes(phase === "open" ? 1 : 0);
+    }
+  );
+
+  it("finishes an installed recovery with only a marker and coalesces a newer full synchronization", async () => {
+    const harness = createHarness({ presentation, viewState });
+    harness.coordinator.rendererStarted();
+    await harness.coordinator.enqueueSynchronization(false, true);
+    expect(harness.posted).not.toContainEqual(snapshot);
+    expect(harness.posted).not.toContainEqual({ kind: "sessionPresentation", presentation });
+    expect(harness.coordinator.rendererViewStateLocked).toBe(false);
+    expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
+    expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
+    const markerOnly = harness.coordinator.enqueueSynchronization(false, true);
+    const full = harness.coordinator.enqueueSynchronization(false);
+    expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+    await Promise.all([markerOnly, full]);
+    expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+    expect(harness.posted.filter((message) => message === snapshot)).toHaveLength(1);
+    expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation });
+    harness.coordinator.dispose();
+  });
+
+  it("completes hydration when same-view profiling replaces the retained snapshot during publication", async () => {
+    const postedSnapshot = deferred<boolean>();
+    const harness = createHarness({
+      presentation,
+      viewState,
+      postMessage: (message) => {
+        harness.posted.push(message);
+        return message === snapshot ? postedSnapshot.promise : Promise.resolve(true);
+      }
+    });
+    harness.coordinator.rendererStarted();
+    const synchronization = harness.coordinator.enqueueSynchronization(false);
+    harness.state.snapshot = {
+      ...snapshot,
+      metadata: {
+        ...snapshot.metadata,
+        stats: { missingCells: 0, missingRows: 0, duplicateRows: 0, missingValuesByColumn: [] }
+      }
+    };
+    postedSnapshot.resolve(true);
+    await synchronization;
+    expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation });
+    expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
+    expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
+    expect(harness.didPublishAuthoritativeSnapshot).toHaveBeenCalledOnce();
+    harness.coordinator.dispose();
+  });
+
   it("publishes one complete retained snapshot before accepting its exact post-commit acknowledgement", async () => {
     const harness = createHarness({ presentation, viewState, importBusy: true });
     harness.coordinator.replaceRenderer();
@@ -292,6 +375,7 @@ interface HarnessState {
   viewState: GridViewState | undefined;
   importBusy: boolean;
   visible: boolean;
+  snapshotPending: boolean;
 }
 
 interface Harness {
@@ -318,6 +402,7 @@ function createHarness(
     viewState: undefined,
     importBusy: false,
     visible: true,
+    snapshotPending: false,
     ...options
   };
   const posted: unknown[] = [];
@@ -340,6 +425,7 @@ function createHarness(
       isVisible: () => state.visible,
       getSnapshot: () => state.snapshot,
       getOpenResponse: () => state.openResponse,
+      isSnapshotPending: () => state.snapshotPending,
       getSessionPresentation: () => state.presentation,
       getViewState: () => state.viewState,
       isImportBusy: () => state.importBusy,

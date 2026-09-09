@@ -42,6 +42,7 @@ export interface RuntimeRecoveryHooks {
   installRuntimeSettlement(settlement: Promise<void>): void;
   clearPublishedStepInspection(): void;
   publishActive(): void;
+  didReplaceRuntime?(): void;
   replayAfterRuntimeLoss(
     failedRuntimeId: string,
     options: BridgeRequestOptions,
@@ -256,6 +257,7 @@ export class SessionRuntimeRecovery {
     );
     this.runtimeCleanup.track(previous, "retired runtime");
     hooks.clearPublishedStepInspection();
+    hooks.didReplaceRuntime?.();
     if (publishActive) hooks.publishActive();
     if (restoredPage) onRestoredPage?.(restoredPage);
     return true;

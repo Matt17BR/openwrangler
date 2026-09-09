@@ -4,6 +4,7 @@ import type {
   LiveGridPage,
   OperationKind,
   SessionMetadata,
+  SessionOpenedResponse,
   StepInspectionResponse,
   TransformStep
 } from "../shared/protocol";
@@ -22,8 +23,9 @@ import {
   viewSortModelSignature,
   type FilterModel
 } from "../shared/filterModel";
-import type { GridViewState } from "../shared/viewState";
+import { encodeGridViewState, type GridViewState, type SerializedGridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
+import type { SessionPresentation } from "../shared/sessionRecovery";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { sessionModeAction } from "../shared/sessionMode";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
@@ -162,6 +164,7 @@ export function App() {
     clearSynchronization,
     flushGridViewState,
     gridViewState,
+    gridViewStateRef,
     publishGridViewState,
     resetGridViewState,
     restoreGridViewport,
@@ -174,6 +177,7 @@ export function App() {
   const {
     pending: sessionModeChangePending,
     target: sessionModeChangeTarget,
+    isModeChangePending,
     requestModeChange: requestSessionModeChange,
     settleModeChange
   } = useSessionModeChangeLifecycle({
@@ -228,6 +232,7 @@ export function App() {
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
+  const lastIssuedPageRequestId = useRef<string | null>(null);
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
@@ -331,17 +336,20 @@ export function App() {
     [closeOperationDialog, settleImportOptionsPending]
   );
 
-  const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
-    const confirmed = {
-      viewContextId,
-      sessionId: next.sessionId,
-      revision: next.revision
-    };
-    confirmedView.current = confirmed;
-    setActiveViewContextId(viewContextId);
-    vscode.postMessage({ kind: "setViewContext", viewContextId });
-    return confirmed;
-  }, []);
+  const confirmView = useCallback(
+    (next: SessionMetadata, viewContextId: string, state?: SerializedGridViewState): ConfirmedView => {
+      const confirmed = {
+        viewContextId,
+        sessionId: next.sessionId,
+        revision: next.revision
+      };
+      confirmedView.current = confirmed;
+      setActiveViewContextId(viewContextId);
+      vscode.postMessage({ kind: "setViewContext", viewContextId, ...(state ? { state } : {}) });
+      return confirmed;
+    },
+    []
+  );
 
   const canProfileConfirmedView = useCallback(
     (viewContextId: string): boolean => {
@@ -755,9 +763,126 @@ export function App() {
   );
 
   useEffect(() => {
+    const installPresentation = (presentation: Omit<SessionPresentation, "code">) => {
+      setDiff(presentation.draft?.diff);
+      setRemainingMissingCells(presentation.draft?.remainingMissingCells);
+      setDraftBefore(presentation.draft ? { schema: presentation.draft.beforeSchema } : undefined);
+      setDraftWarnings(presentation.draft?.warnings ?? []);
+    };
+    const installSessionSnapshot = (
+      response: SessionOpenedResponse,
+      viewContextId: string,
+      clearProfileOwners: boolean
+    ) => {
+      resetGridViewState();
+      storePendingStepInspection(undefined);
+      storeStepInspection(undefined);
+      storeStepInspectionTarget(undefined);
+      setStepInspectionError(undefined);
+      setDraftBefore(undefined);
+      setDiff(undefined);
+      setRemainingMissingCells(undefined);
+      setDraftWarnings([]);
+      resetConfirmedFilterHistory();
+      resetViewProfiling({
+        initialSummaries: supportsViewingCapability(response.metadata.capabilities, "profile")
+          ? response.summaries
+          : [],
+        clearOwners: clearProfileOwners
+      });
+      reconcileSidePanelAvailability(
+        supportsViewingCapability(response.metadata.capabilities, "profile"),
+        supportsViewingCapability(response.metadata.capabilities, "filter") ||
+          supportsViewingCapability(response.metadata.capabilities, "sort")
+      );
+      confirmView(response.metadata, viewContextId);
+      storeMetadata(response.metadata);
+      storeFilterModel(response.metadata.filterModel);
+      storePage(response.page);
+      const openedWindow = columnWindowFromPage(response.metadata, response.page, initialColumnWindow());
+      confirmedColumnWindow.current = openedWindow;
+      desiredColumnWindow.current = openedWindow;
+      inspectionColumnWindow.current = openedWindow;
+    };
     const handleMessage = (event: MessageEvent<unknown>) => {
       if (event.origin !== window.location.origin) return;
-      const response = decodeAppHostMessage(event.data);
+      const decoded = decodeAppHostMessage(event.data);
+      if (!decoded) return;
+      const recovery = decoded.kind === "sessionRecovered" ? decoded : undefined;
+      const response = decoded.kind === "sessionRecovered" ? decoded.result : decoded;
+      if (recovery) {
+        const { context } = recovery;
+        const current = metadataRef.current;
+        const pending = latestPageRequest.current;
+        const request = context.request;
+        const bootstrap =
+          !current &&
+          recovery.snapshot &&
+          request === null &&
+          context.viewContextId === null &&
+          context.lastPageRequestId === null;
+        if (
+          (!bootstrap &&
+            (!current ||
+              current.sessionId !== context.sessionId ||
+              current.revision !== context.revision ||
+              (confirmedView.current?.viewContextId ?? null) !== context.viewContextId ||
+              lastIssuedPageRequestId.current !== context.lastPageRequestId)) ||
+          isImportOptionsPending() ||
+          isModeChangePending()
+        )
+          return;
+        if (request?.kind === "getPage") {
+          if (
+            !pending ||
+            pending.viewRequestId !== request.viewRequestId ||
+            typeof foregroundRequest.current !== "object" ||
+            foregroundRequest.current.viewRequestId !== request.viewRequestId
+          )
+            return;
+        } else if (request) {
+          if (
+            foregroundRequest.current !== "mutation" ||
+            mutationSnapshot.current?.redoViewRequestId !== request.viewRequestId
+          )
+            return;
+        } else if (foregroundRequest.current !== undefined) return;
+
+        if (recovery.snapshot) {
+          if (bootstrap) {
+            lastIssuedPageRequestId.current = null;
+            setImportOptionsRequestPending(false);
+            setLoading(false);
+          }
+          installSessionSnapshot(recovery.snapshot, recovery.offeredViewContextId, false);
+          installPresentation(recovery.presentation);
+          restoreHostGridViewState(recovery.viewState);
+          const fresh = captureConfirmedViewState();
+          if (!fresh) return;
+          // Rollback and Retry must refer to the replacement, never its retired profiles or page.
+          if (pending)
+            latestPageRequest.current = {
+              ...pending,
+              viewContextId: recovery.offeredViewContextId,
+              previousConfirmedState: fresh,
+              filterHistoryUndoTarget: undefined
+            };
+          const failed = failedPageRequestRef.current;
+          if (failed)
+            storeFailedPageRequest({
+              ...failed,
+              viewContextId: recovery.offeredViewContextId,
+              previousConfirmedState: fresh,
+              filterHistoryUndoTarget: undefined
+            });
+          if (mutationSnapshot.current) mutationSnapshot.current = { ...mutationSnapshot.current, view: fresh };
+          if (!response) restartProfilingForConfirmedView();
+        } else {
+          resetViewProfiling();
+          resetConfirmedFilterHistory();
+          clearStepInspection(false, false);
+        }
+      }
       if (!response) return;
       if (response.kind === "sessionOpenProgress") {
         setSessionOpenProgress(response.stage ?? undefined);
@@ -817,10 +942,7 @@ export function App() {
         ) {
           return;
         }
-        setDiff(response.presentation.draft?.diff);
-        setRemainingMissingCells(response.presentation.draft?.remainingMissingCells);
-        setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
-        setDraftWarnings(response.presentation.draft?.warnings ?? []);
+        installPresentation(response.presentation);
         return;
       }
       if (response.kind === "stepInspectionCleared") {
@@ -1057,6 +1179,7 @@ export function App() {
               else setLoading(isImportOptionsPending());
             }
             restoreViewAfterPageFailure(pendingPage, response.code === "pyspark_connect_state_lost");
+            if (recovery && !pendingPage.changesView) restartProfilingForConfirmedView();
             storeFailedPageRequest(pendingPage);
             setForegroundError({ message: response.message, code: response.code });
             return;
@@ -1151,6 +1274,7 @@ export function App() {
             else setLoading(isImportOptionsPending());
           }
           restoreViewAfterPageFailure(pendingPage);
+          if (recovery && !pendingPage.changesView) restartProfilingForConfirmedView();
           storeFailedPageRequest(pendingPage);
           setForegroundError({ message: "Page request was cancelled." });
           return;
@@ -1175,6 +1299,7 @@ export function App() {
           closeOperationDialog();
         }
         latestPageRequest.current = undefined;
+        lastIssuedPageRequestId.current = null;
         setFilterBarRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -1185,35 +1310,7 @@ export function App() {
         setLiveSessionReconnectPending(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
-        resetGridViewState();
-        storePendingStepInspection(undefined);
-        storeStepInspection(undefined);
-        storeStepInspectionTarget(undefined);
-        setStepInspectionError(undefined);
-        setDraftBefore(undefined);
-        setDiff(undefined);
-        setRemainingMissingCells(undefined);
-        setDraftWarnings([]);
-        resetConfirmedFilterHistory();
-        resetViewProfiling({
-          initialSummaries: supportsViewingCapability(response.metadata.capabilities, "profile")
-            ? response.summaries
-            : [],
-          clearOwners: true
-        });
-        const openedProfileSupported = supportsViewingCapability(response.metadata.capabilities, "profile");
-        const openedFilterPanelSupported =
-          supportsViewingCapability(response.metadata.capabilities, "filter") ||
-          supportsViewingCapability(response.metadata.capabilities, "sort");
-        reconcileSidePanelAvailability(openedProfileSupported, openedFilterPanelSupported);
-        confirmView(response.metadata, nextViewRequestId());
-        storeMetadata(response.metadata);
-        storeFilterModel(response.metadata.filterModel);
-        storePage(response.page);
-        const openedWindow = columnWindowFromPage(response.metadata, response.page, initialColumnWindow());
-        confirmedColumnWindow.current = openedWindow;
-        desiredColumnWindow.current = openedWindow;
-        inspectionColumnWindow.current = openedWindow;
+        installSessionSnapshot(response, nextViewRequestId(), true);
         return;
       }
 
@@ -1235,18 +1332,19 @@ export function App() {
 
         const previousView = confirmedView.current;
         const sameView = Boolean(
+          !recovery &&
           previousView &&
           previousView.viewContextId === pendingPage.viewContextId &&
           previousView.sessionId === response.metadata.sessionId
         );
-        if (!sameView) {
+        if (!sameView && !recovery) {
           resetViewProfiling({ preserveColumnValues: true });
         }
         const previousStats = sameView ? metadataRef.current?.stats : undefined;
         const nextMetadata = previousStats
           ? { ...response.metadata, stats: previousStats }
           : withoutDatasetStats(response.metadata);
-        if (pendingPage.changesView) {
+        if (pendingPage.changesView && !recovery) {
           if (pendingPage.filterHistoryUndoTarget) {
             storeConfirmedFilterHistory(
               confirmLatestFilterUndo(
@@ -1268,11 +1366,32 @@ export function App() {
             }
           }
         }
-        confirmView(nextMetadata, pendingPage.viewContextId);
+        const recoveredViewState = recovery
+          ? {
+              ...recovery.viewState,
+              viewport: {
+                firstVisibleRow: pendingPage.changesView
+                  ? response.page.offset
+                  : gridViewStateRef.current.viewport.firstVisibleRow,
+                scrollLeft: gridViewStateRef.current.viewport.scrollLeft
+              }
+            }
+          : undefined;
+        confirmView(
+          nextMetadata,
+          recovery?.offeredViewContextId ?? pendingPage.viewContextId,
+          recoveredViewState ? encodeGridViewState(recoveredViewState) : undefined
+        );
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
         storePage(response.page);
         confirmedColumnWindow.current = columnWindowFromPage(nextMetadata, response.page, pendingPage.columnWindow);
+        if (recovery) {
+          desiredColumnWindow.current = confirmedColumnWindow.current;
+          inspectionColumnWindow.current = confirmedColumnWindow.current;
+          installPresentation(recovery.presentation);
+          if (recoveredViewState) restoreHostGridViewState(recoveredViewState);
+        }
         restartProfilingForConfirmedView();
         if (restoreGridFocusForPage.current === response.viewRequestId) {
           restoreGridFocusForPage.current = undefined;
@@ -1289,9 +1408,10 @@ export function App() {
         if (redoSnapshot && !matchesRedoResponse) return;
         const planReturnTarget = planActionReturnFocus.current;
         planActionReturnFocus.current = null;
-        clearSynchronization();
+        if (!recovery) clearSynchronization();
         const previous = mutationSnapshot.current?.view;
         latestPageRequest.current = undefined;
+        lastIssuedPageRequestId.current = null;
         setFilterBarRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -1308,7 +1428,7 @@ export function App() {
           ((response.action === "undo" && nextMetadata.steps.length === 0) ||
             (response.action === "redo" && nextMetadata.canRedo !== true)) &&
           nextMetadata.draftStep === undefined;
-        confirmView(nextMetadata, nextViewRequestId());
+        confirmView(nextMetadata, recovery?.offeredViewContextId ?? nextViewRequestId());
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
         storePage(response.page);
@@ -1348,6 +1468,10 @@ export function App() {
             : undefined
         );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
+        if (recovery) {
+          installPresentation(recovery.presentation);
+          restoreHostGridViewState(recovery.viewState);
+        }
         if (response.kind === "stepPreview") closeOperationDialog();
         else {
           reconcileEditingStep(nextMetadata.steps);
@@ -1382,12 +1506,15 @@ export function App() {
   }, [
     acceptSynchronization,
     beginMutation,
+    captureConfirmedViewState,
     clearSynchronization,
     clearStepInspection,
     closeOperationDialog,
     confirmView,
     deleteStep,
+    gridViewStateRef,
     isImportOptionsPending,
+    isModeChangePending,
     nextViewRequestId,
     openSidePanel,
     reconcileEditingStep,
@@ -1570,6 +1697,7 @@ export function App() {
       ...(options.filterHistoryUndoTarget ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget } : {})
     };
     latestPageRequest.current = pendingPage;
+    lastIssuedPageRequestId.current = viewRequestId;
     foregroundRequest.current = { kind: "page", viewRequestId };
     setFilterBarRequestLifecycle({ pendingRequestId: viewRequestId });
     desiredColumnWindow.current = columnWindow;

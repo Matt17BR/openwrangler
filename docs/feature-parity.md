@@ -56,6 +56,9 @@ filter. Spark also retains the prior view's continuation anchors when a replacem
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
 Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
 successfully saved state, as the storage warning explains.
+Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.
+A newer page request takes precedence over a pending recovery refresh.
+If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
 
 The operation catalog search exposes its accessible name before and after entering a query.
 Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.

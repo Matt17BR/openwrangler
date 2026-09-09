@@ -29,6 +29,11 @@ export const MAX_COLUMN_WIDTH = 640;
 export const MAX_GRID_COLUMN_WIDTHS = 2_048;
 export const MAX_GRID_COLUMN_ID_CODE_UNITS = 65_536;
 export const MAX_GRID_COLUMN_WIDTH_ID_CODE_UNITS = 1_048_576;
+const MAX_WEBVIEW_VIEW_ID_CODE_UNITS = 256;
+
+export function isBoundedViewId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_WEBVIEW_VIEW_ID_CODE_UNITS;
+}
 
 export function emptyGridViewState(): GridViewState {
   return {

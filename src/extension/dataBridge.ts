@@ -1,13 +1,16 @@
 import type {
-  ColumnSchema,
+  CancelledResponse,
   DataBackend,
-  DataDiff,
+  ErrorResponse,
   OpenWranglerRequest,
   OpenWranglerResponse,
+  PageResponse,
   SessionMode,
   SessionSource
 } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
+import type { SessionPresentation } from "../shared/sessionRecovery";
+export type { SessionPresentation } from "../shared/sessionRecovery";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { ExportSourceProtection } from "./files/safeFileExport";
 
@@ -72,20 +75,23 @@ export interface BridgeRequestOptions {
   onOpenProgress?: (stage: SessionOpenProgressStage) => void;
 }
 
-export interface SessionPresentation {
-  sessionId: string;
-  revision: number;
-  code: string;
-  draft?: {
-    diff: DataDiff;
-    remainingMissingCells?: number;
-    warnings: string[];
-    beforeSchema: ColumnSchema[];
-  };
+/** Exact private replacement; retained only until its owning panel confirms a fresh view. */
+export interface SessionRuntimeReplacement {
+  readonly sessionId: string;
+  isCurrent(): boolean;
+  /** Captures the accepted coordinator view without exposing private runtime identity. */
+  captureView(expectedPageRequestId?: string | null): (() => boolean) | undefined;
+  /** Called outside an executing request; reads only the current confirmed viewport. */
+  readPage(window: {
+    limit: number;
+    columnOffset: number;
+    columnLimit: number;
+  }): Promise<{ response: PageResponse | ErrorResponse | CancelledResponse; isCurrent(): boolean } | undefined>;
 }
 
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
+  onDidReplaceRuntime?(listener: (replacement: SessionRuntimeReplacement) => void): { dispose(): void };
   /**
    * Lists the worksheets in the exact workbook owned by a live file session.
    * The coordinator translates public session identity before delegation.

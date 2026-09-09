@@ -270,13 +270,22 @@ describe("App draft state boundaries", () => {
       editing: true,
       literal: "340282366920938463463374607431768211456",
       message: "Formula literal exceeds Polars native integer capacity."
+    },
+    {
+      backend: "r" as const,
+      editing: false,
+      literal: "9007199254740993",
+      message: "The original R kernel changed; retry the operation.",
+      recovered: true
     }
   ])(
-    "keeps $backend preview refusal accessible in its retained form (editing=$editing)",
-    async ({ backend, editing, literal, message }) => {
+    "keeps $backend preview refusal accessible in its retained form (editing=$editing, recovered=$recovered)",
+    async ({ backend, editing, literal, message, recovered }) => {
       const fixture = formulaPreviewFixture(backend, editing);
       render(<App />);
       dispatch({ kind: "sessionOpened", ...fixture, summaries: [] });
+      const originalContext = postMessage.mock.calls.find(([value]) => value.kind === "setViewContext")?.[0]
+        .viewContextId;
       dispatch({ kind: "editorAction", action: editing ? "editLatest" : "openOperation", operationKind: "formula" });
       const dialog = await screen.findByRole("dialog");
       const value = within(dialog).getByLabelText("Numeric value", { exact: true });
@@ -289,18 +298,49 @@ describe("App draft state boundaries", () => {
       expect(request.step).toMatchObject({ kind: "formula", params: { value: literal, newColumn: "exact_result" } });
       expect(request.replaceStepId).toBe(editing ? "saved" : undefined);
       expect(dialog).toHaveAttribute("aria-busy", "true");
-      dispatch({
+      const refusal = {
         kind: "error",
-        code: backend === "r" ? "invalid_request" : "engine_error",
+        code: recovered ? "r_kernel_changed" : backend === "r" ? "invalid_request" : "engine_error",
         message,
         recoverable: true
-      });
+      };
+      const confirmed = recovered
+        ? {
+            ...fixture,
+            page: {
+              ...fixture.page,
+              rows: fixture.page.rows.map((row) => ({
+                ...row,
+                values: row.values.map((cell) => ({ ...cell, raw: 4, display: "4" }))
+              }))
+            }
+          }
+        : fixture;
+      dispatch(
+        recovered
+          ? {
+              kind: "sessionRecovered",
+              offeredViewContextId: "recovery:r-kernel",
+              context: {
+                sessionId: fixture.metadata.sessionId,
+                revision: fixture.metadata.revision,
+                viewContextId: originalContext,
+                lastPageRequestId: null,
+                request: { kind: "previewStep" }
+              },
+              snapshot: { kind: "sessionOpened", ...confirmed, summaries: [] },
+              result: refusal,
+              presentation: { sessionId: fixture.metadata.sessionId, revision: fixture.metadata.revision },
+              viewState: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+            }
+          : refusal
+      );
       expect(within(dialog).getByRole("alert")).toHaveTextContent(message);
       expect(dialog).toHaveAttribute("aria-busy", "false");
       expect(value).toHaveDisplayValue(literal);
       expect(output).toHaveValue("exact_result");
       expect(value).toBeEnabled();
-      expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(fixture);
+      expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(confirmed);
       expect(screen.queryByRole("region", { name: "Draft review" })).toBeNull();
 
       fireEvent.change(value, { target: { value: "2" } });
@@ -312,6 +352,7 @@ describe("App draft state boundaries", () => {
       expect(within(dialog).getByRole("alert")).toHaveTextContent("The cleaning operation was cancelled.");
       expect(value).toHaveDisplayValue("2");
       expect(dialog).toHaveAttribute("aria-busy", "false");
+      if (recovered) expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(confirmed);
 
       fireEvent.click(within(dialog).getByRole("button", { name: /^Uppercase/ }));
       expect(within(dialog).queryByRole("alert")).toBeNull();

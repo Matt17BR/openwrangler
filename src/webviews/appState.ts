@@ -1,7 +1,6 @@
 import type {
   ColumnSummary,
   ColumnSchema,
-  DataDiff,
   GridPage,
   LiveGridPage,
   OperationKind,
@@ -12,7 +11,13 @@ import type { FilterModel } from "../shared/filterModel";
 import { operationKinds } from "../shared/operationCatalog.generated";
 import { isColumnSchemaArray, isDataDiff, isOpenWranglerResponse } from "../shared/protocolValidation";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
-import { decodeGridViewState } from "../shared/viewState";
+import { decodeGridViewState, isBoundedViewId } from "../shared/viewState";
+import {
+  isRecoveryViewContextId,
+  RECOVERY_VIEW_CONTEXT_PREFIX,
+  type SessionPresentation,
+  type SessionRecoveryMessage
+} from "../shared/sessionRecovery";
 import type { ConfirmedFilterState } from "./filters/filterHistory";
 import type { VisibleColumnRange } from "./grid/DataGrid";
 
@@ -91,17 +96,21 @@ export interface RendererSynchronizationMessage {
 
 type SessionPresentationMessage = {
   kind: "sessionPresentation";
-  presentation: {
-    sessionId: string;
-    revision: number;
-    draft?: {
-      diff: DataDiff;
-      remainingMissingCells?: number;
-      warnings: string[];
-      beforeSchema: ColumnSchema[];
-    };
-  };
+  presentation: Omit<SessionPresentation, "code">;
 };
+
+function isSessionPresentation(value: unknown): value is SessionPresentationMessage["presentation"] {
+  if (!isRecord(value) || typeof value.sessionId !== "string" || !isNonNegativeInteger(value.revision)) return false;
+  const draft = value.draft;
+  return (
+    draft === undefined ||
+    (isRecord(draft) &&
+      isDataDiff(draft.diff) &&
+      (draft.remainingMissingCells === undefined || isNonNegativeInteger(draft.remainingMissingCells)) &&
+      isStringArray(draft.warnings) &&
+      isColumnSchemaArray(draft.beforeSchema))
+  );
+}
 
 export function decodeAppHostMessage(value: unknown) {
   if (isOpenWranglerResponse(value)) return value;
@@ -135,22 +144,100 @@ export function decodeAppHostMessage(value: unknown) {
         ? { kind: value.kind, busy: value.busy, mode: value.mode as "viewing" | "editing" }
         : undefined;
     case "sessionPresentation": {
-      const presentation = value.presentation;
+      return isSessionPresentation(value.presentation) ? (value as SessionPresentationMessage) : undefined;
+    }
+    case "sessionRecovered": {
+      const context = value.context;
+      const state = decodeGridViewState(value.viewState);
       if (
-        !isRecord(presentation) ||
-        typeof presentation.sessionId !== "string" ||
-        !isNonNegativeInteger(presentation.revision)
+        !isRecord(context) ||
+        !isNonEmptyString(context.sessionId) ||
+        !isNonNegativeInteger(context.revision) ||
+        !(context.viewContextId === null || isBoundedViewId(context.viewContextId)) ||
+        !(context.lastPageRequestId === null || isBoundedViewId(context.lastPageRequestId)) ||
+        !isBoundedViewId(value.offeredViewContextId) ||
+        !isRecoveryViewContextId(value.offeredViewContextId) ||
+        value.offeredViewContextId.length === RECOVERY_VIEW_CONTEXT_PREFIX.length ||
+        /\s/u.test(value.offeredViewContextId) ||
+        !isSessionPresentation(value.presentation) ||
+        !state
       )
         return undefined;
-      if (presentation.draft === undefined) return value as SessionPresentationMessage;
-      const draft = presentation.draft;
-      return isRecord(draft) &&
-        isDataDiff(draft.diff) &&
-        (draft.remainingMissingCells === undefined || isNonNegativeInteger(draft.remainingMissingCells)) &&
-        isStringArray(draft.warnings) &&
-        isColumnSchemaArray(draft.beforeSchema)
-        ? (value as SessionPresentationMessage)
-        : undefined;
+      const request = context.request;
+      if (
+        request !== null &&
+        (!isRecord(request) || !(request.viewRequestId === undefined || isBoundedViewId(request.viewRequestId)))
+      )
+        return undefined;
+      const result = value.result;
+      const snapshot = value.snapshot;
+      if (("result" in value && result === undefined) || ("snapshot" in value && snapshot === undefined))
+        return undefined;
+      if (result !== undefined && !isOpenWranglerResponse(result)) return undefined;
+      if (snapshot !== undefined && (!isOpenWranglerResponse(snapshot) || snapshot.kind !== "sessionOpened"))
+        return undefined;
+      const pageResult =
+        result && (result.kind === "page" || result.kind === "stepPreview" || result.kind === "planUpdated")
+          ? result
+          : undefined;
+      if (
+        pageResult
+          ? snapshot !== undefined || request === null
+          : snapshot === undefined ||
+            (result !== undefined && result.kind !== "error" && result.kind !== "cancelled") ||
+            (request === null && result !== undefined)
+      )
+        return undefined;
+      if (result && ("viewRequestId" in result ? result.viewRequestId : undefined) !== request?.viewRequestId)
+        return undefined;
+      if (result?.kind === "error" && result.sessionId !== undefined && result.sessionId !== context.sessionId)
+        return undefined;
+      if (request) {
+        if (!result) return undefined;
+        const refused = result.kind === "error" || result.kind === "cancelled";
+        if (request.kind === "getPage") {
+          if (
+            !isNonEmptyString(request.viewRequestId) ||
+            context.lastPageRequestId !== request.viewRequestId ||
+            (!refused && result.kind !== "page")
+          )
+            return undefined;
+        } else if (request.kind === "previewStep") {
+          if (request.viewRequestId !== undefined || (!refused && result.kind !== "stepPreview")) return undefined;
+        } else if (
+          request.kind === "applyDraft" ||
+          request.kind === "discardDraft" ||
+          request.kind === "undoStep" ||
+          request.kind === "redoStep"
+        ) {
+          if (
+            request.kind === "redoStep" ? !isNonEmptyString(request.viewRequestId) : request.viewRequestId !== undefined
+          )
+            return undefined;
+          const action =
+            request.kind === "applyDraft"
+              ? "apply"
+              : request.kind === "discardDraft"
+                ? "discard"
+                : request.kind === "undoStep"
+                  ? "undo"
+                  : "redo";
+          if (!refused && (result.kind !== "planUpdated" || result.action !== action)) return undefined;
+        } else return undefined;
+      }
+      const next = pageResult?.metadata ?? snapshot?.metadata;
+      if (
+        !next ||
+        next.sessionId !== context.sessionId ||
+        next.revision < context.revision ||
+        value.presentation.sessionId !== next.sessionId ||
+        value.presentation.revision !== next.revision ||
+        (result && "revision" in result && result.revision !== next.revision) ||
+        (next.draftStep !== undefined) !== (value.presentation.draft !== undefined)
+      )
+        return undefined;
+      const message = value as SessionRecoveryMessage;
+      return { ...message, viewState: state };
     }
     case "viewState": {
       const state = decodeGridViewState(value.state);
@@ -234,6 +321,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function isStringArray(value: unknown): value is string[] {

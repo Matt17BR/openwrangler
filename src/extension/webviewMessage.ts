@@ -1,7 +1,8 @@
 import { supportsOperation } from "../shared/operations";
 import type { OpenWranglerRequest, SessionMode, SessionOpenedResponse } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
-import { decodeGridViewState, type GridViewState } from "../shared/viewState";
+import { isRecoveryViewContextId } from "../shared/sessionRecovery";
+import { decodeGridViewState, isBoundedViewId, type GridViewState } from "../shared/viewState";
 import { isWebviewFailurePhase, type WebviewFailurePhase } from "../shared/webviewFailure";
 
 export interface WebviewMessageDecodeContext {
@@ -26,7 +27,7 @@ export type WebviewRequest =
       sessionId: string | null;
       revision: number | null;
     }
-  | { kind: "setViewContext"; viewContextId: string }
+  | { kind: "setViewContext"; viewContextId: string; state?: GridViewState }
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
   | { kind: "prioritizeViewRequest"; viewRequestId: string }
   | { kind: "updateViewState"; state: GridViewState }
@@ -66,7 +67,6 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "undoStep",
   "redoStep"
 ]);
-const MAX_WEBVIEW_VIEW_ID_CODE_UNITS = 256;
 const MAX_CANCEL_VIEW_REQUEST_IDS = 1_024;
 const MAX_CANCEL_VIEW_REQUEST_ID_CODE_UNITS = 64 * 1_024;
 
@@ -117,10 +117,14 @@ export function decodeWebviewMessage(
       : undefined;
   }
   if (message.kind === "setViewContext") {
-    return hasExactKeys(message, ["kind", "viewContextId"]) && isBoundedViewId(message.viewContextId)
-      ? { kind: "setViewContext", viewContextId: message.viewContextId }
-      : undefined;
+    if (!hasExactKeys(message, ["kind", "viewContextId"], ["state"]) || !isBoundedViewId(message.viewContextId))
+      return undefined;
+    if (!Object.hasOwn(message, "state")) return { kind: "setViewContext", viewContextId: message.viewContextId };
+    if (!isRecoveryViewContextId(message.viewContextId)) return undefined;
+    const state = decodeGridViewState(message.state);
+    return state ? { kind: "setViewContext", viewContextId: message.viewContextId, state } : undefined;
   }
+
   if (message.kind === "cancelViewRequests") {
     if (!hasExactKeys(message, ["kind", "viewRequestIds"])) return undefined;
     const viewRequestIds = decodeCancelledViewRequestIds(message.viewRequestIds);
@@ -234,10 +238,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRendererControlId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9]{32}$/u.test(value);
-}
-
-function isBoundedViewId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= MAX_WEBVIEW_VIEW_ID_CODE_UNITS;
 }
 
 function decodeCancelledViewRequestIds(value: unknown): string[] | undefined {

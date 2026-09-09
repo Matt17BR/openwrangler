@@ -32,6 +32,8 @@ export interface RendererSynchronizationCallbacks {
   readonly isVisible: () => boolean;
   readonly getSnapshot: () => SessionOpenedResponse | undefined;
   readonly getOpenResponse: () => OpenWranglerResponse | undefined;
+  /** Recovery has a session, but its replacement is not yet accepted by the renderer. */
+  readonly isSnapshotPending?: () => boolean;
   readonly getSessionPresentation: () => SessionPresentation | undefined;
   readonly getViewState: () => GridViewState | undefined;
   readonly isImportBusy: () => boolean;
@@ -85,6 +87,7 @@ export class RendererSynchronizationCoordinator {
   private synchronizationRun: Promise<void> | undefined;
   private synchronizationRequested = false;
   private synchronizationNeedsInspectionClear = false;
+  private synchronizationNeedsSnapshot = false;
   private pendingImportAction: PendingImportAction | undefined;
   private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private startupRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -124,8 +127,14 @@ export class RendererSynchronizationCoordinator {
     this.callbacks.replaceRenderer();
   }
 
-  rendererStarted(): void {
+  get rendererGeneration(): number {
+    return this.generation;
+  }
+
+  rendererStarted(freshRenderer = false): void {
     if (this.disposed) return;
+    // The first ready completes the current generation, including its pending open publication.
+    if (freshRenderer && this.ready) this.generation += 1;
     this.clearStartupRecoveryTimer();
     this.ready = true;
     this.invalidate();
@@ -165,6 +174,7 @@ export class RendererSynchronizationCoordinator {
       return false;
     }
     this.clearStartupRecoveryTimer();
+    this.generation += 1;
     this.ready = false;
     this.invalidate();
     this.scheduleStartupRecovery();
@@ -172,6 +182,7 @@ export class RendererSynchronizationCoordinator {
   }
 
   hasHydratedRenderer(): boolean {
+    if (this.callbacks.isSnapshotPending?.()) return false;
     const synchronization = this.synchronizationIdentity;
     const snapshot = this.callbacks.getSnapshot();
     return Boolean(
@@ -219,6 +230,7 @@ export class RendererSynchronizationCoordinator {
   scheduleStartupRecovery(): void {
     if (
       this.disposed ||
+      this.callbacks.isSnapshotPending?.() ||
       this.hasSynchronizedRenderer() ||
       this.startupRecoveryAttempts >= this.maxStartupRecoveryAttempts ||
       this.startupRecoveryTimer ||
@@ -245,10 +257,18 @@ export class RendererSynchronizationCoordinator {
     });
   }
 
-  enqueueSynchronization(clearInspection: boolean): Promise<void> {
+  synchronizeAcceptedSnapshot(): Promise<void> {
+    // The atomic receipt retires trailing publications from the previous view.
+    this.generation += 1;
+    return this.enqueueSynchronization(false, true);
+  }
+
+  enqueueSynchronization(clearInspection: boolean, snapshotAlreadyInstalled = false): Promise<void> {
     if (this.disposed) return Promise.resolve();
     this.synchronizationRequested = true;
     this.synchronizationNeedsInspectionClear ||= clearInspection;
+    this.synchronizationNeedsSnapshot ||= !snapshotAlreadyInstalled;
+    this.viewStateLocked = this.synchronizationNeedsSnapshot;
     if (this.synchronizationRun) return this.synchronizationRun;
 
     const synchronization = (async () => {
@@ -256,8 +276,10 @@ export class RendererSynchronizationCoordinator {
         do {
           this.synchronizationRequested = false;
           const shouldClearInspection = this.synchronizationNeedsInspectionClear;
+          const shouldPublishSnapshot = this.synchronizationNeedsSnapshot;
           this.synchronizationNeedsInspectionClear = false;
-          await this.synchronize(shouldClearInspection);
+          this.synchronizationNeedsSnapshot = false;
+          await this.synchronize(shouldClearInspection, shouldPublishSnapshot);
         } while (!this.disposed && this.synchronizationRequested);
       } finally {
         this.synchronizationRun = undefined;
@@ -397,18 +419,19 @@ export class RendererSynchronizationCoordinator {
     this.scheduleStartupRecovery();
   }
 
-  private async synchronize(clearInspection: boolean): Promise<void> {
-    if (this.disposed || !this.ready) return;
+  private async synchronize(clearInspection: boolean, publishSnapshot: boolean): Promise<void> {
+    if (this.disposed || !this.ready || this.callbacks.isSnapshotPending?.()) return;
     const generation = this.generation;
-    this.viewStateLocked = true;
+    this.viewStateLocked = publishSnapshot;
     if (clearInspection) {
       this.callbacks.clearStepInspection();
       if (!(await this.postMessage({ kind: "stepInspectionCleared", resumeProfiling: false }))) return;
     }
+    if (this.callbacks.isSnapshotPending?.()) return;
     if (!this.callbacks.getSnapshot() && !this.callbacks.getOpenResponse()) {
       await this.callbacks.ensureSessionOpen();
     }
-    if (this.disposed || !this.ready || generation !== this.generation) return;
+    if (this.disposed || !this.ready || generation !== this.generation || this.callbacks.isSnapshotPending?.()) return;
     const snapshot = this.callbacks.getSnapshot();
     const openResponse = this.callbacks.getOpenResponse();
     const synchronization: RendererSynchronizationIdentity = snapshot
@@ -437,22 +460,39 @@ export class RendererSynchronizationCoordinator {
       promise: acknowledgement,
       resolve: resolveAcknowledgement
     };
-    if (snapshot) {
+    const isCurrent = (): boolean =>
+      this.synchronizationIdentity === synchronization && !this.callbacks.isSnapshotPending?.();
+    if (snapshot && publishSnapshot) {
       if (!(await this.postMessage(snapshot))) return;
-      const presentation = this.callbacks.getSessionPresentation();
-      if (presentation && !(await this.postMessage({ kind: "sessionPresentation", presentation }))) return;
-      const state = this.callbacks.getViewState();
-      const serialized = state ? encodeGridViewState(state) : undefined;
-      if (state && (!serialized || !(await this.postMessage({ kind: "viewState", state: serialized })))) return;
-      this.callbacks.didPublishAuthoritativeSnapshot();
-    } else if (openResponse) {
+      let published = false;
+      try {
+        if (!isCurrent()) return;
+        const presentation = this.callbacks.getSessionPresentation();
+        if (presentation && !(await this.postMessage({ kind: "sessionPresentation", presentation }))) return;
+        if (!isCurrent()) return;
+        const state = this.callbacks.getViewState();
+        const serialized = state ? encodeGridViewState(state) : undefined;
+        if (state && (!serialized || !(await this.postMessage({ kind: "viewState", state: serialized })))) return;
+        if (!isCurrent()) return;
+        this.callbacks.didPublishAuthoritativeSnapshot();
+        published = true;
+      } finally {
+        if (!published && generation === this.generation && !this.disposed && this.callbacks.isSnapshotPending?.()) {
+          // The delivered snapshot already reset the App's foreground owner,
+          // even when replacement interrupted a later presentation post.
+          this.generation += 1;
+          this.callbacks.didPublishAuthoritativeSnapshot();
+        }
+      }
+    } else if (!snapshot && openResponse) {
       if (!(await this.postMessage(openResponse))) return;
     }
+    if (!isCurrent()) return;
     if (this.pendingPreReadyImportResponse) {
       if (!(await this.postMessage(this.pendingPreReadyImportResponse))) return;
     }
     if (!(await this.postMessage({ kind: "importOptionsState", busy: this.callbacks.isImportBusy() }))) return;
-    if (this.synchronizationIdentity !== synchronization) {
+    if (!isCurrent()) {
       this.synchronizationRequested = true;
       return;
     }
