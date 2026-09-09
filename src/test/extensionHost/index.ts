@@ -2015,6 +2015,7 @@ async function exerciseReleasedREditingJourney(
         previewReleasedRSelect,
         previewReleasedRTextLength,
         recordAcceptanceProgress,
+        reacquireAcknowledgedSessionApp,
         releasedRSessionApp,
         requireFreshExactSessionPanelHydration,
         waitFor,
