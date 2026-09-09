@@ -1,3 +1,4 @@
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -967,7 +968,21 @@ describe("SessionCoordinator", () => {
       if (request.kind === "inspectStep") {
         executionOrder.push(`inspect-${request.sessionId}-${request.revision}`);
         if (request.sessionId === "runtime-1") throw new Error("inspection transport failed");
-        return stepInspectionResponse(request, 0, "# recovered prefix");
+        const response = stepInspectionResponse(request, 0, "# recovered prefix");
+        const inspectionPage = {
+          ...response.inputPage,
+          totalRows: 500,
+          columnIds: schema
+            .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+            .map((column) => column.id)
+        };
+        return {
+          ...response,
+          inputSchema: schema,
+          outputSchema: schema,
+          inputPage: inspectionPage,
+          outputPage: inspectionPage
+        };
       }
       if (request.kind === "previewStep") {
         executionOrder.push(`preview-${request.sessionId}-${request.revision}`);
@@ -1036,11 +1051,14 @@ describe("SessionCoordinator", () => {
       ...columnWindow
     });
 
+    expect(isOpenWranglerResponse(response)).toBe(true);
     expect(response).toMatchObject({
       kind: "stepInspection",
       stepId: inspectionStep.id,
       revision: opened.metadata.revision,
-      code: "# recovered prefix"
+      code: "# recovered prefix",
+      inputPage: { offset: 25, totalRows: 500, columnIds: ["c:sales"] },
+      outputPage: { offset: 25, totalRows: 500, columnIds: ["c:sales"] }
     });
     expect(coordinator.activeSession()?.metadata.source).toEqual(sourceBefore);
     expect(coordinator.activeSession()?.viewState).toEqual(viewBefore);

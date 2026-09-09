@@ -217,7 +217,8 @@ function projectedPageMismatch(
   request: { offset: number; limit: number; columnOffset: number; columnLimit: number },
   label = "page"
 ): string | undefined {
-  if (page.offset !== request.offset) return `${label} offset ${page.offset} did not match ${request.offset}`;
+  const expectedOffset = page.totalRows === null ? request.offset : Math.min(request.offset, page.totalRows);
+  if (page.offset !== expectedOffset) return `${label} offset ${page.offset} did not match ${expectedOffset}`;
   if (page.limit !== request.limit) return `${label} limit ${page.limit} did not match ${request.limit}`;
   const expectedColumnIds = schema
     .slice(request.columnOffset, request.columnOffset + request.columnLimit)

@@ -1,3 +1,4 @@
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { describe, expect, it, vi } from "vitest";
 import type {
   DataBackend,
@@ -223,6 +224,7 @@ describe("SessionRuntimeStateRestorer", () => {
 
   it("bounds a shrunken saved viewport to the final page without issuing profile work", async () => {
     const offsets: number[] = [];
+    const returnedOffsets: number[] = [];
     const reducedMetadata = metadata({
       shape: { rows: 120, columns: 1 },
       filteredShape: { rows: 120, columns: 1 }
@@ -230,7 +232,10 @@ describe("SessionRuntimeStateRestorer", () => {
     const delegate = bridge(async (request) => {
       if (request.kind !== "getPage") throw new Error(`Unexpected restore request: ${request.kind}`);
       offsets.push(request.offset);
-      return pageResponse(request, reducedMetadata, 120);
+      const response = pageResponse(request, reducedMetadata, 120);
+      expect(isOpenWranglerResponse(response)).toBe(true);
+      returnedOffsets.push(response.page.offset);
+      return response;
     });
     const session = runtimeSession(delegate, reducedMetadata);
 
@@ -252,6 +257,7 @@ describe("SessionRuntimeStateRestorer", () => {
     );
 
     expect(offsets).toEqual([400, 100]);
+    expect(returnedOffsets).toEqual([120, 100]);
     expect(page.page.offset).toBe(100);
     expect(session.viewState).toEqual({
       filterModel: emptyFilter,
@@ -463,7 +469,7 @@ function pageResponse(
             rows: []
           }
         : {
-            offset: request.offset,
+            offset: Math.min(request.offset, totalRows),
             limit: request.limit,
             totalRows,
             columnIds: next.schema

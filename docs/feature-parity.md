@@ -58,6 +58,7 @@ Failed recovery-storage writes retain the current selection and layout during th
 successfully saved state, as the storage warning explains.
 Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.
 A newer page request takes precedence over a pending recovery refresh.
+When a Python dataset shrinks, paging can return the valid empty end and the grid moves back within the remaining rows.
 If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
 
 The operation catalog search exposes its accessible name before and after entering a query.

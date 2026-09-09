@@ -384,6 +384,9 @@ source invalidation, request-scope exit, profile leases and exact row-count disc
 retain the old view's anchors through a rejected replacement page, including a cached first block followed by a
 native continuation. Accepted pages retain the existing page and complete-frame allowances.
 Late background invalidation is serialized with page publication, including reentrant cleanup with a queued writer.
+The session-cache and step-inspection owners cover known-total page boundaries across Pandas, Polars and DuckDB,
+including empty results, projection, cache reuse and differently sized inspection sides. Host response-validation
+tests accept only the exact end clamp and preserve unknown-total continuation correlation.
 
 Formula's arithmetic limits and engine-specific behavior are defined in [Engine boundaries and
 capabilities](architecture.md#engine-boundaries-and-capabilities). The owners below compare live and generated
