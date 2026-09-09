@@ -486,6 +486,11 @@ Polars and DuckDB engine owners exercise misleading enum labels, nested types, f
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
 the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.
 
+The DuckDB engine owner checks literal selected-file imports for CSV, TSV, JSONL/NDJSON and Parquet beside matching
+and escaped-looking siblings. It covers native rows and types, import options, ordinary and empty files, generated
+cleaning, source preservation and explicit unsupported-path refusals. The existing Windows job selects these same
+cases for actual local-drive coverage; lexical UNC/device checks do not claim network-share execution.
+
 Polars file owners read actual JSONL/NDJSON files beside misleading encoded siblings and escaped-path directories.
 They check selected rows, native lazy projection, standalone transformations and source replacement refusal. Unix
 tests retain native reads after the Python stream closes and exhaust descriptors only inside isolated child

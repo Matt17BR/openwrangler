@@ -295,6 +295,8 @@ jobs:
         run: |
           python -m pytest -q python/tests/test_export_target.py -k windows
           python -m pytest -q python/tests/test_duckdb_export_filesystem.py
+      - name: Windows selected-file import contracts
+        run: python -m pytest -q python/tests/test_duckdb_engine.py -k literal_selected_file
       - name: Windows dependency filesystem contracts
         run: |
           python -m pytest -q python/tests/test_dependency_guard.py -k windows

@@ -543,6 +543,13 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+File readers adapt paths to DuckDB's glob rules so imports use the selected file. Source identity, blank-file checks
+and diagnostics retain the original path. On Unix, the adapter preserves the first absolute component, which DuckDB
+treats literally, and escapes the remaining components. Windows paths on local drives use standard glob escaping.
+Unix paths containing both backslashes and glob syntax, and Windows drive, share or device anchors containing glob
+syntax, are refused because native expansion can select another file. Existing source fingerprint checks still
+surround lazy reads; the adapter adds no dataframe scan or filesystem owner.
+
 Generated Sort Rows, Drop Duplicates and Mark Duplicates reserve current input names and requested keys when choosing
 temporary row ordinals. Missing requested keys are rejected; an internal ordinal cannot supply them. Native
 case-insensitive key binding remains valid. Sort Rows preserves every user column and input order within ties.

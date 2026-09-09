@@ -373,6 +373,11 @@ fractions differently. Missing timestamps remain supported; a refused export pre
 
 ## DuckDB experimental file support
 
+CSV, TSV, JSONL/NDJSON and Parquet imports preserve the selected file when ordinary filenames or directories contain
+wildcard characters. Unix paths combining backslashes and glob syntax, and Windows drive/share/device anchors with
+glob syntax, are refused. Choose another supported engine or a path without those characters. Ordinary local-drive
+paths retain native lazy reading; the full cross-platform import matrix remains incomplete.
+
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
 extension auto-install, autoload, and external-file caching stay disabled.
 Generated queries use the input relation's connection, preserving private tables and functions even when the default
