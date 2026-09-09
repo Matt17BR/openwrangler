@@ -44,7 +44,8 @@ try {
   });
   for (const harness of harnesses) {
     console.log(`Accessibility checking: ${harness}`);
-    const page = await browser.newPage({ viewport: { width: harness.includes("-800") ? 800 : 1280, height: 760 } });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: harness.includes("-800") ? 800 : 1280, height: 760 });
     page.setDefaultTimeout(15_000);
     page.setDefaultNavigationTimeout(15_000);
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load", timeout: 15_000 });
@@ -93,7 +94,8 @@ try {
 
 async function verifyNotebookPreviewDisclosure(browser) {
   const harness = "notebook-preview.html";
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
   const status = await page.getByTestId("inline-preview-page").textContent();
   const match = /^1-([0-9,]+) of ([0-9,]+) captured · ([0-9,]+) total$/u.exec(status ?? "");
@@ -413,7 +415,8 @@ async function verifyCompactDraftReview(browser) {
   ];
 
   for (const { harness, width, operation, diff, warnings, expectSingleRowToolbar = false } of cases) {
-    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
     const reviews = page.getByRole("region", { name: "Draft review" });
@@ -577,7 +580,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
     ["summary-families-dark-800.html", 800],
     ["summary-families-dark-zoom-200.html", 1280]
   ]) {
-    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
     await page
@@ -840,7 +844,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.close();
   }
 
-  const interactivePage = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const interactivePage = await browser.newPage();
+  await interactivePage.setViewportSize({ width: 1280, height: 760 });
   const interactiveHarness = "grid-view.html";
   await interactivePage.goto(pathToFileURL(resolve(harnessDir, interactiveHarness)).href, { waitUntil: "load" });
   const interactiveHistogram = interactivePage.getByRole("group", { name: /numeric distribution/u }).first();
@@ -929,7 +934,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
   }
   await interactivePage.close();
 
-  const textPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  const textPage = await browser.newPage();
+  await textPage.setViewportSize({ width: 800, height: 760 });
   const textHarness = "summary-text-dark-800.html";
   await textPage.goto(pathToFileURL(resolve(harnessDir, textHarness)).href, { waitUntil: "load" });
   const textToggle = textPage.getByRole("button", { name: "Column profiles and filters" });
@@ -966,7 +972,8 @@ async function verifyInsightsDrawerWorkflow(browser) {
   }
   await textPage.close();
 
-  const extremaPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  const extremaPage = await browser.newPage();
+  await extremaPage.setViewportSize({ width: 800, height: 760 });
   const extremaHarness = "summary-extrema-limit.html";
   await extremaPage.goto(pathToFileURL(resolve(harnessDir, extremaHarness)).href, { waitUntil: "load" });
   const extremaPanel = extremaPage.getByRole("complementary", { name: "Column profiles and filters" });
@@ -1365,7 +1372,8 @@ async function withTimeout(promise, timeoutMs, label) {
 }
 
 async function verifyWideGridPerformance(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
   await page.waitForSelector('[data-grid-row="0"]');
 
@@ -1407,7 +1415,8 @@ async function verifyWideGridPerformance(browser) {
 }
 
 async function verifyColumnSearchEscapePropagation(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(pathToFileURL(resolve(harnessDir, "draft-preview.html")).href, { waitUntil: "load" });
   await page.getByRole("button", { name: "Apply step" }).waitFor();
   const columnSearch = page.getByRole("combobox", { name: "Column" });
@@ -1438,7 +1447,8 @@ async function verifyAppliedPlanToolbarLayout(browser) {
 
   for (const { harness, width, label, forcedColors = false } of cases) {
     console.log(`Applied-plan toolbar checking: ${harness} (${label}).`);
-    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width, height: 760 });
     if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
@@ -1565,7 +1575,8 @@ async function verifyAppliedPlanToolbarLayout(browser) {
 }
 
 async function verifyStepInspectionWorkflow(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(pathToFileURL(resolve(harnessDir, "step-inspection.html")).href, { waitUntil: "load" });
   await waitForRuntimeRequest(page, "inspectStep");
 
@@ -1626,7 +1637,8 @@ async function verifyStepInspectionWorkflow(browser) {
 }
 
 async function verifyFilterKeyboardWorkflow(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(pathToFileURL(resolve(harnessDir, "filter-panel.html")).href, { waitUntil: "load" });
   await page.bringToFront();
   await page.waitForFunction(() => document.hasFocus());
@@ -1727,7 +1739,8 @@ async function verifyFilterKeyboardWorkflow(browser) {
 }
 
 async function verifyGridKeyboardWorkflow(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
