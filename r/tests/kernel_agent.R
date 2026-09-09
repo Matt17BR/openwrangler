@@ -4850,6 +4850,42 @@ local({
   on.exit(assign("maximum_response_bytes", previous_limit, envir = encoder_environment), add = TRUE)
   assign("maximum_response_bytes", 128L, envir = encoder_environment)
 
+  latin1 <- rawToChar(as.raw(c(65L, 233L, 255L, 34L)))
+  Encoding(latin1) <- "latin1"
+  wire_cases <- list(
+    list(value = "", expected = '{"value":""}'),
+    list(value = "safe /ASCII", expected = '{"value":"safe /ASCII"}'),
+    list(value = NA_character_, expected = '{"value":null}'),
+    list(
+      value = intToUtf8(c(34L, 92L, 8L, 9L, 10L, 12L, 13L)),
+      expected = '{"value":"\\\"\\\\\\b\\t\\n\\f\\r"}'
+    ),
+    list(
+      value = intToUtf8(c(1L, 7L, 11L, 31L, 127L)),
+      expected = '{"value":"\\u0001\\u0007\\u000B\\u001F\\u007F"}'
+    ),
+    list(
+      value = intToUtf8(c(128L, 2047L, 2048L, 55295L, 57344L, 65535L)),
+      expected = '{"value":"\\u0080\\u07FF\\u0800\\uD7FF\\uE000\\uFFFF"}'
+    ),
+    list(
+      value = intToUtf8(c(65536L, 1114111L)),
+      expected = '{"value":"\\uD800\\uDC00\\uDBFF\\uDFFF"}'
+    ),
+    list(
+      value = paste0("a\"\n", intToUtf8(c(946L, 128512L)), "\\u00ff\"\n"),
+      expected = '{"value":"a\\\"\\n\\u03B2\\uD83D\\uDE00\\\\u00ff\\\"\\n"}'
+    ),
+    list(value = latin1, expected = '{"value":"A\\u00E9\\u00FF\\\""}')
+  )
+  for (case in wire_cases) {
+    assert_identical(
+      encoder(list(value = case$value)),
+      case$expected,
+      "the R scalar encoder changed its exact ASCII escapes"
+    )
+  }
+
   exact <- encoder(list(value = strrep("x", 116L)))
   assert_identical(nchar(exact, type = "bytes"), 128L, "the exact R response byte limit changed")
   assert_identical(

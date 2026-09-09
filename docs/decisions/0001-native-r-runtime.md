@@ -127,6 +127,8 @@ escaped string fragments before building them, including values repeated in cell
 This prevents string expansion from exceeding the 17 MiB transport limit after a page passed its separate 16 MiB
 native bound. It does not replace jsonlite's final exact-byte check for keys, numbers and JSON structure or claim an
 exact preallocation ceiling for every payload. Unicode validation and scalar versus explicit-array behavior remain.
+Scalar escaping converts codepoints together and replaces escape classes in bulk, avoiding an R callback for every
+character in generated programs. Aggregate byte charging still precedes expansion.
 Encoder refusals produce a bounded correlated request error, allowing a standalone process to accept a smaller
 followup page. Open, preview and apply retain their full encoded-response preflight before session assignment.
 
