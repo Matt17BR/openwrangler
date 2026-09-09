@@ -7,7 +7,7 @@ import type { SessionMetadata, TypedSelectionToken } from "../shared/protocol";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "../webviews/filters/ActiveFilterBar";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "session",
   revision: 0,
   backend: "polars",

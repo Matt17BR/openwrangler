@@ -1698,6 +1698,11 @@ export function parseKernelResponse(output: string, marker: string, requestId: s
   } catch {
     throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
   }
+  if (isPlainRecord(parsed) && parsed.protocolVersion === 2 && parsed.requestId === requestId) {
+    throw new Error(
+      "This kernel returned an older Open Wrangler protocol. Restart the kernel and rerun the cells that create your dataframe before reopening it in Open Wrangler."
+    );
+  }
   if (!isRuntimeResponseEnvelope(parsed) || parsed.requestId !== requestId) {
     throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
   }

@@ -173,7 +173,7 @@ export class PythonRuntimeTransport<Runtime extends PythonRuntimeTransportSlot> 
       return;
     }
     if (!isRuntimeResponseEnvelope(parsed)) {
-      this.hooks.reportDiagnostic("Invalid runtime response: non-protocol-v2 payload omitted.");
+      this.hooks.reportDiagnostic(`Invalid runtime response: non-protocol-v${PROTOCOL_VERSION} payload omitted.`);
       return;
     }
     const envelope: RuntimeResponseEnvelope = parsed;

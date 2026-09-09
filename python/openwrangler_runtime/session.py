@@ -20,7 +20,7 @@ from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
-from .protocol import MAX_COLUMN_LIMIT
+from .protocol import MAX_COLUMN_LIMIT, PROTOCOL_VERSION
 from .response_framing import MAX_RESPONSE_FRAME_BYTES
 from .session_access import SessionRequestAdmission
 from .session_plan import compile_plan_with_limits, preflight_retained_plan
@@ -301,7 +301,7 @@ class SessionManager:
     def initialize(self) -> dict[str, Any]:
         return {
             "kind": "initialized",
-            "protocolVersion": 2,
+            "protocolVersion": PROTOCOL_VERSION,
             "runtimeVersion": __version__,
             "capabilities": {
                 "editable": True,
@@ -1441,7 +1441,7 @@ class SessionManager:
         if display_lineage is None:
             raise EngineError("The active dataframe is missing column lineage.")
         metadata = {
-            "protocolVersion": 2,
+            "protocolVersion": PROTOCOL_VERSION,
             "sessionId": session.session_id,
             "revision": session.revision,
             "backend": session.backend,

@@ -6,7 +6,7 @@ import { operationCatalog } from "../shared/operations";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "session",
   revision: 0,
   backend: "polars",

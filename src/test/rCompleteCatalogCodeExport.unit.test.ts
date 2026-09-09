@@ -302,7 +302,7 @@ function rSnapshot(sourcePath: string, operations: readonly OperationKind[]): Ac
     sessionId: "11111111-1111-4111-8111-111111111111",
     code: "open_wrangler_result <- catalog\n",
     metadata: {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId: "11111111-1111-4111-8111-111111111111",
       revision: 28,
       backend: "r",

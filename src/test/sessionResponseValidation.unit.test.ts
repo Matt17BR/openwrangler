@@ -24,7 +24,7 @@ const schema: ColumnSchema[] = [
   { id: "column:b", name: "region", position: 1, rawType: "string", type: "string", nullable: true }
 ];
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: runtimeSessionId,
   revision: 4,
   backend: "polars",

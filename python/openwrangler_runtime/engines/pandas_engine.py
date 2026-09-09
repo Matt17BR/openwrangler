@@ -1006,10 +1006,30 @@ class PandasEngine(DataFrameEngine):
             and pd.api.types.is_integer_dtype(single_dtype)
             else df
         )
+        missing_rows = int(df.isna().any(axis=1).sum())
+        try:
+            duplicate_mask = duplicate_keys.duplicated()
+        except TypeError as error:
+            if (
+                df.shape[1] <= 1
+                or type(error) is not TypeError
+                or len(error.args) != 1
+                or type(error.args[0]) is not str
+                or error.args[0]
+                not in (
+                    "unhashable type: 'list'",
+                    "unhashable type: 'dict'",
+                    "unhashable type: 'numpy.ndarray'",
+                )
+            ):
+                raise
+            duplicate_rows = None
+        else:
+            duplicate_rows = int(duplicate_mask.sum())
         return {
             "missingCells": sum(item["count"] for item in missing_by_column),
-            "missingRows": int(df.isna().any(axis=1).sum()),
-            "duplicateRows": int(duplicate_keys.duplicated().sum()),
+            "missingRows": missing_rows,
+            "duplicateRows": duplicate_rows,
             "missingValuesByColumn": missing_by_column,
         }
 

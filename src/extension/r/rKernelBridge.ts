@@ -45,7 +45,7 @@ import {
 const CLOSED_SESSION_LIMIT = 1_024;
 
 /**
- * Adapts the native-R kernel contract to protocol v2 without converting the
+ * Adapts the native-R kernel contract to the coordinator protocol without converting the
  * dataframe through Python.
  */
 export class RKernelBridge implements OpenWranglerBridge {

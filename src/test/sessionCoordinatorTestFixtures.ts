@@ -34,7 +34,7 @@ export function openedResponse(
   backend: SessionMetadata["backend"] = "polars"
 ): ExactSessionOpenedResponse {
   const metadata: SessionMetadata = {
-    protocolVersion: 2,
+    protocolVersion: 3,
     sessionId,
     revision: 0,
     backend,

@@ -33,7 +33,7 @@ describe("canonical R kernel bridge", () => {
 
     await expect(bridge.request({ kind: "initialize" })).resolves.toMatchObject({
       kind: "initialized",
-      protocolVersion: 2,
+      protocolVersion: 3,
       runtimeVersion: "2.0.0-preview.1",
       capabilities: {
         editable: true,

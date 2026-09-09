@@ -6,7 +6,7 @@ import { metadata, requests, responses, validateTransportSchema } from "./protoc
 
 const representativeRequests = [...new Map(requests.map((request) => [request.kind, request] as const)).values()];
 
-describe("protocol-v2 request validation", () => {
+describe("protocol-v3 request validation", () => {
   it("requires a nonempty attempt identity for Redo at both request boundaries", () => {
     const redo = requests.find((request) => request.kind === "redoStep");
     if (!redo) throw new Error("Expected the canonical Redo fixture.");
@@ -19,7 +19,7 @@ describe("protocol-v2 request validation", () => {
       const request = { ...redo, viewRequestId };
       expect(isOpenWranglerRequest(request)).toBe(valid);
       expect(
-        validateTransportSchema({ protocolVersion: 2, requestId: "wire-redo", priority: "interactive", request })
+        validateTransportSchema({ protocolVersion: 3, requestId: "wire-redo", priority: "interactive", request })
       ).toBe(valid);
     }
   });
@@ -30,7 +30,7 @@ describe("protocol-v2 request validation", () => {
       expect(isOpenWranglerRequest(request)).toBe(true);
       expect(
         isRuntimeRequestEnvelope({
-          protocolVersion: 2,
+          protocolVersion: 3,
           requestId: `request-${request.kind}`,
           priority: "interactive",
           request
@@ -86,7 +86,7 @@ describe("protocol-v2 request validation", () => {
     );
   });
 
-  it("keeps host runtime identity outside every protocol-v2 payload", () => {
+  it("keeps host runtime identity outside every protocol-v3 payload", () => {
     const runtimeIdentity = runtimeIdentityForDataBackend("polars");
     const openRequest = requests.find((request) => request.kind === "openSession");
     const openedResponse = responses.find((response) => response.kind === "sessionOpened");
@@ -102,7 +102,7 @@ describe("protocol-v2 request validation", () => {
     ).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "request-private-runtime-identity",
         priority: "interactive",
         request: { ...openRequest, runtimeIdentity }
@@ -110,7 +110,7 @@ describe("protocol-v2 request validation", () => {
     ).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "response-private-runtime-identity",
         response: { ...openedResponse, runtimeIdentity }
       })
@@ -225,7 +225,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest({ ...request, mode: "editing" })).toBe(true);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-editing-open",
         priority: "interactive",
         request: { ...request, mode: "editing" }
@@ -233,7 +233,7 @@ describe("protocol-v2 request validation", () => {
     ).toBe(true);
     expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
     expect(isOpenWranglerResponse(opened)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-open", response: opened })).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "r-open", response: opened })).toBe(true);
     for (const invalidSource of [
       { kind: "file" as const, label: "frame.csv", path: "/workspace/frame.csv" },
       { kind: "notebookOutput" as const, label: "saved R output" }
@@ -241,24 +241,24 @@ describe("protocol-v2 request validation", () => {
       const invalidOpened = { ...opened, metadata: { ...rMetadata, source: invalidSource } };
       expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
       expect(
-        validateTransportSchema({ protocolVersion: 2, requestId: `r-${invalidSource.kind}`, response: invalidOpened })
+        validateTransportSchema({ protocolVersion: 3, requestId: `r-${invalidSource.kind}`, response: invalidOpened })
       ).toBe(false);
     }
     const { rDataframeFlavor: _rDataframeFlavor, ...rMetadataWithoutFlavor } = rMetadata;
     const rWithoutFlavor = { ...opened, metadata: rMetadataWithoutFlavor };
     expect(isOpenWranglerResponse(rWithoutFlavor)).toBe(false);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-no-flavor", response: rWithoutFlavor })).toBe(
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "r-no-flavor", response: rWithoutFlavor })).toBe(
       false
     );
     const editingOpened = { ...opened, metadata: { ...rMetadata, mode: "editing" as const } };
     expect(isOpenWranglerResponse(editingOpened)).toBe(true);
     expect(
-      validateTransportSchema({ protocolVersion: 2, requestId: "r-editing-opened", response: editingOpened })
+      validateTransportSchema({ protocolVersion: 3, requestId: "r-editing-opened", response: editingOpened })
     ).toBe(true);
     const nonRWithFlavor = { ...responses[1], metadata: { ...metadata, rDataframeFlavor: "r.tibble" as const } };
     expect(isOpenWranglerResponse(nonRWithFlavor)).toBe(false);
     expect(
-      validateTransportSchema({ protocolVersion: 2, requestId: "python-r-flavor", response: nonRWithFlavor })
+      validateTransportSchema({ protocolVersion: 3, requestId: "python-r-flavor", response: nonRWithFlavor })
     ).toBe(false);
     const insertableNotebookOpened = {
       ...opened,
@@ -270,7 +270,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse(insertableNotebookOpened)).toBe(true);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-notebook-insertion",
         response: insertableNotebookOpened
       })
@@ -282,7 +282,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse(notebookWithDocumentInsertion)).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-notebook-wrong-insertion",
         response: notebookWithDocumentInsertion
       })
@@ -314,7 +314,7 @@ describe("protocol-v2 request validation", () => {
     };
     const opened = { ...responses[1], metadata: rMetadata };
     const requestEnvelope = (candidate: unknown) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "r-document-open",
       priority: "interactive",
       request: candidate
@@ -323,7 +323,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest(request)).toBe(true);
     expect(validateTransportSchema(requestEnvelope(request))).toBe(true);
     expect(isOpenWranglerResponse(opened)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-document-opened", response: opened })).toBe(
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "r-document-opened", response: opened })).toBe(
       true
     );
 
@@ -344,7 +344,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse(documentInsertionDisabled)).toBe(true);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-document-insertion-disabled",
         response: documentInsertionDisabled
       })
@@ -356,7 +356,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse(malformedDocumentInsertion)).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-document-insertion-malformed",
         response: malformedDocumentInsertion
       })
@@ -368,7 +368,7 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse(documentWithNotebookInsertion)).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "r-document-wrong-insertion",
         response: documentWithNotebookInsertion
       })
@@ -393,7 +393,7 @@ describe("protocol-v2 request validation", () => {
       expect(validateTransportSchema(requestEnvelope(invalidRequest))).toBe(false);
       expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
       expect(
-        validateTransportSchema({ protocolVersion: 2, requestId: "invalid-r-document-opened", response: invalidOpened })
+        validateTransportSchema({ protocolVersion: 3, requestId: "invalid-r-document-opened", response: invalidOpened })
       ).toBe(false);
     }
 
@@ -407,7 +407,7 @@ describe("protocol-v2 request validation", () => {
     };
     expect(isOpenWranglerResponse(sparkOpened)).toBe(false);
     expect(
-      validateTransportSchema({ protocolVersion: 2, requestId: "spark-document-opened", response: sparkOpened })
+      validateTransportSchema({ protocolVersion: 3, requestId: "spark-document-opened", response: sparkOpened })
     ).toBe(false);
   });
 
@@ -436,12 +436,12 @@ describe("protocol-v2 request validation", () => {
         capabilities: { ...metadata.capabilities, notebookInsert: false, documentInsert: false }
       }
     };
-    const envelope = { protocolVersion: 2, requestId: "r-interactive-open", priority: "interactive", request };
+    const envelope = { protocolVersion: 3, requestId: "r-interactive-open", priority: "interactive", request };
 
     expect(isOpenWranglerRequest(request)).toBe(true);
     expect(validateTransportSchema(envelope)).toBe(true);
     expect(isOpenWranglerResponse(opened)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-interactive-opened", response: opened })).toBe(
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "r-interactive-opened", response: opened })).toBe(
       true
     );
 

@@ -1,10 +1,10 @@
-/* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */
+/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */
 
 /**
- * Runtime transport contract for Open Wrangler protocol v2.
+ * Runtime transport contract for Open Wrangler protocol v3.
  */
 export type OpenWranglerTransportMessage = RuntimeRequestEnvelope | RuntimeResponseEnvelope;
-export type ProtocolVersion = 2;
+export type ProtocolVersion = 3;
 export type RequestPriority = "interactive" | "background";
 export type OpenWranglerRequest =
   | InitializeRequest
@@ -1324,7 +1324,7 @@ export interface RowAxis {
 export interface DatasetStats {
   missingCells: number;
   missingRows: number;
-  duplicateRows: number;
+  duplicateRows: number | null;
   duplicateRowsSampleSize?: number;
   missingValuesByColumn: {
     column: string;

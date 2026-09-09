@@ -1,4 +1,5 @@
 import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata } from "./protocol";
+import { PROTOCOL_VERSION } from "./protocol";
 import { isOpenWranglerResponse } from "./protocolValidation";
 
 export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
@@ -30,9 +31,25 @@ export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPa
   const page = value.page;
   const candidate = { mimeVersion: 2, metadata: value.metadata, page, summaries: value.summaries };
   if (!isWithinPayloadBudget(candidate)) return undefined;
+  const savedMetadata = value.metadata;
+  if (
+    !isRecord(savedMetadata) ||
+    !Object.prototype.hasOwnProperty.call(savedMetadata, "protocolVersion") ||
+    (savedMetadata.protocolVersion !== 2 && savedMetadata.protocolVersion !== PROTOCOL_VERSION)
+  ) {
+    return undefined;
+  }
+  if (
+    savedMetadata.protocolVersion === 2 &&
+    Object.prototype.hasOwnProperty.call(savedMetadata, "stats") &&
+    (!isRecord(savedMetadata.stats) || typeof savedMetadata.stats.duplicateRows !== "number")
+  ) {
+    return undefined;
+  }
   const opened = {
     kind: "sessionOpened",
-    metadata: value.metadata,
+    // Saved v2 and already-normalized handoffs share the same saved-only checks.
+    metadata: { ...savedMetadata, protocolVersion: PROTOCOL_VERSION },
     page,
     // Saved profiles are never trusted by the inline renderer.
     summaries: []

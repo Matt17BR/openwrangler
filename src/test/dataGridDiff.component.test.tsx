@@ -41,7 +41,7 @@ const inputSchema: ColumnSchema[] = [
 ];
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "session",
   revision: 2,
   backend: "polars",

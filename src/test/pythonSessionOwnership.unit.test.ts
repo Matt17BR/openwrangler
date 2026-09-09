@@ -294,7 +294,7 @@ function openRequest(requestedSessionId: string): OpenSessionRequest {
 
 function opened(request: OpenSessionRequest, sessionId: string): SessionOpenedResponse {
   const metadata: SessionMetadata = {
-    protocolVersion: 2,
+    protocolVersion: 3,
     sessionId,
     revision: 0,
     backend: "polars",

@@ -94,7 +94,7 @@ const MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024;
 const MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024;
 const MAX_ROW_LABEL_CODE_POINTS = 1_024;
 
-/** Validates the canonical protocol-v2 request envelope at an untrusted transport boundary. */
+/** Validates the canonical runtime protocol request envelope at an untrusted transport boundary. */
 export function isRuntimeRequestEnvelope(value: unknown): value is RuntimeRequestEnvelope {
   const candidate = exactRecord(value, ["protocolVersion", "requestId", "priority", "request"]);
   return (
@@ -106,7 +106,7 @@ export function isRuntimeRequestEnvelope(value: unknown): value is RuntimeReques
   );
 }
 
-/** Validates every canonical protocol-v2 request variant and its structural payload. */
+/** Validates every canonical runtime protocol request variant and its structural payload. */
 export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequest {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   const definition = REQUEST_SHAPES_BY_KIND.get(value.kind);
@@ -261,7 +261,7 @@ function isCanonicalUnsigned128BitDecimal(value: unknown): value is string {
   return BigInt(value) <= (1n << 128n) - 1n;
 }
 
-/** Validates the canonical protocol-v2 response envelope at an untrusted transport boundary. */
+/** Validates the canonical runtime protocol response envelope at an untrusted transport boundary. */
 export function isRuntimeResponseEnvelope(value: unknown): value is RuntimeResponseEnvelope {
   const candidate = exactRecord(value, ["protocolVersion", "requestId", "response"]);
   return (
@@ -272,7 +272,7 @@ export function isRuntimeResponseEnvelope(value: unknown): value is RuntimeRespo
   );
 }
 
-/** Validates every canonical protocol-v2 response variant and its structural payload. */
+/** Validates every canonical runtime protocol response variant and its structural payload. */
 export function isOpenWranglerResponse(value: unknown): value is OpenWranglerResponse {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   const definition = RESPONSE_SHAPES_BY_KIND.get(value.kind);
@@ -1893,9 +1893,11 @@ function isDatasetStats(value: unknown): boolean {
   return (
     isNonNegativeInteger(candidate.missingCells) &&
     isNonNegativeInteger(candidate.missingRows) &&
-    isNonNegativeInteger(candidate.duplicateRows) &&
-    (sampleSize === undefined ||
-      (isNonNegativeInteger(sampleSize) && sampleSize > 0 && candidate.duplicateRows < sampleSize)) &&
+    (candidate.duplicateRows === null
+      ? !Object.prototype.hasOwnProperty.call(candidate, "duplicateRowsSampleSize")
+      : isNonNegativeInteger(candidate.duplicateRows) &&
+        (sampleSize === undefined ||
+          (isNonNegativeInteger(sampleSize) && sampleSize > 0 && candidate.duplicateRows < sampleSize))) &&
     isArrayOf(candidate.missingValuesByColumn, isMissingValueCount)
   );
 }

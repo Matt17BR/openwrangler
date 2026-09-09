@@ -19,6 +19,10 @@ import {
 } from "./rendererProvenance";
 import type { TestApi } from "./extensionHostTestApi";
 
+type SavedNotebookPayload = Omit<NotebookOutputPayload, "metadata"> & {
+  metadata: Omit<NotebookOutputPayload["metadata"], "protocolVersion"> & { protocolVersion: 2 };
+};
+
 interface PackagedRendererProvenanceJupyterApi {
   readonly testing: {
     denialCalls(): number;
@@ -72,13 +76,13 @@ export function createPackagedRendererProvenanceJourneys(dependencies: PackagedR
     testing: TestApi,
     jupyter: PackagedRendererProvenanceJupyterApi,
     originNotebook: vscode.NotebookDocument,
-    payloadTemplate: NotebookOutputPayload,
+    payloadTemplate: SavedNotebookPayload,
     directory: string
   ) => Promise<void>;
   readonly exercisePackagedSameGroupRendererSwitch: (
     jupyter: PackagedRendererProvenanceJupyterApi,
     originNotebook: vscode.NotebookDocument,
-    payloadTemplate: NotebookOutputPayload,
+    payloadTemplate: SavedNotebookPayload,
     directory: string
   ) => Promise<void>;
 } {
@@ -102,12 +106,12 @@ export function createPackagedRendererProvenanceJourneys(dependencies: PackagedR
   async function exercisePackagedSameGroupRendererSwitch(
     jupyter: FakeJupyterApi,
     originNotebook: vscode.NotebookDocument,
-    payloadTemplate: NotebookOutputPayload,
+    payloadTemplate: SavedNotebookPayload,
     directory: string
   ): Promise<void> {
     const label = "same-group renderer switch";
     const notebookPath = path.join(directory, "renderer-same-group.ipynb");
-    const payload: NotebookOutputPayload = {
+    const payload: SavedNotebookPayload = {
       ...payloadTemplate,
       metadata: {
         ...payloadTemplate.metadata,
@@ -187,12 +191,12 @@ export function createPackagedRendererProvenanceJourneys(dependencies: PackagedR
     testing: TestApi,
     jupyter: FakeJupyterApi,
     originNotebook: vscode.NotebookDocument,
-    payloadTemplate: NotebookOutputPayload,
+    payloadTemplate: SavedNotebookPayload,
     directory: string
   ): Promise<void> {
     recordAcceptanceProgress("verify:notebook-renderer:fixtures");
     const secondNotebookPath = path.join(directory, "renderer-provenance-b.ipynb");
-    const secondPayload: NotebookOutputPayload = {
+    const secondPayload: SavedNotebookPayload = {
       ...payloadTemplate,
       metadata: {
         ...payloadTemplate.metadata,

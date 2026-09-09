@@ -246,7 +246,7 @@ describe("DataGrid column search target", () => {
   it("navigates duplicate column names by stable column ID", async () => {
     const duplicateColumns = columns.slice(1, 3).map((column, position) => ({ ...column, position }));
     const metadata: SessionMetadata = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId: "session",
       revision: 0,
       backend: "polars",
@@ -384,7 +384,7 @@ describe("DataGrid column search target", () => {
         nullable: false
       }));
       const metadata: SessionMetadata = {
-        protocolVersion: 2,
+        protocolVersion: 3,
         sessionId: "session",
         revision: 1,
         backend: "polars",
@@ -667,7 +667,7 @@ describe("DataGrid column search target", () => {
       nullable: false
     }));
     const metadata: SessionMetadata = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId: "preview-session",
       revision: 1,
       backend: "polars",

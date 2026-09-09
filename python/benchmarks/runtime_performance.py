@@ -26,6 +26,7 @@ from fixture_contract import (
     fixture_specs,
 )
 
+from openwrangler_runtime.protocol import PROTOCOL_VERSION
 from openwrangler_runtime.session import PAGE_CACHE_BYTE_LIMIT, PAGE_CACHE_LIMIT, SessionManager
 
 PAGE_SIZE = 200
@@ -281,7 +282,7 @@ def _benchmark_provenance(backend: Backend) -> dict[str, Any]:
 
 
 class StdioRuntimeClient:
-    """Small canonical protocol-v2 client for the real standalone runtime process."""
+    """Small canonical protocol client for the real standalone runtime process."""
 
     def __init__(self, backend: Backend = "polars") -> None:
         environment = os.environ.copy()
@@ -349,7 +350,7 @@ class StdioRuntimeClient:
         self._sequence += 1
         request_id = f"benchmark-{label or request.get('kind', 'request')}-{self._sequence}"
         envelope = {
-            "protocolVersion": 2,
+            "protocolVersion": PROTOCOL_VERSION,
             "requestId": request_id,
             "priority": priority,
             "request": request,
@@ -482,7 +483,7 @@ class StdioRuntimeClient:
             item, arrival = item
         if not isinstance(item, dict):
             raise AssertionError(f"Standalone runtime returned a non-object envelope: {item!r}.")
-        if item.get("protocolVersion") != 2 or not isinstance(item.get("requestId"), str):
+        if item.get("protocolVersion") != PROTOCOL_VERSION or not isinstance(item.get("requestId"), str):
             raise AssertionError(f"Standalone runtime returned an invalid protocol envelope: {item!r}.")
         response = item.get("response")
         if not isinstance(response, dict) or not isinstance(response.get("kind"), str):
@@ -911,7 +912,9 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "p
 
     return {
         "backend": backend,
-        "boundary": "standalone Python process using canonical protocol-v2 newline-delimited JSON envelopes",
+        "boundary": (
+            f"standalone Python process using canonical protocol-v{PROTOCOL_VERSION} newline-delimited JSON envelopes"
+        ),
         "statsStartProof": (
             f"benchmark-only {backend.title()} header_stats entry/exit events on stderr using process-wide "
             "perf_counter_ns"
@@ -961,7 +964,7 @@ def run_benchmark(directory: Path, smoke: bool = False, backend: Backend = "pola
             "selectedBackend": backend,
             "fixtures": "deterministic synthetic integer CSV and Parquet sources only",
             "measurementBoundary": (
-                "Direct Python SessionManager calls and standalone runtime protocol-v2 round trips. "
+                f"Direct Python SessionManager calls and standalone runtime protocol-v{PROTOCOL_VERSION} round trips. "
                 "These are not VS Code, Cursor, webview, or editor first-paint timings."
             ),
             "releaseLimitsApplyToBackend": "polars",

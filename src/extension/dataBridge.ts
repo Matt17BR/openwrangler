@@ -99,7 +99,7 @@ export interface OpenWranglerBridge {
   /**
    * Atomically replaces the private runtime behind an existing file session
    * after opening the same source with different import options. This is a
-   * host-only lifecycle operation and is intentionally absent from protocol v2.
+   * host-only lifecycle operation and is intentionally absent from the runtime protocol.
    */
   reconfigureFileSession?(
     sessionId: string,
@@ -110,7 +110,7 @@ export interface OpenWranglerBridge {
   /**
    * Atomically replaces a supported live-variable runtime in the requested mode
    * while remaining bound to the same live source. This is a host-only lifecycle
-   * operation and is intentionally absent from protocol v2.
+   * operation and is intentionally absent from the runtime protocol.
    */
   reconfigureLiveSessionMode?(
     sessionId: string,
@@ -122,7 +122,7 @@ export interface OpenWranglerBridge {
   /**
    * Replays one stable-ID cleaning-plan replacement or deletion in a private
    * runtime and publishes it only after the complete suffix and view succeed.
-   * This host-owned atomic transaction is intentionally absent from protocol v2.
+   * This host-owned atomic transaction is intentionally absent from the runtime protocol.
    */
   rewriteCleaningPlan?(
     sessionId: string,

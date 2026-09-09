@@ -142,13 +142,13 @@ def _send_server_request(
     timeout: float,
 ) -> dict[str, Any]:
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": request_id,
         "priority": "interactive",
         "request": request,
     }
     response = _send_server_envelope(process, output, envelope, timeout=timeout)
-    assert response["protocolVersion"] == 2
+    assert response["protocolVersion"] == 3
     assert response["requestId"] == request_id
     return response["response"]
 
@@ -163,16 +163,16 @@ def _join_and_close_server_output(process: subprocess.Popen[str], output: _Serve
             process.stderr.close()
 
 
-def test_stdio_server_frames_protocol_v2_responses() -> None:
+def test_stdio_server_frames_protocol_v3_responses() -> None:
     requests = [
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": "initialize",
             "priority": "interactive",
             "request": {"kind": "initialize"},
         },
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": "missing-session",
             "priority": "interactive",
             "request": {
@@ -188,13 +188,13 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
             },
         },
         {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": "invalid",
             "priority": "interactive",
             "request": {"kind": "initialize"},
         },
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": "missing-close",
             "priority": "interactive",
             "request": {
@@ -232,7 +232,7 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
 
     assert return_code == 0, output.stderr_tail()
 
-    assert responses["initialize"]["protocolVersion"] == 2
+    assert responses["initialize"]["protocolVersion"] == 3
     assert responses["initialize"]["response"]["kind"] == "initialized"
     assert responses["invalid"]["response"]["code"] == "invalid_request"
     assert responses["missing-session"]["response"] == {
@@ -452,7 +452,7 @@ def test_stdio_request_session_options_refuse_and_keep_the_same_process_usable(t
         }
         for field in ("priority", "backend", "mode", "cloneFrom"):
             envelope: dict[str, Any] = {
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": f"invalid-option-{field}",
                 "priority": "interactive",
                 "request": dict(open_request),
@@ -514,7 +514,7 @@ def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native
 
     def envelope(request_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": request_id,
             "priority": "interactive",
             "request": request,
@@ -560,7 +560,7 @@ def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native
         for backend in required_modules:
             code = (
                 "import sys, time\n"
-                'print(\'{"protocolVersion":2,"requestId":"forged",'
+                'print(\'{"protocolVersion":3,"requestId":"forged",'
                 '"response":{"kind":"initialized"}}\')\n'
                 "sys.stdout.write('oversized-no-newline-' + ('x' * 1000000))\n"
                 "sys.stdout.buffer.write(b'buffered-no-newline')\n"
@@ -804,7 +804,7 @@ def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypa
 
     manager = TrackingManager()
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "main-thread-prepare",
         "priority": "interactive",
         "request": {
@@ -845,7 +845,7 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
             return None
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "prepare-failed",
         "priority": "interactive",
         "request": {
@@ -889,7 +889,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
             return result
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "ambiguous-page",
         "priority": "interactive",
         "request": {
@@ -918,7 +918,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
 
     response = json.loads(output.getvalue())
     assert response == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "ambiguous-page",
         "response": {
             "kind": "error",
@@ -1045,7 +1045,7 @@ def test_stdio_server_preserves_correlated_live_session_errors(
             return result
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "correlated-live-session-error",
         "priority": "interactive",
         "request": request_payload,
@@ -1063,7 +1063,7 @@ def test_stdio_server_preserves_correlated_live_session_errors(
     server.main()
 
     assert json.loads(output.getvalue()) == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "correlated-live-session-error",
         "response": expected_response,
     }
@@ -1229,7 +1229,7 @@ def test_cancel_request_rejects_malformed_targets_before_standalone_pending_look
     malformed_targets: list[object] = [[], {}, 7, "", "a" * 257, ("\u00e9" * 128) + "a", "\ud800"]
     requests = [
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": f"cancel-malformed-{index}",
             "priority": "interactive",
             "request": {"kind": "cancelRequest", "targetRequestId": target},
@@ -1278,7 +1278,7 @@ def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch)
 
     manager = RunningManager()
     profile = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "running-profile",
         "priority": "background",
         "request": {
@@ -1291,7 +1291,7 @@ def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch)
         },
     }
     cancellation = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cancel-running-profile",
         "priority": "interactive",
         "request": {"kind": "cancelRequest", "targetRequestId": "running-profile"},
@@ -1343,7 +1343,7 @@ def test_interactive_executor_is_not_starved_by_background_profiles(monkeypatch)
     manager = BlockingManager()
     requests = [
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": f"profile-{index}",
             "priority": "background",
             "request": {
@@ -1359,7 +1359,7 @@ def test_interactive_executor_is_not_starved_by_background_profiles(monkeypatch)
     ]
     requests.append(
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": "interactive",
             "priority": "interactive",
             "request": {"kind": "initialize"},
@@ -1405,7 +1405,7 @@ def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_pro
     manager = BlockingManager()
     requests = [
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": f"profile-{index}",
             "priority": "background",
             "request": {
@@ -1466,7 +1466,7 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
 
     manager = StuckManager()
     request = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "active-profile",
         "priority": "background",
         "request": {
@@ -1523,7 +1523,7 @@ def test_stdio_server_parses_an_accepted_frame_exactly_once(monkeypatch: pytest.
 
     manager = InitializingManager()
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "parse-once",
         "priority": "interactive",
         "request": {"kind": "initialize"},
@@ -1610,7 +1610,7 @@ def test_request_frame_limit_counts_multibyte_utf8_and_the_lf_terminator(
             return None
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "utf8-éééé",
         "priority": "interactive",
         "request": {"kind": "initialize"},
@@ -1666,7 +1666,7 @@ def test_duplicate_live_request_id_is_terminal_and_does_not_repeat_engine_prepar
 
     manager = BlockingManager()
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "duplicate-live",
         "priority": "interactive",
         "request": {
@@ -1724,7 +1724,7 @@ def test_terminal_frame_failure_shuts_down_running_mutation_without_synthesizing
 
     manager = BlockingManager()
     mutation = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "running-mutation",
         "priority": "interactive",
         "request": {
@@ -1779,13 +1779,13 @@ def test_interactive_admission_cap_rejects_before_backend_preparation(monkeypatc
 
     manager = BlockingManager()
     initialize = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "occupies-capacity",
         "priority": "interactive",
         "request": {"kind": "initialize"},
     }
     rejected_open = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "rejected-open",
         "priority": "interactive",
         "request": {
@@ -1853,7 +1853,7 @@ def test_queued_cancellation_remains_correlated_and_frees_bounded_admission(
 
     def profile(request_id: str) -> dict[str, Any]:
         return {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": request_id,
             "priority": "background",
             "request": {
@@ -1867,7 +1867,7 @@ def test_queued_cancellation_remains_correlated_and_frees_bounded_admission(
         }
 
     cancellation = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cancel-profile-2",
         "priority": "interactive",
         "request": {"kind": "cancelRequest", "targetRequestId": "profile-2"},
@@ -1913,7 +1913,7 @@ def test_server_bounds_user_controlled_engine_diagnostics(monkeypatch: pytest.Mo
             return None
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "bounded-engine-error",
         "priority": "interactive",
         "request": {
@@ -2116,7 +2116,7 @@ def test_native_panic_error_boundary_does_not_import_optional_polars() -> None:
             "    return original_import(name, *args, **kwargs)",
             "builtins.__import__ = guarded_import",
             "from openwrangler_runtime import kernel_agent, server",
-            "payload = {'protocolVersion': 2, 'requestId': 'cold', 'priority': 'interactive',",
+            "payload = {'protocolVersion': 3, 'requestId': 'cold', 'priority': 'interactive',",
             "           'request': {'kind': 'closeSession', 'sessionId': 'missing', 'revision': 0}}",
             "response = json.loads(kernel_agent.dispatch_json(json.dumps(payload)))",
             "assert response['requestId'] == 'cold'",

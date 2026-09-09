@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, NotebookDocument, NotebookEditor, Uri } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
-import { NOTEBOOK_OUTPUT_LIMITS } from "../shared/notebookOutput";
+import { NOTEBOOK_OUTPUT_LIMITS, normalizeNotebookOutputPayload } from "../shared/notebookOutput";
 
 interface RendererEvent {
   editor: NotebookEditor;
@@ -176,7 +176,11 @@ describe("notebook renderer messaging", () => {
     rendererMocks.activeNotebookEditor = editorB;
     const { context, coordinator, coordinatedBridge } = register();
 
-    dispatch(editorA, validPayload());
+    const saved = validPayload();
+    const original = structuredClone(saved);
+    const rendererPayload = normalizeNotebookOutputPayload(saved);
+    expect(rendererPayload?.metadata.protocolVersion).toBe(3);
+    dispatch(editorA, rendererPayload);
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
     expect(rendererMocks.kernelNotebookDocuments).toEqual([notebookA]);
@@ -189,6 +193,7 @@ describe("notebook renderer messaging", () => {
     });
     expect(rendererMocks.createPanel.mock.calls[0]).toHaveLength(3);
     expect(rendererMocks.activeEditorReads).toBe(0);
+    expect(saved).toEqual(original);
   });
 
   it("opens an opaque live-result handle under the readable output label", () => {
@@ -426,6 +431,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"1".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source: {
@@ -511,6 +517,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"3".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1200,6 +1207,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"9".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1625,9 +1633,12 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("2") });
     await settleMessages();
     const upgrade = rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown };
+    const rendererPayload = normalizeNotebookOutputPayload(upgrade.payload);
+    expect(rendererPayload?.metadata.protocolVersion).toBe(3);
+    expect(rendererPayload).toEqual(upgrade.payload);
     rendererMocks.inlineListener?.({
       editor: exactEditor,
-      message: { kind: "openInOpenWrangler", payload: upgrade.payload }
+      message: { kind: "openInOpenWrangler", payload: rendererPayload }
     });
     await settleMessages();
 
@@ -1781,7 +1792,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.request
       .mockResolvedValueOnce({
         kind: "sessionOpened",
-        metadata: { ...saved.metadata, backend: "duckdb", sessionId: "mismatch", revision: 1 }
+        metadata: { ...saved.metadata, protocolVersion: 3, backend: "duckdb", sessionId: "mismatch", revision: 1 }
       })
       .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "mismatch" });
 
@@ -1809,6 +1820,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"7".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1852,6 +1864,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"8".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -2099,6 +2112,7 @@ function installCanonicalRuntimeResponses(
         : { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() };
     const metadata = {
       ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       ...(mismatch === "mode" ? { mode: "cleaning" } : {}),
@@ -2184,6 +2198,7 @@ function installNearLimitRuntimeResponses(): void {
     if (!source) throw new Error("The near-limit fixture lost its exact source.");
     const metadata = {
       ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
+      protocolVersion: 3,
       sessionId,
       revision: 3,
       source,

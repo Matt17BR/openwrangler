@@ -71,7 +71,7 @@ generated execution, including duration columns. Convert Type to text retains ch
 column, so the generated result keeps the requested schema.
 
 The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
-metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the
+metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v3 and the
 shared session coordinator. The notebook command and Operations view discover supported R variables and open the
 same grid, Activity Bar views, and profile drawer used by Python-backed sessions. Cached Operations rows retain the
 original discovery receipt, so opening one rechecks that the same notebook, kernel, variable, and R dataframe type

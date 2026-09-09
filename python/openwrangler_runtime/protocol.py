@@ -12,7 +12,7 @@ from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operations import COLUMN_TYPES, FILTER_OPERATORS, OperationError, validate_step
 from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_PAGE_LIMIT = 10_000
 MAX_COLUMN_LIMIT = 256
 MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
@@ -127,7 +127,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
 
 
 class ProtocolError(ValueError):
-    """Raised when a transport envelope or request violates protocol v2."""
+    """Raised when a transport envelope or request violates the runtime protocol."""
 
 
 class RequestFrameError(ProtocolError):

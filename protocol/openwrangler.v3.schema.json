@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v2.schema.json",
+  "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v3.schema.json",
   "title": "OpenWranglerTransportMessage",
-  "description": "Runtime transport contract for Open Wrangler protocol v2.",
+  "description": "Runtime transport contract for Open Wrangler protocol v3.",
   "x-openwrangler-limits": {
     "pythonCustomCodeUtf8Bytes": 65536,
     "pythonRetainedPlanUtf8Bytes": 4194304,
@@ -252,7 +252,7 @@
   ],
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
-    "ProtocolVersion": { "type": "integer", "enum": [2] },
+    "ProtocolVersion": { "type": "integer", "enum": [3] },
     "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark", "r"] },
     "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
@@ -800,10 +800,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"],
+      "dependencies": {
+        "duplicateRowsSampleSize": {
+          "properties": { "duplicateRows": { "type": "integer" } }
+        }
+      },
       "properties": {
         "missingCells": { "type": "integer", "minimum": 0 },
         "missingRows": { "type": "integer", "minimum": 0 },
-        "duplicateRows": { "type": "integer", "minimum": 0 },
+        "duplicateRows": { "type": ["integer", "null"], "minimum": 0 },
         "duplicateRowsSampleSize": { "type": "integer", "minimum": 1 },
         "missingValuesByColumn": {
           "type": "array",

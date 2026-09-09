@@ -19,7 +19,7 @@ vi.mock("../webviews/grid/DataGrid", () => ({
 import { App } from "../webviews/App";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "snapshot",
   revision: 0,
   backend: "polars",

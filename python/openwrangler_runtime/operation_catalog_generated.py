@@ -1,4 +1,4 @@
-# Generated from protocol/openwrangler.v2.schema.json. Do not edit.
+# Generated from protocol/openwrangler.v3.schema.json. Do not edit.
 from __future__ import annotations
 
 from dataclasses import dataclass

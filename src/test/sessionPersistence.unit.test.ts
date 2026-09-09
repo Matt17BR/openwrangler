@@ -10,7 +10,7 @@ import {
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "session",
   revision: 4,
   backend: "polars",

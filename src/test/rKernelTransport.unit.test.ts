@@ -278,6 +278,19 @@ describe("native R kernel protocol", () => {
   });
 
   it("strictly decodes bounded column profiles and dataset statistics", () => {
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: statsRequestId,
+          kind: "datasetStats",
+          sessionId,
+          totalRows: 1,
+          stats: { ...minimalDatasetStats(), duplicateRows: null }
+        }),
+        statsRequestId
+      )
+    ).toThrow("filtered row count");
     const summary = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
