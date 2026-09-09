@@ -8,6 +8,7 @@ import { assertExactBytes } from "./acceptanceSourceFixture";
 import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import type { TestApi } from "./extensionHostTestApi";
+import { withAcceptanceOperationDeadline } from "./playwrightLifecycle";
 import { releasedRNotebookCleanedCsvHeader, releasedRNotebookCleanedCsvRow } from "./releasedDocumentFixtures";
 import { assertReleasedRGeneratedCode, assertReleasedRTextLengthGeneratedCode } from "./releasedRGeneratedCode";
 
@@ -130,7 +131,7 @@ export interface ReleasedRCoreEditingDependencies {
     predicate: () => boolean,
     timeoutMs: number,
     expectation: string,
-    diagnostics?: () => string
+    diagnostics?: () => string | Promise<string>
   ) => Promise<void>;
   readonly waitForOpenWranglerWebviewAction: (
     workbench: Page,
@@ -387,7 +388,81 @@ export async function exerciseReleasedRCoreEditingCatalog(
         );
       },
       30_000,
-      "undoing native R Mark Duplicates"
+      "undoing native R Mark Duplicates",
+      async () => {
+        const summarize = (session: ActiveSession | undefined) =>
+          session
+            ? {
+                sessionMatches: session.sessionId === sessionId,
+                revision: session.metadata.revision,
+                steps: session.metadata.steps.length,
+                draft: session.metadata.draftStep !== undefined,
+                columns: session.metadata.schema.length,
+                duplicateColumn: session.metadata.schema.some((column) => column.id === duplicateOutput.id)
+              }
+            : null;
+        const receipt = testing.panelSynchronizationReceipt(sessionId);
+        const scheduler = testing.sessionSchedulerState(sessionId);
+        const host = {
+          appliedRevision: duplicateApplied.metadata.revision,
+          active: summarize(testing.activeSession()),
+          exact: summarize(testing.sessionSnapshot(sessionId)),
+          hydrated: testing.panelHydrated(sessionId),
+          receipt: receipt
+            ? {
+                revision: receipt.revision,
+                sessionMatches: receipt.sessionId === sessionId,
+                layoutPending: receipt.layoutTransitionPending
+              }
+            : null,
+          scheduler: scheduler
+            ? {
+                sessionMatches: scheduler.sessionId === sessionId,
+                quiescent: scheduler.quiescent,
+                activeForegroundOperation: scheduler.activeForegroundOperation,
+                activeBackgroundOperation: scheduler.activeBackgroundOperation,
+                interactiveQueueLength: scheduler.interactiveQueueLength,
+                backgroundQueueLength: scheduler.backgroundQueueLength,
+                terminalOperation: scheduler.terminalOperation
+              }
+            : null
+        };
+        const dom = await withAcceptanceOperationDeadline(
+          app.evaluate(
+            (element, expected) => {
+              type DiagnosticElement = {
+                disabled?: boolean;
+                textContent: string | null;
+                getAttribute(name: string): string | null;
+                getClientRects(): ArrayLike<unknown>;
+                querySelector(selector: string): DiagnosticElement | null;
+                querySelectorAll(selector: string): ArrayLike<DiagnosticElement>;
+                ownerDocument: {
+                  defaultView: { getComputedStyle(target: DiagnosticElement): { visibility: string } } | null;
+                };
+              };
+              const root = element as unknown as DiagnosticElement;
+              const undo = root.querySelector("button[data-cleaning-plan-undo]");
+              const alert = Array.from(root.querySelectorAll('[role="alert"]')).find(
+                (candidate) =>
+                  candidate.getClientRects().length > 0 &&
+                  candidate.getAttribute("aria-hidden") !== "true" &&
+                  candidate.ownerDocument.defaultView?.getComputedStyle(candidate).visibility !== "hidden"
+              );
+              return {
+                sessionMatches: root.getAttribute("data-session-id") === expected.sessionId,
+                syncMatches: expected.syncId !== null && root.getAttribute("data-renderer-sync-id") === expected.syncId,
+                undoDisabled: undo?.disabled ?? null,
+                alert: alert?.textContent?.replace(/\s+/gu, " ").trim().slice(0, 1_000) ?? null
+              };
+            },
+            { sessionId, syncId: receipt?.syncId ?? null }
+          ),
+          2_000,
+          "the failed native R Undo diagnostic"
+        ).catch(() => ({ unavailable: true }));
+        return JSON.stringify({ host, dom });
+      }
     );
     const duplicateRestored = testing.activeSession();
     assert.ok(duplicateRestored);
