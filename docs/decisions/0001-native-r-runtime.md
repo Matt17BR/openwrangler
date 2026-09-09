@@ -103,6 +103,10 @@ live object. A document session follows the file start-mode setting, which defau
 inserted only when the session retains an exact notebook or text document. An active terminal has no such source, so
 its generated R can be copied or saved but not inserted.
 
+R discovery and session requests honor the configured opening and ordinary request deadlines under the shared
+[runtime ownership rules](../architecture.md#runtime-ownership). Configured fractions round upward to whole
+milliseconds. Explicit per-call deadlines and the separate 30-minute export default retain their existing owners.
+
 The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
 out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
 bounded direct close attempt for the known candidate on the same kernel; it does not look the kernel up again or retry

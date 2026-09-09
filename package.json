@@ -984,7 +984,7 @@
           "default": 30000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Maximum time Open Wrangler waits for a runtime request other than session opening. Notebook execution may continue after this wait expires."
+          "description": "Maximum time Open Wrangler waits for a runtime request other than session opening and native R data export. Notebook execution may continue after this wait expires."
         }
       }
     }

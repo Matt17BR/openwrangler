@@ -7,6 +7,8 @@ type CommandHandler = (resource?: unknown) => Promise<unknown>;
 
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  openingTimeout: 45_000 as unknown,
+  configurationReads: [] as Array<readonly [string, unknown]>,
   registrationAttempt: 0,
   failRegistrationAttempt: undefined as number | undefined,
   textDocuments: [] as TextDocument[],
@@ -74,9 +76,19 @@ vi.mock("vscode", () => {
       get textDocuments() {
         return mocks.textDocuments;
       },
-      getConfiguration: () => ({
-        get: (_key: string, fallback: unknown) => mocks.reticulateCells ?? fallback
-      }),
+      getConfiguration: (section: string, resource?: unknown) => {
+        mocks.configurationReads.push([section, resource]);
+        return {
+          get: (key: string, fallback: unknown) =>
+            section === "openWrangler"
+              ? key === "rscriptPath"
+                ? "/configured/Rscript"
+                : key === "sessionOpenTimeoutMs"
+                  ? mocks.openingTimeout
+                  : fallback
+              : (mocks.reticulateCells ?? fallback)
+        };
+      },
       openTextDocument: mocks.openTextDocument
     },
     window: {
@@ -92,11 +104,6 @@ vi.mock("vscode", () => {
     }
   };
 });
-
-vi.mock("../extension/configuration", () => ({
-  getSetting: (key: string, fallback: unknown) =>
-    key === "rscriptPath" ? "/configured/Rscript" : key === "sessionOpenTimeoutMs" ? 45_000 : fallback
-}));
 
 vi.mock("../extension/pythonPath", () => ({
   resolveExecutableCommand: mocks.resolveExecutable
@@ -135,6 +142,8 @@ import {
 describe("R document command", () => {
   beforeEach(() => {
     mocks.commands.clear();
+    mocks.openingTimeout = 45_000;
+    mocks.configurationReads.length = 0;
     mocks.registrationAttempt = 0;
     mocks.failRegistrationAttempt = undefined;
     mocks.textDocuments.length = 0;
@@ -178,47 +187,62 @@ describe("R document command", () => {
     expect(mocks.commands.size).toBe(0);
   });
 
-  it("runs the exact in-memory R file, selects a frame, and binds its document origin", async () => {
-    const document = rDocument("/workspace/analysis/orders.R", "orders <- data.frame(id = 1:3)\n");
-    mocks.textDocuments.push(document);
-    mocks.openTextDocument.mockResolvedValue(document);
-    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
-    const coordinator = coordinatorMock();
-    register(coordinator);
+  it.each([
+    [45_000, 45_000],
+    [45_000.25, 45_001],
+    [null, 60_000]
+  ])(
+    "runs the exact R file with configured deadline %s and binds its document origin",
+    async (configured, expected) => {
+      mocks.openingTimeout = configured;
+      const document = rDocument("/workspace/analysis/orders.R", "orders <- data.frame(id = 1:3)\n");
+      mocks.textDocuments.push(document);
+      mocks.openTextDocument.mockResolvedValue(document);
+      mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+      const coordinator = coordinatorMock();
+      register(coordinator);
 
-    await expect(command()(vscode.Uri.file("/workspace/analysis/orders.R"))).resolves.toBe(true);
+      await expect(command()(vscode.Uri.file("/workspace/analysis/orders.R"))).resolves.toBe(true);
 
-    expect(mocks.transportOptions).toEqual([
-      {
-        runtimeRoot: "/extension/r/openwrangler_runtime",
-        documentText: ["orders <- data.frame(id = 1:3)\n"],
-        rscriptPath: "/usr/bin/Rscript",
-        workingDirectory: "/workspace/analysis"
-      }
-    ]);
-    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
-      kind: "textDocument",
-      document,
-      version: 1,
-      sourceProtection: expect.any(Promise)
-    });
-    expect(mocks.panelCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ extensionPath: "/extension" }),
-      expect.anything(),
-      {
-        kind: "documentVariable",
-        label: "orders",
-        variableName: "orders",
-        uri: "file:///workspace/analysis/orders.R"
-      },
-      "r"
-    );
-    expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
-    expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.panelCreate.mock.invocationCallOrder[0]!
-    );
-    expect(mocks.transportDispose).not.toHaveBeenCalled();
-  });
+      expect(mocks.discovery).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: expected }));
+      expect(mocks.configurationReads).toContainEqual(["openWrangler", document.uri]);
+      expect(
+        mocks.configurationReads
+          .filter(([section]) => section === "openWrangler")
+          .every(([, resource]) => resource === document.uri)
+      ).toBe(true);
+      expect(mocks.transportOptions).toEqual([
+        {
+          runtimeRoot: "/extension/r/openwrangler_runtime",
+          documentText: ["orders <- data.frame(id = 1:3)\n"],
+          rscriptPath: "/usr/bin/Rscript",
+          workingDirectory: "/workspace/analysis"
+        }
+      ]);
+      expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
+        kind: "textDocument",
+        document,
+        version: 1,
+        sourceProtection: expect.any(Promise)
+      });
+      expect(mocks.panelCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ extensionPath: "/extension" }),
+        expect.anything(),
+        {
+          kind: "documentVariable",
+          label: "orders",
+          variableName: "orders",
+          uri: "file:///workspace/analysis/orders.R"
+        },
+        "r"
+      );
+      expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+      expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.panelCreate.mock.invocationCallOrder[0]!
+      );
+      expect(mocks.transportDispose).not.toHaveBeenCalled();
+    }
+  );
 
   it("rechecks the R document after returning focus from its picker", async () => {
     const document = rDocument("/workspace/orders.R", "orders <- data.frame(id = 1:3)\n");

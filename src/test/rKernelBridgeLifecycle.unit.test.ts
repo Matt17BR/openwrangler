@@ -118,7 +118,7 @@ describe("R kernel bridge lifecycle", () => {
     await expect(bridge.request(close)).resolves.toEqual({ kind: "sessionClosed", sessionId });
     expect(transport.close).toHaveBeenCalledTimes(1);
     expect(transport.close).toHaveBeenCalledWith(sessionId, {
-      timeoutMs: undefined,
+      timeoutMs: 30_000,
       cancellation: undefined
     });
   });

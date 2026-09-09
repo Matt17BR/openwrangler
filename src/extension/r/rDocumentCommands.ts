@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
-import { getSetting } from "../configuration";
+import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { resolveExecutableCommand } from "../pythonPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
@@ -119,7 +119,7 @@ export function registerRDocumentCommands(
             (_progress, cancellation) =>
               transport.discoverVariables({
                 cancellation,
-                timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000, document.uri)
+                timeoutMs: Math.ceil(runtimeRequestTimeoutMs({ kind: "openSession" }, undefined, document.uri))
               })
           );
         } catch (error) {

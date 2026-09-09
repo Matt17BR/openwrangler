@@ -8,6 +8,7 @@ import {
   type OpenWranglerResponse
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
+import { runtimeRequestTimeoutMs } from "../configuration";
 import { beginAtomicFileTransaction } from "../files/safeFileExport";
 import { RKernelDiagnosticError, RKernelSessionTransport } from "./rKernelTransport";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
@@ -142,6 +143,9 @@ export class RKernelBridge implements OpenWranglerBridge {
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
     if (this.disposed) throw new Error("The Open Wrangler R bridge has been disposed.");
     this.idleRequested = false;
+    if (request.kind !== "initialize" && request.kind !== "exportData" && options.timeoutMs === undefined) {
+      options = { ...options, timeoutMs: Math.ceil(runtimeRequestTimeoutMs(request)) };
+    }
 
     switch (request.kind) {
       case "initialize":

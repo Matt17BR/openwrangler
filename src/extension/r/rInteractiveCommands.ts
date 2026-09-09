@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
-import { getSetting } from "../configuration";
+import { runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
@@ -721,7 +721,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     try {
       const discovery = await transport.discoverVariables({
         cancellation,
-        timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000)
+        timeoutMs: Math.ceil(runtimeRequestTimeoutMs({ kind: "openSession" }))
       });
       if (!this.isCurrentRefresh(terminal, transport, generation)) return false;
       this.publishDiscovery(terminal, discovery);
@@ -1080,7 +1080,7 @@ async function discoverWithProgress(
       }
       const options = {
         cancellation,
-        timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000)
+        timeoutMs: Math.ceil(runtimeRequestTimeoutMs({ kind: "openSession" }))
       };
       return evaluationCode === undefined
         ? transport.discoverVariables(options)
