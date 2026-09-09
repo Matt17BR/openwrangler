@@ -77,6 +77,8 @@ jobs:
       candidate-sha: ${{ steps.daily_source.outputs.generated_sha || github.sha }}
       preview-date: ${{ steps.daily_source.outputs.preview_date }}
       release-tag: ${{ steps.daily_source.outputs.release_tag || inputs.release_tag }}
+      notes-base-tag: ${{ steps.notes_base.outputs.notes_base_tag }}
+      notes-base-sha: ${{ steps.notes_base.outputs.notes_base_sha }}
     steps:
       - name: Require first preview package attempt
         env:
@@ -131,6 +133,15 @@ jobs:
           RELEASE_TAG: ${{ steps.daily_source.outputs.release_tag || inputs.release_tag }}
         run: node scripts/release-metadata.mjs --preview-only
       - run: npm ci --ignore-scripts
+      - id: notes_base
+        if: ${{ github.event_name == 'schedule' }}
+        name: Freeze the published preview baseline for change notes
+        env:
+          EXPECTED_SHA: ${{ steps.daily_source.outputs.generated_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.daily_source.outputs.release_tag }}
+        run: node scripts/publish-github-preview-release.mjs --notes-baseline
       - run: python -m pip install -e "python[dev]"
       - name: Package the preview VSIX once
         run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix
@@ -239,6 +250,8 @@ jobs:
           GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
+          NOTES_BASE_TAG: ${{ needs.package.outputs.notes-base-tag }}
+          NOTES_BASE_SHA: ${{ needs.package.outputs.notes-base-sha }}
           RELEASE_TAG: ${{ needs.package.outputs.release-tag }}
         run: node scripts/publish-github-preview-release.mjs canonical-release
       - name: Dispatch the exact public preview to Open VSX promotion

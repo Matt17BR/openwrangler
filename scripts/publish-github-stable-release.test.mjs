@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { publishGitHubRelease } from "./github-release-publisher.mjs";
+import { publishGitHubRelease, readPublishedPreviewRelease } from "./github-release-publisher.mjs";
 import {
   parseGitHubImmutableReleaseExpectation,
   publishGitHubStableRelease
@@ -304,6 +304,179 @@ function publish(fetchImpl, options = {}) {
     version: release.version
   });
 }
+
+function publishedPreview(tag = "v2.1.20260828", publishedAt = "2026-08-28T09:00:00Z", provenanceChanges = {}) {
+  const provenance = Buffer.from(
+    `${JSON.stringify({
+      protocol: "openwrangler-canonical-preview-release-artifact-v1",
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: tag.slice(1),
+      preview: true,
+      releaseTag: tag,
+      sourceCommit: expectedCommit,
+      vsixSha256: createHash("sha256").update(assets[0].bytes).digest("hex"),
+      vsixBytes: assets[0].bytes.length,
+      ...provenanceChanges
+    })}\n`
+  );
+  return {
+    release: releaseMetadata({
+      channel: "preview",
+      releaseTag: tag,
+      version: tag.slice(1),
+      published_at: publishedAt,
+      releaseAssets: assets.map((asset, index) =>
+        releaseAsset(asset.name, index === 1 ? provenance : asset.bytes, index + 1)
+      )
+    }),
+    assetByteOverrides: new Map([[2, provenance]])
+  };
+}
+
+test("notes baseline uses publication time across pages and ignores drafts, stable and noncanonical releases", async () => {
+  const selected = publishedPreview("v2.0.20260828", "2026-08-30T09:00:00Z");
+  const newerTag = publishedPreview("v2.1.20260829", "2026-08-29T09:00:00Z").release;
+  const fixture = githubFixture({
+    initialReleases: [
+      newerTag,
+      { ...selected.release, draft: true, published_at: null, tag_name: "v2.1.20260830" },
+      releaseMetadata(),
+      { draft: false, prerelease: true, tag_name: "experimental" },
+      selected.release
+    ],
+    inventoryPrefix: [
+      publishedPreview("v2.0.20260826", "2026-08-28T09:00:00Z").release,
+      publishedPreview("v2.0.20260827", "2026-08-28T09:00:00Z").release,
+      ...Array.from({ length: 98 }, () => ({ draft: false, prerelease: false, tag_name: "other" }))
+    ],
+    assetByteOverrides: selected.assetByteOverrides
+  });
+  assert.deepEqual(
+    await readPublishedPreviewRelease({ fetchImpl: fixture.fetchImpl, repository, token: "test-token" }),
+    {
+      releaseTag: selected.release.tag_name,
+      sourceCommit: expectedCommit
+    }
+  );
+  assert.ok(fixture.requests.some(({ url }) => url.endsWith("page=2")));
+  assert.equal(
+    fixture.requests.some(({ method }) => method !== "GET"),
+    false
+  );
+  assert.equal(
+    fixture.requests.some(({ url }) => url.endsWith("/assets/1")),
+    false
+  );
+});
+
+test("a frozen preview baseline is read directly after a newer publication", async () => {
+  for (const body of ["", "Edited historical notes without a newline"]) {
+    const frozen = publishedPreview();
+    frozen.release.body = body;
+    const fixture = githubFixture({
+      initialReleases: [publishedPreview("v2.1.20260829", "2026-08-29T09:00:00Z").release, frozen.release],
+      assetByteOverrides: frozen.assetByteOverrides
+    });
+    assert.deepEqual(
+      await readPublishedPreviewRelease({
+        fetchImpl: fixture.fetchImpl,
+        releaseTag: frozen.release.tag_name,
+        repository,
+        token: "test-token"
+      }),
+      {
+        releaseTag: frozen.release.tag_name,
+        sourceCommit: expectedCommit
+      }
+    );
+    assert.equal(
+      fixture.requests.some(({ url }) => url.includes("/releases?")),
+      false
+    );
+  }
+});
+
+test("notes baseline refuses malformed latest provenance, missing assets, publication time and moving tags", async () => {
+  for (const problem of ["source", "extra provenance", "missing asset", "time", "ambiguous time", "moving tag"]) {
+    const selected = publishedPreview(
+      undefined,
+      undefined,
+      problem === "source" ? { sourceCommit: "b".repeat(40) } : problem === "extra provenance" ? { extra: true } : {}
+    );
+    if (problem === "missing asset") selected.release.assets.pop();
+    if (problem === "time") selected.release.published_at = "2026-02-30T09:00:00Z";
+    const fixture = githubFixture({
+      initialReleases: [
+        selected.release,
+        publishedPreview(
+          "v2.0.20260827",
+          problem === "ambiguous time" ? selected.release.published_at : "2026-08-27T09:00:00Z"
+        ).release
+      ],
+      assetByteOverrides: selected.assetByteOverrides,
+      ...(problem === "moving tag" ? { tagCommits: [expectedCommit, "b".repeat(40)] } : {})
+    });
+    await assert.rejects(
+      readPublishedPreviewRelease({ fetchImpl: fixture.fetchImpl, repository, token: "test-token" }),
+      /provenance|source artifacts|missing canonical assets|publication time|ambiguous|moved/u,
+      problem
+    );
+    assert.equal(
+      fixture.requests.some(({ method }) => method !== "GET"),
+      false
+    );
+  }
+});
+
+test("empty published preview history is distinct from failed discovery and missing frozen history", async () => {
+  const fixture = githubFixture({ initialReleases: [releaseMetadata({ draft: true })] });
+  assert.equal(
+    await readPublishedPreviewRelease({ fetchImpl: fixture.fetchImpl, repository, token: "test-token" }),
+    undefined
+  );
+  await assert.rejects(
+    readPublishedPreviewRelease({
+      fetchImpl: fixture.fetchImpl,
+      releaseTag: "v2.1.20260828",
+      repository,
+      token: "test-token"
+    }),
+    /no longer published/u
+  );
+  await assert.rejects(
+    readPublishedPreviewRelease({ fetchImpl: async () => jsonResponse({}, 503), repository, token: "test-token" }),
+    /HTTP 503/u
+  );
+});
+
+test("daily preview recovery retains the exact frozen body and rejects an edited comparison link", async () => {
+  const daily = { channel: "preview", releaseTag: "v2.1.20260828", version: "2.1.20260828" };
+  for (const draft of [true, false]) {
+    const exact = releaseMetadata({
+      channel: "preview",
+      releaseTag: daily.releaseTag,
+      version: daily.version,
+      draft,
+      releaseAssets: exactAssets()
+    });
+    const fixture = githubFixture({ initialReleases: [exact] });
+    await publish(fixture.fetchImpl, { release: daily });
+    await publish(fixture.fetchImpl, { release: daily });
+    const edited = githubFixture({
+      initialReleases: [
+        {
+          ...exact,
+          body: `${releaseNotes}\n[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${"b".repeat(40)}...${expectedCommit})\n`
+        }
+      ]
+    });
+    await assert.rejects(publish(edited.fetchImpl, { release: daily }), /metadata conflicts/u);
+    assert.equal(
+      edited.requests.some(({ method }) => method !== "GET"),
+      false
+    );
+  }
+});
 
 test("accepts an already exact public release without mutation", async () => {
   const fixture = githubFixture({

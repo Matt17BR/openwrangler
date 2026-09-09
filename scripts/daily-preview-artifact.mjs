@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   classifyNumericReleaseVersion,
   dailyPreviewDateFromVersion,
@@ -9,6 +10,7 @@ import {
   isDailyPreviewVersion
 } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
+import { validateReleaseNotes } from "./release-notes.mjs";
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
 const CANONICAL_NUMERIC_RELEASE_TAG = /^v(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/u;
@@ -254,19 +256,101 @@ export function dailyPreviewIdentity(environment = process.env, stableAuthority)
   };
 }
 
-export function dailyPreviewReleaseNotes({ sourceSha, version }) {
-  const date = dailyPreviewDateFromVersion(version);
-  if (!FULL_SHA.test(sourceSha ?? "") || date === undefined) {
-    throw new Error("Daily preview release notes require one source commit and dated preview version.");
+function versionOnlyCommit(root, commit) {
+  const parents = git(root, ["rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
+  if (parents.length !== 2) return false;
+  const paths = git(root, ["diff", "--name-only", "--no-renames", "-z", parents[1], commit, "--"])
+    .split("\0")
+    .filter(Boolean);
+  if (!paths.includes("package.json") || paths.some((path) => !VERSION_PATHS.includes(path))) return false;
+  let before;
+  let after;
+  let previous;
+  let current;
+  try {
+    previous = versionSources(root, parents[1]);
+    current = versionSources(root, commit);
+    before = inspectVersionSources(previous, "Previous version metadata", false);
+    after = inspectVersionSources(current, "Current version metadata", false);
+  } catch {
+    return false;
   }
-  const isoDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
-  return [
-    `# Open Wrangler ${version}`,
-    "",
-    `The ${isoDate} daily preview packages protected \`main\` commit \`${sourceSha}\`.`,
-    "Its exact VSIX passed the short installed smoke in stable VS Code before publication.",
-    ""
-  ].join("\n");
+  if (before.version === after.version && before.manifest.preview === after.manifest.preview) return false;
+  const metadataWithoutVersion = ({ version: _version, preview: _preview, ...metadata }) => metadata;
+  const lockWithoutVersion = (lock) => ({
+    ...lock,
+    version: undefined,
+    packages: { ...lock.packages, "": { ...lock.packages[""], version: undefined } }
+  });
+  return (
+    isDeepStrictEqual(metadataWithoutVersion(before.manifest), metadataWithoutVersion(after.manifest)) &&
+    isDeepStrictEqual(lockWithoutVersion(before.lock), lockWithoutVersion(after.lock)) &&
+    previous.runtimeVersion.replace(/^__version__ = "[^"]+"$/mu, `__version__ = "${after.version}"`) ===
+      current.runtimeVersion
+  );
+}
+
+export function dailyPreviewReleaseNotes({ baseSha, baseTag, root, sourceSha, version }) {
+  const date = dailyPreviewDateFromVersion(version);
+  const baseVersion = CANONICAL_NUMERIC_RELEASE_TAG.exec(baseTag ?? "")?.groups?.version;
+  const baseChannel = classifyNumericReleaseVersion(baseVersion)?.channel;
+  if (
+    !FULL_SHA.test(sourceSha ?? "") ||
+    !FULL_SHA.test(baseSha ?? "") ||
+    date === undefined ||
+    baseChannel === undefined
+  ) {
+    throw new Error(
+      "Daily preview release notes require exact source and baseline commits, a canonical baseline tag, and a dated version."
+    );
+  }
+  const sourceRoot = repositoryRoot(root);
+  if (git(sourceRoot, ["rev-parse", "--verify", `refs/tags/${baseTag}^{commit}`]).trim() !== baseSha) {
+    throw new Error("The release-notes baseline tag moved from its recorded commit.");
+  }
+  const baseline = inspectVersionSources(
+    versionSources(sourceRoot, baseSha),
+    "Release-notes baseline",
+    baseChannel === "preview"
+  );
+  if (baseline.version !== baseVersion)
+    throw new Error("The release-notes baseline tag does not match its source version.");
+  const baseSource = isDailyPreviewVersion(baseVersion)
+    ? inspectDailyPreviewSourceCommit({ commit: baseSha, releaseTag: baseTag, root: sourceRoot }).parentCommit
+    : baseSha;
+  try {
+    git(sourceRoot, ["merge-base", "--is-ancestor", baseSource, sourceSha]);
+  } catch (error) {
+    throw new Error("The release-notes baseline must be an ancestor of the current preview source.", { cause: error });
+  }
+  const history = git(sourceRoot, ["log", "-z", "--format=%H%x00%s", `${baseSource}..${sourceSha}`, "--"]);
+  const fields = history === "" ? [] : history.split("\0");
+  if (fields.length > 0 && fields.pop() !== "") throw new Error("Git returned incomplete release-notes history.");
+  if (fields.length % 2 !== 0) throw new Error("Git returned malformed release-notes history.");
+  const entries = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const [commit, subject] = fields.slice(index, index + 2);
+    if (!FULL_SHA.test(commit) || subject.length === 0 || /[\0\r\n]/u.test(subject))
+      throw new Error("Git returned an invalid release-notes commit.");
+    if (versionOnlyCommit(sourceRoot, commit)) continue;
+    const label = subject
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replace(/[\\`*_[\]]/gu, "\\$&");
+    entries.push(`- [${label}](https://github.com/Matt17BR/openwrangler/commit/${commit})`);
+  }
+  return validateReleaseNotes(
+    [
+      ...(baseChannel === "stable"
+        ? [`No earlier published preview; changes since stable tag \`${baseTag}\`.`, ""]
+        : []),
+      ...(entries.length === 0 ? ["No source changes beyond release metadata."] : entries),
+      "",
+      `[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${baseSource}...${sourceSha})`,
+      ""
+    ].join("\n")
+  );
 }
 
 export function inspectDailyPreviewSourceCommit({ commit, expectedParent, releaseTag, root }) {

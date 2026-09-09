@@ -115,7 +115,10 @@ The consolidated preview workflow owns both the automatic daily public train and
 - A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
   publication remains explicit through its `publish` input.
 - Packaging admits only a workflow run's first attempt, before checkout or setup. Package failures require a new run;
-  **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs.
+  **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs. After its
+  existing dependency setup, the package job also freezes the latest published preview's verified tag and commit for
+  [daily change notes](releasing.md#daily-preview). Retries retain these outputs and exact notes rather than advancing
+  to a newer publication. This adds no release asset and does not change artifact qualification or registry recovery.
 - Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
   suites. It validates stable metadata, packages once, audits published dependencies, runs pinned VS Code
   installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
