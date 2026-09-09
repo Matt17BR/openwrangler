@@ -711,8 +711,14 @@ Integer sums and integer64 sum, mean and median share the live exact-sum arithme
 functions once when needed, reusing unsigned addition if coarse Round also needs it. Ordinary integer sums retain
 bounded native batches; integer64 accumulation and existing result-range refusals remain unchanged.
 
-Built-in R means and profile medians use primitive numeric calculations that bypass registered S3 mean methods.
-Live operations and their generated programs agree; Custom Code retains the caller's ordinary R dispatch.
+Finite Mean Fill, ordinary integer/double Group By means, and numeric profile means share one exact binary64
+sum/count owner. It accumulates at most 65,536 values per chunk into two fixed 134-word arrays, using the existing
+frame row limit to bound their capacity. Final division rounds once to the nearest double, with ties to even.
+Generated cleaning code emits the same functions once when needed. Profiles retain the existing variance calculation;
+integer64 means keep their separate arithmetic and conversion rules. The fixed accumulator does not bound all
+temporary allocations or eliminate the added scan and per-group work.
+Built-in R means and profile medians bypass registered S3 mean methods. Live operations and their generated programs
+agree; Custom Code retains the caller's ordinary R dispatch.
 Profile calculation and precision limits are described in [ADR 0001](decisions/0001-native-r-runtime.md).
 
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing

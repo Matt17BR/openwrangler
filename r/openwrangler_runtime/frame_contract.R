@@ -1879,6 +1879,145 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
+  # Finite binary64 values are integer multiples of 2^-1074. With fewer than 2^31
+  # values, separate signs fit in 134 base-65536 limbs (each held exactly in a double).
+  exact_mean_new <- function() list(positive = numeric(134L), negative = numeric(134L), count = 0)
+
+  exact_mean_add <- function(values, state) {
+    n <- length(values)
+    if (n == 0L) return(state)
+    if (n > 65536L || state$count + n > 2147483647) stop("exact mean input count outside admitted bound")
+    words <- matrix(base::readBin(base::writeBin(as.double(values), raw(), size = 8L, endian = "little"),
+      integer(), n = 4L * n, size = 2L, signed = FALSE, endian = "little"), ncol = 4L, byrow = TRUE)
+    high <- words[, 4L]
+    negative <- high >= 32768L
+    exponent <- (high %/% 16L) %% 2048L
+    if (any(exponent == 2047L)) stop("exact mean requires finite values")
+    words[, 4L] <- high %% 16L + 16L * (exponent != 0L)
+    shift <- pmax(exponent - 1L, 0L)
+    bins <- shift %/% 16L + 1L + 128L * negative
+    # At most 65536 rows keep native double partials and overlapping carries below 2^49.
+    partial <- base::rowsum.default(words * (2^(shift %% 16L)), bins, reorder = FALSE)
+    groups <- as.integer(rownames(partial))
+    positive <- groups <= 128L
+    negative <- !positive
+    for (j in 1L:4L) {
+      if (any(positive)) {
+        positions <- groups[positive] + j - 1L
+        state$positive[positions] <- state$positive[positions] + partial[positive, j]
+      }
+      if (any(negative)) {
+        positions <- groups[negative] - 128L + j - 1L
+        state$negative[positions] <- state$negative[positions] + partial[negative, j]
+      }
+    }
+    overflow <- which(state$positive >= 65536 | state$negative >= 65536)
+    if (length(overflow) != 0L) {
+      i <- overflow[[1L]]
+      last <- overflow[[length(overflow)]]
+      while (i < 134L && (i <= last || state$positive[[i]] >= 65536 || state$negative[[i]] >= 65536)) {
+        carry <- floor(state$positive[[i]] / 65536)
+        state$positive[[i]] <- state$positive[[i]] - carry * 65536
+        state$positive[[i + 1L]] <- state$positive[[i + 1L]] + carry
+        carry <- floor(state$negative[[i]] / 65536)
+        state$negative[[i]] <- state$negative[[i]] - carry * 65536
+        state$negative[[i + 1L]] <- state$negative[[i + 1L]] + carry
+        i <- i + 1L
+      }
+    }
+    state$count <- state$count + as.double(n)
+    state
+  }
+
+  exact_mean_finish <- function(state) {
+    n <- state$count
+    if (n == 0) return(NaN)
+    different <- which(state$positive != state$negative)
+    if (length(different) == 0L) return(0)
+    highest <- different[[length(different)]]
+    negative <- state$positive[[highest]] < state$negative[[highest]]
+    larger <- if (negative) state$negative else state$positive
+    smaller <- if (negative) state$positive else state$negative
+    magnitude <- numeric(134L)
+    borrow <- 0
+    for (i in seq.int(different[[1L]], highest)) {
+      value <- larger[[i]] - smaller[[i]] - borrow
+      borrow <- as.double(value < 0)
+      magnitude[[i]] <- value + borrow * 65536
+    }
+    used <- which(magnitude != 0)
+    highest <- used[[length(used)]]
+    high_word <- magnitude[[highest]]
+    bits <- 0L
+    while (high_word >= 1) { bits <- bits + 1L; high_word <- floor(high_word / 2) }
+    sum_bits <- (highest - 1L) * 16L + bits
+    count_word <- n
+    count_bits <- 0L
+    while (count_word >= 1) { count_bits <- count_bits + 1L; count_word <- floor(count_word / 2) }
+    # Select at most 53 quotient bits; one decrement suffices if the first binade is high.
+    # The shifted numerator has at most 84 bits, so only six limbs need exact division.
+    k <- max(0L, sum_bits - count_bits - 52L)
+    repeat {
+      first <- k %/% 16L + 1L
+      shift <- k %% 16L
+      words <- (sum_bits - k - 1L) %/% 16L + 1L
+      remainder <- 0
+      retained <- 0
+      for (j in seq.int(words - 1L, 0L)) {
+        i <- first + j
+        digit <- floor(magnitude[[i]] / 2^shift)
+        if (shift != 0L && i < 134L) digit <- digit +
+          (magnitude[[i + 1L]] %% 2^shift) * 2^(16L - shift)
+        dividend <- remainder * 65536 + digit
+        quotient_digit <- floor(dividend / n)
+        retained <- retained * 65536 + quotient_digit
+        remainder <- dividend - quotient_digit * n
+      }
+      if (k == 0L || retained >= 2^52) break
+      k <- k - 1L
+    }
+    guard <- 0
+    sticky <- FALSE
+    if (k > 0L) {
+      word <- (k - 1L) %/% 16L + 1L
+      bit <- (k - 1L) %% 16L
+      guard <- floor(magnitude[[word]] / 2^bit) %% 2
+      sticky <- magnitude[[word]] %% 2^bit != 0 ||
+        (word > 1L && any(magnitude[seq_len(word - 1L)] != 0))
+    }
+    # S = 2^k * (n * retained + remainder) + tail. The guard/sticky bits describe tail.
+    # For odd n, 2*remainder == n-1 requires comparing that tail with half a unit.
+    twice_remainder <- 2 * remainder
+    odd <- retained %% 2 == 1
+    round_up <- twice_remainder > n ||
+      (twice_remainder == n && (guard == 1 || sticky || odd)) ||
+      (twice_remainder == n - 1 && guard == 1 && (sticky || odd))
+    if (round_up) retained <- retained + 1
+    if (retained == 2^53) { retained <- retained / 2; k <- k + 1L }
+    exponent <- if (retained >= 2^52) k + 1L else 0L
+    fraction <- if (exponent != 0L) retained - 2^52 else retained
+    words <- numeric(4L)
+    for (i in 1L:4L) {
+      words[[i]] <- fraction %% 65536
+      fraction <- floor(fraction / 65536)
+    }
+    words[[4L]] <- words[[4L]] + 16 * exponent + 32768 * negative
+    bytes <- as.raw(as.vector(rbind(words %% 256, floor(words / 256))))
+    base::readBin(bytes, double(), n = 1L, size = 8L, endian = "little")
+  }
+
+  exact_binary64_mean <- function(values) {
+    state <- exact_mean_new()
+    count <- length(values)
+    start <- 1
+    while (start <= count) {
+      size <- min(65536, count - start + 1)
+      state <- exact_mean_add(.subset(values, seq.int(start, length.out = size)), state)
+      start <- start + size
+    }
+    exact_mean_finish(state)
+  }
+
   finite_statistic <- function(value) {
     if (length(value) != 1L || is.na(value) || !is.finite(value)) NULL else as.double(value)
   }
@@ -1983,7 +2122,7 @@ openwrangler_r_frame_contract <- local({
     candidates <- list(
       min = if (length(values) == 0L) NULL else suppressWarnings(min(values)),
       max = if (length(values) == 0L) NULL else suppressWarnings(max(values)),
-      mean = if (length(values) == 0L) NULL else suppressWarnings(base::mean.default(values)),
+      mean = if (length(values) == 0L) NULL else if (semantics$kind == "integer64" || any(!is.finite(values))) suppressWarnings(base::mean.default(values)) else exact_binary64_mean(values),
       median = if (length(values) == 0L) NULL else suppressWarnings(numeric_profile_median(values)),
       std = if (length(values) < 2L) NULL else suppressWarnings(stats::sd(values))
     )
@@ -2188,6 +2327,7 @@ openwrangler_r_frame_contract <- local({
     numeric_maximum <- NULL
     numeric_finite_count <- 0
     numeric_mean <- 0
+    numeric_exact_mean <- if (kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
     numeric_m2 <- 0
     numeric_sum <- 0
     numeric_has_nonfinite <- FALSE
@@ -2258,6 +2398,7 @@ openwrangler_r_frame_contract <- local({
           finite_values <- values[is.finite(values)]
           numeric_has_nonfinite <- numeric_has_nonfinite || length(finite_values) != length(values)
           if (length(finite_values) != 0L) {
+            if (kind != "integer64") numeric_exact_mean <- exact_mean_add(finite_values, numeric_exact_mean)
             numeric_sum <- numeric_sum + sum(finite_values)
             chunk_finite_count <- length(finite_values)
             chunk_mean <- base::mean.default(finite_values)
@@ -2389,7 +2530,7 @@ openwrangler_r_frame_contract <- local({
       if (!is.null(minimum)) numeric$min <- minimum
       if (!is.null(maximum)) numeric$max <- maximum
       if (!numeric_has_nonfinite && numeric_finite_count != 0) {
-        mean_value <- finite_statistic(numeric_mean)
+        mean_value <- finite_statistic(if (kind == "integer64") numeric_mean else exact_mean_finish(numeric_exact_mean))
         if (!is.null(mean_value)) numeric$mean <- mean_value
         if (numeric_finite_count >= 2) {
           standard_deviation <- finite_statistic(sqrt(numeric_m2 / (numeric_finite_count - 1)))
@@ -6480,12 +6621,7 @@ openwrangler_r_frame_contract <- local({
       } else if (has_negative_infinity) {
         fill <- -Inf
       } else {
-        scale <- max(abs(present))
-        fill <- if (scale == 0) {
-          0
-        } else {
-          max(-1, min(1, base::mean.default(present / scale))) * scale
-        }
+        fill <- exact_binary64_mean(present)
       }
       result <- column
       result[missing] <- fill
@@ -7169,8 +7305,7 @@ openwrangler_r_frame_contract <- local({
           } else if (has_negative_infinity) {
             fill <- -Inf
           } else {
-            scale <- max(abs(present))
-            fill <- if (scale == 0) 0 else max(-1, min(1, base::mean.default(present / scale))) * scale
+            fill <- exact_binary64_mean(present)
           }
         } else if (identical(statistic, "median")) {
           fill <- if (identical(target_kind, "integer64")) {
@@ -7700,9 +7835,7 @@ openwrangler_r_frame_contract <- local({
     if (positive_infinity && negative_infinity) return(NaN)
     if (positive_infinity) return(Inf)
     if (negative_infinity) return(-Inf)
-    scale <- max(abs(values))
-    if (scale == 0) return(0)
-    max(-1, min(1, base::mean.default(values / scale))) * scale
+    exact_binary64_mean(values)
   }
 
   safe_group_median <- function(values, semantics) {
@@ -9761,6 +9894,7 @@ openwrangler_r_frame_contract <- local({
     drop_columns_at = drop_columns_at,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
+    exact_mean_helpers = list(exact_mean_new = exact_mean_new, exact_mean_add = exact_mean_add, exact_mean_finish = exact_mean_finish, exact_binary64_mean = exact_binary64_mean),
     integer_sum_helpers = list(
       compare_unsigned_decimal = compare_unsigned_decimal,
       add_unsigned_decimal = add_unsigned_decimal,
