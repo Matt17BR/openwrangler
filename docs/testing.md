@@ -99,6 +99,13 @@ Linux R phase supervision uses the selected repository Python's standard library
 Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The runner checks this capability before starting
 a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
 
+For second-resolution POSIX observations, only the original phase root may change its command/environment rendering
+while its observed PID/start identity, parent, process group and phase marker remain unchanged. Descendants retain
+command continuity, and retired identity keys remain refused. A later marked start identity does not inherit the
+original root's allowance. This is coarse marker-based continuity, not a kernel-held identity; copied markers and
+same-second PID reuse can remain ambiguous. Process-free tracker tests cover these boundaries without claiming
+native macOS settlement.
+
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
 closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
 verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;
