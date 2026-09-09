@@ -389,10 +389,11 @@ code.
 Sparse storage and native power identities with missing operands. The same file owns Arrow integer modulo and eligible
 integer/Decimal capacity repairs. These cases compare actual operand pairs, preserve missing values and retain correct
 native results and existing refusals. Multiplication cases cover signed and unsigned result capacity, chunked and
-null-paired operands, duplicate indexes, native type retention and custom-extension exclusion. The existing public
-capacity journey checks signed-result Preview, Apply, complete generated code, Parquet readback, Undo and Redo,
-plus refusal beyond the displayed page. Mixed Formula, By Example and Custom Code programs check helper isolation
-without changing the other operations' behavior.
+null-paired operands, duplicate indexes, native type retention and custom-extension exclusion. Subtraction cases
+also cover signed/unsigned operand order, negative results, scalar underflow and existing overflow diagnostics.
+The existing public capacity journey checks signed-result Preview, Apply, complete generated code, Parquet readback,
+Undo and Redo, plus refusal beyond the displayed page. Mixed Formula, By Example and Custom Code programs check helper
+isolation without changing the other operations' behavior.
 
 `python/tests/test_duckdb_engine.py` owns fixed-width integer promotion checks in both signed/unsigned operand orders
 and protection from caller-defined macros. Its cases with volatile inputs distinguish metadata inspection from
