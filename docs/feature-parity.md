@@ -250,6 +250,8 @@ operation-builder tests verify the exact submitted references, saved selections,
 If a schema change removes selected columns, forms retain those dependencies until the user explicitly clears them.
 The repair message explains when this will select all columns. A nonempty search remains clearable after the schema
 shrinks to one or zero available columns.
+Single-column forms also retain targets across schema changes. A missing or incompatible target displays an empty
+selection and requires a new choice before Preview; it does not silently switch to the first available column.
 
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.

@@ -156,6 +156,9 @@ Operation Builder and Fill Missing controls check explicit repair of unavailable
 semantics, retained valid selection order and names, controlled grouping, and search recovery after schema changes.
 The App owner checks that failed Undo retains selection and successful Undo cannot silently broaden a retained
 Drop Missing form to all columns; unrelated form input survives repair.
+Single-column cases cover removed targets after Undo, type-incompatible targets, explicit repair, retained input, same-ID
+renames and eligible targets returning. The control owners distinguish a controlled empty value from an uncontrolled
+form receiving its first available default.
 The same UI owners check Redo after the last Undo, focus ownership, draft/projection gates and exact attempt
 correlation before success or failure can settle a mutation. Panel controls verify that an empty-history refusal
 also clears the snapshot used on remount. Native session and transaction owners check ordered re-execution,

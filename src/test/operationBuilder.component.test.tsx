@@ -143,6 +143,135 @@ describe("OperationBuilder", () => {
     expect(onPreview).not.toHaveBeenCalled();
   });
 
+  it("requires repair of a single numeric choice after its type changes and restores the same eligible ID", () => {
+    const onPreview = vi.fn();
+    const alternate = { ...metadata.schema[1], id: "c:2", name: "alternate", position: 2 };
+    const columns = [...metadata.schema, alternate];
+    const props = {
+      metadata: { ...metadata, schema: columns },
+      filterModel: metadata.filterModel,
+      initialKind: "formula" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    const picker = screen.getByRole("combobox", { name: "Left column" });
+    fireEvent.change(picker, { target: { value: "c:1" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "New column" }), {
+      target: { value: "chosen_output" }
+    });
+    const changed = { ...metadata.schema[1], type: "string" as const, rawType: "String" };
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [columns[0], changed, alternate] }} />);
+    expect(picker).toHaveValue("");
+    expect(picker).toHaveDisplayValue("Selected column is no longer available");
+    expect(picker).toBeInvalid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+
+    const restored = { ...metadata.schema[1], name: "revenue", position: 2 };
+    view.rerender(
+      <OperationBuilder
+        {...props}
+        metadata={{ ...metadata, schema: [columns[0], { ...alternate, position: 1 }, restored] }}
+      />
+    );
+    expect(picker).toHaveValue("c:1");
+    expect(picker).toHaveDisplayValue("revenue");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenLastCalledWith(
+      {
+        id: expect.any(String),
+        kind: "formula",
+        params: { leftColumn: { id: "c:1", name: "revenue" }, operator: "add", value: 0, newColumn: "chosen_output" }
+      },
+      undefined
+    );
+
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [columns[0], changed, alternate] }} />);
+    fireEvent.change(picker, { target: { value: alternate.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenLastCalledWith(
+      {
+        id: expect.any(String),
+        kind: "formula",
+        params: {
+          leftColumn: { id: alternate.id, name: alternate.name },
+          operator: "add",
+          value: 0,
+          newColumn: "chosen_output"
+        }
+      },
+      undefined
+    );
+  });
+
+  it("initializes a single numeric default when columns first become available and retains that choice", () => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata: { ...metadata, schema: [metadata.schema[0]] },
+      filterModel: metadata.filterModel,
+      initialKind: "denseRank" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    const picker = screen.getByRole("combobox", { name: "Numeric column" });
+    expect(picker).toBeDisabled();
+    view.rerender(<OperationBuilder {...props} metadata={metadata} />);
+    expect(picker).toBeEnabled();
+    expect(picker).toHaveValue("c:1");
+    const alternate = { ...metadata.schema[1], id: "c:2", name: "alternate" };
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[0], alternate] }} />);
+    expect(picker).toHaveValue("");
+    expect(picker).toBeInvalid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(picker, { target: { value: alternate.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "denseRank",
+        params: { column: { id: alternate.id, name: alternate.name }, direction: "asc", newColumn: "rank" }
+      },
+      undefined
+    );
+  });
+
+  it("requires an explicit single choice when a controlled aggregation starts without compatible columns", () => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata: { ...metadata, schema: [metadata.schema[0]] },
+      filterModel: metadata.filterModel,
+      initialKind: "groupBy" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    const picker = screen.getByRole("combobox", { name: "Value 1" });
+    expect(picker).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "city" }));
+    view.rerender(<OperationBuilder {...props} metadata={metadata} />);
+    expect(picker).toBeEnabled();
+    expect(picker).toHaveValue("");
+    expect(picker).toHaveDisplayValue("Choose a column");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(picker, { target: { value: "c:1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "c:0", name: "city" }],
+          aggregations: [{ column: { id: "c:1", name: "sales" }, operation: "sum", alias: "value_1" }]
+        }
+      },
+      undefined
+    );
+  });
+
   it("shows only operations advertised by the active dataframe", () => {
     render(
       <OperationBuilder

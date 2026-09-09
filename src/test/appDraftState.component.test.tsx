@@ -435,6 +435,65 @@ describe("App draft state boundaries", () => {
     expect(onlyPreviewRequest().step.params).not.toHaveProperty("columns");
   });
 
+  it.each([
+    ["renameColumn", "Column", "New name"],
+    ["formula", "Left column", "New column"],
+    ["groupBy", "Value 1", "Output name"]
+  ] as const)(
+    "requires a new single-column choice after Undo removes the %s target",
+    async (kind, label, outputLabel) => {
+      const saved = formulaPreviewFixture("polars", true);
+      const original = formulaPreviewFixture("polars", false);
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata: saved.metadata, page: saved.page, summaries: [] });
+      dispatch({ kind: "editorAction", action: "openOperation", operationKind: kind });
+      const dialog = await screen.findByRole("dialog");
+      const picker = within(dialog).getByRole("combobox", { name: label });
+      fireEvent.change(picker, { target: { value: "c:step:saved:0" } });
+      fireEvent.change(within(dialog).getByRole("textbox", { name: outputLabel }), {
+        target: { value: "chosen_output" }
+      });
+      if (kind === "groupBy") fireEvent.click(within(dialog).getByRole("checkbox", { name: "input" }));
+      dispatch({ kind: "editorAction", action: "undoStep" });
+      expect(dialog).toHaveAttribute("aria-busy", "true");
+      dispatch({ kind: "error", code: "engine_error", message: "Undo failed", recoverable: true });
+      expect(picker).toHaveValue("c:step:saved:0");
+
+      dispatch({ kind: "editorAction", action: "undoStep" });
+      dispatch({
+        kind: "planUpdated",
+        action: "undo",
+        revision: 2,
+        metadata: { ...original.metadata, revision: 2, canRedo: true },
+        page: original.page,
+        code: ""
+      });
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(picker).toHaveValue("");
+      expect(picker).toHaveDisplayValue("Selected column is no longer available");
+      expect(picker).toBeInvalid();
+      expect(within(dialog).getByRole("textbox", { name: outputLabel })).toHaveValue("chosen_output");
+      postMessage.mockClear();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+      expect(postMessage).not.toHaveBeenCalled();
+
+      fireEvent.change(picker, { target: { value: "c:source:0" } });
+      expect(picker).toBeValid();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+      const column = { id: "c:source:0", name: "input" };
+      expect(onlyPreviewRequest().step).toEqual({
+        id: expect.any(String),
+        kind,
+        params:
+          kind === "renameColumn"
+            ? { column, newName: "chosen_output" }
+            : kind === "formula"
+              ? { leftColumn: column, operator: "add", value: 0, newColumn: "chosen_output" }
+              : { keys: [column], aggregations: [{ column, operation: "sum", alias: "chosen_output" }] }
+      });
+    }
+  );
+
   it.each(["earlier edit", "new operation"])("retains a %s and its typed input after Undo", async (kind) => {
     const fixture = formulaPreviewFixture("polars", true);
     const original = formulaPreviewFixture("polars", false);

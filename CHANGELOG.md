@@ -24,6 +24,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Single-column cleaning forms retain their chosen target when a schema change removes it or makes it incompatible.
+  Preview requires an explicit replacement instead of silently selecting another column.
 - Cleaning forms retain unavailable column selections after schema changes and offer an explicit repair action.
   Column search remains clearable when only one column remains.
 - DuckDB Multi-label Encoding accepts an input named `label` or an unrelated column with that name.

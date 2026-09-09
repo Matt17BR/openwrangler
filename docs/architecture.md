@@ -149,6 +149,10 @@ Retained multi-column forms submit unavailable selected IDs to the existing para
 dropping dependencies. An explicit repair action removes those selections; optional forms explain when clearing them
 will select all columns. Toggling another checkbox preserves unavailable IDs, and a nonempty column search remains
 clearable after the schema shrinks.
+Single-column forms retain the chosen ID when its option disappears or becomes incompatible. They display an empty
+selection, so the existing required-field validation prevents submission until the user chooses a compatible column.
+If that ID becomes eligible again, its current name is restored. Controlled forms keep the parent value authoritative;
+an empty parent value remains visibly empty when options appear. Uncontrolled forms choose an initial default only once.
 
 Redo retains the commands removed by Undo in the exact runtime session. It binds the next saved command to the
 current confirmed input and executes that step once; it does not replay the preceding plan or retain old dataframe
