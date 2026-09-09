@@ -16,6 +16,16 @@ function identityOf(child) {
 }
 
 test("POSIX ownership diagnostics distinguish bounded evidence without exposing process data", async (context) => {
+  const identity = (pid, parentPid) => ({
+    pid,
+    parentPid,
+    groupId: 101,
+    state: "?",
+    startIdentity: "synthetic-secret-start",
+    command: "synthetic-secret-command".repeat(1000),
+    ownerMarked: true,
+    identityResolution: "second"
+  });
   const cases = [
     {
       name: "command changes despite retained marker and lineage",
@@ -27,19 +37,42 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
         "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=true, root=false"
     },
     {
-      name: "root parent, group and marker change",
+      name: "root parent changes despite retained marker",
       failingPid: 101,
       change: (identities) => {
-        identities.set(101, {
-          ...identities.get(101),
-          parentPid: 900,
-          groupId: 900,
-          command: "changed-synthetic-secret",
-          ownerMarked: false
-        });
+        identities.set(101, { ...identities.get(101), parentPid: 900, command: "changed-synthetic-secret" });
       },
       flags:
-        "secondResolution=true, parentMatches=false, groupMatches=false, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true"
+        "secondResolution=true, parentMatches=false, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=true"
+    },
+    {
+      name: "root group changes despite retained marker",
+      failingPid: 101,
+      change: (identities) => {
+        identities.set(101, { ...identities.get(101), groupId: 900, command: "changed-synthetic-secret" });
+      },
+      flags:
+        "secondResolution=true, parentMatches=true, groupMatches=false, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=true"
+    },
+    {
+      name: "root command changes without retained marker",
+      failingPid: 101,
+      change: (identities) => {
+        identities.set(101, { ...identities.get(101), command: "changed-synthetic-secret", ownerMarked: false });
+      },
+      flags:
+        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true"
+    },
+    {
+      name: "a newly admitted start identity does not inherit the original root allowance",
+      failingPid: 101,
+      change: (identities, tracker) => {
+        identities.set(101, { ...identities.get(101), startIdentity: "later-synthetic-secret-start" });
+        assert.equal(tracker.observe(), 2, "the existing marker rule can admit the new start identity");
+        identities.set(101, { ...identities.get(101), command: "changed-synthetic-secret" });
+      },
+      flags:
+        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=false"
     },
     {
       name: "unmarked child loses its tracked parent",
@@ -52,16 +85,6 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
   ];
   for (const scenario of cases) {
     await context.test(scenario.name, async () => {
-      const identity = (pid, parentPid) => ({
-        pid,
-        parentPid,
-        groupId: 101,
-        state: "?",
-        startIdentity: "synthetic-secret-start",
-        command: "synthetic-secret-command".repeat(1000),
-        ownerMarked: true,
-        identityResolution: "second"
-      });
       const identities = new Map([
         [101, identity(101, 100)],
         [102, { ...identity(102, 101), ownerMarked: !scenario.unmarkedChild }]
@@ -72,7 +95,7 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
       });
       try {
         assert.equal(tracker.observe(), 2, "the initial marked or lineage-owned tree remains accepted");
-        scenario.change(identities);
+        scenario.change(identities, tracker);
         let failure;
         assert.throws(
           () => tracker.observe(),
@@ -96,6 +119,48 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
       }
     });
   }
+
+  await context.test("original marked root command changes retain child and exit settlement", () => {
+    const identities = new Map([
+      [101, identity(101, 100)],
+      [102, identity(102, 101)]
+    ]);
+    const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+      readProcessIdentity: (pid) => identities.get(pid),
+      listProcessIdentities: () => [...identities.values()]
+    });
+    try {
+      for (const command of ["exec-synthetic-secret", "exec-synthetic-secret ENV=changed-synthetic-secret"]) {
+        identities.set(101, { ...identities.get(101), command });
+        assert.equal(tracker.observe(), 2);
+      }
+      identities.delete(101);
+      assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the marked child still belongs to the phase");
+      identities.clear();
+      assert.equal(tracker.isSettled({ isSettled: () => false }), false, "the child observer must also settle");
+      assert.equal(tracker.isSettled({ isSettled: () => true }), true);
+    } finally {
+      tracker.stop();
+    }
+  });
+
+  await context.test("a retired original root key remains refused despite its marker", async () => {
+    const original = identity(101, 100);
+    let current = original;
+    const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+      readProcessIdentity: () => current,
+      listProcessIdentities: () => (current ? [current] : [])
+    });
+    try {
+      current = undefined;
+      assert.equal(tracker.observe(), 0);
+      current = { ...original, command: "changed-synthetic-secret" };
+      assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
+      assert.equal((await tracker.failure).processTreeUnsettled, true);
+    } finally {
+      tracker.stop();
+    }
+  });
 
   let current = { pid: 101, startIdentity: "tick", identityResolution: "kernel-start-tick" };
   const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
