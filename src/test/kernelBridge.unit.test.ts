@@ -16,7 +16,12 @@ import {
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { KernelGenerationBinding } from "../extension/notebooks/kernelLifecycle";
-import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import type {
+  OpenSessionRequest,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
+  RuntimeRequestEnvelope
+} from "../shared/protocol";
 import {
   cancellationSource,
   closeNotebook,
@@ -2379,3 +2384,62 @@ describe("kernel data export publication", () => {
     }
   });
 });
+
+it.each(["undoStep", "getPage"] as const)(
+  "forwards confirmed %s intent in notebook envelopes while preserving direct requests",
+  async (kind) => {
+    const envelopes: RuntimeRequestEnvelope[] = [];
+    const controller = controllableKernel((code) => {
+      const payload = code.match(/__ow_payload = __ow_base64\.b64decode\("([A-Za-z0-9+/=]+)"\)/);
+      if (payload)
+        envelopes.push(JSON.parse(Buffer.from(payload[1], "base64").toString("utf8")) as RuntimeRequestEnvelope);
+      return kernelExecution(code, (request) =>
+        request.kind === "openSession"
+          ? openedResponse(request.requestedSessionId!)
+          : request.kind === "undoStep" || request.kind === "getPage"
+            ? {
+                kind: "error",
+                code: "invalid_request",
+                message: "Fixed request refusal",
+                recoverable: true,
+                sessionId: request.sessionId,
+                ...(request.kind === "getPage" ? { viewRequestId: request.viewRequestId } : {})
+              }
+            : initializedResponse
+      );
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    try {
+      await bridge.request(openRequest("confirmed-edit"));
+      const request: OpenWranglerRequest = {
+        ...(kind === "getPage"
+          ? { kind, viewRequestId: "page-current", filterModel: { filters: [], sort: [] } }
+          : { kind }),
+        sessionId: "confirmed-edit",
+        revision: 0,
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 1
+      };
+      const confirmedView = { filterModel: { filters: [], sort: [] }, viewChangeEpoch: 7 };
+      for (const options of [{}, { confirmedView }]) {
+        await expect(bridge.request(request, options)).resolves.toMatchObject({
+          kind: "error",
+          code: "invalid_request"
+        });
+        const envelope = envelopes.at(-1)!;
+        expect(envelope).toEqual({
+          protocolVersion: 4,
+          requestId: envelope.requestId,
+          priority: "interactive",
+          request,
+          ...options
+        });
+      }
+    } finally {
+      bridge.dispose();
+    }
+  }
+);

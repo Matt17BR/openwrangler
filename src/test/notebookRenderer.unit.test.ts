@@ -278,7 +278,7 @@ describe("notebook renderer", () => {
     button?.click();
     expect(postMessage).toHaveBeenCalledWith({
       kind: "openInOpenWrangler",
-      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 4 } }
     });
     expect(payload).toEqual(original);
   });
@@ -304,7 +304,7 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledOnce();
     expect(postMessage).toHaveBeenCalledWith({
       kind: "openInOpenWrangler",
-      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 4 } }
     });
   });
 
@@ -324,7 +324,7 @@ describe("notebook renderer", () => {
     action?.click();
     expect(postMessage).toHaveBeenCalledWith({
       kind: "openInOpenWrangler",
-      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 4 } }
     });
   });
 
@@ -449,7 +449,7 @@ describe("notebook renderer", () => {
     element.querySelector("button")?.click();
     expect(postMessage).toHaveBeenCalledWith({
       kind: "openInOpenWrangler",
-      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 4 } }
     });
   });
 
@@ -502,7 +502,7 @@ describe("notebook renderer", () => {
     element.querySelector("button")?.click();
     expect(postMessage).toHaveBeenCalledWith({
       kind: "openInOpenWrangler",
-      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 4 } }
     });
   });
 });

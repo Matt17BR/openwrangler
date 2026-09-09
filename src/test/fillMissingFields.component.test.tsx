@@ -5,7 +5,7 @@ import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session",
   revision: 0,
   backend: "polars",

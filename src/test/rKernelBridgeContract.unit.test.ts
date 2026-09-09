@@ -57,7 +57,7 @@ describe("R kernel bridge contract", () => {
     };
     const metadata = metadataFor(session);
     expect(metadata).toMatchObject({
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       backend: "r",
       mode: "editing",

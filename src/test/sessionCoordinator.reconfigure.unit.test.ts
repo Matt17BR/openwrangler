@@ -186,6 +186,23 @@ describe("SessionCoordinator file-session reconfiguration", () => {
             "# restored apply"
           );
         }
+        if (request.kind === "discardDraft" && request.sessionId === candidateId) {
+          return {
+            ...appliedFor(
+              { ...request, kind: "applyDraft" },
+              metadataFor({
+                runtimeId: candidateId,
+                source: replacementSource,
+                backend: "pandas",
+                revision: request.revision + 1,
+                steps: [appliedStep],
+                filterModel: savedFilter
+              }),
+              "# restored apply"
+            ),
+            action: "discard"
+          };
+        }
         if (request.kind === "getPage" && request.sessionId === candidateId) {
           return pageFor(
             request,
@@ -318,6 +335,22 @@ describe("SessionCoordinator file-session reconfiguration", () => {
         }
       });
     });
+    await expect(
+      bridge.request({
+        kind: "discardDraft",
+        sessionId: publicId,
+        revision: opened.metadata.revision + 1,
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).resolves.toMatchObject({ kind: "planUpdated", action: "discard" });
+    expect(requests.find(({ request }) => request.kind === "discardDraft")?.options?.confirmedView).toEqual({
+      filterModel: savedFilter,
+      viewChangeEpoch: 1
+    });
+    await coordinator.shutdown();
   });
 
   it("does not publish a replacement whose durable stage is overtaken by close", async () => {
@@ -969,7 +1002,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
           requestedCandidateId = request.requestedSessionId ?? "";
           return {
             kind: "initialized",
-            protocolVersion: 3,
+            protocolVersion: 4,
             runtimeVersion: "0.3.0",
             capabilities: capabilities()
           };

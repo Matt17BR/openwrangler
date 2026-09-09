@@ -7,7 +7,7 @@ import type { GridViewState } from "../shared/viewState";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "resize-session",
   revision: 1,
   backend: "pandas",

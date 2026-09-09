@@ -35,7 +35,9 @@ export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPa
   if (
     !isRecord(savedMetadata) ||
     !Object.prototype.hasOwnProperty.call(savedMetadata, "protocolVersion") ||
-    (savedMetadata.protocolVersion !== 2 && savedMetadata.protocolVersion !== PROTOCOL_VERSION)
+    (savedMetadata.protocolVersion !== 2 &&
+      savedMetadata.protocolVersion !== 3 &&
+      savedMetadata.protocolVersion !== PROTOCOL_VERSION)
   ) {
     return undefined;
   }
@@ -48,7 +50,7 @@ export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPa
   }
   const opened = {
     kind: "sessionOpened",
-    // Saved v2 and already-normalized handoffs share the same saved-only checks.
+    // Saved v2/v3 and already-normalized handoffs share the same saved-only checks.
     metadata: { ...savedMetadata, protocolVersion: PROTOCOL_VERSION },
     page,
     // Saved profiles are never trusted by the inline renderer.

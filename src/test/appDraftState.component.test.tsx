@@ -37,7 +37,7 @@ const selectStep: TransformStep = {
   }
 };
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session",
   revision: 2,
   backend: "pandas",

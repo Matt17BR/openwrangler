@@ -883,7 +883,7 @@ function openedResponse(sessionId = "runtime-session"): SessionOpenedResponse {
 
 function metadataFor(sessionId: string, revision = 0): SessionMetadata {
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId,
     revision,
     backend: "polars",

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { ColumnSchema, ErrorResponse, OpenWranglerResponse, SessionBoundRequest } from "../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions } from "./dataBridge";
+import { confirmedViewOptions } from "./sessionRuntimeStateRestorer";
 import { responseMismatch } from "./sessionResponseValidation";
 import {
   isCurrentLogicalView,
@@ -118,7 +119,7 @@ export class SessionRuntimeRequestExecutor {
     }
     let requestRuntimeId = session.runtimeId;
     let requestRuntimeRevision = session.runtimeRevision;
-    const previousFilterModel = session.metadata.filterModel;
+    let previousFilterModel = session.metadata.filterModel;
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
     const rendererBackgroundRead =
       isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
@@ -150,6 +151,11 @@ export class SessionRuntimeRequestExecutor {
         session.publicId,
         requestViewId(publicRequest)
       );
+    const runtimeOptions = (): BridgeRequestOptions | undefined =>
+      isRuntimeStateMutation(publicRequest) ||
+      (publicRequest.kind === "getPage" && session.metadata.backend === "pyspark")
+        ? confirmedViewOptions(session, options)
+        : options;
     const runtimeRequest = (): SessionBoundRequest =>
       ({
         ...publicRequest,
@@ -164,7 +170,7 @@ export class SessionRuntimeRequestExecutor {
 
     let response: OpenWranglerResponse;
     try {
-      response = await session.delegate.request(runtimeRequest(), options);
+      response = await session.delegate.request(runtimeRequest(), runtimeOptions());
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError) {
         hooks.installRuntimeSettlement(error.settlement);
@@ -187,7 +193,8 @@ export class SessionRuntimeRequestExecutor {
       if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       requestRuntimeId = session.runtimeId;
       requestRuntimeRevision = session.runtimeRevision;
-      response = await session.delegate.request(runtimeRequest(), options);
+      previousFilterModel = session.metadata.filterModel;
+      response = await session.delegate.request(runtimeRequest(), runtimeOptions());
     }
 
     if (isUnknownRuntimeSession(response, requestRuntimeId)) {
@@ -228,8 +235,9 @@ export class SessionRuntimeRequestExecutor {
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
+        previousFilterModel = session.metadata.filterModel;
         if (!hasExecutionTrust()) return untrustedResponse();
-        response = await session.delegate.request(runtimeRequest(), options);
+        response = await session.delegate.request(runtimeRequest(), runtimeOptions());
       }
     }
 
@@ -291,7 +299,8 @@ export class SessionRuntimeRequestExecutor {
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
-        response = await session.delegate.request(runtimeRequest(), options);
+        previousFilterModel = session.metadata.filterModel;
+        response = await session.delegate.request(runtimeRequest(), runtimeOptions());
       }
     }
 

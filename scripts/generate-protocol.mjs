@@ -5,7 +5,7 @@ import prettier from "prettier";
 import { canonicalOperationCatalog } from "./operation-catalog.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const schemaPath = resolve(root, "protocol", "openwrangler.v3.schema.json");
+const schemaPath = resolve(root, "protocol", "openwrangler.v4.schema.json");
 const protocolOutputPath = resolve(root, "src", "shared", "protocol.generated.ts");
 const catalogOutputPath = resolve(root, "src", "shared", "operationCatalog.generated.ts");
 const pythonCatalogOutputPath = resolve(root, "python", "openwrangler_runtime", "operation_catalog_generated.py");
@@ -27,7 +27,7 @@ const responseShapes = canonicalTaggedUnionShapes(schema, {
 });
 const prettierConfig = (await prettier.resolveConfig(catalogOutputPath)) ?? {};
 const protocolTypesOutput = await compileFromFile(schemaPath, {
-  bannerComment: "/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */",
+  bannerComment: "/* Generated from protocol/openwrangler.v4.schema.json. Do not edit. */",
   style: {
     bracketSpacing: true,
     printWidth: 120,
@@ -107,7 +107,7 @@ function renderTypeScriptCatalog(catalog) {
 })`
     )
     .join(",");
-  return `/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */
+  return `/* Generated from protocol/openwrangler.v4.schema.json. Do not edit. */
 import type { OperationKind } from "./protocol.generated";
 
 export type OperationGroup = ${groups.map(JSON.stringify).join(" | ")};
@@ -338,7 +338,7 @@ function renderPythonCatalog(catalog) {
     ),`
     )
     .join("\n");
-  return `# Generated from protocol/openwrangler.v3.schema.json. Do not edit.
+  return `# Generated from protocol/openwrangler.v4.schema.json. Do not edit.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -390,7 +390,7 @@ function canonicalProtocolLimits(value) {
 }
 
 function renderTypeScriptProtocolLimits(limits) {
-  return `/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */
+  return `/* Generated from protocol/openwrangler.v4.schema.json. Do not edit. */
 export const MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode};
 export const MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan};
 export const MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode};
@@ -400,7 +400,7 @@ export const MAX_FORMULA_INPUT_CHARACTERS = ${limits.formulaInputCharacters};
 }
 
 function renderPythonProtocolLimits(limits) {
-  return `# Generated from protocol/openwrangler.v3.schema.json. Do not edit.
+  return `# Generated from protocol/openwrangler.v4.schema.json. Do not edit.
 MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES = ${limits.customCode}
 MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES = ${limits.retainedPlan}
 MAX_GENERATED_PYTHON_CODE_UTF8_BYTES = ${limits.generatedCode}

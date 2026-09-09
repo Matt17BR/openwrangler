@@ -12,7 +12,7 @@ from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operations import COLUMN_TYPES, FILTER_OPERATORS, OperationError, validate_step
 from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MAX_PAGE_LIMIT = 10_000
 MAX_COLUMN_LIMIT = 256
 MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
@@ -245,25 +245,7 @@ def decode_request(value: Any) -> dict[str, Any]:
     if "offset" in request and not _is_non_negative_integer(request["offset"]):
         raise ProtocolError("offset must be a non-negative integer.")
     if "filterModel" in request:
-        model = _mapping(request["filterModel"], "filterModel")
-        if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
-            raise ProtocolError("filterModel must contain filters and sort arrays.")
-        _validate_view_filter_model(model)
-        sort_columns: set[str] = set()
-        for index, value in enumerate(model["sort"]):
-            rule = _mapping(value, f"filterModel.sort[{index}]")
-            if set(rule) != {"column", "direction", "nulls"}:
-                raise ProtocolError(f"filterModel.sort[{index}] must contain exactly column, direction and nulls.")
-            column = rule.get("column")
-            if not isinstance(column, str) or not column:
-                raise ProtocolError(f"filterModel.sort[{index}].column must be a non-empty string.")
-            if not isinstance(rule["direction"], str) or rule["direction"] not in {"asc", "desc"}:
-                raise ProtocolError(f"filterModel.sort[{index}].direction must be asc or desc.")
-            if not isinstance(rule["nulls"], str) or rule["nulls"] not in {"first", "last"}:
-                raise ProtocolError(f"filterModel.sort[{index}].nulls must be first or last.")
-            if column in sort_columns:
-                raise ProtocolError("filterModel.sort contains duplicate columns.")
-            sort_columns.add(column)
+        _validate_filter_model(request["filterModel"])
     if kind == "getColumnValues":
         if not isinstance(request["column"], str) or not request["column"]:
             raise ProtocolError("column must be a non-empty string.")
@@ -370,9 +352,31 @@ def _filesystem_identity_component(value: Any, label: str) -> str:
     return value
 
 
-def decode_envelope(value: Any) -> tuple[str, str, dict[str, Any]]:
+def _validate_filter_model(value: Any) -> None:
+    model = _mapping(value, "filterModel")
+    if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
+        raise ProtocolError("filterModel must contain filters and sort arrays.")
+    _validate_view_filter_model(model)
+    sort_columns: set[str] = set()
+    for index, value in enumerate(model["sort"]):
+        rule = _mapping(value, f"filterModel.sort[{index}]")
+        if set(rule) != {"column", "direction", "nulls"}:
+            raise ProtocolError(f"filterModel.sort[{index}] must contain exactly column, direction and nulls.")
+        column = rule.get("column")
+        if not isinstance(column, str) or not column:
+            raise ProtocolError(f"filterModel.sort[{index}].column must be a non-empty string.")
+        if not isinstance(rule["direction"], str) or rule["direction"] not in {"asc", "desc"}:
+            raise ProtocolError(f"filterModel.sort[{index}].direction must be asc or desc.")
+        if not isinstance(rule["nulls"], str) or rule["nulls"] not in {"first", "last"}:
+            raise ProtocolError(f"filterModel.sort[{index}].nulls must be first or last.")
+        if column in sort_columns:
+            raise ProtocolError("filterModel.sort contains duplicate columns.")
+        sort_columns.add(column)
+
+
+def decode_envelope(value: Any) -> tuple[str, str, dict[str, Any], dict[str, Any] | None]:
     envelope = _mapping(value, "envelope")
-    unexpected = set(envelope) - {"protocolVersion", "requestId", "priority", "request"}
+    unexpected = set(envelope) - {"protocolVersion", "requestId", "priority", "request", "confirmedView"}
     if unexpected:
         raise ProtocolError(f"Envelope contains unknown fields: {', '.join(sorted(unexpected))}")
     if envelope.get("protocolVersion") != PROTOCOL_VERSION:
@@ -387,7 +391,18 @@ def decode_envelope(value: Any) -> tuple[str, str, dict[str, Any]]:
         raise ProtocolError("priority must be interactive or background.")
     request = decode_request(envelope.get("request"))
     validate_transport_ids(request_id, request)
-    return request_id, str(priority), request
+    confirmed_view = None
+    if "confirmedView" in envelope:
+        if request["kind"] not in {"getPage", "previewStep", "applyDraft", "discardDraft", "undoStep", "redoStep"}:
+            raise ProtocolError("confirmedView is supported only for page and edit requests.")
+        confirmed_view = dict(_mapping(envelope["confirmedView"], "confirmedView"))
+        if set(confirmed_view) != {"filterModel", "viewChangeEpoch"}:
+            raise ProtocolError("confirmedView must contain exactly filterModel and viewChangeEpoch.")
+        _validate_filter_model(confirmed_view["filterModel"])
+        epoch = confirmed_view["viewChangeEpoch"]
+        if not _is_non_negative_integer(epoch) or epoch > 9007199254740991:
+            raise ProtocolError("confirmedView.viewChangeEpoch must be a non-negative safe integer.")
+    return request_id, str(priority), request, confirmed_view
 
 
 def response_envelope(request_id: str, response: Mapping[str, Any]) -> dict[str, Any]:

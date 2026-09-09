@@ -1,4 +1,4 @@
-/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */
+/* Generated from protocol/openwrangler.v4.schema.json. Do not edit. */
 import type { OperationKind } from "./protocol.generated";
 
 export type OperationGroup =

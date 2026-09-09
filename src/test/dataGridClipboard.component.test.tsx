@@ -11,7 +11,7 @@ vi.mock("../webviews/vscodeApi", () => ({
 }));
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "clipboard-session",
   revision: 3,
   backend: "pandas",

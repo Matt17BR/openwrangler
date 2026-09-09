@@ -120,14 +120,14 @@ def dispatch_json(payload: str) -> str:
                 admitted = True
                 if not _request_registry.start(request_id):
                     raise CancelledError
-            candidate_request_id, _, request = decode_envelope(decoded)
+            candidate_request_id, _, request, confirmed_view = decode_envelope(decoded)
             request_id = candidate_request_id
             request_kind = request["kind"]
             view_request_id = request.get("viewRequestId")
             if request_kind == "cancelRequest":
                 response = _cancel_request(request["targetRequestId"])
             else:
-                response = dispatch(_manager, request, request_id)
+                response = dispatch(_manager, request, request_id, confirmed_view)
             return _encode_response(request_id, response)
         except _DuplicateActiveRequestIdError:
             # A response carrying the reused ID would be indistinguishable from the

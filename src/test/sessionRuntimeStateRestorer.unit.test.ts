@@ -9,7 +9,7 @@ import type {
   TransformStep
 } from "../shared/protocol";
 import { decodePersistedSession } from "../extension/sessionPersistence";
-import type { OpenWranglerBridge } from "../extension/dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import {
   RuntimeStateRestoreError,
   SessionRuntimeStateRestorer,
@@ -65,10 +65,12 @@ describe("SessionRuntimeStateRestorer", () => {
       sort: [{ column: "total", direction: "desc", nulls: "last" }]
     };
     const requests: OpenWranglerRequest[] = [];
+    const confirmedViews: BridgeRequestOptions["confirmedView"][] = [];
     let confirmedSteps: TransformStep[] = [];
     let pendingStep: TransformStep | undefined;
     let currentFilter = emptyFilter;
-    const delegate = bridge(async (request) => {
+    const delegate = bridge(async (request, options) => {
+      if (request.kind === "previewStep" || request.kind === "applyDraft") confirmedViews.push(options?.confirmedView);
       requests.push(request);
       if (request.kind === "previewStep") {
         pendingStep = request.step;
@@ -98,6 +100,8 @@ describe("SessionRuntimeStateRestorer", () => {
       throw new Error(`Unexpected restore request: ${request.kind}`);
     });
     const session = runtimeSession(delegate);
+    session.viewChangeEpoch = 9;
+    session.draftBaseViewChangeEpoch = 7;
     const restorer = new SessionRuntimeStateRestorer();
 
     await restorer.restoreCleaningState(
@@ -129,10 +133,16 @@ describe("SessionRuntimeStateRestorer", () => {
     expect(requests.find((request) => request.kind === "getPage")).toMatchObject({
       filterModel: draftBaseFilter
     });
+    expect(confirmedViews).toEqual([
+      ...Array.from({ length: 4 }, () => ({ filterModel: emptyFilter, viewChangeEpoch: 9 })),
+      { filterModel: draftBaseFilter, viewChangeEpoch: 7 }
+    ]);
     expect(session).toMatchObject({
       runtimeRevision: 5,
       metadata: { steps: [groupStep, exampleStep], draftStep, filterModel: draftBaseFilter },
       draftBaseFilterModel: draftBaseFilter,
+      viewChangeEpoch: 9,
+      draftBaseViewChangeEpoch: 7,
       draftPresentation: { warnings: [], beforeSchema: schema }
     });
   });
@@ -220,6 +230,38 @@ describe("SessionRuntimeStateRestorer", () => {
       columnWidths: new Map(),
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
+  });
+
+  it.each([0, 8])("restores a later draft view without inventing another live epoch: %s", async (currentEpoch) => {
+    const savedFilter: FilterModel = { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] };
+    const delegate = bridge(async (request) => {
+      if (request.kind !== "getPage") throw new Error("Expected the saved viewing request.");
+      return pageResponse(request, metadata({ filterModel: request.filterModel }));
+    });
+    const session = runtimeSession(delegate);
+    session.draftBaseFilterModel = emptyFilter;
+    session.draftBaseViewChangeEpoch = 0;
+    session.viewChangeEpoch = currentEpoch;
+    const restorer = new SessionRuntimeStateRestorer();
+    await restorer.restoreOneViewingState(
+      session,
+      { ...session.viewState, filterModel: savedFilter },
+      10,
+      0,
+      1,
+      "saved"
+    );
+    expect(session.viewChangeEpoch).toBe(currentEpoch || 1);
+    expect(session.draftBaseViewChangeEpoch).toBe(0);
+    await restorer.restoreOneViewingState(
+      session,
+      { ...session.viewState, filterModel: savedFilter },
+      10,
+      0,
+      1,
+      "saved"
+    );
+    expect(session.viewChangeEpoch).toBe(currentEpoch || 1);
   });
 
   it("bounds a shrunken saved viewport to the final page without issuing profile work", async () => {
@@ -422,7 +464,7 @@ function bridge(request: OpenWranglerBridge["request"]): OpenWranglerBridge {
 function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   const backend: DataBackend = overrides.backend ?? "polars";
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: "runtime-session",
     revision: 0,
     backend,

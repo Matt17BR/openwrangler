@@ -14,7 +14,7 @@ from python.tests.pyspark_engine_test_support import (
     spark_session as _shared_spark_session,
 )
 
-from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.engines import EngineError, PySparkEngine
 
 sample_frame = _shared_sample_frame
 spark_session = _shared_spark_session
@@ -80,6 +80,18 @@ def test_progressive_page_rejects_a_changed_partition_traversal(
     try:
         first = engine.page(indexed, 0, 2, total_rows=None, column_projection=[(0, "name-id")])
         assert first["hasMore"] is True
+        checkpoint = engine.capture_page_checkpoint(indexed)
+        foreign = PySparkEngine()
+        try:
+            with pytest.raises(EngineError, match="different or closed engine"):
+                foreign.restore_page_checkpoint(checkpoint)
+        finally:
+            foreign.close()
+        different = engine.apply_filter_model(
+            indexed, {"filters": [], "sort": [{"column": "name", "direction": "desc", "nulls": "last"}]}
+        )
+        engine.page(different, 0, 2, total_rows=None, column_projection=[(0, "name-id")])
+        assert engine.restore_page_checkpoint(checkpoint) is indexed
 
         def reordered_offset(frame: Any, value: int) -> Any:
             reordered = frame.orderBy(functions.col(f"`{row_id.replace('`', '``')}`").desc())

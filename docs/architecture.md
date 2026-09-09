@@ -21,11 +21,11 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
   generated Python code, and file-data export.
 - `r/openwrangler_runtime/` owns the native R frame contract used in IRkernel, an exact official R terminal, or an
   Open Wrangler-owned `Rscript` process. R frames never cross through Python.
-- `protocol/openwrangler.v3.schema.json` is the canonical coordinator-facing request and response schema. Its
+- `protocol/openwrangler.v4.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
   has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
-  protocol v3.
+  protocol v4.
 
 Native tree views and Code Preview keep their original lazy provider registrations until shutdown. Loading the
 view owner attaches delegates and tree-change forwarding without unregistering a view while VS Code resolves it.
@@ -86,12 +86,12 @@ identity remains stable while the runtime identity may change.
 
 ## Protocol and publication
 
-Every coordinator-facing request and response uses protocol v3, passes strict decoding, and carries the identifiers
+Every coordinator-facing request and response uses protocol v4, passes strict decoding, and carries the identifiers
 needed to correlate it to a request and session. Python bridges implement that boundary directly; `RKernelBridge`
 validates and translates between it and native R's private transport and frame contracts. Public transform parameters
 never contain private bound positions. Unknown fields, malformed unions, invalid limits, stale identities, and schema
 inconsistencies fail before adapter dispatch or UI publication.
-Older live protocols are rejected. An already-running Python notebook kernel may retain an imported v2 runtime after
+Older live protocols are rejected. An already-running Python notebook kernel may retain an imported v2 or v3 runtime after
 an extension update; restart that kernel and rerun its cells before reopening the dataframe. Open Wrangler does not
 replace imported modules or restart a user-owned kernel to change its protocol.
 
@@ -127,6 +127,18 @@ those whose logical context is no longer current. This prevents a queued read fo
 runtime viewing state after a newer view has been confirmed. Contextless internal reads retain their existing
 behavior; running reads still require correlated response validation and freshness checks.
 
+Before Preview, Apply, Discard, Undo or Redo, the host supplies its accepted filter and view-change epoch through the
+runtime envelope. The pair belongs to the enclosing request's exact session and revision; it is absent from webview
+requests. The runtime reconciles its query within the existing mutation transaction before consuming history. A
+successful page that the host later discards therefore cannot choose the view used by an edit. Matching queries reuse
+their native frame; restoring a different accepted query may require filtering again. Editable-engine page reads and
+background profiles retain their existing behavior.
+Recovery and replacement replay create history receipts in the same epoch namespace as the published session. Each
+replayed edit uses the candidate's current schema and filter. Returning to the same filter after a confirmed view
+change does not erase that change or revive an obsolete draft restoration receipt during the live session.
+Durable state retains the draft's base filter, but not intervening view epochs. A persisted open uses the existing
+saved-filter restoration rules in a fresh epoch namespace.
+
 Python and R kernel execution is not treated as safely interruptible. Timeout or cancellation stops publication and
 triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and
 dataset-statistics reads may recover once after a lost runtime when the view is still current. Mutation retry rules do
@@ -151,6 +163,17 @@ Inspection applies this rule separately to its input and output. The host requir
 continuations retain the requested position and their existing anchor checks. No extra row count is performed.
 Spark owns a page-only scope for its continuation anchors. A rejected candidate therefore cannot prevent the prior
 view from continuing after a cached page, and background profile failure cannot roll back newer foreground paging.
+Spark page requests also carry the host's accepted filter and epoch. The runtime retains one accepted query with its
+exact logical frame, known shape and ordered continuation anchors. A later request confirms the successful working
+query before replacing it; a superseded working query cannot replace that checkpoint. Reading the accepted filter
+reuses its exact frame even at row zero, preserving subsequent continuation after another query fails.
+
+The first such request binds the current matching query to the supplied host epoch. This also covers a fresh runtime
+whose accepted viewport was restored through contiguous pages. Each checkpoint belongs to its exact session, source
+and revision, and source loss or disposal releases it. A successful page without host intent clears the checkpoint.
+Spark retains at most 4096 working and 4096 accepted anchors,
+with one unchanged eight-page, 16 MiB page cache. Capturing or restoring the checkpoint performs no Spark action and
+does not persist or materialize a dataframe; ordinary page validation and traversal checks still apply.
 
 Mutation state crosses the runtime and webview boundary atomically. Preview, apply, discard, undo, redo, import replacement,
 and recovery either publish a complete confirmed snapshot or restore the prior revision, plan, draft, metadata, page

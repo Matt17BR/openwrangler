@@ -5,6 +5,7 @@ import os
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
@@ -88,6 +89,13 @@ PYSPARK_SUMMARY_TERMINAL_BRANCH_LIMIT = 4
 _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class PySparkPageCheckpoint:
+    frame: Any
+    _owner: PySparkEngine
+    _anchors: dict[int, Any]
+
+
 class PySparkEngine(DataFrameEngine):
     """Read-only native viewing for live classic and Spark Connect dataframes."""
 
@@ -114,6 +122,20 @@ class PySparkEngine(DataFrameEngine):
 
     def validate_runtime(self) -> None:
         _require_supported_pyspark_runtime()
+
+    def capture_page_checkpoint(self, frame: Any) -> PySparkPageCheckpoint:
+        if self._closed or self._paging_frame is not frame:
+            raise EngineError("The confirmed PySpark page no longer has its exact continuation frame.")
+        # One confirmed map plus the existing working map retains at most
+        # 2 * PYSPARK_PAGE_ANCHOR_LIMIT boundaries, without another page cache.
+        return PySparkPageCheckpoint(frame, self, self._paging_anchors.copy())
+
+    def restore_page_checkpoint(self, checkpoint: PySparkPageCheckpoint) -> Any:
+        if self._closed or checkpoint._owner is not self:
+            raise EngineError("The confirmed PySpark page belongs to a different or closed engine.")
+        self._paging_frame = checkpoint.frame
+        self._paging_anchors = checkpoint._anchors.copy()
+        return checkpoint.frame
 
     @contextmanager
     def page_read_scope(self) -> Iterator[None]:

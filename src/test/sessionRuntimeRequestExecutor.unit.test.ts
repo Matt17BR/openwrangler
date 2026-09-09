@@ -17,6 +17,7 @@ import {
   type RuntimeRequestSession
 } from "../extension/sessionRuntimeRequestExecutor";
 import type { SessionRequestScheduler } from "../extension/sessionRequestScheduler";
+import { stepPreviewResponse } from "./sessionCoordinatorTestFixtures";
 import { initialViewingState } from "../extension/sessionRuntimeStateRestorer";
 
 const emptyFilter: FilterModel = { filters: [], sort: [] };
@@ -132,6 +133,146 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(recoveredSession.recoveryRequired).toBe(false);
     expect(recoveredHooks.replay).toHaveBeenCalledWith({ priority: "interactive" });
   });
+
+  it.each(
+    (["previewStep", "getPage", "clipboard"] as const).flatMap((kind) =>
+      (["settlement", "recovery", "unknown-session"] as const).map((phase) => ({ kind, phase }))
+    )
+  )("captures the confirmed view only at actual $kind dispatch after $phase", async ({ kind, phase }) => {
+    const acceptedFilter: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const delegate = bridge(
+      requestMock(async (request) => ({
+        kind: "error",
+        code: "unknown_session",
+        message: "Unknown session.",
+        recoverable: true,
+        sessionId: runtimeSessionId(request),
+        ...("viewRequestId" in request ? { viewRequestId: request.viewRequestId } : {})
+      }))
+    );
+    const session = runtimeSession(delegate, {
+      metadata: metadata({ backend: kind === "previewStep" ? "polars" : "pyspark" }),
+      viewChangeEpoch: 1,
+      recoveryRequired: phase === "recovery"
+    });
+    const updateView = (): void => {
+      session.metadata = { ...session.metadata, filterModel: acceptedFilter };
+      session.viewChangeEpoch = 7;
+    };
+    const requestHooks = hooks({
+      waitForRuntimeSettlement: vi.fn(async () => {
+        if (phase === "settlement") updateView();
+      }),
+      replay: vi.fn(async () => {
+        updateView();
+        return true;
+      }),
+      replayAfterRuntimeLoss: vi.fn(async () => {
+        if (phase !== "unknown-session") return false;
+        replaceRuntime(session);
+        updateView();
+        return true;
+      })
+    });
+    const options = {
+      timeoutMs: 17,
+      ...(kind === "clipboard" ? { ephemeralPage: true } : {}),
+      confirmedView: { filterModel: emptyFilter, viewChangeEpoch: 99 }
+    };
+    const request = kind === "previewStep" ? previewRequest() : pageRequest("confirmed-page", 0);
+    await runtimeExecutor().execute(session, request, options, requestHooks);
+    const calls = vi.mocked(delegate.request).mock.calls;
+    expect(calls).toHaveLength(phase === "unknown-session" ? 2 : 1);
+    expect(calls.at(-1)?.[1]).toMatchObject({
+      timeoutMs: 17,
+      confirmedView: { filterModel: acceptedFilter, viewChangeEpoch: 7 }
+    });
+    if (phase === "unknown-session")
+      expect(calls[0]?.[1]?.confirmedView).toEqual({ filterModel: emptyFilter, viewChangeEpoch: 1 });
+    if (kind !== "previewStep") expect(calls.at(-1)?.[0]).toMatchObject({ filterModel: emptyFilter });
+    expect(options.confirmedView.viewChangeEpoch).toBe(99);
+  });
+
+  it.each(["polars", "r", "pyspark-profile"] as const)(
+    "leaves confirmed-view options absent on unrelated %s reads",
+    async (kind) => {
+      const delegate = bridge(
+        requestMock(async (request) => ({
+          kind: "error",
+          code: "runtime_error",
+          message: "Read refused.",
+          recoverable: true,
+          sessionId: runtimeSessionId(request)
+        }))
+      );
+      const session = runtimeSession(delegate, {
+        metadata: metadata({ backend: kind === "pyspark-profile" ? "pyspark" : kind })
+      });
+      const options = { timeoutMs: 17 };
+      const request = kind === "pyspark-profile" ? statsRequest(0) : pageRequest("ordinary-page", 0);
+      await runtimeExecutor().execute(session, request, options, hooks());
+      expect(delegate.request).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(delegate.request).mock.calls[0]?.[1]).toEqual(options);
+    }
+  );
+
+  it.each([false, true])(
+    "commits the same Preview base sent to the runtime after view recovery: %s",
+    async (recover) => {
+      const originalFilter: FilterModel = {
+        filters: [],
+        sort: [{ column: "value", direction: "desc", nulls: "last" }]
+      };
+      let calls = 0;
+      const delegate = bridge(
+        requestMock(async (request, options) => {
+          if (request.kind !== "previewStep") throw new Error("Expected Preview.");
+          calls += 1;
+          if (recover && calls === 1)
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Lost runtime.",
+              recoverable: true,
+              sessionId: request.sessionId
+            };
+          const filterModel = options?.confirmedView?.filterModel;
+          if (!filterModel) throw new Error("Expected the dispatch-owned confirmed view.");
+          const next = metadata({ sessionId: request.sessionId, revision: 1, draftStep: step, filterModel });
+          return {
+            ...stepPreviewResponse(1, step, request.sessionId),
+            metadata: next,
+            page: {
+              ...pageResponse({ ...pageRequest("preview-page", 1), limit: request.limit, filterModel }, next).page,
+              totalRows: 10
+            }
+          };
+        })
+      );
+      const session = runtimeSession(delegate, {
+        metadata: metadata({ filterModel: originalFilter }),
+        viewChangeEpoch: 3
+      });
+      const requestHooks = hooks({
+        replayAfterRuntimeLoss: vi.fn(async () => {
+          replaceRuntime(session);
+          session.metadata = { ...session.metadata, filterModel: emptyFilter };
+          session.viewChangeEpoch = 4;
+          return true;
+        })
+      });
+      const expectedFilter = recover ? emptyFilter : originalFilter;
+      await expect(
+        runtimeExecutor().execute(session, previewRequest(), undefined, requestHooks)
+      ).resolves.toMatchObject({ kind: "stepPreview", metadata: { filterModel: expectedFilter } });
+      expect(session.draftBaseFilterModel).toEqual(expectedFilter);
+      expect(session.draftBaseViewChangeEpoch).toBe(recover ? 4 : 3);
+      expect(delegate.request).toHaveBeenCalledTimes(recover ? 2 : 1);
+    }
+  );
 
   it("records detached and thrown mutation ambiguity without replaying it", async () => {
     const request = previewRequest();
@@ -1065,7 +1206,7 @@ function replaceRuntime(session: RuntimeRequestSession): void {
 
 function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: "runtime-session",
     revision: 0,
     backend: "polars",

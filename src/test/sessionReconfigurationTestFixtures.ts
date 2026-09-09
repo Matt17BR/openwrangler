@@ -102,7 +102,7 @@ export function metadataFor({
   filterModel?: FilterModel;
 }): SessionMetadata {
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: runtimeId,
     revision,
     backend,

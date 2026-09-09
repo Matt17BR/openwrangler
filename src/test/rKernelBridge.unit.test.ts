@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  ConfirmedView,
   CustomCodeTransformStep,
   DataDiff,
   MultiLabelBinarizeTransformStep,
@@ -9,6 +10,12 @@ import type {
   PivotLongerTransformStep,
   PivotWiderTransformStep
 } from "../shared/protocol";
+import {
+  SessionRuntimeStateRestorer,
+  initialViewingState,
+  confirmedViewOptions,
+  type RuntimeSessionState
+} from "../extension/sessionRuntimeStateRestorer";
 import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
@@ -120,7 +127,7 @@ describe("canonical R kernel bridge", () => {
 
     await expect(bridge.request({ kind: "initialize" })).resolves.toMatchObject({
       kind: "initialized",
-      protocolVersion: 3,
+      protocolVersion: 4,
       runtimeVersion: "2.0.0-preview.1",
       capabilities: {
         editable: true,
@@ -991,33 +998,30 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
-  it("reconciles dropped native R multi-label filters and restores them on discard", async () => {
-    const source = frameContract();
-    const step: MultiLabelBinarizeTransformStep = {
-      id: "r-multi-label-dynamic",
-      kind: "multiLabelBinarize",
-      params: {
-        column: { id: "r:c:6", name: "missing" },
-        delimiter: "::",
-        prefix: "tag_",
-        dropOriginal: true
-      }
-    };
-    const encoded = categoricalContract(source, step.id, ["r:c:6"], true, ["tag_alpha", "tag_beta"]);
-    const transport = fakeTransport(source);
-    const bridge = createBridge(transport);
-    await bridge.request(openRequest("editing"));
-    transport.getPage.mockResolvedValueOnce(source);
-    await expect(
-      bridge.request({
-        kind: "getPage",
-        sessionId,
-        revision: 0,
-        viewRequestId: "multi-label-filter",
-        offset: 0,
-        limit: 20,
-        columnOffset: 0,
-        columnLimit: 8,
+  it.each([
+    ["discardDraft", false],
+    ["discardDraft", true],
+    ["undoStep", false],
+    ["undoStep", true]
+  ] as const)(
+    "retains dropped-filter receipts for %s without replacing a newer view: %s",
+    async (action, newerView) => {
+      const source = frameContract();
+      const step: MultiLabelBinarizeTransformStep = {
+        id: "r-multi-label-dynamic",
+        kind: "multiLabelBinarize",
+        params: {
+          column: { id: "r:c:6", name: "missing" },
+          delimiter: "::",
+          prefix: "tag_",
+          dropOriginal: true
+        }
+      };
+      const encoded = categoricalContract(source, step.id, ["r:c:6"], true, ["tag_alpha", "tag_beta"]);
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const baseView: ConfirmedView = {
         filterModel: {
           filters: [
             {
@@ -1027,61 +1031,268 @@ describe("canonical R kernel bridge", () => {
             }
           ],
           sort: []
-        }
-      })
-    ).resolves.toMatchObject({ kind: "page" });
-    transport.queuePreview({
-      sessionId,
-      revision: 1,
-      page: encoded,
-      diff: categoricalDiff(["tag_alpha", "tag_beta"], ["missing"]),
-      code: "open_wrangler_result <- open_wrangler_multi_label_binarize_column(orders)"
-    });
+        },
+        viewChangeEpoch: 7
+      };
+      transport.getPage.mockResolvedValueOnce(source);
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: "multi-label-filter",
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8,
+          filterModel: {
+            filters: [
+              {
+                column: "missing",
+                type: "string",
+                predicates: [{ kind: "predicate", operator: "contains", value: "alpha" }]
+              }
+            ],
+            sort: []
+          }
+        })
+      ).resolves.toMatchObject({ kind: "page" });
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: encoded,
+        diff: categoricalDiff(["tag_alpha", "tag_beta"], ["missing"]),
+        code: "open_wrangler_result <- open_wrangler_multi_label_binarize_column(orders)"
+      });
 
-    await expect(
-      bridge.request({
-        kind: "previewStep",
+      await expect(
+        bridge.request(
+          {
+            kind: "previewStep",
+            sessionId,
+            revision: 0,
+            step,
+            offset: 0,
+            limit: 20,
+            columnOffset: 0,
+            columnLimit: 8
+          },
+          { confirmedView: baseView }
+        )
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: { filterModel: { filters: [], sort: [] }, shape: { rows: 1, columns: 9 } },
+        diff: { addedColumns: ["tag_alpha", "tag_beta"], removedColumns: ["missing"] }
+      });
+      expect(transport.previewStep).toHaveBeenLastCalledWith(
+        sessionId,
+        0,
+        expect.objectContaining({ kind: "multiLabelBinarize" }),
+        expect.objectContaining({ view: { filters: [], sorts: [] } }),
+        source.schema,
+        undefined,
+        expect.any(Object)
+      );
+
+      let revision = 1;
+      const draftView: ConfirmedView = { filterModel: { filters: [], sort: [] }, viewChangeEpoch: 7 };
+      if (action === "undoStep") {
+        transport.applyDraft.mockResolvedValueOnce({
+          sessionId,
+          action: "apply",
+          revision: 2,
+          page: encoded,
+          code: "owned applied code"
+        });
+        await expect(bridge.request(planRequest("applyDraft", 1), { confirmedView: draftView })).resolves.toMatchObject(
+          { kind: "planUpdated" }
+        );
+        revision = 2;
+      }
+      // An unpublished read moves the runtime view; only the host epoch distinguishes a later accepted view.
+      transport.getPage.mockResolvedValueOnce(encoded);
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision,
+          viewRequestId: "unpublished-page",
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8,
+          filterModel: { filters: [], sort: [{ column: "count", direction: "desc", nulls: "last" }] }
+        })
+      ).resolves.toMatchObject({ kind: "page" });
+      const consumeView = { ...draftView, viewChangeEpoch: newerView ? 9 : 7 };
+      transport[action].mockResolvedValueOnce({
+        sessionId,
+        action: action === "undoStep" ? "undo" : "discard",
+        revision: revision + 1,
+        page: source,
+        code: ""
+      });
+      const expectedFilter = newerView ? draftView.filterModel : baseView.filterModel;
+      await expect(
+        bridge.request(planRequest(action, revision), { confirmedView: consumeView })
+      ).resolves.toMatchObject({
+        kind: "planUpdated",
+        metadata: { filterModel: expectedFilter, steps: [] }
+      });
+      expect(transport[action].mock.calls[0]?.[2].view.filters).toHaveLength(newerView ? 0 : 1);
+      if (action === "undoStep" && !newerView) {
+        transport.redoStep.mockResolvedValueOnce({
+          sessionId,
+          revision: revision + 2,
+          page: encoded,
+          diff: categoricalDiff(["tag_alpha", "tag_beta"], ["missing"]),
+          code: "owned redone code"
+        });
+        await expect(
+          bridge.request(
+            { ...planRequest("undoStep", revision + 1), kind: "redoStep", viewRequestId: "redo-filter" },
+            { confirmedView: baseView }
+          )
+        ).resolves.toMatchObject({
+          kind: "planUpdated",
+          action: "redo",
+          metadata: { filterModel: draftView.filterModel, steps: [step] }
+        });
+        transport.undoStep.mockResolvedValueOnce({
+          sessionId,
+          revision: revision + 3,
+          action: "undo",
+          page: source,
+          code: ""
+        });
+        await expect(
+          bridge.request(planRequest("undoStep", revision + 2), { confirmedView: draftView })
+        ).resolves.toMatchObject({ kind: "planUpdated", metadata: { filterModel: baseView.filterModel, steps: [] } });
+      }
+      expect(transport.getPage).toHaveBeenCalledTimes(2);
+      expect(transport.previewStep).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([false, true])(
+    "replays a pruned R draft with its original epoch and later-view distinction: %s",
+    async (laterView) => {
+      const source = frameContract();
+      const step: MultiLabelBinarizeTransformStep = {
+        id: "recovered-drop",
+        kind: "multiLabelBinarize",
+        params: { column: { id: "r:c:6", name: "missing" }, delimiter: "::", prefix: "tag_", dropOriginal: true }
+      };
+      const encoded = categoricalContract(source, step.id, ["r:c:6"], true, ["tag_alpha", "tag_beta"]);
+      const baseFilter: ConfirmedView["filterModel"] = {
+        filters: [
+          {
+            column: "missing",
+            type: "string",
+            predicates: [{ kind: "predicate", operator: "contains", value: "alpha" }]
+          }
+        ],
+        sort: []
+      };
+      const emptyFilter = { filters: [], sort: [] };
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      const opened = await bridge.request(openRequest("editing"));
+      if (opened.kind !== "sessionOpened") throw new Error("Expected a fresh R session.");
+      const candidate: RuntimeSessionState = {
+        publicId: "recovered-public",
+        runtimeId: sessionId,
+        runtimeRevision: 0,
+        delegate: bridge,
+        metadata: opened.metadata,
+        code: "",
+        viewState: initialViewingState(opened.metadata),
+        viewChangeEpoch: laterView ? 9 : 7,
+        draftBaseViewChangeEpoch: 7
+      };
+      transport.getPage
+        .mockResolvedValueOnce({ ...source, page: { ...source.page, limit: 1 } })
+        .mockResolvedValueOnce(encoded);
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: { ...encoded, page: { ...encoded.page, limit: 1 } },
+        diff: categoricalDiff(["tag_alpha", "tag_beta"], ["missing"]),
+        code: "owned recovered draft"
+      });
+      await new SessionRuntimeStateRestorer().restoreRuntimeState(
+        candidate,
+        {
+          backend: "r",
+          cleaning: { steps: [], draftStep: step, draftBaseFilterModel: baseFilter },
+          view: { ...candidate.viewState, filterModel: emptyFilter }
+        },
+        20,
+        0,
+        8
+      );
+      expect(candidate.viewChangeEpoch).toBe(laterView ? 9 : 7);
+      expect(candidate.draftBaseViewChangeEpoch).toBe(7);
+      expect(candidate.metadata.filterModel).toEqual(emptyFilter);
+      transport.discardDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "discard",
+        revision: 2,
+        page: source,
+        code: ""
+      });
+      await expect(
+        bridge.request(planRequest("discardDraft", 1), confirmedViewOptions(candidate))
+      ).resolves.toMatchObject({
+        kind: "planUpdated",
+        metadata: { filterModel: laterView ? emptyFilter : baseFilter, steps: [] }
+      });
+      expect(transport.previewStep).toHaveBeenCalledOnce();
+      expect(transport.getPage).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it.each(["epoch", "column", "stale revision"] as const)(
+    "refuses an invalid confirmed R view before mutation: %s",
+    async (invalid) => {
+      const source = frameContract();
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const renamed = renameContract(source, "r:c:0", "amount");
+      const request = {
+        kind: "previewStep" as const,
         sessionId,
         revision: 0,
-        step,
+        step: {
+          id: "safe-rename",
+          kind: "renameColumn" as const,
+          params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
+        },
         offset: 0,
         limit: 20,
         columnOffset: 0,
         columnLimit: 8
-      })
-    ).resolves.toMatchObject({
-      kind: "stepPreview",
-      metadata: { filterModel: { filters: [], sort: [] }, shape: { rows: 1, columns: 9 } },
-      diff: { addedColumns: ["tag_alpha", "tag_beta"], removedColumns: ["missing"] }
-    });
-    expect(transport.previewStep).toHaveBeenLastCalledWith(
-      sessionId,
-      0,
-      expect.objectContaining({ kind: "multiLabelBinarize" }),
-      expect.objectContaining({ view: { filters: [], sorts: [] } }),
-      source.schema,
-      undefined,
-      expect.any(Object)
-    );
-
-    transport.discardDraft.mockResolvedValueOnce({
-      sessionId,
-      action: "discard",
-      revision: 2,
-      page: source,
-      code: ""
-    });
-    await expect(bridge.request(planRequest("discardDraft", 1))).resolves.toMatchObject({
-      kind: "planUpdated",
-      action: "discard",
-      metadata: {
+      };
+      const view: ConfirmedView = {
         filterModel: {
-          filters: [expect.objectContaining({ column: "missing" })],
-          sort: []
-        }
-      }
-    });
-  });
+          filters: [],
+          sort: [{ column: invalid === "column" ? "absent" : "count", direction: "desc", nulls: "last" }]
+        },
+        viewChangeEpoch: invalid === "epoch" ? -1 : 99
+      };
+      await expect(
+        bridge.request({ ...request, revision: invalid === "stale revision" ? 1 : 0 }, { confirmedView: view })
+      ).resolves.toMatchObject({ kind: "error" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+      transport.queuePreview({ sessionId, revision: 1, page: renamed, diff: renameDiff(), code: "owned rename" });
+      await expect(bridge.request(request)).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: { filterModel: { filters: [], sort: [] } }
+      });
+      expect(transport.previewStep.mock.calls[0]?.[3].view).toEqual({ filters: [], sorts: [] });
+    }
+  );
 
   it("rejects malformed dynamic native R categorical schemas before publication", async () => {
     const source = frameContract();

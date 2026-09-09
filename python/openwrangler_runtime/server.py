@@ -137,17 +137,19 @@ def dispatch(
     manager: SessionManager,
     request: dict[str, Any],
     request_id: str | None = None,
+    confirmed_view: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if request_id is not None and request.get("kind") != "getPage":
         with manager.request_scope(request_id, request):
-            return _dispatch(manager, request, request_id)
-    return _dispatch(manager, request, request_id)
+            return _dispatch(manager, request, request_id, confirmed_view)
+    return _dispatch(manager, request, request_id, confirmed_view)
 
 
 def _dispatch(
     manager: SessionManager,
     request: dict[str, Any],
     request_id: str | None,
+    confirmed_view: dict[str, Any] | None,
 ) -> dict[str, Any]:
     kind = request.get("kind")
     response_preflight = _state_response_preflight(request_id)
@@ -177,6 +179,7 @@ def _dispatch(
                 int(request["columnLimit"]),
                 response_preflight=_state_response_preflight(request_id, request["viewRequestId"]),
                 request_id=request_id,
+                confirmed_view=confirmed_view,
             ),
             request,
         )
@@ -222,6 +225,7 @@ def _dispatch(
             int(request["columnOffset"]),
             int(request["columnLimit"]),
             response_preflight=response_preflight,
+            confirmed_view=confirmed_view,
         )
     if kind == "inspectStep":
         return manager.inspect_step(
@@ -242,6 +246,7 @@ def _dispatch(
             int(request["columnOffset"]),
             int(request["columnLimit"]),
             response_preflight=response_preflight,
+            confirmed_view=confirmed_view,
         )
     if kind == "discardDraft":
         return manager.discard_draft(
@@ -252,6 +257,7 @@ def _dispatch(
             int(request["columnOffset"]),
             int(request["columnLimit"]),
             response_preflight=response_preflight,
+            confirmed_view=confirmed_view,
         )
     if kind == "undoStep":
         return manager.undo_step(
@@ -262,6 +268,7 @@ def _dispatch(
             int(request["columnOffset"]),
             int(request["columnLimit"]),
             response_preflight=response_preflight,
+            confirmed_view=confirmed_view,
         )
     if kind == "redoStep":
         return _with_view_request_id(
@@ -273,6 +280,7 @@ def _dispatch(
                 int(request["columnOffset"]),
                 int(request["columnLimit"]),
                 response_preflight=_state_response_preflight(request_id, request["viewRequestId"]),
+                confirmed_view=confirmed_view,
             ),
             request,
         )
@@ -394,7 +402,7 @@ def main() -> int:
             admitted = False
             submitted = False
             try:
-                request_id, priority, request = decode_envelope(payload)
+                request_id, priority, request, confirmed_view = decode_envelope(payload)
                 view_request_id = request.get("viewRequestId")
                 if request["kind"] == "cancelRequest":
                     target = str(request["targetRequestId"])
@@ -435,7 +443,7 @@ def main() -> int:
                     # Pandas after Polars from a Windows worker can deadlock.
                     manager.prepare_backend(request["source"], request.get("backend"))
                 executor = background_executor if priority == "background" else interactive_executor
-                future = executor.submit(dispatch, manager, request, request_id)
+                future = executor.submit(dispatch, manager, request, request_id, confirmed_view)
                 with pending_lock:
                     pending[request_id] = future
                 future.add_done_callback(

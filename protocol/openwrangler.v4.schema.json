@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v3.schema.json",
+  "$id": "https://github.com/Matt17BR/openwrangler/protocol/openwrangler.v4.schema.json",
   "title": "OpenWranglerTransportMessage",
-  "description": "Runtime transport contract for Open Wrangler protocol v3.",
+  "description": "Runtime transport contract for Open Wrangler protocol v4.",
   "x-openwrangler-limits": {
     "pythonCustomCodeUtf8Bytes": 65536,
     "pythonRetainedPlanUtf8Bytes": 4194304,
@@ -252,7 +252,7 @@
   ],
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
-    "ProtocolVersion": { "type": "integer", "enum": [3] },
+    "ProtocolVersion": { "type": "integer", "enum": [4] },
     "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark", "r"] },
     "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
@@ -2841,7 +2841,27 @@
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
         "requestId": { "type": "string", "minLength": 1 },
         "priority": { "$ref": "#/definitions/RequestPriority" },
-        "request": { "$ref": "#/definitions/OpenWranglerRequest" }
+        "request": { "$ref": "#/definitions/OpenWranglerRequest" },
+        "confirmedView": { "$ref": "#/definitions/ConfirmedView" }
+      },
+      "if": { "required": ["confirmedView"] },
+      "then": {
+        "properties": {
+          "request": {
+            "properties": {
+              "kind": { "enum": ["getPage", "previewStep", "applyDraft", "discardDraft", "undoStep", "redoStep"] }
+            }
+          }
+        }
+      }
+    },
+    "ConfirmedView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filterModel", "viewChangeEpoch"],
+      "properties": {
+        "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "viewChangeEpoch": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
       }
     },
     "RuntimeResponseEnvelope": {

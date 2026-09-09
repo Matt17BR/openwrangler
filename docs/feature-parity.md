@@ -51,8 +51,9 @@ Open Wrangler targets desktop VS Code and editors based on it. Release-candidate
 VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
 cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
 
-A failed Python viewing page retains the last confirmed query, so later Apply and Discard do not use an unseen
-filter. Spark also retains the prior view's continuation anchors when a replacement page fails.
+A runtime-refused Python viewing page retains its previous query. Editing uses the host's accepted filter and history
+marker even when a successful page was superseded before publication. Spark retains the accepted query's exact
+continuation anchors and known total through superseded pages and failed replacements, including a return to row zero.
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
 Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
 successfully saved state, as the storage warning explains.
@@ -459,19 +460,19 @@ Only stable/final PySpark 4.2.x local Classic and local Connect batch DataFrames
 notebook-only and viewing-only. It uses the notebook's existing Spark session and never converts through a local
 dataframe engine.
 
-| Surface                                        | Availability       | Status       | Current evidence                             | Boundary                                    |
-| ---------------------------------------------- | ------------------ | ------------ | -------------------------------------------- | ------------------------------------------- |
-| Local Classic DataFrame viewing                | Live notebook only | Done         | Direct stable/final-version path             | Installed prerelease denial is unearned     |
-| Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Direct and installed local Connect path      | Local Connect only                          |
-| Progressive projected grid pages               | Viewing only       | Done         | Lookahead, boundary, and terminal-page tests | Sequential traversal                        |
-| Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged queries      | Unique final key needed for repeatable ties |
-| Summaries, statistics, and distinct values     | Viewing only       | Done         | Native fixed-size aggregate tests            | Header profiles start off                   |
-| Session recovery and non-interrupting disposal | Viewing only       | Done         | Classic/Connect rebind and cleanup           | Running Spark work is not interrupted       |
-| Cleaning operations and history                | No                 | Out of scope | Editing capability is absent                 | No distributed transformation plan          |
-| Script/notebook/data export                    | No                 | Out of scope | Export capability is absent                  | No Spark export contract                    |
-| Saved-output MIME formatter                    | No                 | Out of scope | Saved-output capability is absent            | Live variables only                         |
-| File sessions and automatic backend selection  | No                 | Out of scope | File capability is absent                    | Notebook variables only                     |
-| Streaming, external, or authenticated clusters | No                 | Out of scope | Local batch contract only                    | No authentication or provisioning           |
+| Surface                                        | Availability       | Status       | Current evidence                            | Boundary                                    |
+| ---------------------------------------------- | ------------------ | ------------ | ------------------------------------------- | ------------------------------------------- |
+| Local Classic DataFrame viewing                | Live notebook only | Done         | Direct stable/final-version path            | Installed prerelease denial is unearned     |
+| Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Direct and installed local Connect path     | Local Connect only                          |
+| Progressive projected grid pages               | Viewing only       | Done         | Lookahead, accepted-view and terminal tests | Sequential paging with bounded anchors      |
+| Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged queries     | Unique final key needed for repeatable ties |
+| Summaries, statistics, and distinct values     | Viewing only       | Done         | Native fixed-size aggregate tests           | Header profiles start off                   |
+| Session recovery and non-interrupting disposal | Viewing only       | Done         | Classic/Connect rebind and cleanup          | Running Spark work is not interrupted       |
+| Cleaning operations and history                | No                 | Out of scope | Editing capability is absent                | No distributed transformation plan          |
+| Script/notebook/data export                    | No                 | Out of scope | Export capability is absent                 | No Spark export contract                    |
+| Saved-output MIME formatter                    | No                 | Out of scope | Saved-output capability is absent           | Live variables only                         |
+| File sessions and automatic backend selection  | No                 | Out of scope | File capability is absent                   | Notebook variables only                     |
+| Streaming, external, or authenticated clusters | No                 | Out of scope | Local batch contract only                   | No authentication or provisioning           |
 
 The first page does not count, globally index, cache, or persist the whole dataframe. Paging advances sequentially;
 only a short terminal page establishes an exact total. Spark does not promise source order, and repeatable sorted ties

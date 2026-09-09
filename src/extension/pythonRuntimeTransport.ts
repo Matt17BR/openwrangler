@@ -92,7 +92,8 @@ export class PythonRuntimeTransport<Runtime extends PythonRuntimeTransportSlot> 
       priority:
         options.priority ??
         (request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive"),
-      request
+      request,
+      ...(options.confirmedView === undefined ? {} : { confirmedView: options.confirmedView })
     };
     const timeoutMs = runtimeRequestTimeoutMs(request, options.timeoutMs);
 

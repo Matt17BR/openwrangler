@@ -231,6 +231,8 @@ export class SessionRuntimeEstablisher {
       session.code = "";
       session.draftPresentation = undefined;
       session.draftBaseFilterModel = undefined;
+      session.viewChangeEpoch = 0;
+      session.draftBaseViewChangeEpoch = undefined;
       session.viewState = initialViewingState(clean.metadata);
       const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
       if (cleanMismatch) {

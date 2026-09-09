@@ -3,6 +3,7 @@ import type {
   ColumnReference,
   ColumnSchema,
   ColumnSummary,
+  ConfirmedView,
   DataDiff,
   ExportOptions,
   FilterModel,
@@ -96,13 +97,32 @@ const MAX_ROW_LABEL_CODE_POINTS = 1_024;
 
 /** Validates the canonical runtime protocol request envelope at an untrusted transport boundary. */
 export function isRuntimeRequestEnvelope(value: unknown): value is RuntimeRequestEnvelope {
-  const candidate = exactRecord(value, ["protocolVersion", "requestId", "priority", "request"]);
+  const candidate = exactRecord(value, ["protocolVersion", "requestId", "priority", "request"], ["confirmedView"]);
+  const request = candidate?.request;
   return (
     candidate !== undefined &&
     candidate.protocolVersion === PROTOCOL_VERSION &&
     isNonEmptyString(candidate.requestId) &&
     isOneOf(candidate.priority, ["interactive", "background"]) &&
-    isOpenWranglerRequest(candidate.request)
+    isOpenWranglerRequest(request) &&
+    optional(
+      candidate,
+      "confirmedView",
+      (value) =>
+        isOneOf(request.kind, ["getPage", "previewStep", "applyDraft", "discardDraft", "undoStep", "redoStep"]) &&
+        isConfirmedView(value)
+    )
+  );
+}
+
+/** Validates host-supplied viewing intent at an adapter or transport boundary. */
+export function isConfirmedView(value: unknown): value is ConfirmedView {
+  const candidate = exactRecord(value, ["filterModel", "viewChangeEpoch"]);
+  return (
+    candidate !== undefined &&
+    isFilterModel(candidate.filterModel) &&
+    isNonNegativeInteger(candidate.viewChangeEpoch) &&
+    Number.isSafeInteger(candidate.viewChangeEpoch)
   );
 }
 

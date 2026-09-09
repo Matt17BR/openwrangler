@@ -1,5 +1,6 @@
 import type {
   CancelledResponse,
+  ConfirmedView,
   DataBackend,
   ErrorResponse,
   OpenWranglerRequest,
@@ -47,6 +48,8 @@ export class DetachedBridgeRequestError extends Error {
 export interface BridgeRequestOptions {
   /** Host-owned source identities retained before an export's user interaction. */
   sourceProtection?: ExportSourceProtection;
+  /** Host-confirmed viewing state consumed by an edit or Spark page, captured at runtime dispatch. */
+  confirmedView?: ConfirmedView;
   cancellation?: CancellationTokenLike;
   priority?: "interactive" | "background";
   timeoutMs?: number;
