@@ -600,6 +600,12 @@ Native R CSV export writes validated UTF-8 bytes with LF record separators, inde
 It prepares character values and factor levels in a temporary frame, preserving source storage and native non-text
 columns. Invalid text is refused before creating the artifact; export does not apply the page cell-size limit.
 
+Native R Parquet export retains nanoparquet's microsecond timestamp representation. Before writing, it scans all
+POSIXct values in bounded slices and refuses non-missing non-finite values, range overflow or precision loss.
+The check reconstructs seconds from the writer's integer microseconds independently of any reader's rounding.
+Some reader-created floating values therefore fail even if that reader previously reproduced them. Refusal leaves
+the source and confirmed session unchanged and publishes no artifact.
+
 Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. All three frame flavors
 use temporary decimal text keys, including for the two supported signed extrema. A data.table comparison remains a data.table
 so other columns retain their native equality and configured numeric rounding. Original values and metadata remain

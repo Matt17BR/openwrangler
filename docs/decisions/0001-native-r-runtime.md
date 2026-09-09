@@ -332,6 +332,7 @@ rule in this ADR.
   returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in
   the extension-host atomic save path. CSV uses UTF-8 and LF record separators even under the C locale; its text
   validation and source-preservation contract is owned by [the architecture document](../architecture.md#native-r).
+  Parquet timestamps must retain their native value in microsecond storage; otherwise export refuses before publication.
 - Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
   integer type, so the runtime rejects an out-of-range sum before publishing a result instead of stringifying it or
   routing it through another engine. Integer64 mean and median perform exact decimal addition before their final

@@ -353,6 +353,10 @@ and notebook export is available only from the current local extension host. Fil
 `integer64` coordinates, and active `data.table` keys restrict in-place changes. The durable ownership boundary lives
 in the [Native R ADR](decisions/0001-native-r-runtime.md).
 
+Native R Parquet datetime export uses microseconds and refuses values that cannot be represented exactly, including
+sub-microsecond timestamps. The exactness check can also refuse floating values produced by a reader that rounds
+fractions differently. Missing timestamps remain supported; a refused export preserves the source and cleaning plan.
+
 ## DuckDB experimental file support
 
 DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and

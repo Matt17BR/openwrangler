@@ -203,6 +203,10 @@ apply, and inspection code must preserve complete live results and source frames
 Native R frame export controls check exact C-locale CSV bytes across frame families, including Unicode headers,
 factor labels, quoting, missing values and text beyond the page cell limit. Invalid off-page text and writer failures
 must leave no artifact. The existing kernel export owner verifies the returned UTF-8 chunks and unchanged source.
+Parquet timestamp controls distinguish correct physical microseconds from reader-only rounding, retain native
+bytes for exact values, and refuse precision loss, non-finite values and range overflow. The kernel owner checks
+an invalid value beyond the first validation slice, correlated refusal without an artifact, and successful correction,
+generated execution, export and Undo while preserving the source.
 
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
