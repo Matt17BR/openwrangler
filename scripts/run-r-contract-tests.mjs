@@ -570,7 +570,7 @@ export function createPosixProcessTracker(
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
   };
-  const coarseIdentityError = (expected, current) => {
+  const coarseIdentityFailure = (expected, current) => {
     if (expected.identityResolution !== "second" && current.identityResolution !== "second") return undefined;
     const secondResolution = expected.identityResolution === "second" && current.identityResolution === "second";
     const parentMatches = expected.parentPid === current.parentPid;
@@ -590,12 +590,22 @@ export function createPosixProcessTracker(
     ) {
       return undefined;
     }
-    return new Error(
-      `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
-        `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
-        `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
-        `lineageOwned=${lineageOwned}, root=${originalRoot})`
-    );
+    return {
+      error: new Error(
+        `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
+          `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
+          `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
+          `lineageOwned=${lineageOwned}, root=${originalRoot})`
+      ),
+      confirmDeparture:
+        originalRoot &&
+        secondResolution &&
+        parentMatches &&
+        groupMatches &&
+        markerBefore &&
+        !markerNow &&
+        !commandMatches
+    };
   };
   const verifiedIdentity = (expected) => {
     let current;
@@ -607,9 +617,23 @@ export function createPosixProcessTracker(
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
-    const ownershipError = coarseIdentityError(expected, current);
-    if (ownershipError) {
-      latch(ownershipError);
+    const ownershipFailure = coarseIdentityFailure(expected, current);
+    if (ownershipFailure) {
+      if (ownershipFailure.confirmDeparture) {
+        // ps reads process metadata and argv separately; the root may have
+        // exited between them. Confirm departure, never renewed ownership.
+        try {
+          const latest = readProcessIdentity(expected.pid, ownerToken);
+          if (
+            !latest ||
+            (latest.pid === expected.pid && (latest.state === "Z" || latest.startIdentity !== expected.startIdentity))
+          )
+            return undefined;
+        } catch {
+          // An unreadable confirmation retains the original ownership failure.
+        }
+      }
+      latch(ownershipFailure.error);
       throw failure;
     }
     return current;
