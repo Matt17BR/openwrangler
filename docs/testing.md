@@ -203,14 +203,14 @@ The engine owner also executes complete generated programs on private connection
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.
 
-Polars engine and session transaction owners check deferred-result refusal before publication, confirmed-state
-preservation and successful correction. Complete generated programs refuse an invalid intermediate even when a later
-step drops its output. Native eager/lazy values, types, nulls and source preservation remain covered; the existing
-Custom Code owner checks Series normalization and scalar refusal.
-The Decimal operation owner checks live and generated readiness under caller-configured streaming without changing
-that setting, alongside exact output capacity and null checks. Floor, Ceiling and Round owners also check exact
-Decimal coefficients and signed carry boundaries through eager and lazy streaming results. Session transactions
-cover file-backed Preview, Apply, returned-code execution, counts, stable row IDs and Undo with hidden or off-page values.
+Polars engine and session transaction owners check hidden Custom expression errors, confirmed-state preservation and
+successful correction. Complete generated programs refuse an invalid Custom result before a later step drops its
+output. Native eager/lazy values, types, nulls and source preservation remain covered; the existing Custom Code owner
+checks Series normalization and scalar refusal. Ordinary lazy plans retain deferred execution, and the large-notebook
+journey keeps its bounded collection assertions through viewing, editing and export.
+Floor, Ceiling and Round owners check exact Decimal coefficients, nulls and signed carry boundaries through eager
+and lazy streaming results without changing caller configuration. Session transactions cover file-backed Preview,
+Apply, returned-code execution, counts, stable row IDs and Undo with hidden or off-page values.
 
 `python/tests/test_custom_code_scope.py` owns Pandas/Polars Custom result admission in live sessions and complete
 generated programs, including retained conditional plans reused on another input and a later step that could hide

@@ -1764,7 +1764,6 @@ def test_polars_formula_native_integer_collects_only_one_guard_boolean(
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
     native_collect = pl.LazyFrame.collect
-    native_collect_all = pl.collect_all
     observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
     def guard_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1772,25 +1771,14 @@ def test_polars_formula_native_integer_collects_only_one_guard_boolean(
         observed.append((dict(result.schema), result.rows()))
         return result
 
-    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
-        queries = list(queries)
-        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
-        results = native_collect_all(queries, *args, **kwargs)
-        assert len(results) == 1
-        observed.append((dict(results[0].schema), results[0].rows()))
-        return results
-
     with monkeypatch.context() as guard:
-        guard.setattr(pl, "collect_all", readiness_collect)
+        guard.setattr(pl, "collect_all", lambda *_args, **_kwargs: pytest.fail("Formula collected extra queries."))
         guard.setattr(pl.LazyFrame, "collect", guard_collect)
         live = engine.apply_transform(frame, operation)
         assert observed == [({"invalid": pl.Boolean}, [(False,)])]
         observed.clear()
         generated = namespace["clean_data"](frame)
-    assert observed == [
-        ({"invalid": pl.Boolean}, [(False,)]),
-        ({"value": pl.UInt32, "other": pl.UInt32, "result": pl.UInt32}, [(1, 2, 1)]),
-    ]
+    assert observed == [({"invalid": pl.Boolean}, [(False,)])]
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
     assert live.collect_schema() == generated.collect_schema() == expected.schema
@@ -1804,7 +1792,6 @@ def test_polars_formula_integer_string_preflights_only_selected_native_bounds(mo
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
     native_collect = pl.LazyFrame.collect
-    native_collect_all = pl.collect_all
     observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
     def bounded_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1812,25 +1799,14 @@ def test_polars_formula_integer_string_preflights_only_selected_native_bounds(mo
         observed.append((dict(result.schema), result.rows()))
         return result
 
-    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
-        queries = list(queries)
-        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
-        results = native_collect_all(queries, *args, **kwargs)
-        assert len(results) == 1
-        observed.append((dict(results[0].schema), results[0].rows()))
-        return results
-
     with monkeypatch.context() as guard:
-        guard.setattr(pl, "collect_all", readiness_collect)
+        guard.setattr(pl, "collect_all", lambda *_args, **_kwargs: pytest.fail("Formula collected extra queries."))
         guard.setattr(pl.LazyFrame, "collect", bounded_collect)
         live = engine.apply_transform(frame, operation)
         assert observed == [({"minimum": pl.Int64, "maximum": pl.Int64}, [(0, 99)])]
         observed.clear()
         generated = namespace["clean_data"](frame)
-    assert observed == [
-        ({"minimum": pl.Int64, "maximum": pl.Int64}, [(0, 99)]),
-        ({"minimum": pl.UInt32, "maximum": pl.UInt32, "result": pl.UInt32}, [(100, 100, 100)]),
-    ]
+    assert observed == [({"minimum": pl.Int64, "maximum": pl.Int64}, [(0, 99)])]
     for result in (live, generated):
         eager = result.collect()
         assert eager["result"].to_list() == [2**63 + value for value in range(100)]
@@ -2187,30 +2163,15 @@ def test_polars_formula_native_noninteger_has_no_row_guard(dtype: Any, monkeypat
     step = _polars_formula_literal_operation(frame, "multiply", 3)
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace)
-    native_collect = pl.LazyFrame.collect
-    native_collect_all = pl.collect_all
-    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
-    def observed_collect(query: Any, *args: Any, **kwargs: Any) -> Any:
-        result = cast(pl.DataFrame, native_collect(query, *args, **kwargs))
-        observed.append((dict(result.schema), result.rows()))
-        return result
-
-    def readiness_collect(queries: Any, *args: Any, **kwargs: Any) -> Any:
-        queries = list(queries)
-        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
-        results = native_collect_all(queries, *args, **kwargs)
-        assert len(results) == 1
-        observed.append((dict(results[0].schema), results[0].rows()))
-        return results
+    def reject_collect(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("Floating/Decimal rows scanned during Formula construction.")
 
     with monkeypatch.context() as guard:
-        guard.setattr(pl, "collect_all", readiness_collect)
-        guard.setattr(pl.LazyFrame, "collect", observed_collect)
+        guard.setattr(pl, "collect_all", reject_collect)
+        guard.setattr(pl.LazyFrame, "collect", reject_collect)
         live = engine.apply_transform(frame, step)
-        assert observed == []
         generated = namespace["clean_data"](frame)
-    assert observed == [({"value": pl.UInt32, "result": pl.UInt32}, [(2, 2)])]
     expected = source.with_columns((pl.col("value") * pl.lit(3)).alias("result"))
     assert live.collect().equals(expected)
     assert generated.collect().equals(expected)
@@ -2384,7 +2345,7 @@ def test_polars_uint128_kernel_refusal_includes_noninteger_operands(
 
 
 @pytest.mark.parametrize("boundary", ["live", "generated", "generated-drop"])
-def test_polars_result_readiness_refuses_invalid_intermediate_before_projection(boundary: str) -> None:
+def test_polars_custom_result_refuses_invalid_expression_before_projection(boundary: str) -> None:
     source = pl.DataFrame({"pos": [0, 1, 2], "value": ["1", "bad", None]})
     before = source.clone()
     engine = PolarsEngine()
@@ -2395,12 +2356,12 @@ def test_polars_result_readiness_refuses_invalid_intermediate_before_projection(
             "params": {"code": 'result = df.lazy().with_columns(pl.col("value").cast(pl.Int64))'},
         }
     )
-    intermediate = engine.apply_transform(source, custom)
+    intermediate = source.lazy().with_columns(pl.col("value").cast(pl.Int64))
     assert isinstance(intermediate, pl.LazyFrame)
     assert intermediate.collect_schema() == {"pos": pl.Int64, "value": pl.Int64}
     if boundary == "live":
         with pytest.raises(pl.exceptions.InvalidOperationError):
-            engine.validate_transformation_result(intermediate)
+            engine.apply_transform(source, custom)
     else:
         plan = [custom]
         if boundary == "generated-drop":
@@ -2428,7 +2389,7 @@ def test_polars_result_readiness_refuses_invalid_intermediate_before_projection(
 
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize("empty", [False, True])
-def test_polars_result_readiness_preserves_native_objects_nulls_and_empty_frames(lazy: bool, empty: bool) -> None:
+def test_polars_custom_result_check_preserves_native_objects_nulls_and_empty_frames(lazy: bool, empty: bool) -> None:
     token = object()
     source = pl.DataFrame(
         {
@@ -2443,6 +2404,7 @@ def test_polars_result_readiness_preserves_native_objects_nulls_and_empty_frames
     engine = PolarsEngine()
     engine.validate_transformation_result(frame)
     step = validate_step({"id": "identity", "kind": "customCode", "params": {"code": "result = df"}})
+    assert engine.apply_transform(frame, step) is frame
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace)
     result = namespace["clean_data"](frame)
@@ -2459,7 +2421,8 @@ def test_polars_result_readiness_preserves_native_objects_nulls_and_empty_frames
         engine.validate_transformation_result(pl.DataFrame().lazy() if lazy else pl.DataFrame())
 
 
-def test_polars_result_readiness_executes_each_step_but_preserves_lazy_construction_and_empty_plan() -> None:
+@pytest.mark.parametrize("with_custom", [False, True])
+def test_polars_only_custom_steps_evaluate_rows_during_plan_construction(with_custom: bool) -> None:
     visits: list[int | None] = []
 
     def observe(value: int | None) -> int | None:
@@ -2494,19 +2457,74 @@ def test_polars_result_readiness_executes_each_step_but_preserves_lazy_construct
         second_schema,
         source_lineage(second_schema),
     )
+    plan = [first]
+    if with_custom:
+        plan.append(validate_step({"id": "custom", "kind": "customCode", "params": {"code": "result = df"}}))
+    plan.append(second)
     namespace: dict[str, Any] = {}
-    exec(engine.compile_plan([first, second]), namespace)
+    exec(engine.compile_plan(plan), namespace)
     empty_namespace: dict[str, Any] = {}
     exec(engine.compile_plan([]), empty_namespace)
     assert empty_namespace["clean_data"](frame) is frame
     assert visits == []
     engine.validate_transformation_result(intermediate)
-    assert Counter(visits) == Counter([1, 2, None])
+    assert visits == []
+    if with_custom:
+        assert engine.apply_transform(intermediate, plan[1]) is intermediate
+        assert Counter(visits) == Counter([1, 2, None])
     visits.clear()
     generated = namespace["clean_data"](frame)
     assert isinstance(generated, pl.LazyFrame)
-    assert Counter(visits) == Counter([1, 2, None] * 2)
+    assert Counter(visits) == Counter([1, 2, None] if with_custom else [])
     visits.clear()
     assert generated.collect(engine="streaming").equals(source)
     assert Counter(visits) == Counter([1, 2, None])
     assert source.schema == {"value": pl.Int64} and source.rows() == [(1,), (2,), (None,)]
+
+
+@pytest.mark.parametrize("population", ["values", "null", "empty"])
+def test_polars_format_datetime_preserves_native_lazy_error_timing(population: str) -> None:
+    dates = [0, None] if population == "values" else [None, None]
+    source = pl.DataFrame({"pos": [0, 1], "date": pl.Series(dates, dtype=pl.Date)})
+    if population == "empty":
+        source = source.head(0)
+    before = source.clone()
+    frame = source.lazy()
+    engine = PolarsEngine()
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "format",
+                "kind": "formatDatetime",
+                "params": {"column": lineage[1], "format": "%Q", "newColumn": "formatted"},
+            }
+        ),
+        schema,
+        lineage,
+    )
+    live = engine.apply_transform(frame, operation)
+    engine.validate_transformation_result(live)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    generated = namespace["clean_data"](frame)
+    for result in (live, generated):
+        assert isinstance(result, pl.LazyFrame)
+        assert result.collect_schema() == {"pos": pl.Int64, "date": pl.Date, "formatted": pl.String}
+        assert result.select("pos").collect().equals(source.select("pos"))
+        if population == "values":
+            with pytest.raises(pl.exceptions.PolarsError):
+                result.collect()
+        else:
+            assert result.collect().equals(source.with_columns(pl.lit(None, dtype=pl.String).alias("formatted")))
+    output_schema = engine.schema(live)
+    output_lineage = source_lineage(output_schema)
+    drop = bind_step(
+        validate_step({"id": "drop", "kind": "dropColumns", "params": {"columns": [output_lineage[2]]}}),
+        output_schema,
+        output_lineage,
+    )
+    exec(engine.compile_plan([operation, drop]), namespace)
+    assert namespace["clean_data"](frame).collect().equals(source)
+    assert source.equals(before)
