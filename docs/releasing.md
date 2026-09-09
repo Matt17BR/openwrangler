@@ -56,6 +56,10 @@ npm run verify:vsix -- openwrangler.vsix
 `npm run check:pr` runs `npm run check` and `npm test`. `package:prepared` does not repeat source checks or rebuild the
 project. The installed smoke described in [Testing](testing.md) uses this same verified VSIX.
 
+Packaging verifies the staged archive's canonical form, then compares the published descriptor snapshot with those
+exact bytes before reusing its receipt. Final file identity, link count, source inventory and manifest checks remain
+required. A changed output fails and only owned files are removed.
+
 `npm run package:dev` is for local development. Its output is not a release candidate and must not be committed.
 
 ## Daily preview

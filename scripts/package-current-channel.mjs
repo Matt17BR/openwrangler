@@ -588,11 +588,9 @@ export async function packageCurrentChannel(
     hooks.beforeFinalRead?.({ output, privatePath });
     const finalSnapshot = readVsixSnapshot(output, { requireOwner: true });
     requireNamedFileSnapshot(output, publicIdentity, "Published package output", { links: [1n] });
-    if (!finalSnapshot.bytes.equals(canonical.bytes)) {
+    if (!finalSnapshot.bytes.equals(stagedSnapshot.bytes)) {
       throw new Error("Published package output changed after atomic publication.");
     }
-    const finalReceipt = await assertCanonicalArchive(finalSnapshot.bytes);
-    assertCanonicalReceiptMatches(canonical.receipt, finalReceipt);
     const finalArchive = await inspectArchive(finalSnapshot.bytes);
     assertSameArchiveInventory(canonicalArchive, finalArchive);
     assertPackageInventory(packageSource, finalArchive.archiveEntries, finalArchive.entryDigests);
@@ -618,7 +616,7 @@ export async function packageCurrentChannel(
     result = freezePackageResult({
       output,
       snapshot: finalSnapshot,
-      receipt: finalReceipt,
+      receipt: stagedReceipt,
       sourceManifest,
       sourceManifestBytes
     });
