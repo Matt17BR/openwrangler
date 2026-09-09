@@ -1076,6 +1076,11 @@ run_frame_contract_case("group-by", local({
 local({
   raw_double <- function(value) writeBin(value, raw(), size = 8L, endian = "little")
   cases <- list(
+    singleton_named_integer = list(values = c(donor = 17L), expected = "0x1.1000000000000p+4"),
+    singleton_named_negative = list(values = c(donor = -7.5), expected = "-0x1.e000000000000p+2"),
+    singleton_positive_zero = list(values = 0, expected = "0x0.0p+0"),
+    singleton_negative_zero = list(values = -abs(0), expected = "0x0.0p+0"),
+    singleton_negative_subnormal = list(values = -0x0.0000000000001p-1022, expected = "-0x0.0000000000001p-1022"),
     cancel_order_0 = list(values = c(-0x1.1ccf385ebc8a0p+1023, 0x1.1ccf385ebc8a0p+1023, 0x1.8000000000000p+1), expected = "0x1.0000000000000p+0"),
     ordinary_cancellation = list(values = c(0x1.1c37937e08000p+53, 0x1.0000000000000p+0, -0x1.1c37937e08000p+53), expected = "0x1.5555555555555p-2"),
     near_one_rounding_1 = list(values = c(0x1.ffffffffffff0p-1, 0x1.ffffffffffff0p-1, 0x1.ffffffffffff2p-1), expected = "0x1.ffffffffffff1p-1"),
@@ -1120,7 +1125,10 @@ local({
     assert_identical(raw_double(result$average), expected, paste(name, "Group By lost exact mean bits"))
     assert_identical(serialize(frame, NULL, version = 3L), before, paste(name, "Group By changed its source"))
     helpers <- openwrangler_r_frame_contract$exact_mean_helpers
-    assert_identical(raw_double(helpers$exact_binary64_mean(rev(case$values))), expected,
+    reversed_mean <- helpers$exact_binary64_mean(rev(case$values))
+    assert_identical(typeof(reversed_mean), "double", paste(name, "mean changed its numeric type"))
+    assert_identical(attributes(reversed_mean), NULL, paste(name, "mean retained source attributes"))
+    assert_identical(raw_double(reversed_mean), expected,
       paste(name, "mean changed under permutation"))
     state <- helpers$exact_mean_new()
     size <- if (length(case$values) > 65536L) 32767L else 2L

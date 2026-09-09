@@ -2985,6 +2985,27 @@ local({
       assert_identical(serialize(copied$exact_fill, NULL, version = 3L), before, "copied Mean Fill changed source")
       revision <- applied$revision
     }
+    for (donor in c(-abs(0), -0x0.0000000000001p-1022)) {
+      copied$exact_fill <- unserialize(before)
+      copied$exact_fill$value <- c(donor, NA, NA, NA, NaN)
+      singleton_before <- serialize(copied$exact_fill, NULL, version = 3L)
+      singleton_expected <- copied$exact_fill
+      singleton_expected$value[2:5] <- if (donor == 0) 0 else donor
+      singleton_live <- if (grouped) {
+        openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(copied$exact_fill, 2L, "value", 1L, "group", "mean")
+      } else {
+        openwrangler_r_frame_contract$fill_missing_column_at(copied$exact_fill, 2L, "value", list(kind = "mean"))
+      }
+      eval(parse(text = applied$code), envir = copied)
+      assert_identical(singleton_live, singleton_expected, "single-donor Mean Fill changed values or metadata")
+      assert_identical(copied$open_wrangler_result, singleton_expected, "copied single-donor Mean Fill changed values or metadata")
+      for (result in list(singleton_live, copied$open_wrangler_result)) {
+        assert_identical(writeBin(result$value, raw(), size = 8L, endian = "little"),
+          writeBin(singleton_expected$value, raw(), size = 8L, endian = "little"),
+          "single-donor Mean Fill changed zero or subnormal bits")
+      }
+      assert_identical(serialize(copied$exact_fill, NULL, version = 3L), singleton_before, "single-donor Mean Fill changed source")
+    }
     for (iteration in 1:2) {
       undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
       revision <- undone$revision
