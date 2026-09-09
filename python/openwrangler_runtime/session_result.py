@@ -53,7 +53,7 @@ def read_live_page(
     try:
         page = engine.page(
             frame,
-            offset,
+            offset if total_rows is None else min(offset, total_rows),
             limit,
             total_rows=total_rows,
             column_projection=column_projection,

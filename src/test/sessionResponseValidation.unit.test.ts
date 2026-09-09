@@ -15,6 +15,7 @@ import type {
   SessionMetadata,
   SessionOpenedResponse
 } from "../shared/protocol";
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../extension/sessionResponseValidation";
 
 const runtimeSessionId = "runtime-session";
@@ -129,6 +130,111 @@ describe("session response validation", () => {
     for (const [expected, candidate] of cases) {
       expect(responseMismatch(request, candidate, runtimeSessionId, schema)).toBe(expected);
     }
+  });
+
+  it("accepts only the exact known-total clamp while keeping unknown continuations exact", () => {
+    const request = { ...pageRequest(), offset: 25 };
+    const response = { ...pageResponse(), page: { ...page, offset: 1, rows: [] } };
+    expect(responseMismatch(request, response, runtimeSessionId, schema)).toBeUndefined();
+    for (const offset of [0, 2, 25]) {
+      expect(
+        responseMismatch(request, { ...response, page: { ...response.page, offset } }, runtimeSessionId, schema)
+      ).toBe(`page offset ${offset} did not match 1`);
+    }
+    const empty = {
+      ...response,
+      metadata: { ...metadata, shape: { rows: 0, columns: 2 }, filteredShape: { rows: 0, columns: 2 } },
+      page: { ...response.page, offset: 0, totalRows: 0 }
+    };
+    expect(responseMismatch(request, empty, runtimeSessionId, schema)).toBeUndefined();
+    expect(responseMismatch({ ...request, offset: 1 }, response, runtimeSessionId, schema)).toBeUndefined();
+    const continuationRequest = { ...request, limit: 1 };
+    const continuation = {
+      ...response,
+      metadata: {
+        ...metadata,
+        backend: "pyspark" as const,
+        mode: "viewing" as const,
+        source: { kind: "notebookVariable" as const, variableName: "frame", label: "frame" },
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        shape: { rows: null, columns: 2 },
+        filteredShape: { rows: null, columns: 2 }
+      },
+      page: {
+        ...page,
+        offset: 25,
+        limit: 1,
+        totalRows: null,
+        hasMore: true as const,
+        rows: page.rows.map((row) => ({ ...row, id: "row:25", rowNumber: 25 }))
+      }
+    };
+    expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(isOpenWranglerResponse(empty)).toBe(true);
+    expect(isOpenWranglerResponse(continuation)).toBe(true);
+    expect(responseMismatch(continuationRequest, continuation, runtimeSessionId, schema)).toBeUndefined();
+    expect(
+      responseMismatch(
+        continuationRequest,
+        {
+          ...continuation,
+          page: {
+            ...continuation.page,
+            offset: 1,
+            rows: continuation.page.rows.map((row) => ({ ...row, id: "row:1", rowNumber: 1 }))
+          }
+        },
+        runtimeSessionId,
+        schema
+      )
+    ).toBe("page offset 1 did not match 25");
+  });
+
+  it("clamps differently sized inspection boundaries independently", () => {
+    const request: SessionBoundRequest = {
+      kind: "inspectStep",
+      sessionId: runtimeSessionId,
+      revision: 4,
+      stepId: "drop",
+      offset: 25,
+      limit: 10,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const response: OpenWranglerResponse = {
+      kind: "stepInspection",
+      revision: 4,
+      stepId: "drop",
+      stepIndex: 0,
+      inputSchema: schema,
+      outputSchema: schema,
+      inputRowAxis: { kind: "positional", levelNames: [] },
+      outputRowAxis: { kind: "positional", levelNames: [] },
+      inputPage: { ...page, offset: 3, totalRows: 3, rows: [] },
+      outputPage: { ...page, offset: 1, totalRows: 1, rows: [] },
+      code: "cleaned",
+      diff: {
+        addedRows: 0,
+        removedRows: 2,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: true
+      }
+    };
+    expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(responseMismatch(request, response, runtimeSessionId)).toBeUndefined();
+    expect(
+      responseMismatch(request, { ...response, outputPage: { ...response.outputPage, offset: 3 } }, runtimeSessionId)
+    ).toBe("inspection output page offset 3 did not match 1");
   });
 
   it("binds summaries to the requested stable-column projection and confirmed schema", () => {

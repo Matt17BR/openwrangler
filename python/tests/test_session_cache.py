@@ -490,6 +490,40 @@ def test_live_page_text_limit_rejects_before_cross_engine_cache_insertion_and_re
     manager.close_session(session_id, 0)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_live_pages_clamp_known_row_tails_without_changing_projection_or_cache(tmp_path: Path, backend: str) -> None:
+    path = tmp_path / f"page-tail-{backend}.csv"
+    path.write_text("name,value\na,1\nb,2\nc,3\n", encoding="utf-8")
+    original = path.read_bytes()
+    manager = SessionManager()
+    opened = manager.open_session(source(path), backend=backend, page_size=1, column_offset=1, column_limit=1)
+    session_id = opened["metadata"]["sessionId"]
+    schema = opened["metadata"]["schema"]
+    model = {"filters": [], "sort": []}
+    try:
+        for requested, expected, displays in [(1, 1, ["2"]), (3, 3, []), (25, 3, [])]:
+            response = manager.get_page(session_id, 0, requested, 1, model, column_offset=1, column_limit=1)
+            page = response["page"]
+            assert (page["offset"], page["limit"], page["totalRows"]) == (expected, 1, 3)
+            assert page["columnIds"] == [schema[1]["id"]]
+            assert [row["values"][0]["display"] for row in page["rows"]] == displays
+            assert [row["rowNumber"] for row in page["rows"]] == ([1] if displays else [])
+            assert response["metadata"]["schema"] == schema
+            assert response["metadata"]["revision"] == 0
+            assert response["metadata"]["steps"] == []
+            repeated = manager.get_page(session_id, 0, requested, 1, model, column_offset=1, column_limit=1)
+            assert repeated["page"] is page
+        empty = manager.get_page(session_id, 0, 25, 1, greater_than(3), column_offset=1, column_limit=1)
+        assert (empty["page"]["offset"], empty["page"]["totalRows"], empty["page"]["rows"]) == (0, 0, [])
+        assert empty["page"]["columnIds"] == [schema[1]["id"]]
+        restored = manager.get_page(session_id, 0, 1, 1, model, column_offset=1, column_limit=1)
+        assert restored["page"]["rows"][0]["values"][0]["display"] == "2"
+        assert restored["metadata"]["shape"] == opened["metadata"]["shape"]
+        assert path.read_bytes() == original
+    finally:
+        manager.close_session(session_id, 0)
+
+
 def test_live_page_validation_covers_current_preview_and_inspection_reads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

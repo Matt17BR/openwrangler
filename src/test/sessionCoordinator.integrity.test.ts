@@ -1,3 +1,4 @@
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
@@ -711,18 +712,22 @@ describe("SessionCoordinator recovery boundaries", () => {
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge);
 
-    await expect(
-      bridge.request({
-        kind: "getPage",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision,
-        viewRequestId: "recoverable-page",
-        offset: 100,
-        limit: 100,
-        ...columnWindow,
-        filterModel: opened.metadata.filterModel
-      })
-    ).resolves.toMatchObject({ kind: "page", viewRequestId: "recoverable-page" });
+    const response = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "recoverable-page",
+      offset: 100,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    expect(response).toMatchObject({
+      kind: "page",
+      viewRequestId: "recoverable-page",
+      page: { offset: 1, totalRows: 1, rows: [] }
+    });
+    expect(isOpenWranglerResponse(response)).toBe(true);
 
     expect(requests.filter((request) => request.kind === "openSession")).toHaveLength(2);
     expect(
@@ -922,7 +927,7 @@ function pageResponse(
       filterModel: request.filterModel
     },
     page: {
-      offset: request.offset,
+      offset: Math.min(request.offset, 1),
       limit: request.limit,
       totalRows: 1,
       columnIds: metadataFor(runtimeSessionId)

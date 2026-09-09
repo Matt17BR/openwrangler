@@ -56,6 +56,60 @@ def observable_state(session: Session) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_preview_apply_and_inspection_clamp_each_known_row_boundary(backend: str, tmp_path: Path) -> None:
+    path = tmp_path / f"inspection-tail-{backend}.csv"
+    path.write_text("name,value\na,1\na,1\nb,2\n", encoding="utf-8")
+    original = path.read_bytes()
+    manager = SessionManager()
+    opened = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend=backend, page_size=1)
+    session_id = opened["metadata"]["sessionId"]
+    revision = 0
+    try:
+        preview = manager.preview_step(
+            session_id,
+            revision,
+            step("deduplicate", "dropDuplicates", keep="first"),
+            25,
+            1,
+            column_offset=1,
+            column_limit=1,
+        )
+        revision = preview["revision"]
+        assert (preview["page"]["offset"], preview["page"]["totalRows"], preview["page"]["rows"]) == (2, 2, [])
+        assert preview["diff"]["removedRows"] == 1
+        assert preview["diff"]["changedCells"] == 0
+        applied = manager.apply_draft(session_id, revision, 25, 1, column_offset=1, column_limit=1)
+        revision = applied["revision"]
+        assert (applied["page"]["offset"], applied["page"]["totalRows"], applied["page"]["rows"]) == (2, 2, [])
+        session = manager.sessions[session_id]
+        before = observable_state(session)
+        for requested, input_offset, output_offset in [(2, 2, 2), (3, 3, 2), (25, 3, 2)]:
+            inspected = manager.inspect_step(
+                session_id, revision, "deduplicate", requested, 1, column_offset=1, column_limit=1
+            )
+            assert inspected["inputPage"]["offset"] == input_offset
+            assert inspected["outputPage"]["offset"] == output_offset
+            assert inspected["inputPage"]["totalRows"] == 3
+            assert inspected["outputPage"]["totalRows"] == 2
+            assert inspected["inputPage"]["columnIds"] == inspected["outputPage"]["columnIds"] == ["c:source:1"]
+            assert [row["values"][0]["display"] for row in inspected["inputPage"]["rows"]] == (
+                ["2"] if requested == 2 else []
+            )
+            assert inspected["outputPage"]["rows"] == []
+            assert inspected["diff"]["removedRows"] == 1
+            assert inspected["diff"]["cells"] == []
+            assert observable_state(session) == before
+        undone = manager.undo_step(session_id, revision, 25, 1, column_offset=1, column_limit=1)
+        revision = undone["revision"]
+        assert (undone["page"]["offset"], undone["page"]["totalRows"], undone["page"]["rows"]) == (3, 3, [])
+        assert undone["metadata"]["steps"] == []
+        assert undone["metadata"]["schema"] == opened["metadata"]["schema"]
+        assert path.read_bytes() == original
+    finally:
+        manager.close_session(session_id, revision)
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
     backend: str,
     tmp_path: Path,
