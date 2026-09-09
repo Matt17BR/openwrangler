@@ -722,7 +722,7 @@ OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
 OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE=python-notebooks \
 OPEN_WRANGLER_TEST_PYTHON=/absolute/path/to/python \
 VSCODE_TEST_VERSION=stable \
-npm run test:packaged-editors:prepare -- openwrangler.vsix
+npm run test:packaged-editors -- openwrangler.vsix
 ```
 
 The selected Python needs the supported interpreter, `venv`, and `ensurepip`; dataframe packages are installed at the
