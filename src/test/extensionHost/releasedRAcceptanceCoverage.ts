@@ -55,7 +55,8 @@ export const RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE: ReleasedRAcceptanceCoverage
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "platform-lifecycle",
   editing: "platform-lifecycle",
-  openCollapseSessions: true
+  openCollapseSessions: true,
+  nativeFrameEditing: "none"
 });
 
 export const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
