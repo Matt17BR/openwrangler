@@ -446,15 +446,11 @@ CSV and Parquet export prepare logical scalar dictionary, `bool8` and UUID colum
 index levels use the same logical values; changed MultiIndex levels are rebuilt from actual row labels so equivalent
 values coalesce. Parquet omits an unrequested index before native dtype inspection. Source arrays, index levels and
 codes remain unchanged. Exported `bool8` and UUID fields use Boolean and string storage respectively.
-Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Arrow float32 and
-float64 grouping keys use the same missing-value and signed-zero equality as other numeric keys. Group By retains
-its native representative key; Pivot retains each first identifier row. Grouped Fill shares this key equality without
-changing the stored keys.
-Sparse Count uses a temporary presence mask for that aggregation alone. Keys, source storage and other aggregates
-on the same column retain their own numeric behavior.
-Integer group keys use native factorization codes and exact scalar labels. Group By and Pivot restore those labels;
-grouped Fill uses the same temporary identities while retaining source keys. Sparse fill values retain their native
-numeric equality and first representative, including fractional fills accepted by the minimum Pandas version.
+Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Group By, Pivot
+and grouped Fill use the same missing-value and signed-zero equality for Arrow float32/float64 keys. Integer group
+keys use native factorization codes and restore exact scalar labels; Sparse fill values retain native equality,
+including fractional fills accepted by the minimum Pandas version. Sparse Count uses a temporary presence mask
+for that aggregation alone; keys, source storage and other aggregates retain their own behavior.
 
 ### Polars
 
