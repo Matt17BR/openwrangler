@@ -106,20 +106,6 @@ def _polars_require_pivot_output_names(existing_names: Sequence[str], outputs: S
         raise EngineError("Pivot longer would create duplicate column names: " + ", ".join(collisions))
 
 
-def _polars_pivot_type_metadata(frame: Any, name: str, dtype: Any) -> tuple[str, tuple[str, ...] | None]:
-    import polars as pl
-
-    base_type = dtype.base_type()
-    if base_type == pl.Enum:
-        categories = getattr(dtype, "categories", None)
-        return str(dtype), tuple(str(value) for value in categories) if categories is not None else None
-    if base_type != pl.Categorical:
-        return str(dtype), None
-    query = frame.select(pl.col(name).cat.get_categories().alias(name))
-    eager = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
-    return str(dtype), tuple(str(value) for value in eager.get_column(name).to_list())
-
-
 def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple[list[str], list[str], list[str], Any]:
     import polars as pl
 
@@ -1374,8 +1360,8 @@ class PolarsEngine(DataFrameEngine):
             outputs = [params["labelColumn"], params["valueColumn"]]
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             _polars_require_pivot_output_names(schema.names(), outputs)
-            first_metadata = _polars_pivot_type_metadata(df, selected[0], schema[selected[0]])
-            if any(_polars_pivot_type_metadata(df, name, schema[name]) != first_metadata for name in selected[1:]):
+            first_dtype = schema[selected[0]]
+            if any(not schema[name].is_(first_dtype) for name in selected[1:]):
                 raise EngineError("Pivot-longer columns must have one exactly compatible Polars dtype.")
             row_count = self.shape(df)["rows"]
             if row_count is None:
@@ -1541,8 +1527,8 @@ class PolarsEngine(DataFrameEngine):
         selected = [bound_column_name(column, "pivotLonger") for column in params["columns"]]
         schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
         _polars_require_pivot_output_names(schema.names(), [params["labelColumn"], params["valueColumn"]])
-        first_metadata = _polars_pivot_type_metadata(frame, selected[0], schema[selected[0]])
-        if any(_polars_pivot_type_metadata(frame, name, schema[name]) != first_metadata for name in selected[1:]):
+        first_dtype = schema[selected[0]]
+        if any(not schema[name].is_(first_dtype) for name in selected[1:]):
             raise EngineError("Pivot-longer columns must have one exactly compatible Polars dtype.")
 
     def _row_id_column(self, frame: Any) -> str | None:
@@ -1640,22 +1626,6 @@ class PolarsEngine(DataFrameEngine):
                 [*_generated_polars_fill_helpers(), *_generated_polars_linear_interpolation_helpers()]
             )
             lines.extend([select_generated_helpers(fill_helpers, clean_data), ""])
-        if any(step["kind"] == "pivotLonger" for step in plan):
-            lines.extend(
-                [
-                    "def _ow_polars_pivot_type_metadata(df, name, dtype):",
-                    "    if dtype.base_type() == pl.Enum:",
-                    "        categories = getattr(dtype, 'categories', None)",
-                    "        return str(dtype), tuple(map(str, categories)) if categories is not None else None",
-                    "    if dtype.base_type() != pl.Categorical:",
-                    "        return str(dtype), None",
-                    "    query = df.select(pl.col(name).cat.get_categories().alias(name))",
-                    "    eager = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query",
-                    "    return str(dtype), tuple(map(str, eager.get_column(name).to_list()))",
-                    "",
-                    "",
-                ]
-            )
         if any(step["kind"] == "pivotWider" for step in plan):
             lines.extend(
                 [
@@ -2351,11 +2321,7 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}if any(key in {existing} for key in {output_keys}):",
                 f"{prefix}    raise ValueError('Pivot longer would create a duplicate column name.')",
-                (
-                    f"{prefix}if any(_ow_polars_pivot_type_metadata(df, name, {schema}[name]) != "
-                    f"_ow_polars_pivot_type_metadata(df, {selected[0]!r}, {schema}[{selected[0]!r}]) "
-                    f"for name in {selected[1:]!r}):"
-                ),
+                (f"{prefix}if any(not {schema}[name].is_({schema}[{selected[0]!r}]) for name in {selected[1:]!r}):"),
                 f"{prefix}    raise ValueError('Pivot-longer columns must have one exactly compatible Polars dtype.')",
                 (
                     f"{prefix}{row_count} = (df.select(pl.len()).collect(engine='streaming').item() "

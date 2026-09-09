@@ -249,6 +249,10 @@ Select steps could otherwise conceal a wrong-column result. Case-only Rename and
 remain valid. Existing Regex, Split and Pivot owners retain their stronger validation; session transaction tests retain
 exact generated-size and pre-transform rollback checks.
 
+The Polars Pivot Longer owner checks fresh lazy category mappings in preflight, live and generated execution,
+including nulls, exact output dtype and row order. Preflight must not evaluate the source; separate category spaces,
+physical encodings and Enum orders remain incompatible.
+
 Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
 retain cancellation correlation before dispatch, including synchronous listener registration, without losing
 request leases or treating unstarted work as an ambiguous mutation.
