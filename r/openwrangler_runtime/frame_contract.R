@@ -9077,6 +9077,24 @@ openwrangler_r_frame_contract <- local({
       if (!is.null(connection)) try(close(connection), silent = TRUE)
       if (!completed && file.exists(target_path)) try(unlink(target_path, force = TRUE), silent = TRUE)
     }, add = TRUE)
+    for (position in seq_along(frame)) {
+      column <- .subset2(frame, position)
+      if (!inherits(column, "POSIXct")) next
+      row_count <- length(column)
+      if (row_count == 0L) next
+      for (start in seq.int(1, row_count, by = 65536)) {
+        values <- plain_metadata_storage(.subset(column, seq.int(start, min(start + 65535, row_count))))
+        scaled <- values * 1e6
+        # Check the writer's physical microseconds independently of native reader rounding.
+        if (
+          any(is.nan(scaled)) || any(is.infinite(scaled)) ||
+            any(scaled < -2^63 | scaled >= 2^63, na.rm = TRUE) ||
+            any(trunc(scaled) / 1e6 != values, na.rm = TRUE)
+        ) {
+          abort("export-write-failed", "R datetime values cannot be represented exactly as Parquet microsecond timestamps")
+        }
+      }
+    }
     tryCatch(
       nanoparquet::write_parquet(frame, target_path),
       openwrangler_r_frame_error = function(error) stop(error),

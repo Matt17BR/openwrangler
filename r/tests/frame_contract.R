@@ -552,6 +552,52 @@ assert_identical(as.numeric(parquet_frame[[9L]], units = "secs"), as.numeric(bas
 assert_identical(as.character(parquet_frame[[10L]]), as.character(base_frame[[10L]]), "Parquet export lost integer64 precision")
 unlink(parquet_target)
 
+local({
+  for (value in c(1e-7, -1e-7, 1767225600 + 2^-22, 21 / 1000 / 1000, NaN, Inf, -Inf, 2^63 / 1e6, -2^63 / 1e6 - 1)) {
+    source <- data.frame(at = structure(value, class = c("POSIXct", "POSIXt"), tzone = "UTC"))
+    before <- serialize(source, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_frame(source)
+    target <- tempfile(fileext = ".parquet")
+    on.exit(unlink(target), add = TRUE)
+    assert_error(
+      openwrangler_r_frame_contract$write_parquet(capture, target),
+      "exactly as Parquet microsecond timestamps"
+    )
+    assert_true(!file.exists(target), "a refused timestamp export retained an artifact")
+    assert_identical(serialize(source, NULL, version = 3L), before, "timestamp refusal changed the source")
+  }
+
+  fixtures <- list(
+    ordinary = c(0.25, 1e-6, -11676096000, 16725225600, NA_real_),
+    reader_rounding = c(9e-6, 21e-6, NA_real_),
+    empty = numeric(),
+    missing = c(NA_real_, NA_real_)
+  )
+  for (name in names(fixtures)) {
+    source <- data.frame(at = structure(fixtures[[name]], class = c("POSIXct", "POSIXt"), tzone = "UTC"))
+    before <- serialize(source, NULL, version = 3L)
+    target <- tempfile(fileext = ".parquet")
+    native_target <- tempfile(fileext = ".parquet")
+    on.exit(unlink(c(target, native_target)), add = TRUE)
+    details <- openwrangler_r_frame_contract$write_parquet(openwrangler_r_frame_contract$capture_frame(source), target)
+    nanoparquet::write_parquet(source, native_target)
+    assert_identical(
+      readBin(target, "raw", n = details$bytes),
+      readBin(native_target, "raw", n = file.info(native_target)$size),
+      "timestamp validation changed an exact native microsecond encoding"
+    )
+    result <- nanoparquet::read_parquet(target, options = nanoparquet::parquet_options(class = "data.frame"))
+    assert_identical(class(result$at), c("POSIXct", "POSIXt"), "timestamp export changed the native type")
+    assert_identical(is.na(result$at), is.na(source$at), "timestamp export changed missing values")
+    # Native readback divides twice; 9/21 microseconds can round differently despite correct stored ticks.
+    if (name != "reader_rounding") {
+      assert_identical(as.numeric(result$at), fixtures[[name]], "timestamp export changed exact native instants")
+    }
+    assert_identical(serialize(source, NULL, version = 3L), before, "timestamp validation changed the source")
+    unlink(c(target, native_target))
+  }
+})
+
 zero_column_frame <- data.frame(row.names = seq_len(3L))
 zero_column_capture <- openwrangler_r_frame_contract$capture_frame(zero_column_frame)
 zero_column_target <- tempfile(fileext = ".parquet")

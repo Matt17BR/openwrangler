@@ -13545,6 +13545,62 @@ parquet_closed <- dispatch(
 )
 assert_identical(parquet_closed$kind, "dataExportClosed", "the R Parquet export artifact did not close")
 
+local({
+  timestamp_session <- "93939393-9393-4393-8393-939393939393"
+  timestamp_export <- "94949494-9494-4494-8494-949494949494"
+  failure_request <- "95959595-9595-4595-8595-959595959595"
+  source_environment$timestamp_export <- data.frame(
+    at = structure(c(rep(0.25, 65536L), 1e-7), class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+    keep = seq_len(65537L)
+  )
+  before <- serialize(source_environment$timestamp_export, NULL, version = 3L)
+  opened <- dispatch("openSession", list(sessionId = timestamp_session, variableName = "timestamp_export", page = page_window(row_limit = 1L)))
+  assert_identical(opened$kind, "page", "the timestamp export session did not open")
+  on.exit({
+    dispatch("closeSession", list(sessionId = timestamp_session))
+    rm("timestamp_export", envir = source_environment)
+  })
+  failed <- dispatch(
+    "exportData",
+    list(sessionId = timestamp_session, revision = 0L, exportId = timestamp_export, options = parquet_export_options),
+    id = failure_request
+  )
+  assert_identical(failed$kind, "error", "Parquet export accepted a lossy timestamp beyond the first validation slice")
+  assert_identical(failed$requestId, failure_request, "timestamp export refusal lost request correlation")
+  assert_identical(failed$code, "runtime_error", "timestamp export refusal changed the runtime error boundary")
+  assert_identical(failed$recoverable, TRUE, "timestamp export refusal was not recoverable")
+  assert_identical(grepl("exactly as Parquet microsecond timestamps", failed$message, fixed = TRUE), TRUE, "timestamp export hid its precision diagnostic")
+  unreadable <- dispatch("readDataExport", list(sessionId = timestamp_session, revision = 0L, exportId = timestamp_export, offset = 0L, limit = 1L))
+  assert_identical(unreadable$kind, "error", "a refused timestamp export published readable bytes")
+  current <- dispatch("getPage", list(sessionId = timestamp_session, page = page_window(row_limit = 1L)))
+  assert_identical(current$page$page, opened$page$page, "timestamp refusal changed the confirmed page")
+  preview <- dispatch("previewStep", list(
+    sessionId = timestamp_session, revision = 0L,
+    step = list(id = "drop-lossy-timestamp", kind = "dropColumns", params = list(columns = I(list(list(id = "r:c:0", name = "at"))))),
+    page = page_window(row_limit = 1L)
+  ))
+  assert_identical(preview$kind, "stepPreview", "a refused export prevented correction of the cleaning plan")
+  scope <- new.env(parent = baseenv())
+  scope$timestamp_export <- source_environment$timestamp_export
+  eval(parse(text = preview$code), envir = scope)
+  assert_identical(scope$open_wrangler_result, source_environment$timestamp_export["keep"], "generated timestamp correction changed retained data")
+  applied <- dispatch("applyDraft", list(sessionId = timestamp_session, revision = 1L, page = page_window(row_limit = 1L)))
+  assert_identical(applied$revision, 2L, "timestamp correction did not apply")
+  exported <- dispatch("exportData", list(sessionId = timestamp_session, revision = 2L, exportId = timestamp_export, options = parquet_export_options))
+  assert_identical(exported$kind, "dataExported", "a corrected result could not reuse the refused export identity")
+  chunk <- dispatch("readDataExport", list(sessionId = timestamp_session, revision = 2L, exportId = timestamp_export, offset = 0L, limit = 1048576L))
+  bytes <- jsonlite::base64_dec(chunk$data)
+  assert_identical(length(bytes), exported$bytes, "the corrected timestamp export was incomplete")
+  target <- tempfile(fileext = ".parquet")
+  on.exit(unlink(target), add = TRUE)
+  writeBin(bytes, target)
+  result <- nanoparquet::read_parquet(target, options = nanoparquet::parquet_options(class = "data.frame"))
+  assert_identical(result, source_environment$timestamp_export["keep"], "the corrected export changed retained native values")
+  undone <- dispatch("undoStep", list(sessionId = timestamp_session, revision = 2L, page = page_window(row_limit = 1L)))
+  assert_identical(undone$page$page, opened$page$page, "timestamp export correction did not undo")
+  assert_identical(serialize(source_environment$timestamp_export, NULL, version = 3L), before, "timestamp export or correction changed the source")
+})
+
 cleanup_ready <- dispatch(
   "exportData",
   list(
