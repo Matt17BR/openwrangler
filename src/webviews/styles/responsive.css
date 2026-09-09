@@ -39,7 +39,8 @@
     justify-content: flex-start;
   }
 
-  .sessionModeHelp[open] {
+  .sessionModeHelp[open],
+  .orderingHelp[open] {
     align-items: flex-start;
     flex-basis: 100%;
     flex-direction: column;
@@ -47,7 +48,8 @@
     white-space: normal;
   }
 
-  .sessionModeHelp[open] .sessionModeHelpText {
+  .sessionModeHelp[open] .sessionModeHelpText,
+  .orderingHelp[open] .orderingHelpText {
     box-sizing: border-box;
     max-width: none;
     position: static;
@@ -66,7 +68,7 @@
   }
 
   .goToColumn {
-    flex: 1;
+    flex: 1 1 100%;
   }
 
   .columnSearchControl input {
@@ -74,9 +76,9 @@
   }
 
   .columnSearchPopup {
-    left: 0;
-    max-width: min(92vw, 360px);
-    right: auto;
+    box-sizing: border-box;
+    max-width: calc(100vw - 20px);
+    min-width: min(280px, calc(100vw - 20px));
   }
 
   .draftReview {

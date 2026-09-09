@@ -90,10 +90,14 @@ export function useGridHeaderProfiles({
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
     const header = headerRef.current;
-    if (!showProfiles || disabled) return;
     if (!scroller || !header) return;
 
     const updateProfileFit = (): void => {
+      const compactHeight = profileHeaderHeight(header, true);
+      if (compactHeight <= 0) return;
+      const minimum = `${compactHeight + gridRowHeight + headerProfileFitTolerance + scroller.offsetHeight - scroller.clientHeight}px`;
+      if (scroller.style.minHeight !== minimum) scroller.style.minHeight = minimum;
+      if (!showProfiles || disabled) return;
       const scrollerHeight = scroller.clientHeight;
       if (scrollerHeight <= 0) return;
       const hasDistributions = header.querySelector(".summaryDistribution") !== null;
@@ -110,7 +114,7 @@ export function useGridHeaderProfiles({
       // offsetHeight and clientHeight share the element's layout-pixel
       // coordinate system. getBoundingClientRect() is scaled by CSS zoom,
       // which would make a 200%-zoom editor compact profiles too early.
-      const expandedHeight = expandedProfileHeaderHeight(header);
+      const expandedHeight = profileHeaderHeight(header, false);
       if (expandedHeight <= 0) return;
       const currentCompact = fitState.sessionId === sessionId && fitState.compact;
       const nextCompact = currentCompact
@@ -255,14 +259,15 @@ export function useGridHeaderProfiles({
   return { controls, headerRef, renderColumnProfile };
 }
 
-function expandedProfileHeaderHeight(header: HTMLTableSectionElement): number {
-  const compactInsights = [...header.querySelectorAll<HTMLElement>(".columnInsight.compact")];
-  if (compactInsights.length === 0) return header.offsetHeight;
-  for (const insight of compactInsights) insight.classList.remove("compact");
+function profileHeaderHeight(header: HTMLTableSectionElement, compact: boolean): number {
+  const changedInsights = [
+    ...header.querySelectorAll<HTMLElement>(compact ? ".columnInsight:not(.compact)" : ".columnInsight.compact")
+  ];
+  for (const insight of changedInsights) insight.classList.toggle("compact", compact);
   try {
     return header.offsetHeight;
   } finally {
-    for (const insight of compactInsights) insight.classList.add("compact");
+    for (const insight of changedInsights) insight.classList.toggle("compact", !compact);
   }
 }
 

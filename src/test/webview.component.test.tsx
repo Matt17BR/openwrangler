@@ -434,7 +434,7 @@ describe("DataGrid", () => {
     const onVisibleSummaryColumnsChange = vi.fn();
     let unmount: (() => void) | undefined;
 
-    const grid = (currentMetadata: SessionMetadata, summaries: ColumnSummary[]) => (
+    const grid = (currentMetadata: SessionMetadata, summaries: ColumnSummary[], profilesDisabled = false) => (
       <DataGrid
         metadata={currentMetadata}
         page={page}
@@ -442,6 +442,7 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={true}
+        profilesDisabled={profilesDisabled}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onApplyProfileFilter={() => undefined}
@@ -463,6 +464,12 @@ describe("DataGrid", () => {
       expect(fitStatus).toBeEmptyDOMElement();
       let scrollerHeight = 124;
       let expandedNaturalHeight = 166;
+      let bareHeaderHeight = 58;
+      // Model the native scrollbar separately from the existing profile-fit viewport.
+      Object.defineProperty(scroller, "offsetHeight", {
+        configurable: true,
+        get: () => scrollerHeight + 12
+      });
       Object.defineProperty(scroller, "clientHeight", {
         configurable: true,
         get: () => scrollerHeight
@@ -475,11 +482,14 @@ describe("DataGrid", () => {
             ? tableHeader.querySelector(".columnInsight.compact")
               ? 68
               : expandedNaturalHeight
-            : 68;
+            : tableHeader.querySelector(".emptyInsight")
+              ? 68
+              : bareHeaderHeight;
         }
       });
 
       signalResize();
+      expect(scroller.style.minHeight).toBe("110px");
       expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument();
       rerender(grid(metadata, [salesSummary]));
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
@@ -509,6 +519,8 @@ describe("DataGrid", () => {
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument());
       expect(document.querySelector(".columnInsight .summaryDistribution")).toBeInTheDocument();
       expect(fitStatus).toHaveTextContent("Header profile distributions are visible again.");
+      // Expanded distributions must not become the minimum and prevent compacting again.
+      expect(scroller.style.minHeight).toBe("110px");
       signalResize();
       expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument();
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
@@ -536,8 +548,11 @@ describe("DataGrid", () => {
       expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
       expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
       expect(fitStatus).toBeEmptyDOMElement();
+      expect(scroller.style.minHeight).toBe("100px");
+      bareHeaderHeight = 76;
       scrollerHeight = 240;
       signalResize();
+      expect(scroller.style.minHeight).toBe("118px");
       expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
       fireEvent.click(headerProfiles);
       await waitFor(() => expect(document.querySelector(".columnInsight:not(.compact)")).toBeInTheDocument());
@@ -548,7 +563,16 @@ describe("DataGrid", () => {
       rerender(grid({ ...metadata, sessionId: "replacement-session" }, [salesSummary]));
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+      expect(scroller.style.minHeight).toBe("110px");
+      fireEvent.click(headerProfiles);
+      rerender(grid({ ...metadata, sessionId: "replacement-session" }, [], true));
+      bareHeaderHeight = 84;
+      signalResize();
+      expect(scroller.style.minHeight).toBe("126px");
+      expect(headerProfiles).toBeDisabled();
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]);
       unmount();
+      expect(scroller.isConnected).toBe(false);
       unmount = undefined;
       expect(resizeObservers.size).toBe(0);
     } finally {

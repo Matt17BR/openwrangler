@@ -333,6 +333,140 @@ describe("DataGrid column search target", () => {
     expect(onViewStateChange).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { owner: "target", zoom: 1, outerHeight: 200 },
+    { owner: "target", zoom: 2, outerHeight: 200 },
+    { owner: "target", zoom: 1, outerHeight: 500 },
+    { owner: "newer", zoom: 1, outerHeight: 200 },
+    { owner: "blurred", zoom: 1, outerHeight: 200 },
+    { owner: "empty", zoom: 1, outerHeight: 200 }
+  ] as const)(
+    "reveals only the owned app ancestor for $owner focus at $zoom zoom and $outerHeight height",
+    async ({ owner, zoom, outerHeight }) => {
+      const schema = columns.slice(1, 3).map((column, position) => ({ ...column, position }));
+      const metadata: SessionMetadata = {
+        protocolVersion: 3,
+        sessionId: "outer-reveal",
+        revision: 0,
+        backend: "polars",
+        mode: "editing",
+        source: { kind: "file", label: "sample.csv", path: "sample.csv" },
+        capabilities: {
+          editable: true,
+          lazy: true,
+          cancel: true,
+          exportCsv: true,
+          exportParquet: true,
+          notebookInsert: false
+        },
+        shape: { rows: owner === "empty" ? 0 : 1, columns: 2 },
+        filteredShape: { rows: owner === "empty" ? 0 : 1, columns: 2 },
+        filterModel: { filters: [], sort: [] },
+        steps: [],
+        schema
+      };
+      const page = (loaded: boolean): GridPage => ({
+        offset: 0,
+        limit: 1,
+        totalRows: owner === "empty" ? 0 : 1,
+        columnIds: schema.slice(0, loaded ? 2 : 1).map((column) => column.id),
+        rows:
+          owner === "empty"
+            ? []
+            : [
+                {
+                  id: "r:0",
+                  rowNumber: 0,
+                  values: schema
+                    .slice(0, loaded ? 2 : 1)
+                    .map(() => ({ kind: "number" as const, raw: 1, display: "1", isNull: false, isNaN: false }))
+                }
+              ]
+      });
+      const onHandled = vi.fn();
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const viewportHeight = vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(800 * zoom);
+      const bounds = (top: number, height: number) => ({
+        x: 0,
+        y: top * zoom,
+        left: 0,
+        right: 760 * zoom,
+        top: top * zoom,
+        bottom: (top + height) * zoom,
+        width: 760 * zoom,
+        height: height * zoom,
+        toJSON: () => ({})
+      });
+      const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+      const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+        this: HTMLElement
+      ) {
+        if (this.classList.contains("app")) return bounds(20, outerHeight);
+        if (this.classList.contains("tableScroller")) return bounds(260, 200);
+        if (this.matches('th[data-grid-column="1"]')) return bounds(260, 58);
+        if (this.matches('td[data-grid-row="0"][data-grid-column="1"]')) return bounds(318, 29);
+        return originalBounds.call(this);
+      });
+      const grid = (requestId?: number, loaded = false) => (
+        <div className="app">
+          <button type="button">Later action</button>
+          <DataGrid
+            metadata={metadata}
+            page={page(loaded)}
+            summaries={[]}
+            pageSize={1}
+            defaultColumnWidth={190}
+            insightsOnOpen={false}
+            goToColumnId={requestId === undefined ? undefined : "c:float"}
+            goToColumnRequestId={requestId}
+            onPage={() => undefined}
+            onSortColumn={() => undefined}
+            onOpenFilter={() => undefined}
+            onVisibleSummaryColumnsChange={() => undefined}
+            onGoToColumnHandled={onHandled}
+          />
+        </div>
+      );
+      try {
+        const { rerender } = render(grid());
+        const scroller = screen.getByTestId("data-grid-scroller");
+        const app = scroller.closest<HTMLElement>(".app")!;
+        Object.defineProperties(scroller, {
+          clientWidth: { configurable: true, value: 760 },
+          clientHeight: { configurable: true, value: 200 }
+        });
+        Object.defineProperties(app, {
+          offsetHeight: { configurable: true, value: outerHeight },
+          clientHeight: { configurable: true, value: outerHeight }
+        });
+        app.scrollTop = 10;
+        app.scrollLeft = 7;
+        rerender(grid(1));
+        expect(onHandled).not.toHaveBeenCalled();
+        if (owner === "newer") act(() => screen.getByRole("button", { name: "Later action" }).focus());
+        if (owner === "blurred") hasFocus.mockReturnValue(false);
+        const innerLeft = scroller.scrollLeft;
+        const innerTop = scroller.scrollTop;
+        rerender(grid(1, true));
+        await waitFor(() => expect(onHandled).toHaveBeenLastCalledWith(1, "revealed"));
+        const expectedTop =
+          owner === "newer" || owner === "blurred" || outerHeight === 500 ? 10 : owner === "empty" ? 108 : 137;
+        expect(app.scrollTop).toBe(expectedTop);
+        expect(app.scrollLeft).toBe(7);
+        expect(scroller.scrollLeft).toBe(innerLeft);
+        expect(scroller.scrollTop).toBe(innerTop);
+        if (owner === "newer") expect(screen.getByRole("button", { name: "Later action" })).toHaveFocus();
+        rerender(grid(1, true));
+        expect(app.scrollTop).toBe(expectedTop);
+        expect(onHandled).toHaveBeenCalledTimes(1);
+      } finally {
+        measure.mockRestore();
+        hasFocus.mockRestore();
+        viewportHeight.mockRestore();
+      }
+    }
+  );
+
   it("reveals a newly appended column across silent layout changes and bounded retries", async () => {
     let nextFrameId = 0;
     let frameTime = 0;
@@ -345,20 +479,31 @@ describe("DataGrid column search target", () => {
     const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
       frames.delete(frameId);
     });
-    const resizeObservers = new Map<object, ResizeObserverCallback>();
+    const resizeObservers = new Map<ControlledResizeObserver, ResizeObserverCallback>();
     class ControlledResizeObserver {
+      readonly targets = new Set<Element>();
       constructor(callback: ResizeObserverCallback) {
         resizeObservers.set(this, callback);
       }
 
-      observe(): void {}
-      unobserve(): void {}
+      observe(target: Element): void {
+        this.targets.add(target);
+      }
+      unobserve(target: Element): void {
+        this.targets.delete(target);
+      }
 
       disconnect(): void {
         resizeObservers.delete(this);
       }
     }
     vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    // The header sizing observer also remains active with profiles off.
+    // These assertions own retirement of the separate table-reveal observer.
+    const revealObserverCount = () =>
+      [...resizeObservers.keys()].filter((observer) =>
+        [...observer.targets].some((target) => target.matches('table[role="grid"]'))
+      ).length;
     const advanceFrame = () => {
       const pending = [...frames.entries()];
       frames.clear();
@@ -491,7 +636,7 @@ describe("DataGrid column search target", () => {
       layoutReady = true;
       advanceFrame();
       expect(frames.size).toBe(0);
-      expect(resizeObservers.size).toBe(0);
+      expect(revealObserverCount()).toBe(0);
 
       const target = await screen.findByRole("columnheader", { name: /market_upper/u });
       expect(target).toBeVisible();
@@ -531,7 +676,7 @@ describe("DataGrid column search target", () => {
       expect(frames.size).toBe(1);
       fireEvent.wheel(scroller);
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(3, "interrupted");
-      expect(resizeObservers.size).toBe(0);
+      expect(revealObserverCount()).toBe(0);
       layoutReady = true;
       signalResize();
       fireEvent(window, new Event("resize"));
@@ -552,7 +697,7 @@ describe("DataGrid column search target", () => {
       expect(keyboardCell).not.toBeNull();
       fireEvent.keyDown(keyboardCell!, { key: "ArrowLeft" });
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(4, "interrupted");
-      expect(resizeObservers.size).toBe(0);
+      expect(revealObserverCount()).toBe(0);
       const keyboardScrollLeft = scroller.scrollLeft;
       expect(keyboardScrollLeft).toBeLessThan(324);
 
@@ -583,7 +728,7 @@ describe("DataGrid column search target", () => {
       expect(frames.size).toBe(1);
       fireEvent.click(screen.getByRole("button", { name: "Next block" }));
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(5, "interrupted");
-      expect(resizeObservers.size).toBe(0);
+      expect(revealObserverCount()).toBe(0);
       layoutReady = true;
       signalResize();
       fireEvent(window, new Event("resize"));
@@ -606,7 +751,7 @@ describe("DataGrid column search target", () => {
       expect(scroller.scrollLeft).toBe(324);
       expect(onViewStateChange).not.toHaveBeenCalled();
       expect(onGoToColumnHandled.mock.calls.some(([requestId]) => requestId === 6)).toBe(false);
-      expect(resizeObservers.size).toBe(1);
+      expect(revealObserverCount()).toBe(1);
 
       // Exhausting animation frames leaves concrete wake sources available.
       layoutReady = true;
@@ -626,7 +771,7 @@ describe("DataGrid column search target", () => {
       fireEvent.pointerDown(scroller);
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(7, "interrupted");
       expect(frames.size).toBe(0);
-      expect(resizeObservers.size).toBe(0);
+      expect(revealObserverCount()).toBe(0);
       const pointerInterruptedScrollLeft = scroller.scrollLeft;
       layoutReady = true;
       signalResize();
@@ -640,7 +785,7 @@ describe("DataGrid column search target", () => {
       scrollLeft = 0;
       rerender(renderGrid(8));
       await waitFor(() => expect(frames.size).toBe(1));
-      expect(resizeObservers.size).toBe(1);
+      expect(revealObserverCount()).toBe(1);
       unmount();
       expect(frames.size).toBe(0);
       expect(resizeObservers.size).toBe(0);

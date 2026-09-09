@@ -1,5 +1,5 @@
 .layout {
-  min-height: 0;
+  min-height: auto;
   flex: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -11,6 +11,7 @@
 }
 
 .sidebar {
+  contain: size;
   display: flex;
   flex-direction: column;
   min-height: 0;
