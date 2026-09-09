@@ -489,7 +489,8 @@ def test_polars_lazy_overflow_is_a_normal_actionable_error() -> None:
     with pytest.raises(Exception, match="portable 38-digit envelope"):
         transformed.collect()
 
+    engine.validate_transformation_result(transformed)
+    compiled = generated(engine, source, operation)
+    assert isinstance(compiled, pl.LazyFrame)
     with pytest.raises(Exception, match="portable 38-digit envelope"):
-        engine.validate_transformation_result(transformed)
-    with pytest.raises(Exception, match="portable 38-digit envelope"):
-        generated(engine, source, operation)
+        compiled.collect()

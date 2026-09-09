@@ -667,23 +667,7 @@ def test_polars_grouped_exact_median_builds_a_lazy_plan_without_collecting(
         context.setattr(pl.LazyFrame, "collect", reject_collect)
         context.setattr(pl, "collect_all", reject_collect)
         live = engine.apply_transform(source, operation)
-
-    native_collect_all = pl.collect_all
-    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
-
-    def observed_collect_all(queries: Any, *args: Any, **kwargs: Any) -> Any:
-        queries = list(queries)
-        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
-        results = native_collect_all(queries, *args, **kwargs)
-        assert len(results) == 1
-        observed.append((dict(results[0].schema), results[0].rows()))
-        return results
-
-    with monkeypatch.context() as context:
-        context.setattr(pl.LazyFrame, "collect", reject_collect)
-        context.setattr(pl, "collect_all", observed_collect_all)
         generated = execute_generated(engine, source, [operation])
-    assert observed == [({"group": pl.UInt32, "value": pl.UInt32}, [(5, 5)])]
 
     assert isinstance(live, pl.LazyFrame)
     assert isinstance(generated, pl.LazyFrame)
@@ -2870,26 +2854,7 @@ def test_polars_grouped_median_preserves_native_endpoints_and_empty_groups(
             scoped.setattr(pl.LazyFrame, "collect", reject_collect)
             scoped.setattr(pl, "collect_all", reject_collect)
         live = engine.apply_transform(frame, operation)
-
-    native_collect_all = pl.collect_all
-    observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
-
-    def observed_collect_all(queries: Any, *args: Any, **kwargs: Any) -> Any:
-        queries = list(queries)
-        assert len(queries) == 1 and not args and kwargs == {"engine": "in-memory"}
-        results = native_collect_all(queries, *args, **kwargs)
-        assert len(results) == 1
-        observed.append((dict(results[0].schema), results[0].rows()))
-        return results
-
-    with monkeypatch.context() as scoped:
-        if lazy:
-            scoped.setattr(pl.LazyFrame, "collect", reject_collect)
-            scoped.setattr(pl, "collect_all", observed_collect_all)
         generated = execute_generated(engine, frame, [operation])
-    if lazy:
-        expected_counts = (0, 0, 0, 0) if empty else (7, 0, 9, 11)
-        assert observed == [({name: pl.UInt32 for name in expected.columns}, [expected_counts])]
     for actual in [live, generated]:
         if lazy:
             assert isinstance(actual, pl.LazyFrame)

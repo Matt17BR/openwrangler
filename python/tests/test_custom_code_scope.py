@@ -526,7 +526,7 @@ def test_generated_custom_result_schema_check_does_not_evaluate_lazy_rows() -> N
         return batch
 
     frame = pl.DataFrame({"key": [2, 3]}).lazy().map_batches(observe, schema={"key": pl.Int64})
-    # Exercise this shared emitter separately from whole-plan expression-readiness validation.
+    # Exercise this shared schema check separately from the Polars Custom result expression check.
     lines = [
         *custom_code_prelude_lines(),
         "import polars as pl",

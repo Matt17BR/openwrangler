@@ -283,13 +283,6 @@ class PolarsEngine(DataFrameEngine):
             return value.to_frame()
         return value
 
-    def validate_transformation_result(self, frame: Any) -> None:
-        import polars as pl
-
-        super().validate_transformation_result(frame)
-        if isinstance(frame, pl.LazyFrame):
-            pl.collect_all([frame.select(pl.all().count())], engine="in-memory")
-
     def is_lazy(self, frame: Any, source: Mapping[str, Any]) -> bool:
         import polars as pl
 
@@ -1517,7 +1510,10 @@ class PolarsEngine(DataFrameEngine):
                             "Custom Polars code must assign a Polars DataFrame, LazyFrame, or Series to result.", output
                         )
                     )
-                return result.to_frame() if isinstance(result, pl.Series) else result
+                result = result.to_frame() if isinstance(result, pl.Series) else result
+            if isinstance(result, pl.LazyFrame):
+                pl.collect_all([result.select(pl.all().count())], engine="in-memory")
+            return result
         raise EngineError(f"Polars does not implement transformation: {kind}")
 
     def validate_transform_preflight(
@@ -1562,12 +1558,13 @@ class PolarsEngine(DataFrameEngine):
             )
             clean_data_lines.extend(output_guards)
             clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
-            clean_data_lines.extend(
-                [
-                    "    if isinstance(df, pl.LazyFrame):",
-                    "        pl.collect_all([df.select(pl.all().count())], engine='in-memory')",
-                ]
-            )
+            if step["kind"] == "customCode":
+                clean_data_lines.extend(
+                    [
+                        "    if isinstance(df, pl.LazyFrame):",
+                        "        pl.collect_all([df.select(pl.all().count())], engine='in-memory')",
+                    ]
+                )
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)

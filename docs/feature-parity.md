@@ -80,9 +80,10 @@ results, before later expressions can read the wrong column. Case-only Rename re
 Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
 Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
-names. Lazy cleaning results are evaluated before confirmation and after each generated step, then retained as
-LazyFrames. One-hot encoding, multi-label encoding and Custom Code may instead materialize their results.
-These checks catch deferred expression errors outside the displayed columns; they do not snapshot external inputs.
+names. Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
+check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
+do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
+Code may materialize their results.
 Pandas accepts its supported text encodings
 and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte delimiter and quote syntax. Excel accepts
 exactly one sheet name or zero-based sheet index; delimited syntax characters are one Unicode scalar each. Import
