@@ -682,21 +682,85 @@ def test_duckdb_generated_rename_results_use_the_private_connection(
                     "SELECT CASE WHEN value > 0 THEN error('owned private result error') ELSE value END AS ow "
                     "FROM (VALUES (0), (1)) source(value)"
                 )
+                deferred = execute_generated(engine, invalid, plan)
                 with pytest.raises(duckdb.Error, match="owned private result error"):
-                    execute_generated(engine, invalid, plan)
+                    deferred.fetchall()
+                # Computed results still evaluate through qualified builtins,
+                # even when this connection shadows a validation function.
+                with pytest.raises(duckdb.Error, match="owned private result error"):
+                    execute_generated(engine, invalid, [bound_step("customCode", code="result = df"), *plan])
                 assert invalid.columns == ["ow"]
                 generated = execute_generated(engine, frame, plan)
-                assert 0 in visits and 2**63 - 1 in visits and None in visits
+                assert visits == []
                 assert generated.columns == ["OW", "zero"]
                 assert generated.types == frame.types == [BIGINT, DOUBLE]
                 actual = generated.fetchall()
                 assert actual == [(0, -0.0), (2**63 - 1, -0.0), (None, -0.0)]
+                assert visits == [0, 2**63 - 1, None]
                 assert all(row[1].hex() == "-0x0.0p+0" for row in actual)
             assert frame.columns == ["ow", "zero"]
             assert frame.fetchall() == actual
             assert connection.sql("SELECT 17").fetchone() == (17,)
             if shadow is not None:
                 assert connection.sql(f"SELECT {shadow}(17)").fetchone() == (0,)
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize("kind", ["renameColumn", "selectColumns", "dropColumns"])
+def test_duckdb_structural_plans_preserve_deferred_input_errors_and_allow_repair(kind: str) -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        frame = connection.sql(
+            "SELECT i AS safe, CASE WHEN i=1 THEN error('inherited input error') ELSE i END AS bad, "
+            "17 AS unused FROM range(2) source(i)"
+        )
+        safe = bound_ref("c:source:0", "safe", 0)
+        bad = bound_ref("c:source:1", "bad", 1)
+        unused = bound_ref("c:source:2", "unused", 2)
+        operation = {
+            "renameColumn": bound_step("renameColumn", column=safe, newName='safe"renamed'),
+            "selectColumns": bound_step("selectColumns", columns=[safe, bad]),
+            "dropColumns": bound_step("dropColumns", columns=[unused]),
+        }[kind]
+        try:
+            result = execute_generated(engine, frame, [operation])
+            name = 'safe"renamed' if kind == "renameColumn" else "safe"
+            assert result.project('"' + name.replace('"', '""') + '"').fetchall() == [(0,), (1,)]
+            with pytest.raises(duckdb.Error, match="inherited input error"):
+                result.fetchall()
+            repaired = execute_generated(engine, frame, [bound_step("dropColumns", columns=[bad])])
+            assert repaired.columns == ["safe", "unused"]
+            assert repaired.fetchall() == [(0, 17), (1, 17)]
+            assert frame.columns == ["safe", "bad", "unused"]
+            assert connection.sql("SELECT 23").fetchone() == (23,)
+        finally:
+            engine.close()
+
+
+def test_duckdb_structural_plans_leave_volatile_input_evaluation_to_the_caller() -> None:
+    engine = DuckDBEngine()
+    calls: list[int] = []
+    with duckdb.connect() as connection:
+
+        def once(value: int) -> int:
+            calls.append(value)
+            if len(calls) > 1:
+                raise ValueError("owned later evaluation")
+            return value
+
+        connection.create_function("owned_once", once, ["BIGINT"], "BIGINT", side_effects=True)
+        frame = connection.sql("SELECT owned_once(7) AS value")
+        operation = bound_step("renameColumn", column=bound_ref("c:source:0", "value", 0), newName="renamed")
+        try:
+            result = execute_generated(engine, frame, [operation])
+            assert calls == []
+            assert result.fetchall() == [(7,)] and calls == [7]
+            with pytest.raises(duckdb.Error, match="owned later evaluation"):
+                result.fetchall()
+            assert calls == [7, 7]
+            assert frame.columns == ["value"] and frame.types == result.types == [BIGINT]
+            assert connection.sql("SELECT 29").fetchone() == (29,)
         finally:
             engine.close()
 

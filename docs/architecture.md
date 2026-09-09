@@ -506,14 +506,20 @@ catalog work without evaluating source rows. A failed ownership lookup prevents 
 error; without an earlier error, the cleanup failure propagates. The identity check and removal are separate native
 operations and do not promise atomicity against arbitrary concurrent caller DDL.
 
-Before publishing a newly computed cleaning step, DuckDB evaluates every physical output column across all result
-rows. This includes Custom Code and errors outside the requested page or column window. The existing transformation
-validation hook executes a native aggregate and discards its single scalar result; it does not retain a materialized
-frame, connection or cache. Both functions resolve from DuckDB's built-in catalog, so user macros cannot
-replace the check. Generated code performs the same evaluation after each step, before later projections
-can remove an erroneous output, using that relation's connection. Empty plans remain no-ops.
-This adds work proportional to the evaluated result at each step, including replay. It verifies the current execution;
-it cannot guarantee that a later evaluation of nondeterministic Custom Code will succeed.
+DuckDB evaluates computed cleaning results across every physical output column before publication, including errors
+outside the requested page. The existing result-validation hook receives the operation kind from Session. Rename,
+Select Columns and Drop Columns only project existing fields, so they skip the additional hash aggregate while keeping
+visible-column, addressability and identity validation. An explicit validation call without operation context still
+checks the whole result. One DuckDB-owned classification also controls generated checks.
+
+Other operations, including Formula and Custom Code, retain the native aggregate before a later projection can remove
+an erroneous output. The hash primitives resolve from DuckDB's built-in catalog; generated code evaluates on the input
+relation's connection. The scalar is discarded without retaining a materialized frame, connection or cache. This work
+remains necessary to force lazy arithmetic guards, including mixed-integer precision checks.
+
+Structural steps preserve native lazy input evaluation: an inherited expression error may surface on a later read,
+and a Drop can remove an unused erroneous expression. They add no full-result validation scan or retained snapshot.
+Computed-result checks can also be followed by a different outcome for volatile inputs. Empty plans remain no-ops.
 
 Formula checks addition, subtraction, multiplication and modulo when both selected operands have native fixed-width
 integer types, through 128 bits, and DuckDB promotes the result to DOUBLE. Each evaluated expression checks its actual

@@ -879,7 +879,7 @@ class DataFrameEngine(ABC):
 
         return None
 
-    def validate_transformation_result(self, frame: Any) -> None:
+    def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
         """Require an engine-portable dataframe result with visible data columns."""
 
         if not any(not is_internal_row_id_label(label) for label in self._raw_column_labels(frame)):

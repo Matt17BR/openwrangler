@@ -576,6 +576,87 @@ def test_duckdb_result_error_outside_the_page_preserves_state_and_allows_correct
         manager.close_all()
 
 
+@pytest.mark.parametrize("kind", ["renameColumn", "selectColumns", "dropColumns"])
+def test_duckdb_structural_public_steps_preserve_data_without_result_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import duckdb
+
+    from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
+
+    source_bytes = b"ow,value,kept\n0,-0.0,a\n1,,b\n2,2.5,c\n"
+    path = tmp_path / "structural.csv"
+    path.write_bytes(source_bytes)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="duckdb", page_size=2)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        engine = session.engine
+        assert isinstance(engine, DuckDBEngine)
+        original = engine._terminal_rows(session.original, "SELECT * FROM ow")
+        columns = [{"id": item["id"], "name": item["name"]} for item in opened["metadata"]["schema"]]
+        params = {
+            "renameColumn": {"column": columns[0], "newName": 'a"b'},
+            "selectColumns": {"columns": [columns[2], columns[1]]},
+            "dropColumns": {"columns": [columns[2]]},
+        }[kind]
+        expected_names = {
+            "renameColumn": ['a"b', "value", "kept"],
+            "selectColumns": ["kept", "value"],
+            "dropColumns": ["ow", "value"],
+        }[kind]
+        expected_rows = {
+            "renameColumn": [(0, -0.0, "a"), (1, None, "b"), (2, 2.5, "c")],
+            "selectColumns": [("a", -0.0), ("b", None), ("c", 2.5)],
+            "dropColumns": [(0, -0.0), (1, None), (2, 2.5)],
+        }[kind]
+        expected_ids = [columns[index]["id"] for index in ([2, 1] if kind == "selectColumns" else [0, 1])]
+        if kind == "renameColumn":
+            expected_ids.append(columns[2]["id"])
+        native_scalar = engine._terminal_scalar
+        hashes: list[str] = []
+
+        def observe_scalar(frame: Any, query: str) -> Any:
+            if "system.main.bit_xor(system.main.hash(" in query:
+                hashes.append(query)
+            return native_scalar(frame, query)
+
+        monkeypatch.setattr(engine, "_terminal_scalar", observe_scalar)
+        preview = manager.preview_step(sid, 0, {"id": "structural", "kind": kind, "params": params}, 0, 2)
+        assert hashes == []
+        draft = session.draft_frame
+        applied = manager.apply_draft(sid, preview["revision"], 0, 2)
+        assert hashes == [] and session.committed is draft
+        assert applied["revision"] == 2 and len(session.plan) == 1
+        assert [item["name"] for item in applied["metadata"]["schema"]] == expected_names
+        assert [item["id"] for item in applied["metadata"]["schema"]] == expected_ids
+        projection = ", ".join('"' + name.replace('"', '""') + '"' for name in expected_names)
+        rows = engine._terminal_rows(session.committed, f"SELECT {projection} FROM ow")
+        assert rows == expected_rows and rows[0][1].hex() == "-0x0.0p+0"
+        row_id = engine.internal_row_id_column(session.original)
+        assert row_id is not None
+        row_id_index = engine._columns(session.original).index(row_id)
+        assert engine._terminal_rows(session.committed, f'SELECT "{row_id}" FROM ow') == [
+            (row[row_id_index],) for row in original
+        ]
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        with duckdb.connect() as connection:
+            native = connection.sql(session.original.sql_query())
+            result = namespace["clean_data"](native)
+            assert result.columns == engine._columns(session.committed)
+            assert list(map(str, result.types)) == list(session.committed.types)
+            assert result.project(projection).fetchall() == expected_rows
+        undone = manager.undo_step(sid, 2, 0, 2)
+        assert undone["kind"] == "planUpdated" and session.plan == []
+        assert session.committed is session.original
+        assert engine._terminal_rows(session.original, "SELECT * FROM ow") == original
+        assert path.read_bytes() == source_bytes
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize(("operator", "right"), [("add", 1), ("subtract", 2**100), ("multiply", 1), ("modulo", 2)])
 def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_correction(
     tmp_path: Path, operator: str, right: int

@@ -37,8 +37,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas Formula rejects integer wraparound and lossy promotion in addition, subtraction, multiplication and
   nonnegative integer powers. Correct native results retain their types, with matching generated code.
 - Changing operations clears validation errors from the previous form.
-- DuckDB evaluates cleaning results before accepting a step, catching errors outside the visible rows or columns.
-  Generated programs also check each intermediate result before continuing.
+- DuckDB evaluates computed cleaning results before accepting a step, catching errors outside the visible rows or
+  columns. Rename, Select Columns and Drop Columns avoid repeating this full-result scan.
+  Generated programs apply the same policy before continuing.
 - Registered R mean methods no longer change built-in means or profile medians. Custom Code keeps normal R dispatch.
 - Generated native R Group By handles empty inputs and preserves integer64 keys and first/last values in a fresh R session.
 - Native R medians and midpoint interpolation preserve tiny numeric results in live and generated cleaning code.

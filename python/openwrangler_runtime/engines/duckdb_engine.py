@@ -78,6 +78,7 @@ _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
+_STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
 
 
 def _duckdb_cast_target(dtype: str) -> str:
@@ -426,8 +427,10 @@ class DuckDBEngine(DataFrameEngine):
         row_count = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 
-    def validate_transformation_result(self, frame: Any) -> None:
-        super().validate_transformation_result(frame)
+    def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
+        super().validate_transformation_result(frame, operation_kind=operation_kind)
+        if operation_kind in _STRUCTURAL_TRANSFORM_KINDS:
+            return
         columns = ", ".join("ow." + _quote_ident(column) for column in self._columns(frame))
         self._terminal_scalar(frame, f"SELECT system.main.bit_xor(system.main.hash({columns})) FROM ow")
 
@@ -1236,7 +1239,6 @@ class DuckDBEngine(DataFrameEngine):
                     f"+ {quote + ')'!r})"
                 )
                 lines.append("    _ow_check_addressability(df)")
-                lines.append("    _ow_validate_result(df)")
             lines.append("    return df")
             clean_data = "\n".join(lines)
             helpers = select_generated_helpers(_generated_helper_source(), clean_data)
@@ -1254,7 +1256,8 @@ class DuckDBEngine(DataFrameEngine):
             clean_data_lines.extend(output_guards)
             clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
             clean_data_lines.append("    _ow_check_addressability(df)")
-            clean_data_lines.append("    _ow_validate_result(df)")
+            if step["kind"] not in _STRUCTURAL_TRANSFORM_KINDS:
+                clean_data_lines.append("    _ow_validate_result(df)")
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
