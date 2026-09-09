@@ -1,6 +1,6 @@
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -861,7 +861,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
     }
   }, 30_000);
 
-  it("rejects an export artifact rewritten in place while it is streaming", async () => {
+  it("rejects a metadata-visible export artifact rewrite in place while it is streaming", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-rewrite-test-"));
     const transport = new RProcessSessionTransport({
       runtimeRoot,
@@ -883,6 +883,8 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
           const artifactPath = resolve(exportRoot, artifact!);
           const expectedCsv = Buffer.from('"value"\n1\n2\n3\n', "utf8");
           await writeFile(artifactPath, Buffer.alloc(expectedCsv.byteLength, 0x78), { flag: "r+" });
+          const changedTime = new Date("2000-01-01T00:00:00.000Z");
+          await utimes(artifactPath, changedTime, changedTime);
           rewritten = true;
         })
       ).rejects.toThrow("changing private R export artifact");
