@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R cleanup no longer rejects an unchanged directory after moving a response file into it.
 - Native R Formula checks large integer literals exactly on Windows, preventing silent rounding of admitted input.
 - Native R numeric, datetime and duration filters preserve selected values when platform decimal parsers differ.
   Scalar numeric Fill also retains the same value in live and generated execution.

@@ -1,4 +1,4 @@
-import { lstat, link, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -78,6 +78,85 @@ describe("R private artifact boundary", () => {
     expect(contents?.toString("utf8")).toBe('{"status":"ready"}');
     await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
+  });
+
+  it("scrubs the exact artifact when the directory link count includes its new file entry", async () => {
+    const artifactPath = resolve(directory, "response.json");
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    const directoryLinkCounts = new Set<bigint>();
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async lstat(filePath) {
+        const metadata = await base.lstat(filePath);
+        if (!basename(filePath).startsWith(".openwrangler-cleanup-")) return metadata;
+        const nlink = 2n + BigInt((await readdir(filePath)).length);
+        directoryLinkCounts.add(nlink);
+        return new Proxy(metadata, {
+          get(target, property) {
+            if (property === "nlink") return nlink;
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+      }
+    };
+
+    const contents = await readRPrivateArtifact({
+      filePath: artifactPath,
+      maximumBytes: 5,
+      label: "test R response",
+      removeAfterRead: "success",
+      operations
+    });
+
+    expect(contents?.toString("utf8")).toBe("owned");
+    expect(directoryLinkCounts).toEqual(new Set([2n, 3n]));
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
+  });
+
+  it("refuses a replacement cleanup directory even when it contains the exact owned artifact", async () => {
+    const artifactPath = resolve(directory, "response.json");
+    const displacedDirectory = resolve(directory, "displaced-cleanup");
+    const unrelatedPath = resolve(displacedDirectory, "unrelated.txt");
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    let quarantinePath: string | undefined;
+    let openedQuarantinedArtifact = false;
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async rename(sourcePath, destinationPath) {
+        await base.rename(sourcePath, destinationPath);
+        quarantinePath = destinationPath;
+        const cleanupDirectory = dirname(destinationPath);
+        await rename(cleanupDirectory, displacedDirectory);
+        await mkdir(cleanupDirectory, { mode: 0o700 });
+        await rename(resolve(displacedDirectory, "artifact"), destinationPath);
+        await writeFile(unrelatedPath, "other", { mode: 0o600 });
+      },
+      async open(filePath, flags) {
+        if (filePath === quarantinePath) openedQuarantinedArtifact = true;
+        return base.open(filePath, flags);
+      }
+    };
+
+    const error = await captureFailure(() =>
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        label: "test R response",
+        removeAfterRead: "success",
+        operations
+      })
+    );
+
+    expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
+    expect(openedQuarantinedArtifact).toBe(false);
+    expect(quarantinePath).toBeDefined();
+    expect(await readFile(quarantinePath!, "utf8")).toBe("owned");
+    expect(await readFile(unrelatedPath, "utf8")).toBe("other");
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("descriptor-scrubs an unread exact artifact through the same boundary", async () => {

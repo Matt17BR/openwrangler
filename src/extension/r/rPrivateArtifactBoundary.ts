@@ -437,7 +437,6 @@ interface RPrivateDirectorySnapshot {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly mode: bigint;
-  readonly nlink: bigint;
   readonly uid: bigint;
   readonly gid: bigint;
 }
@@ -464,7 +463,6 @@ function privateCleanupDirectorySnapshot(
     dev: metadata.dev,
     ino: metadata.ino,
     mode: metadata.mode,
-    nlink: metadata.nlink,
     uid: metadata.uid,
     gid: metadata.gid
   });
@@ -483,7 +481,6 @@ function assertPrivateCleanupDirectory(
     current.dev !== expected.dev ||
     current.ino !== expected.ino ||
     current.mode !== expected.mode ||
-    current.nlink !== expected.nlink ||
     current.uid !== expected.uid ||
     current.gid !== expected.gid
   ) {

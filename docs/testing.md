@@ -374,6 +374,9 @@ both dependency endpoints. They retain correct UTC and `24:00` cases where the s
 check refusal after a valid row alongside source, session and pinned-target identity preservation.
 The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
 owned process root when the session closes.
+The `rPrivateArtifactBoundary` unit owner covers real reads, quarantine and zero-byte cleanup, directory link counts
+that change with contents, and refusal of a replacement cleanup directory. File link-count and identity checks remain
+intact. The macOS and Windows R jobs run this owner before R dependency and editor preparation.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
 
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
@@ -620,7 +623,9 @@ phase, the existing progress poll also logs changed, allowlisted fixture milesto
 launch. These include editing, native-frame opening, document execution and restart. Polling may miss quick transitions;
 these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
 progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
-cleanup cost from editor execution. These diagnostics preserve the existing inactivity and absolute phase deadlines.
+cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
+their start and completion against the same preparation clock. These diagnostics preserve the existing inactivity and
+absolute phase deadlines.
 If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
 notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
 unavailable collection yields an empty list; the failure-artifact redaction rules still apply.

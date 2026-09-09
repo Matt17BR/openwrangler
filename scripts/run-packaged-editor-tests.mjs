@@ -361,7 +361,17 @@ try {
           );
           if (vscodeAcquisitionPlan?.kind === "download") {
             writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:download-vscode");
+            if (acceptanceMode === "r-jupyter") {
+              console.log(
+                `R acceptance VS Code acquisition started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+              );
+            }
             const executable = await downloadEditorWithRetry(vscodeAcquisitionPlan.version);
+            if (acceptanceMode === "r-jupyter") {
+              console.log(
+                `R acceptance VS Code acquisition completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+              );
+            }
             const downloadedCli = resolveDownloadedEditorCliPath(executable);
             if (!existsSync(downloadedCli)) {
               throw new Error("The downloaded VS Code CLI was not found.");
@@ -436,10 +446,20 @@ try {
               ) {
                 throw error;
               }
+              if (acceptanceMode === "r-jupyter") {
+                console.log(
+                  `R acceptance dependency installation started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                );
+              }
               await runBoundedEditorCommand(
                 rAcceptanceEnvironment.dependencyInstall.input,
                 rAcceptanceEnvironment.dependencyInstall.options
               );
+              if (acceptanceMode === "r-jupyter") {
+                console.log(
+                  `R acceptance dependency installation completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                );
+              }
               dependencyProbeResult = await runBoundedEditorCommand(
                 rAcceptanceEnvironment.dependencyProbe.input,
                 rAcceptanceEnvironment.dependencyProbe.options

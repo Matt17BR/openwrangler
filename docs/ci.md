@@ -83,7 +83,10 @@ resolved by their existing journey. Private package-version and kernel-readiness
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane. This tooling selection does not change the terminal lane's R package or IRkernel checks.
 
-The `macos-r` and `windows-r` released-Jupyter jobs run the canonical `kernel:numeric-portability` source case
+The `macos-r` and `windows-r` jobs first run the existing private R artifact filesystem tests in Node, before private
+R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
+on each platform without launching R or an editor.
+The released-Jupyter jobs then run the canonical `kernel:numeric-portability` source case
 before opening the editor. It checks the platform-sensitive arithmetic, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
 keeps its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
