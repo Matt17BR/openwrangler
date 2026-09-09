@@ -23,6 +23,19 @@ import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 
 const notebookPackages = ["IRkernel", "jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet"];
+const editorPackages = [
+  "IRkernel",
+  "jsonlite",
+  "rlang",
+  "Rcpp",
+  "languageserver",
+  "rmarkdown",
+  "knitr",
+  "tibble",
+  "data.table",
+  "collapse",
+  "nanoparquet"
+];
 
 function provisioning(t) {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-r-dependencies-"));
@@ -79,7 +92,7 @@ for (const nativeEditorTooling of [undefined, true, false]) {
       ...fixture.options,
       ...(nativeEditorTooling === undefined ? {} : { nativeEditorTooling })
     });
-    const packages = nativeEditorTooling === false ? notebookPackages : Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS);
+    const packages = nativeEditorTooling === false ? notebookPackages : editorPackages;
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
     assert.deepEqual(prepared.packages, packages);
@@ -105,7 +118,7 @@ for (const nativeEditorTooling of [undefined, true, false]) {
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
-    assert.equal(Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS).length, 11);
+    assert.equal(prepared.packages.includes("bit64"), false);
   });
 }
 
@@ -124,19 +137,90 @@ test("invalid R tooling decisions fail before commands or private directories", 
   }
 });
 
-test("both R package scopes require the caller's contained private directory", async (t) => {
+test("all R package scopes require the caller's contained private directory", async (t) => {
   const fixture = provisioning(t);
   const other = provisioning(t);
-  for (const nativeEditorTooling of [false, true]) {
+  for (const selection of [
+    { nativeEditorTooling: false },
+    { nativeEditorTooling: true },
+    { nativeEditorTooling: false, sourceContracts: true }
+  ]) {
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(other.directory, fixture.rscript, {
         ...fixture.options,
-        nativeEditorTooling
+        ...selection
       }),
       /inside its caller-owned root/u
     );
     assert.equal(fixture.commands.length, 0);
     assert.equal(existsSync(other.directory), false);
+  }
+});
+
+for (const platform of ["darwin", "win32"]) {
+  test(`source R contracts prepare only their private dependencies on ${platform}`, async (t) => {
+    const fixture = provisioning(t);
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      nativeEditorTooling: false,
+      sourceContracts: true,
+      platform
+    });
+    const packages = ["jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet", "bit64"];
+    const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
+    assert.deepEqual(prepared.packages, packages);
+    assert.equal(versions.bit64, "4.6.0.1");
+    assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
+    assert.deepEqual(prepared.packageVersions, versions);
+    assert.equal(prepared.packageRecord, packages.map((name) => `${name}=${versions[name]}`).join("\n"));
+    for (const value of [prepared, prepared.packages, prepared.packageVersions]) assert.ok(Object.isFrozen(value));
+    assert.deepEqual(readdirSync(prepared.root).sort(), ["h", "l", "t"]);
+    assert.equal(prepared.jupyterEnvironment, undefined);
+    assert.equal(prepared.kernelSpecPath, undefined);
+    assert.equal(prepared.rExecutable, fixture.rExecutable);
+    assert.equal(fixture.commands.length, 1);
+    assert.equal(fixture.commands[0].executable, fixture.rscript);
+    for (const command of [prepared.dependencyInstall, prepared.dependencyProbe]) {
+      assert.equal(command.input.executable, fixture.rscript);
+      assert.equal(command.input.environment.R_LIBS_USER, prepared.libraryDir);
+      assert.equal(command.input.environment.HOME, join(prepared.root, "h"));
+      for (const key of ["TMPDIR", "TMP", "TEMP"])
+        assert.equal(command.input.environment[key], join(prepared.root, "t"));
+      assert.equal(command.input.environment.RETAINED, "value");
+      assert.equal(command.input.environment.R_LIBS, undefined);
+      assert.equal(command.input.environment.R_PROFILE, undefined);
+    }
+    const repositories = rAcceptanceRepositories(platform);
+    assert.equal(prepared.repository, repositories.repository);
+    assert.equal(prepared.supplementalRepository, repositories.supplementalRepository);
+    const install = commandCode(prepared.dependencyInstall);
+    assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet"\)/u);
+    assert.equal(install.includes('type = "source"'), platform === "darwin");
+    assert.match(install, /dependencies = NA/u);
+    const probe = commandCode(prepared.dependencyProbe);
+    assert.match(probe, /find\.package\(\.ow_package, lib.loc = \.ow_library, quiet = TRUE\)/u);
+    assert.match(probe, /loadNamespace\(\.ow_package, lib.loc = \.ow_library\)/u);
+    for (const status of [10, 11, 12, 13, 14, 15, 16, 17]) assert.ok(probe.includes(`status = ${status}L`));
+    await assert.rejects(
+      probeJupyterAcceptanceRKernel(fixture.rscript, prepared, { runCommand: fixture.options.runCommand }),
+      /exact prepared private environment/u
+    );
+    assert.equal(fixture.commands.length, 1);
+  });
+}
+
+test("invalid or mixed R source-contract scope fails before commands or directories", async (t) => {
+  const fixture = provisioning(t);
+  for (const selection of [
+    ...[null, 0, 1, "false", [], {}].map((sourceContracts) => ({ nativeEditorTooling: false, sourceContracts })),
+    { nativeEditorTooling: true, sourceContracts: true }
+  ]) {
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, { ...fixture.options, ...selection }),
+      /source.contract/u
+    );
+    assert.equal(fixture.commands.length, 0);
+    assert.equal(existsSync(fixture.directory), false);
   }
 });
 

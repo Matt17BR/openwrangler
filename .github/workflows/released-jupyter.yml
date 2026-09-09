@@ -260,6 +260,62 @@ jobs:
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
+      - &r_source_contracts
+        name: Qualify native R mean source contracts
+        shell: node {0}
+        env:
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+        run: |
+          const { execFileSync } = require("node:child_process");
+          const { mkdtempSync, realpathSync } = require("node:fs");
+          const { join, resolve } = require("node:path");
+          const { pathToFileURL } = require("node:url");
+
+          (async () => {
+            const { prepareJupyterAcceptanceREnvironment } = await import(pathToFileURL(resolve("scripts/jupyter-acceptance-environment.mjs")));
+            const { runBoundedEditorCommand } = await import(pathToFileURL(resolve("scripts/editor-acceptance.mjs")));
+            const { createEditorAcceptancePrivateRootReceipt, removeEditorAcceptancePrivateRoot } = await import(pathToFileURL(resolve("scripts/packaged-editor-orchestration.mjs")));
+            const { createRContractPhases, selectRContractPhases, runRContractPhasesWithSignalForwarding } = await import(pathToFileURL(resolve("scripts/run-r-contract-tests.mjs")));
+            const checkout = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", maxBuffer: 4096 }).trim();
+            if (!/^[0-9a-f]{40}$/.test(checkout) || checkout !== process.env.GITHUB_SHA) {
+              throw new Error("R source qualification must use the workflow's exact checkout.");
+            }
+            console.log(`R source checkout: ${checkout}; Node ${process.version}; ${process.platform}/${process.arch}`);
+            const parent = realpathSync(process.env.RUNNER_TEMP);
+            const privateRoot = mkdtempSync(join(parent, "openwrangler-r-source-"));
+            const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: parent });
+            const prepared = await prepareJupyterAcceptanceREnvironment(
+              join(privateRoot, "r"), process.env.OPEN_WRANGLER_TEST_RSCRIPT,
+              { containedBy: privateRoot, nativeEditorTooling: false, sourceContracts: true }
+            );
+            const environment = prepared.dependencyProbe.input.environment;
+            const runtime = await runBoundedEditorCommand({
+              executable: prepared.dependencyProbe.input.executable,
+              args: ["--vanilla", "-e", 'cat(R.version.string, R.version$platform, Sys.info()[["sysname"]], Sys.info()[["machine"]], sep = "\\n")'],
+              environment,
+              label: "R source qualification runtime identity"
+            }, prepared.dependencyProbe.options);
+            console.log(runtime.stdout);
+            await runBoundedEditorCommand(prepared.dependencyInstall.input, prepared.dependencyInstall.options);
+            const probe = await runBoundedEditorCommand(prepared.dependencyProbe.input, prepared.dependencyProbe.options);
+            if (probe.stdout !== prepared.packageRecord) {
+              throw new Error("R source qualification did not resolve its reviewed private package versions.");
+            }
+            console.log(`R source packages:\n${prepared.packageRecord}`);
+            const phases = createRContractPhases({
+              environment, r: prepared.rExecutable, rscript: prepared.dependencyProbe.input.executable
+            });
+            const selected = [
+              "frame:group-by", "frame:fill-missing", "frame:profiling",
+              "kernel:text-fill-and-cast", "kernel:group-pivot-and-export"
+            ].flatMap((id) => selectRContractPhases(phases, { kind: "phase", id }));
+            await runRContractPhasesWithSignalForwarding(selected);
+            // Any earlier failure retains this root, including unverified process settlement.
+            removeEditorAcceptancePrivateRoot(receipt, { processTreeVerifiedStopped: true, privatePathsVerified: true });
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
@@ -319,6 +375,7 @@ jobs:
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
+      - *r_source_contracts
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix

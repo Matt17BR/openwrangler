@@ -444,7 +444,8 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   tibble: "3.3.1",
   "data.table": "1.18.2.1",
   collapse: "2.1.7",
-  nanoparquet: "0.5.1"
+  nanoparquet: "0.5.1",
+  bit64: "4.6.0.1" // packageVersion() renders the archive's 4.6.0-1 with dots.
 });
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
@@ -635,7 +636,13 @@ const R_ACCEPTANCE_PROBE = [
   ".ow_versions <- vapply(.ow_packages, function(.ow_package) {",
   "  as.character(utils::packageVersion(.ow_package, lib.loc = .ow_library))",
   "}, character(1L), USE.NAMES = FALSE)",
-  'if (!identical(.ow_versions, unname(.ow_expected))) quit(save = "no", status = 11L)',
+  "if (!identical(.ow_versions, unname(.ow_expected))) {",
+  "  .ow_mismatches <- which(.ow_versions != unname(.ow_expected))",
+  "  cat(sprintf('%s: expected %s, actual %s',",
+  "    .ow_packages[.ow_mismatches], substr(unname(.ow_expected)[.ow_mismatches], 1L, 64L),",
+  "    substr(.ow_versions[.ow_mismatches], 1L, 64L)), sep = '\\n', file = stderr())",
+  '  quit(save = "no", status = 11L)',
+  "}",
   ".ow_loadable <- vapply(.ow_packages, function(.ow_package) {",
   "  tryCatch({",
   "    loadNamespace(.ow_package, lib.loc = .ow_library)",
@@ -1924,11 +1931,15 @@ export async function prepareJupyterAcceptanceREnvironment(
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
     nativeEditorTooling = true,
+    sourceContracts = false,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
   if (typeof nativeEditorTooling !== "boolean") {
     throw new Error("Released-Jupyter R acceptance requires an explicit native editor tooling decision.");
+  }
+  if (typeof sourceContracts !== "boolean" || (sourceContracts && nativeEditorTooling)) {
+    throw new Error("R source-contract preparation requires a boolean scope and excludes native editor tooling.");
   }
   if (
     typeof directory !== "string" ||
@@ -1952,9 +1963,11 @@ export async function prepareJupyterAcceptanceREnvironment(
     );
   }
 
-  const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(
-    ([packageName]) => nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName)
-  );
+  const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
+    if (packageName === "bit64") return sourceContracts;
+    if (sourceContracts && packageName === "IRkernel") return false;
+    return nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
+  });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
   const packageVersions = Object.freeze(Object.fromEntries(packageEntries));
   const packageRecord = packageEntries.map(([packageName, version]) => `${packageName}=${version}`).join("\n");
@@ -1973,6 +1986,46 @@ export async function prepareJupyterAcceptanceREnvironment(
   const libraryDir = resolve(root, "l");
   const homeDir = resolve(root, "h");
   const tempDir = resolve(root, "t");
+  for (const path of [libraryDir, homeDir, tempDir]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+
+  const commandEnvironment = privateRCommandEnvironment(environment, {
+    homeDir,
+    libraryDir,
+    tempDir
+  });
+  const dependencyProbe = freezeRCommandInvocation(
+    {
+      executable: canonicalRscript,
+      args: ["--vanilla", "-e", `.ow_expected <- c(${expectedVersions})\n${R_ACCEPTANCE_PROBE}`],
+      environment: commandEnvironment,
+      label: "Released-Jupyter private R dependency probe"
+    },
+    30_000
+  );
+  const dependencyInstall = freezeRCommandInvocation(
+    {
+      executable: canonicalRscript,
+      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform, packages)],
+      environment: commandEnvironment,
+      label: "Released-Jupyter private R dependency installation"
+    },
+    1_200_000
+  );
+  const dependencies = {
+    root,
+    libraryDir,
+    rExecutable,
+    packages,
+    packageVersions,
+    packageRecord,
+    repository: repositories.repository,
+    supplementalRepository: repositories.supplementalRepository,
+    dependencyProbe,
+    dependencyInstall
+  };
+  if (sourceContracts) return Object.freeze(dependencies);
+
   const dataDir = resolve(root, "d");
   const runtimeDir = resolve(root, "r");
   const configDir = resolve(root, "c");
@@ -1981,26 +2034,11 @@ export async function prepareJupyterAcceptanceREnvironment(
   const kernelBootstrapPath = resolve(root, "kernel-bootstrap.R");
   const kernelBootstrapStagePath = resolve(root, "kernel-bootstrap-stage");
   const kernelDirectory = resolve(dataDir, "kernels", R_ACCEPTANCE_KERNEL_ID);
-  for (const path of [
-    libraryDir,
-    homeDir,
-    tempDir,
-    dataDir,
-    runtimeDir,
-    configDir,
-    pathDir,
-    kernelProbeWorkingDirectory,
-    kernelDirectory
-  ]) {
+  for (const path of [dataDir, runtimeDir, configDir, pathDir, kernelProbeWorkingDirectory, kernelDirectory]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
 
-  const commandEnvironment = privateRCommandEnvironment(environment, {
-    homeDir,
-    libraryDir,
-    tempDir
-  });
   writeFileSync(kernelBootstrapStagePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
   const kernelBootstrapStageIdentity = ownedRBootstrapStageIdentity(kernelBootstrapStagePath);
   writeFileSync(kernelBootstrapPath, rAcceptanceKernelBootstrap(libraryDir, kernelBootstrapStagePath), {
@@ -2036,40 +2074,14 @@ export async function prepareJupyterAcceptanceREnvironment(
   );
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
 
-  const dependencyProbe = freezeRCommandInvocation(
-    {
-      executable: canonicalRscript,
-      args: ["--vanilla", "-e", `.ow_expected <- c(${expectedVersions})\n${R_ACCEPTANCE_PROBE}`],
-      environment: commandEnvironment,
-      label: "Released-Jupyter private R dependency probe"
-    },
-    30_000
-  );
-  const dependencyInstall = freezeRCommandInvocation(
-    {
-      executable: canonicalRscript,
-      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform, packages)],
-      environment: commandEnvironment,
-      label: "Released-Jupyter private R dependency installation"
-    },
-    1_200_000
-  );
-
   const prepared = Object.freeze({
-    root,
-    libraryDir,
+    ...dependencies,
     kernelId: R_ACCEPTANCE_KERNEL_ID,
     kernelDisplayName: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
-    rExecutable,
     kernelProbeWorkingDirectory,
     kernelBootstrapPath,
     kernelBootstrapStagePath,
     kernelSpecPath,
-    packages,
-    packageVersions,
-    packageRecord,
-    repository: repositories.repository,
-    supplementalRepository: repositories.supplementalRepository,
     jupyterEnvironment: Object.freeze({
       dataDir,
       runtimeDir,
@@ -2077,9 +2089,7 @@ export async function prepareJupyterAcceptanceREnvironment(
       path: pathDir,
       rscriptPath: canonicalRscript,
       rLibraryDir: libraryDir
-    }),
-    dependencyProbe,
-    dependencyInstall
+    })
   });
   rAcceptanceBootstrapReceipts.set(prepared, {
     directoryReceipt,
