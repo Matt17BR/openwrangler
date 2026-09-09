@@ -188,7 +188,7 @@ test("all R package scopes require the caller's contained private directory", as
   }
 });
 
-for (const platform of ["darwin", "win32"]) {
+for (const platform of ["linux", "darwin", "win32"]) {
   test(`source R contracts prepare only their private dependencies on ${platform}`, async (t) => {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
@@ -228,6 +228,7 @@ for (const platform of ["darwin", "win32"]) {
     assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
     assert.equal(install.includes('"collapse"'), false);
     assert.equal(install.includes('type = "source"'), false);
+    assert.equal(install.includes("-j2"), false);
     assert.match(install, /dependencies = NA/u);
     const probe = commandCode(prepared.dependencyProbe);
     assert.match(probe, /find\.package\(\.ow_package, lib.loc = \.ow_library, quiet = TRUE\)/u);
@@ -333,6 +334,19 @@ test("notebook roots retain supplemental installs and private dependency refusal
     assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet"\)/u);
     assert.equal(install.includes('type = "source"'), platform === "darwin");
     assert.equal(install.includes('.ow_binary_supplemental_packages <- "nanoparquet"'), platform === "darwin");
+    const serialMake = 'Sys.setenv(MAKEFLAGS = "-s")';
+    const parallelMake = 'Sys.setenv(MAKEFLAGS = "-s -j2")';
+    assert.equal(install.split("\n")[0], serialMake);
+    assert.deepEqual(
+      install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
+      platform === "darwin" ? [serialMake, parallelMake] : [serialMake]
+    );
+    if (platform === "darwin") {
+      const collapseStart = install.indexOf(`${parallelMake}\nutils::install.packages(\n  "collapse",`);
+      assert.notEqual(collapseStart, -1);
+      assert.equal(install.slice(0, collapseStart).match(/utils::install\.packages\(/gu)?.length, 2);
+      assert.equal(install.slice(collapseStart).match(/utils::install\.packages\(/gu)?.length, 1);
+    }
     assert.match(install, /dependencies = NA/u);
     const probe = commandCode(prepared.dependencyProbe);
     assert.match(probe, /find\.package\(.ow_package, lib.loc = .ow_library, quiet = TRUE\)/u);

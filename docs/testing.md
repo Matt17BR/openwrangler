@@ -729,6 +729,7 @@ PySpark and generic verification. Qualification coverage is determined by the se
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
 `languageserver`, `rmarkdown`, and `knitr`; interactive-terminal and literate-documents journeys retain all three.
 Shared IRkernel, native-frame and Parquet fixtures keep their dependencies, including collapse and Rcpp.
+On macOS, collapse is built from the pinned source snapshot using two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
 

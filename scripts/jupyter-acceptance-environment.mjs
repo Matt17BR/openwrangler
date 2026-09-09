@@ -724,6 +724,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
   const nativeCollapseInstall =
     platform === "darwin" && packages.includes("collapse")
       ? [
+          'Sys.setenv(MAKEFLAGS = "-s -j2")',
           "utils::install.packages(",
           '  "collapse",',
           "  lib = .ow_library,",
