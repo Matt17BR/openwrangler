@@ -44,9 +44,9 @@ _Open a live notebook dataframe from its output and continue in the workbench._
 
 **2. Preview a transformation.** If your notebook session opens in Viewing mode and supports editing, choose
 **Switch to Editing** first. Choose **Add step**, select an operation, configure it, then choose **Preview changes**.
-Search multi-column lists to find fields; changing the search keeps your selections. Changed values and generated code
-appear as a draft. Viewing filters and sorts affect only the current view. Use **Sort rows** or **Filter rows** to add
-a cleaning step.
+Where a form offers column search, changing the search keeps your selections. Changed values and generated code appear
+as a draft. Viewing filters and sorts affect only the current view. Use **Sort rows** or **Filter rows** to add a
+cleaning step.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
@@ -65,13 +65,15 @@ Mode.
 - Explore a paged grid with column profiles, dataset summaries, typed filters, ordered sorts, full-schema search,
   rectangular selection, and copy.
 - Clean rows, columns, types, text, categories, numbers, dates, missing values, and reshaped data. Drafts can be
-  applied or discarded, and applied steps can be inspected, edited, deleted, or undone. Redo restores an undone
-  command while its runtime session remains open.
-- Add Dense Rank from a numeric column, with ascending or descending order, tied ranks and missing values preserved.
-- Mark repeated groups with a Boolean column while retaining every record for review or export.
+  applied or discarded, and applied steps can be inspected, edited, deleted, or undone.
 - Keep executable code for the selected engine beside the preview. Viewing filters and sorts remain separate from
   the cleaning plan and exported result.
 - Open delimited text, Parquet, JSON Lines, and Excel files, or continue from live notebook and interactive dataframes.
+
+**Unreleased (current source):** Redo restores an undone command while its runtime session remains open. Dense Rank
+adds numeric ranks while preserving ties and missing values. Mark Duplicates flags repeated groups without removing
+records. These additions are not in stable 2.1.0; see the
+[Unreleased changelog](https://github.com/Matt17BR/openwrangler/blob/main/CHANGELOG.md#unreleased).
 
 ## View, edit, and export
 
@@ -84,7 +86,7 @@ Mode.
 | Export cleaned data              | Write CSV or Parquet to a separate destination                                         | Available from supported editing sessions; view-only sessions cannot export                                                          |
 
 The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every command,
-setting, operation, and supported parameter.
+setting, operation, and supported parameter in the current source.
 
 ## Compatibility and limits
 
