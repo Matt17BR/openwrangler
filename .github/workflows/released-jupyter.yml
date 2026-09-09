@@ -307,7 +307,7 @@ jobs:
             });
             const selected = [
               "frame:group-by", "frame:fill-missing", "frame:profiling", "frame:cast-and-structure",
-              "kernel:text-fill-and-cast", "kernel:group-pivot-and-export"
+              "kernel:text-fill-and-cast", "kernel:group-pivot-and-export", "kernel:rows-numeric-datetime-and-by-example"
             ].flatMap((id) => selectRContractPhases(phases, { kind: "phase", id }));
             await runRContractPhasesWithSignalForwarding(selected);
             // Any earlier failure retains this root, including unverified process settlement.

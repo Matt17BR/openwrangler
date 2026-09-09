@@ -5737,10 +5737,16 @@ openwrangler_r_kernel_agent <- local({
 
   r_number <- function(value) {
     if (is.integer(value)) return(sprintf("%dL", value))
-    sprintf(
-      "as.double(%s)",
-      r_string(format(value, digits = 17L, scientific = TRUE, trim = TRUE, decimal.mark = "."))
+    bytes <- as.integer(writeBin(value, raw(), size = 8L, endian = "little"))
+    sign <- if (bytes[[8L]] >= 128L) "-" else ""
+    exponent <- (bytes[[8L]] %% 128L) * 16L + bytes[[7L]] %/% 16L
+    fraction <- paste0(
+      sprintf("%x", bytes[[7L]] %% 16L),
+      paste(sprintf("%02x", rev(bytes[1:6])), collapse = "")
     )
+    leading <- if (exponent == 0L) "0" else "1"
+    power <- if (exponent == 0L) -1022L else exponent - 1023L
+    sprintf("as.double(%s)", r_string(sprintf("%s0x%s.%sp%d", sign, leading, fraction, power)))
   }
 
   r_character_vector <- function(values) {

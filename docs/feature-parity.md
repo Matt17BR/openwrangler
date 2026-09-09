@@ -358,6 +358,8 @@ explicit sample labels.
 Native R Mean Fill, ordinary integer/double Group By and numeric profiles retain finite means through cancellation
 and across profile chunks. Live and generated cleaning use the same arithmetic. Integer64 conversion and unrelated
 statistics keep their existing limits.
+Generated Formula and By Example preserve their finite numeric literals, including when decimal parsing differs
+between R platforms. Existing integer precision and operation-specific input limits still apply.
 
 Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys,
 including both supported signed extrema. All three keep modes preserve original values and native frame metadata; data.table

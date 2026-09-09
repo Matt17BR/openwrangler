@@ -29,6 +29,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated native R Formula and By Example preserve finite numeric literals when platform decimal parsers differ.
 - Native R Mean Fill, Group By and numeric profiles retain finite means across cancellation and chunk boundaries.
 - Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.
 - Python sessions return valid empty pages when recovery or cleaning leaves fewer rows than the requested position.
