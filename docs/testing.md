@@ -99,21 +99,19 @@ Linux R phase supervision uses the selected repository Python's standard library
 Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The runner checks this capability before starting
 a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
 
-For second-resolution POSIX observations, only the original phase root may change its command/environment rendering
-while its observed PID/start identity, parent, process group and phase marker remain unchanged. Descendants retain
-command continuity, and retired identity keys remain refused. A later marked start identity does not inherit the
-original root's allowance. This is coarse marker-based continuity, not a kernel-held identity; copied markers and
-same-second PID reuse can remain ambiguous. Process-free tracker tests cover these boundaries without claiming
-native macOS settlement. POSIX observations retain the primary process state, so an explicitly reported zombie
-retires without requiring its former command or environment marker. A listed zombie does not count as a live
-reappearance of a retired identity; a later live identity with that same coarse key remains refused. Live descendants
-and the child observer must still settle before the phase completes.
+For second-resolution POSIX identities, the exact spawned child's exit event confirms the original root's departure.
+Its close event still gates output settlement, and independently tracked descendants must also settle. The initial
+root identity is retained for retirement and cleanup; a pending exit callback does not authenticate a sampled PID.
+Later root command or marker loss is not a separate lifetime failure. When an unmarked descendant depends on root
+lineage, however, that observation requires fresh matching PID/start, parent, process group and retained-marker
+evidence. Ambiguous lineage still fails, including for an already tracked child.
 
-The `ps` process metadata and argument/environment reads are separate. If only the original root's command changes
-and its previously present marker disappears while its second-resolution PID/start, parent and group stay unchanged,
-the tracker makes one bounded identity reread. It retires that root only when the reread confirms absence, a zombie
-or a different start identity. Any same-identity live result, including a restored marker, or an unreadable reread
-retains the original failure. Other ownership disagreements fail without that extra read.
+Descendants retain their command and ownership checks. Explicitly reported zombies retire, while a later live
+identity with the same retired coarse key remains refused. A later marked process using the root PID receives
+ordinary descendant checks. Coarse marker and lineage evidence can remain ambiguous with copied markers and
+same-second PID reuse; these tests do not establish a kernel-held identity or native macOS cancellation support.
+The existing tracker and phase owners cover delayed exit/close, initial zombies, lost root credentials, replacement
+PIDs, surviving descendants and cleanup targets. Linux's precise identity and pidfd path remains unchanged.
 
 The periodic POSIX watcher schedules its next observation after the previous one finishes, leaving a 10 ms delay
 between periodic reads. Initial, explicit, final and pre-signal observations keep their existing timing and may run

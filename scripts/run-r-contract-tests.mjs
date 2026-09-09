@@ -373,10 +373,14 @@ function sleep(milliseconds) {
 }
 
 function observeChild(child) {
+  let exited = false;
   let settled = false;
   let state;
   let spawnError;
   const promise = new Promise((resolveExit) => {
+    child.once("exit", () => {
+      exited = true;
+    });
     child.once("error", (error) => {
       spawnError ??= error;
     });
@@ -388,6 +392,7 @@ function observeChild(child) {
   });
   return Object.freeze({
     promise,
+    hasExited: () => exited,
     isSettled: () => settled,
     state: () => state
   });
@@ -547,6 +552,7 @@ export function createPosixProcessTracker(
     readProcessIdentity = readPosixProcessIdentity,
     listProcessIdentities = listPosixProcessIdentities,
     signalVerifiedProcesses,
+    rootHasExited,
     observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
   } = {}
 ) {
@@ -570,7 +576,7 @@ export function createPosixProcessTracker(
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
   };
-  const coarseIdentityFailure = (expected, current) => {
+  const coarseIdentityFailure = (expected, current, ownsRootLineage) => {
     if (expected.identityResolution !== "second" && current.identityResolution !== "second") return undefined;
     const secondResolution = expected.identityResolution === "second" && current.identityResolution === "second";
     const parentMatches = expected.parentPid === current.parentPid;
@@ -580,34 +586,22 @@ export function createPosixProcessTracker(
     const markerNow = current.ownerMarked === true;
     const markerOwned = markerBefore && markerNow;
     const originalRoot = sameProcessIdentity(expected, rootIdentity);
-    const lineageOwned = parentMatches && observed.has(expected.parentPid) && current.parentPid !== expected.pid;
-    if (
-      secondResolution &&
+    const lineageOwned =
       parentMatches &&
-      groupMatches &&
-      (commandMatches || (originalRoot && markerOwned)) &&
-      (markerOwned || lineageOwned)
-    ) {
+      current.parentPid !== expected.pid &&
+      (observed.has(expected.parentPid) ||
+        (!markerOwned && childOwnedRoot && expected.parentPid === rootPid && ownsRootLineage()));
+    if (secondResolution && parentMatches && groupMatches && commandMatches && (markerOwned || lineageOwned)) {
       return undefined;
     }
-    return {
-      error: new Error(
-        `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
-          `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
-          `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
-          `lineageOwned=${lineageOwned}, root=${originalRoot})`
-      ),
-      confirmDeparture:
-        originalRoot &&
-        secondResolution &&
-        parentMatches &&
-        groupMatches &&
-        markerBefore &&
-        !markerNow &&
-        !commandMatches
-    };
+    return new Error(
+      `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
+        `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
+        `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
+        `lineageOwned=${lineageOwned}, root=${originalRoot})`
+    );
   };
-  const verifiedIdentity = (expected) => {
+  const verifiedIdentity = (expected, ownsRootLineage) => {
     let current;
     try {
       current = readProcessIdentity(expected.pid, ownerToken);
@@ -617,31 +611,48 @@ export function createPosixProcessTracker(
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
-    const ownershipFailure = coarseIdentityFailure(expected, current);
+    const ownershipFailure = coarseIdentityFailure(expected, current, ownsRootLineage);
     if (ownershipFailure) {
-      if (ownershipFailure.confirmDeparture) {
-        // ps reads process metadata and argv separately; the root may have
-        // exited between them. Confirm departure, never renewed ownership.
-        try {
-          const latest = readProcessIdentity(expected.pid, ownerToken);
-          if (
-            !latest ||
-            (latest.pid === expected.pid && (latest.state === "Z" || latest.startIdentity !== expected.startIdentity))
-          )
-            return undefined;
-        } catch {
-          // An unreadable confirmation retains the original ownership failure.
-        }
-      }
-      latch(ownershipFailure.error);
+      latch(ownershipFailure);
       throw failure;
     }
     return current;
   };
   const observe = () => {
     if (failure) throw failure;
+    if (childOwnedRoot && rootHasExited()) {
+      // An exact child exit retires only the original key, never a later PID owner.
+      retiredIdentities.set(processIdentityKey(rootIdentity), rootIdentity);
+    }
+    let rootLineageVerified = false;
+    const ownsRootLineage = () => {
+      if (rootLineageVerified) return true;
+      let current;
+      try {
+        if (!rootHasExited()) current = readProcessIdentity(rootPid, ownerToken);
+      } catch (error) {
+        latch(error);
+        throw failure;
+      }
+      if (
+        rootIdentity.state !== "Z" &&
+        rootIdentity.ownerMarked === true &&
+        current &&
+        current.state !== "Z" &&
+        current.ownerMarked === true &&
+        current.identityResolution === "second" &&
+        sameProcessIdentity(current, rootIdentity) &&
+        current.parentPid === rootIdentity.parentPid &&
+        current.groupId === rootIdentity.groupId
+      ) {
+        rootLineageVerified = true;
+        return true;
+      }
+      latch(new Error(`root process ${rootPid} cannot authenticate unmarked descendants`));
+      throw failure;
+    };
     for (const expected of observed.values()) {
-      if (!verifiedIdentity(expected)) {
+      if (!verifiedIdentity(expected, ownsRootLineage)) {
         retire(expected);
       }
     }
@@ -653,19 +664,26 @@ export function createPosixProcessTracker(
       throw failure;
     }
     const pending = new Map(snapshot.map((identity) => [identity.pid, identity]));
-    let root;
-    try {
-      root = readProcessIdentity(rootPid, ownerToken);
-    } catch (error) {
-      latch(error);
-      throw failure;
+    if (!childOwnedRoot) {
+      let root;
+      try {
+        root = readProcessIdentity(rootPid, ownerToken);
+      } catch (error) {
+        latch(error);
+        throw failure;
+      }
+      if (root && root.state !== "Z") pending.set(rootPid, root);
     }
-    if (root && root.state !== "Z") pending.set(rootPid, root);
     let changed = true;
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
-        if (identity.state === "Z" || observed.has(identity.pid)) continue;
+        if (
+          identity.state === "Z" ||
+          observed.has(identity.pid) ||
+          (childOwnedRoot && !rootHasExited() && identity.pid === rootPid)
+        )
+          continue;
         const retired = retiredIdentities.get(processIdentityKey(identity));
         if (retired) {
           if (retired.identityResolution === "second" || identity.identityResolution === "second") {
@@ -679,9 +697,10 @@ export function createPosixProcessTracker(
           continue;
         }
         const belongs =
-          sameProcessIdentity(identity, rootIdentity) ||
+          (!childOwnedRoot && sameProcessIdentity(identity, rootIdentity)) ||
           identity.ownerMarked === true ||
-          observed.has(identity.parentPid);
+          observed.has(identity.parentPid) ||
+          (childOwnedRoot && identity.parentPid === rootPid && ownsRootLineage());
         if (!belongs) continue;
         let verified;
         try {
@@ -698,12 +717,17 @@ export function createPosixProcessTracker(
     return observed.size;
   };
   let rootIdentity;
+  let childOwnedRoot = false;
   try {
     rootIdentity = readProcessIdentity(rootPid, ownerToken);
-    if (!rootIdentity || rootIdentity.state === "Z") {
+    if (!rootIdentity || (rootIdentity.state === "Z" && rootIdentity.identityResolution !== "second")) {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
-    observed.set(rootPid, rootIdentity);
+    if (rootIdentity.identityResolution === "second" && typeof rootHasExited !== "function") {
+      throw new Error("The coarse R contract root requires an exact child exit witness.");
+    }
+    childOwnedRoot = rootIdentity.identityResolution === "second";
+    if (!childOwnedRoot) observed.set(rootPid, rootIdentity);
     observe();
   } catch (error) {
     latch(error);
@@ -723,7 +747,7 @@ export function createPosixProcessTracker(
     observe,
     isSettled: (observer) => {
       observe();
-      return observed.size === 0 && observer.isSettled();
+      return observed.size === 0 && (!childOwnedRoot || rootHasExited()) && observer.isSettled();
     },
     signal: (signal) => {
       try {
@@ -732,7 +756,9 @@ export function createPosixProcessTracker(
         // Keep the failed observation, but still attempt the retained identities.
         // The signaler revalidates every target through its exact OS identity.
       }
-      const targets = [...observed.values()].sort((left, right) => left.pid - right.pid);
+      const targets = [...observed.values()];
+      if (childOwnedRoot && !rootHasExited()) targets.push(rootIdentity);
+      targets.sort((left, right) => left.pid - right.pid);
       if (targets.length > 0) {
         try {
           if (!signalVerifiedProcesses) {
@@ -1211,6 +1237,7 @@ async function runRContractPhaseAsync(
           readProcessIdentity: settlementOptions.readProcessIdentity,
           listProcessIdentities: settlementOptions.listProcessIdentities,
           signalVerifiedProcesses,
+          rootHasExited: observer.hasExited,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
   const failurePromise = Promise.race([
