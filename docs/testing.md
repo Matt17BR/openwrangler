@@ -688,8 +688,9 @@ roots and IRkernel readiness checks.
 
 The manual macOS and Windows R jobs also prepare a separate library for source contracts through the same package
 owner. This selection includes bit64 and the native-frame prerequisites, without IRkernel or editor tooling.
-Installation, version checks and namespace loading must succeed in that private library before the five existing
-phases run: `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `kernel:text-fill-and-cast` and
+Installation, version checks and namespace loading must succeed in that private library before the six existing
+phases run: `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `frame:cast-and-structure`,
+`kernel:text-fill-and-cast` and
 `kernel:group-pivot-and-export`. The caller removes its root only after all preparation and phases succeed; any
 failure retains the root. These checks repeat dependency installation, including macOS collapse compilation. They
 do not replace the subsequent installed-editor journey or the separate R 4.4 qualification.

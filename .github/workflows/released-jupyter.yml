@@ -261,7 +261,7 @@ jobs:
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
       - &r_source_contracts
-        name: Qualify native R mean source contracts
+        name: Qualify native R source contracts
         shell: node {0}
         env:
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
@@ -306,7 +306,7 @@ jobs:
               environment, r: prepared.rExecutable, rscript: prepared.dependencyProbe.input.executable
             });
             const selected = [
-              "frame:group-by", "frame:fill-missing", "frame:profiling",
+              "frame:group-by", "frame:fill-missing", "frame:profiling", "frame:cast-and-structure",
               "kernel:text-fill-and-cast", "kernel:group-pivot-and-export"
             ].flatMap((id) => selectRContractPhases(phases, { kind: "phase", id }));
             await runRContractPhasesWithSignalForwarding(selected);
