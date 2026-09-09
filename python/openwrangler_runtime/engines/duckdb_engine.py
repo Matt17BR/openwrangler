@@ -3248,6 +3248,9 @@ def _guard_duckdb_integer_formula(left: str, right: str, operator: str, types: S
         "UBIGINT",
         "UHUGEINT",
     }
+    bignum = operator in {"multiply", "modulo"} and "BIGNUM" in {left_type, right_type}
+    if bignum:
+        integer_types.add("BIGNUM")
     if left_type not in integer_types or right_type not in integer_types or result_type != "DOUBLE":
         return expression
 
@@ -3262,12 +3265,33 @@ def _guard_duckdb_integer_formula(left: str, right: str, operator: str, types: S
         f"WITH operands AS (SELECT l, r, (l {symbol} r) AS actual FROM (SELECT {left} AS l, {right} AS r) AS selected)"
     )
     relation = "operands"
+    bounded = []
+    magnitude_inputs = {"l": "l", "r": "r"}
+    checked_inputs = {"l": "l", "r": "r"}
+    if bignum:
+        checks = []
+        for value, raw_type in (("l", left_type), ("r", right_type)):
+            if raw_type == "BIGNUM":
+                # Compare BIGNUM with BIGNUM before formatting; admitted text is at most 40 bytes.
+                in_range = (
+                    f"{value} >= '-170141183460469231731687303715884105728'::BIGNUM AND "
+                    f"{value} <= '170141183460469231731687303715884105727'::BIGNUM"
+                )
+                checks.append(
+                    f"CASE WHEN {in_range} THEN TRY_CAST(CAST({value} AS VARCHAR) AS HUGEINT) END AS {value}_checked"
+                )
+                checked_inputs[value] = f"{value}_checked"
+                bounded.append(f"{value}_checked IS NOT NULL")
+                magnitude_inputs[value] = f"coalesce({value}_checked, 0::HUGEINT)"
+        query += ", checked_inputs AS (SELECT *, " + ", ".join(checks) + " FROM operands)"
+        relation = "checked_inputs"
     if operator in {"add", "subtract"}:
         exact = native(symbol, "CAST(l AS BIGNUM)", "CAST(r AS BIGNUM)")
         valid = f"CAST({exact} AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
     else:
 
         def magnitude(value: str, raw_type: str) -> str:
+            value = magnitude_inputs[value]
             if raw_type.startswith("U"):
                 return f"CAST({value} AS UHUGEINT)"
             # -(MIN + 1) fits the signed type; the unsigned +1 restores abs(MIN).
@@ -3277,13 +3301,14 @@ def _guard_duckdb_integer_formula(left: str, right: str, operator: str, types: S
 
         query += (
             f", magnitudes AS (SELECT *, {magnitude('l', left_type)} AS lm, "
-            f"{magnitude('r', right_type)} AS rm FROM operands)"
+            f"{magnitude('r', right_type)} AS rm FROM {relation})"
         )
         relation = "magnitudes"
         if operator == "modulo":
             remainder = native("%", "lm", native("nullif", "rm", "0::UHUGEINT"))
             negative = native("-", f"CAST({remainder} AS BIGNUM)")
-            exact = f"CASE WHEN l<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
+            sign = magnitude_inputs["l"]
+            exact = f"CASE WHEN {sign}<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
             valid = f"CAST(({exact}) AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
         else:
 
@@ -3313,8 +3338,21 @@ def _guard_duckdb_integer_formula(left: str, right: str, operator: str, types: S
         # BIGNUM conversion alone discards fractions. Verify the represented
         # DOUBLE is integral before comparing its exact integer value.
         valid = f"(actual = CAST(CAST(actual AS BIGNUM) AS DOUBLE)) AND ({valid})"
-    bypass = "l IS NULL OR r IS NULL" + (" OR r=0" if operator == "modulo" else "")
+    bypass = "l IS NULL OR r IS NULL" + (f" OR {checked_inputs['r']}=0" if operator == "modulo" else "")
     refusal = native("error", "'Open Wrangler integer Formula result is not exact.'")
+    if bignum:
+        # Nullable checked inputs preserve identities without formatting excluded values.
+        identity = (
+            f"{checked_inputs['l']}=0 OR {checked_inputs['r']}=0"
+            if operator == "multiply"
+            else f"{checked_inputs['r']} IN (-1, 1)"
+        )
+        in_range = " AND ".join(bounded)
+        valid = f"CASE WHEN {in_range} THEN ({valid}) ELSE ({identity}) AND actual=0 END"
+        unavailable = native(
+            "error", "'Open Wrangler BIGNUM Formula exactness is unavailable outside the signed 128-bit operand range.'"
+        )
+        refusal = f"CASE WHEN {in_range} THEN {refusal} ELSE {unavailable} END"
     return (
         "(" + query + f" SELECT CASE WHEN {bypass} THEN actual WHEN ({valid}) THEN actual "
         "ELSE " + refusal + " END FROM " + relation + ")"
@@ -5162,6 +5200,9 @@ def _ow_guard_integer_formula(left, right, operator, types, expression):
         "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
         "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
     }
+    bignum = operator in {"multiply", "modulo"} and "BIGNUM" in {left_type, right_type}
+    if bignum:
+        integer_types.add("BIGNUM")
     if left_type not in integer_types or right_type not in integer_types or result_type != "DOUBLE":
         return expression
 
@@ -5177,11 +5218,32 @@ def _ow_guard_integer_formula(left, right, operator, types, expression):
         f"FROM (SELECT {left} AS l, {right} AS r) AS selected)"
     )
     relation = "operands"
+    bounded = []
+    magnitude_inputs = {"l": "l", "r": "r"}
+    checked_inputs = {"l": "l", "r": "r"}
+    if bignum:
+        checks = []
+        for value, raw_type in (("l", left_type), ("r", right_type)):
+            if raw_type == "BIGNUM":
+                # Compare BIGNUM with BIGNUM before formatting; admitted text is at most 40 bytes.
+                in_range = (
+                    f"{value} >= '-170141183460469231731687303715884105728'::BIGNUM AND "
+                    f"{value} <= '170141183460469231731687303715884105727'::BIGNUM"
+                )
+                checks.append(
+                    f"CASE WHEN {in_range} THEN TRY_CAST(CAST({value} AS VARCHAR) AS HUGEINT) END AS {value}_checked"
+                )
+                checked_inputs[value] = f"{value}_checked"
+                bounded.append(f"{value}_checked IS NOT NULL")
+                magnitude_inputs[value] = f"coalesce({value}_checked, 0::HUGEINT)"
+        query += ", checked_inputs AS (SELECT *, " + ", ".join(checks) + " FROM operands)"
+        relation = "checked_inputs"
     if operator in {"add", "subtract"}:
         exact = native(symbol, "CAST(l AS BIGNUM)", "CAST(r AS BIGNUM)")
         valid = f"CAST({exact} AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
     else:
         def magnitude(value, raw_type):
+            value = magnitude_inputs[value]
             if raw_type.startswith("U"):
                 return f"CAST({value} AS UHUGEINT)"
             # -(MIN + 1) fits the signed type; the unsigned +1 restores abs(MIN).
@@ -5191,13 +5253,14 @@ def _ow_guard_integer_formula(left, right, operator, types, expression):
 
         query += (
             f", magnitudes AS (SELECT *, {magnitude('l', left_type)} AS lm, "
-            f"{magnitude('r', right_type)} AS rm FROM operands)"
+            f"{magnitude('r', right_type)} AS rm FROM {relation})"
         )
         relation = "magnitudes"
         if operator == "modulo":
             remainder = native("%", "lm", native("nullif", "rm", "0::UHUGEINT"))
             negative = native("-", f"CAST({remainder} AS BIGNUM)")
-            exact = f"CASE WHEN l<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
+            sign = magnitude_inputs["l"]
+            exact = f"CASE WHEN {sign}<0 THEN {negative} ELSE CAST({remainder} AS BIGNUM) END"
             valid = f"CAST(({exact}) AS VARCHAR) = CAST(CAST(actual AS BIGNUM) AS VARCHAR)"
         else:
             def trailing_zeros(value):
@@ -5226,8 +5289,20 @@ def _ow_guard_integer_formula(left, right, operator, types, expression):
         # BIGNUM conversion alone discards fractions. Verify the represented
         # DOUBLE is integral before comparing its exact integer value.
         valid = f"(actual = CAST(CAST(actual AS BIGNUM) AS DOUBLE)) AND ({valid})"
-    bypass = "l IS NULL OR r IS NULL" + (" OR r=0" if operator == "modulo" else "")
+    bypass = "l IS NULL OR r IS NULL" + (f" OR {checked_inputs['r']}=0" if operator == "modulo" else "")
     refusal = native("error", "'Open Wrangler integer Formula result is not exact.'")
+    if bignum:
+        # Nullable checked inputs preserve identities without formatting excluded values.
+        identity = (
+            f"{checked_inputs['l']}=0 OR {checked_inputs['r']}=0"
+            if operator == "multiply" else f"{checked_inputs['r']} IN (-1, 1)"
+        )
+        in_range = " AND ".join(bounded)
+        valid = f"CASE WHEN {in_range} THEN ({valid}) ELSE ({identity}) AND actual=0 END"
+        unavailable = native(
+            "error", "'Open Wrangler BIGNUM Formula exactness is unavailable outside the signed 128-bit operand range.'"
+        )
+        refusal = f"CASE WHEN {in_range} THEN {refusal} ELSE {unavailable} END"
     return (
         "(" + query + f" SELECT CASE WHEN {bypass} THEN actual WHEN ({valid}) THEN actual "
         "ELSE " + refusal + " END FROM " + relation + ")"

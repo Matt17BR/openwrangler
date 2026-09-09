@@ -269,10 +269,27 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
         ("modulo", 2**100 + 1, -2, 1, True, "UHUGEINT", "HUGEINT"),
         ("modulo", 2, 2**100 + 1, 2, False, "UHUGEINT", "HUGEINT"),
         ("modulo", 2**127, -(2**127), 0, False, "UHUGEINT", "HUGEINT"),
+        ("multiply", 2**100 + 1, 1, 2**100 + 1, True, "BIGNUM", "BIGINT"),
+        ("multiply", 1, 2**100 + 1, 2**100 + 1, True, "UHUGEINT", "BIGNUM"),
+        ("modulo", 2**100 + 1, 2, 1, True, "BIGNUM", "UHUGEINT"),
+        ("modulo", 2**100, 2**100 + 1, 2**100, True, "UHUGEINT", "BIGNUM"),
+        ("multiply", -(2**127), 1, -(2**127), False, "BIGNUM", "UHUGEINT"),
+        ("modulo", 2**127 - 1, 3, 1, True, "BIGNUM", "UHUGEINT"),
+        ("modulo", 2**127, -(2**127), 0, False, "UHUGEINT", "BIGNUM"),
+        ("modulo", -(2**100 + 3), 3, -1, False, "BIGNUM", "BIGNUM"),
+        ("multiply", 2**127, 1, 2**127, "outside the signed 128-bit", "BIGNUM", "BIGINT"),
+        ("multiply", -(2**128), 1, -(2**128), "outside the signed 128-bit", "BIGNUM", "BIGINT"),
+        ("multiply", 2**200, 2**100, 2**300, "outside the signed 128-bit", "BIGNUM", "BIGNUM"),
+        ("modulo", 2**200 + 3, 3, 1, "outside the signed 128-bit", "BIGNUM", "BIGINT"),
+        ("modulo", 7, 2**200 + 1, 7, "outside the signed 128-bit", "UHUGEINT", "BIGNUM"),
+        ("multiply", 2**200 + 1, 0, 0, False, "BIGNUM", "UHUGEINT"),
+        ("multiply", 0, 2**200 + 1, 0, False, "UHUGEINT", "BIGNUM"),
+        ("modulo", 2**200 + 1, -1, 0, False, "BIGNUM", "BIGNUM"),
+        ("modulo", 2**200 + 1, 0, None, False, "BIGNUM", "BIGNUM"),
     ],
 )
 def test_duckdb_integer_formula_checks_selected_results_without_changing_native_values(
-    operator: str, left: int, right: int, exact: int | None, refuse: bool, left_type: str, right_type: str
+    operator: str, left: int, right: int, exact: int | None, refuse: bool | str, left_type: str, right_type: str
 ) -> None:
     engine = DuckDBEngine()
     symbol = {"add": "+", "subtract": "-", "multiply": "*", "modulo": "%"}[operator]
@@ -290,7 +307,8 @@ def test_duckdb_integer_formula_checks_selected_results_without_changing_native_
         native_rows = native.fetchall()
         assert native.types[-1] == DOUBLE
         if exact is not None:
-            assert (Fraction(native_rows[0][-1]) != exact) is refuse
+            # Range refusals deliberately include currently exact native results.
+            assert (Fraction(native_rows[0][-1]) != exact) is (refuse is True)
         operation = bound_step(
             "formula",
             leftColumn=bound_ref("c:source:1", 'left"value', 1),
@@ -302,10 +320,11 @@ def test_duckdb_integer_formula_checks_selected_results_without_changing_native_
             live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
             assert list(map(str, live.types)) == list(map(str, native.types))
             if refuse:
-                with pytest.raises(EngineError, match="integer Formula result is not exact"):
+                message = refuse if isinstance(refuse, str) else "integer Formula result is not exact"
+                with pytest.raises(EngineError, match=message):
                     engine.validate_transformation_result(live)
                 # Readiness must evaluate the Formula before a later projection can prune it.
-                with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+                with pytest.raises(duckdb.Error, match=message):
                     execute_generated(
                         engine,
                         frame,
@@ -325,6 +344,13 @@ def test_duckdb_integer_formula_checks_selected_results_without_changing_native_
                         else:
                             assert Fraction(value) == exact
                             assert value.hex() == native_rows[index][-1].hex()
+            if "BIGNUM" in (left_type, right_type):
+                empty = frame.limit(0)
+                empty_live = engine.apply_transform(engine.normalize_notebook_relation(empty), operation)
+                engine.validate_transformation_result(empty_live)
+                empty_generated = execute_generated(engine, empty, [operation])
+                assert empty_generated.types == native.types
+                assert engine._terminal_rows(empty_live, "SELECT * FROM ow") == empty_generated.fetchall() == []
             assert frame.fetchall() == original
             assert connection.sql("SELECT 19").fetchone() == (19,)
         finally:
@@ -332,19 +358,24 @@ def test_duckdb_integer_formula_checks_selected_results_without_changing_native_
 
 
 @pytest.mark.parametrize(
-    ("operator", "left", "literal", "expected", "refuse"),
+    ("operator", "left", "literal", "expected", "refuse", "source_type"),
     [
-        ("add", 0, str(2**128 - 1), 2**128 - 1, True),
-        ("multiply", 0, str(2**128 - 1), 0, False),
-        ("add", 0, str(2**127), 2**127, False),
-        ("modulo", 2**100 + 1, str(2**127 + 1), 2**100 + 1, True),
+        ("add", 0, str(2**128 - 1), 2**128 - 1, True, "HUGEINT"),
+        ("multiply", 0, str(2**128 - 1), 0, False, "HUGEINT"),
+        ("add", 0, str(2**127), 2**127, False, "HUGEINT"),
+        ("modulo", 2**100 + 1, str(2**127 + 1), 2**100 + 1, True, "HUGEINT"),
+        ("multiply", 2**100 + 1, "1", 2**100 + 1, True, "BIGNUM"),
+        ("multiply", 2**200, "0", 0, False, "BIGNUM"),
+        ("modulo", 2**200, "-1", 0, False, "BIGNUM"),
+        ("multiply", 2**127, "1", 2**127, "outside the signed 128-bit", "BIGNUM"),
     ],
 )
 def test_duckdb_integer_formula_preserves_exact_scalar_literal_intent(
-    operator: str, left: int, literal: str, expected: int, refuse: bool
+    operator: str, left: int, literal: str, expected: int, refuse: bool | str, source_type: str
 ) -> None:
     engine = DuckDBEngine()
-    frame = duckdb.sql(f"SELECT '{left}'::HUGEINT AS value")
+    frame = duckdb.sql(f"SELECT '{left}'::{source_type} AS value")
+    original = frame.fetchall()
     schema = engine.schema(frame)
     lineage = source_lineage(schema)
     operation = bind_step(
@@ -354,16 +385,21 @@ def test_duckdb_integer_formula_preserves_exact_scalar_literal_intent(
         live = engine.apply_transform(frame, operation)
         assert str(live.types[-1]) == "DOUBLE"
         if refuse:
-            with pytest.raises(EngineError, match="integer Formula result is not exact"):
+            message = refuse if isinstance(refuse, str) else "integer Formula result is not exact"
+            with pytest.raises(EngineError, match=message):
                 engine.validate_transformation_result(live)
-            with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+            with pytest.raises(duckdb.Error, match=message):
                 execute_generated(engine, frame, [operation])
         else:
             generated = execute_generated(engine, frame, [operation])
             assert generated.types[-1] == DOUBLE
-            assert engine._terminal_rows(live, "SELECT * FROM ow") == generated.fetchall() == [(left, float(expected))]
+            assert (
+                engine._terminal_rows(live, "SELECT * FROM ow")
+                == generated.fetchall()
+                == [(*original[0], float(expected))]
+            )
             assert Fraction(generated.fetchall()[0][-1]) == expected
-        assert frame.fetchall() == [(left,)]
+        assert frame.fetchall() == original == [(str(left) if source_type == "BIGNUM" else left,)]
     finally:
         engine.close()
 
@@ -394,21 +430,25 @@ def test_duckdb_integer_formula_retains_explicit_decimal_and_approximate_operato
 
 
 @pytest.mark.parametrize(
-    ("definition", "operator", "left", "right"),
+    ("definition", "operator", "left", "right", "left_type"),
     [
-        ("bit_count(v) AS 100", "multiply", 2**100 + 1, 2**100 + 1),
-        (f"xor(a,b) AS '{2**101 - 1}'::UHUGEINT", "multiply", 2**100 + 1, 2**100 + 1),
-        ("nullif(a,b) AS 1::UHUGEINT", "modulo", 2**100 + 1, 2),
-        ("error(message) AS 0.0::DOUBLE", "add", 2**100 + 1, 1),
-        (f'"//"(a,b) AS {2**128 - 1}::UHUGEINT', "multiply", 2**100 + 1, 2**100 + 1),
-        ('"*"(a,b) AS 0.0::DOUBLE', "multiply", 2**100, 2),
-        ('"+"(a,b) AS 0.25::DOUBLE', "add", 0, 0),
-        ('"-"(a,b) AS 0.25::DOUBLE', "subtract", 0, 0),
-        ('"%"(a,b) AS 0.25::DOUBLE', "modulo", 0, 2),
+        ("bit_count(v) AS 100", "multiply", 2**100 + 1, 2**100 + 1, "HUGEINT"),
+        (f"xor(a,b) AS '{2**101 - 1}'::UHUGEINT", "multiply", 2**100 + 1, 2**100 + 1, "HUGEINT"),
+        ("nullif(a,b) AS 1::UHUGEINT", "modulo", 2**100 + 1, 2, "HUGEINT"),
+        ("error(message) AS 0.0::DOUBLE", "add", 2**100 + 1, 1, "HUGEINT"),
+        (f'"//"(a,b) AS {2**128 - 1}::UHUGEINT', "multiply", 2**100 + 1, 2**100 + 1, "HUGEINT"),
+        ('"*"(a,b) AS 0.0::DOUBLE', "multiply", 2**100, 2, "HUGEINT"),
+        ('"+"(a,b) AS 0.25::DOUBLE', "add", 0, 0, "HUGEINT"),
+        ('"-"(a,b) AS 0.25::DOUBLE', "subtract", 0, 0, "HUGEINT"),
+        ('"%"(a,b) AS 0.25::DOUBLE', "modulo", 0, 2, "HUGEINT"),
+        ("bit_count(v) AS 100", "multiply", 2**100 + 1, 1, "BIGNUM"),
+        ("coalesce(a,b) AS 0::HUGEINT", "multiply", 2**100 + 1, 1, "BIGNUM"),
+        ('"*"(a,b) AS 0.0::DOUBLE', "multiply", 7, 2, "BIGNUM"),
+        ('"%"(a,b) AS 0.25::DOUBLE', "modulo", 0, 2, "BIGNUM"),
     ],
 )
 def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_owner(
-    definition: str, operator: str, left: int, right: int
+    definition: str, operator: str, left: int, right: int, left_type: str
 ) -> None:
     engine = DuckDBEngine()
     with duckdb.connect() as connection:
@@ -425,7 +465,7 @@ def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_o
             for context in (connection, duckdb):
                 context.execute("CREATE MACRO " + definition)
                 try:
-                    frame = context.sql(f"SELECT '{left}'::HUGEINT AS lhs, '{right}'::UHUGEINT AS rhs")
+                    frame = context.sql(f"SELECT '{left}'::{left_type} AS lhs, '{right}'::UHUGEINT AS rhs")
                     if context is connection:
                         live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
                         assert str(live.types[-1]) == "DOUBLE"
@@ -434,7 +474,7 @@ def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_o
                     else:
                         with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
                             execute_generated(engine, frame, [operation])
-                    assert frame.fetchall() == [(left, right)]
+                    assert frame.fetchall() == [(str(left) if left_type == "BIGNUM" else left, right)]
                 finally:
                     context.execute("DROP MACRO " + definition.split("(", 1)[0])
         finally:

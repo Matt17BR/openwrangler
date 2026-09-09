@@ -376,9 +376,10 @@ lazy input evaluation; later reads can still reveal inherited source errors.
 
 Formula rejects lossy DOUBLE promotion for addition, subtraction, multiplication and modulo on native integer types
 through 128 bits, retaining correct results and types. Live and generated checks use the same operand pair; explicit
-floating and Decimal inputs, division and power retain native behavior. BIGNUM operands remain outside numeric form
-choices and this check; their programmatic/generated multiplication and modulo precision gap remains in
-[#1094](https://github.com/Matt17BR/openwrangler/issues/1094).
+floating and Decimal inputs, division and power retain native behavior. Programmatic and generated multiplication
+and modulo also check BIGNUM integer pairs. Selected BIGNUM operands must fit the signed 128-bit range, apart from
+native zero results proved by zero-product or unit-divisor identities. Wider pairs can refuse even when their result
+is exact. Null operands and modulo by zero retain native behavior. BIGNUM remains outside numeric form choices.
 
 Generated Sort Rows preserves columns whose names coincide with internal sort helpers, including after an earlier
 Rename or when a saved program runs on new input. Ties keep their input order, and missing sort keys are rejected.
