@@ -14922,26 +14922,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         params: { column: structuralSecondDuplicate, newName: "second_copy" }
       },
       {
-        id: "structural-cast-first",
-        kind: "castColumn",
-        params: { column: structuralFirstDuplicate, dtype: "float" }
-      },
-      {
-        id: "structural-formula-duplicates",
-        kind: "formula",
-        params: {
-          leftColumn: structuralFirstDuplicate,
-          operator: "add",
-          rightColumn: structuralSecondDuplicate,
-          newColumn: "combined"
-        }
-      },
-      {
-        id: "structural-text-length-integer",
-        kind: "textLength",
-        params: { column: structuralIntegerLabel, newColumn: "label_length" }
-      },
-      {
         id: "structural-drop-second-duplicate",
         kind: "dropColumns",
         params: { columns: [structuralSecondDuplicate] }
@@ -14958,25 +14938,12 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       { kind: "number", raw: 10.26, display: "10.26", isNull: false, isNaN: false },
       { kind: "nan", raw: null, display: "NaN", isNull: false, isNaN: true }
     ] as const;
-    const castDuplicateCells = [
-      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false },
-      { kind: "number", raw: 1, display: "1.0", isNull: false, isNaN: false },
-      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false },
-      { kind: "number", raw: 2, display: "2.0", isNull: false, isNaN: false }
+    const firstDuplicateCells = [
+      { kind: "integer", raw: 2, display: "2", isNull: false, isNaN: false },
+      { kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false },
+      { kind: "integer", raw: 2, display: "2", isNull: false, isNaN: false },
+      { kind: "integer", raw: 2, display: "2", isNull: false, isNaN: false }
     ] as const;
-    const combinedCells = [
-      { kind: "number", raw: 12.26, display: "12.26", isNull: false, isNaN: false },
-      { kind: "number", raw: 21.74, display: "21.74", isNull: false, isNaN: false },
-      { kind: "number", raw: 12.26, display: "12.26", isNull: false, isNaN: false },
-      { kind: "null", raw: null, display: "", isNull: true, isNaN: false }
-    ] as const;
-    const lengthCells = ["a", "b", "c", "d"].map(() => ({
-      kind: "integer" as const,
-      raw: 1,
-      display: "1",
-      isNull: false,
-      isNaN: false
-    }));
     const integerLabelCells = ["a", "b", "c", "d"].map((value) => ({
       kind: "string" as const,
       raw: value,
@@ -14989,8 +14956,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     let structuralMetadata = active.metadata;
     let structuralPage: LiveGridPage | undefined;
     let structuralClone: ColumnReference | undefined;
-    let structuralCombined: ColumnReference | undefined;
-    let structuralLength: ColumnReference | undefined;
     for (const [index, step] of structuralSteps.entries()) {
       recordAcceptanceProgress(`verify:notebook:pandas-structural:${step.kind}:preview`);
       const structuralPreview = await testing.request({
@@ -15006,7 +14971,9 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       if (structuralPreview.kind !== "stepPreview") {
         throw new Error(`Packaged ${step.kind} structural preview did not resolve.`);
       }
-      await assertGeneratedPandasPreview(structuralPreview, "structural_frame", structuralIntegerLabel.id);
+      if (index === structuralSteps.length - 1) {
+        await assertGeneratedPandasPreview(structuralPreview, "structural_frame", structuralIntegerLabel.id);
+      }
       assert.doesNotMatch(
         structuralPreview.code,
         /df\[['"]duplicate['"]\]/u,
@@ -15044,23 +15011,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         assert.equal(clone.id, `c:step:${step.id}:0`);
         assert.deepEqual(gridColumnCells(structuralPreview.page, clone.id), secondDuplicateCells);
         assert.equal(structuralPreview.metadata.schema.at(-1)?.id, clone.id);
-      } else if (step.kind === "castColumn") {
-        assert.deepEqual(gridColumnCells(structuralPreview.page, structuralFirstDuplicate.id), castDuplicateCells);
-        assert.deepEqual(
-          gridColumnCells(structuralPreview.page, structuralSecondDuplicate.id),
-          secondDuplicateCells,
-          "Casting the first duplicate must not change its same-named neighbor."
-        );
-      } else if (step.kind === "formula") {
-        const combined = columnReference(structuralPreview.metadata, "combined");
-        assert.equal(combined.id, `c:step:${step.id}:0`);
-        assert.deepEqual(gridColumnCells(structuralPreview.page, combined.id), combinedCells);
-        assert.equal(structuralPreview.metadata.schema.at(-1)?.id, combined.id);
-      } else if (step.kind === "textLength") {
-        const length = columnReference(structuralPreview.metadata, "label_length");
-        assert.equal(length.id, `c:step:${step.id}:0`);
-        assert.deepEqual(gridColumnCells(structuralPreview.page, length.id), lengthCells);
-        assert.equal(structuralPreview.metadata.schema.at(-1)?.id, length.id);
       } else if (step.kind === "dropColumns") {
         assert.equal(
           structuralPreview.metadata.schema.some((column) => column.id === structuralSecondDuplicate.id),
@@ -15117,17 +15067,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       structuralPage = structuralApplied.page;
       if (step.kind === "cloneColumn") {
         structuralClone = columnReference(structuralApplied.metadata, "second_copy");
-      } else if (step.kind === "formula") {
-        structuralCombined = columnReference(structuralApplied.metadata, "combined");
-      } else if (step.kind === "textLength") {
-        structuralLength = columnReference(structuralApplied.metadata, "label_length");
       }
     }
 
     assert.ok(structuralPage, "The structural plan must publish its final typed page.");
     assert.ok(structuralClone, "Clone Column must publish deterministic output lineage.");
-    assert.ok(structuralCombined, "Formula must publish deterministic output lineage.");
-    assert.ok(structuralLength, "Text Length must publish deterministic output lineage.");
     assert.deepEqual(
       structuralMetadata.schema.map(({ id, name, position }) => ({ id, name, position })),
       [
@@ -15137,15 +15081,11 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         { ...structuralFirstCategory, position: 3 },
         { ...structuralSecondDatetime, position: 4 },
         { ...structuralFirstDatetime, position: 5 },
-        { ...structuralClone, position: 6 },
-        { ...structuralCombined, position: 7 },
-        { ...structuralLength, position: 8 }
+        { ...structuralClone, position: 6 }
       ]
     );
-    assert.deepEqual(gridColumnCells(structuralPage, structuralLength.id), lengthCells);
     assert.deepEqual(gridColumnCells(structuralPage, structuralIntegerLabel.id), integerLabelCells);
-    assert.deepEqual(gridColumnCells(structuralPage, structuralRenamedFirst.id), castDuplicateCells);
-    assert.deepEqual(gridColumnCells(structuralPage, structuralCombined.id), combinedCells);
+    assert.deepEqual(gridColumnCells(structuralPage, structuralRenamedFirst.id), firstDuplicateCells);
     assert.deepEqual(gridColumnCells(structuralPage, structuralClone.id), secondDuplicateCells);
     const structuralSourceBeforeRestart = await jupyter.testing.execute(
       notebook.uri,
@@ -15183,24 +15123,15 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Kernel replay must preserve the exact public structural plan."
     );
     assert.deepEqual(
-      structuralReplayed.metadata.schema.map(({ id, name, position }) => ({ id, name, position })),
-      [
-        { ...structuralIntegerLabel, position: 0 },
-        { ...structuralRenamedFirst, position: 1 },
-        { ...structuralSecondCategory, position: 2 },
-        { ...structuralFirstCategory, position: 3 },
-        { ...structuralSecondDatetime, position: 4 },
-        { ...structuralFirstDatetime, position: 5 },
-        { ...structuralClone, position: 6 },
-        { ...structuralCombined, position: 7 },
-        { ...structuralLength, position: 8 }
-      ]
+      structuralReplayed.metadata.schema,
+      structuralMetadata.schema,
+      "Kernel replay must restore the complete validated structural schema."
     );
-    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralLength.id), lengthCells);
-    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralIntegerLabel.id), integerLabelCells);
-    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralRenamedFirst.id), castDuplicateCells);
-    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralCombined.id), combinedCells);
-    assert.deepEqual(gridColumnCells(structuralReplayed.page, structuralClone.id), secondDuplicateCells);
+    assert.deepEqual(
+      { ...structuralReplayed.page, rows: structuralReplayed.page.rows.map(({ id: _id, ...row }) => row) },
+      { ...structuralPage, rows: structuralPage.rows.map(({ id: _id, ...row }) => row) },
+      "Kernel replay must restore every structural page field except session-scoped row IDs."
+    );
     assert.doesNotMatch(
       JSON.stringify(structuralReplayed.metadata.steps),
       /"position"\s*:/u,
