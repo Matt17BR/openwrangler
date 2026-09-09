@@ -1071,7 +1071,8 @@ for (case in named_column_cases) {
 }))
 run_frame_contract_case("group-by", local({
 
-# Exact Fraction-derived binary64 oracles protect cancellation and final rounding, including signed zero.
+# Hexadecimal inputs bind the Fraction oracles to the same binary64 values on every platform.
+# These controls protect cancellation and final rounding, including signed zero.
 local({
   raw_double <- function(value) writeBin(value, raw(), size = 8L, endian = "little")
   cases <- list(
@@ -1104,11 +1105,11 @@ local({
     odd_divisor_tail_half_odd = list(values = c(0x1.8000000000000p+1, 0x1.2000000000000p-50, 0x0.0p+0), expected = "0x1.0000000000002p+0"),
     even_divisor_tail_positive = list(values = c(0x1.0000000000000p+0, 0x1.0000000000001p-53), expected = "0x1.0000000000001p-1"),
     normal_word_aligned = list(values = c(0x1.0000000000000p+2), expected = "0x1.0000000000000p+2"),
-    difference = list(values = c(rep.int(-1e308, 65536L), rep.int(1e308, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
-    product = list(values = c(rep.int(0, 65536L), rep.int(1e306, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
+    difference = list(values = c(rep.int(-0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(0x1.1ccf385ebc8a0p+1023, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
+    product = list(values = c(rep.int(0, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
     maximum = list(values = rep.int(.Machine$double.xmax, 100001L), expected = "0x1.fffffffffffffp+1023"),
     cancellation_sign = list(values = c(rep.int(0x1.c7b1f3cac7433p+1019, 131072L), rep.int(-0x1.c7b3bb7e82c1bp+1020, 65535L)), expected = "0x1.d675f22750b7cp+963"),
-    cancellation_zero = list(values = c(rep.int(1e308, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966")
+    cancellation_zero = list(values = c(rep.int(0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966")
   )
   for (name in names(cases)) {
     case <- cases[[name]]
@@ -5867,13 +5868,13 @@ run_frame_contract_case("profiling", local({
 # Exact means use the full profile population, retaining native class and missing policies.
 local({
   cases <- list(
-    difference = list(values = c(rep.int(-1e308, 65536L), rep.int(1e308, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
-    product = list(values = c(rep.int(0, 65536L), rep.int(1e306, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
+    difference = list(values = c(rep.int(-0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(0x1.1ccf385ebc8a0p+1023, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
+    product = list(values = c(rep.int(0, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
     maximum = list(values = rep.int(.Machine$double.xmax, 100001L), expected = "0x1.fffffffffffffp+1023"),
     cancellation_sign = list(values = c(rep.int(0x1.c7b1f3cac7433p+1019, 131072L), rep.int(-0x1.c7b3bb7e82c1bp+1020, 65535L)), expected = "0x1.d675f22750b7cp+963"),
-    cancellation_zero = list(values = c(rep.int(1e308, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966"),
+    cancellation_zero = list(values = c(rep.int(0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966"),
     small = list(values = c(2^1000, 0, -2^1000, 4), expected = "0x1p+0"),
-    duration = list(values = as.difftime(c(rep.int(-1e306, 65536L), rep.int(1e306, 34465L)), units = "hours"),
+    duration = list(values = as.difftime(c(rep.int(-0x1.6c8e5ca239029p+1016, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), units = "hours"),
       expected = "-0x1.c514935f8595fp+1014")
   )
   for (name in names(cases)) {
