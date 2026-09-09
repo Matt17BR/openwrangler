@@ -411,11 +411,11 @@ integer/Decimal capacity repairs. These cases compare actual operand pairs, pres
 native results and existing refusals. Multiplication cases cover signed and unsigned result capacity, chunked and
 null-paired operands, duplicate indexes, native type retention and custom-extension exclusion. Subtraction cases
 also cover signed/unsigned operand order, negative results, scalar underflow and existing overflow diagnostics.
-Even-scalar power cases compare exact UInt64 results, scalar admission bounds, nulls and native-success types with
-standalone generated code.
-The existing public capacity journey checks signed-result and even-power Preview, Apply, complete generated code, Parquet readback,
-Undo and Redo, plus refusal beyond the displayed page. Mixed Formula, By Example and Custom Code programs check helper
-isolation without changing the other operations' behavior.
+Scalar power cases compare exact UInt64 results, even and odd exponents, scalar admission bounds, nulls, empty inputs
+and native-success types with standalone generated code.
+The existing public capacity journey checks signed-result and scalar-power Preview, Apply, complete generated code,
+Parquet readback, Undo and Redo, plus negative-value and overflow refusal beyond the displayed page. Mixed Formula,
+By Example and Custom Code programs check helper isolation without changing the other operations' behavior.
 
 `python/tests/test_duckdb_engine.py` owns fixed-width integer promotion checks in both signed/unsigned operand orders
 and protection from caller-defined macros. Its cases with volatile inputs distinguish metadata inspection from

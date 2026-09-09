@@ -182,9 +182,9 @@ Arrow integer subtraction accepts previously refused differences that fit one UI
 including negative results and reversed signed/unsigned operands. Successful native results retain their types;
 repairs prefer UInt64, then Int64. This additional repair accepts integer literals from Int64 minimum to UInt64
 maximum; wider negative literals retain the existing UInt64 path and its capacity limits.
-Signed Arrow integer columns support more exact even scalar powers, including `(-3)^40`, when every repaired result
-fits UInt64. Positive even integer exponents below 2^64 are eligible after native failure; existing native successes
-and other exponent families retain their behavior.
+Signed Arrow integer columns support more exact scalar powers, including `(-3)^40` and `2^63`, when every repaired
+result fits UInt64. Positive integer exponents below 2^64 are eligible after native failure. Odd-power repairs require
+nonnegative values; existing native successes and other exponent families retain their behavior.
 Negative power and widest or negative-scale Decimal capacity gaps remain
 tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
