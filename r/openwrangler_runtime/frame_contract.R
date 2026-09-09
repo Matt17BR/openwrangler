@@ -2007,8 +2007,12 @@ openwrangler_r_frame_contract <- local({
   }
 
   exact_binary64_mean <- function(values) {
-    state <- exact_mean_new()
     count <- length(values)
+    if (count == 1L && !is.object(values) && is.numeric(values) && is.finite(values)) {
+      value <- as.double(.subset(values, 1L))
+      return(if (value == 0) 0 else value)
+    }
+    state <- exact_mean_new()
     start <- 1
     while (start <= count) {
       size <- min(65536, count - start + 1)

@@ -1,10 +1,10 @@
 # Exact finite means retain group identity, null keys, standalone ownership, and repeated helper admission.
 local({
   sources <- new.env(parent = baseenv())
-  sources$exact_means <- data.frame(group = c(rep("b", 3L), rep("a", 4L), rep("c", 4L), NA, NA),
-    value = c(-1e308, 1e308, 3, 2^1000, 0, -2^1000, 4, 2^1000, 3, -2^1000, 4, NA, NaN))
+  sources$exact_means <- data.frame(group = c(rep("b", 3L), rep("a", 4L), rep("c", 4L), NA, NA, "zero", "tiny"),
+    value = c(-1e308, 1e308, 3, 2^1000, 0, -2^1000, 4, 2^1000, 3, -2^1000, 4, NA, NaN, -abs(0), -0x0.0000000000001p-1022))
   before <- serialize(sources$exact_means, NULL, version = 3L)
-  expected <- data.frame(group = c("b", "a", "c", NA), average = c(1, 1, 1.75, NA))
+  expected <- data.frame(group = c("b", "a", "c", NA, "zero", "tiny"), average = c(1, 1, 1.75, NA, 0, -0x0.0000000000001p-1022))
   agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
   on.exit(agent$dispose(), add = TRUE)
   session <- "76767676-7676-4676-8676-767676767676"
@@ -35,6 +35,8 @@ local({
     }
     assert_no_warning(eval(parse(text = applied$code), envir = copied), "generated exact means")
     assert_identical(copied$open_wrangler_result, expected, "generated exact means changed values, types, order or missing keys")
+    assert_identical(writeBin(copied$open_wrangler_result$average, raw(), size = 8L, endian = "little"),
+      writeBin(expected$average, raw(), size = 8L, endian = "little"), "generated singleton means changed zero or subnormal bits")
     assert_identical(serialize(copied$exact_means, NULL, version = 3L), before, "generated means changed source storage")
     revision <- applied$revision
   }
