@@ -1,3 +1,4 @@
+import { globalAgent } from "node:https";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
 
@@ -26,6 +27,9 @@ try {
   result = { protocol: RESULT_PROTOCOL, ok: true, executablePath };
 } catch (error) {
   result = { protocol: RESULT_PROTOCOL, ok: false, error: describeBoundedError(error) };
+} finally {
+  // Rejected download responses can otherwise keep this isolated helper alive.
+  globalAgent.destroy();
 }
 
 process.stdout.write(`${serializeBoundedResult(result)}\n`);
