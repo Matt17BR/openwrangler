@@ -15,6 +15,8 @@ type Listener<T> = (value: T) => unknown;
 
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
+  openingTimeout: 45_000 as unknown,
+  configurationReads: [] as Array<readonly [string, unknown]>,
   registrationAttempt: 0,
   failRegistrationAttempt: undefined as number | undefined,
   trusted: true,
@@ -91,6 +93,12 @@ vi.mock("vscode", () => {
       executeCommand: mocks.executeCommand
     },
     workspace: {
+      getConfiguration: (section: string, resource?: unknown) => {
+        mocks.configurationReads.push([section, resource]);
+        return {
+          get: (key: string, fallback: unknown) => (key === "sessionOpenTimeoutMs" ? mocks.openingTimeout : fallback)
+        };
+      },
       get isTrusted() {
         return mocks.trusted;
       },
@@ -141,10 +149,6 @@ vi.mock("vscode", () => {
   };
 });
 
-vi.mock("../extension/configuration", () => ({
-  getSetting: (key: string, fallback: unknown) => (key === "sessionOpenTimeoutMs" ? 45_000 : fallback)
-}));
-
 vi.mock("../extension/r/rInteractiveSessionTransport", () => ({
   RInteractiveSessionTransport: class {}
 }));
@@ -178,6 +182,8 @@ const tibble = { name: "orders", backend: "r" as const, dataframeFlavor: "r.tibb
 describe("active R session commands", () => {
   beforeEach(() => {
     mocks.commands.clear();
+    mocks.openingTimeout = 45_000;
+    mocks.configurationReads.length = 0;
     mocks.registrationAttempt = 0;
     mocks.failRegistrationAttempt = undefined;
     mocks.trusted = true;
@@ -245,7 +251,12 @@ describe("active R session commands", () => {
     expect(mocks.trustListeners.size).toBe(0);
   });
 
-  it("picks and opens a live dataframe from an explicit active-R command", async () => {
+  it.each([
+    [45_000, 45_000],
+    [45_000.25, 45_001],
+    [null, 60_000]
+  ])("picks a live dataframe with global configured deadline %s", async (configured, expected) => {
+    mocks.openingTimeout = configured;
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
@@ -253,6 +264,8 @@ describe("active R session commands", () => {
 
     await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(true);
 
+    expect(transport.discoverVariables).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: expected }));
+    expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
@@ -271,6 +284,7 @@ describe("active R session commands", () => {
   });
 
   it("evaluates and discovers an R chunk against the exact captured terminal", async () => {
+    mocks.openingTimeout = 45_000.25;
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
     transport.evaluateAndDiscoverVariables.mockResolvedValueOnce(discovery(tibble));
@@ -289,10 +303,11 @@ describe("active R session commands", () => {
       literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
     ).resolves.toBe(true);
 
+    expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
     expect(transport.discoverVariables).not.toHaveBeenCalled();
     expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledWith(
       "orders <- data.frame(id = 1:3)\n",
-      expect.objectContaining({ timeoutMs: 45_000, workingDirectory: "/workspace" })
+      expect.objectContaining({ timeoutMs: 45_001, workingDirectory: "/workspace" })
     );
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), {
       terminalMode: "active",
@@ -869,6 +884,7 @@ describe("active R session commands", () => {
   });
 
   it("refreshes the exact active R terminal and transfers that transport when a cached row opens", async () => {
+    mocks.openingTimeout = null;
     const terminal = rTerminal("R");
     setActiveTerminal(terminal);
     const transport = transportMock();
@@ -882,6 +898,8 @@ describe("active R session commands", () => {
       terminalLabel: "R",
       variables: [{ label: "orders", description: "R · tibble" }]
     });
+    expect(transport.discoverVariables).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+    expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
     const snapshot = provider.snapshot();
     if (snapshot.state !== "ready") throw new Error("Expected a refreshed R dataframe list.");
 

@@ -193,8 +193,12 @@ Requests and cancellations route through the exact owner. Restart invalidates th
 last session stops its process after bounded stdin/EOF shutdown. A forced kill is reserved for recovery or an expired
 shutdown bound.
 
-Python process and kernel requests accept configured timeouts only within the settings' declared finite numeric
-range. Invalid values use the corresponding default. Explicit per-call deadlines remain authoritative.
+Python and native R requests accept configured timeouts only within the settings' declared finite numeric range.
+Invalid values use the corresponding default. R rounds configured values upward to whole milliseconds; its native
+transports retain strict validation of explicit per-call deadlines. Explicit deadlines remain authoritative.
+R discovery uses the validated opening setting, retaining the document resource or global terminal scope that
+started it. Each discovery and session request keeps its own deadline. R export retains its separate 30-minute
+default; it does not use the ordinary request setting.
 
 The bounded Python stderr buffer belongs to the current process. A retired process's late stderr remains in the
 output channel history but cannot enter a replacement process's error details.

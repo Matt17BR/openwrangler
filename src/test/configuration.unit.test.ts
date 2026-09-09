@@ -30,6 +30,18 @@ describe("runtime request deadlines", () => {
     expect(runtimeRequestTimeoutMs({ kind: "getSummary" })).toBe(12_000);
   });
 
+  it("uses the captured resource for configured deadlines and skips it for explicit overrides", () => {
+    const resource = vscode.Uri.file("/workspace/orders.R");
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(_key: string, _fallback: T): T => 45_000.25 as T
+    } as vscode.WorkspaceConfiguration);
+    expect(runtimeRequestTimeoutMs({ kind: "openSession" }, undefined, resource)).toBe(45_000.25);
+    expect(configuration).toHaveBeenCalledWith("openWrangler", resource);
+    configuration.mockClear();
+    expect(runtimeRequestTimeoutMs({ kind: "openSession" }, 0, resource)).toBe(0);
+    expect(configuration).not.toHaveBeenCalled();
+  });
+
   it("uses each documented default for invalid configured deadlines", () => {
     let configured: unknown;
     vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import * as vscode from "vscode";
+import { describe, expect, it, vi } from "vitest";
 import type {
   CustomCodeTransformStep,
   DataDiff,
@@ -26,6 +27,92 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("canonical R kernel bridge", () => {
+  it.each([
+    [120_000.25, 90_000.5, 120_001, 90_001],
+    [undefined, undefined, 60_000, 30_000],
+    [null, "invalid", 60_000, 30_000]
+  ])(
+    "routes configured R deadlines %s/%s without changing caller options",
+    async (opening, ordinary, openMs, readMs) => {
+      const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+        get: <T>(key: string, fallback: T): T =>
+          (key === "sessionOpenTimeoutMs" ? opening : key === "requestTimeoutMs" ? ordinary : fallback) as T
+      } as vscode.WorkspaceConfiguration);
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      const cancellation = new vscode.CancellationTokenSource();
+      const options = Object.freeze({ cancellation: cancellation.token });
+      try {
+        await expect(bridge.request(openRequest(), options)).resolves.toMatchObject({ kind: "sessionOpened" });
+        expect(transport.open.mock.calls[0]?.[2]).toMatchObject({
+          timeoutMs: openMs,
+          cancellation: options.cancellation
+        });
+        await expect(
+          bridge.request(
+            {
+              kind: "getPage",
+              sessionId,
+              revision: 0,
+              viewRequestId: "configured-deadline",
+              offset: 0,
+              limit: 20,
+              columnOffset: 0,
+              columnLimit: 8,
+              filterModel: { filters: [], sort: [] }
+            },
+            options
+          )
+        ).resolves.toMatchObject({ kind: "page" });
+        expect(transport.getPage.mock.calls[0]?.[2]).toMatchObject({
+          timeoutMs: readMs,
+          cancellation: options.cancellation
+        });
+        expect(options).not.toHaveProperty("timeoutMs");
+      } finally {
+        await bridge.dispose();
+        cancellation.dispose();
+        configuration.mockRestore();
+      }
+    }
+  );
+
+  it("keeps local metadata and explicit R deadlines independent of configuration", async () => {
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration");
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    try {
+      await expect(bridge.request({ kind: "initialize" })).resolves.toMatchObject({ kind: "initialized" });
+      await expect(bridge.request(openRequest(), { timeoutMs: 25 })).resolves.toMatchObject({ kind: "sessionOpened" });
+      expect(transport.open.mock.calls[0]?.[2]?.timeoutMs).toBe(25);
+      for (const timeoutMs of [0, 25, 1_000.5]) {
+        await expect(
+          bridge.request(
+            {
+              kind: "getPage",
+              sessionId,
+              revision: 0,
+              viewRequestId: "explicit-deadline",
+              offset: 0,
+              limit: 20,
+              columnOffset: 0,
+              columnLimit: 8,
+              filterModel: { filters: [], sort: [] }
+            },
+            { timeoutMs }
+          )
+        ).resolves.toMatchObject({ kind: "page" });
+        expect(transport.getPage.mock.calls.at(-1)?.[2]?.timeoutMs).toBe(timeoutMs);
+      }
+      await bridge.request({ kind: "closeSession", sessionId, revision: 0 }, { timeoutMs: 0 });
+      expect(transport.close.mock.calls[0]?.[1]?.timeoutMs).toBe(0);
+      expect(configuration).not.toHaveBeenCalled();
+    } finally {
+      await bridge.dispose();
+      configuration.mockRestore();
+    }
+  });
+
   it("hands the native R frame and extension version across the public bridge boundary", async () => {
     const contract = frameContract();
     const transport = fakeTransport(contract);

@@ -56,11 +56,12 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
 
 export function runtimeRequestTimeoutMs(
   request: Pick<OpenWranglerRequest, "kind">,
-  explicitTimeoutMs?: number
+  explicitTimeoutMs?: number,
+  resource?: vscode.Uri
 ): number {
   if (explicitTimeoutMs !== undefined) return explicitTimeoutMs;
   const openingSession = request.kind === "openSession";
   const key = openingSession ? "sessionOpenTimeoutMs" : "requestTimeoutMs";
   const fallback = openingSession ? DEFAULT_SESSION_OPEN_TIMEOUT_MS : DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS;
-  return boundedNumber(getSetting<unknown>(key, fallback), fallback, 1_000, 600_000);
+  return boundedNumber(getSetting<unknown>(key, fallback, resource), fallback, 1_000, 600_000);
 }

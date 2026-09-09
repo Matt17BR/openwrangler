@@ -4112,16 +4112,19 @@ describe("exact IRkernel session transport", () => {
     expect(controller.bootstrapExecutions()).toBe(0);
   });
 
-  it("rejects an out-of-range host deadline before touching Jupyter", async () => {
-    const getExtension = vi.spyOn(vscode.extensions, "getExtension");
-    const document = notebookDocument();
-    setOpenNotebookDocuments(document);
+  it.each([2_147_483_648, 1_000.5])(
+    "rejects an invalid explicit host deadline %s before touching Jupyter",
+    async (timeoutMs) => {
+      const getExtension = vi.spyOn(vscode.extensions, "getExtension");
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
 
-    await expect(
-      createTransport(document, [sessionId]).open("frame", pageWindow(), { timeoutMs: 2_147_483_648 })
-    ).rejects.toThrow("outside the supported integer range");
-    expect(getExtension).not.toHaveBeenCalled();
-  });
+      await expect(createTransport(document, [sessionId]).open("frame", pageWindow(), { timeoutMs })).rejects.toThrow(
+        "outside the supported integer range"
+      );
+      expect(getExtension).not.toHaveBeenCalled();
+    }
+  );
 
   it("makes disposal single-flight and rejects an open that is still preparing", async () => {
     const secondLookupStarted = deferred<void>();
