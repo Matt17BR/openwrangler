@@ -96,8 +96,9 @@ The consolidated preview workflow owns both the automatic daily public train and
 - Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
   suites. It validates stable metadata, packages once, audits published dependencies, runs pinned VS Code
   installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
-- Stable publication selects a successful candidate and promotes its already-recorded bytes. It does not rebuild the
-  extension.
+- Stable publication selects a successful candidate and promotes its already-recorded bytes. Candidate selection uses
+  Node built-ins without installing or caching npm dependencies. The separate promotion job installs its publication
+  tools and verifies the exact artifact; it does not rebuild the extension.
 
 The workflows themselves are authoritative for their current inputs and schedules. See [Releasing](releasing.md) for
 the operator sequence and failed-publication recovery. These release paths are not additional pull-request
