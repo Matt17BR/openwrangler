@@ -126,9 +126,15 @@ async function verifyNotebookPreviewDisclosure(browser) {
 }
 
 async function verifyCodePreviewOrigin(browser) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 420 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 420 });
   await page.goto(pathToFileURL(resolve(harnessDir, "code-preview.html")).href, { waitUntil: "load" });
-  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent?.includes("def clean_data"));
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#root")?.getAttribute("data-code-dialect") === "python.polars" &&
+      document.querySelector(".cm-content")?.getAttribute("aria-label") === "Editable generated Python code preview" &&
+      document.querySelector(".cm-line")?.textContent === "import polars as pl"
+  );
   const before = await page.locator(".cm-content").textContent();
   await page.evaluate(() => {
     window.dispatchEvent(
@@ -204,7 +210,9 @@ async function verifyCodePreviewOrigin(browser) {
     throw new Error("Code preview accepted a host message with unknown fields.");
   }
 
-  const readOnlyCode = "# Read-only saved notebook snapshot.";
+  const readOnlyCode = Array.from({ length: 100 }, (_, index) => `# Read-only saved notebook line ${index + 1}.`).join(
+    "\n"
+  );
   await page.evaluate((code) => {
     window.dispatchEvent(
       new MessageEvent("message", {
@@ -226,17 +234,42 @@ async function verifyCodePreviewOrigin(browser) {
     );
   }, readOnlyCode);
   const content = page.locator(".cm-content");
-  await page.waitForFunction((code) => document.querySelector(".cm-content")?.textContent === code, readOnlyCode);
+  await page.waitForFunction(
+    () => document.querySelector(".cm-line")?.textContent === "# Read-only saved notebook line 1."
+  );
   if ((await content.getAttribute("aria-label")) !== "Read-only generated Python code preview") {
     throw new Error("Code preview did not publish its read-only accessible label.");
   }
   if ((await content.getAttribute("contenteditable")) !== "false") {
     throw new Error("Code preview remained editable after a read-only host update.");
   }
-  await content.click({ force: true });
+  await page.keyboard.press("Tab");
+  if (!(await content.evaluate((element) => document.activeElement === element))) {
+    throw new Error("Read-only Code Preview could not be reached with Tab.");
+  }
+  await page.keyboard.press("Control+End");
+  await page.waitForFunction(() => {
+    const scroller = document.querySelector(".cm-scroller");
+    const lastLine = [...document.querySelectorAll(".cm-line")].find(
+      (line) => line.textContent === "# Read-only saved notebook line 100."
+    );
+    if (!(scroller instanceof HTMLElement) || !(lastLine instanceof HTMLElement) || scroller.scrollTop <= 0)
+      return false;
+    const bounds = scroller.getBoundingClientRect();
+    const lineBounds = lastLine.getBoundingClientRect();
+    return (
+      lineBounds.top >= bounds.top + scroller.clientTop &&
+      lineBounds.bottom <= bounds.top + scroller.clientTop + scroller.clientHeight
+    );
+  });
+  const readOnlyVisibleCode = await content.textContent();
   await page.keyboard.type("\nraise RuntimeError('must not be inserted')");
-  if ((await content.textContent()) !== readOnlyCode) {
+  if ((await content.textContent()) !== readOnlyVisibleCode) {
     throw new Error("Read-only Code Preview accepted keyboard input.");
+  }
+  await page.keyboard.press("Tab");
+  if (await content.evaluate((element) => element.contains(document.activeElement))) {
+    throw new Error("Read-only Code Preview trapped Tab inside the editor.");
   }
 
   const noDialectCode = "def distributed_frame():\n    return None";

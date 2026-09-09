@@ -64,6 +64,7 @@ If the recovered grid cannot be read, Open Wrangler reports the failure and keep
 The operation catalog search exposes its accessible name before and after entering a query.
 Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
+Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
 Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.

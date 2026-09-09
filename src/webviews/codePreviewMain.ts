@@ -342,6 +342,7 @@ function codePreviewEditability(editable: boolean, languageLabel: "Python" | "R"
     EditorView.editable.of(editable),
     EditorView.contentAttributes.of({
       "aria-label": `${editable ? "Editable" : "Read-only"} ${subject}`,
+      tabindex: "0",
       spellcheck: "false"
     })
   ];
