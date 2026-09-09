@@ -352,7 +352,8 @@ Generated Sort Rows preserves columns whose names coincide with internal sort he
 Rename or when a saved program runs on new input. Ties keep their input order, and missing sort keys are rejected.
 
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
-generated code.
+generated code. Saved Drop Duplicates and Mark Duplicates programs reject missing duplicate keys, including names
+that coincide with internal row ordinals.
 
 Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with up to 38 digits, preserving nulls.
 Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
