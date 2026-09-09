@@ -134,7 +134,7 @@ for (const scenario of [
 }
 
 function git(root, args) {
-  return execFileSync("git", args, {
+  return execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
     cwd: root,
     encoding: "utf8",
     env: {
@@ -170,18 +170,7 @@ function writeVersionSources(root, { preview, version }) {
 
 function tagStable(root, version, commit = "HEAD", annotated = false) {
   const arguments_ = annotated
-    ? [
-        "-c",
-        "user.name=Test",
-        "-c",
-        "user.email=test@example.com",
-        "tag",
-        "-a",
-        "-m",
-        `Stable ${version}`,
-        `v${version}`,
-        commit
-      ]
+    ? ["tag", "-a", "-m", `Stable ${version}`, `v${version}`, commit]
     : ["tag", `v${version}`, commit];
   git(root, arguments_);
 }
@@ -205,19 +194,19 @@ function repository(
   writeVersionSources(root, initial);
   git(root, ["init", "--quiet"]);
   git(root, ["add", "."]);
-  git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "initial"]);
+  git(root, ["commit", "--quiet", "-m", "initial"]);
   if (stable !== null) tagStable(root, stable.version, "HEAD", stableTagAnnotated);
   if (source.preview !== initial.preview || source.version !== initial.version) {
     writeVersionSources(root, source);
     git(root, ["add", ...versionPaths]);
-    git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "source"]);
+    git(root, ["commit", "--quiet", "-m", "source"]);
   }
   return root;
 }
 
 function commitChanges(root, subject) {
   git(root, ["add", "."]);
-  git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", subject]);
+  git(root, ["commit", "--quiet", "-m", subject]);
   return git(root, ["rev-parse", "HEAD"]);
 }
 
@@ -364,17 +353,7 @@ test("daily notes preserve merge-resolution commits and refuse oversized complet
   assert.ok(dailyPreviewReleaseNotes(input).includes(`commit/${merged}`));
   const messagePath = join(root, ".git", "notes-message");
   writeFileSync(messagePath, "x".repeat(70 * 1024));
-  git(root, [
-    "-c",
-    "user.name=Test",
-    "-c",
-    "user.email=test@example.com",
-    "commit",
-    "--quiet",
-    "--allow-empty",
-    "-F",
-    messagePath
-  ]);
+  git(root, ["commit", "--quiet", "--allow-empty", "-F", messagePath]);
   const oversized = git(root, ["rev-parse", "HEAD"]);
   assert.throws(() => dailyPreviewReleaseNotes({ ...input, sourceSha: oversized }), /Release notes must be/u);
 });
@@ -599,16 +578,7 @@ test("stable-series preparation is deterministic, recoverable, and changes only 
   );
   writeFileSync(join(firstRoot, "unexpected.txt"), "unexpected\n");
   git(firstRoot, ["add", "unexpected.txt"]);
-  git(firstRoot, [
-    "-c",
-    "user.name=Test",
-    "-c",
-    "user.email=test@example.com",
-    "commit",
-    "--quiet",
-    "--amend",
-    "--no-edit"
-  ]);
+  git(firstRoot, ["commit", "--quiet", "--amend", "--no-edit"]);
   assert.throws(
     () =>
       inspectDailyPreviewSourceCommit({
@@ -726,10 +696,6 @@ test("source inspection rejects a series that differs from its bound stable tag"
   writeVersionSources(root, { preview: true, version: wrongVersion });
   git(root, ["add", "--", ...versionPaths]);
   git(root, [
-    "-c",
-    "user.name=Test",
-    "-c",
-    "user.email=test@example.com",
     "commit",
     "--quiet",
     "--amend",
