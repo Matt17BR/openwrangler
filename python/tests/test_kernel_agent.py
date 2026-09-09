@@ -728,7 +728,9 @@ def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeyp
     }
 
 
-def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder() -> None:
+def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame_limit = 256 * 1024
+    monkeypatch.setattr(kernel_agent, "MAX_RESPONSE_FRAME_BYTES", frame_limit)
     value = "é" * 30_000
     cell = {"kind": "string", "raw": value, "display": value, "isNull": False, "isNaN": False}
     response = {
@@ -736,21 +738,21 @@ def test_kernel_response_uses_the_bounded_compact_utf8_frame_encoder() -> None:
         "revision": 1,
         "page": {
             "offset": 0,
-            "limit": 100,
-            "totalRows": 100,
+            "limit": 2,
+            "totalRows": 2,
             "columnIds": ["c:source:0"],
-            "rows": [{"rowId": str(index), "values": [cell]} for index in range(100)],
+            "rows": [{"rowId": str(index), "values": [cell]} for index in range(2)],
         },
     }
     envelope = response_envelope("non-ascii-response", response)
 
     encoded = kernel_agent._encode_response("non-ascii-response", response)
 
-    assert encoded.encode("utf-8") == encode_response_frame(envelope, MAX_RESPONSE_FRAME_BYTES)[:-1]
-    assert len(encoded.encode("utf-8")) + 1 <= MAX_RESPONSE_FRAME_BYTES
+    assert encoded.encode("utf-8") == encode_response_frame(envelope, frame_limit)[:-1]
+    assert len(encoded.encode("utf-8")) + 1 <= frame_limit
     assert "é" in encoded
     assert "\\u00e9" not in encoded
-    assert len(json.dumps(envelope).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
+    assert len(json.dumps(envelope).encode("utf-8")) > frame_limit
 
 
 def test_response_transports_preserve_existing_page_and_plan_depth_boundaries() -> None:
@@ -1005,10 +1007,13 @@ def test_kernel_oversized_string_response_preserves_publication_semantics(
 
 
 def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(monkeypatch) -> None:
+    frame_limit = 256 * 1024
+    monkeypatch.setattr(kernel_agent, "MAX_RESPONSE_FRAME_BYTES", frame_limit)
+    monkeypatch.setattr(server, "MAX_RESPONSE_FRAME_BYTES", frame_limit)
     manager = SessionManager()
     monkeypatch.setattr(kernel_agent, "_manager", manager)
     value = "é" * 15_000
-    frame = pd.DataFrame({"city": [value] * 100})
+    frame = pd.DataFrame({"city": [value] * 2})
     handle = notebook._register_live_result(frame)
     opened = json.loads(
         kernel_agent.dispatch_json(
@@ -1018,7 +1023,7 @@ def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(mo
                     "source": {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
                     "backend": "pandas",
                     "mode": "editing",
-                    "pageSize": 100,
+                    "pageSize": 2,
                     "columnOffset": 0,
                     "columnLimit": 64,
                 },
@@ -1043,7 +1048,7 @@ def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(mo
                     },
                 },
                 "offset": 0,
-                "limit": 100,
+                "limit": 2,
                 "columnOffset": 0,
                 "columnLimit": 64,
             },
@@ -1054,10 +1059,10 @@ def test_kernel_dispatches_a_non_ascii_mutation_with_the_preflighted_encoding(mo
 
     assert decoded["response"]["kind"] == "stepPreview"
     assert decoded["response"]["revision"] == 1
-    assert len(encoded.encode("utf-8")) + 1 <= MAX_RESPONSE_FRAME_BYTES
+    assert len(encoded.encode("utf-8")) + 1 <= frame_limit
     assert "é" in encoded
     assert "\\u00e9" not in encoded
-    assert len(json.dumps(decoded).encode("utf-8")) > MAX_RESPONSE_FRAME_BYTES
+    assert len(json.dumps(decoded).encode("utf-8")) > frame_limit
     manager.close_session(session_id, 1)
 
 
