@@ -1,7 +1,7 @@
-# Open Wrangler v1.2 product media
+# Open Wrangler v1.2 media series
 
-This is the canonical README and gallery contract for v1.2. The media must explain the product to a prospective
-user, match the packaged extension, and remain readable at its rendered width.
+This document retains the capture, composition, and asset requirements for the v1.2 media series. The media must
+explain the product to a prospective user, match the packaged extension, and remain readable at its rendered width.
 
 ## Source and capture contract
 
@@ -18,8 +18,8 @@ user, match the packaged extension, and remain readable at its rendered width.
   markers, setup cells, or acceptance-only labels.
 - Crops select exact rectangles from accepted screenshots. Do not scale, mask, annotate, recolor, or reconstruct
   editor UI. The compositor records whether each source came from packaged-editor acceptance or the production
-  webview harness, converts each logical crop to physical pixels exactly once, and the inventory test rejects both
-  missing and orphaned public PNGs.
+  webview harness and converts each logical crop to physical pixels exactly once. It verifies declared output names,
+  counts, and dimensions.
 - Add only the standard sRGB PNG chunk when preparing portable copies.
 - Every README and gallery screenshot uses a width-only presentation capped at 960 CSS pixels. The browser derives
   height from the PNG's aspect ratio, and the PNG supplies at least two physical pixels per rendered CSS pixel after
@@ -31,21 +31,10 @@ The packaged workbench starts at 1440 × 900 or 1280 × 900. Some grid captures 
 bottom row after verifying the complete layout. Notebook crops remove empty canvas or private collapsed cells,
 never visible product controls.
 
-## README story
+## README and gallery
 
-The README uses six visual chapters instead of an unexplained screenshot wall:
-
-1. **Explore:** `explore.png` and `gallery/sidebar-overview.png` introduce the grid, profiles, and all four native
-   views.
-2. **Open and navigate:** the Explorer action, full-schema search, filter result, histogram, and compound-sort
-   controls show how users reach and understand data.
-3. **Clean:** `workflow.png` plus the edit/undo pair show draft, generated code, applied history, and precise
-   recovery.
-4. **Notebooks:** the live-variable picker, generated-code insertion, Pandas/Polars/DuckDB/PySpark matrix, and R
-   editing scene show how each engine behaves.
-5. **Export:** paired script and data outcomes show reproducible code and separate cleaned files.
-6. **Evidence and roadmap:** concise engine, format, and compatibility tables plus a short performance summary and
-   future scope follow the visual proof.
+The [README](../README.md) selects product scenes for the current introduction. The [product gallery](media-gallery.md)
+organizes the broader collection by workflow and links detail crops to their full-size images.
 
 ## Public media inventory
 
