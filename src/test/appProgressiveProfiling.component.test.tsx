@@ -1009,6 +1009,65 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.queryByText("Berlin", { selector: ".valueList span" })).not.toBeInTheDocument();
   });
 
+  it("clears unfinished filter inputs when a replacement session reuses column IDs", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    const salesHeader = document.querySelector<HTMLTableCellElement>('th[data-column="sales"]');
+    if (!salesHeader) throw new Error("Expected the sales header.");
+    fireEvent.click(within(salesHeader).getByLabelText("Column actions for sales"));
+    fireEvent.click(within(salesHeader).getByRole("button", { name: "Filter…" }));
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "equals" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "12" } });
+    fireEvent.change(screen.getByPlaceholderText("Search values"), { target: { value: "12" } });
+    fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
+    const oldValuesRequest = requestsOfKind("getColumnValues").at(-1);
+    if (!oldValuesRequest) throw new Error("Expected the original values search.");
+    const oldContext = setViewContextMessages().at(-1)?.viewContextId;
+
+    dispatch({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        sessionId: "replacement-session",
+        source: { kind: "file", label: "replacement.csv", path: "replacement.csv" }
+      },
+      page: pageWithCity("Milan"),
+      summaries: []
+    });
+    await screen.findByText("Milan");
+    expect(screen.queryByText("Berlin")).toBeNull();
+    expect(setViewContextMessages().at(-1)?.viewContextId).not.toBe(oldContext);
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("sales");
+    expect(screen.getByPlaceholderText("Value")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(requestsOfKind("getPage")).toHaveLength(0);
+    dispatch({
+      kind: "columnValues",
+      revision: metadata.revision,
+      viewRequestId: viewId(oldValuesRequest),
+      column: "sales",
+      values: [{ value: "old-session-only", count: 1 }],
+      hasMore: false
+    });
+    expect(screen.queryByText("old-session-only")).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "34" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    const submitted = onlyRequest("getPage");
+    expect(filterModelOf(submitted).filters).toEqual([
+      {
+        column: "sales",
+        type: "float",
+        logic: "and",
+        predicates: [{ kind: "predicate", operator: "equals", value: "34" }]
+      }
+    ]);
+    expect(onlyRuntimeEnvelope("getPage").viewContextId).toBe(viewId(submitted));
+    expect(viewId(submitted)).not.toBe(oldContext);
+  });
+
   it("cancels filter-value work and ignores its late diagnostic after leaving Filters", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });

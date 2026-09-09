@@ -2483,7 +2483,7 @@ export function App() {
                   aria-labelledby={summaryTabId("filters")}
                 >
                   <FilterPanel
-                    key={filterColumn}
+                    key={JSON.stringify([metadata?.sessionId, filterColumn])}
                     metadata={metadata}
                     model={filterModel}
                     values={columnValues}

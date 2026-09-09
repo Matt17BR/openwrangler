@@ -250,6 +250,12 @@ Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only qu
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
 
+Unsubmitted filter input belongs to its session and selected column ID. If that column disappears, both column
+selectors show an unavailable target and retain the input until the user chooses another column or the same ID
+returns. Missing-target controls cannot dispatch a predicate, value request or sort. A replacement session resets
+this local input even if column names and IDs are reused. Explicit column navigation and same-ID renames retain
+their existing behavior.
+
 A locally staged sort order binds each rule to its unique column ID, name and semantic type. Schema changes
 permanently retire rules whose owner disappeared, changed or became ineligible, preserving unaffected rule order.
 The panel uses the confirmed model directly when no local difference is staged. An authoritative sort-model

@@ -134,7 +134,7 @@ export function FilterPanel({
       const schema = metadata?.schema ?? [];
       const requestedSchema = schema.find((item) => item.name === requestedColumn);
       if (requestedColumnChanged && requestedSchema) return requestedSchema.id;
-      if (schema.some((item) => item.id === currentId)) return currentId;
+      if (currentId) return currentId;
       return requestedSchema?.id ?? schema[0]?.id ?? "";
     });
   }, [metadata?.schema, requestedColumn]);
@@ -427,6 +427,11 @@ export function FilterPanel({
             onChange={(event) => setColumnId(event.target.value)}
           >
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
+            {columnId && !columnSchema && (
+              <option value={columnId} disabled>
+                Selected column is unavailable
+              </option>
+            )}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
                 {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}
@@ -596,6 +601,11 @@ export function FilterPanel({
             onChange={(event) => setColumnId(event.target.value)}
           >
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
+            {columnId && !columnSchema && (
+              <option value={columnId} disabled>
+                Selected column is unavailable
+              </option>
+            )}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
                 {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}

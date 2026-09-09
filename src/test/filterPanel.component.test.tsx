@@ -1375,7 +1375,7 @@ describe("FilterPanel", () => {
   it("handles an empty schema without dispatching invalid filters", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();
-    render(
+    const { rerender } = render(
       <FilterPanel
         metadata={{ ...metadata, schema: [], shape: { rows: 0, columns: 0 }, filteredShape: { rows: 0, columns: 0 } }}
         model={{ filters: [], sort: [] }}
@@ -1410,6 +1410,99 @@ describe("FilterPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
     expect(onApply).not.toHaveBeenCalled();
     expect(onRequestValues).not.toHaveBeenCalled();
+
+    const available = (activeColumn?: string) => (
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        activeColumn={activeColumn}
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+    rerender(available());
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("city");
+    rerender(available("sales"));
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("sales");
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onRequestValues).not.toHaveBeenCalled();
+  });
+
+  it("retains a missing selected column and its inputs until explicit repair", () => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    const panel = (current: SessionMetadata, disabled = false) => (
+      <FilterPanel
+        metadata={current}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        activeColumn="sales"
+        disabled={disabled}
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+    const { rerender } = render(panel(metadata));
+    fireEvent.click(screen.getByText("SORTS"));
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "equals" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "12" } });
+    fireEvent.change(screen.getByPlaceholderText("Search values"), { target: { value: "12" } });
+    rerender(panel(metadata, true));
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    rerender(panel(metadata));
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("sales");
+    expect(screen.getByPlaceholderText("Value")).toHaveValue("12");
+
+    const missing: SessionMetadata = {
+      ...metadata,
+      revision: 1,
+      schema: metadata.schema.filter((column) => column.id === "c:0"),
+      shape: { ...metadata.shape, columns: 1 },
+      filteredShape: { ...metadata.filteredShape, columns: 1 },
+      stats: undefined
+    };
+    rerender(panel(missing));
+    for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
+      expect(select).toBeEnabled();
+      expect(select).toHaveValue("c:1");
+      expect(select).toHaveDisplayValue("Selected column is unavailable");
+    }
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("12");
+    expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onRequestValues).not.toHaveBeenCalled();
+
+    rerender(
+      panel({
+        ...metadata,
+        revision: 2,
+        schema: metadata.schema.map((column) => (column.id === "c:1" ? { ...column, name: "revenue" } : column))
+      })
+    );
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("revenue");
+    expect(screen.getByPlaceholderText("Value")).toHaveValue("12");
+    rerender(panel({ ...missing, revision: 3 }));
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:0" } });
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("city");
+    expect(screen.getByPlaceholderText("Value")).toHaveValue("12");
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    expect(onApply).toHaveBeenCalledExactlyOnceWith({
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          logic: "and",
+          valueFilter: undefined,
+          predicates: [{ kind: "predicate", operator: "equals", value: "12" }]
+        }
+      ],
+      sort: []
+    });
   });
 
   it("disables every filter action while a foreground mutation is pending", () => {
