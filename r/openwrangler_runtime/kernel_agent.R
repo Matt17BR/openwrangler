@@ -3925,7 +3925,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  bind_fill_missing_step <- function(capture, step) {
+  bind_fill_missing_step <- function(frame_contract, capture, step) {
     schema <- capture$descriptor$schema
     matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
     if (
@@ -4110,6 +4110,10 @@ openwrangler_r_kernel_agent <- local({
         semanticsKind = coordinate_column$semantics$kind
       )
     }
+    replacement <- step$params$replacement
+    if (identical(semantic_kind, "double") && replacement_kind %in% c("integer", "float")) {
+      replacement$value <- frame_contract$parse_finite_number(replacement$value, "replacement$value")
+    }
     list(
       id = step$id,
       kind = step$kind,
@@ -4122,7 +4126,7 @@ openwrangler_r_kernel_agent <- local({
       semanticKind = semantic_kind,
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
-      replacement = step$params$replacement,
+      replacement = replacement,
       fallbackColumns = fallback_columns,
       orderBy = order_by,
       groupKeys = group_keys,
@@ -5595,7 +5599,7 @@ openwrangler_r_kernel_agent <- local({
       ))
     }
     if (identical(step$kind, "fillMissingValues")) {
-      bound <- bind_fill_missing_step(capture, step)
+      bound <- bind_fill_missing_step(frame_contract, capture, step)
       fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
       directional_fill <- identical(bound$replacement$kind, "directional")
       grouped_fill <- identical(bound$replacement$kind, "groupedStatistic")
@@ -5867,7 +5871,7 @@ openwrangler_r_kernel_agent <- local({
       logical = if (identical(value_key, "TRUE")) "TRUE" else "FALSE",
       integer = sprintf("as.double(%s)", r_string(value_key)),
       integer64 = sprintf("bit64::as.integer64(%s)", r_string(value_key)),
-      double = sprintf("as.double(%s)", r_string(value_key)),
+      double = if (is.finite(value_key)) r_number(value_key) else if (value_key < 0) "-Inf" else "Inf",
       character = r_string(value_key),
       factor = r_string(value_key),
       date = sprintf("as.double(%s)", r_string(value_key)),
@@ -5887,7 +5891,7 @@ openwrangler_r_kernel_agent <- local({
       ),
       integer64 = sprintf("bit64::as.integer64(%s)", r_character_vector(value_keys)),
       integer = sprintf("as.double(%s)", r_character_vector(value_keys)),
-      double = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      double = sprintf("c(%s)", paste(vapply(value_keys, row_target, character(1L), specification = specification), collapse = ", ")),
       date = sprintf("as.double(%s)", r_character_vector(value_keys)),
       datetime = sprintf("as.double(%s)", r_character_vector(value_keys)),
       difftime = sprintf("as.double(%s)", r_character_vector(value_keys)),
@@ -6341,7 +6345,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  r_fill_replacement <- function(replacement) {
+  r_fill_replacement <- function(replacement, semantic_kind) {
     if (replacement$kind %in% c("fallbackColumns", "directional", "groupedStatistic", "linearInterpolation")) {
       abort("runtime_error", "Generated R code received a non-scalar replacement through the scalar fill path")
     }
@@ -6350,6 +6354,8 @@ openwrangler_r_kernel_agent <- local({
     }
     value <- if (identical(replacement$kind, "boolean")) {
       if (isTRUE(replacement$value)) "TRUE" else "FALSE"
+    } else if (identical(semantic_kind, "double") && replacement$kind %in% c("integer", "float")) {
+      r_number(replacement$value)
     } else {
       r_string(replacement$value)
     }
@@ -9202,7 +9208,7 @@ openwrangler_r_kernel_agent <- local({
             sprintf(
               "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
               r_string(step$semanticKind),
-              r_fill_replacement(step$replacement),
+              r_fill_replacement(step$replacement, step$semanticKind),
               ".ow_fill_timezone"
             )
           )
