@@ -620,6 +620,8 @@ function TopValueRow({
 function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined }) {
   const stats = metadata?.stats;
   const missingByColumn = stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
+  const missingMaximum =
+    metadata?.filteredShape.rows ?? missingByColumn.reduce((maximum, item) => Math.max(maximum, item.count), 1);
 
   return (
     <>
@@ -674,7 +676,7 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
                     <span title={item.column}>{item.column}</span>
                     <meter
                       min={0}
-                      max={metadata?.filteredShape.rows ?? Math.max(1, ...missingByColumn.map((value) => value.count))}
+                      max={missingMaximum}
                       value={item.count}
                       aria-label={`${item.column}: ${item.count.toLocaleString()} missing`}
                     />

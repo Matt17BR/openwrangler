@@ -821,6 +821,80 @@ describe("SummaryPanel", () => {
     expect(screen.queryByText("Profiling selected column...")).not.toBeInTheDocument();
   });
 
+  it("updates missing-value meter domains as counts and the row total become known", () => {
+    const unknownRows: SessionMetadata = {
+      ...metadata,
+      backend: "pyspark",
+      mode: "viewing",
+      source: { kind: "notebookVariable", label: "df", variableName: "df" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: null, columns: 3 },
+      filteredShape: { rows: null, columns: 3 },
+      schema: [
+        { ...metadata.schema[0]!, nullable: true },
+        metadata.schema[1]!,
+        { ...metadata.schema[0]!, id: "c:2", name: "complete", position: 2 }
+      ],
+      stats: {
+        missingCells: 6,
+        missingRows: 4,
+        duplicateRows: 0,
+        missingValuesByColumn: [
+          { column: "city", count: 4 },
+          { column: "sales", count: 2 },
+          { column: "complete", count: 0 }
+        ]
+      }
+    };
+    const props = {
+      summaries: [],
+      schemaById: new Map(unknownRows.schema.map((column) => [column.id, column])),
+      activeView: "dataset" as const,
+      onSelectView: () => undefined
+    };
+    const { rerender } = render(<SummaryPanel {...props} metadata={unknownRows} />);
+    expect(screen.getAllByRole("meter")).toHaveLength(2);
+    expect(screen.queryByText("complete")).not.toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: "city: 4 missing" })).toHaveAttribute("value", "4");
+    expect(screen.getByRole("meter", { name: "sales: 2 missing" })).toHaveAttribute("value", "2");
+    for (const meter of screen.getAllByRole("meter")) {
+      expect(meter).toHaveAttribute("min", "0");
+      expect(meter).toHaveAttribute("max", "4");
+    }
+
+    const changedCounts: SessionMetadata = {
+      ...unknownRows,
+      stats: {
+        ...unknownRows.stats!,
+        missingCells: 3,
+        missingRows: 2,
+        missingValuesByColumn: [
+          { column: "city", count: 1 },
+          { column: "sales", count: 2 },
+          { column: "complete", count: 0 }
+        ]
+      }
+    };
+    rerender(<SummaryPanel {...props} metadata={changedCounts} />);
+    expect(screen.getByRole("meter", { name: "city: 1 missing" })).toHaveAttribute("value", "1");
+    expect(screen.queryByRole("meter", { name: "city: 4 missing" })).not.toBeInTheDocument();
+    for (const meter of screen.getAllByRole("meter")) expect(meter).toHaveAttribute("max", "2");
+
+    const knownRows = { ...changedCounts, shape: { rows: 20, columns: 3 }, filteredShape: { rows: 20, columns: 3 } };
+    rerender(<SummaryPanel {...props} metadata={knownRows} />);
+    expect(screen.getByText("Rows").nextElementSibling).toHaveTextContent("20");
+    expect(screen.getByRole("meter", { name: "city: 1 missing" })).toHaveAttribute("value", "1");
+    expect(screen.getByRole("meter", { name: "sales: 2 missing" })).toHaveAttribute("value", "2");
+    for (const meter of screen.getAllByRole("meter")) expect(meter).toHaveAttribute("max", "20");
+  });
+
   it("labels a sampled duplicate count with its sample size", () => {
     renderSummary({
       activeView: "dataset",
