@@ -89,9 +89,15 @@ session and renderer and has a separate one-second diagnostic limit.
 The App inspection owner checks that deletion confirmation belongs to the selected step. Switching targets requires
 a fresh confirmation, while paging within that step preserves it; Cancel returns to the ordinary actions.
 
-Installed Pandas journeys with duplicate or non-string column labels execute emitted value, row, structural,
-By Example and Group By plans in fresh namespaces. They compare complete values, physical labels, dtypes and native
-indexes, while retaining source, input, stable-reference and replay assertions.
+Generic notebook verification uses a fixture Jupyter API backed by real Python, the production bridge and a real
+editor. Released Jupyter runs in separate acceptance phases. The duplicate/non-string Pandas structural journey
+composes Select, Clone, Drop and Rename, executes the final generated plan once, and compares complete values,
+physical labels, dtypes and native indexes. It retains source/input immutability, exact stable references,
+Preview/Apply publication and complete schema equality after restart. The replay comparison retains every page
+field except session-scoped row IDs. Native operation, binding and lineage owners cover individual operation and
+generated-code semantics. The installed composition omits the nullable-float cast, duplicate-column Formula and
+non-string-label Text Length intersections. The value, row, By Example and Group By journeys retain their
+generated-plan comparisons.
 
 R kernel-restart journeys open an editing session before committing the step whose restart behavior they check.
 Their enclosing configuration owner restores the prior notebook setting on exit.
