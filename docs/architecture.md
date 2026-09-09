@@ -336,7 +336,7 @@ literal must be entered again; its original spelling cannot be reconstructed fro
 Min-max Scale computes exact integer and decimal offsets before converting them to double-precision ratios.
 Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
-the owning engine.
+the owning engine. Pandas shares one helper between live execution and generated programs.
 
 Round accepts finite integer decimal precision, including negative values for rounding to tens and larger units.
 Python engines round exact integers and Decimal values before floating conversion, using half-even ties. Ordinary
