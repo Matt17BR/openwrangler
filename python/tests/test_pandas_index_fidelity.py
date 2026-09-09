@@ -4,6 +4,7 @@ import io
 import json
 import os
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -12,10 +13,13 @@ import pandas as pd
 import pytest
 
 import openwrangler_runtime.session as session_runtime
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.base import RowAxisExportPolicy
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.export_target import _regular_file_identity
+from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
 
 
@@ -41,6 +45,164 @@ def reserve_export_target(path: Path) -> dict[str, str]:
     path.touch(exist_ok=False)
     device, inode = _regular_file_identity(path)
     return {"device": str(device), "inode": str(inode)}
+
+
+@pytest.mark.parametrize("shape", ["present", "empty", "missing"])
+def test_parquet_integer_data_file_session_preserves_values_through_edit_and_export(tmp_path: Path, shape: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    signed = [-(2**63), None, 2**53 + 1, 2**63 - 1, 0]
+    unsigned = [2**64 - 1, None, 2**53 + 1, 0, 1]
+    nested = [[2**53, None], [2**53 + 1, None], None, [], [2**53 + 1, None]]
+    records = [{"value": 2**53}, {"value": 2**53 + 1}, None, {"value": None}, {"value": 2**53 + 1}]
+    if shape != "present":
+        signed = unsigned = [] if shape == "empty" else [None] * 5
+        nested = records = [] if shape == "empty" else [None] * 5
+    table = pa.table(
+        {
+            "signed": pa.array(signed, type=pa.int64()),
+            "unsigned": pa.array(unsigned, type=pa.uint64()),
+            "nested": pa.array(nested, type=pa.list_(pa.int64())),
+            "record": pa.array(records, type=pa.struct([("value", pa.int64())])),
+        }
+    )
+    path = tmp_path / "integers.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)}, backend="pandas", mode="editing", page_size=10
+    )
+    session_id = str(opened["metadata"]["sessionId"])
+    revision = 0
+    try:
+        loaded = manager.sessions[session_id].original[table.column_names]
+        loaded_before = loaded.copy(deep=True)
+        assert pa.Table.from_pandas(loaded, preserve_index=False).to_pydict() == table.to_pydict()
+        assert [column["type"] for column in opened["metadata"]["schema"]] == ["integer", "integer", "list", "struct"]
+        assert [row["values"][0]["raw"] for row in opened["page"]["rows"]] == [
+            str(value) if value is not None and abs(value) > 2**53 - 1 else value for value in signed
+        ]
+        profiles = manager.get_summary(session_id, 0, {})["summaries"]
+        assert [profile["type"] for profile in profiles] == ["integer", "integer", "list", "struct"]
+        for profile, values in zip(profiles, table.to_pydict().values(), strict=True):
+            expected_counts = {str(value): values.count(value) for value in values if value is not None}
+            assert profile["nullCount"] == values.count(None) and profile["nanCount"] == 0
+            assert profile["distinctCount"] == len(expected_counts)
+            assert {item["value"]: item["count"] for item in profile["topValues"]} == expected_counts
+        operation = {
+            "id": "copy-exact",
+            "kind": "cloneColumn",
+            "params": {"column": {"id": "c:source:0", "name": "signed"}, "newName": "copy"},
+        }
+        preview = manager.preview_step(session_id, revision, operation, 0, 10)
+        revision = preview["revision"]
+        applied = manager.apply_draft(session_id, revision, 0, 10)
+        revision = applied["revision"]
+        expected = table.append_column("copy", table.column("signed"))
+        scope: dict[str, Any] = {}
+        exec(applied["code"], scope)
+        generated = scope["clean_data"](loaded)
+        assert pa.Table.from_pandas(generated, preserve_index=False).to_pydict() == expected.to_pydict()
+        output = tmp_path / "export.parquet"
+        response = manager.export_data(
+            session_id,
+            revision,
+            str(output),
+            {"format": "parquet", "rowAxisPolicy": "omit"},
+            reserve_export_target(output),
+        )
+        assert response["kind"] == "dataExported"
+        exported = pq.read_table(output)
+        assert exported.to_pydict() == expected.to_pydict()
+        assert [field.type for field in exported.schema] == [field.type for field in pq.read_table(path).schema] + [
+            pa.int64()
+        ]
+        undone = manager.undo_step(session_id, revision, 0, 10)
+        revision = undone["revision"]
+        assert undone["page"] == opened["page"]
+        pd.testing.assert_frame_equal(loaded, loaded_before)
+    finally:
+        manager.close_session(session_id, revision)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("container", ["list", "large-list", "fixed-list", "struct", "map", "no-null-list"])
+def test_parquet_integer_containers_keep_native_children_and_siblings(tmp_path: Path, container: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    wide = 2**53 + 1
+    dtype = pa.list_(pa.int64())
+    values: Any = [[wide, None], [wide - 1, None]]
+    empty: Any = []
+    if container == "large-list":
+        dtype = pa.large_list(pa.int64())
+    elif container == "fixed-list":
+        dtype = pa.list_(pa.int64(), 2)
+        empty = [None, None]
+    elif container == "no-null-list":
+        values = [[wide, -wide], [wide - 1, -wide]]
+    elif container == "struct":
+        dtype = pa.struct([("integer", pa.int64()), ("floating", pa.float64()), ("decimal", pa.decimal128(10, 2))])
+        values = [
+            {"integer": wide, "floating": 1.25, "decimal": Decimal("1.25")},
+            {"integer": wide - 1, "floating": 1.25, "decimal": Decimal("1.25")},
+        ]
+        empty = {"integer": None, "floating": None, "decimal": None}
+    elif container == "map":
+        dtype = pa.map_(pa.string(), pa.int64())
+        values = [[("wide", wide), ("missing", None)], [("wide", wide - 1), ("missing", None)]]
+    values.extend([empty, empty, values[0]])
+    if container not in {"no-null-list", "fixed-list"}:
+        values.append(None)
+    table = pa.table(
+        {
+            "value": pa.array(values, type=dtype),
+            "ordinary": pa.array([wide, -wide, 0, 1, 2, 3][: len(values)], type=pa.int64()),
+        }
+    )
+    path = tmp_path / "container.parquet"
+    pq.write_table(table, path)
+    before = path.read_bytes()
+    ordinary = pd.read_parquet(path)
+    loaded = PandasEngine().read_file(str(path))
+    assert isinstance(loaded["value"].dtype, pd.ArrowDtype)
+    assert loaded["value"].array.__arrow_array__().to_pylist() == values
+    pd.testing.assert_series_equal(loaded["ordinary"], ordinary["ordinary"])
+    engine = PandasEngine()
+    summary = engine.summaries(loaded)[0]
+    expected_counts = {str(value): values.count(value) for value in values if value is not None}
+    assert summary["nullCount"] == values.count(None) and summary["nanCount"] == 0
+    assert summary["distinctCount"] == len(expected_counts)
+    assert {item["value"]: item["count"] for item in summary["topValues"]} == expected_counts
+    choices, truncated = engine.column_values(loaded, "value")
+    assert not truncated
+    assert {item["value"]: item["count"] for item in choices} == expected_counts
+    loaded.index = pd.Index([9, 9, 2, 3, 7, 1][: len(values)], name="rows")
+    original = loaded.copy(deep=True)
+    assert engine.header_stats(loaded[["value"]])["duplicateRows"] == 2
+    schema = engine.schema(loaded)
+    lineage = source_lineage(schema)
+    for kind in ("dropDuplicates", "markDuplicates"):
+        params: dict[str, Any] = {"columns": [lineage[0]]}
+        params.update({"keep": "first"} if kind == "dropDuplicates" else {"newColumn": "duplicate"})
+        step = bind_step(validate_step({"id": kind, "kind": kind, "params": params}), schema, lineage)
+        expected = (
+            loaded.iloc[[0, 1, 2, *([5] if len(values) == 6 else [])]]
+            if kind == "dropDuplicates"
+            else loaded.assign(duplicate=[True, False, True, True, True, False][: len(values)])
+        )
+        scope: dict[str, Any] = {}
+        exec(engine.compile_plan([step]), scope)
+        for result in (engine.apply_transform(loaded, step), scope["clean_data"](loaded)):
+            pd.testing.assert_frame_equal(result, expected)
+        pd.testing.assert_frame_equal(loaded, original)
+    output = tmp_path / "container-out.parquet"
+    loaded.to_parquet(output, index=False)
+    assert pq.read_table(output).to_pydict() == table.to_pydict()
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("family", ["bool8", "uuid"])
@@ -235,6 +397,7 @@ def test_parquet_file_session_preserves_nullable_integer_index_values(tmp_path: 
         "category",
         "timezone",
         "float-sign",
+        "integer-data",
     ],
 )
 def test_parquet_index_repair_preserves_native_metadata_and_other_columns(
@@ -264,6 +427,9 @@ def test_parquet_index_repair_preserves_native_metadata_and_other_columns(
         )
     elif case == "float-sign":
         source.index = pd.MultiIndex.from_arrays([wide, pd.Index([-0.0, 1.5, None, -2.5], name="float")])
+    elif case == "integer-data":
+        source["nested.child"] = pd.Series([2**63 - 1, None, 2**53 + 1, 0], index=wide, dtype=object)
+        source["nested"] = [{"child": "unrelated data"}] * 4
     source.attrs = {"purpose": "preserved metadata"}
     table = pa.Table.from_pandas(source)
     metadata = deepcopy(table.schema.pandas_metadata)
@@ -285,6 +451,11 @@ def test_parquet_index_repair_preserves_native_metadata_and_other_columns(
     pq.write_table(table, path)
     before = path.read_bytes()
     ordinary = pd.read_parquet(path)
+    if case == "integer-data":
+        field = table.schema.field("nested.child")
+        ordinary["nested.child"] = pd.Series(
+            table.column(field.name), dtype=pd.ArrowDtype(field.type), index=ordinary.index
+        )
     exact_index = table.to_pandas(
         types_mapper=lambda dtype: pd.ArrowDtype(dtype) if pa.types.is_integer(dtype) else None
     ).index
@@ -312,6 +483,8 @@ def test_parquet_index_repair_preserves_native_metadata_and_other_columns(
         and table.schema.get_field_index(name) >= 0
         and pa.types.is_integer(table.schema.field(name).type)
     ]
+    if case == "integer-data":
+        expected_fields.append("nested.child")
     assert projected == [expected_fields]
     assert streams and all(stream.closed for stream in streams)
     assert path.read_bytes() == before
@@ -380,6 +553,8 @@ def test_parquet_reader_retains_native_invalid_index_metadata_refusal(
     [
         ("integer-index", "after-main"),
         ("integer-index", "after-index"),
+        ("integer-data", "after-main"),
+        ("integer-data", "after-index"),
         ("bool8", "before-main"),
         ("bool8", "after-main"),
         ("uuid", "before-main"),
@@ -394,6 +569,16 @@ def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
     pq = pytest.importorskip("pyarrow.parquet")
 
     def payload(offset: int) -> bytes:
+        if source_type == "integer-data":
+            table = pa.table(
+                {
+                    "value": pa.array([2**53 + 1 + offset, None, 2**53 + 3 + offset], type=pa.int64()),
+                    "padding": ["A" * 65536] * 3,
+                }
+            )
+            output = io.BytesIO()
+            pq.write_table(table, output, compression=None, use_dictionary=False, write_statistics=False)
+            return output.getvalue()
         if source_type == "integer-index":
             index = pd.Index(pd.array([2**53 + 1 + offset, None, 2**53 + 3 + offset], dtype="UInt64"), name="index")
             frame = pd.DataFrame(
@@ -478,6 +663,8 @@ def test_parquet_reader_refuses_changes_between_reads_and_closes_descriptor(
             if source_type == "integer-index":
                 assert [row["rowLabel"] for row in rows] == [str(2**53 + 1), "null", str(2**53 + 3)]
                 expected_values = [11, 12, 13]
+            elif source_type == "integer-data":
+                expected_values = [str(2**53 + 1), None, str(2**53 + 3)]
             else:
                 assert result["metadata"]["rowAxis"]["kind"] == "positional"
                 assert [row["rowNumber"] for row in rows] == [0, 1, 2]

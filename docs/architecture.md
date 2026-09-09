@@ -334,9 +334,14 @@ Numeric dtypes and dedicated string dtypes bypass the temporal search scan. Ordi
 timestamp conversion and input precision stay with their existing owners.
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
-Parquet reads repair nullable integer index levels from their exact physical fields while retaining ordinary Pandas
-data-column decoding. The supplemental read uses the same open file and checks its fingerprint across the reads
-before publishing the repaired index. A changed source is refused; this guard does not persist beyond the read.
+Parquet reads repair nullable integer index levels and integer data that ordinary Pandas decoding would convert to
+floating storage. Object columns containing integer children in lists, structs or maps use native Arrow arrays;
+other data columns retain ordinary Pandas decoding. Data and index repair share one supplemental projection through
+the same open file. Its field names, physical types, row count and source fingerprint are checked before publication.
+A changed source is refused; this guard does not persist beyond the read.
+Profiles and duplicate comparisons use temporary exact Python values for these Arrow containers because native
+Arrow lacks their count and duplicate kernels. Live and generated comparisons share that conversion policy;
+stored arrays and export types remain unchanged. No comparison keys persist between requests.
 Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. A local schema copy
 repairs only their canonical unsupported Pandas dtype metadata; unrelated invalid metadata retains native refusal.
 The same descriptor and fingerprint guard covers their schema, data and any supplemental index reads.
