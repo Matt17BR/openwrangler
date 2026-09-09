@@ -465,7 +465,10 @@ Native R's `r/tests/kernel_agent.R` and `src/test/rKernelTransport.cross.test.ts
 generated execution, including the finite 309-digit endpoint. The existing
 `kernel:rows-numeric-datetime-and-by-example` phase checks fixed binary64 literal bits, integer capacity, and public
 Formula and By Example results through complete interpreted and compiled programs, retaining nulls, types and source
-values. The kernel's missing-power case compares the captured native vector, wire cell kinds and generated result.
+values. Formula integer-text cases also compare finite native result bits, accept exact extrema and neighboring
+representable integers, and refuse the inexact spellings admitted by Windows decimal formatting. Failed previews
+retain the committed page and revision. Missing values retain their typed null contract rather than a particular
+native NA payload. The kernel's missing-power case compares the captured native vector, wire cell kinds and generated result.
 `src/test/rKernelTransformBinding.unit.test.ts` and `src/test/rKernelMutationSchema.unit.test.ts` own exact text
 retention and type prediction.
 

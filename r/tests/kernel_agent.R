@@ -5570,6 +5570,18 @@ local({
 
 # Canonical integer text stays public text and binds only to an exact native scalar.
 formula_literal_session <- "f9980000-0000-4000-8000-000000000001"
+formula_max_integer_text <- paste0(
+  "179769313486231570814527423731704356798070567525844996598917476803157260780028",
+  "538760589558632766878171540458953514382464234321326889464182768467546703537516",
+  "986049910576551282076245490090389328944075868508455133942304583236903222948165",
+  "808559332123348274797826204144723168738177180919299881250404026184124858368"
+)
+formula_previous_max_integer_text <- paste0(
+  "179769313486231550856124328384506240234343437157459335924404872448581845754556",
+  "114388470639943126220321960804027157371570809852884964511743044087662767600909",
+  "594331927728237078876188760579532563768698654064825262115771015791463983014857",
+  "704008123419459386245141723703148097529108423358883457665451722744025579520"
+)
 formula_literal_cases <- list(
   list(value = "0", scalar = 0L),
   list(value = "2", scalar = 2L),
@@ -5579,7 +5591,15 @@ formula_literal_cases <- list(
   list(value = "2147483648", scalar = 2147483648),
   list(value = "1152921504606846976", scalar = 2^60),
   list(value = "-1152921504606846976", scalar = -2^60),
-  list(value = "1267650600228229401496703205376", scalar = 2^100),
+  list(value = "1267650600228229401496703205376", scalar = 2^100, compiled = TRUE),
+  list(value = "-1267650600228229401496703205376", scalar = -2^100, compiled = TRUE),
+  list(value = "1267650600228229260759214850048", scalar = 0x1.fffffffffffffp+99, compiled = TRUE),
+  list(value = "1267650600228229682971679916032", scalar = 0x1.0000000000001p+100, compiled = TRUE),
+  list(value = "9007199254740992", scalar = 0x1p+53, compiled = TRUE),
+  list(value = "1000000000000000000", scalar = 0x1.bc16d674ec8p+59, compiled = TRUE),
+  list(value = formula_max_integer_text, scalar = 0x1.fffffffffffffp+1023, compiled = TRUE),
+  list(value = paste0("-", formula_max_integer_text), scalar = -0x1.fffffffffffffp+1023, compiled = TRUE),
+  list(value = formula_previous_max_integer_text, scalar = 0x1.ffffffffffffep+1023, compiled = TRUE),
   list(value = "2", scalar = 2L, wide = TRUE),
   list(value = "1152921504606846976", scalar = 2^60, wide = TRUE),
   list(value = 2, scalar = 2L),
@@ -5616,6 +5636,13 @@ for (literal in formula_literal_cases) {
   }
   expected_frame <- source_environment$formula_literal_frame
   expected_frame$result <- expected
+  literal_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+  assert_identical(literal_live, expected_frame, "live R Formula changed native values or frame metadata")
+  if (is.double(expected) && !inherits(expected, "integer64")) {
+    present <- !is.na(expected)
+    assert_identical(writeBin(literal_live$result[present], raw(), size = 8L, endian = "little"),
+      writeBin(expected[present], raw(), size = 8L, endian = "little"), "live R Formula changed exact finite scalar bits")
+  }
   expected_page <- jsonlite::fromJSON(
     openwrangler_r_frame_contract$encode_page(
       openwrangler_r_frame_contract$capture_frame(expected_frame), row_limit = 3L, column_limit = 2L
@@ -5658,6 +5685,8 @@ for (literal in formula_literal_cases) {
       "-0", "+2", "02", "2\n", " 2", "2.5", "1e2", "Infinity",
       paste(rep("9", 309L), collapse = ""), paste(rep("1", 310L), collapse = ""),
       "9007199254740993", "1152921504606847000", "1267650600228229401496703205377",
+      "1267650600228229401522626226666", "-1267650600228229401522626226666",
+      paste0(substr(formula_max_integer_text, 1L, nchar(formula_max_integer_text) - 1L), "7"),
       TRUE, Inf, NaN, list(2)
     )) {
       rejected <- dispatch("previewStep", list(
@@ -5666,13 +5695,18 @@ for (literal in formula_literal_cases) {
       ))
       assert_identical(rejected$kind, "error", "R Formula accepted invalid or inexact integer text")
       assert_identical(rejected$code, "invalid_request", "R Formula integer text returned the wrong refusal")
-      if (is.character(invalid_literal) && invalid_literal %in% c("9007199254740993", "1152921504606847000", "1267650600228229401496703205377")) {
+      if (is.character(invalid_literal) && invalid_literal %in% c("9007199254740993", "1152921504606847000", "1267650600228229401496703205377",
+        "1267650600228229401522626226666", "-1267650600228229401522626226666",
+        paste0(substr(formula_max_integer_text, 1L, nchar(formula_max_integer_text) - 1L), "7"))) {
         assert_identical(
           grepl("represented exactly", rejected$message, fixed = TRUE), TRUE,
           "R Formula omitted its precision diagnostic"
         )
       }
     }
+    literal_retained <- dispatch("getPage", list(sessionId = formula_literal_session, page = page_window()))
+    assert_identical(literal_retained$kind, "page", "R Formula lost the committed page after rejecting integer text")
+    assert_identical(literal_retained$page, literal_applied$page, "rejecting integer text changed the committed result")
   }
   literal_inspection <- inspect_step(formula_literal_session, 2L, "formula-literal", page_window())
   assert_identical(literal_inspection$kind, "stepInspection", "the retained R Formula literal did not replay")

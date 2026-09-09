@@ -30,6 +30,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R Formula checks large integer literals exactly on Windows, preventing silent rounding of admitted input.
 - Native R numeric, datetime and duration filters preserve selected values when platform decimal parsers differ.
   Scalar numeric Fill also retains the same value in live and generated execution.
 - Generated native R Formula and By Example preserve finite numeric literals when platform decimal parsers differ.

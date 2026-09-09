@@ -260,7 +260,10 @@ precision are rejected. A keyed `data.table` column must be cloned before it can
 same checks and conversion rules.
 
 Formula retains canonical integer strings in public steps and decodes only its bound execution operand. A string
-must fit the shared finite, 309-digit limit and round-trip exactly through an ordinary R numeric scalar. Values in
+must fit the shared finite, 309-digit limit and equal the integer represented by an ordinary R numeric scalar.
+Both decoding and binding use the shared finite-number parser. The binding check derives the exact integer from
+binary64 words using at most 35 base-10^9 limbs; it does not use floating-point decimal formatting as an exactness
+oracle. This scalar-only check adds no generated helper. Values in
 R's non-missing integer range use integer storage; other exactly representable values use double storage. A literal
 such as `9007199254740993` is refused before mutation. This does not add integer64 scalar arithmetic: existing
 integer64-column and double-scalar promotion remains unchanged. Live and generated Formula use the same bound value.

@@ -313,6 +313,9 @@ bound value in live, generated and compiled execution. Datetime and duration sel
 native values, preserving adjacent instants and durations in generated and compiled filtering. Manual duration
 input uses seconds; typed selections retain the column's units. Invalid previews preserve the confirmed result.
 
+Native R Formula accepts exactly representable large integer literals and refuses inexact neighbors.
+Live and generated execution use the same admitted scalar; ordinary R arithmetic limits still apply.
+
 Native R Group By medians, median Fill and midpoint interpolation use R's native mean for unequal finite pairs
 in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.
 Interpolation at other weights still has a [known tiny-value rounding limit](https://github.com/Matt17BR/openwrangler/issues/1064).
