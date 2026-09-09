@@ -3155,8 +3155,11 @@ generated_dst_error <- tryCatch(
   error = function(error) error
 )
 if (
-  is.null(generated_dst_error) ||
-    !grepl("invalid local datetime in Europe/Berlin", conditionMessage(generated_dst_error), fixed = TRUE)
+  !inherits(generated_dst_error, "error") ||
+    !conditionMessage(generated_dst_error) %in% c(
+      "Open Wrangler expected a valid ISO datetime",
+      "Open Wrangler received an invalid local datetime in Europe/Berlin"
+    )
 ) {
   stop(sprintf(
     "generated R Fill Missing Values reused a stale timezone or normalized a DST gap; actual: %s",
