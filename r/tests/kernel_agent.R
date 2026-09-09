@@ -1823,6 +1823,18 @@ categorical_empty_step <- function(kind, id, drop_original) {
     )
   }
 }
+for (duration_values in list(numeric(), c(NA_real_, NA_real_))) {
+  for (drop_original in c(FALSE, TRUE)) {
+    index <- length(categorical_retained_empty_cases) + 1L
+    categorical_retained_empty_cases[[index]] <- list(
+      label = sprintf("one-hot duration rows=%d dropOriginal=%s", length(duration_values), drop_original),
+      sessionId = sprintf("f1f1f1f1-f1f1-41f1-81f1-%012d", index),
+      kind = "oneHotEncode",
+      dropOriginal = drop_original,
+      source = data.frame(input = as.difftime(duration_values, units = "hours"), keep = seq_along(duration_values))
+    )
+  }
+}
 for (case_index in seq_along(categorical_retained_empty_cases)) {
   case <- categorical_retained_empty_cases[[case_index]]
   variable_name <- sprintf("categorical_retained_empty_%d", case_index)
@@ -1844,6 +1856,9 @@ for (case_index in seq_along(categorical_retained_empty_cases)) {
   )
   assert_identical(previewed$kind, "error", sprintf("%s accepted zero generated columns", case$label))
   assert_identical(previewed$code, "invalid_request", sprintf("%s returned the wrong error", case$label))
+  recovered <- dispatch("getPage", list(sessionId = case$sessionId, page = page_window()))
+  assert_identical(recovered$kind, "page", sprintf("%s could not read the confirmed page", case$label))
+  assert_identical(recovered$page, opened$page, sprintf("%s changed the confirmed page", case$label))
   assert_identical(
     serialize(source_environment[[variable_name]], NULL, version = 3L),
     source_bytes,
@@ -1863,10 +1878,24 @@ categorical_generated_empty_cases <- list(
   list(kind = "multiLabelBinarize", dropOriginal = FALSE, sessionId = "e3e3e3e3-e3e3-43e3-83e3-e3e3e3e3e3e3"),
   list(kind = "multiLabelBinarize", dropOriginal = TRUE, sessionId = "e4e4e4e4-e4e4-44e4-84e4-e4e4e4e4e4e4")
 )
+for (drop_original in c(FALSE, TRUE)) {
+  index <- length(categorical_generated_empty_cases) + 1L
+  categorical_generated_empty_cases[[index]] <- list(
+    kind = "oneHotEncode",
+    dropOriginal = drop_original,
+    sessionId = sprintf("f2f2f2f2-f2f2-42f2-82f2-%012d", index),
+    source = data.frame(input = as.difftime(c(1.5, NA_real_), units = "hours"), keep = 1:2),
+    changed = list(
+      data.frame(input = as.difftime(c(NA_real_, NA_real_), units = "hours"), keep = 1:2),
+      data.frame(input = as.difftime(numeric(), units = "hours"), keep = integer())
+    )
+  )
+}
 for (case_index in seq_along(categorical_generated_empty_cases)) {
   case <- categorical_generated_empty_cases[[case_index]]
   variable_name <- sprintf("categorical_generated_empty_%d", case_index)
   original <- data.frame(input = c("a", "b"), keep = 1:2, check.names = FALSE)
+  if (!is.null(case$source)) original <- case$source
   source_environment[[variable_name]] <- original
   opened <- dispatch(
     "openSession",
@@ -1888,12 +1917,15 @@ for (case_index in seq_along(categorical_generated_empty_cases)) {
     list(sessionId = case$sessionId, revision = previewed$revision, page = page_window())
   )
   assert_identical(applied$kind, "planUpdated", "a generated-empty categorical source did not compile")
-  for (changed in list(
+  changed_sources <- list(
     data.frame(input = c(NA_character_, ""), keep = 1:2, check.names = FALSE),
     data.frame(input = character(), keep = integer(), check.names = FALSE)
-  )) {
+  )
+  if (!is.null(case$changed)) changed_sources <- case$changed
+  for (changed in changed_sources) {
     changed_bytes <- serialize(changed, NULL, version = 3L)
     evaluation_environment <- new.env(parent = baseenv())
+    evaluation_environment$open_wrangler_result <- "prior result"
     assign(variable_name, changed, envir = evaluation_environment)
     generated_error <- tryCatch(
       {
@@ -1913,6 +1945,7 @@ for (case_index in seq_along(categorical_generated_empty_cases)) {
       changed_bytes,
       "failed generated categorical code mutated its source"
     )
+    assert_identical(evaluation_environment$open_wrangler_result, "prior result", "failed categorical code replaced prior output")
   }
   assert_identical(
     dispatch("closeSession", list(sessionId = case$sessionId))$kind,
@@ -1921,6 +1954,41 @@ for (case_index in seq_along(categorical_generated_empty_cases)) {
   )
   rm(list = variable_name, envir = source_environment)
 }
+
+duration_mixed_id <- "f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f3f3"
+source_environment$duration_mixed <- data.frame(
+  duration = as.difftime(c(NA_real_, NA_real_), units = "hours"), tags = c("a", NA_character_)
+)
+duration_mixed_bytes <- serialize(source_environment$duration_mixed, NULL, version = 3L)
+duration_mixed_open <- dispatch("openSession", list(sessionId = duration_mixed_id, variableName = "duration_mixed", page = page_window()))
+duration_mixed_preview <- dispatch("previewStep", list(
+  sessionId = duration_mixed_id,
+  revision = 0L,
+  step = list(id = "duration-mixed", kind = "oneHotEncode", params = list(
+    columns = I(list(list(id = "r:c:0", name = "duration"), list(id = "r:c:1", name = "tags"))),
+    dropOriginal = FALSE
+  )),
+  page = page_window()
+))
+assert_identical(duration_mixed_preview$kind, "stepPreview", "an empty duration domain prevented a valid category")
+assert_identical(vapply(duration_mixed_preview$page$schema, `[[`, character(1L), "name"), c("duration", "tags", "tags_a"), "duration encoding added a phantom category")
+assert_identical(duration_mixed_preview$page$page$columnIds, list("r:c:0", "r:c:1", "c:step:duration-mixed:0"), "duration encoding changed column identities")
+assert_identical(vapply(duration_mixed_preview$page$page$rows, function(row) row$values[[3L]]$raw, character(1L)), c("1", "0"), "duration encoding changed visible indicator values")
+duration_mixed_apply <- dispatch("applyDraft", list(sessionId = duration_mixed_id, revision = 1L, page = page_window()))
+assert_identical(duration_mixed_apply$page, duration_mixed_preview$page, "applying mixed duration encoding changed its page")
+duration_mixed_scope <- new.env(parent = baseenv())
+duration_mixed_scope$duration_mixed <- source_environment$duration_mixed
+eval(parse(text = duration_mixed_apply$code), envir = duration_mixed_scope)
+duration_mixed_expected <- source_environment$duration_mixed
+duration_mixed_expected$tags_a <- c(1L, 0L)
+assert_identical(duration_mixed_scope$open_wrangler_result, duration_mixed_expected, "generated mixed duration output changed native values or types")
+assert_identical(serialize(duration_mixed_scope$duration_mixed, NULL, version = 3L), duration_mixed_bytes, "generated duration encoding mutated its source")
+duration_mixed_undo <- dispatch("undoStep", list(sessionId = duration_mixed_id, revision = 2L, page = page_window()))
+assert_identical(duration_mixed_undo$page, duration_mixed_open$page, "duration encoding Undo changed its original page")
+assert_identical(duration_mixed_undo$code, "", "duration encoding Undo retained a plan")
+assert_identical(serialize(source_environment$duration_mixed, NULL, version = 3L), duration_mixed_bytes, "public duration encoding mutated its source")
+assert_identical(dispatch("closeSession", list(sessionId = duration_mixed_id))$kind, "closed", "mixed duration session did not close")
+rm("duration_mixed", envir = source_environment)
 
 cleanup_preview <- dispatch(
   "previewStep",

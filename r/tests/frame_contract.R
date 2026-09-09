@@ -8629,6 +8629,20 @@ for (source in zero_row_flavors) {
   }
 }
 
+for (duration_values in list(numeric(), c(NA_real_, NA_real_))) {
+  source <- data.frame(duration = as.difftime(duration_values, units = "hours"), keep = seq_along(duration_values))
+  source_bytes <- serialize(source, NULL, version = 3L)
+  for (drop_original in c(FALSE, TRUE)) {
+    assert_error(
+      openwrangler_r_frame_contract$one_hot_encode_columns_at(
+        source, 1L, "duration", drop_original = drop_original
+      ),
+      "must produce at least one indicator column"
+    )
+    assert_identical(serialize(source, NULL, version = 3L), source_bytes, "empty duration encoding mutated its source")
+  }
+}
+
 selected_all_empty_flavors <- list(
   data.frame(group = factor(character(), levels = c("unused", ""))),
   tibble::tibble(group = factor(character(), levels = c("unused", ""))),
