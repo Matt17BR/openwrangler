@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - DuckDB file imports preserve the selected file when its path contains wildcard characters, and refuse native path forms that could select another file.
 - Unfinished filters retain unavailable column targets until a replacement is chosen, and reset when a different session opens.
+- Removing operation rows or clearing unavailable selections keeps focus in the dialog so Escape continues to work.
 - Invalid Python runtime timeout settings use their defaults instead of causing immediate timeouts.
 - Native R sessions honor configured opening and request deadlines while preserving the separate export timeout.
 - Pandas Dataset statistics retain missing-value counts when nested or set-valued columns prevent duplicate counting, and show the duplicate count as unavailable.
