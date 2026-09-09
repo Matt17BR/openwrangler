@@ -2162,26 +2162,83 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
 
 
 @pytest.mark.parametrize(
-    "left_dtype,left_values,right_dtype,right_values,output_dtype,expected",
+    "operator,left_dtype,left_values,right_dtype,right_values,output_dtype,expected",
     [
-        ("uint64[pyarrow]", [0, 2**63, None], None, "-1", "int64[pyarrow]", [0, -(2**63), None]),
-        ("int64[pyarrow]", [-(2**63), -1, None], None, "-1", "uint64[pyarrow]", [2**63, 1, None]),
-        ("int64[pyarrow]", [2**63 - 1, 0, None], None, "2", "uint64[pyarrow]", [2**64 - 2, 0, None]),
-        ("int8[pyarrow]", [-100, 3, None], "int8[pyarrow]", [-2, 2, None], "int64[pyarrow]", [200, 6, None]),
-        ("uint64[pyarrow]", [0, 2**64 - 1, None], "int16", [-1, 1, -2], "uint64[pyarrow]", [0, 2**64 - 1, None]),
-        ("int64", [-1, 1, 0], "uint64[pyarrow]", [0, 2**64 - 1, None], "uint64[pyarrow]", [0, 2**64 - 1, None]),
-        ("UInt64", [0, 2**63, None], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
-        ("uint64", [0, 2**63, 0], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
-        ("uint64[pyarrow]", [0, 2**64 - 1, None], "Int8", [-2, None, -1], "int64[pyarrow]", [0, None, None]),
-        ("uint64[pyarrow]", [3, 2, None], "uint64[pyarrow]", [2, 3, None], "uint64[pyarrow]", [6, 6, None]),
-        ("uint64[pyarrow]", [], None, "-1", "int64[pyarrow]", []),
-        ("uint64[pyarrow]", [None, None], None, "-1", "int64[pyarrow]", [None, None]),
-        ("uint64[pyarrow]", [1, 2**64 - 1], "int64[pyarrow]", [-1, 1], None, None),
-        ("int64[pyarrow]", [0, -(2**63)], None, "2", None, None),
+        ("multiply", *case)
+        for case in [
+            ("uint64[pyarrow]", [0, 2**63, None], None, "-1", "int64[pyarrow]", [0, -(2**63), None]),
+            ("int64[pyarrow]", [-(2**63), -1, None], None, "-1", "uint64[pyarrow]", [2**63, 1, None]),
+            ("int64[pyarrow]", [2**63 - 1, 0, None], None, "2", "uint64[pyarrow]", [2**64 - 2, 0, None]),
+            ("int8[pyarrow]", [-100, 3, None], "int8[pyarrow]", [-2, 2, None], "int64[pyarrow]", [200, 6, None]),
+            ("uint64[pyarrow]", [0, 2**64 - 1, None], "int16", [-1, 1, -2], "uint64[pyarrow]", [0, 2**64 - 1, None]),
+            ("int64", [-1, 1, 0], "uint64[pyarrow]", [0, 2**64 - 1, None], "uint64[pyarrow]", [0, 2**64 - 1, None]),
+            ("UInt64", [0, 2**63, None], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
+            ("uint64", [0, 2**63, 0], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
+            ("uint64[pyarrow]", [0, 2**64 - 1, None], "Int8", [-2, None, -1], "int64[pyarrow]", [0, None, None]),
+            ("uint64[pyarrow]", [3, 2, None], "uint64[pyarrow]", [2, 3, None], "uint64[pyarrow]", [6, 6, None]),
+            ("uint64[pyarrow]", [], None, "-1", "int64[pyarrow]", []),
+            ("uint64[pyarrow]", [None, None], None, "-1", "int64[pyarrow]", [None, None]),
+            ("uint64[pyarrow]", [1, 2**64 - 1], "int64[pyarrow]", [-1, 1], None, None),
+            ("int64[pyarrow]", [0, -(2**63)], None, "2", None, None),
+        ]
+    ]
+    + [
+        (
+            "subtract",
+            "int64[pyarrow]",
+            [-1, 1, None],
+            "uint64[pyarrow]",
+            [0, 2**63, 2**64 - 1],
+            "int64[pyarrow]",
+            [-1, -(2**63 - 1), None],
+        ),
+        ("subtract", "uint64[pyarrow]", [0, 2**63, None], None, "1", "int64[pyarrow]", [-1, 2**63 - 1, None]),
+        (
+            "subtract",
+            "int64[pyarrow]",
+            [2**63 - 1, 1, None],
+            "uint64[pyarrow]",
+            [2**63, 0, 2**64 - 1],
+            "int64[pyarrow]",
+            [-1, 1, None],
+        ),
+        (
+            "subtract",
+            "int64",
+            [-1, 1, 0],
+            "uint64[pyarrow]",
+            [0, 2**63, None],
+            "int64[pyarrow]",
+            [-1, -(2**63 - 1), None],
+        ),
+        (
+            "subtract",
+            "Int64",
+            [2**63 - 1, 0, None],
+            "uint64[pyarrow]",
+            [2**63, 1, 2**64 - 1],
+            "int64[pyarrow]",
+            [-1, -1, None],
+        ),
+        (
+            "subtract",
+            "uint64[pyarrow]",
+            [0, 2**63, None],
+            "Int64",
+            [1, 1, None],
+            "int64[pyarrow]",
+            [-1, 2**63 - 1, None],
+        ),
+        ("subtract", "int64[pyarrow]", [3, 7, None], "uint64[pyarrow]", [0, 3, None], "int64[pyarrow]", [3, 4, None]),
+        ("subtract", "uint64[pyarrow]", [2**63, 2, None], None, "1", "uint64[pyarrow]", [2**63 - 1, 1, None]),
+        ("subtract", "uint64[pyarrow]", [0, None], None, str(-(2**64 - 1)), "uint64[pyarrow]", [2**64 - 1, None]),
+        ("subtract", "uint64[pyarrow]", [2**64 - 1, 1], "int64[pyarrow]", [-1, 1], None, None),
+        ("subtract", "uint64[pyarrow]", [2**64 - 1, 0], "uint64[pyarrow]", [0, 1], None, None),
+        ("subtract", "int64[pyarrow]", [0, None], "uint64[pyarrow]", [2**64 - 1, None], None, None),
     ],
 )
-def test_pandas_arrow_integer_products_keep_exact_native_capacity(
-    left_dtype, left_values, right_dtype, right_values, output_dtype, expected
+def test_pandas_arrow_integer_results_keep_exact_native_capacity(
+    operator, left_dtype, left_values, right_dtype, right_values, output_dtype, expected
 ) -> None:
     import numpy as np
 
@@ -2204,7 +2261,7 @@ def test_pandas_arrow_integer_products_keep_exact_native_capacity(
         step(
             "formula",
             leftColumn=lineage[0],
-            operator="multiply",
+            operator=operator,
             newColumn="result",
             **({"rightColumn": lineage[1]} if right_dtype is not None else {"value": right_values}),
         ),

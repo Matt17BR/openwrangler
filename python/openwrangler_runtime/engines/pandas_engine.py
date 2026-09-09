@@ -5281,6 +5281,30 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                     return False
             return True
 
+        if (
+            operator == "subtract"
+            and is_integer_column(left, signed_only=False)
+            and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
+        ):
+            import pyarrow.compute as pc
+
+            decimal = pa.decimal128(20, 0)
+            first = pc.cast(pa.array(left.array), decimal)
+            second = (
+                pc.cast(pa.array(right.array), decimal) if isinstance(right, pd.Series) else pa.scalar(right, decimal)
+            )
+            result = pc.call_function("subtract_checked", [first, second])
+            try:
+                try:
+                    result = pc.cast(result, pa.uint64())
+                except pa.ArrowInvalid:
+                    result = pc.cast(result, pa.int64())
+            except pa.ArrowInvalid:
+                # Preserve the original repair path and its refusal.
+                del first, second, result
+            else:
+                return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+
         if operator in {"add", "subtract", "multiply", "power"}:
             if left_type == pa.uint64() and type(right) is int:
                 if 0 <= right < 2**64:
@@ -5550,6 +5574,32 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "or dtype.itemsize > 8:",
         "                    return False",
         "            return True",
+        "",
+        "        if (",
+        '            operator == "subtract"',
+        "            and is_integer_column(left, signed_only=False)",
+        "            and (is_integer_column(right, signed_only=False) "
+        "or type(right) is int and -(2**63) <= right < 2**64)",
+        "        ):",
+        "            import pyarrow.compute as pc",
+        "",
+        "            decimal = pa.decimal128(20, 0)",
+        "            first = pc.cast(pa.array(left.array), decimal)",
+        "            second = (",
+        "                pc.cast(pa.array(right.array), decimal) "
+        "if isinstance(right, pd.Series) else pa.scalar(right, decimal)",
+        "            )",
+        '            result = pc.call_function("subtract_checked", [first, second])',
+        "            try:",
+        "                try:",
+        "                    result = pc.cast(result, pa.uint64())",
+        "                except pa.ArrowInvalid:",
+        "                    result = pc.cast(result, pa.int64())",
+        "            except pa.ArrowInvalid:",
+        "                # Preserve the original repair path and its refusal.",
+        "                del first, second, result",
+        "            else:",
+        "                return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
         "",
         '        if operator in {"add", "subtract", "multiply", "power"}:',
         "            if left_type == pa.uint64() and type(right) is int:",

@@ -414,15 +414,22 @@ Missing-power identities, noninteger Sparse fills and Boolean-only operations re
 Explicit floating-point and Decimal arithmetic, division, negative or fractional powers, modulo and By Example
 keep their existing paths. Live Formula and generated code share the same validation.
 
-Arrow-backed Formula preserves successful native results and types. After eligible coercion failures,
-UInt64 add, subtract, multiply and power may use exact UInt64 literals or convert nonnegative signed companion
-columns in either column order. Signed companions must be 8–64-bit native NumPy, built-in Pandas nullable or Arrow
-integers; Sparse and arbitrary extension types are excluded from repair.
+Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8–64-bit native NumPy,
+built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
 
-UInt64-left add and subtract also repair negative integer literals of magnitude at most UInt64 maximum and signed
-columns of any sign. Addition allows either column order. Repaired results must fit UInt64; nulls remain null, and
-intermediates cannot overflow when the requested result fits. This includes signed 64-bit minimum. Mixed-sign
-columns require two checked operations; other repairs require one.
+After native subtraction fails, eligible integer operands use an exact Decimal128 intermediate. Integer literals
+on this path range from Int64 minimum to UInt64 maximum. The result returns as UInt64 if it fits, otherwise Int64.
+If neither type holds the complete result, temporary buffers are released and untouched operands continue through
+the existing repair path so its refusal remains authoritative. The attempt allocates temporary Decimal buffers even
+for some previously successful UInt64 repairs; successful initial native operations need no added conversion.
+
+Remaining UInt64 add, subtract, multiply and power repairs may use exact UInt64 literals or convert nonnegative
+signed companion columns in either column order.
+
+The remaining UInt64-left add and subtract repairs accept negative integer literals of magnitude at most UInt64
+maximum and signed columns of any sign. Addition allows either column order. These results must fit UInt64; nulls
+remain null, and intermediates cannot overflow when the requested result fits. Signed 64-bit minimum remains
+supported. Mixed-sign columns require two checked operations; other repairs require one.
 
 After existing native and eligible repairs fail, multiplication of fixed-width integer operands up to 64 bits may use
 an exact native Decimal256 intermediate when at least one column uses Arrow. The result returns as Int64 if it fits,
@@ -433,8 +440,7 @@ remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
 precision and scale. Native arithmetic determines the result type. Live and generated Formula apply the same policy;
-By Example remains unchanged. Reversed negative-column subtraction, negative power and widest or negative-scale
-Decimal capacity gaps remain tracked in
+By Example remains unchanged. Negative power and widest or negative-scale Decimal capacity gaps remain tracked in
 [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and

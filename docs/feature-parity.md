@@ -173,7 +173,11 @@ when every repaired result fits UInt64. Addition accepts these columns in either
 Arrow integer multiplication also accepts previously refused products that fit one signed or unsigned 64-bit output
 column, including signed-minimum negation and either operand order. Existing native successes retain their types;
 newly repaired results use Int64 when possible, otherwise UInt64. Unrepresentable results are refused.
-Reversed negative-column subtraction, negative power and widest or negative-scale Decimal capacity gaps remain
+Arrow integer subtraction accepts previously refused differences that fit one UInt64 or Int64 output column,
+including negative results and reversed signed/unsigned operands. Successful native results retain their types;
+repairs prefer UInt64, then Int64. This additional repair accepts integer literals from Int64 minimum to UInt64
+maximum; wider negative literals retain the existing UInt64 path and its capacity limits.
+Negative power and widest or negative-scale Decimal capacity gaps remain
 tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.

@@ -1005,6 +1005,7 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "uint64-negative-add",
         "uint64-negative-subtract",
         "uint64-negative-multiply",
+        "uint64-signed-subtract",
         "uint64-negative-column-add",
         "uint64-negative-column-subtract",
         "uint64-mixed-column-add",
@@ -1026,13 +1027,16 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
     unsigned = family.startswith("uint64")
+    signed_subtract = family == "uint64-signed-subtract"
     negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract", "uint64-negative-multiply"}
     negative_column = family in {"uint64-negative-column-add", "uint64-negative-column-subtract"}
     signed_left = family.startswith("uint64-reversed-column-")
     mixed_column = family in {"uint64-mixed-column-add", "uint64-mixed-column-subtract"} or signed_left
     column_operand = negative_column or mixed_column
     unsigned_values = [3, 2**64 - 1, None]
-    if family == "uint64-negative-add":
+    if signed_subtract:
+        unsigned_values = [0, 2**63, None]
+    elif family == "uint64-negative-add":
         unsigned_values = [2**64 - 1, 1, None]
     elif family == "uint64-negative-subtract":
         unsigned_values = [3, 2**64 - 2, None]
@@ -1075,7 +1079,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             "params": {
                 "leftColumn": {"id": columns[0]["id"], "name": columns[0]["name"]},
                 "operator": "subtract" if unsigned else ("multiply" if family == "decimal-multiply" else "divide"),
-                "value": "2" if unsigned else (2 if family == "decimal-multiply" else 3),
+                "value": "1" if signed_subtract else "2" if unsigned else (2 if family == "decimal-multiply" else 3),
                 "newColumn": "result",
             },
         }
@@ -1092,7 +1096,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                     operation["params"]["leftColumn"],
                 )
         unsigned_expected = [1, 2**64 - 3, None]
-        if family == "uint64-negative-add":
+        if signed_subtract:
+            unsigned_expected = [-1, 2**63 - 1, None]
+        elif family == "uint64-negative-add":
             unsigned_expected = [2**64 - 2, 0, None]
         elif family == "uint64-negative-subtract":
             unsigned_expected = [4, 2**64 - 1, None]
@@ -1114,7 +1120,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             ),
             index=frame.index,
             name="result",
-            dtype=("int64[pyarrow]" if family == "uint64-negative-multiply" else "uint64[pyarrow]")
+            dtype=("int64[pyarrow]" if signed_subtract or family == "uint64-negative-multiply" else "uint64[pyarrow]")
             if unsigned
             else pd.ArrowDtype(pa.decimal256(50, 3 if family == "decimal-multiply" else 23)),
         )
@@ -1152,7 +1158,10 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 **({"value": 2} if unsigned else {"rightColumn": {"id": columns[1]["id"], "name": columns[1]["name"]}}),
             },
         }
-        if negative_literal:
+        if signed_subtract:
+            invalid["params"]["operator"] = "subtract"
+            invalid["params"]["value"] = str(-(2**63))
+        elif negative_literal:
             invalid["params"]["operator"] = operation["params"]["operator"]
             invalid["params"]["value"] = "-2"
         elif column_operand:
@@ -1207,7 +1216,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         pd.testing.assert_index_equal(reopened.index, frame.index)
         pd.testing.assert_frame_equal(frame, original)
         assert frame.attrs == original.attrs
-        if family == "uint64-negative-multiply":
+        if signed_subtract or family == "uint64-negative-multiply":
             undone = manager.undo_step(session_id, session.revision, 0, 1)
             assert undone["action"] == "undo"
             assert session.plan == []
