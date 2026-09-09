@@ -6,6 +6,7 @@
     "moduleResolution": "Bundler",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "allowSyntheticDefaultImports": true,
+    "skipLibCheck": false,
     "types": ["node", "react", "react-dom", "vitest/globals"],
     "noEmit": true
   },

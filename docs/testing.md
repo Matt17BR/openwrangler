@@ -58,7 +58,6 @@ npm run format:check
 npm run lint
 npm run lint:python
 npm run typecheck
-npm run typecheck:dependencies
 npm run protocol:check
 npm run reference:check
 npm run docs:check
@@ -66,6 +65,9 @@ npm run check:remote-jupyter-lock
 npm run check:r-dependency-lock
 npm run license:check
 ```
+
+`npm run typecheck` checks the extension with Node module resolution, then checks the webview, shared and test program
+including dependency declarations. Local and CI checks use the same strict webview configuration.
 
 `npm run check` runs those static checks sequentially, and `npm test` runs the three source suites sequentially.
 `npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
