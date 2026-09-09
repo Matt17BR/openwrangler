@@ -168,8 +168,11 @@ Decimal128 operations to Decimal256, retaining native precision and scale. UInt6
 negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. A UInt64 left column
 also accepts signed right columns, including mixed positive and negative adjustments and signed 64-bit minimum,
 when every repaired result fits UInt64. Addition accepts these columns in either order. Missing operands remain missing.
-Existing Arrow-native successes remain unchanged. Reversed negative-column subtraction, negative multiply/power and widest
-or negative-scale Decimal capacity gaps remain tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
+Arrow integer multiplication also accepts previously refused products that fit one signed or unsigned 64-bit output
+column, including signed-minimum negation and either operand order. Existing native successes retain their types;
+newly repaired results use Int64 when possible, otherwise UInt64. Unrepresentable results are refused.
+Reversed negative-column subtraction, negative power and widest or negative-scale Decimal capacity gaps remain
+tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans

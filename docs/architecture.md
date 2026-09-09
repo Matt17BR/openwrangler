@@ -407,10 +407,17 @@ columns of any sign. Addition allows either column order. Repaired results must 
 intermediates cannot overflow when the requested result fits. This includes signed 64-bit minimum. Mixed-sign
 columns require two checked operations; other repairs require one.
 
+After existing native and eligible repairs fail, multiplication of fixed-width integer operands up to 64 bits may use
+an exact native Decimal256 intermediate when at least one column uses Arrow. The result returns as Int64 if it fits,
+or UInt64 otherwise. This policy applies only to newly admitted results; successful native types stay unchanged.
+True overflow and columns needing both negative results and values above Int64 maximum retain the original refusal.
+Only selected operands gain temporary storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands
+remain on their existing paths.
+
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
 precision and scale. Native arithmetic determines the result type. Live and generated Formula apply the same policy;
-By Example remains unchanged. Reversed negative-column subtraction, negative multiply/power and widest or
-negative-scale Decimal capacity gaps remain tracked in
+By Example remains unchanged. Reversed negative-column subtraction, negative power and widest or negative-scale
+Decimal capacity gaps remain tracked in
 [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
