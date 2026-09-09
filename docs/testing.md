@@ -224,8 +224,10 @@ The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans
 that generated code includes each required helper family once and omits unused families.
 Its mixed scalar Fill case compares raw native doubles with complete generated and compiled results. The frame
 interactive and Fill owners cover accepted decimal spellings, signed zero, subnormals, finite extrema and invalid
-input. The existing rows/numeric kernel owner checks native floating picker selections and predicates through
-Preview, generated execution and draft discard, preserving source values and row identities.
+input. The existing rows/numeric kernel owner checks native floating, datetime and duration picker selections and
+predicates through Preview, generated execution and draft discard, preserving source values and row identities.
+Temporal cases include compiled programs, adjacent values, timezone metadata, missing values, manual inputs,
+empty rebound frames and refusal of stale duration units. The existing datetime Fill case also executes compiled code.
 Mixed literal and regex Find and Replace steps check independent replacement state, one shared generated regex
 function, complete live/generated results and source isolation despite conflicting caller functions.
 Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,

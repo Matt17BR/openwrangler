@@ -42,10 +42,12 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Read-only filters and sorts use the captured stable column ID and name. They remain stable with duplicate names,
   keep source row IDs, and never become cleaning steps. Filters support compound AND/OR logic, typed predicates, and
   selected values; sorts choose direction and missing-value placement independently for each key.
-- Finite numeric filter operands and typed temporal payloads retain their native value while binding. Floating
-  comparisons and picker tokens use native source values. Accepted decimal text is normalized for the existing
-  jsonlite decoder without changing its grammar or finite-range checks. Generated floating filters encode the
-  bound numeric values directly; native floating selections still refuse integer-cell tokens.
+- Finite numeric filter operands and typed temporal payloads retain their native value while binding. Floating,
+  datetime and duration comparisons and picker tokens use native source values. Datetime keys retain epoch seconds;
+  duration keys retain the column's units. Accepted decimal text is normalized for the existing jsonlite decoder
+  without changing its grammar or finite-range checks. Generated filters encode those bound numeric values directly.
+  Manual datetime input retains its timezone rules, and manual duration input converts seconds to the column's units.
+  Native floating selections still refuse integer-cell tokens.
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
   TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
   a complete oversized page or JSON string.

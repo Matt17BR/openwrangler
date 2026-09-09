@@ -3217,6 +3217,11 @@ assert_identical(
   "generated scalar datetime fill lost its parser dependency or diverged from live"
 )
 assert_identical(fill_datetime_environment$fill_frame, fill_source_before, "generated datetime fill mutated its source")
+fill_datetime_compiled <- compiler::cmpfun(eval(parse(text = paste("function(fill_frame) {", fill_datetime_preview$code,
+  "open_wrangler_result\n}", sep = "\n")), envir = new.env(parent = baseenv())))
+assert_identical(fill_datetime_compiled(fill_source_before), get("snapshot", envir = latest_full_capture, inherits = FALSE),
+  "compiled datetime Fill changed the native parsed instant or frame metadata")
+assert_identical(fill_datetime_environment$fill_frame, fill_source_before, "compiled datetime Fill mutated its source")
 generated_dst_source <- fill_source_before
 attr(generated_dst_source$instant, "tzone") <- "Europe/Berlin"
 assign("fill_frame", generated_dst_source, envir = .GlobalEnv)

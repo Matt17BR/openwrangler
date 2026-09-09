@@ -648,12 +648,14 @@ process.
 
 ### Native R
 
-Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating
-columns compare native values directly, and picker selections use the source value instead of reparsing display text.
+Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating,
+datetime and duration columns compare native values directly. Picker selections use the source value instead of
+reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
 The shared finite-number parser normalizes accepted decimal spellings for the existing jsonlite decoder; it keeps
 native numeric inputs, signed zero and the existing grammar and range checks. Public scalar Fill still accepts
 replacement text, binds double replacements once and emits that bound value through the existing numeric-literal
-owner. Generated floating Filter Rows uses that owner too. Explicit Infinity tokens retain their separate rules,
+owner. Generated floating, datetime and duration Filter Rows uses that owner too. Manual datetime input retains its
+timezone rules, and manual duration input still converts seconds to the column's units. Explicit Infinity tokens retain their separate rules,
 and native floating columns refuse integer-cell selection tokens.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
