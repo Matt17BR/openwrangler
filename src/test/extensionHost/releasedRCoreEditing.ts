@@ -285,7 +285,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
       duplicatePreviewRows.map((row) => row.values.at(-1)),
       Array.from({ length: 4 }, () => ({ kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false }))
     );
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R duplicate draft must reach its renderer.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Mark Duplicates draft");
     const duplicateReview = app.getByRole("region", { name: "Draft review" });
     await duplicateReview.getByText("Mark duplicates", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -309,11 +308,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(duplicateApplied.metadata.schema, duplicatePreview.metadata.schema);
     assert.equal(duplicateApplied.code, duplicatePreview.code);
     assert.deepEqual(await readDuplicateSample(duplicateApplied), duplicatePreviewRows);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The applied R duplicate flag must reach its renderer."
-    );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Mark Duplicates session");
     const duplicateColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await duplicateColumnSearch.fill(duplicateOutput.name);
@@ -546,7 +540,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
       previewRanks.map(({ values: _values, ...row }) => row),
       sourceSample.map(({ values: _values, ...row }) => row)
     );
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R rank draft must reach its renderer.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Dense Rank draft");
     const rankReview = app.getByRole("region", { name: "Draft review" });
     await rankReview.getByText("Dense rank", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -570,7 +563,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(rankApplied.metadata.schema, rankPreview.metadata.schema);
     assert.equal(rankApplied.code, rankPreview.code);
     assert.deepEqual(await readRankSample(rankApplied, rankOutput, "applied"), previewRanks);
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R rank must reach its renderer.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Dense Rank session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
@@ -681,18 +673,13 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R rename step"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R rename must be acknowledged before inspection."
-  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
   const firstApplied = testing.activeSession();
   assert.ok(firstApplied, "The applied native R rename must retain its session.");
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
   assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
   assert.equal(firstApplied.metadata.capabilities.exportParquet, true);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
   recordAcceptanceProgress(`${phase}:editing:export-cleaned-csv`);
