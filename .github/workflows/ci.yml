@@ -109,7 +109,7 @@ jobs:
         env:
           OPEN_WRANGLER_PYTHON: ${{ steps.python_runtime.outputs.python-path }}
       - name: Python tests
-        run: python -m pytest python/tests -q
+        run: python -m pytest python/tests -q --durations=20
 
   python:
     name: Python runtime contracts

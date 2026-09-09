@@ -16,6 +16,9 @@ Every pull request reports the same five required product checks:
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, plus the
   DuckDB owner's selected-file import cases against actual local-drive paths.
 
+The Python runtime job reports the 20 slowest test phases, including fixture setup and teardown, to guide later
+investigation.
+
 Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. Native cancellation
 contracts run once, with the frame/interactive-transport shard; scheduled R 4.4 qualification includes them through the
 full R command. Each shard retains serial execution within its own worker. Source keeps its existing Node-only test owner.
