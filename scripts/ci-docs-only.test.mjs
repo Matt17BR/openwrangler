@@ -329,7 +329,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
     const omissionOutput = id === "r" ? "r_omittable" : "docs_only";
     const omissionEnvironment = id === "r" ? "R_OMITTABLE" : "DOCS_ONLY";
     assert.equal(guard.env[omissionEnvironment], `\${{ needs.docs-proof.outputs.${omissionOutput} }}`);
-    if (id === "r") assert.equal(guard.env.DOCS_ONLY, "${{ needs.docs-proof.outputs.docs_only }}");
+    if (id === "r") assert.equal(guard.env.DOCS_ONLY, undefined);
     else assert.equal(guard.env.R_OMITTABLE, undefined);
     assert.equal(guard.env.RUNTIME_RESULT, `\${{ needs.${runtimeId}.result }}`);
     assert.equal(runtime.needs, "docs-proof");
@@ -369,10 +369,10 @@ test("required runtime results reject missing proof and incomplete or canceled e
           DOCS_ONLY: id === "r" ? "false" : docsOnly,
           R_OMITTABLE: id === "r" ? docsOnly : docsOnly === "true" ? "false" : "true",
           RUNTIME_RESULT: runtimeResult,
-          MACOS_CALL_RESULT: "success",
-          MACOS_RESULT: "success",
-          WINDOWS_CALL_RESULT: "success",
-          WINDOWS_RESULT: "success",
+          MACOS_CALL_RESULT: id === "r" && docsOnly === "true" ? "skipped" : "success",
+          MACOS_RESULT: id === "r" && docsOnly === "true" ? "" : "success",
+          WINDOWS_CALL_RESULT: id === "r" && docsOnly === "true" ? "skipped" : "success",
+          WINDOWS_RESULT: id === "r" && docsOnly === "true" ? "" : "success",
           GITHUB_STEP_SUMMARY: summary
         },
         encoding: "utf8"
@@ -405,9 +405,8 @@ test("required R result checks installed caller and selected platform outcomes i
     WINDOWS_CALL_RESULT: "success",
     WINDOWS_RESULT: "success"
   };
-  const docs = {
+  const omitted = {
     ...successful,
-    DOCS_ONLY: "true",
     R_OMITTABLE: "true",
     RUNTIME_RESULT: "skipped",
     MACOS_CALL_RESULT: "skipped",
@@ -417,23 +416,24 @@ test("required R result checks installed caller and selected platform outcomes i
   };
   const cases = [
     [successful, 0],
-    [{ ...successful, R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 0],
-    [docs, 0]
+    [omitted, 0],
+    [{ ...omitted, DOCS_ONLY: "true" }, 0],
+    [{ ...successful, R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1]
   ];
   for (const platform of ["MACOS", "WINDOWS"]) {
     for (const suffix of ["CALL_RESULT", "RESULT"]) {
       const field = `${platform}_${suffix}`;
-      for (const result of ["failure", "cancelled", "skipped", "", "unexpected"]) {
-        cases.push([{ ...successful, [field]: result }, 1]);
+      for (const result of ["failure", "cancelled", "skipped", "", "unexpected", "success"]) {
+        if (result !== "success") cases.push([{ ...successful, [field]: result }, 1]);
+        if (result !== omitted[field]) cases.push([{ ...omitted, [field]: result }, 1]);
       }
-      cases.push([{ ...docs, [field]: "success" }, 1]);
     }
   }
   cases.push(
-    [{ ...docs, PROOF_RESULT: "failure" }, 1],
-    [{ ...docs, R_OMITTABLE: "false", RUNTIME_RESULT: "success" }, 1],
-    [{ ...successful, DOCS_ONLY: "", R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1],
-    [{ ...successful, DOCS_ONLY: "TRUE", R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1]
+    [{ ...omitted, PROOF_RESULT: "failure" }, 1],
+    [{ ...omitted, R_OMITTABLE: "false", RUNTIME_RESULT: "success" }, 1],
+    [{ ...omitted, R_OMITTABLE: "" }, 1],
+    [{ ...omitted, R_OMITTABLE: "TRUE" }, 1]
   );
   for (const [environment, status] of cases) {
     const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
@@ -495,7 +495,7 @@ test("installed R calls use the tested workflow and expose each actual platform 
     assert.equal(caller.needs, "docs-proof");
     assert.equal(
       caller.if,
-      "${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}"
+      "${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}"
     );
     assert.equal(caller.uses, "./.github/workflows/released-jupyter.yml");
     assert.deepEqual(caller.with, { target });

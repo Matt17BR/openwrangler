@@ -10,7 +10,7 @@ Every pull request reports the same five required product checks:
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
   plus the native kernel-agent shard on three separate Linux workers. It also requires the existing macOS and Windows
-  installed R notebook journeys for changes beyond proved documentation edits.
+  installed R notebook journeys unless the change is proved independent of R.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, dependency
@@ -27,23 +27,24 @@ Source contracts, packaged smoke, and the separate required CodeQL gate run for 
 run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing regular,
 non-executable `README.md` or `docs/**/*.md` files.
 
-The same proof makes a separate native R decision. R execution may also be omitted when every change modifies an
-existing regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or existing
-`README.md`, `CHANGELOG.md` or `docs/**/*.md`. These Python sources are not inputs to the native R suite. Python and
+The same proof controls all R source and installed-editor jobs. R execution may also be omitted when every change
+modifies an existing regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or existing
+`README.md`, `CHANGELOG.md` or `docs/**/*.md`. These R checks do not execute Python files from the allowed paths. The selected
+installed R journeys use Python only for Jupyter client readiness; they exclude the mixed-language literate journey.
+The always-required Source and packaged smoke checks retain package validation. Python and
 Windows still run for Python or CHANGELOG changes. Shared/host code, R sources, fixtures, scripts, configuration,
-dependency locks and all other paths require full R. If an R test or runner begins consuming Python source, update
-this proof and its tests in the same change.
+dependency locks and all other paths require full R. If an R test or selected runner begins executing files from
+those Python paths, update this proof and its tests in the same change.
 
 This policy reduces fresh R 4.5 environment checks during sequences of isolated Python changes. An omission is not
 a newly executed or transferred R success; it can delay discovery of unrelated hosted-environment regressions.
-Scheduled R 4.4 qualification does not replace R 4.5 coverage. The additional Python-source omission applies only to
-the native source suite. Installed R retains the narrower documentation-only omission because its preparation also
-packages the extension and sets up Jupyter. Release qualification remains separate.
+Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
 execution or a proved omission with actually skipped execution. The R result also checks both installed workflow calls
-and their selected platform job results. Missing, canceled or skipped selected jobs cannot satisfy it, even if a
-misconfigured workflow call otherwise reports success.
+and their selected platform job results. A proved R omission requires the source matrix and both installed workflow
+calls to be skipped, with empty reusable outputs. Otherwise every result must succeed; missing, canceled or skipped selected jobs
+cannot satisfy the check, even if a misconfigured workflow call otherwise reports success.
 
 The installed jobs reuse `released-jupyter.yml` at the same commit as the caller. Manual dispatch remains available for
 diagnosis; there is no second pull-request trigger. Their preparation, dependencies and artifact safeguards have one
