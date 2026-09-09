@@ -4466,9 +4466,17 @@ dst_error <- tryCatch(
   },
   error = identity
 )
-if (is.null(dst_error) || !grepl("not a valid local datetime", conditionMessage(dst_error), fixed = TRUE)) {
+# Native parsers may reject the gap directly or normalize it before the wall-time check.
+if (
+  !inherits(dst_error, "openwrangler_r_frame_error") ||
+    !identical(dst_error$code, "invalid-view-value") ||
+    !conditionMessage(dst_error) %in% c(
+      "replacement$value is not a valid datetime",
+      "replacement$value is not a valid local datetime in Europe/Berlin"
+    )
+) {
   stop(sprintf(
-    "Expected an error containing not a valid local datetime; actual: %s",
+    "Expected an invalid-view-value DST datetime refusal; actual: %s",
     if (is.null(dst_error)) "<no error>" else substr(conditionMessage(dst_error), 1L, 256L)
   ), call. = FALSE)
 }
