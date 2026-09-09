@@ -400,7 +400,7 @@ describe("App draft state boundaries", () => {
     }
   });
 
-  it("requires explicit column-selection repair before an open form can preview after Undo", async () => {
+  it.each(["preview", "escape"])("retains a repaired form after Undo until %s", async (nextAction) => {
     const saved = formulaPreviewFixture("polars", true);
     const original = formulaPreviewFixture("polars", false);
     render(<App />);
@@ -429,7 +429,22 @@ describe("App draft state boundaries", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
     expect(postMessage).not.toHaveBeenCalled();
     expect(within(dialog).getByRole("alert")).toHaveTextContent("The selected column is no longer available.");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Clear unavailable selections" }));
+    const repair = within(dialog).getByRole("button", { name: "Clear unavailable selections" });
+    act(() => repair.focus());
+    expect(repair).toHaveFocus();
+    fireEvent.click(repair);
+    const group = within(dialog).getByRole("group", { name: "Columns (none means all)" });
+    expect(group).toHaveFocus();
+    expect(group).toHaveAttribute("tabindex", "-1");
+    expect(repair).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Drop when")).toHaveValue("all");
+    expect(postMessage).not.toHaveBeenCalled();
+    if (nextAction === "escape") {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(postMessage).not.toHaveBeenCalled();
+      return;
+    }
     fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
     expect(onlyPreviewRequest().step).toMatchObject({ kind: "dropMissingRows", params: { how: "all" } });
     expect(onlyPreviewRequest().step.params).not.toHaveProperty("columns");

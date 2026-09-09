@@ -157,6 +157,9 @@ Retained multi-column forms submit unavailable selected IDs to the existing para
 dropping dependencies. An explicit repair action removes those selections; optional forms explain when clearing them
 will select all columns. Toggling another checkbox preserves unavailable IDs, and a nonempty column search remains
 clearable after the schema shrinks.
+Removing a focused form row or clearing unavailable selections moves focus to its surviving labelled group before
+removing the control. The shared fieldsets accept programmatic focus without adding a Tab stop. The action respects
+focus held by another control or outside the webview.
 Single-column forms retain the chosen ID when its option disappears or becomes incompatible. They display an empty
 selection, so the existing required-field validation prevents submission until the user chooses a compatible column.
 If that ID becomes eligible again, its current name is restored. Controlled forms keep the parent value authoritative;

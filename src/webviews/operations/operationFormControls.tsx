@@ -4,7 +4,7 @@ import type { ColumnSchema } from "../../shared/protocol";
 
 export function Fieldset({ legend, children }: { legend: string; children: ReactNode }) {
   return (
-    <fieldset className="formFieldset">
+    <fieldset className="formFieldset" tabIndex={-1}>
       <legend>{legend}</legend>
       {children}
     </fieldset>
@@ -17,6 +17,12 @@ export function moveItem<T>(items: readonly T[], from: number, to: number): T[] 
   const [item] = result.splice(from, 1);
   result.splice(to, 0, item);
   return result;
+}
+
+function focusRemovalGroup(button: HTMLButtonElement): void {
+  if (document.activeElement === button && document.hasFocus()) {
+    button.closest("fieldset")?.focus();
+  }
 }
 
 export function RowActions({
@@ -60,7 +66,10 @@ export function RowActions({
         aria-label={`Remove ${label}`}
         disabled={!canRemove}
         title={canRemove ? `Remove ${label}` : "At least one row is required"}
-        onClick={onRemove}
+        onClick={(event) => {
+          focusRemovalGroup(event.currentTarget);
+          onRemove();
+        }}
       >
         <span className="codicon codicon-trash" aria-hidden="true" />
         <span>Remove</span>
@@ -180,6 +189,7 @@ export function ColumnReferencesSelect({
   return (
     <fieldset
       className="columnSelectionField"
+      tabIndex={-1}
       aria-describedby={
         selectedLabels.length === 0
           ? helpId
@@ -242,7 +252,13 @@ export function ColumnReferencesSelect({
             Some selected columns are no longer available.
             {!required && selectedLabels.length === 0 && " Clearing them will use all columns."}
           </p>
-          <button type="button" onClick={() => updateSelectedIds(selectedIds.filter((id) => validColumnIds.has(id)))}>
+          <button
+            type="button"
+            onClick={(event) => {
+              focusRemovalGroup(event.currentTarget);
+              updateSelectedIds(selectedIds.filter((id) => validColumnIds.has(id)));
+            }}
+          >
             Clear unavailable selections
           </button>
         </div>

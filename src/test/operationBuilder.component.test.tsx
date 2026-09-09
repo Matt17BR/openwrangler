@@ -777,6 +777,9 @@ describe("OperationBuilder", () => {
     );
 
     expect(screen.getByRole("button", { name: "Remove sort rule 1" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove sort rule 1" }));
+    expect(screen.getByLabelText("Column 1")).toBeInTheDocument();
+    expect(onPreview).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Add sort column" }));
     fireEvent.change(screen.getByLabelText("Column 2"), { target: { value: "c:1" } });
     fireEvent.change(screen.getAllByLabelText("Direction")[1], { target: { value: "desc" } });
@@ -786,11 +789,45 @@ describe("OperationBuilder", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove sort rule 2" }));
+    const remove = screen.getByRole("button", { name: "Remove sort rule 2" });
+    remove.focus();
+    expect(remove).toHaveFocus();
+    fireEvent.click(remove);
+    const group = screen.getByRole("group", { name: "Sort rules" });
+    expect(group).toHaveFocus();
+    expect(group).toHaveAttribute("tabindex", "-1");
     expect(screen.queryByLabelText("Column 2")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Column 1")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Direction")).toHaveValue("desc");
+    expect(onPreview).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["surviving control", "host"])("does not reclaim %s focus when a sort row is removed", (owner) => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialKind="sortRows"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add sort column" }));
+    const survivor = screen.getByLabelText("Column 1");
+    const remove = screen.getByRole("button", { name: "Remove sort rule 2" });
+    (owner === "host" ? remove : survivor).focus();
+    // Model the host losing focus without replacing the currently active DOM control.
+    vi.spyOn(document, "hasFocus").mockReturnValue(owner !== "host");
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    fireEvent.click(remove);
+    expect(focus).not.toHaveBeenCalled();
+    if (owner === "surviving control") expect(survivor).toHaveFocus();
+    expect(screen.queryByLabelText("Column 2")).not.toBeInTheDocument();
+    expect(survivor).toHaveValue("c:0");
+    expect(onPreview).not.toHaveBeenCalled();
   });
 
   it("allocates unique split output defaults after removing and reordering rows", () => {
@@ -1568,7 +1605,10 @@ describe("OperationBuilder", () => {
     };
     const view = render(<OperationBuilder {...props} />);
     fireEvent.click(screen.getByRole("checkbox", { name: "city" }));
+    const survivor = screen.getByRole("checkbox", { name: "sales" });
+    survivor.focus();
     view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[1]] }} />);
+    expect(survivor).toHaveFocus();
     const preview = screen.getByRole("button", { name: "Preview changes" });
     fireEvent.click(preview);
     expect(onPreview).not.toHaveBeenCalled();
@@ -1580,6 +1620,7 @@ describe("OperationBuilder", () => {
     fireEvent.click(preview);
     expect(onPreview).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Clear unavailable selections" }));
+    expect(survivor).toHaveFocus();
     fireEvent.click(preview);
     expect(onPreview).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ kind, params: { ...defaults, columns: [{ id: "c:1", name: "sales" }] } }),

@@ -58,6 +58,7 @@ Failed recovery-storage writes retain the current selection and layout during th
 successfully saved state, as the storage warning explains.
 
 The operation catalog search exposes its accessible name before and after entering a query.
+Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.

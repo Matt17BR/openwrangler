@@ -161,7 +161,9 @@ replaces a session with reused column IDs to verify fresh draft/search input and
 Operation Builder and Fill Missing controls check explicit repair of unavailable column selections, optional All
 semantics, retained valid selection order and names, controlled grouping, and search recovery after schema changes.
 The App owner checks that failed Undo retains selection and successful Undo cannot silently broaden a retained
-Drop Missing form to all columns; unrelated form input survives repair.
+Drop Missing form to all columns; unrelated form input survives repair. Focused repair and repeated-row removal keep
+focus on the surviving labelled group, retain values and leave Escape with the open dialog. The App and Builder owners
+also preserve focus on unrelated controls and retain disabled Remove behavior.
 Single-column cases cover removed targets after Undo, type-incompatible targets, explicit repair, retained input, same-ID
 renames and eligible targets returning. The control owners distinguish a controlled empty value from an uncontrolled
 form receiving its first available default.
