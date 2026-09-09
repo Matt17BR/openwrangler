@@ -199,7 +199,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     kind: "splitTextColumns",
     title: "Split text into columns",
     description:
-      "Retain the source and atomically create 2–64 ordered columns from a literal delimiter; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
+      "Split text at a literal delimiter into 2–64 new columns, keeping the original; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
     group: "Categorical / text",
     icon: "split-horizontal",
     required: Object.freeze(["column", "delimiter", "newColumns"]),
@@ -299,8 +299,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
   Object.freeze({
     kind: "pivotLonger",
     title: "Pivot longer",
-    description:
-      "Replace 2–64 compatible scalar columns with one label column and one value column in deterministic selected-column-major order.",
+    description: "Turn selected columns into rows, with one column for their names and one for their values.",
     group: "Reshape",
     icon: "table",
     required: Object.freeze(["columns", "labelColumn", "valueColumn"]),
@@ -328,7 +327,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
   Object.freeze({
     kind: "byExample",
     title: "Transform by example",
-    description: "Synthesize the simplest deterministic program matching every example.",
+    description: "Find a transformation matching your example inputs and outputs.",
     group: "By example",
     icon: "sparkle",
     required: Object.freeze(["sourceColumns", "newColumn", "examples"]),
