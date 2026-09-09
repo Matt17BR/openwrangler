@@ -5,6 +5,10 @@ package, runtime, or platform failure that a direct test cannot. Keep dedicated 
 credential redaction, no-follow identity checks, sealed artifacts, and exact output-path handoff. Do not keep fixture
 or end-to-end tests merely to verify how another test runner, selector, or diagnostic path is wired.
 
+Before adding operations to an installed journey, measure preparation, editor execution and cleanup separately and
+review the remaining phase margin. Keep operation semantics in their source/generated-code owners when the installed
+interaction adds no distinct coverage. Include execution and maintenance cost when proposing new test infrastructure.
+
 ## Direct source checks
 
 While iterating, run the smallest relevant test:
@@ -586,14 +590,16 @@ The pull-request workflow requires five jobs:
 - Source contracts: formatting, lint, types, generated protocol/reference output, documentation, dependency locks,
   licenses, the retained script contracts, and Vitest.
 - Python runtime contracts: Ruff, Pyright, and Pytest.
-- Native R frame, kernel, and transport contracts: the three R 4.5 selections above.
+- Native R frame, kernel, and transport contracts: the three R 4.5 selections above on separate Linux workers, plus
+  installed R notebook acceptance in macOS and Windows VS Code.
 - Packaged VS Code smoke: one production VSIX opened in the declared minimum VS Code 1.106.0 and current stable VS
   Code.
 - Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
 
 Branch protection requires all five jobs and the separate CodeQL gate to pass. A proved edit of existing Markdown
-documentation lets the Python, native R, and Windows jobs report an explicit omission. Native R has a separate proof
-for existing Python source and documentation edits; Python and Windows retain their documentation-only scope.
+documentation lets the Python, native R, installed R, and Windows jobs report an explicit omission. Native R source has
+a separate proof for existing Python source and documentation edits; installed R, Python and Windows retain their
+documentation-only scope.
 Source and packaged smoke still run. See [CI](ci.md) for the exact paths, commit binding, failure behavior and reduced
 fresh R environment coverage.
 

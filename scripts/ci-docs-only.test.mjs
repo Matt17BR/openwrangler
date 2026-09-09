@@ -7,9 +7,13 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { load } from "js-yaml";
 import { proveRuntimeOmissions } from "./ci-docs-only.mjs";
+import { createRContractPhases, selectRContractPhases } from "./run-r-contract-tests.mjs";
 
 const script = resolve(import.meta.dirname, "ci-docs-only.mjs");
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
+const releasedJupyter = load(
+  readFileSync(resolve(import.meta.dirname, "../.github/workflows/released-jupyter.yml"), "utf8")
+);
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
@@ -315,7 +319,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
     const runtime = workflow.jobs[runtimeId];
     assert.equal(job.name, name);
     assert.equal(Object.values(workflow.jobs).filter((candidate) => candidate.name === name).length, 1);
-    assert.deepEqual(job.needs, ["docs-proof", runtimeId]);
+    assert.deepEqual(job.needs, ["docs-proof", runtimeId, ...(id === "r" ? ["r-macos", "r-windows"] : [])]);
     assert.equal(job.if, "${{ always() }}", "failed or canceled dependencies must not skip required jobs");
     assert.equal(job.steps.length, 1, "required result jobs must not retain expensive work after cancellation");
     const [guard] = job.steps;
@@ -325,7 +329,8 @@ test("required runtime results reject missing proof and incomplete or canceled e
     const omissionOutput = id === "r" ? "r_omittable" : "docs_only";
     const omissionEnvironment = id === "r" ? "R_OMITTABLE" : "DOCS_ONLY";
     assert.equal(guard.env[omissionEnvironment], `\${{ needs.docs-proof.outputs.${omissionOutput} }}`);
-    assert.equal(guard.env[id === "r" ? "DOCS_ONLY" : "R_OMITTABLE"], undefined);
+    if (id === "r") assert.equal(guard.env.DOCS_ONLY, "${{ needs.docs-proof.outputs.docs_only }}");
+    else assert.equal(guard.env.R_OMITTABLE, undefined);
     assert.equal(guard.env.RUNTIME_RESULT, `\${{ needs.${runtimeId}.result }}`);
     assert.equal(runtime.needs, "docs-proof");
     assert.equal(
@@ -361,9 +366,13 @@ test("required runtime results reject missing proof and incomplete or canceled e
         env: {
           ...process.env,
           PROOF_RESULT: result,
-          DOCS_ONLY: id === "r" ? (docsOnly === "true" ? "false" : "true") : docsOnly,
+          DOCS_ONLY: id === "r" ? "false" : docsOnly,
           R_OMITTABLE: id === "r" ? docsOnly : docsOnly === "true" ? "false" : "true",
           RUNTIME_RESULT: runtimeResult,
+          MACOS_CALL_RESULT: "success",
+          MACOS_RESULT: "success",
+          WINDOWS_CALL_RESULT: "success",
+          WINDOWS_RESULT: "success",
           GITHUB_STEP_SUMMARY: summary
         },
         encoding: "utf8"
@@ -380,4 +389,135 @@ test("required runtime results reject missing proof and incomplete or canceled e
       }
     }
   }
+});
+
+test("required R result checks installed caller and selected platform outcomes independently", (context) => {
+  const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-platform-guard-"));
+  context.after(() => rmSync(temp, { recursive: true, force: true }));
+  const guard = workflow.jobs.r.steps[0];
+  const successful = {
+    PROOF_RESULT: "success",
+    DOCS_ONLY: "false",
+    R_OMITTABLE: "false",
+    RUNTIME_RESULT: "success",
+    MACOS_CALL_RESULT: "success",
+    MACOS_RESULT: "success",
+    WINDOWS_CALL_RESULT: "success",
+    WINDOWS_RESULT: "success"
+  };
+  const docs = {
+    ...successful,
+    DOCS_ONLY: "true",
+    R_OMITTABLE: "true",
+    RUNTIME_RESULT: "skipped",
+    MACOS_CALL_RESULT: "skipped",
+    MACOS_RESULT: "",
+    WINDOWS_CALL_RESULT: "skipped",
+    WINDOWS_RESULT: ""
+  };
+  const cases = [
+    [successful, 0],
+    [{ ...successful, R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 0],
+    [docs, 0]
+  ];
+  for (const platform of ["MACOS", "WINDOWS"]) {
+    for (const suffix of ["CALL_RESULT", "RESULT"]) {
+      const field = `${platform}_${suffix}`;
+      for (const result of ["failure", "cancelled", "skipped", "", "unexpected"]) {
+        cases.push([{ ...successful, [field]: result }, 1]);
+      }
+      cases.push([{ ...docs, [field]: "success" }, 1]);
+    }
+  }
+  cases.push(
+    [{ ...docs, PROOF_RESULT: "failure" }, 1],
+    [{ ...docs, R_OMITTABLE: "false", RUNTIME_RESULT: "success" }, 1],
+    [{ ...successful, DOCS_ONLY: "", R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1],
+    [{ ...successful, DOCS_ONLY: "TRUE", R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1]
+  );
+  for (const [environment, status] of cases) {
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
+      env: { ...process.env, ...environment, GITHUB_STEP_SUMMARY: join(temp, "summary") },
+      encoding: "utf8"
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, status, JSON.stringify(environment));
+  }
+});
+
+test("CI schedules every existing native R phase exactly once and cancellation on one shard", () => {
+  const runtime = workflow.jobs["r-runtime"];
+  assert.equal(runtime.strategy?.["fail-fast"], false);
+  const entries = runtime.strategy.matrix.include;
+  assert.deepEqual(entries.map((entry) => entry.shard).sort(), [
+    "catalog-and-process-transport",
+    "frame-and-interactive-transport",
+    "kernel-agent"
+  ]);
+  const commands = runtime.steps.filter(
+    (step) => step.run?.includes("scripts/run-r-contract-tests.mjs") || step.run === "npm run test:scripts:native"
+  );
+  assert.equal(commands.length, 2);
+  const cancellation = commands.find((step) => step.run === "npm run test:scripts:native");
+  assert.equal(cancellation.if, "${{ matrix.native_cancellation }}");
+  const shard = commands.find((step) => step !== cancellation);
+  assert.equal(shard.run, 'node scripts/run-r-contract-tests.mjs --shard "$R_CONTRACT_SHARD"');
+  assert.equal(shard.if, undefined);
+  assert.equal(shard.env.R_CONTRACT_SHARD, "${{ matrix.shard }}");
+  assert.equal(shard.env.R_LIBS_USER, "${{ steps.r_prepare.outputs.library }}");
+  const phases = createRContractPhases({ environment: {}, r: "unused-R", rscript: "unused-Rscript" });
+  const scheduled = [];
+  for (const entry of entries) {
+    assert.equal(typeof entry.native_cancellation, "boolean");
+    scheduled.push(...selectRContractPhases(phases, { kind: "shard", id: entry.shard }).map((phase) => phase.id));
+  }
+  assert.deepEqual(
+    entries.filter((entry) => entry.native_cancellation).map((entry) => entry.shard),
+    ["frame-and-interactive-transport"]
+  );
+  assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
+});
+
+test("installed R calls use the tested workflow and expose each actual platform result", () => {
+  assert.deepEqual(Object.keys(releasedJupyter.on).sort(), ["workflow_call", "workflow_dispatch"]);
+  assert.deepEqual(releasedJupyter.on.workflow_dispatch.inputs.target.options, ["linux-all", "macos-r", "windows-r"]);
+  assert.equal(releasedJupyter.on.workflow_dispatch.inputs.target.default, "linux-all");
+  assert.equal(releasedJupyter.on.workflow_call.inputs.target.type, "string");
+  assert.equal(releasedJupyter.on.workflow_call.inputs.target.required, true);
+  assert.deepEqual(releasedJupyter.permissions, { contents: "read" });
+  const guard = workflow.jobs.r.steps[0];
+  for (const [id, target, prefix] of [
+    ["r-macos", "macos-r", "MACOS"],
+    ["r-windows", "windows-r", "WINDOWS"]
+  ]) {
+    const caller = workflow.jobs[id];
+    const output = `${target.split("-")[0]}_result`;
+    assert.equal(caller.needs, "docs-proof");
+    assert.equal(
+      caller.if,
+      "${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}"
+    );
+    assert.equal(caller.uses, "./.github/workflows/released-jupyter.yml");
+    assert.deepEqual(caller.with, { target });
+    assert.equal(guard.env[`${prefix}_CALL_RESULT`], `\${{ needs.${id}.result }}`);
+    assert.equal(guard.env[`${prefix}_RESULT`], `\${{ needs.${id}.outputs.${output} }}`);
+    assert.equal(releasedJupyter.on.workflow_call.outputs[output].value, `\${{ jobs.${target}.result }}`);
+    const platform = releasedJupyter.jobs[target];
+    assert.equal(platform.if, `\${{ inputs.target == '${target}' }}`);
+    assert.equal(platform.steps[0].with.ref, "${{ github.sha }}");
+    assert.equal(platform.steps[0].with["persist-credentials"], false);
+  }
+  const concurrencyGroups = ["workflow_dispatch", "pull_request"].flatMap((event) =>
+    ["macos-r", "windows-r"].map((target) =>
+      releasedJupyter.concurrency.group
+        .replaceAll("${{ github.event_name }}", event)
+        .replaceAll("${{ github.ref }}", "refs/heads/same-source")
+        .replaceAll("${{ inputs.target }}", target)
+    )
+  );
+  assert.equal(new Set(concurrencyGroups).size, 4, "manual runs and the two CI calls must not cancel one another");
+  assert.equal(
+    concurrencyGroups.includes(workflow.concurrency.group.replaceAll("${{ github.event.pull_request.number }}", "123")),
+    false
+  );
 });

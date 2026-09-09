@@ -12,12 +12,25 @@ on:
           - linux-all
           - macos-r
           - windows-r
+  workflow_call:
+    inputs:
+      target:
+        description: Acceptance lane to run
+        required: true
+        type: string
+    outputs:
+      macos_result:
+        description: Result of the macOS installed R job
+        value: ${{ jobs.macos-r.result }}
+      windows_result:
+        description: Result of the Windows installed R job
+        value: ${{ jobs.windows-r.result }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: released-jupyter-${{ github.ref }}-${{ inputs.target }}
+  group: released-jupyter-${{ github.event_name }}-${{ github.ref }}-${{ inputs.target }}
   cancel-in-progress: true
 
 jobs:
@@ -235,6 +248,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -325,7 +339,7 @@ jobs:
             process.exitCode = 1;
           });
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
@@ -358,6 +372,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -385,7 +400,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - *r_source_contracts
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension

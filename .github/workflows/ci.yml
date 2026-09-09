@@ -135,11 +135,21 @@ jobs:
           esac
 
   r-runtime:
-    name: Execute native R contracts
+    name: Execute native R contracts (${{ matrix.shard }})
     needs: docs-proof
     if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: frame-and-interactive-transport
+            native_cancellation: true
+          - shard: kernel-agent
+            native_cancellation: false
+          - shard: catalog-and-process-transport
+            native_cancellation: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -192,23 +202,31 @@ jobs:
           path: ${{ steps.r_prepare.outputs.archives }}
           key: ${{ steps.r_prepare.outputs.cache-key }}
       - name: Native process cancellation contracts
+        if: ${{ matrix.native_cancellation }}
         run: npm run test:scripts:native
-      - name: Native frame and interactive transport
-        run: node scripts/run-r-contract-tests.mjs --shard frame-and-interactive-transport
+      - name: Native R shard
+        run: node scripts/run-r-contract-tests.mjs --shard "$R_CONTRACT_SHARD"
         env:
+          R_CONTRACT_SHARD: ${{ matrix.shard }}
           R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
-      - name: Native kernel-agent contracts
-        run: node scripts/run-r-contract-tests.mjs --shard kernel-agent
-        env:
-          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
-      - name: Catalog and process transport
-        run: node scripts/run-r-contract-tests.mjs --shard catalog-and-process-transport
-        env:
-          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+
+  r-macos:
+    needs: docs-proof
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    uses: ./.github/workflows/released-jupyter.yml
+    with:
+      target: macos-r
+
+  r-windows:
+    needs: docs-proof
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    uses: ./.github/workflows/released-jupyter.yml
+    with:
+      target: windows-r
 
   r:
     name: Native R frame, kernel, and transport contracts
-    needs: [docs-proof, r-runtime]
+    needs: [docs-proof, r-runtime, r-macos, r-windows]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -219,6 +237,11 @@ jobs:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
           R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
           RUNTIME_RESULT: ${{ needs.r-runtime.result }}
+          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          MACOS_CALL_RESULT: ${{ needs.r-macos.result }}
+          MACOS_RESULT: ${{ needs.r-macos.outputs.macos_result }}
+          WINDOWS_CALL_RESULT: ${{ needs.r-windows.result }}
+          WINDOWS_RESULT: ${{ needs.r-windows.outputs.windows_result }}
         run: |
           test "$PROOF_RESULT" = success
           case "$R_OMITTABLE:$RUNTIME_RESULT" in
@@ -226,6 +249,14 @@ jobs:
               echo 'Native R checks omitted: the tested merge only edits existing regular Python runtime/test source or Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success) ;;
+            *) exit 1 ;;
+          esac
+          case "$DOCS_ONLY:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
+            true:skipped::skipped:)
+              test "$R_OMITTABLE" = true
+              echo 'Installed R checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false:success:success:success:success) ;;
             *) exit 1 ;;
           esac
 
