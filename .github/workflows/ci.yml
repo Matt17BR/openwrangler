@@ -330,7 +330,7 @@ jobs:
         run: python -m pytest -q python/tests/test_duckdb_engine.py -k literal_selected_file
       - name: Windows dependency filesystem contracts
         run: |
-          python -m pytest -q python/tests/test_dependency_guard.py -k windows
+          python -m pytest -q python/tests/test_dependency_guard.py -k "windows or status_lock_preparation or concurrent_status_on_absent_journal"
           python -m pytest -q python/tests/test_dependency_guard_exact_version.py
       - name: Windows dependency and process cleanup contracts
         run: >-

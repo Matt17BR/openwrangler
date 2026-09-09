@@ -34,6 +34,10 @@ refusal and owned cleanup. Successful publication retains the verified receipt a
 The CI scope proof tests use real Git merges to cover exact commit binding, changed paths and modes, shallow history,
 and bounded output. They distinguish documentation-only omissions from native R's additional Python-source scope,
 and execute the required-result guards with failed proofs, malformed outputs, and skipped or canceled runtime execution.
+Dependency guard tests force lock creation between the initial missing-file check and directory enumeration, and
+retain refusal when the lock stays missing. Their real concurrent status pair receives EOF on both inputs before
+either process is awaited; status validation requires EOF before execution. The deterministic cases and real pair run
+in ordinary Linux and Windows CI alongside the existing platform filesystem controls.
 The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
 and changed commits, missing history, manual dispatches, and lookup failures. Real Git fixtures own daily change-note
 ranges, sibling preview source parents, first-preview and empty output, conservative version-only filtering, merge

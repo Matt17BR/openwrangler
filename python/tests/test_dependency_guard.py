@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import importlib.util
 import json
@@ -1135,28 +1136,79 @@ def test_status_recovers_an_empty_journal_left_before_lock_creation(guard_fixtur
     assert (guard_fixture.journal / "mutation.lock").is_file()
 
 
+@pytest.mark.parametrize("create_lock", [True, False], ids=["lock-created", "lock-still-missing"])
+def test_status_lock_preparation_rechecks_after_directory_scan(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    create_lock: bool,
+) -> None:
+    _create_manual_empty_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    leaf = lock if create_lock else guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
+    original_scandir = guard.os.scandir
+    scanned = False
+
+    def scan_after_leaf_created(path: Path) -> Any:
+        nonlocal scanned
+        if path == guard_fixture.journal and not scanned:
+            assert not lock.exists()
+            _write_manual_journal_leaf(leaf, b"")
+            scanned = True
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(guard.os, "scandir", scan_after_leaf_created)
+        if create_lock:
+            guard._prepare_status_lock(guard_fixture.journal)
+        else:
+            with pytest.raises(guard.GuardError, match="malformed_state"):
+                guard._prepare_status_lock(guard_fixture.journal)
+
+    assert scanned
+    assert leaf.read_bytes() == b""
+    assert lock.exists() is create_lock
+
+
 def test_concurrent_status_on_absent_journal_never_misclassifies_clean_state(
     guard_fixture: GuardFixture,
 ) -> None:
-    for _iteration in range(50):
-        processes = [_start(guard_fixture, "status"), _start(guard_fixture, "status")]
+    processes: list[subprocess.Popen[bytes]] = []
+    try:
+        for _ in range(2):
+            processes.append(_start(guard_fixture, "status"))
         for process in processes:
             _write_frame(process, _status_request(guard_fixture))
+        # Status requires EOF before dispatch. Release both inputs before waiting for either process.
+        for process in processes:
+            assert process.stdin is not None
+            process.stdin.close()
+            process.stdin = None
         results = [_finish(process) for process in processes]
-        assert any(code == 0 for code, _stdout, _stderr in results)
-        for code, stdout, stderr in results:
-            assert code in {0, 11}
-            frames = [json.loads(line) for line in stdout.splitlines()]
-            if code == 0:
-                assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-            else:
-                assert frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
-            assert stderr == b""
-        lock = guard_fixture.journal / "mutation.lock"
-        assert lock.is_file()
-        assert _run(guard_fixture, "status", _status_request(guard_fixture))[0] == 0
-        lock.unlink()
-        guard_fixture.journal.rmdir()
+    finally:
+        for process in processes:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=PROCESS_TIMEOUT_SECONDS)
+            finally:
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    if pipe is not None:
+                        with contextlib.suppress(BrokenPipeError):
+                            pipe.close()
+    assert any(code == 0 for code, _stdout, _stderr in results)
+    for code, stdout, stderr in results:
+        assert code in {0, 11}
+        frames = [json.loads(line) for line in stdout.splitlines()]
+        if code == 0:
+            assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+        else:
+            assert frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
+        assert stderr == b""
+    lock = guard_fixture.journal / "mutation.lock"
+    assert lock.is_file()
+    assert _run(guard_fixture, "status", _status_request(guard_fixture))[0] == 0
+    lock.unlink()
+    guard_fixture.journal.rmdir()
 
 
 @pytest.mark.parametrize(
