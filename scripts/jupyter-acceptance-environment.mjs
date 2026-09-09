@@ -19,6 +19,7 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   createEditorAcceptanceEnvironment,
+  EDITOR_COMMAND_OUTPUT_MAX_BYTES,
   readBoundedAcceptanceText,
   runBoundedEditorCommand
 } from "./editor-acceptance.mjs";
@@ -724,6 +725,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
   const nativeCollapseInstall =
     platform === "darwin" && packages.includes("collapse")
       ? [
+          '.ow_install_started <- proc.time()[["elapsed"]]',
           'Sys.setenv(MAKEFLAGS = "-s -j2")',
           "utils::install.packages(",
           '  "collapse",',
@@ -732,7 +734,8 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
           '  type = "source",',
           "  dependencies = NA,",
           "  quiet = TRUE",
-          ")"
+          ")",
+          'cat(sprintf("OPEN_WRANGLER_R_INSTALL:macos-collapse-source:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))'
         ]
       : [];
   return [
@@ -744,6 +747,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
       : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
     '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
+    '.ow_install_started <- proc.time()[["elapsed"]]',
     "utils::install.packages(",
     "  .ow_core_packages,",
     "  lib = .ow_library,",
@@ -751,6 +755,8 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
     "  dependencies = NA,",
     "  quiet = TRUE",
     ")",
+    'cat(sprintf("OPEN_WRANGLER_R_INSTALL:core:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))',
+    '.ow_install_started <- proc.time()[["elapsed"]]',
     "utils::install.packages(",
     "  .ow_binary_supplemental_packages,",
     "  lib = .ow_library,",
@@ -758,6 +764,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
     "  dependencies = NA,",
     "  quiet = TRUE",
     ")",
+    'cat(sprintf("OPEN_WRANGLER_R_INSTALL:supplemental:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))',
     ...nativeCollapseInstall
   ].join("\n");
 }
@@ -1928,6 +1935,25 @@ function javaSpecificationMajor(specificationVersion) {
 
 export function rAcceptancePackageRecordMatches(stdout, packageRecord) {
   return stdout.replaceAll("\r\n", "\n") === packageRecord;
+}
+
+export function rAcceptanceInstallTimings(stdout) {
+  if (
+    typeof stdout !== "string" ||
+    stdout.length > EDITOR_COMMAND_OUTPUT_MAX_BYTES ||
+    Buffer.byteLength(stdout, "utf8") > EDITOR_COMMAND_OUTPUT_MAX_BYTES
+  ) {
+    return [];
+  }
+  const timings = new Map();
+  for (const line of stdout.split(/\r?\n/u)) {
+    const match = /^OPEN_WRANGLER_R_INSTALL:(core|supplemental|macos-collapse-source):(0|[1-9][0-9]{0,6})$/u.exec(line);
+    if (!match || Number(match[2]) > 1_200_000) continue;
+    timings.set(match[1], timings.has(match[1]) ? undefined : Number(match[2]));
+  }
+  return [...timings].flatMap(([stage, milliseconds]) =>
+    milliseconds === undefined ? [] : [`R acceptance ${stage} installation completed in ${milliseconds} ms.`]
+  );
 }
 
 export async function prepareJupyterAcceptanceREnvironment(

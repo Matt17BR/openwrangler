@@ -17,6 +17,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceRKernel,
   R_ACCEPTANCE_PACKAGE_VERSIONS,
+  rAcceptanceInstallTimings,
   rAcceptancePackageRecordMatches,
   rAcceptanceRepositories
 } from "./jupyter-acceptance-environment.mjs";
@@ -105,6 +106,7 @@ for (const nativeEditorTooling of [undefined, true, false]) {
     assert.equal(fixture.commands[0].environment.R_LIBS, undefined);
     assert.equal(fixture.commands[0].environment.R_PROFILE, undefined);
     assert.equal(prepared.rExecutable, fixture.rExecutable);
+    assert.deepEqual(readdirSync(prepared.libraryDir), []);
     for (const command of [prepared.dependencyInstall, prepared.dependencyProbe]) {
       assert.equal(command.input.executable, fixture.rscript);
       assert.equal(command.input.environment.R_LIBS_USER, prepared.libraryDir);
@@ -120,6 +122,11 @@ for (const nativeEditorTooling of [undefined, true, false]) {
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
     assert.equal(prepared.packages.includes("bit64"), false);
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, fixture.options),
+      /new contained private environment/u
+    );
+    assert.equal(fixture.commands.length, 1);
   });
 }
 
@@ -150,6 +157,37 @@ test("R package records accept console line endings while preserving exact packa
     ]) {
       assert.equal(rAcceptancePackageRecordMatches(output, record), false, description);
     }
+  }
+});
+
+test("R install timings expose only bounded fixed stages and omit ambiguous records", () => {
+  assert.deepEqual(
+    rAcceptanceInstallTimings(
+      "private package output\nOPEN_WRANGLER_R_INSTALL:core:0\r\n" +
+        "OPEN_WRANGLER_R_INSTALL:supplemental:123\nOPEN_WRANGLER_R_INSTALL:macos-collapse-source:1200000\n"
+    ),
+    [
+      "R acceptance core installation completed in 0 ms.",
+      "R acceptance supplemental installation completed in 123 ms.",
+      "R acceptance macos-collapse-source installation completed in 1200000 ms."
+    ]
+  );
+  for (const value of ["-1", "+1", "01", "1.5", "1e3", "NaN", "Inf", "1200001", "12345678", "7 private"]) {
+    assert.deepEqual(rAcceptanceInstallTimings(`OPEN_WRANGLER_R_INSTALL:core:${value}\n`), []);
+  }
+  assert.deepEqual(
+    rAcceptanceInstallTimings(
+      "OPEN_WRANGLER_R_INSTALL:unknown:1\n leading OPEN_WRANGLER_R_INSTALL:core:1\n" +
+        "OPEN_WRANGLER_R_INSTALL:core:1\nOPEN_WRANGLER_R_INSTALL:core:2\nOPEN_WRANGLER_R_INSTALL:core:3\n" +
+        "OPEN_WRANGLER_R_INSTALL:supplemental:4\n"
+    ),
+    ["R acceptance supplemental installation completed in 4 ms."]
+  );
+  const record = "\nOPEN_WRANGLER_R_INSTALL:core:1\n";
+  const limit = 1024 * 1024;
+  assert.equal(rAcceptanceInstallTimings("x".repeat(limit - record.length) + record).length, 1);
+  for (const value of [undefined, null, {}, "x".repeat(limit) + record, "é".repeat(limit / 2) + record]) {
+    assert.deepEqual(rAcceptanceInstallTimings(value), []);
   }
 });
 

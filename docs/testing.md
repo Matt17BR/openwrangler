@@ -657,8 +657,10 @@ launch. These include editing, native-frame opening, document execution and rest
 these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
 progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
 cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
-their start and completion against the same preparation clock. These diagnostics preserve the existing inactivity and
-absolute phase deadlines.
+their start and completion against the same preparation clock. Successful R installer processes also report bounded elapsed
+records for core packages, supplemental packages and the macOS collapse source build. Each total includes downloads
+and installation; it does not separate transfer from compilation. Other successful installer output is omitted.
+These diagnostics preserve the existing inactivity and absolute phase deadlines.
 If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
 notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
 unavailable collection yields an empty list; the failure-artifact redaction rules still apply.

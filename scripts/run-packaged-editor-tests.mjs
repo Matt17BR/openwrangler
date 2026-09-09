@@ -67,6 +67,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceQuartoPythonKernel,
   probeJupyterAcceptanceRKernel,
+  rAcceptanceInstallTimings,
   rAcceptancePackageRecordMatches,
   RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   writeJupyterAcceptanceEnvironment,
@@ -433,38 +434,25 @@ try {
               containedBy: temporaryRoot,
               nativeEditorTooling: rJupyterSelection.nativeEditorTooling
             });
-            let dependencyProbeResult;
-            try {
-              dependencyProbeResult = await runBoundedEditorCommand(
-                rAcceptanceEnvironment.dependencyProbe.input,
-                rAcceptanceEnvironment.dependencyProbe.options
-              );
-            } catch (error) {
-              if (
-                !(error instanceof Error) ||
-                !/Released-Jupyter private R dependency probe exited with code 10 and signal none/u.test(error.message)
-              ) {
-                throw error;
-              }
-              if (acceptanceMode === "r-jupyter") {
-                console.log(
-                  `R acceptance dependency installation started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
-                );
-              }
-              await runBoundedEditorCommand(
-                rAcceptanceEnvironment.dependencyInstall.input,
-                rAcceptanceEnvironment.dependencyInstall.options
-              );
-              if (acceptanceMode === "r-jupyter") {
-                console.log(
-                  `R acceptance dependency installation completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
-                );
-              }
-              dependencyProbeResult = await runBoundedEditorCommand(
-                rAcceptanceEnvironment.dependencyProbe.input,
-                rAcceptanceEnvironment.dependencyProbe.options
+            if (acceptanceMode === "r-jupyter") {
+              console.log(
+                `R acceptance dependency installation started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
               );
             }
+            const dependencyInstallResult = await runBoundedEditorCommand(
+              rAcceptanceEnvironment.dependencyInstall.input,
+              rAcceptanceEnvironment.dependencyInstall.options
+            );
+            if (acceptanceMode === "r-jupyter") {
+              console.log(
+                `R acceptance dependency installation completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+              );
+              for (const line of rAcceptanceInstallTimings(dependencyInstallResult.stdout)) console.log(line);
+            }
+            const dependencyProbeResult = await runBoundedEditorCommand(
+              rAcceptanceEnvironment.dependencyProbe.input,
+              rAcceptanceEnvironment.dependencyProbe.options
+            );
             if (!rAcceptancePackageRecordMatches(dependencyProbeResult.stdout, rAcceptanceEnvironment.packageRecord)) {
               throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
             }
