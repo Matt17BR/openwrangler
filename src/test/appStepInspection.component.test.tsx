@@ -346,12 +346,80 @@ describe("App applied-step inspection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
     expect(postMessage).not.toHaveBeenCalled();
     expect(screen.getByText("Delete this step and replay every later step?")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id, offset: 200 });
+    dispatch(inspectionResult(step.id, 200, inspection(200)));
+    expect(screen.getByRole("group", { name: "Confirm step deletion" })).toBeVisible();
+    expect(screen.getByRole("cell", { name: "sales, row 201: changed from 10.5 to 11" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Confirm step deletion" })).toBeNull();
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
+    expect(postMessage).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(postMessage).toHaveBeenCalledWith({
       kind: "rewriteCleaningPlan",
       action: "deleteStep",
       stepId: step.id,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 2
+    });
+  });
+
+  it("requires a fresh delete confirmation when selecting another step with the same operation", async () => {
+    const secondStep: TransformStep = { ...step, id: "round-again" };
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step, secondStep] },
+      page: confirmedPage,
+      summaries: []
+    });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByRole("button", { name: "Delete step" });
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
+    expect(screen.getByRole("group", { name: "Confirm step deletion" })).toBeVisible();
+    expect(postMessage).not.toHaveBeenCalled();
+
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: secondStep.id });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: secondStep.id });
+    expect(screen.getByText("Loading Round")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Confirm step deletion" })).toBeNull();
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    expect(screen.getByText("Loading Round")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+
+    const firstInspection = inspection();
+    dispatch(
+      inspectionResult(secondStep.id, 0, {
+        ...firstInspection,
+        stepId: secondStep.id,
+        stepIndex: 1,
+        inputPage: firstInspection.outputPage,
+        diff: { ...firstInspection.diff, changedCells: 0, cells: [] }
+      })
+    );
+    expect(screen.getByText("Inspecting Round")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Confirm step deletion" })).toBeNull();
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "rewriteCleaningPlan" }));
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
+    expect(screen.getByRole("group", { name: "Confirm step deletion" })).toBeVisible();
+    expect(postMessage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith({
+      kind: "rewriteCleaningPlan",
+      action: "deleteStep",
+      stepId: secondStep.id,
       offset: 0,
       limit: 200,
       columnOffset: 0,

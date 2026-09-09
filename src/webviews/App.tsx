@@ -2242,6 +2242,7 @@ export function App() {
 
         {metadata && inspectionMode && (
           <StepInspectionPanel
+            key={JSON.stringify([metadata.sessionId, stepInspectionTarget?.stepId])}
             operationTitle={selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : undefined}
             pendingOffset={pendingStepInspection?.offset}
             pageSize={pageSize}
