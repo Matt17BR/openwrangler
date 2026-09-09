@@ -444,7 +444,7 @@ try {
             if (dependencyProbeResult.stdout !== rAcceptanceEnvironment.packageRecord) {
               throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
             }
-            process.stdout.write(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}\n`);
+            console.log(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}`);
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
