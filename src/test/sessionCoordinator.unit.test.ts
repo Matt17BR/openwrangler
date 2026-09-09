@@ -23,18 +23,17 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator", () => {
-  it("observes asynchronous shutdown rejection from its synchronous disposable fallback", () => {
+  it("observes asynchronous shutdown rejection from its synchronous disposable fallback", async () => {
     const coordinator = new SessionCoordinator();
-    const observeRejection = vi.fn((_onRejected: (reason: unknown) => unknown) => Promise.resolve());
-    const shutdown = vi
-      .spyOn(coordinator, "shutdown")
-      .mockReturnValue({ catch: observeRejection } as unknown as Promise<void>);
+    const rejectedShutdown = Promise.reject<void>(new Error("synthetic shutdown rejection"));
+    const observeRejection = vi.spyOn(rejectedShutdown, "catch");
+    const shutdown = vi.spyOn(coordinator, "shutdown").mockReturnValue(rejectedShutdown);
 
     coordinator.dispose();
 
     expect(shutdown).toHaveBeenCalledOnce();
     expect(observeRejection).toHaveBeenCalledOnce();
-    expect(observeRejection.mock.calls[0][0]).toBeTypeOf("function");
+    await expect(observeRejection.mock.results[0]!.value).resolves.toBeUndefined();
   });
 
   it("forwards a fixed panel diagnostic without opening or changing a session", () => {
