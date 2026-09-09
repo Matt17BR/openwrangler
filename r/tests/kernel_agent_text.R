@@ -787,9 +787,23 @@ assert_identical(find_regex_apply$action, "apply", "regex R Find and Replace did
 if (!grepl(".ow_output <- toupper(.ow_utf8)", find_regex_apply$code, fixed = TRUE)) {
   stop("generated R Uppercase lost its native toupper expression", call. = FALSE)
 }
-if (!grepl("gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, perl = TRUE)", find_regex_apply$code, fixed = TRUE)) {
-  stop("generated regex R Find and Replace lost its native gsub expression", call. = FALSE)
-}
+assert_identical(
+  sum(grepl("^  \\.ow_prepare_find_replace_regex <-", strsplit(find_regex_apply$code, "\n", fixed = TRUE)[[1L]])),
+  1L,
+  "generated regex R Find and Replace must emit its calculation owner once"
+)
+assert_identical(
+  grepl(
+    paste(c("  .ow_prepare_find_replace_regex <-", paste0("  ", deparse(
+      openwrangler_r_frame_contract$prepare_find_replace_regex,
+      width.cutoff = 500L
+    ))), collapse = "\n"),
+    find_regex_apply$code,
+    fixed = TRUE
+  ),
+  TRUE,
+  "generated regex R Find and Replace must use the live native calculation"
+)
 assign("text_cleanup_frame", source_environment$text_cleanup_frame, envir = .GlobalEnv)
 eval(parse(text = find_regex_apply$code), envir = .GlobalEnv)
 text_cleanup_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -1613,6 +1627,68 @@ rm("text_failure_frame", envir = .GlobalEnv)
 if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
   rm("open_wrangler_result", envir = .GlobalEnv)
 }
+
+repeated_find_open <- dispatch(
+  "openSession",
+  list(sessionId = text_cleanup_session_id, variableName = "text_cleanup_frame", page = page_window())
+)
+assert_identical(repeated_find_open$kind, "page", "the repeated R Find session did not open")
+repeated_find_cases <- list(
+  list(find = "-", replacement = ":", regex = FALSE, expected = c("alpha:12", "béta:34", NA_character_)),
+  list(find = "^(.+):([0-9]+)$", replacement = "\\2/\\1", regex = TRUE, expected = c("12/alpha", "34/béta", NA_character_)),
+  list(find = "^([0-9]+)/(.+)$", replacement = "\\U\\2\\E-\\1", regex = TRUE, expected = c("ALPHA-12", "BÉTA-34", NA_character_)),
+  list(find = "-", replacement = "|", regex = FALSE, expected = c("ALPHA|12", "BÉTA|34", NA_character_)),
+  list(find = "^([^|]+)[|]([0-9]+)$", replacement = "\\2:\\1", regex = TRUE, expected = c("12:ALPHA", "34:BÉTA", NA_character_))
+)
+repeated_find_has_regex <- FALSE
+for (find_index in seq_along(repeated_find_cases)) {
+  find_case <- repeated_find_cases[[find_index]]
+  repeated_find_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = text_cleanup_session_id,
+      revision = as.integer(2L * (find_index - 1L)),
+      step = text_transform_step(
+        "findReplace", paste0("repeated-find-", find_index), "r:c:0", "text",
+        find = find_case$find, replacement = find_case$replacement, regex = find_case$regex
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(repeated_find_preview$kind, "stepPreview", "a repeated R Find step did not preview")
+  repeated_find_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = text_cleanup_session_id, revision = repeated_find_preview$revision, page = page_window())
+  )
+  assert_identical(repeated_find_apply$action, "apply", "a repeated R Find step did not apply")
+  assert_identical(
+    vapply(repeated_find_apply$page$page$rows, function(row) {
+      cell <- row$values[[1L]]
+      if (isTRUE(cell$isNull)) NA_character_ else cell$raw
+    }, character(1L)),
+    find_case$expected,
+    "repeated R Find steps did not keep their own replacement semantics"
+  )
+  repeated_find_has_regex <- repeated_find_has_regex || find_case$regex
+  repeated_find_lines <- strsplit(repeated_find_apply$code, "\n", fixed = TRUE)[[1L]]
+  assert_identical(
+    sum(grepl("^  \\.ow_prepare_find_replace_regex <-", repeated_find_lines)),
+    as.integer(repeated_find_has_regex),
+    "generated R Find must select one regex owner only when the plan needs it"
+  )
+  repeated_find_environment <- new.env(parent = baseenv())
+  repeated_find_environment$text_cleanup_frame <- text_cleanup_before
+  repeated_find_environment$gsub <- function(...) stop("caller gsub replaced native Find", call. = FALSE)
+  repeated_find_environment$.ow_prepare_find_replace_regex <- function(...) stop("caller helper replaced native Find", call. = FALSE)
+  eval(parse(text = repeated_find_apply$code), envir = repeated_find_environment)
+  repeated_find_expected <- text_cleanup_before
+  repeated_find_expected$text <- find_case$expected
+  assert_identical(repeated_find_environment$open_wrangler_result, repeated_find_expected, "generated mixed R Find changed values, types or row names")
+  assert_identical(repeated_find_environment$text_cleanup_frame, text_cleanup_before, "generated mixed R Find mutated its source")
+}
+assert_identical(source_environment$text_cleanup_frame, text_cleanup_before, "repeated live R Find mutated its source")
+repeated_find_closed <- dispatch("closeSession", list(sessionId = text_cleanup_session_id))
+assert_identical(repeated_find_closed$kind, "closed", "the repeated R Find session did not close")
 
 source_environment$fill_frame <- data.frame(
   amount = c(1L, NA_integer_, 3L),
