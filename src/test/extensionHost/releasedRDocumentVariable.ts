@@ -4,6 +4,7 @@ import type { Locator, Page } from "playwright-core";
 import type { Uri } from "vscode";
 
 interface ReleasedRDocumentVariableDependencies {
+  readonly boundedImportPromptDiagnostics: (workbench: Page) => Promise<{ readonly notifications: readonly string[] }>;
   readonly releasedJupyterQuickPickRow: (picker: Locator, variableName: string) => Promise<Locator | undefined>;
   readonly runReleasedRDocument: (source: Pick<Uri, "fsPath">) => PromiseLike<boolean>;
   readonly withBoundedAcceptancePromise: <T>(
@@ -14,6 +15,7 @@ interface ReleasedRDocumentVariableDependencies {
 }
 
 export function createReleasedRDocumentVariableInvoker({
+  boundedImportPromptDiagnostics,
   releasedJupyterQuickPickRow,
   runReleasedRDocument,
   withBoundedAcceptancePromise
@@ -31,10 +33,17 @@ export function createReleasedRDocumentVariableInvoker({
       picker.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ kind: "picker" as const })),
       Promise.resolve(outcome).then((value) => ({ kind: "outcome" as const, value }))
     ]);
+    const notifications =
+      first.kind === "picker"
+        ? []
+        : (await boundedImportPromptDiagnostics(workbench)).notifications
+            .slice(0, 8)
+            .map((value) => value.replace(/\s+/gu, " ").trim().slice(0, 1_000));
     assert.equal(
       first.kind,
       "picker",
-      `The public R-file command ended before showing its real picker: ${JSON.stringify(first)}.`
+      `The public R-file command ended before showing its real picker: ${JSON.stringify(first)}. ` +
+        `Notifications: ${JSON.stringify(notifications)}.`
     );
     if (assertDiscovery) {
       for (const [name, flavor] of [
