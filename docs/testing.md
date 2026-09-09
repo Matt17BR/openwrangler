@@ -756,9 +756,9 @@ keeps its separate environment and lifetime. The separate R 4.4 qualification re
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, Mark Duplicates and Dense Rank forms, compact
 column reveal and focus, and the full Rename lifecycle with inspection, Edit, Undo/Redo, all-row exports, source
-refusal, Save, clipboard and source-bound notebook insertion. It also retains all three collapse-frame opens, one
-operation per additional native frame flavor, direct-document execution and kernel restart/recovery. Three page
-windows after Dense Rank Apply check exact ranks, missing cells and row identities. The native kernel owner checks
+refusal, Save, clipboard and source-bound notebook insertion. It also retains all three collapse-frame opens,
+direct-document execution and kernel restart/recovery. Three page windows after Dense Rank Apply check exact ranks,
+missing cells and row identities. The native kernel owner checks
 all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for
 both operations. Requested code-insertion screenshots keep the same capture owner.
 If the Mark Duplicates Undo wait fails, its diagnostic records bounded session, scheduler and renderer state and
@@ -766,9 +766,10 @@ the visible alert. The diagnostic does not initiate synchronization or retry the
 separate two-second limit.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
-native Viewing opens and both native-flavor operations. These repetitions are omitted on macOS; source and generated
-operation semantics remain covered by their R contract owners. Windows and Cursor retain their representative
-profiles. The editor phase has a 300-second absolute deadline; preparation and cleanup add to total wall time.
+native Viewing opens and both native-flavor operations. macOS omits the additional tibble Rename and keyed-data.table
+Drop editing round; those class-specific semantics remain in the native R contracts, Linux comprehensive and Windows
+representative journeys. Windows and Cursor retain their representative profiles. The editor phase has a 300-second
+absolute deadline; preparation and cleanup add to total wall time.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package
