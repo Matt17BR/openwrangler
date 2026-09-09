@@ -362,7 +362,8 @@ Decimal(38,0), avoiding an overflowing intermediate at the old scale. For Round 
 precision below 38 is widened before native rounding. At precision 38, rows whose rounded coefficient would exceed
 capacity are masked before rounding and receive exact target-typed endpoints. At zero decimal places, the half-even
 ties at ±0.5 still produce zero. Native expressions preserve nulls; negative-precision Round retains its existing local
-Decimal context. Live and generated paths agree. The physical coefficient mapping, also used by Min-max Scale, is
+Decimal context. Polars Round uses one normal Python helper module for live execution and emits its source into
+standalone generated programs. The physical coefficient mapping, also used by Min-max Scale, is
 checked on minimum and current Polars; `to_physical` does not promise representation stability across future versions.
 
 Dense Rank appends one integer column while preserving the cleaning input's row order, existing column identities
