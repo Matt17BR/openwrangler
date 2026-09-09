@@ -638,6 +638,10 @@ Built-in R means and profile medians use primitive numeric calculations that byp
 Live operations and their generated programs agree; Custom Code retains the caller's ordinary R dispatch.
 Profile calculation and precision limits are described in [ADR 0001](decisions/0001-native-r-runtime.md).
 
+One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
+duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
+before publishing a result. Other selected columns can still supply valid categories.
+
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 

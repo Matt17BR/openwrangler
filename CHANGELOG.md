@@ -26,6 +26,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R One-hot encoding no longer creates phantom indicators for empty or all-missing duration columns.
 - Single-column cleaning forms retain their chosen target when a schema change removes it or makes it incompatible.
   Preview requires an explicit replacement instead of silently selecting another column.
 - Cleaning forms retain unavailable column selections after schema changes and offer an explicit repair action.

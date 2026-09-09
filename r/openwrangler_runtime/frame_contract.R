@@ -4356,7 +4356,8 @@ openwrangler_r_frame_contract <- local({
         },
         difftime = paste(
           vapply(categories, exact_double, character(1L), USE.NAMES = FALSE),
-          semantics$units
+          semantics$units,
+          recycle0 = TRUE
         ),
         abort("internal-error", "oneHotEncode received an unsupported R scalar kind")
       )
