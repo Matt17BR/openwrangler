@@ -5386,14 +5386,24 @@ cast_ancient_datetime <- openwrangler_r_frame_contract$cast_column_at(
   "datetime",
   "datetime"
 )
+# Native year padding differs: keep year 0001 only when this runtime can display its ISO form.
+cast_ancient_date_expected <- as.Date(c("2024-02-29", "0001-01-01", NA))
+if (!identical(format(cast_ancient_date_expected[2L], "%Y-%m-%d"), "0001-01-01")) {
+  cast_ancient_date_expected[2L] <- as.Date(NA_character_)
+}
+cast_ancient_datetime_expected <- as.POSIXct(c("2024-02-29 12:00:00", "0001-01-01 00:00:00", NA), tz = "UTC")
+if (!identical(format(cast_ancient_datetime_expected[2L], "%Y-%m-%dT%H:%M:%OS6", tz = "UTC"),
+  "0001-01-01T00:00:00.000000")) {
+  cast_ancient_datetime_expected[2L] <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+}
 assert_identical(
   cast_ancient_date$date,
-  as.Date(c("2024-02-29", NA, NA)),
+  cast_ancient_date_expected,
   "castColumn created a Date that the page contract cannot encode"
 )
 assert_identical(
   cast_ancient_datetime$datetime,
-  as.POSIXct(c("2024-02-29 12:00:00", NA, NA), tz = "UTC"),
+  cast_ancient_datetime_expected,
   "castColumn created a POSIXct value that the page contract cannot encode"
 )
 invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_date))
@@ -5409,9 +5419,13 @@ cast_ancient_posix_date <- openwrangler_r_frame_contract$cast_column_at(
   "instant",
   "date"
 )
+cast_ancient_posix_date_expected <- as.Date(cast_ancient_posix$instant, tz = "UTC")
+if (!identical(format(cast_ancient_posix_date_expected[2L], "%Y-%m-%d"), "0001-01-01")) {
+  cast_ancient_posix_date_expected[2L] <- as.Date(NA_character_)
+}
 assert_identical(
   cast_ancient_posix_date$instant,
-  as.Date(c("2024-02-29", NA)),
+  cast_ancient_posix_date_expected,
   "POSIXct-to-Date cast created a value that the page contract cannot encode"
 )
 invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_posix_date))

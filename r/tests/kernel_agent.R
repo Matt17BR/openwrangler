@@ -4698,7 +4698,7 @@ assert_identical(cast_table_closed$kind, "closed", "the R data.table Cast sessio
 
 source_environment$cast_off_page <- data.frame(
   elapsed = as.difftime(c(rep(1, 100L), NaN), units = "hours"),
-  date_text = c(rep("2024-02-29", 100L), "0001-01-01"),
+  date_text = c(rep("2024-02-29", 100L), "0000-01-01"),
   check.names = FALSE
 )
 cast_off_page_before <- unserialize(serialize(source_environment$cast_off_page, NULL, version = 3L))
@@ -4757,7 +4757,7 @@ assert_identical(
 assert_identical(
   is.na(cast_off_page_generated$date_text[[101L]]),
   TRUE,
-  "generated R date Cast disagreed with the live off-page ancient-date result"
+  "generated R date Cast disagreed with the live off-page year-zero refusal"
 )
 assert_identical(
   get("cast_off_page", envir = .GlobalEnv, inherits = FALSE),
