@@ -463,7 +463,7 @@ function linuxProcessHasOwner(pid, ownerToken) {
 
 function parsePsProcessIdentity(line, ownerToken) {
   const match =
-    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
+    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
       line
     );
   if (!match) return undefined;
@@ -471,10 +471,10 @@ function parsePsProcessIdentity(line, ownerToken) {
     pid: Number(match[1]),
     parentPid: Number(match[2]),
     groupId: Number(match[3]),
-    state: "?",
-    startIdentity: match[4],
-    command: match[5],
-    ownerMarked: typeof ownerToken === "string" && match[5].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
+    state: match[4][0],
+    startIdentity: match[5],
+    command: match[6],
+    ownerMarked: typeof ownerToken === "string" && match[6].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
     identityResolution: "second"
   });
 }
@@ -482,7 +482,7 @@ function parsePsProcessIdentity(line, ownerToken) {
 export function readPsProcessIdentity(pid, { execute = execFileSync, ownerToken } = {}) {
   let output;
   try {
-    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
+    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,state=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 64 * 1024,
       timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
@@ -504,7 +504,7 @@ function readPosixProcessIdentity(pid, ownerToken) {
 
 function listPosixProcessIdentities(ownerToken) {
   if (process.platform !== "linux") {
-    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,lstart=,command="], {
+    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,state=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
@@ -641,7 +641,7 @@ export function createPosixProcessTracker(
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
-        if (observed.has(identity.pid)) continue;
+        if (identity.state === "Z" || observed.has(identity.pid)) continue;
         const retired = retiredIdentities.get(processIdentityKey(identity));
         if (retired) {
           if (retired.identityResolution === "second" || identity.identityResolution === "second") {
