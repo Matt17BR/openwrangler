@@ -645,6 +645,8 @@ Generated One-hot code normalizes text before choosing categories and comparing 
 execution across text encodings. It validates the complete input before formatting distinct category labels.
 Multi-label encoding retains its per-row text preparation.
 
+Convert Type to text retains a character output column for empty duration input in both live and generated execution.
+
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 

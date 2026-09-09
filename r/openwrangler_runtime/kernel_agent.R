@@ -6306,7 +6306,7 @@ openwrangler_r_kernel_agent <- local({
       "      .ow_duration <- as.double(.ow_value, units = attr(.ow_value, \"units\"))",
       "      .ow_number <- .ow_cast_double_text(.ow_duration)",
       "      .ow_number[is.nan(.ow_duration)] <- NA_character_",
-      "      return(ifelse(is.na(.ow_number), NA_character_, paste(.ow_number, attr(.ow_value, \"units\"))))",
+      "      return(as.character(ifelse(is.na(.ow_number), NA_character_, paste(.ow_number, attr(.ow_value, \"units\")))))",
       "    }",
       "    if (identical(.ow_target, \"integer\")) {",
       "      if (identical(.ow_kind, \"integer64\")) return(.ow_value)",

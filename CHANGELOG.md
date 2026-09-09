@@ -27,6 +27,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated native R Convert Type preserves text output when its duration input has no rows.
 - Native R One-hot encoding no longer creates phantom indicators for empty or all-missing duration columns.
 - Generated native R One-hot encoding groups equivalent text encodings consistently under the C locale.
 - Single-column cleaning forms retain their chosen target when a schema change removes it or makes it incompatible.
