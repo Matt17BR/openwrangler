@@ -272,7 +272,7 @@ jobs:
           const { pathToFileURL } = require("node:url");
 
           (async () => {
-            const { prepareJupyterAcceptanceREnvironment } = await import(pathToFileURL(resolve("scripts/jupyter-acceptance-environment.mjs")));
+            const { prepareJupyterAcceptanceREnvironment, rAcceptancePackageRecordMatches } = await import(pathToFileURL(resolve("scripts/jupyter-acceptance-environment.mjs")));
             const { runBoundedEditorCommand } = await import(pathToFileURL(resolve("scripts/editor-acceptance.mjs")));
             const { createEditorAcceptancePrivateRootReceipt, removeEditorAcceptancePrivateRoot } = await import(pathToFileURL(resolve("scripts/packaged-editor-orchestration.mjs")));
             const { createRContractPhases, selectRContractPhases, runRContractPhasesWithSignalForwarding } = await import(pathToFileURL(resolve("scripts/run-r-contract-tests.mjs")));
@@ -298,7 +298,7 @@ jobs:
             console.log(runtime.stdout);
             await runBoundedEditorCommand(prepared.dependencyInstall.input, prepared.dependencyInstall.options);
             const probe = await runBoundedEditorCommand(prepared.dependencyProbe.input, prepared.dependencyProbe.options);
-            if (probe.stdout !== prepared.packageRecord) {
+            if (!rAcceptancePackageRecordMatches(probe.stdout, prepared.packageRecord)) {
               throw new Error("R source qualification did not resolve its reviewed private package versions.");
             }
             console.log(`R source packages:\n${prepared.packageRecord}`);

@@ -1923,6 +1923,10 @@ function javaSpecificationMajor(specificationVersion) {
   return major;
 }
 
+export function rAcceptancePackageRecordMatches(stdout, packageRecord) {
+  return stdout.replaceAll("\r\n", "\n") === packageRecord;
+}
+
 export async function prepareJupyterAcceptanceREnvironment(
   directory,
   rscript,
