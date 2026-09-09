@@ -2235,6 +2235,35 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
         ("subtract", "uint64[pyarrow]", [2**64 - 1, 1], "int64[pyarrow]", [-1, 1], None, None),
         ("subtract", "uint64[pyarrow]", [2**64 - 1, 0], "uint64[pyarrow]", [0, 1], None, None),
         ("subtract", "int64[pyarrow]", [0, None], "uint64[pyarrow]", [2**64 - 1, None], None, None),
+        ("power", "int64[pyarrow]", [-3, 0, None], None, "40", "uint64[pyarrow]", [3**40, 0, None]),
+        (
+            "power",
+            "int64[pyarrow]",
+            [-3037000500, -1, None],
+            None,
+            "2",
+            "uint64[pyarrow]",
+            [3037000500**2, 1, None],
+        ),
+        (
+            "power",
+            "int64[pyarrow]",
+            [-1, 0, 1, None],
+            None,
+            str(2**64 - 2),
+            "uint64[pyarrow]",
+            [1, 0, 1, None],
+        ),
+        ("power", "int8[pyarrow]", [-128, None], None, "2", "int64[pyarrow]", [16384, None]),
+        ("power", "int64[pyarrow]", [-3, 0, None], None, "2", "int64[pyarrow]", [9, 0, None]),
+        ("power", "int64[pyarrow]", [-2, None], None, "63", "int64[pyarrow]", [-(2**63), None]),
+        ("power", "int64[pyarrow]", [0, None], None, "0", "int64[pyarrow]", [1, None]),
+        ("power", "int8[pyarrow]", [], None, "2", "int64[pyarrow]", []),
+        ("power", "int64[pyarrow]", [None, None], None, "2", "int64[pyarrow]", [None, None]),
+        ("power", "int64[pyarrow]", [-(2**63), None], None, "2", None, None),
+        ("power", "int64[pyarrow]", [2**32, None], None, "2", None, None),
+        ("power", "int64[pyarrow]", [-1, None], None, "-2", None, None),
+        ("power", "int64[pyarrow]", [-3, None], "uint64[pyarrow]", [40, None], None, None),
     ],
 )
 def test_pandas_arrow_integer_results_keep_exact_native_capacity(
@@ -2601,6 +2630,7 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "negative-column-sparse",
         "below-negative-uint64",
         "above-uint64",
+        "power-above-uint64",
         "decimal-capacity",
         "decimal-negative-scale",
     ],
@@ -2623,6 +2653,9 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         operand, error = -(2**64), OverflowError
     elif family == "above-uint64":
         operand, op, error = 2**64, "multiply", OverflowError
+    elif family == "power-above-uint64":
+        value = pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]")
+        operand, op, error = 2**64, "power", OverflowError
     elif family == "decimal-capacity":
         value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
     elif family == "decimal-negative-scale":

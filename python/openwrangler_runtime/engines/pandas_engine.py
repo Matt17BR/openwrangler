@@ -5283,6 +5283,24 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
             return True
 
         if (
+            operator == "power"
+            and is_integer_column(left)
+            and type(right) is int
+            and 0 < right < 2**64
+            and right % 2 == 0
+        ):
+            import pyarrow.compute as pc
+
+            # Widen narrow signed minima before taking their magnitude.
+            first = pc.cast(pa.array(left.array), pa.int64())
+            try:
+                magnitude = pc.cast(pc.call_function("abs_checked", [first]), pa.uint64())
+                result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])
+            except pa.ArrowInvalid:
+                raise error from None
+            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+
+        if (
             operator == "subtract"
             and is_integer_column(left, signed_only=False)
             and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
@@ -5575,6 +5593,24 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "or dtype.itemsize > 8:",
         "                    return False",
         "            return True",
+        "",
+        "        if (",
+        '            operator == "power"',
+        "            and is_integer_column(left)",
+        "            and type(right) is int",
+        "            and 0 < right < 2**64",
+        "            and right % 2 == 0",
+        "        ):",
+        "            import pyarrow.compute as pc",
+        "",
+        "            # Widen narrow signed minima before taking their magnitude.",
+        "            first = pc.cast(pa.array(left.array), pa.int64())",
+        "            try:",
+        '                magnitude = pc.cast(pc.call_function("abs_checked", [first]), pa.uint64())',
+        '                result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])',
+        "            except pa.ArrowInvalid:",
+        "                raise error from None",
+        "            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
         "",
         "        if (",
         '            operator == "subtract"',
