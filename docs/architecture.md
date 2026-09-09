@@ -641,6 +641,9 @@ Profile calculation and precision limits are described in [ADR 0001](decisions/0
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
 before publishing a result. Other selected columns can still supply valid categories.
+Generated One-hot code normalizes text before choosing categories and comparing indicator values, matching live
+execution across text encodings. It validates the complete input before formatting distinct category labels.
+Multi-label encoding retains its per-row text preparation.
 
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.

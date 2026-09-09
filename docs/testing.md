@@ -206,6 +206,8 @@ frame families. Mixed cleaning and Custom Code plans verify that metadata differ
 Native R categorical owners check empty and all-missing duration columns with both source-column retention modes.
 Public refusal preserves the session; standalone generated refusal preserves its prior result binding. A mixed
 duration/text case checks Preview, Apply, generated values and Undo against the original source.
+C-locale controls verify equivalent text encodings, first-seen signed-zero duration labels, and mixed One-hot and
+Multi-label plans with character or factor input. They restore the locale and preserve exact source storage.
 
 The existing scalar-categorical kernel case verifies that integer64 One-hot Encode omits unused arithmetic code,
 retains primitive validation, and includes the arithmetic dependencies needed by a later Formula's right operand.

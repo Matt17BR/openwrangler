@@ -335,7 +335,8 @@ retains its configured comparison of ordinary numeric keys.
 Repeated data.table column labels do not merge distinct selected columns during comparison.
 
 One-hot encoding creates no indicators for empty or all-missing duration columns. It refuses a selection that produces
-no indicators; other selected columns can still contribute valid categories.
+no indicators; other selected columns can still contribute valid categories. Equivalent text encodings produce the
+same categories in live and generated code, including under the C locale. Retained source columns keep their storage.
 
 The complete current operation set has direct native live, generated-code, and replay contracts. The exact names and
 parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with

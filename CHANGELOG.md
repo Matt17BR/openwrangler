@@ -8,6 +8,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Pandas Formula accepts more exact Arrow integer products, including signed-minimum negation and results that fit UInt64.
 - Generated native R Group By reuses live exact integer accumulation, including batching for ordinary integer sums.
+- Generated native R One-hot encoding prepares distinct category labels and avoids repeated source searches.
 - Mark Duplicates flags every row whose selected values occur more than once. It retains all records and their
   order, with matching generated code in Pandas, Polars, DuckDB and native R.
 
@@ -27,6 +28,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Fixed
 
 - Native R One-hot encoding no longer creates phantom indicators for empty or all-missing duration columns.
+- Generated native R One-hot encoding groups equivalent text encodings consistently under the C locale.
 - Single-column cleaning forms retain their chosen target when a schema change removes it or makes it incompatible.
   Preview requires an explicit replacement instead of silently selecting another column.
 - Cleaning forms retain unavailable column selections after schema changes and offer an explicit repair action.
