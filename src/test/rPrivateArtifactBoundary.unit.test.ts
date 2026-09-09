@@ -1,4 +1,16 @@
-import { lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -347,9 +359,12 @@ describe("R private artifact boundary", () => {
     expect(await readFile(await soleQuarantinedArtifact(directory))).toEqual(Buffer.alloc(0));
   });
 
-  it("rejects a same-inode rewrite but still removes that exact owned artifact", async () => {
+  it("rejects a metadata-visible same-inode rewrite but still removes that exact owned artifact", async () => {
     const artifactPath = resolve(directory, "export.csv");
     await writeFile(artifactPath, "owned", { mode: 0o600 });
+    // Separate the initial mtime from the write even on coarse filesystem clocks.
+    const initialTime = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(artifactPath, initialTime, initialTime);
     let rewritten = false;
 
     const error = await captureFailure(() =>

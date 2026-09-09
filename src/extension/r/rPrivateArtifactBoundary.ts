@@ -545,7 +545,7 @@ function snapshotFromMetadata(metadata: BigIntStats): RPrivateArtifactSnapshot {
 }
 
 function sameArtifactIdentity(left: RPrivateArtifactSnapshot, right: RPrivateArtifactSnapshot): boolean {
-  // Size and timestamps prove read stability, but they do not define cleanup
+  // Size and timestamps detect observable changes, but they do not define cleanup
   // ownership. A rejected same-inode rewrite is still the exact file to remove.
   return (
     left.dev === right.dev &&
