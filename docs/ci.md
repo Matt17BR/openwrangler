@@ -22,6 +22,9 @@ investigation.
 Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. Native cancellation
 contracts run once, with the frame/interactive-transport shard; scheduled R 4.4 qualification includes them through the
 full R command. Each shard retains serial execution within its own worker. Source keeps its existing Node-only test owner.
+These Linux workers move the hosted image's unused `google-chrome.sources` file outside APT's source directory before
+R installation. This keeps a Chrome repository outage from blocking R setup or its system dependencies. Required
+repositories retain APT's signature and hash checks.
 
 Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python and Windows
 run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing regular,
