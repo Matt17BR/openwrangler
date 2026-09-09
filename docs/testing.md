@@ -217,8 +217,9 @@ surviving edit targets and new-operation forms retain their input.
 FilterPanel controls retain unavailable column targets and unfinished text while blocking dispatch until explicit
 repair. They preserve initial defaults, deliberate navigation and same-ID rename/return behavior. The App progressive-profiling owner
 replaces a session with reused column IDs to verify fresh draft/search input and continued rejection of old responses.
-FilterPanel and Operation Builder owners distinguish generated position labels from literal source names. Viewing
-selectors retain stable IDs, refuse ambiguous source names and dispatch the original name after a valid selection.
+FilterPanel and Operation Builder owners distinguish generated position labels from literal source names and names
+that collapse to the same HTML option text. Viewing selectors retain stable IDs, refuse duplicate raw source names
+and dispatch the original name after a valid selection, including newline and whitespace-only names.
 Operation Builder and Fill Missing controls check explicit repair of unavailable column selections, optional All
 semantics, retained valid selection order and names, controlled grouping, and search recovery after schema changes.
 The App owner checks that failed Undo retains selection and successful Undo cannot silently broaden a retained

@@ -1307,15 +1307,18 @@ describe("FilterPanel", () => {
     const ambiguousMetadata: SessionMetadata = {
       ...metadata,
       backend: "pandas",
-      shape: { rows: 2, columns: 6 },
-      filteredShape: { rows: 2, columns: 6 },
+      shape: { rows: 2, columns: 9 },
+      filteredShape: { rows: 2, columns: 9 },
       schema: [
         "value",
         "value",
         "value (column 1)",
         "value, column 1",
         "value, source column 1",
-        "value, source column 1 (2)"
+        "value, source column 1 (2)",
+        "a b",
+        "a\nb",
+        " "
       ].map((name, position) => ({
         id: `c:${position}`,
         name,
@@ -1358,11 +1361,12 @@ describe("FilterPanel", () => {
     ).toHaveAttribute("role", "status");
     for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
       const options = within(select).getAllByRole<HTMLOptionElement>("option");
-      expect(new Set(options.map((option) => option.textContent)).size).toBe(ambiguousMetadata.schema.length);
+      expect(new Set(options.map((option) => option.label)).size).toBe(ambiguousMetadata.schema.length);
       expect(options.map((option) => option.value)).toEqual(ambiguousMetadata.schema.map((column) => column.id));
-      for (const column of ambiguousMetadata.schema.slice(2)) {
+      for (const column of ambiguousMetadata.schema.slice(2, 6)) {
         expect(within(select).getByRole("option", { name: column.name })).toHaveValue(column.id);
       }
+      expect(options[8]!.label).toBe("(whitespace name), column 9");
       expect(select).toBeEnabled();
     }
     expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
@@ -1414,6 +1418,13 @@ describe("FilterPanel", () => {
       filters: [],
       sort: [{ column: "value, column 1", direction: "asc", nulls: "last" }]
     });
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:7" } });
+    expect(screen.getByLabelText<HTMLSelectElement>("Filter column").selectedOptions[0]!.label).toBe("a b, column 8");
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
+    expect(onRequestValues).toHaveBeenLastCalledWith("a\nb", "");
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:8" } });
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
+    expect(onRequestValues).toHaveBeenLastCalledWith(" ", "");
   });
 
   it("handles an empty schema without dispatching invalid filters", () => {
