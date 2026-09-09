@@ -212,14 +212,14 @@ jobs:
 
   r-macos:
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}
     uses: ./.github/workflows/released-jupyter.yml
     with:
       target: macos-r
 
   r-windows:
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}
     uses: ./.github/workflows/released-jupyter.yml
     with:
       target: windows-r
@@ -237,26 +237,17 @@ jobs:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
           R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
           RUNTIME_RESULT: ${{ needs.r-runtime.result }}
-          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
           MACOS_CALL_RESULT: ${{ needs.r-macos.result }}
           MACOS_RESULT: ${{ needs.r-macos.outputs.macos_result }}
           WINDOWS_CALL_RESULT: ${{ needs.r-windows.result }}
           WINDOWS_RESULT: ${{ needs.r-windows.outputs.windows_result }}
         run: |
           test "$PROOF_RESULT" = success
-          case "$R_OMITTABLE:$RUNTIME_RESULT" in
-            true:skipped)
+          case "$R_OMITTABLE:$RUNTIME_RESULT:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
+            true:skipped:skipped::skipped:)
               echo 'Native R checks omitted: the tested merge only edits existing regular Python runtime/test source or Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
-            false:success) ;;
-            *) exit 1 ;;
-          esac
-          case "$DOCS_ONLY:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
-            true:skipped::skipped:)
-              test "$R_OMITTABLE" = true
-              echo 'Installed R checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            false:success:success:success:success) ;;
+            false:success:success:success:success:success) ;;
             *) exit 1 ;;
           esac
 
