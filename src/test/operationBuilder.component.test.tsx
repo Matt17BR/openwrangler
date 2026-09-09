@@ -1360,15 +1360,23 @@ describe("OperationBuilder", () => {
   });
 
   it("keeps every visible label unique when source names imitate positional fallbacks", () => {
+    const onPreview = vi.fn();
     const columns = [
       { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
       { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
-      { ...metadata.schema[0], id: "c:2", name: "other_a", position: 2 },
-      { ...metadata.schema[0], id: "c:3", name: "other_b", position: 3 },
-      { ...metadata.schema[0], id: "c:4", name: "value, column 1", position: 4 },
+      { ...metadata.schema[0], id: "c:2", name: "a b", position: 2 },
+      { ...metadata.schema[0], id: "c:3", name: "a  b", position: 3 },
+      { ...metadata.schema[0], id: "c:4", name: "value,\tcolumn 1", position: 4 },
       { ...metadata.schema[0], id: "c:5", name: "value, column 1, column 5", position: 5 },
-      { ...metadata.schema[0], id: "c:6", name: "value, source column 1", position: 6 },
-      { ...metadata.schema[0], id: "c:7", name: "value, source column 1 (2)", position: 7 }
+      { ...metadata.schema[0], id: "c:6", name: "value,\nsource column 1", position: 6 },
+      { ...metadata.schema[0], id: "c:7", name: "value, source column 1 (2)\r ", position: 7 },
+      { ...metadata.schema[0], id: "c:8", name: "\r a\t\n\f\rb \r", position: 8 },
+      { ...metadata.schema[0], id: "c:9", name: " ", position: 9 },
+      { ...metadata.schema[0], id: "c:10", name: "\t", position: 10 },
+      { ...metadata.schema[0], id: "c:11", name: "(whitespace name),\tcolumn 10", position: 11 },
+      { ...metadata.schema[0], id: "c:12", name: "a\u00a0b", position: 12 },
+      { ...metadata.schema[0], id: "c:13", name: " lone  name ", position: 13 },
+      { ...metadata.schema[0], id: "c:14", name: "a\nb", position: 14 }
     ];
     render(
       <OperationBuilder
@@ -1381,18 +1389,35 @@ describe("OperationBuilder", () => {
         filterModel={{ filters: [], sort: [] }}
         initialKind="renameColumn"
         onClose={() => undefined}
-        onPreview={() => undefined}
+        onPreview={onPreview}
       />
     );
 
-    const options = screen.getAllByRole("option");
-    const visibleLabels = options.map((option) => option.textContent);
+    const options = screen.getAllByRole<HTMLOptionElement>("option");
+    const visibleLabels = options.map((option) => option.label);
     expect(new Set(visibleLabels).size).toBe(visibleLabels.length);
-    expect(screen.getByRole("option", { name: "value, source column 1 (3)" })).toHaveValue("c:0");
-    expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:4");
-    expect(screen.getByRole("option", { name: "value, column 1, column 5" })).toHaveValue("c:5");
-    expect(screen.getByRole("option", { name: "value, source column 1" })).toHaveValue("c:6");
-    expect(screen.getByRole("option", { name: "value, source column 1 (2)" })).toHaveValue("c:7");
+    expect(options[0]!.label).toBe("value, source column 1 (3)");
+    expect(options[4]!.label).toBe("value, column 1");
+    expect(options[5]!.label).toBe("value, column 1, column 5");
+    expect(options[6]!.label).toBe("value, source column 1");
+    expect(options[7]!.label).toBe("value, source column 1 (2)");
+    expect(options.map((option) => option.value)).toEqual(columns.map((column) => column.id));
+    expect(options[8]!.label).toBe("a b , column 9");
+    expect(options[9]!.label).toBe("(whitespace name), source column 10");
+    expect(options[10]!.label).toBe("(whitespace name), column 11");
+    for (const position of [4, 5, 6, 7, 11, 12, 13]) {
+      expect(options[position]!.textContent).toBe(columns[position]!.name);
+    }
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:14" } });
+    fireEvent.change(screen.getByLabelText("New name"), { target: { value: "renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        kind: "renameColumn",
+        params: { column: { id: "c:14", name: "a\nb" }, newName: "renamed" }
+      }),
+      undefined
+    );
   });
 
   it("switches Formula between scalar and column operand controls", () => {
@@ -1534,7 +1559,16 @@ describe("OperationBuilder", () => {
     const structuralPreview = vi.fn();
     render(
       <OperationBuilder
-        metadata={metadata}
+        metadata={{
+          ...metadata,
+          schema: [
+            ...metadata.schema,
+            { ...metadata.schema[0], id: "c:2", name: "a b", position: 2 },
+            { ...metadata.schema[0], id: "c:3", name: "a  b", position: 3 }
+          ],
+          shape: { rows: 4, columns: 4 },
+          filteredShape: { rows: 4, columns: 4 }
+        }}
         filterModel={{ filters: [], sort: [] }}
         initialKind={kind}
         onClose={() => undefined}
@@ -1561,6 +1595,23 @@ describe("OperationBuilder", () => {
     expect(structuralPreview).toHaveBeenCalledOnce();
     expect(structuralPreview).toHaveBeenCalledWith(
       expect.objectContaining({ kind, params: { columns: [{ id: "c:1", name: "sales" }] } }),
+      undefined
+    );
+    fireEvent.change(search, { target: { value: "a  b" } });
+    const exactWhitespaceChoice = within(structuralSelection).getByRole("checkbox");
+    expect(exactWhitespaceChoice).toHaveAttribute("value", "c:3");
+    fireEvent.click(exactWhitespaceChoice);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(structuralPreview).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind,
+        params: {
+          columns: [
+            { id: "c:1", name: "sales" },
+            { id: "c:3", name: "a  b" }
+          ]
+        }
+      }),
       undefined
     );
   });

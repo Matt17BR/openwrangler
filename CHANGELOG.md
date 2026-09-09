@@ -50,7 +50,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Runtime recovery refreshes stale profiles with the recovered grid and preserves the originating operation's error.
 - DuckDB file imports preserve the selected file when its path contains wildcard characters, and refuse native path forms that could select another file.
 - Unfinished filters retain unavailable column targets until a replacement is chosen, and reset when a different session opens.
-- Filter and sort column choices distinguish duplicate names from literal names such as `value (column 1)`.
+- Column choices distinguish names that resemble position labels or differ only in ordinary spaces, tabs or line breaks.
 - Removing operation rows or clearing unavailable selections keeps focus in the dialog so Escape continues to work.
 - Invalid Python runtime timeout settings use their defaults instead of causing immediate timeouts.
 - Native R sessions honor configured opening and request deadlines while preserving the separate export timeout.
