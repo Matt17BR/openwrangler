@@ -67,6 +67,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceQuartoPythonKernel,
   probeJupyterAcceptanceRKernel,
+  rAcceptancePackageRecordMatches,
   RELEASED_PYSPARK_PRERELEASE_DENIAL_DISTRIBUTION,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
@@ -441,7 +442,7 @@ try {
                 rAcceptanceEnvironment.dependencyProbe.options
               );
             }
-            if (dependencyProbeResult.stdout !== rAcceptanceEnvironment.packageRecord) {
+            if (!rAcceptancePackageRecordMatches(dependencyProbeResult.stdout, rAcceptanceEnvironment.packageRecord)) {
               throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
             }
             console.log(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}`);
