@@ -2432,7 +2432,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  decode_transform_step <- function(value, limits) {
+  decode_transform_step <- function(value, limits, parse_finite_number) {
     step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
@@ -2771,11 +2771,11 @@ openwrangler_r_kernel_agent <- local({
           if (
             is.object(value_operand) || length(value_operand) != 1L || is.na(value_operand) ||
               nchar(value_operand, type = "bytes") - as.integer(startsWith(value_operand, "-")) > maximum_formula_integer_digits ||
-              !grepl("\\A(?:0|-?[1-9][0-9]*)\\z", value_operand, perl = TRUE) ||
-              !is.finite(as.double(value_operand))
+              !grepl("\\A(?:0|-?[1-9][0-9]*)\\z", value_operand, perl = TRUE)
           ) {
             abort("invalid_request", "request.payload.step.params.value must be finite canonical integer text")
           }
+          parse_finite_number(value_operand, "request.payload.step.params.value")
         } else if (
           length(value_operand) != 1L ||
             !is.numeric(value_operand) ||
@@ -3527,7 +3527,42 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  bind_formula_step <- function(capture, step) {
+  # Canonical finite integer text needs at most 35 base-1e9 limbs. Binary word folding
+  # keeps integer totals below 2^46 and floor division exact, without floating formatting.
+  formula_integer_matches <- function(value, parsed) {
+    if (abs(parsed) <= .Machine$integer.max) return(identical(as.character(as.integer(parsed)), value))
+    words <- readBin(writeBin(abs(parsed), raw(), size = 8L, endian = "little"),
+      integer(), n = 4L, size = 2L, signed = FALSE, endian = "little")
+    shift <- words[[4L]] %/% 16L - 1075L
+    words[[4L]] <- words[[4L]] %% 16L + 16L
+    if (shift < 0L) {
+      words <- as.integer((abs(parsed) %/% (65536^(0L:3L))) %% 65536)
+      shift <- 0L
+    }
+    words <- rev(words)
+    digits <- numeric(35L)
+    used <- 1L
+    last <- 5L + shift %/% 16L
+    for (index in seq_len(last)) {
+      multiplier <- if (index == last) 2^(shift %% 16L) else 65536
+      carry <- if (index <= 4L) words[[index]] else 0
+      for (digit in seq_len(used)) {
+        total <- digits[[digit]] * multiplier + carry
+        carry <- floor(total / 1e9)
+        digits[[digit]] <- total - carry * 1e9
+      }
+      if (carry != 0) {
+        used <- used + 1L
+        digits[[used]] <- carry
+      }
+    }
+    magnitude <- paste0(as.character(as.integer(digits[[used]])), if (used > 1L) {
+      paste0(sprintf("%09d", as.integer(rev(digits[seq_len(used - 1L)]))), collapse = "")
+    } else "")
+    identical(if (parsed < 0) paste0("-", magnitude) else magnitude, value)
+  }
+
+  bind_formula_step <- function(frame_contract, capture, step) {
     schema <- capture$descriptor$schema
     resolve_operand <- function(reference, label) {
       matches <- which(vapply(schema, function(column) identical(column$id, reference$id), logical(1L)))
@@ -3553,8 +3588,8 @@ openwrangler_r_kernel_agent <- local({
     }
     value <- step$params$value
     if (is.character(value)) {
-      parsed <- as.double(value)
-      if (!identical(sprintf("%.0f", parsed), value)) {
+      parsed <- frame_contract$parse_finite_number(value, "request.payload.step.params.value")
+      if (!formula_integer_matches(value, parsed)) {
         abort("invalid_request", "The Formula integer literal cannot be represented exactly as an R numeric scalar", TRUE)
       }
       value <- if (parsed >= -.Machine$integer.max && parsed <= .Machine$integer.max) as.integer(parsed) else parsed
@@ -5214,7 +5249,7 @@ openwrangler_r_kernel_agent <- local({
       ))
     }
     if (identical(step$kind, "formula")) {
-      bound <- bind_formula_step(capture, step)
+      bound <- bind_formula_step(frame_contract, capture, step)
       result <- frame_contract$formula_column_at(
         source,
         bound$left$position,
@@ -9989,7 +10024,7 @@ openwrangler_r_kernel_agent <- local({
           }
           saved
         } else {
-          decode_transform_step(payload$step, frame_contract$limits)
+          decode_transform_step(payload$step, frame_contract$limits, frame_contract$parse_finite_number)
         }
         replace_step_id <- if ("replaceStepId" %in% names(payload)) {
           value <- bounded_text(payload$replaceStepId, "request.payload.replaceStepId", maximum_step_id_bytes)

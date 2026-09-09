@@ -296,8 +296,9 @@ Leading signs and zeros are normalized on entry; stored strings reject redundant
 Decimal and exponent input retain binary64 interpretation. Unsafe integral binary64 values that JSON would spell as
 plain integers use their actual integer text, avoiding a second rounding at the runtime boundary.
 Execution and generated code decode the retained text in the owning engine. Polars and DuckDB refuse text outside
-native signed/unsigned 128-bit literal capacity. R requires an exactly representable ordinary numeric scalar; it
-does not add an integer64 scalar type. Native arithmetic promotion and output limits still apply.
+native signed/unsigned 128-bit literal capacity. R requires an exactly representable ordinary numeric scalar. Its
+shared finite parser supplies the candidate value, and a bounded binary64-to-integer comparison checks the retained
+text before binding. This does not add an integer64 scalar type. Native arithmetic promotion and output limits still apply.
 Legacy numeric plans retain their replay behavior. If an earlier numeric representation lost digits, the original
 literal must be entered again; its original spelling cannot be reconstructed from the saved number.
 
