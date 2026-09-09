@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
 import type { DataRow, FilterModel } from "../../shared/protocol";
 import { assertExactBytes } from "./acceptanceSourceFixture";
+import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import type { TestApi } from "./extensionHostTestApi";
 import { releasedRNotebookCleanedCsvHeader, releasedRNotebookCleanedCsvRow } from "./releasedDocumentFixtures";
@@ -187,6 +188,22 @@ export async function exerciseReleasedRCoreEditingCatalog(
     waitForOpenWranglerWebviewAction
   } = dependencies;
 
+  const appForObservedMutation = async (observed: ActiveSession, description: string): Promise<Locator> => {
+    const revision = observed.metadata.revision;
+    assert.equal(observed.sessionId, sessionId);
+    const assertCurrent = (): void => {
+      const active = testing.activeSession();
+      assert.equal(active?.sessionId, sessionId, "The observed mutation must retain its active session.");
+      assert.equal(active?.metadata.revision, revision, "The observed mutation revision must remain current.");
+    };
+    assertCurrent();
+    const observedApp = await consumeLayoutCommittedRendererValue(testing, sessionId, revision, waitFor, () =>
+      reacquireAcknowledgedSessionApp(workbench, testing, sessionId, description)
+    );
+    assertCurrent();
+    return observedApp;
+  };
+
   if (phase === "jupyter-r" && editingCatalog === "core-catalog") {
     await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
@@ -285,7 +302,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
       duplicatePreviewRows.map((row) => row.values.at(-1)),
       Array.from({ length: 4 }, () => ({ kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false }))
     );
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Mark Duplicates draft");
+    app = await appForObservedMutation(duplicatePreview, "the visible R Mark Duplicates draft");
     const duplicateReview = app.getByRole("region", { name: "Draft review" });
     await duplicateReview.getByText("Mark duplicates", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await duplicateReview.getByRole("button", { name: "Apply step", exact: true }).click();
@@ -308,7 +325,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(duplicateApplied.metadata.schema, duplicatePreview.metadata.schema);
     assert.equal(duplicateApplied.code, duplicatePreview.code);
     assert.deepEqual(await readDuplicateSample(duplicateApplied), duplicatePreviewRows);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Mark Duplicates session");
+    app = await appForObservedMutation(duplicateApplied, "the applied R Mark Duplicates session");
     const duplicateColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await duplicateColumnSearch.fill(duplicateOutput.name);
     await app
@@ -540,7 +557,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
       previewRanks.map(({ values: _values, ...row }) => row),
       sourceSample.map(({ values: _values, ...row }) => row)
     );
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Dense Rank draft");
+    app = await appForObservedMutation(rankPreview, "the visible R Dense Rank draft");
     const rankReview = app.getByRole("region", { name: "Draft review" });
     await rankReview.getByText("Dense rank", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await rankReview.getByRole("button", { name: "Apply step", exact: true }).click();
@@ -563,7 +580,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     assert.deepEqual(rankApplied.metadata.schema, rankPreview.metadata.schema);
     assert.equal(rankApplied.code, rankPreview.code);
     assert.deepEqual(await readRankSample(rankApplied, rankOutput, "applied"), previewRanks);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Dense Rank session");
+    app = await appForObservedMutation(rankApplied, "the applied R Dense Rank session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
       () => {
@@ -673,9 +690,9 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R rename step"
   );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
   const firstApplied = testing.activeSession();
   assert.ok(firstApplied, "The applied native R rename must retain its session.");
+  app = await appForObservedMutation(firstApplied, "the applied R rename session");
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
   assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
