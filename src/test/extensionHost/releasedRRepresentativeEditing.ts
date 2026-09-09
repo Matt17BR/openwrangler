@@ -130,11 +130,6 @@ export function createReleasedRRepresentativeEditingJourney(
         ["3", "3", "4"]
       ]
     );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Custom code preview must be acknowledged before apply."
-    );
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code preview");
     const draftReview = app.getByRole("region", { name: "Draft review" });
     await draftReview.getByText("Custom code", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -165,11 +160,6 @@ export function createReleasedRRepresentativeEditingJourney(
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:custom-code-source-after-apply`);
 
     recordAcceptanceProgress(`${phase}:editing:custom-code:undo`);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The applied native R Custom code step must be acknowledged before undo."
-    );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code session before undo");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
@@ -187,11 +177,6 @@ export function createReleasedRRepresentativeEditingJourney(
       },
       30_000,
       "undoing native R Custom code"
-    );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The undone native R Custom code step must reach its renderer before checking restored cells."
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code session after undo");
     const restoredDisplays = ["1", "A", "1"] as const;
@@ -219,11 +204,6 @@ export function createReleasedRRepresentativeEditingJourney(
     phase: "jupyter-r" | "jupyter-r-remote"
   ): Promise<void> {
     recordAcceptanceProgress(`${phase}:editing:representative:open`);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The representative editable R renderer must acknowledge its first complete host snapshot."
-    );
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the representative editable R session");
     const opened = testing.activeSession();
     assert.ok(opened, "The representative R editing journey requires one active session.");

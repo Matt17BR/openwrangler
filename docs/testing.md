@@ -209,7 +209,8 @@ The Mark Duplicates and Dense Rank preview/apply checks and the applied Rename c
 revision and committed layout without requesting another publication. They retain active-session and revision guards
 before and after renderer acquisition. Other R session acquisitions keep their existing fresh synchronization;
 inspection retains its existing renderer.
-Each R mode transition uses one fresh renderer acquisition while retaining its source, view, revision and DOM checks.
+The R journeys omit an explicit refresh when the following app acquisition already performs it.
+They retain separate waits before step inspection, passive acquisition, Code Preview receipt checks and helper completion.
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.

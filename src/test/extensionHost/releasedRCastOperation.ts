@@ -19,11 +19,6 @@ export interface ReleasedRCastOperationDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
 }
 
@@ -41,13 +36,7 @@ export async function exerciseReleasedRCastOperation(
 ): Promise<void> {
   const { testing, workbench, sessionId, phase } = input;
   let app = input.initialApp;
-  const {
-    previewReleasedRCast,
-    recordAcceptanceProgress,
-    releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
-    waitFor
-  } = dependencies;
+  const { previewReleasedRCast, recordAcceptanceProgress, releasedRSessionApp, waitFor } = dependencies;
 
   recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
   const castBase = testing.activeSession();
@@ -127,11 +116,6 @@ export async function exerciseReleasedRCastOperation(
     isNull: false,
     isNaN: false
   });
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Convert type step must be acknowledged before undo."
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Convert type session before undo");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(

@@ -143,11 +143,6 @@ export function createReleasedREditingMediaCapture({
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
         "switching the representative R notebook dataframe to Editing mode"
       );
-      await requireFreshExactSessionPanelHydration(
-        testing,
-        sessionId,
-        "The representative R editing renderer must acknowledge the reopened live session."
-      );
 
       app = await releasedRSessionApp(workbench, testing, sessionId, "the representative R editing session");
       const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });

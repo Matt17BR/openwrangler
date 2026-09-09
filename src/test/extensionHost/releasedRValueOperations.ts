@@ -133,11 +133,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
   const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
   assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Find and replace result must reach its exact renderer before inspection."
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Find and replace session");
   const groupSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await groupSearch.fill(groupAfterReplace.name);
@@ -150,11 +145,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
     () => testing.activeSession()?.viewState.selectedColumnId === groupAfterReplace.id,
     10_000,
     "revealing the replaced R column"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The replaced R column must be visible before its rendered value is checked."
   );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Find and replace result");
   await app
@@ -220,11 +210,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   assert.ok(minMaxPreview?.metadata.draftStep?.kind === "minMaxScale");
   const minMaxOutput = minMaxPreview.metadata.schema.at(-1);
   assert.ok(minMaxOutput, "The R Min-max scale preview must append one output column.");
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The R Min-max scale preview must reach its renderer."
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Min-max scale preview");
   const minMaxReview = app.getByRole("region", { name: "Draft review" });
   await minMaxReview.getByText("Min-max scale", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -261,11 +246,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
     },
     30_000,
     "applying native R Min-max scale"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Min-max scale step must reach its renderer."
   );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Min-max scale session");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
@@ -317,7 +297,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   const roundingPreview = testing.activeSession();
   assert.ok(roundingPreview?.metadata.draftStep?.kind === "roundNumber");
   assert.match(roundingPreview.code ?? "", /\bround\s*\(/u);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Round preview must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Round preview");
   const roundingColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await roundingColumnSearch.fill(roundingColumn.name);
@@ -346,7 +325,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
     30_000,
     "applying native R Round"
   );
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Round step must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Round session");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Round");
@@ -380,7 +358,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   const floorPreview = testing.activeSession();
   assert.ok(floorPreview?.metadata.draftStep?.kind === "floorNumber");
   assert.match(floorPreview.code ?? "", /\bfloor\s*\(/u);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Floor preview must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Floor preview");
   const floorColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_floor");
   assert.ok(floorColumn, "The visible R Floor preview must retain its derived column.");
@@ -453,7 +430,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   assert.ok(ceilingPreview?.metadata.draftStep?.kind === "ceilNumber");
   assert.equal(ceilingPreview.metadata.schema.at(-1)?.id, `c:step:${ceilingPreview.metadata.draftStep.id}:0`);
   assert.match(ceilingPreview.code ?? "", /\bceiling\s*\(/u);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Ceiling preview must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Ceiling preview");
   const ceilingColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_ceiling");
   assert.ok(ceilingColumn, "The visible R Ceiling preview must retain its derived column.");
@@ -523,7 +499,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
   assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
   assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
   assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Capitalize preview must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Capitalize preview");
   const capitalizeColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await capitalizeColumnSearch.fill(labelColumn.name);
@@ -557,7 +532,6 @@ export async function exerciseReleasedRValueOperationsBeforeLowercase(
     30_000,
     "applying native R Capitalize"
   );
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "R Capitalize must reach its renderer.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");

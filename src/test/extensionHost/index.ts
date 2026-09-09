@@ -1609,7 +1609,6 @@ const {
   assertReleasedSessionPage,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   withBoundedAcceptancePromise: (promise, timeoutMs, description) =>
     withBoundedAcceptancePromise(promise, timeoutMs, description)
@@ -1658,7 +1657,6 @@ const exerciseReleasedRDocumentGrid = createReleasedRDocumentGrid({
   applyReleasedRQuickSort,
   assertReleasedProfileStat,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   waitForLocatorText
 });
@@ -1679,7 +1677,6 @@ const exerciseReleasedRDocumentJourney = createReleasedRDocumentJourney({
   recordAcceptanceProgress,
   releasedRProcessRoots,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
@@ -1807,7 +1804,6 @@ const { releasedRCloneFailureSnapshot, releasedRCloneMutationRevisionAdvanced, w
 const previewReleasedRClone = createReleasedRClonePreview({
   openReleasedROperationPicker,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   revealCodePreviewText,
   waitFor,
   waitForCodePreview
@@ -1877,7 +1873,6 @@ const { exerciseReleasedRFormulaJourney, exerciseReleasedRFormatDatetimeJourney 
     openReleasedROperationPicker,
     recordAcceptanceProgress,
     releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
     waitFor,
     waitForLocatorText
   });
@@ -1914,11 +1909,6 @@ const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
   exerciseReleasedREditingJourney,
   exerciseReleasedRCategoricalEditingJourney,
   exerciseReleasedRPivotWiderJourney: async (testing, workbench, sessionId) => {
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The focused native R Pivot wider renderer must acknowledge its complete host snapshot."
-    );
     const app = await releasedRSessionApp(workbench, testing, sessionId, "the focused native R Pivot wider session");
     await exercisePivotWiderJourney(
       app,
@@ -1949,11 +1939,6 @@ async function exerciseReleasedREditingJourney(
   editingCatalog: "clone-lifecycle" | "core-catalog" | "platform-lifecycle" | "value-operations" = "core-catalog"
 ): Promise<void> {
   recordAcceptanceProgress(`${phase}:editing:${editingCatalog}:open`);
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The editable R renderer must acknowledge its first complete host snapshot."
-  );
   let app = await releasedRSessionApp(workbench, testing, sessionId, "the editable R session");
   const opened = testing.activeSession();
   assert.ok(opened, "The native R editing journey requires one active session.");
@@ -2050,7 +2035,6 @@ async function exerciseReleasedREditingJourney(
         previewReleasedRCast,
         recordAcceptanceProgress,
         releasedRSessionApp,
-        requireFreshExactSessionPanelHydration,
         waitFor
       }
     );
@@ -2063,7 +2047,6 @@ async function exerciseReleasedREditingJourney(
         openReleasedROperationPicker,
         recordAcceptanceProgress,
         releasedRSessionApp,
-        requireFreshExactSessionPanelHydration,
         waitFor,
         waitForLocatorText
       }

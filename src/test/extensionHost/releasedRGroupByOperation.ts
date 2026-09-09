@@ -15,11 +15,6 @@ export interface ReleasedRGroupByOperationDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
   readonly waitForLocatorText: (
     locator: Locator,
@@ -40,14 +35,8 @@ export async function exerciseReleasedRGroupByOperation(
   dependencies: ReleasedRGroupByOperationDependencies
 ): Promise<void> {
   const { testing, workbench, sessionId } = input;
-  const {
-    openReleasedROperationPicker,
-    recordAcceptanceProgress,
-    releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
-    waitFor,
-    waitForLocatorText
-  } = dependencies;
+  const { openReleasedROperationPicker, recordAcceptanceProgress, releasedRSessionApp, waitFor, waitForLocatorText } =
+    dependencies;
   recordAcceptanceProgress("jupyter-r:editing:group-by-preview-apply-undo");
   const groupBase = testing.activeSession();
   assert.ok(groupBase, "The restored R session must remain available for Group and aggregate.");
@@ -96,11 +85,6 @@ export async function exerciseReleasedRGroupByOperation(
   assert.match(groupPreview.code ?? "", /\.ow_group_by\b/u);
   assert.match(groupPreview.code ?? "", /total_score/u);
   assert.doesNotMatch(groupPreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The R Group and aggregate preview must reach its renderer."
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Group and aggregate preview");
   await app
     .getByRole("region", { name: "Draft review" })
@@ -132,7 +116,6 @@ export async function exerciseReleasedRGroupByOperation(
     30_000,
     "applying native R Group and aggregate"
   );
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "Applied R Group and aggregate must settle.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Group and aggregate session");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(

@@ -18,11 +18,6 @@ interface ReleasedRDocumentGridDependencies {
     sessionId: string,
     expectation: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -42,7 +37,6 @@ export function createReleasedRDocumentGrid({
   applyReleasedRQuickSort,
   assertReleasedProfileStat,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   waitForLocatorText
 }: ReleasedRDocumentGridDependencies) {
@@ -51,11 +45,6 @@ export function createReleasedRDocumentGrid({
     workbench: Page,
     sessionId: string
   ): Promise<void> {
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The plain R renderer must acknowledge its first complete host snapshot."
-    );
     const app = await releasedRSessionApp(workbench, testing, sessionId, "the plain R grid session");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");

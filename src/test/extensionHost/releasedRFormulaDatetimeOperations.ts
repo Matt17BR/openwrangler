@@ -21,11 +21,6 @@ export interface ReleasedRFormulaDatetimeDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
   readonly waitForLocatorText: (
     locator: Locator,
@@ -44,7 +39,6 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     openReleasedROperationPicker,
     recordAcceptanceProgress,
     releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
     waitFor,
     waitForLocatorText
   } = dependencies;
@@ -166,7 +160,6 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
       previewPage.page.rows.map((row) => row.values[0]?.raw),
       [3, 4]
     );
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Formula preview must reach its renderer.");
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Formula preview");
     const review = app.getByRole("region", { name: "Draft review" });
     await review.getByText("Formula column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -210,7 +203,6 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     const applied = testing.activeSession();
     assert.ok(applied, "The applied R Formula must retain its session.");
     assertReleasedRFormulaGeneratedCode(applied.code ?? "", "score", "score_plus_two", "add", 2);
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Formula must reach its renderer.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Formula session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
@@ -300,11 +292,6 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
       previewPage.page.rows.map((row) => row.values[0]?.display),
       ["01/01/2026", "02/01/2026"]
     );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The R Format datetime preview must reach its renderer."
-    );
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Format datetime preview");
     const review = app.getByRole("region", { name: "Draft review" });
     await review.getByText("Format datetime", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -348,11 +335,6 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     const applied = testing.activeSession();
     assert.ok(applied, "The applied R Format datetime must retain its session.");
     assertReleasedRFormatDatetimeGeneratedCode(applied.code ?? "", "extra_19", "formatted_date", "%d/%m/%Y");
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The applied R Format datetime must reach its renderer."
-    );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Format datetime session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(

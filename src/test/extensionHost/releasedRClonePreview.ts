@@ -15,11 +15,6 @@ interface ReleasedRClonePreviewDependencies {
     sessionId: string,
     expectation: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly revealCodePreviewText: (codePreview: Locator, expectedText: string) => Promise<string>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
   readonly waitForCodePreview: (
@@ -32,7 +27,6 @@ interface ReleasedRClonePreviewDependencies {
 export function createReleasedRClonePreview({
   openReleasedROperationPicker,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   revealCodePreviewText,
   waitFor,
   waitForCodePreview
@@ -103,11 +97,6 @@ export function createReleasedRClonePreview({
       sourceName,
       newName,
       variableName
-    );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Clone Column preview must be acknowledged by its exact renderer."
     );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Clone Column preview"),

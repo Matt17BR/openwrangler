@@ -227,7 +227,6 @@ async function exerciseReleasedROneHotJourney(
       ["0", "1"]
     ]
   );
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R One-hot preview must reach its renderer.");
   let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R One-hot preview");
   await app
     .getByRole("region", { name: "Draft review" })
@@ -403,11 +402,6 @@ async function exerciseReleasedRMultiLabelJourney(
       ["1", "1"],
       ["0", "1"]
     ]
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The R Multi-label preview must reach its renderer."
   );
   let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Multi-label preview");
   await app
