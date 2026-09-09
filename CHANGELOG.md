@@ -37,7 +37,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Native R Mean Fill, Group By and numeric profiles retain finite means across cancellation and chunk boundaries.
 - Read-only Code Preview supports keyboard entry and navigation through long generated programs.
 - Small editor panes keep space for the grid header and a data row. Column search brings its target into view
-  when wrapped workbench controls require vertical scrolling.
+  when wrapped workbench controls require vertical scrolling, and restores cell focus when selecting the same column again.
 - Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.
 - Python sessions return valid empty pages when recovery or cleaning leaves fewer rows than the requested position.
 - Runtime recovery refreshes stale profiles with the recovered grid and preserves the originating operation's error.

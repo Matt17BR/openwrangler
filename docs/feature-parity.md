@@ -65,7 +65,8 @@ The operation catalog search exposes its accessible name before and after enteri
 Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
-Column search reveals its target within both the table and editor viewport without replacing a later focus choice.
+Column search reveals and focuses its target within both the table and editor viewport, including when the same column
+is selected again, without replacing a later focus choice.
 Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.

@@ -335,9 +335,11 @@ export async function exerciseReleasedRCoreEditingCatalog(
     const duplicateHeader = app.locator('th[data-column="group_repeated"]').first();
     await duplicateHeader.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(await duplicateHeader.getAttribute("data-grid-column"), String(duplicateOutput.position));
-    const duplicateCell = app.locator(`td[data-grid-row="0"][data-grid-column="${duplicateOutput.position}"]`).first();
+    const duplicateCellSelector = `td[data-grid-row="0"][data-grid-column="${duplicateOutput.position}"]`;
+    const duplicateCell = app.locator(duplicateCellSelector).first();
     await duplicateCell.getByText("TRUE", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await duplicateCell.innerText()).trim(), "TRUE");
+    await app.locator(`${duplicateCellSelector}:focus`).waitFor({ state: "visible", timeout: 10_000 });
     const duplicateExposure = await duplicateCell.evaluate((element, column) => {
       type Rect = { left: number; right: number; top: number; bottom: number; width: number; height: number };
       type GridElement = {

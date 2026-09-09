@@ -965,8 +965,9 @@ The grid's existing header measurement reserves space for its compact header, on
 The profiles panel scrolls within the workspace's height; its contents do not determine that height.
 The workbench can scroll vertically when wrapped controls need more space than a small editor provides. An owned
 column reveal also exposes its header and current row in that outer viewport, preserving the grid's inner scroll
-position. Later focus choices and window blur retain precedence. Wide columns expose the available lane beside
-the sticky row labels; the grid does not require the whole column to fit in a narrower pane.
+position. Selecting the current column again also restores focus to its cell. Later focus choices and window blur
+retain precedence. Wide columns expose the available lane beside the sticky row labels; the grid does not require
+the whole column to fit in a narrower pane.
 
 ## Package and release identity
 

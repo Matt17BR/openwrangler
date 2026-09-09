@@ -147,12 +147,14 @@ The editor environment allowlist and native cleanup owners remain unchanged.
 Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
 column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
 publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
-Column-search controls check outer scrolling at ordinary and doubled zoom, empty results, window blur and newer focus.
+Column-search controls check repeated selection of the current column, outer scrolling at ordinary and doubled zoom,
+empty results, window blur and newer focus.
 The existing webview header-profile owner checks the compact minimum, native scrollbar, expanded-profile fit,
 profile/session updates and observer disposal. The applied-plan browser case in `scripts/test-webview-accessibility.mjs`
 checks compact panes with applied steps, a draft and a viewing filter, including actual suggestion hits, keyboard
 selection and dismissal, exact cell focus, sticky-header clearance and bounded table height. The installed R editing
-case checks the full available column lane, complete visible row, actual pointer target and focus in one DOM read.
+case waits for natural cell focus, then checks the full available column lane, complete visible row, actual pointer
+target and focus in one DOM read.
 Browser cases set intended viewports explicitly through the page API, including the clipboard owner.
 Code Preview readiness uses its visible first line and published editor identity; offscreen generated functions
 may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only controls retain their assertions.
