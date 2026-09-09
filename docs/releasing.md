@@ -118,6 +118,7 @@ protected `main` and dispatch a new candidate.
 From protected `main`, dispatch `.github/workflows/stable-release.yml` with `candidate_run_id` set to the successful
 candidate run and `release_tag` set to its matching stable tag. The workflow accepts only a successful first-attempt
 candidate whose source remains in protected `main`.
+Candidate selection needs only Node and Git. Publication dependencies are installed in the separate promotion job.
 
 The stable workflow is also first-attempt-only: it requires `github.run_attempt == 1`. If it fails before creating the
 exact GitHub Release, start a fresh stable-release dispatch. Once that release exists, use only the registry recovery
