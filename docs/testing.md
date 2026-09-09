@@ -387,6 +387,8 @@ that change with contents, and refusal of a replacement cleanup directory. File 
 intact. Its same-inode rewrite case seeds an old modification time to test metadata-visible changes without relying on
 clock resolution; metadata checks do not detect every same-size content change. The macOS and Windows R jobs run this
 owner before R dependency and editor preparation.
+The R process transport case forces a changed modification time after its real in-place rewrite, then verifies
+refusal, continued session use and cleanup.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
 
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
