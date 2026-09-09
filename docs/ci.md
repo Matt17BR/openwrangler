@@ -12,7 +12,8 @@ Every pull request reports the same five required product checks:
   plus the native kernel-agent shard.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
-- **Windows filesystem and process contracts** runs only Windows-specific export, dependency, and shutdown cases.
+- **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, plus the
+  DuckDB owner's selected-file import cases against actual local-drive paths.
 
 Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. The required
 R job runs native cancellation contracts before its runtime shards; scheduled R 4.4 qualification includes them

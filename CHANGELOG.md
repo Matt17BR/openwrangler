@@ -28,6 +28,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- DuckDB file imports preserve the selected file when its path contains wildcard characters, and refuse native path forms that could select another file.
 - Invalid Python runtime timeout settings use their defaults instead of causing immediate timeouts.
 - Native R sessions honor configured opening and request deadlines while preserving the separate export timeout.
 - Pandas Dataset statistics retain missing-value counts when nested or set-valued columns prevent duplicate counting, and show the duplicate count as unavailable.

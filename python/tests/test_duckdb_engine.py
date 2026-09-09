@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 import weakref
@@ -1551,6 +1552,169 @@ def test_duckdb_header_stats_zero_visible_columns_use_one_count(
         "missingValuesByColumn": [],
     }
     assert scalar_queries == ["SELECT count(*) FROM ow"]
+
+
+@pytest.mark.parametrize(
+    ("selected_name", "sibling_name"),
+    [
+        *[(f"sample[ab].{suffix}", f"samplea.{suffix}") for suffix in ("csv", "tsv", "jsonl", "ndjson", "parquet")],
+        ("parent[ab]/sample.csv", "parenta/sample.csv"),
+        ("open[.csv", "other.csv"),
+        ("close].csv", "other.csv"),
+        ("paren(.csv", "other.csv"),
+        pytest.param("star*.csv", "star-other.csv", marks=pytest.mark.skipif(os.name == "nt", reason="Unix filename.")),
+        pytest.param(
+            "question?.csv", "questionX.csv", marks=pytest.mark.skipif(os.name == "nt", reason="Unix filename.")
+        ),
+    ],
+)
+def test_duckdb_literal_selected_file_readers_and_generated_source(
+    selected_name: str, sibling_name: str, tmp_path: Path
+) -> None:
+    selected = tmp_path / selected_name
+    options: dict[str, Any] = (
+        {"delimiter": ";", "quoteChar": "'", "hasHeader": True} if selected.suffix == ".csv" else {}
+    )
+    before: dict[Path, bytes] = {}
+
+    def write_source(path: Path, chosen: bool) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        values = [("selected\nline", 1), (None, 2)] if chosen else [("wrong sibling", 99)]
+        if path.suffix in {".csv", ".tsv"}:
+            delimiter, quote = (";", "'") if path.suffix == ".csv" else ("\t", '"')
+            path.write_text(
+                f"note{delimiter}count\n"
+                + "".join(
+                    f"{quote + note + quote if note is not None else ''}{delimiter}{count}\n" for note, count in values
+                ),
+                encoding="utf-8",
+                newline="",
+            )
+        elif path.suffix in {".jsonl", ".ndjson"}:
+            path.write_text(
+                "".join(json.dumps({"note": note, "count": count}) + "\n" for note, count in values),
+                encoding="utf-8",
+                newline="",
+            )
+        else:
+            with duckdb.connect() as connection:
+                relation = connection.sql(
+                    "SELECT 'selected' || chr(10) || 'line' AS note, 1::BIGINT AS count UNION ALL SELECT NULL, 2"
+                    if chosen
+                    else "SELECT 'wrong sibling' AS note, 99::BIGINT AS count"
+                )
+                relation.write_parquet(str(path))
+        before[path] = path.read_bytes()
+
+    write_source(selected, True)
+    write_source(tmp_path / sibling_name, False)
+    escaped_spelling = Path(glob.escape(str(selected)))
+    if escaped_spelling != selected:
+        write_source(escaped_spelling, False)
+    engine = DuckDBEngine()
+    try:
+        frame = engine.read_file(str(selected), options)
+        assert isinstance(frame, DuckDBSqlPlan)
+        assert frame.columns == ["note", "count"]
+        assert frame.types == ["VARCHAR", "BIGINT"]
+        assert rows(frame) == [("selected\nline", 1), (None, 2)]
+        assert engine.shape(frame) == {"rows": 2, "columns": 2}
+        operation = bound_step("renameColumn", column=bound_ref("c:source:0", "note", 0), newName="renamed")
+        live = engine.apply_transform(frame, operation)
+        with duckdb.connect() as connection:
+            source = connection.sql(frame.sql_query())
+            generated = execute_generated(engine, source, [operation])
+            assert_same_relation(live, generated)
+            assert generated.columns == ["renamed", "count"]
+            assert [str(dtype) for dtype in generated.types] == ["VARCHAR", "BIGINT"]
+            assert source.fetchall() == [("selected\nline", 1), (None, 2)]
+            assert connection.sql("SELECT 1").fetchone() == (1,)
+        assert all(path.read_bytes() == content for path, content in before.items())
+    finally:
+        engine.close()
+
+
+def test_duckdb_literal_selected_file_public_source_and_blank(tmp_path: Path) -> None:
+    selected = tmp_path / "sample[ab].csv"
+    content = b"value\n17\n18\n"
+    selected.write_bytes(content)
+    (tmp_path / "samplea.csv").write_bytes(b"value\n99\n")
+    escaped_spelling = Path(glob.escape(str(selected)))
+    escaped_spelling.write_bytes(b"value\n100\n")
+    source = {"kind": "file", "label": selected.name, "path": str(selected)}
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(source, backend="duckdb", page_size=2)
+        assert opened["metadata"]["source"] == source
+        assert opened["metadata"]["shape"] == {"rows": 2, "columns": 1}
+        assert [row["values"][0]["raw"] for row in opened["page"]["rows"]] == [17, 18]
+        assert selected.read_bytes() == content
+    finally:
+        manager.close_all()
+    selected.unlink()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        with pytest.raises(EngineError, match="Could not read"):
+            manager.open_session(source, backend="duckdb")
+        assert not manager.sessions
+    finally:
+        manager.close_all()
+    selected.write_bytes(b"\xef\xbb\xbf \n")
+    engine = DuckDBEngine()
+    try:
+        assert engine.shape(engine.read_file(str(selected))) == {"rows": 0, "columns": 0}
+        assert selected.read_bytes() == b"\xef\xbb\xbf \n"
+    finally:
+        engine.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix backslash filename.")
+@pytest.mark.parametrize("name", ["back\\slash.csv", "back\\slash[ab].csv"])
+def test_duckdb_literal_selected_file_unix_backslash(tmp_path: Path, name: str) -> None:
+    selected = tmp_path / name
+    selected.write_bytes(b"value\n17\n")
+    escaped_spelling = Path(glob.escape(str(selected)))
+    if escaped_spelling != selected:
+        escaped_spelling.write_bytes(b"value\n99\n")
+    engine = DuckDBEngine()
+    try:
+        if "[" in name:
+            with pytest.raises(EngineError, match="Unix.*backslash.*glob"):
+                engine.read_file(str(selected))
+        else:
+            assert rows(engine.read_file(str(selected))) == [(17,)]
+        assert selected.read_bytes() == b"value\n17\n"
+    finally:
+        engine.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix native path splitting.")
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/first[ab]/tail[ab]/sample?.csv", "/first[ab]/tail[[]ab]/sample[?].csv"),
+        ("//first[ab]/sample*.csv", "//first[ab]/sample[*].csv"),
+        ("/sample[ab].csv", "/sample[ab].csv"),
+        ("relative[ab]/sample?.csv", "relative[[]ab]/sample[?].csv"),
+    ],
+)
+def test_duckdb_literal_selected_file_unix_components(path: str, expected: str) -> None:
+    assert duckdb_runtime._literal_file_path(path) == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows drive and share parsing.")
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"\\server[ab]\share\source.csv",
+        r"\\server\share[ab]\source.csv",
+        r"\\?\C:\source.csv",
+        r"\\.\share[ab]\source.csv",
+    ],
+)
+def test_duckdb_literal_selected_file_windows_anchor_refusal(path: str) -> None:
+    with pytest.raises(EngineError, match="Windows.*glob"):
+        duckdb_runtime._literal_file_path(path)
 
 
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from glob import escape as escape_glob
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
 from threading import RLock
@@ -79,6 +80,22 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
+
+
+def _literal_file_path(path: str) -> str:
+    if os.name == "nt":
+        if any(character in Path(path).anchor for character in "*?["):
+            raise EngineError("DuckDB cannot read a Windows drive or share containing glob characters.")
+        return escape_glob(path)
+    if "\\" in path and any(character in path for character in "*?["):
+        raise EngineError("DuckDB cannot read a Unix path containing both backslashes and glob characters.")
+    if path.startswith("/"):
+        # DuckDB takes the first absolute component literally and only globs its tail.
+        end = path.find("/", len(path) - len(path.lstrip("/")))
+        if end < 0:
+            return path
+        return path[:end] + escape_glob(path[end:])
+    return escape_glob(path)
 
 
 def _duckdb_cast_target(dtype: str) -> str:
@@ -394,7 +411,7 @@ class DuckDBEngine(DataFrameEngine):
                         return frame
                     return _snapshot_relation_factory(
                         lambda: connection.read_csv(
-                            path,
+                            _literal_file_path(path),
                             delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
                             encoding="utf-8",
                             quotechar=options.get("quoteChar", '"'),
@@ -402,11 +419,11 @@ class DuckDBEngine(DataFrameEngine):
                         )
                     )
                 if extension == ".parquet":
-                    return _snapshot_relation_factory(lambda: connection.read_parquet(path))
+                    return _snapshot_relation_factory(lambda: connection.read_parquet(_literal_file_path(path)))
                 if extension in {".jsonl", ".ndjson"}:
                     try:
                         return _snapshot_relation_factory(
-                            lambda: connection.read_json(path, format="newline_delimited")
+                            lambda: connection.read_json(_literal_file_path(path), format="newline_delimited")
                         )
                     except Exception as error:
                         if _json_reader_is_unavailable(error):
