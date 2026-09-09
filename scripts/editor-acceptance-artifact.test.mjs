@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   assertSealedEditorAcceptanceArtifact,
   captureEditorAcceptanceEvidenceReceipt,
@@ -10,6 +13,7 @@ import {
   sealEditorAcceptanceEvidence
 } from "./editor-acceptance-artifact.mjs";
 import {
+  createEditorAcceptanceEnvironment,
   downloadEditorWithRetry,
   resolvePackagedVscodeAcquisitionPlan,
   waitForEditorAcceptanceObservation
@@ -163,6 +167,70 @@ test("packaged VS Code acquisition honors explicit versions and otherwise reuses
   const malformedPlan = resolvePackagedVscodeAcquisitionPlan({ VSCODE_TEST_VERSION: "../moving" }, pathExists);
   await assert.rejects(() => downloadEditorWithRetry(malformedPlan.version), /download version/u);
 });
+
+for (const failure of [false, true]) {
+  test(`isolated editor downloader releases rejected sockets after ${failure ? "failure" : "success"}`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-download-socket-"));
+    let responseClosed;
+    const closed = new Promise((resolveClosed) => {
+      responseClosed = resolveClosed;
+    });
+    const server = createServer((_request, response) => {
+      response.on("close", responseClosed);
+      response.writeHead(503, { "content-length": "2" });
+      response.write("x");
+    });
+    context.after(async () => {
+      server.closeAllConnections();
+      await new Promise((resolveClosed) => server.close(resolveClosed));
+      await rm(directory, { recursive: true, force: true });
+    });
+    await new Promise((resolveListening, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListening);
+    });
+    const completed = promisify(execFile)(
+      process.execPath,
+      [
+        "--import",
+        join(repositoryRoot, "scripts", "test-fixtures", "editor-download-sockets.mjs"),
+        join(repositoryRoot, "scripts", "download-editor.mjs"),
+        "1.106.0"
+      ],
+      {
+        cwd: directory,
+        env: {
+          ...createEditorAcceptanceEnvironment(),
+          HOME: directory,
+          USERPROFILE: directory,
+          TMPDIR: directory,
+          TMP: directory,
+          TEMP: directory,
+          EDITOR_DOWNLOAD_TEST_PORT: String(server.address().port),
+          EDITOR_DOWNLOAD_TEST_DIRECTORY: directory,
+          EDITOR_DOWNLOAD_TEST_FAILURE: String(failure)
+        },
+        timeout: 2_000,
+        maxBuffer: 32 * 1024,
+        windowsHide: true
+      }
+    );
+    const { stdout, stderr } = await completed;
+    assert.equal(completed.child.killed, false);
+    assert.equal(completed.child.signalCode, null);
+    assert.equal(stderr, "");
+    assert.equal(
+      stdout,
+      `${JSON.stringify(
+        failure
+          ? { protocol: 1, ok: false, error: "Synthetic download failure" }
+          : { protocol: 1, ok: true, executablePath: join(directory, "code") }
+      )}\n`
+    );
+    assert.equal(await readFile(join(directory, "completed"), "utf8"), "complete\n");
+    await closed;
+  });
+}
 
 test("packaged-editor workflows upload only exact revalidated emitted artifact paths", async () => {
   const runner = await readFile(join(repositoryRoot, "scripts", "run-packaged-editor-tests.mjs"), "utf8");

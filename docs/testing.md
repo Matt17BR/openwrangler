@@ -35,6 +35,8 @@ project rather than adding browser setup to every suite.
 
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
+The editor artifact owner checks that the isolated downloader closes rejected HTTPS response sockets after success
+and failure, preserving its result envelope and allowing pending filesystem work to finish through natural exit.
 The package owner checks in-place corruption and truncation after staging-name retirement, requiring byte mismatch
 refusal and owned cleanup. Successful publication retains the verified receipt and exact source-manifest bindings.
 The CI scope proof tests use real Git merges to cover exact commit binding, changed paths and modes, shallow history,
