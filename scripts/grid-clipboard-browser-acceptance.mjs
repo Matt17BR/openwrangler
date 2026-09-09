@@ -9,7 +9,8 @@ const oversizedMarker = "=OW_BROWSER_OVERSIZED:";
 const clipboardDeniedReason = "Could not write to the clipboard. Check this editor's clipboard permissions.";
 
 export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirectory) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
   page.setDefaultTimeout(15_000);
   page.setDefaultNavigationTimeout(15_000);
   await page.addInitScript(installClipboardBoundary);
