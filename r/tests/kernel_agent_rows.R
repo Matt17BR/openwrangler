@@ -190,6 +190,9 @@ numeric_filter_environment <- new.env(parent = baseenv())
 numeric_filter_environment$frame <- data.frame(value = c(0.5, 0x1.1ccf385ebc89cp+1023,
   0x1.1ccf385ebc89dp+1023, 0x1.1ccf385ebc8a0p+1023, -abs(0), 0,
   -0x0.0000000000001p-1022, NA_real_, NaN, Inf, -Inf), ordinal = 1L:11L)
+temporal_filter_values <- c(0x1.0c6f7a0b5ed8dp-20, 0x1.0c6f7a0b5ed8ep-20, 0.5, rep(NA_real_, 8L))
+numeric_filter_environment$frame$instant <- structure(temporal_filter_values, class = c("POSIXct", "POSIXt"), tzone = "Europe/Berlin")
+numeric_filter_environment$frame$elapsed <- structure(temporal_filter_values, class = "difftime", units = "hours")
 numeric_filter_before <- serialize(numeric_filter_environment$frame, NULL, version = 3L)
 numeric_filter_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, numeric_filter_environment)
 numeric_filter_session <- "83838383-8383-4383-8383-838383838383"
@@ -213,15 +216,43 @@ numeric_filter_cases <- list(
   list(operator = "equals", value = numeric_filter_tokens[[which(numeric_filter_token_values == Inf)]], rows = 10L),
   list(operator = "values", rows = c(2L, 5L, 6L, 7L, 8L, 9L, 10L, 11L))
 )
+for (temporal_filter_column in 3L:4L) {
+  temporal_filter_type <- if (temporal_filter_column == 3L) "datetime" else "duration"
+  temporal_filter_values <- dispatch_with(numeric_filter_agent, "getColumnValues", list(sessionId = numeric_filter_session,
+    column = list(id = paste0("r:c:", temporal_filter_column - 1L), name = names(numeric_filter_environment$frame)[[temporal_filter_column]]),
+    view = numeric_filter_window$view, search = NULL, limit = 100L))
+  temporal_filter_tokens <- lapply(temporal_filter_values$values, `[[`, "selectionValue")
+  temporal_filter_tokens <- temporal_filter_tokens[match(c("9.9999999999999995e-07", "1.0000000000000002e-06"),
+    vapply(temporal_filter_tokens, function(token) token$cell$raw, character(1L)))]
+  for (index in 1L:2L) assert_identical(temporal_filter_tokens[[index]]$cell,
+    numeric_filter_open$page$page$rows[[index]]$values[[temporal_filter_column]], "a temporal picker changed the exact wire cell")
+  temporal_filter_cases <- list(
+    list(operator = "values", selectedValues = list(temporal_filter_tokens[[1L]]), includeNulls = temporal_filter_column == 4L,
+      rows = if (temporal_filter_column == 4L) c(1L, 4L:11L) else 1L),
+    list(operator = "equals", value = temporal_filter_tokens[[1L]], rows = 1L),
+    list(operator = if (temporal_filter_column == 3L) "lt" else "gt",
+      value = temporal_filter_tokens[[if (temporal_filter_column == 3L) 2L else 1L]],
+      rows = if (temporal_filter_column == 3L) 1L else 2L:3L),
+    list(operator = "equals", value = if (temporal_filter_column == 3L) "1970-01-01T01:00:00.000001" else "0.0036", rows = 1L)
+  )
+  for (case in temporal_filter_cases) {
+    case$column <- temporal_filter_column; case$type <- temporal_filter_type
+    numeric_filter_cases[[length(numeric_filter_cases) + 1L]] <- case
+  }
+}
 numeric_filter_revision <- 0L
 for (numeric_filter_case in numeric_filter_cases) {
-  numeric_filter_model <- list(column = list(id = "r:c:0", name = "value"), type = "float", predicates = I(list()))
+  numeric_filter_column <- if (is.null(numeric_filter_case$column)) 1L else numeric_filter_case$column
+  numeric_filter_model <- list(column = list(id = paste0("r:c:", numeric_filter_column - 1L),
+    name = names(numeric_filter_environment$frame)[[numeric_filter_column]]),
+    type = if (is.null(numeric_filter_case$type)) "float" else numeric_filter_case$type, predicates = I(list()))
   if (identical(numeric_filter_case$operator, "values")) {
-    numeric_filter_model$valueFilter <- list(kind = "values", selectedValues = I(numeric_filter_tokens[
+    numeric_filter_model$valueFilter <- if (is.null(numeric_filter_case$selectedValues)) list(kind = "values", selectedValues = I(numeric_filter_tokens[
       numeric_filter_token_values %in% c(numeric_filter_environment$frame$value[[2L]], 0, -0x0.0000000000001p-1022, Inf, -Inf)]),
-      includeNulls = TRUE, includeNaN = TRUE)
+      includeNulls = TRUE, includeNaN = TRUE) else list(kind = "values", selectedValues = I(numeric_filter_case$selectedValues),
+      includeNulls = numeric_filter_case$includeNulls, includeNaN = FALSE)
   } else {
-    numeric_filter_predicate <- numeric_filter_case[names(numeric_filter_case) != "rows"]
+    numeric_filter_predicate <- numeric_filter_case[!names(numeric_filter_case) %in% c("rows", "column", "type")]
     numeric_filter_predicate$kind <- "predicate"
     numeric_filter_model$predicates <- I(list(numeric_filter_predicate))
   }
@@ -242,6 +273,21 @@ for (numeric_filter_case in numeric_filter_cases) {
   assert_identical(serialize(numeric_filter_generated$open_wrangler_result, NULL, version = 3L), serialize(numeric_filter_expected, NULL, version = 3L),
     "complete generated filtering disagreed with exact native values")
   assert_identical(serialize(numeric_filter_generated$frame, NULL, version = 3L), numeric_filter_before, "generated numeric filtering mutated its source")
+  if (!is.null(numeric_filter_case$column)) {
+    numeric_filter_compiled <- compiler::cmpfun(eval(parse(text = paste("function(frame) {", numeric_filter_preview$code,
+      "open_wrangler_result\n}", sep = "\n")), envir = new.env(parent = baseenv())))
+    assert_identical(serialize(numeric_filter_compiled(unserialize(numeric_filter_before)), NULL, version = 3L),
+      serialize(numeric_filter_expected, NULL, version = 3L), "compiled temporal filtering changed exact values or metadata")
+    if (numeric_filter_column == 4L && identical(numeric_filter_case$operator, "values")) {
+      attr(numeric_filter_generated$frame$elapsed, "units") <- "secs"
+      numeric_filter_stale_before <- serialize(numeric_filter_generated$frame, NULL, version = 3L)
+      numeric_filter_stale <- tryCatch({ eval(parse(text = numeric_filter_preview$code), envir = numeric_filter_generated); NULL }, error = identity)
+      assert_identical(inherits(numeric_filter_stale, "error") && grepl("duration units are stale", conditionMessage(numeric_filter_stale), fixed = TRUE),
+        TRUE, "generated temporal filtering accepted stale duration units")
+      assert_identical(serialize(numeric_filter_generated$frame, NULL, version = 3L), numeric_filter_stale_before,
+        "refusing stale duration units changed the rebound source")
+    }
+  }
   numeric_filter_generated$frame <- numeric_filter_environment$frame[integer(), , drop = FALSE]
   eval(parse(text = numeric_filter_preview$code), envir = numeric_filter_generated)
   assert_identical(numeric_filter_generated$open_wrangler_result, numeric_filter_generated$frame, "generated numeric filtering changed an empty rebound source")

@@ -1282,7 +1282,7 @@ openwrangler_r_frame_contract <- local({
         abort("invalid-view-value", sprintf("%s is not a valid local datetime in %s", label, timezone))
       }
     }
-    exact_double(as.double(parsed))
+    as.double(parsed)
   }
 
   duration_microseconds_text <- function(text) {
@@ -1356,7 +1356,7 @@ openwrangler_r_frame_contract <- local({
     if (type == "datetime") return(parse_datetime_key(value, semantics, label))
     if (type == "duration") {
       seconds <- parse_duration_seconds(value, label)
-      return(exact_double(seconds / duration_unit_seconds[[semantics$units]]))
+      return(seconds / duration_unit_seconds[[semantics$units]])
     }
     abort("invalid-view-value", sprintf("%s targets an unsupported R column type", label))
   }
@@ -1397,11 +1397,8 @@ openwrangler_r_frame_contract <- local({
       }
       return(if (cell$sign < 0L) -Inf else Inf)
     }
-    if (descriptor$semantics$kind == "datetime") {
-      return(exact_double(parse_finite_number(cell$raw, label)))
-    }
-    if (descriptor$semantics$kind == "difftime") {
-      return(exact_double(parse_finite_number(cell$raw, label)))
+    if (descriptor$semantics$kind %in% c("datetime", "difftime")) {
+      return(parse_finite_number(cell$raw, label))
     }
     primitive_view_key(cell$raw, descriptor, label)
   }
@@ -1505,7 +1502,7 @@ openwrangler_r_frame_contract <- local({
             column_descriptor,
             sprintf("%s$valueFilter$selectedValues[[%d]]", label, value_index)
           ),
-          if (identical(column_descriptor$semantics$kind, "double")) double(1L) else character(1L),
+          if (column_descriptor$semantics$kind %in% c("double", "datetime", "difftime")) double(1L) else character(1L),
           USE.NAMES = FALSE
         )
       }
@@ -1548,7 +1545,8 @@ openwrangler_r_frame_contract <- local({
 
     present <- !missing$null & !missing$nan
     present_indices <- which(present)
-    keys <- if (identical(semantics$kind, "double")) NULL else rep("", storage_length(column))
+    native_numeric <- semantics$kind %in% c("double", "datetime", "difftime")
+    keys <- if (native_numeric) NULL else rep("", storage_length(column))
     if (!is.null(keys)) keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
@@ -1568,8 +1566,10 @@ openwrangler_r_frame_contract <- local({
       if (semantics$kind == "integer64") {
         compare_integer_keys(keys[present_indices], target, comparison_operator)
       } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
-        left <- if (identical(semantics$kind, "double")) column[present_indices] else suppressWarnings(as.double(keys[present_indices]))
-        right <- if (identical(semantics$kind, "double")) target else suppressWarnings(as.double(target))
+        left <- if (identical(semantics$kind, "double")) column[present_indices] else if (native_numeric) {
+          numeric_profile_values(column, semantics, present_indices)
+        } else suppressWarnings(as.double(keys[present_indices]))
+        right <- if (native_numeric) target else suppressWarnings(as.double(target))
         switch(
           comparison_operator,
           equals = left == right,
@@ -1614,7 +1614,9 @@ openwrangler_r_frame_contract <- local({
         current <- rep(FALSE, row_count)
         present_indices <- which(!missing$null & !missing$nan)
         if (length(value_filter$selectedKeys) > 0L && length(present_indices) > 0L) {
-          keys <- if (identical(semantics$kind, "double")) column[present_indices] else profile_value_keys(column, semantics, present_indices)
+          keys <- if (identical(semantics$kind, "double")) column[present_indices] else if (semantics$kind %in% c("datetime", "difftime")) {
+            numeric_profile_values(column, semantics, present_indices)
+          } else profile_value_keys(column, semantics, present_indices)
           current[present_indices] <- keys %in% value_filter$selectedKeys
         }
         if (isTRUE(value_filter$includeNulls)) current <- current | missing$null

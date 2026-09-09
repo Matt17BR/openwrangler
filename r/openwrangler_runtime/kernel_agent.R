@@ -5871,12 +5871,11 @@ openwrangler_r_kernel_agent <- local({
       logical = if (identical(value_key, "TRUE")) "TRUE" else "FALSE",
       integer = sprintf("as.double(%s)", r_string(value_key)),
       integer64 = sprintf("bit64::as.integer64(%s)", r_string(value_key)),
+      datetime =, difftime = r_number(value_key),
       double = if (is.finite(value_key)) r_number(value_key) else if (value_key < 0) "-Inf" else "Inf",
       character = r_string(value_key),
       factor = r_string(value_key),
       date = sprintf("as.double(%s)", r_string(value_key)),
-      datetime = sprintf("as.double(%s)", r_string(value_key)),
-      difftime = sprintf("as.double(%s)", r_string(value_key)),
       abort("runtime_error", "Generated R code received an unsupported row comparison target")
     )
   }
@@ -5891,10 +5890,8 @@ openwrangler_r_kernel_agent <- local({
       ),
       integer64 = sprintf("bit64::as.integer64(%s)", r_character_vector(value_keys)),
       integer = sprintf("as.double(%s)", r_character_vector(value_keys)),
-      double = sprintf("c(%s)", paste(vapply(value_keys, row_target, character(1L), specification = specification), collapse = ", ")),
+      double =, datetime =, difftime = sprintf("c(%s)", paste(vapply(value_keys, row_target, character(1L), specification = specification), collapse = ", ")),
       date = sprintf("as.double(%s)", r_character_vector(value_keys)),
-      datetime = sprintf("as.double(%s)", r_character_vector(value_keys)),
-      difftime = sprintf("as.double(%s)", r_character_vector(value_keys)),
       character = r_character_vector(value_keys),
       factor = r_character_vector(value_keys),
       abort("runtime_error", "Generated R code received unsupported selected row values")

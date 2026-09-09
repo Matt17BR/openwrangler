@@ -6838,22 +6838,40 @@ for (type in names(precise_query_frames)) {
 }
 
 # Distinct native doubles must remain ordered without reparsing their decimal keys.
-adjacent_source <- data.frame(value = c(0x1.1ccf385ebc89dp+1023, 0.5, 0x1.1ccf385ebc8a0p+1023,
-  0x1.1ccf385ebc89cp+1023, NA_real_, NaN))
-adjacent_before <- serialize(adjacent_source, NULL, version = 3L)
-adjacent_capture <- openwrangler_r_frame_contract$capture_frame(adjacent_source)
-for (comparison in list(
-  list(operator = "lt", value = adjacent_source$value[[1L]], expected = c(2L, 4L)),
-  list(operator = "gt", value = adjacent_source$value[[4L]], expected = c(1L, 3L)),
-  list(operator = "between", value = adjacent_source$value[[4L]], second = adjacent_source$value[[1L]], expected = c(1L, 4L))
+adjacent_values <- c(0x1.0c6f7a0b5ed8ep-20, 0, 1, 0x1.0c6f7a0b5ed8dp-20, NA_real_, NA_real_)
+for (adjacent_case in list(
+  list(type = "float", values = c(0x1.1ccf385ebc89dp+1023, 0.5, 0x1.1ccf385ebc8a0p+1023,
+    0x1.1ccf385ebc89cp+1023, NA_real_, NaN)),
+  list(type = "datetime", values = structure(adjacent_values, class = c("POSIXct", "POSIXt"), tzone = "Europe/Berlin"),
+    manual = "1970-01-01T01:00:00.000001"),
+  list(type = "duration", values = structure(adjacent_values, class = "difftime", units = "hours"), manual = "0.0036")
 )) {
-  adjacent_page <- openwrangler_r_frame_contract$materialize_view_page(adjacent_capture, view_query(filters = list(column_filter(
-    "r:c:0", "value", "float", list(predicate(comparison$operator, comparison$value, comparison$second))
-  ))))
-  assert_identical(vapply(adjacent_page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", comparison$expected - 1L),
-    "a native floating comparison collapsed adjacent source values")
+  adjacent_source <- data.frame(value = adjacent_case$values)
+  adjacent_before <- serialize(adjacent_source, NULL, version = 3L)
+  adjacent_capture <- openwrangler_r_frame_contract$capture_frame(adjacent_source)
+  adjacent_page <- openwrangler_r_frame_contract$materialize_page(adjacent_capture)
+  adjacent_operands <- if (identical(adjacent_case$type, "float")) as.list(adjacent_source$value) else lapply(
+    adjacent_page$page$rows, function(row) list(kind = "typedSelection", version = 1L, columnType = adjacent_case$type, cell = row$values[[1L]]))
+  for (comparison in list(
+    list(operator = "lt", value = adjacent_operands[[1L]], expected = c(2L, 4L)),
+    list(operator = "gt", value = adjacent_operands[[4L]], expected = c(1L, 3L)),
+    list(operator = "between", value = adjacent_operands[[4L]], second = adjacent_operands[[1L]], expected = c(1L, 4L))
+  )) {
+    adjacent_page <- openwrangler_r_frame_contract$materialize_view_page(adjacent_capture, view_query(filters = list(column_filter(
+      "r:c:0", "value", adjacent_case$type, list(predicate(comparison$operator, comparison$value, comparison$second))
+    ))))
+    assert_identical(vapply(adjacent_page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", comparison$expected - 1L),
+      "a native floating comparison collapsed adjacent source values")
+  }
+  if (!is.null(adjacent_case$manual)) {
+    adjacent_manual <- openwrangler_r_frame_contract$materialize_view_page(adjacent_capture, view_query(filters = list(column_filter(
+      "r:c:0", "value", adjacent_case$type, list(predicate("equals", adjacent_case$manual))
+    ))))
+    assert_identical(vapply(adjacent_manual$page$rows, `[[`, character(1L), "id"), "r:r:3",
+      "manual temporal input changed its timezone or seconds-to-native-unit meaning")
+  }
+  assert_identical(serialize(adjacent_source, NULL, version = 3L), adjacent_before, "adjacent predicates changed their source")
 }
-assert_identical(serialize(adjacent_source, NULL, version = 3L), adjacent_before, "adjacent predicates changed their source")
 
 parse_number <- get("parse_finite_number", contract_environment, inherits = FALSE)
 for (case in list(
