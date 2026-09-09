@@ -378,13 +378,12 @@ wildcard characters. Unix paths combining backslashes and glob syntax, and Windo
 glob syntax, are refused. Choose another supported engine or a path without those characters. Ordinary local-drive
 paths retain native lazy reading; the full cross-platform import matrix remains incomplete.
 
-DuckDB file sessions remain native and connection-scoped. They do not convert through Pandas, Polars, or Arrow, and
-extension auto-install, autoload, and external-file caching stay disabled.
-Generated queries use the input relation's connection, preserving private tables and functions even when the default
-connection has objects with the same names. Temporary helper views are removed before returning results.
-Computed cleaning results are checked beyond the displayed rows and columns before confirmation, in live and
-generated execution. Rename, Select Columns and Drop Columns avoid an additional full-result scan and retain native
-lazy input evaluation; later reads can still reveal inherited source errors.
+DuckDB file sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
+or Arrow. Extension auto-install, autoload and external-file caching remain disabled. Generated programs use the input
+relation's connection, preserving its private tables and functions. Live and generated execution check computed
+cleaning results beyond the displayed rows and columns before confirmation. Rename, Select Columns and Drop Columns
+retain lazy input evaluation, so later reads can still reveal inherited source errors. Query ownership, cleanup and
+validation costs are described in the [DuckDB architecture](architecture.md#duckdb).
 
 Formula rejects lossy DOUBLE promotion for addition, subtraction, multiplication and modulo on native integer types
 through 128 bits, retaining correct results and types. Live and generated checks use the same operand pair; explicit
@@ -393,18 +392,13 @@ and modulo also check BIGNUM integer pairs. Selected BIGNUM operands must fit th
 native zero results proved by zero-product or unit-divisor identities. Wider pairs can refuse even when their result
 is exact. Null operands and modulo by zero retain native behavior. BIGNUM remains outside numeric form choices.
 
-Generated Sort Rows preserves columns whose names coincide with internal sort helpers, including after an earlier
-Rename or when a saved program runs on new input. Ties keep their input order, and missing sort keys are rejected.
-
-Pivot Longer and Pivot Wider preserve requested output names that coincide with temporary columns, including case
-and suffix variants, in live execution and generated code. Saved Pivot Wider programs reject missing value columns
-even when their names coincide with those helpers.
-Multi-label Encoding accepts a source column named `label`, including case variants, or an unrelated column with that
-name. Live execution and generated code retain the same null and empty-label behavior.
+Generated Sort Rows preserves input columns and stable ties after Rename or when a saved program runs on new input.
+Live and generated Pivot operations preserve valid requested output names, including names resembling temporary
+columns. Multi-label Encoding accepts `label` as an input or unrelated column name, with matching null and empty-label
+behavior. Reused Sort Rows, Pivot Wider, Drop Duplicates and Mark Duplicates programs reject missing selected inputs.
 
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
-generated code. Saved Drop Duplicates and Mark Duplicates programs reject missing duplicate keys, including names
-that coincide with internal row ordinals.
+generated code.
 
 Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with up to 38 digits, preserving nulls.
 Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
@@ -434,7 +428,6 @@ DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote char
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
 identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
 only; closing releases Open Wrangler's reference and never closes the user's connection.
-Notebook queries and captures remove their temporary views after consuming results, including on failure.
 
 ## PySpark live-notebook viewing
 
