@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants as fsConstants, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { Transform } from "node:stream";
+import { inspect } from "node:util";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
@@ -989,8 +990,136 @@ async function requireWindowsSettlement(launch, observer, timeoutMs) {
   return exit.value;
 }
 
+function rContractInterruption(signal) {
+  const error = new Error(`[r-contract] INTERRUPTED by ${signal.reason}.`);
+  error.stopAfterPhase = true;
+  return error;
+}
+
+function createRContractOutput(options) {
+  const destinations = new Map();
+  let pending = 0;
+  let drained = Promise.resolve();
+  let resolveDrained;
+  let closing = false;
+  let failure;
+  let resolveFailure;
+  const failurePromise = new Promise((resolveValue) => {
+    resolveFailure = resolveValue;
+  });
+  const removeListeners = () => {
+    for (const [stream, destination] of destinations) stream.removeListener("error", destination.onError);
+    destinations.clear();
+  };
+  const write = (stream, channel, chunk) => {
+    let destination = destinations.get(stream);
+    if (!destination) {
+      destination = { failed: false, onError: undefined };
+      destination.onError = (error) => {
+        destination.failed = true;
+        if (failure) return;
+        failure = new Error(`The R contract ${channel} sink failed: ${error.message}`, { cause: error });
+        failure.stopAfterPhase = true;
+        resolveFailure(failure);
+      };
+      destinations.set(stream, destination);
+      stream.on("error", destination.onError);
+    }
+    if (destination.failed) return;
+    if (pending++ === 0)
+      drained = new Promise((resolveValue) => {
+        resolveDrained = resolveValue;
+      });
+    let completed = false;
+    const complete = (error) => {
+      if (completed) return;
+      completed = true;
+      if (error) destination.onError(error);
+      if (--pending === 0) {
+        resolveDrained();
+        // Writable callbacks may precede the stream's error event.
+        if (closing)
+          setImmediate(() => {
+            if (pending === 0) removeListeners();
+          });
+      }
+    };
+    try {
+      stream.write(chunk, complete);
+    } catch (error) {
+      complete(error);
+    }
+  };
+  const checkpoint = async () => {
+    await new Promise((resolveValue) => setImmediate(resolveValue));
+    if (failure) throw failure;
+  };
+  const drain = async (terminationSignal) => {
+    let onAbort;
+    const interrupted = new Promise((resolveValue) => {
+      onAbort = () => resolveValue(rContractInterruption(terminationSignal));
+      if (terminationSignal?.aborted) onAbort();
+      else terminationSignal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const outcome = await Promise.race([drained, failurePromise, interrupted]);
+      if (outcome instanceof Error) throw outcome;
+      await checkpoint();
+      if (terminationSignal?.aborted) throw rContractInterruption(terminationSignal);
+    } finally {
+      terminationSignal?.removeEventListener("abort", onAbort);
+    }
+  };
+  return {
+    failure: failurePromise,
+    checkpoint,
+    drain,
+    writeError: options.writeError ?? ((chunk) => write(process.stderr, "stderr", chunk)),
+    writeOutput: options.writeOutput ?? ((chunk) => write(process.stdout, "stdout", chunk)),
+    writeLine: options.writeLine ?? ((line) => write(process.stdout, "stdout", `${line}\n`)),
+    finish: async (failed) => {
+      try {
+        // Child settlement precedes this wait. Healthy native backpressure stays intact.
+        if (!failed) await drain(options.terminationSignal);
+      } finally {
+        closing = true;
+        await new Promise((resolveValue) => setImmediate(resolveValue));
+        if (pending === 0) removeListeners();
+      }
+    }
+  };
+}
+
+async function withRContractOutput(options = {}, run) {
+  if (options.outputScope) return run(options);
+  const outputScope = createRContractOutput(options);
+  let failed = false;
+  let primary;
+  try {
+    await run({
+      ...options,
+      outputScope,
+      writeError: outputScope.writeError,
+      writeOutput: outputScope.writeOutput,
+      writeLine: outputScope.writeLine
+    });
+  } catch (error) {
+    failed = true;
+    primary = error;
+  }
+  try {
+    await outputScope.finish(failed);
+  } catch (error) {
+    if (!failed) {
+      failed = true;
+      primary = error;
+    }
+  }
+  if (failed) throw primary;
+}
+
 export function runRContractPhase(phase, options) {
-  return runRContractPhaseAsync(phase, options);
+  return withRContractOutput(options, (owned) => runRContractPhaseAsync(phase, owned));
 }
 
 async function runRContractPhaseAsync(
@@ -1002,9 +1131,10 @@ async function runRContractPhaseAsync(
     randomToken = randomUUID,
     terminationSignal,
     maximumOutputBytes = R_CONTRACT_PHASE_OUTPUT_MAX_BYTES,
-    writeError = (chunk) => process.stderr.write(chunk),
-    writeOutput = (chunk) => process.stdout.write(chunk),
-    writeLine = (line) => process.stdout.write(`${line}\n`),
+    outputScope,
+    writeError,
+    writeOutput,
+    writeLine,
     ...settlementOptions
   } = {}
 ) {
@@ -1013,6 +1143,8 @@ async function runRContractPhaseAsync(
     (platform === "linux" ? createLinuxProcessSignaler(phase.environment) : undefined);
   const started = now();
   writeLine(`[r-contract] START ${phase.label}; timeout ${formattedSeconds(phase.timeoutMs)}`);
+  await outputScope.checkpoint();
+  if (terminationSignal?.aborted) throw rContractInterruption(terminationSignal);
   const ownerToken = randomToken();
   const outputBudget = createPhaseOutputBudget(maximumOutputBytes);
   const launch =
@@ -1048,7 +1180,11 @@ async function runRContractPhaseAsync(
           signalVerifiedProcesses,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
-  const failurePromise = tracker ? Promise.race([outputBudget.failure, tracker.failure]) : outputBudget.failure;
+  const failurePromise = Promise.race([
+    outputBudget.failure,
+    outputScope.failure,
+    ...(tracker ? [tracker.failure] : [])
+  ]);
   try {
     if (launch.launchError) {
       const primary = new Error(`[r-contract] ERROR ${phase.label}: ${launch.launchError.message}`, {
@@ -1139,14 +1275,19 @@ async function runRContractPhaseAsync(
     }
     if (primary) throw primary;
     writeLine(`[r-contract] PASS ${phase.label} in ${formattedSeconds(elapsed)}`);
+    await outputScope.drain(terminationSignal);
   } finally {
     tracker?.stop();
   }
 }
 
-export async function runRContractPhases(
+export function runRContractPhases(phases, options) {
+  return withRContractOutput(options, (owned) => runRContractPhasesAsync(phases, owned));
+}
+
+async function runRContractPhasesAsync(
   phases,
-  { runPhase = runRContractPhase, writeLine = (line) => process.stdout.write(`${line}\n`), ...phaseOptions } = {}
+  { runPhase = runRContractPhase, writeLine, outputScope, ...phaseOptions }
 ) {
   const failures = [];
   for (const phase of phases) {
@@ -1161,17 +1302,27 @@ export async function runRContractPhases(
       );
     }
     try {
-      await runPhase(phase, { ...phaseOptions, writeLine });
+      await runPhase(phase, { ...phaseOptions, writeLine, outputScope });
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
       writeLine(`[r-contract] RECORDED ${phase.id}: ${normalized.message}`);
+      try {
+        if (normalized.processTreeUnsettled === true || normalized.stopAfterPhase === true) {
+          await outputScope.checkpoint();
+        } else {
+          await outputScope.drain(phaseOptions.terminationSignal);
+        }
+      } catch (outputError) {
+        if (!failures.includes(outputError)) failures.push(outputError);
+        normalized.stopAfterPhase = true;
+      }
       if (normalized.processTreeUnsettled === true || normalized.stopAfterPhase === true) {
         throw new AggregateError(
           failures,
           normalized.processTreeUnsettled === true
             ? `[r-contract] stopped after ${phase.id} because its process tree was not verified settled.`
-            : `[r-contract] stopped after ${phase.id} because the runner received an external termination signal.`
+            : `[r-contract] stopped after ${phase.id} because the failure prevents continuing safely.`
         );
       }
     }
@@ -1202,7 +1353,7 @@ export async function runRContractPhasesWithSignalForwarding(phases, options = {
   }
 }
 
-async function main() {
+async function main(outputOptions) {
   const selection = parseRContractSelection(process.argv.slice(2));
   const rscript = resolveExecutable(process.env.RSCRIPT ?? "Rscript");
   const r = resolveExecutable(process.env.R ?? "R");
@@ -1211,9 +1362,10 @@ async function main() {
   const ordered = orderRContractPhases(selected, selection.seed);
   const signalVerifiedProcesses = process.platform === "linux" ? createLinuxProcessSignaler() : undefined;
   if (selection.seed !== undefined) {
-    process.stdout.write(`[r-contract] ORDER seed ${selection.seed}: ${ordered.map(({ id }) => id).join(", ")}\n`);
+    outputOptions.writeLine(`[r-contract] ORDER seed ${selection.seed}: ${ordered.map(({ id }) => id).join(", ")}`);
+    await outputOptions.outputScope.checkpoint();
   }
-  await runRContractPhasesWithSignalForwarding(ordered, { signalVerifiedProcesses });
+  await runRContractPhasesWithSignalForwarding(ordered, { ...outputOptions, signalVerifiedProcesses });
 }
 
 function invokedDirectly() {
@@ -1226,8 +1378,14 @@ function invokedDirectly() {
 }
 
 if (invokedDirectly()) {
-  main().catch((error) => {
-    console.error(error);
+  withRContractOutput({}, async (outputOptions) => {
+    try {
+      await main(outputOptions);
+    } catch (error) {
+      outputOptions.writeError(`${inspect(error)}\n`);
+      throw error;
+    }
+  }).catch(() => {
     process.exitCode = 1;
   });
 }

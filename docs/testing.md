@@ -98,10 +98,16 @@ Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The run
 a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
 
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
-and escalation. An unverifiable live target leaves the overall phase unsettled even when other verified targets can
-be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism; cancellation there
-remains unresolved. Parent SIGKILL or a runner crash is also outside this shutdown guarantee. These limitations are
-tracked in [#955](https://github.com/Matt17BR/openwrangler/issues/955).
+closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
+verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;
+cancellation there remains unresolved. Parent SIGKILL or a runner crash is also outside this shutdown guarantee.
+These limitations are tracked in [#955](https://github.com/Matt17BR/openwrangler/issues/955).
+
+The runner handles default stdout and stderr errors through the existing failure and verified cleanup path.
+A destination error or cancellation stops later phases without waiting for other pending output. Successful phases
+drain their output after child settlement and before continuing, retaining normal reader backpressure. Destination
+listeners remain owned until pending callbacks and queued errors settle. This does not bound process exit when a
+reader stays open without consuming output.
 
 The native-view source tests cover lifetime provider registrations, forwarded tree updates, and session-pinned code
 insertion. They also check that unchanged validated generated text avoids another source-validation scan, while

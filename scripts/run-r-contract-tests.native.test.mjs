@@ -278,3 +278,270 @@ for fd in opened:
     assert.equal(result.status, 0, result.stderr);
   }
 );
+
+function outputReaderProbe(channel, entryPoint = "runRContractPhasesWithSignalForwarding") {
+  const program = `
+import fs from 'node:fs';
+import { ${entryPoint} } from ${JSON.stringify(runner)};
+const root = process.env.OW_OUTPUT_PROBE_ROOT;
+const childCode = ${JSON.stringify(`
+const fs = require('node:fs');
+const root = process.env.OW_OUTPUT_PROBE_ROOT;
+const event = name => fs.appendFileSync(root+'/events',name+'\\n');
+const fields = fs.readFileSync('/proc/self/stat','utf8').split(') ')[1].split(' ');
+fs.writeFileSync(root+'/phase.tmp',JSON.stringify({pid:process.pid,start:fields[19],owner:process.env.OPEN_WRANGLER_R_CONTRACT_OWNER}));
+fs.renameSync(root+'/phase.tmp',root+'/phase.json');
+process.on('SIGTERM',()=>{event('SIGTERM');process.exit(0);});
+process.stdout.on('error',()=>{});
+process.stderr.on('error',()=>{});
+const gate=setInterval(()=>{if(fs.existsSync(root+'/emit')){clearInterval(gate);process.${channel ?? "stdout"}.write('owned phase output\\n');}},10);
+setTimeout(()=>{event('expiry');process.exit(0);},2000);
+`)};
+const phases = [{id:'output',label:'owned output',command:process.execPath,args:['-e',childCode],environment:process.env,timeoutMs:4000},
+ {id:'next',label:'next',command:process.execPath,args:['-e',"require('node:fs').writeFileSync("+JSON.stringify(root+'/next')+",'yes')"],environment:process.env,timeoutMs:1000}];
+try {
+ await ${entryPoint}(${entryPoint === "runRContractPhase" ? "phases[0]" : "phases"});
+ fs.writeFileSync(root+'/result',JSON.stringify({ok:true}));
+} catch(error) {
+ const messages = e => [e.message,...(e.errors??[]).flatMap(messages)];
+ fs.writeFileSync(root+'/result',JSON.stringify({ok:false,messages:messages(error)}));process.exitCode=1;
+}
+`;
+  const controller = String.raw`
+import ctypes,json,os,pathlib,signal,subprocess,sys,tempfile,time
+assert ctypes.CDLL(None,use_errno=True).prctl(36,1,0,0,0)==0
+with tempfile.TemporaryDirectory(prefix='ow-r-output-') as directory:
+ root=pathlib.Path(directory); phase=None; fd=None; runner=None
+ def identity(pid):
+  try: return pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+  except FileNotFoundError: return None
+ try:
+  runner=subprocess.Popen([sys.argv[1],'--input-type=module','-e',sys.argv[2]],env={**os.environ,'OW_OUTPUT_PROBE_ROOT':directory},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+  deadline=time.monotonic()+4
+  while not (root/'phase.json').exists():
+   assert runner.poll() is None, runner.stderr.read().decode()
+   assert time.monotonic()<deadline, 'phase registration deadline'
+   time.sleep(.01)
+  phase=json.loads((root/'phase.json').read_text()); fields=identity(phase['pid'])
+  assert fields[19]==phase['start'] and int(fields[1])==runner.pid
+  assert ('OPEN_WRANGLER_R_CONTRACT_OWNER='+phase['owner']).encode() in pathlib.Path(f"/proc/{phase['pid']}/environ").read_bytes().split(b'\0')
+  fd=os.pidfd_open(phase['pid'])
+  if sys.argv[3]!='intact': getattr(runner,sys.argv[3]).close()
+  (root/'emit').write_text('go')
+  status=runner.wait(timeout=6)
+  after_exit=identity(phase['pid'])
+  outputs={name:getattr(runner,name).read().decode() for name in ['stdout','stderr'] if not getattr(runner,name).closed}
+  deadline=time.monotonic()+3
+  while identity(phase['pid']) is not None:
+   try: os.waitpid(phase['pid'],os.WNOHANG)
+   except ChildProcessError: pass
+   assert time.monotonic()<deadline, 'self-expiring fixture did not exit'
+   time.sleep(.01)
+  result={'status':status,'phaseAliveAfterRunner':after_exit is not None and after_exit[0]!='Z','events':(root/'events').read_text().splitlines(),'nextStarted':(root/'next').exists(),'outcome':json.loads((root/'result').read_text()) if (root/'result').exists() else None,'outputs':outputs}
+ finally:
+  if fd is not None:
+   try: signal.pidfd_send_signal(fd,signal.SIGKILL)
+   except ProcessLookupError: pass
+   os.close(fd)
+  if runner is not None:
+   if runner.poll() is None: runner.kill()
+   runner.wait(timeout=3)
+   runner.stdout.close();runner.stderr.close()
+  deadline=time.monotonic()+3
+  while True:
+   try: pid,_=os.waitpid(-1,os.WNOHANG)
+   except ChildProcessError: break
+   assert time.monotonic()<deadline, 'owned fixture cleanup deadline'
+   if not pid: time.sleep(.01)
+  if phase is not None: assert identity(phase['pid']) is None
+print(json.dumps(result))
+`;
+  const execution = spawnSync(
+    resolveAcceptancePython({ profile: "repository-command" }),
+    ["-c", controller, process.execPath, program, channel ?? "intact"],
+    {
+      encoding: "utf8",
+      timeout: 12_000,
+      maxBuffer: 128 * 1024
+    }
+  );
+  assert.equal(execution.status, 0, execution.stderr || execution.stdout);
+  const result = JSON.parse(execution.stdout);
+  assert.equal(result.phaseAliveAfterRunner, false, "the runner must settle its phase before returning");
+  if (channel) {
+    assert.equal(result.status, 1);
+    assert.equal(result.outcome?.ok, false, "destination errors must reject through the runner");
+    assert.match(result.outcome.messages.join("\n"), new RegExp(`${channel} sink failed`));
+    assert.deepEqual(result.events, ["SIGTERM"]);
+    assert.equal(result.nextStarted, false);
+    assert.doesNotMatch(Object.values(result.outputs).join(""), /Unhandled 'error' event/);
+  } else {
+    assert.equal(result.status, 0);
+    assert.equal(result.outcome.ok, true);
+    assert.deepEqual(result.events, ["expiry"]);
+    assert.equal(result.nextStarted, true);
+    assert.match(result.outputs.stdout, /owned phase output/);
+  }
+}
+
+test(
+  "Linux default output destinations settle before rejecting closed readers",
+  { skip: process.platform !== "linux" },
+  async (context) => {
+    for (const channel of [undefined, "stdout", "stderr"]) {
+      await context.test(channel ?? "intact", () => outputReaderProbe(channel));
+    }
+    await context.test("direct phase defaults", () => outputReaderProbe("stdout", "runRContractPhase"));
+  }
+);
+
+function outputCallbackProbe(stage) {
+  const program = `
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {runRContractPhase,runRContractPhasesWithSignalForwarding} from ${JSON.stringify(runner)};
+const stage=${JSON.stringify(stage)};
+const safety=setTimeout(()=>process.exit(97),3000);
+const stream=process.stdout, original=stream.write;
+const unrelated=()=>{};stream.on('error',unrelated);
+const listeners=stream.listenerCount('error');
+let triggered=false, spawned=0, closed=0, release;
+const lateError=new Error('controlled destination failure');
+stream.write=function(chunk,...args) {
+ const target=stage==='START-signal'?'START':stage.startsWith('PASS')?'PASS':stage;
+ if(!triggered && (stage==='FAIL-pending'?String(chunk).includes('held payload'):String(chunk).includes('[r-contract] '+target))) {
+  triggered=true;
+  const callback=args.at(-1);assert.equal(typeof callback,'function');
+  if(stage==='START-signal') {process.kill(process.pid,'SIGTERM');return original.call(this,chunk,...args);}
+  release=error=>{callback(error);if(error)process.nextTick(()=>stream.emit('error',error));};
+  if(stage==='FAIL-pending') return true;
+  if(stage==='START') {process.nextTick(()=>release(lateError));return true;}
+  setImmediate(()=>setImmediate(()=>{
+   if(stage.startsWith('PASS') && stage.endsWith('signal')) process.kill(process.pid,'SIGTERM');
+   else if(stage==='PASS-healthy') {assert.equal(spawned,1);assert.equal(closed,1);release();}
+   else release(lateError);
+  }));
+  return true;
+ }
+ return original.call(this,chunk,...args);
+};
+const phases=[{id:'fixture',label:'callback fixture',command:process.execPath,args:['-e',(stage==='FAIL-pending'?"process.stdout.write('held payload');":'')+'process.exit('+(['RECORDED','FAIL-pending'].includes(stage)?7:0)+')'],environment:process.env,timeoutMs:1000},
+ {id:'next',label:'next',command:process.execPath,args:['-e','process.exit(0)'],environment:process.env,timeoutMs:1000}];
+let failure;
+const run=stage==='FAIL-pending'?runRContractPhase:runRContractPhasesWithSignalForwarding;
+try {await run(stage==='FAIL-pending'?phases[0]:phases,{spawnProcess:(...args)=>{spawned++;const child=spawn(...args);child.once('close',()=>closed++);return child;}});}catch(error){failure=error;}
+finally {stream.write=original;}
+assert.ok(triggered);
+if(stage==='FAIL-pending'||(stage.startsWith('PASS') && stage.endsWith('signal'))) {
+ assert.equal(stream.listenerCount('error'),listeners+1,'pending callback retains its error listener');
+ release(lateError);
+}
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(stream.listenerCount('error'),listeners,'only owned listeners retire after callback/error delivery');
+assert.equal(closed,spawned,'native children settle before return');
+const messages=e=>[e?.message,...(e?.errors??[]).flatMap(messages)].filter(Boolean).join('\\n');
+if(stage==='PASS-healthy'){assert.equal(failure,undefined);assert.equal(spawned,2);}
+else {
+ assert.ok(failure);assert.equal(spawned,stage==='START'||stage==='START-signal'?0:1);
+ assert.match(messages(failure),stage==='FAIL-pending'?/exit 7/:stage.endsWith('signal')?/INTERRUPTED.*SIGTERM/:/stdout sink failed/);
+ if(stage==='RECORDED')assert.match(messages(failure),/exit 7/);
+}
+await runRContractPhasesWithSignalForwarding([]);
+assert.equal(stream.listenerCount('error'),listeners,'a second invocation does not accumulate listeners');
+stream.removeListener('error',unrelated);
+clearTimeout(safety);
+process.stderr.write('verified '+stage+'\\n');
+`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+    encoding: "utf8",
+    timeout: 6000,
+    maxBuffer: 128 * 1024
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, new RegExp(`verified ${stage}`));
+}
+
+test(
+  "Linux output callbacks preserve status, interruption and listener ownership",
+  { skip: process.platform !== "linux" },
+  async (context) => {
+    for (const stage of ["START", "PASS", "RECORDED", "START-signal", "PASS-signal", "FAIL-pending", "PASS-healthy"]) {
+      await context.test(stage, () => outputCallbackProbe(stage));
+    }
+  }
+);
+
+test(
+  "CLI order and final diagnostics use the owned output destination",
+  { skip: process.platform !== "linux" },
+  async (context) => {
+    for (const stage of ["ORDER", "final"]) {
+      await context.test(stage, () => {
+        const preload = `
+import assert from 'node:assert/strict';
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+const stream=process.${stage === "ORDER" ? "stdout" : "stderr"}, original=stream.write;
+const listeners=stream.listenerCount('error');let writes=0,spawns=0;
+cp.spawn=()=>{spawns++;throw new Error('unexpected phase launch');};syncBuiltinESMExports();
+stream.write=function(_chunk,callback){writes++;const error=new Error('controlled ${stage} destination failure');setImmediate(()=>{callback(error);process.nextTick(()=>stream.emit('error',error));});return true;};
+process.once('beforeExit',()=>{
+ stream.write=original;
+ assert.equal(spawns,0);assert.equal(writes,1);assert.equal(stream.listenerCount('error'),listeners);
+ process.${stage === "ORDER" ? "stderr" : "stdout"}.write('verified ${stage}\\n');
+});
+`;
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--import",
+            `data:text/javascript,${encodeURIComponent(preload)}`,
+            fileURLToPath(runner),
+            ...(stage === "ORDER" ? ["--phase", "frame:decimal-ordering", "--seed", "1"] : ["--invalid"])
+          ],
+          {
+            env: { ...process.env, R: process.execPath, RSCRIPT: process.execPath },
+            encoding: "utf8",
+            timeout: 6000,
+            maxBuffer: 128 * 1024
+          }
+        );
+        assert.equal(result.status, 1);
+        assert.match(result.stdout + result.stderr, new RegExp(`verified ${stage}`));
+        assert.doesNotMatch(result.stdout + result.stderr, /Unhandled 'error' event/);
+      });
+    }
+  }
+);
+
+test(
+  "Linux output wrapper preserves exact falsy writer rejections",
+  { skip: process.platform !== "linux" },
+  async (context) => {
+    for (const value of [undefined, 0]) {
+      await context.test(String(value), async () => {
+        let spawned = false;
+        let rejected = false;
+        try {
+          await runRContractPhase(
+            { id: "unstarted", label: "unstarted", environment: process.env, timeoutMs: 1000 },
+            {
+              writeLine: () => {
+                throw value;
+              },
+              spawnProcess: () => {
+                spawned = true;
+                throw new Error("unexpected launch");
+              }
+            }
+          );
+        } catch (error) {
+          rejected = true;
+          assert.equal(error, value);
+        }
+        assert.equal(rejected, true);
+        assert.equal(spawned, false);
+      });
+    }
+  }
+);
