@@ -1020,6 +1020,7 @@ class PandasEngine(DataFrameEngine):
                     "unhashable type: 'list'",
                     "unhashable type: 'dict'",
                     "unhashable type: 'numpy.ndarray'",
+                    "unhashable type: 'set'",
                 )
             ):
                 raise

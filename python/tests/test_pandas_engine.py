@@ -179,11 +179,11 @@ def test_pandas_sparse_missing_cell_total_reuses_exact_column_counts(layout: str
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
-@pytest.mark.parametrize("container", ["list", "dict", "numpy.ndarray"])
+@pytest.mark.parametrize("container", ["list", "dict", "numpy.ndarray", "set"])
 def test_pandas_container_stats_preserve_missing_counts_when_composite_duplicates_are_unavailable(
     container: str,
 ) -> None:
-    value = {"list": [1, None], "dict": {"n": 1}, "numpy.ndarray": np.array([1, 2])}[container]
+    value = {"list": [1, None], "dict": {"n": 1}, "numpy.ndarray": np.array([1, 2]), "set": {1, 2}}[container]
     source = pd.DataFrame({"key": pd.Series([value, value, None], dtype=object), "other": [1.0, np.nan, np.nan]})
     source.index = pd.Index([4, 1, 4], name="source rows")
     before = source.copy(deep=True)
@@ -215,7 +215,7 @@ def test_pandas_container_stats_preserve_missing_counts_when_composite_duplicate
     "failure",
     [
         TypeError("unrelated failure"),
-        TypeError("unhashable type: 'set'"),
+        TypeError("unhashable type: 'UnclassifiedKey'"),
         TypeError(),
         TypeError("unhashable type: 'list'", "extra"),
         TypeError(7),

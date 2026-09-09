@@ -349,8 +349,9 @@ replacement controls retain their separate boundaries.
 Python protocol tests own the request-enum and present-null option matrix, including valid omission and clone controls.
 Live protocol owners reject v2 traffic and retain correlated recovery with v3. Shared schema and response validators
 check explicit unavailable duplicate counts and reject a sample size with that state; R host guards retain numeric
-counts. Pandas statistics owners cover native composite-container refusals, exact missing counts, filtered views,
-source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable from pending data.
+counts. Pandas statistics owners cover native composite-container refusals, including sets, exact missing counts,
+filtered views, source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable
+from pending data.
 Kernel and standalone owners check representative `invalid_request` refusals before native dispatch and a valid
 follow-up in the same process. Python protocol and kernel tests also check malformed viewing structures before native
 query work, including correlated errors and retained session state. The native R viewing owner sends raw JSON to distinguish
