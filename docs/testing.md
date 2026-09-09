@@ -352,6 +352,9 @@ check explicit unavailable duplicate counts and reject a sample size with that s
 counts. Pandas statistics owners cover native composite-container refusals, including sets, exact missing counts,
 filtered views, source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable
 from pending data.
+The existing Polars statistics owners cover partial counts for lazy Object columns under default and streaming
+affinity, retaining exact missing metrics, empty results, source/view ownership and scalar collection bounds. They
+verify that this path avoids unique grouping while ordinary and eager statistics retain their behavior.
 Kernel and standalone owners check representative `invalid_request` refusals before native dispatch and a valid
 follow-up in the same process. Python protocol and kernel tests also check malformed viewing structures before native
 query work, including correlated errors and retained session state. The native R viewing owner sends raw JSON to distinguish

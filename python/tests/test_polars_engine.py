@@ -1354,6 +1354,124 @@ def test_lazy_polars_header_stats_collect_only_scalar_results(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("affinity", [None, "streaming"])
+@pytest.mark.parametrize("case", ["mixed", "single", "empty", "all-null", "no-visible"])
+def test_lazy_polars_object_stats_keep_exact_missing_metrics_without_grouping(
+    affinity: Literal["streaming"] | None, case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = pl.DataFrame(
+        {
+            "value": pl.Series(["kept", None, "kept", "nan"], dtype=pl.Object),
+            "number": [-0.0, None, -0.0, float("nan")],
+        }
+    )
+    if case == "single":
+        source = source.select("value")
+    elif case == "empty":
+        source = source.head(0)
+    elif case == "all-null":
+        source = source.slice(1, 1)
+    elif case == "no-visible":
+        source = source.select([])
+    before = source.clone()
+    counts = {"mixed": [1, 2], "single": [1], "empty": [0, 0], "all-null": [1, 1], "no-visible": []}[case]
+    expected = {
+        "missingCells": sum(counts),
+        "missingRows": {"mixed": 2, "single": 1, "empty": 0, "all-null": 1, "no-visible": 0}[case],
+        "duplicateRows": None if source.height else 0,
+        "missingValuesByColumn": [
+            {"column": column, "count": count} for column, count in zip(source.columns, counts, strict=True)
+        ],
+    }
+    engine = PolarsEngine()
+    with pl.Config(engine_affinity=None):
+        assert engine.header_stats(source) == {
+            **expected,
+            "duplicateRows": 1 if case in {"mixed", "single"} else 0,
+        }
+
+    collected_shapes: list[tuple[int, int]] = []
+    native_collect_all = pl.collect_all
+
+    def scalar_collect_all(queries: Any, **kwargs: Any) -> list[pl.DataFrame]:
+        assert kwargs == {"engine": "streaming"}
+        assert len(queries) == 1
+        outputs = native_collect_all(queries, **kwargs)
+        collected_shapes.extend(output.shape for output in outputs)
+        assert all(output.height == 1 for output in outputs)
+        return outputs
+
+    def reject_unique(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Lazy Object statistics must not construct a duplicate grouping query.")
+
+    monkeypatch.setattr(pl, "collect_all", scalar_collect_all)
+    monkeypatch.setattr(pl.LazyFrame, "unique", reject_unique)
+    with pl.Config(engine_affinity=affinity):
+        assert engine.header_stats(source.lazy()) == expected
+    assert collected_shapes == ([(1, 2 + source.width)] if source.width else [])
+    assert source.schema == before.schema
+    if "value" in source.columns:
+        assert source["value"].to_list() == before["value"].to_list()
+        assert source.drop("value").equals(before.drop("value"))
+
+
+def test_live_lazy_object_dataset_stats_preserve_filtered_page_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    import __main__
+
+    source = pl.DataFrame(
+        {
+            "value": pl.Series(["kept", None, "kept", "outside"], dtype=pl.Object),
+            "number": [1.0, float("nan"), 1.0, None],
+            "keep": [True, True, True, False],
+        }
+    )
+    before = source.clone()
+    lazy = source.lazy()
+    monkeypatch.setattr(__main__, "object_stats_source", lazy, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "object_stats_source"},
+            backend="polars",
+            page_size=4,
+            column_offset=1,
+            column_limit=1,
+        )
+        sid = opened["metadata"]["sessionId"]
+        view = {
+            "filters": [{"column": "keep", "type": "boolean", "predicates": [{"operator": "equals", "value": True}]}],
+            "sort": [{"column": "number", "direction": "desc", "nulls": "last"}],
+        }
+        page = manager.get_page(sid, 0, 0, 4, view, column_offset=1, column_limit=1)
+        assert page["metadata"]["filteredShape"] == {"rows": 3, "columns": 3}
+        assert page["page"]["columnIds"] == [opened["metadata"]["schema"][1]["id"]]
+        stats = manager.get_dataset_stats(sid, 0, view)
+        assert stats == {
+            "kind": "datasetStats",
+            "revision": 0,
+            "stats": {
+                "missingCells": 2,
+                "missingRows": 1,
+                "duplicateRows": None,
+                "missingValuesByColumn": [
+                    {"column": "value", "count": 1},
+                    {"column": "number", "count": 1},
+                    {"column": "keep", "count": 0},
+                ],
+            },
+        }
+        assert json.loads(json.dumps(stats, allow_nan=False)) == stats
+        assert manager.get_page(sid, 0, 0, 4, view, column_offset=1, column_limit=1) == page
+        assert manager.sessions[sid].plan == []
+        assert isinstance(manager.sessions[sid].committed, pl.LazyFrame)
+        assert __main__.object_stats_source is lazy
+        assert source.schema == before.schema
+        assert source["value"].to_list() == before["value"].to_list()
+        assert source.drop("value").equals(before.drop("value"))
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 def test_polars_summary_excludes_null_and_nan_from_values_and_numeric_metrics(lazy: bool):
     frame = pl.DataFrame({"value": [1.0, None, float("nan"), 1.0]})

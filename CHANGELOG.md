@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Invalid Python runtime timeout settings use their defaults instead of causing immediate timeouts.
 - Native R sessions honor configured opening and request deadlines while preserving the separate export timeout.
 - Pandas Dataset statistics retain missing-value counts when nested or set-valued columns prevent duplicate counting, and show the duplicate count as unavailable.
+- Lazy Polars Dataset statistics retain missing-value counts for Object columns and show the duplicate count as unavailable.
 - Native R Parquet exports refuse timestamp values that would lose precision in microsecond storage.
 - Native R CSV exports preserve UTF-8 text under the C locale.
 - Pandas Parquet imports preserve nullable integer values and integer children in lists, structs and maps through editing and export.

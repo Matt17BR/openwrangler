@@ -979,17 +979,23 @@ class PolarsEngine(DataFrameEngine):
                 *missing_expressions,
             ]
         )
-        unique_query = (
-            frame.select(visible).unique(maintain_order=False).select(pl.len().alias("__open_wrangler_unique_rows"))
-        )
-        metrics_frame, unique_frame = pl.collect_all([metrics_query, unique_query], engine="streaming")
-        metrics = metrics_frame.row(0, named=True)
+        has_object = any(schema[column] == pl.Object for column in visible)
+        queries = [metrics_query]
+        if not has_object:
+            queries.append(
+                frame.select(visible).unique(maintain_order=False).select(pl.len().alias("__open_wrangler_unique_rows"))
+            )
+        results = pl.collect_all(queries, engine="streaming")
+        metrics = results[0].row(0, named=True)
         total_rows = int(metrics["__open_wrangler_rows"])
+        duplicate_rows = None if total_rows else 0
+        if not has_object:
+            duplicate_rows = total_rows - int(results[1].item())
         missing_by_column = [{"column": column, "count": int(metrics[alias])} for column, alias in aliases]
         return {
             "missingCells": sum(item["count"] for item in missing_by_column),
             "missingRows": int(metrics["__open_wrangler_missing_rows"]),
-            "duplicateRows": total_rows - int(unique_frame.item()),
+            "duplicateRows": duplicate_rows,
             "missingValuesByColumn": missing_by_column,
         }
 

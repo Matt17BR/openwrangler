@@ -467,6 +467,13 @@ for that aggregation alone; keys, source storage and other aggregates retain the
 
 ### Polars
 
+Dataset statistics for nonempty LazyFrames with visible Object columns retain exact missing-value counts and report
+the duplicate count as unavailable. This path streams only the existing missing-metrics query; it does not build a
+unique query. Native streaming cannot compare these Object rows, while multi-column in-memory grouping can incur
+quadratic equality work. Empty and zero-column results retain known zero counts. Eager statistics and streaming for
+ordinary schemas retain their existing behavior. Object-column profiling remains unsupported, and eager Object
+grouping retains its native cost risk.
+
 For a new Formula integer string and an integer source, Polars checks the selected column's native minimum and
 maximum before add, subtract, multiply or integer power. It uses the smallest common native integer capacity at
 least as wide as the source, checking operands and result bounds; unsupported capacity is refused. Only the two
