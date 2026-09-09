@@ -598,9 +598,7 @@ export function createPosixProcessTracker(
     if (!sameProcessIdentity(expected, current)) return undefined;
     if (!coarseIdentityStillOwned(expected, current)) {
       latch(
-        new Error(
-          `process ${expected.pid} retained only an ambiguous second-resolution identity without its exact owned marker or lineage`
-        )
+        new Error(`process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity`)
       );
       throw failure;
     }
