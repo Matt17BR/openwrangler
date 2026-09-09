@@ -113,6 +113,7 @@ export interface ReleasedRCoreEditingDependencies {
     variableName?: string
   ) => Promise<ReleasedRPreview>;
   readonly recordAcceptanceProgress: (checkpoint: string) => void;
+  readonly reacquireAcknowledgedSessionApp: ReleasedRCoreEditingDependencies["releasedRSessionApp"];
   readonly releasedRSessionApp: (
     workbench: Page,
     testing: TestApi,
@@ -178,6 +179,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     previewReleasedRSelect,
     previewReleasedRTextLength,
     recordAcceptanceProgress,
+    reacquireAcknowledgedSessionApp,
     releasedRSessionApp,
     requireFreshExactSessionPanelHydration,
     waitFor,
@@ -329,7 +331,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
       10_000,
       "selecting the applied native R duplicate flag through column search"
     );
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R duplicate flag");
+    app = await reacquireAcknowledgedSessionApp(workbench, testing, sessionId, "the selected native R duplicate flag");
     const duplicateHeader = app.locator('th[data-column="group_repeated"]').first();
     await duplicateHeader.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(await duplicateHeader.getAttribute("data-grid-column"), String(duplicateOutput.position));
