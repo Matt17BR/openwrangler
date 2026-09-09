@@ -184,6 +184,8 @@ accepts a smaller page in the same process. Existing opening and mutation prefli
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
 changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
 receipt after layout settles and retain its session, revision, and DOM marker checks.
+The R session-acquisition helper owns fresh synchronization for confirmed and draft states. Inspection retains its
+existing renderer.
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
