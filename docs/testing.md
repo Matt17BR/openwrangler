@@ -578,6 +578,8 @@ explode behavior on both dependency endpoints, including empty and repeated labe
 Kernel response tests cover split markers and Unicode, exact byte limits, output outside the frame, malformed
 responses and execution settlement after decoding fails. Bridge tests verify that cleanup waits for the original
 execution and that valid noisy responses still publish their correlated state.
+`python/tests/test_response_framing.py` compares canonical bytes and exact sizing and frame limits for string keys
+and values around the writer's chunk boundary, including unescaped ASCII, escaped text and multibyte UTF-8.
 The existing decoder also checks fixed restart guidance for a correlated old-protocol envelope without admitting its
 response. Saved-output and renderer-message owners retain metadata-v2 fixtures, immutable normalization to current
 display metadata, repeated Open/inline receipt handoffs, original bounds and legacy-statistics validation.
