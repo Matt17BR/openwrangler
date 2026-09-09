@@ -570,20 +570,29 @@ export function createPosixProcessTracker(
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
   };
-  const coarseIdentityStillOwned = (expected, current) => {
-    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return true;
-    const markerOwned = expected.ownerMarked === true && current.ownerMarked === true;
-    const lineageOwned =
-      expected.parentPid === current.parentPid &&
-      observed.has(expected.parentPid) &&
-      current.parentPid !== expected.pid;
-    return (
-      expected.identityResolution === "second" &&
-      current.identityResolution === "second" &&
-      expected.parentPid === current.parentPid &&
-      expected.groupId === current.groupId &&
-      expected.command === current.command &&
-      (markerOwned || lineageOwned)
+  const coarseIdentityError = (expected, current) => {
+    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return undefined;
+    const secondResolution = expected.identityResolution === "second" && current.identityResolution === "second";
+    const parentMatches = expected.parentPid === current.parentPid;
+    const groupMatches = expected.groupId === current.groupId;
+    const commandMatches = expected.command === current.command;
+    const markerBefore = expected.ownerMarked === true;
+    const markerNow = current.ownerMarked === true;
+    const lineageOwned = parentMatches && observed.has(expected.parentPid) && current.parentPid !== expected.pid;
+    if (
+      secondResolution &&
+      parentMatches &&
+      groupMatches &&
+      commandMatches &&
+      ((markerBefore && markerNow) || lineageOwned)
+    ) {
+      return undefined;
+    }
+    return new Error(
+      `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
+        `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
+        `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
+        `lineageOwned=${lineageOwned}, root=${expected.pid === rootPid})`
     );
   };
   const verifiedIdentity = (expected) => {
@@ -596,10 +605,9 @@ export function createPosixProcessTracker(
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
-    if (!coarseIdentityStillOwned(expected, current)) {
-      latch(
-        new Error(`process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity`)
-      );
+    const ownershipError = coarseIdentityError(expected, current);
+    if (ownershipError) {
+      latch(ownershipError);
       throw failure;
     }
     return current;
