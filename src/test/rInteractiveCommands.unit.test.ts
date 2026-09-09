@@ -1024,19 +1024,28 @@ describe("active R session commands", () => {
     watcher.readInitial.mockResolvedValue(discovery(tibble));
     const { provider, factory, watcherFactory } = registerWith([], [watcher]);
 
-    provider.startAutomaticDiscovery();
+    vi.useFakeTimers();
+    try {
+      provider.startAutomaticDiscovery();
 
-    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
-    expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), terminal);
-    expect(factory.create).not.toHaveBeenCalled();
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    expect(provider.snapshot()).toMatchObject({
-      state: "ready",
-      terminalLabel: "R Interactive",
-      variables: [{ label: "orders", description: "R · tibble" }]
-    });
-    expect(mocks.withProgress).not.toHaveBeenCalled();
-    await provider.shutdown();
+      await vi.advanceTimersToNextTimerAsync();
+      expect(watcher.readInitial).toHaveBeenCalledOnce();
+      expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), terminal);
+      expect(factory.create).not.toHaveBeenCalled();
+      expect(terminal.sendText).not.toHaveBeenCalled();
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        terminalLabel: "R Interactive",
+        variables: [{ label: "orders", description: "R · tibble" }]
+      });
+      expect(mocks.withProgress).not.toHaveBeenCalled();
+    } finally {
+      try {
+        await provider.shutdown();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("sends nothing while vscode-R metadata is partial and bootstraps only after an explicit open", async () => {
@@ -1101,26 +1110,36 @@ describe("active R session commands", () => {
     const watcher = watcherMock(terminal);
     watcher.readInitial.mockResolvedValue(discovery(tibble));
     const { provider, factory } = registerWith([], [watcher]);
-    provider.startAutomaticDiscovery();
-    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
 
-    watcher.emitVariableChange(
-      discovery({
-        name: "table_orders",
-        backend: "r",
-        dataframeFlavor: "r.data.table"
-      })
-    );
+    vi.useFakeTimers();
+    try {
+      provider.startAutomaticDiscovery();
+      await vi.advanceTimersToNextTimerAsync();
+      expect(watcher.readInitial).toHaveBeenCalledOnce();
 
-    await vi.waitFor(() =>
-      expect(provider.snapshot()).toMatchObject({
-        state: "ready",
-        variables: [{ label: "table_orders", description: "R · data.table" }]
-      })
-    );
-    expect(factory.create).not.toHaveBeenCalled();
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    await provider.shutdown();
+      watcher.emitVariableChange(
+        discovery({
+          name: "table_orders",
+          backend: "r",
+          dataframeFlavor: "r.data.table"
+        })
+      );
+
+      await vi.waitFor(() =>
+        expect(provider.snapshot()).toMatchObject({
+          state: "ready",
+          variables: [{ label: "table_orders", description: "R · data.table" }]
+        })
+      );
+      expect(factory.create).not.toHaveBeenCalled();
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      try {
+        await provider.shutdown();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("keeps watcher updates current while a shell has focus", async () => {
@@ -1169,16 +1188,26 @@ describe("active R session commands", () => {
     const watcher = watcherMock(terminal);
     watcher.readInitial.mockResolvedValue(discovery(tibble));
     const { provider, factory, watcherFactory } = registerWith([], [watcher]);
-    provider.startAutomaticDiscovery();
 
-    await delay(400);
-    expect(factory.create).not.toHaveBeenCalled();
-    expect(watcherFactory.create).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      provider.startAutomaticDiscovery();
 
-    mocks.trusted = true;
-    for (const listener of mocks.trustListeners) listener();
-    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
-    await provider.shutdown();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(factory.create).not.toHaveBeenCalled();
+      expect(watcherFactory.create).not.toHaveBeenCalled();
+
+      mocks.trusted = true;
+      for (const listener of mocks.trustListeners) listener();
+      await vi.advanceTimersToNextTimerAsync();
+      expect(watcher.readInitial).toHaveBeenCalledOnce();
+    } finally {
+      try {
+        await provider.shutdown();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("shows the explicit refresh fallback for a renamed shell without sending text", async () => {
@@ -1186,17 +1215,26 @@ describe("active R session commands", () => {
     setActiveTerminal(terminal);
     const { provider, factory } = registerWith([]);
 
-    provider.startAutomaticDiscovery();
+    vi.useFakeTimers();
+    try {
+      provider.startAutomaticDiscovery();
 
-    await vi.waitFor(() =>
-      expect(provider.snapshot()).toMatchObject({
-        state: "idle",
-        message: "Choose Refresh R dataframes."
-      })
-    );
-    expect(factory.create).not.toHaveBeenCalled();
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    await provider.shutdown();
+      await vi.advanceTimersToNextTimerAsync();
+      await vi.waitFor(() =>
+        expect(provider.snapshot()).toMatchObject({
+          state: "idle",
+          message: "Choose Refresh R dataframes."
+        })
+      );
+      expect(factory.create).not.toHaveBeenCalled();
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      try {
+        await provider.shutdown();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("cancels pending metadata discovery when the provider shuts down", async () => {
