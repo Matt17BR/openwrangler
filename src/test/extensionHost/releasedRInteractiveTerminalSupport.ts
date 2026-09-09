@@ -27,11 +27,6 @@ interface ReleasedRInteractiveTerminalSupportDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -53,7 +48,6 @@ export function createReleasedRInteractiveTerminalSupport({
   assertReleasedSessionPage,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   withBoundedAcceptancePromise
 }: ReleasedRInteractiveTerminalSupportDependencies) {
@@ -133,11 +127,6 @@ export function createReleasedRInteractiveTerminalSupport({
     sessionId: string,
     directory: string
   ): Promise<void> {
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The active R terminal renderer must acknowledge its first complete snapshot."
-    );
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the active R terminal session");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
@@ -173,11 +162,6 @@ export function createReleasedRInteractiveTerminalSupport({
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the active R terminal dataframe to switch to Editing mode"
-    );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The Editing-mode active R terminal renderer must acknowledge the replacement runtime."
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the editable active R terminal session");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");

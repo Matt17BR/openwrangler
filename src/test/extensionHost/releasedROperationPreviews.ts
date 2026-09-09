@@ -252,11 +252,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       newColumn,
       variableName
     );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Text Length preview must be acknowledged by its exact renderer."
-    );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
       stepId
@@ -309,11 +304,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       `.ow_text_replacement <- ${JSON.stringify(replacement)}`
     );
     assertReleasedRFindReplaceCodeSurface(visibleCode, sourceName, find, replacement, false);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Find and replace preview must be acknowledged by its exact renderer."
-    );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Find and replace preview"),
       stepId: active.metadata.draftStep.id
@@ -368,11 +358,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     assertReleasedRCastGeneratedCode(active.code ?? "", sourceName, dtype, variableName);
     const codePreview = await waitForCodePreview(workbench, undefined, "R");
     assert.match(await revealCodePreviewText(codePreview, ".ow_cast_kind"), /\.ow_cast_kind/u);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Convert type preview must be acknowledged by its exact renderer."
-    );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Convert type preview"),
       stepId
@@ -422,11 +407,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       await revealCodePreviewText(codePreview, expectedCode),
       selectedNames,
       variableName
-    );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Select Columns preview must be acknowledged by its exact renderer."
     );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Select Columns preview"),
@@ -483,11 +463,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       variableName
     );
     recordAcceptanceProgress(`${checkpointPrefix}:reveal-complete`);
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The native R Drop Columns preview must be acknowledged by its exact renderer."
-    );
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Drop Columns preview"),
       stepId

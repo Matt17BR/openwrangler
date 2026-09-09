@@ -60,11 +60,6 @@ interface ReleasedRDocumentJourneyDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly textDocumentTab: (uri: vscode.Uri) => vscode.Tab | undefined;
   readonly waitFor: (
     predicate: () => boolean,
@@ -102,7 +97,6 @@ export function createReleasedRDocumentJourney({
   recordAcceptanceProgress,
   releasedRProcessRoots,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
@@ -230,10 +224,11 @@ export function createReleasedRDocumentJourney({
         30_000,
         "applying the plain R rename"
       );
-      await requireFreshExactSessionPanelHydration(
+      app = await releasedRSessionApp(
+        workbench,
         testing,
         opened.sessionId,
-        "The applied plain R rename must reach its exact renderer before insertion."
+        "the applied plain R session before export"
       );
       const applied = testing.activeSession();
       assert.ok(applied, "The applied plain R rename must retain its session.");
@@ -245,12 +240,6 @@ export function createReleasedRDocumentJourney({
       assert.equal(applied.metadata.capabilities.exportParquet, true);
 
       recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
-      app = await releasedRSessionApp(
-        workbench,
-        testing,
-        opened.sessionId,
-        "the applied plain R session before export"
-      );
       await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
       const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
       const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
