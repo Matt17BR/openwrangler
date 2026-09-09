@@ -5557,7 +5557,17 @@ for (literal in formula_literal_cases) {
   } else {
     expected_left + literal$scalar
   }
-  assert_identical(numeric_page_values(literal_preview, "result"), as.double(expected), "R Formula changed exact literal values")
+  expected_frame <- source_environment$formula_literal_frame
+  expected_frame$result <- expected
+  expected_page <- jsonlite::fromJSON(
+    openwrangler_r_frame_contract$encode_page(
+      openwrangler_r_frame_contract$capture_frame(expected_frame), row_limit = 3L, column_limit = 2L
+    ),
+    simplifyVector = FALSE
+  )
+  expected_cells <- lapply(expected_page$page$rows, `[[`, "values")
+  assert_identical(lapply(literal_preview$page$page$rows, `[[`, "values"), expected_cells,
+    "R Formula changed exact literal cells")
   assert_identical(
     literal_preview$page$schema[[2L]]$rawType,
     if (inherits(expected, "integer64")) "integer64" else typeof(expected),
@@ -5584,7 +5594,8 @@ for (literal in formula_literal_cases) {
   )
   literal_applied <- dispatch("applyDraft", list(sessionId = formula_literal_session, revision = 1L, page = page_window()))
   assert_identical(literal_applied$action, "apply", "the exact R Formula draft did not apply")
-  assert_identical(numeric_page_values(literal_applied, "result"), as.double(expected), "applying R Formula changed the exact literal")
+  assert_identical(lapply(literal_applied$page$page$rows, `[[`, "values"), expected_cells,
+    "applying R Formula changed the exact literal cells")
   if (identical(literal$value, "1152921504606846976")) {
     for (invalid_literal in list(
       "-0", "+2", "02", "2\n", " 2", "2.5", "1e2", "Infinity",
