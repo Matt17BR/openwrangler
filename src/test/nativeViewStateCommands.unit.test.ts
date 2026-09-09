@@ -971,7 +971,7 @@ describe("native state and presentation commands", () => {
     });
     savedOutput.code = "";
     savedOutput.metadata = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId: "saved-snapshot",
       revision: 0,
       backend: "polars",
@@ -1254,7 +1254,7 @@ describe("native state and presentation commands", () => {
   it("disambiguates a selected duplicate label by its human column position", () => {
     const duplicate = snapshot({ mode: "viewing", steps: [] });
     duplicate.metadata = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId: "duplicate-summary",
       revision: 0,
       backend: "pandas",

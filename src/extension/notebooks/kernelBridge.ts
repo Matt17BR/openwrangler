@@ -440,7 +440,7 @@ export class KernelBridge implements OpenWranglerBridge {
     if (runtimeRequest.kind === "openSession") {
       this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
     }
-    let framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
+    let framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options), options.confirmedView);
     const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     let requestObservation: KernelObservation | undefined;
     let requestAcquired: AcquiredKernel | undefined;
@@ -545,7 +545,11 @@ export class KernelBridge implements OpenWranglerBridge {
             // superseded attempt may have narrowed an automatic open to
             // PySpark, so always restore the caller's original framing before
             // inspecting the replacement generation.
-            framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
+            framed = frameKernelRequest(
+              runtimeRequest,
+              requestPriority(runtimeRequest, options),
+              options.confirmedView
+            );
             assertRequiredKernel(acquired);
             requestAcquired = acquired;
             const observation = this.requireKernelObservation(acquired);
@@ -575,7 +579,8 @@ export class KernelBridge implements OpenWranglerBridge {
                 if (isPySpark && runtimeRequest.backend === undefined) {
                   framed = frameKernelRequest(
                     { ...runtimeRequest, backend: "pyspark" },
-                    requestPriority(runtimeRequest, options)
+                    requestPriority(runtimeRequest, options),
+                    options.confirmedView
                   );
                 }
               }
@@ -1255,14 +1260,16 @@ function requestPriority(
 
 function frameKernelRequest(
   request: OpenWranglerRequest,
-  priority: RuntimeRequestEnvelope["priority"]
+  priority: RuntimeRequestEnvelope["priority"],
+  confirmedView?: RuntimeRequestEnvelope["confirmedView"]
 ): FramedKernelRequest {
   const requestId = randomUUID();
   const envelope: RuntimeRequestEnvelope = {
     protocolVersion: PROTOCOL_VERSION,
     requestId,
     priority,
-    request
+    request,
+    ...(confirmedView === undefined ? {} : { confirmedView })
   };
   const marker = requestId.replace(/-/g, "");
   const payload = Buffer.from(JSON.stringify(envelope), "utf8").toString("base64");
@@ -1698,7 +1705,11 @@ export function parseKernelResponse(output: string, marker: string, requestId: s
   } catch {
     throw new Error("Open Wrangler kernel agent returned an invalid or stale protocol response.");
   }
-  if (isPlainRecord(parsed) && parsed.protocolVersion === 2 && parsed.requestId === requestId) {
+  if (
+    isPlainRecord(parsed) &&
+    (parsed.protocolVersion === 2 || parsed.protocolVersion === 3) &&
+    parsed.requestId === requestId
+  ) {
     throw new Error(
       "This kernel returned an older Open Wrangler protocol. Restart the kernel and rerun the cells that create your dataframe before reopening it in Open Wrangler."
     );

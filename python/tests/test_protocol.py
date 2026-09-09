@@ -7,19 +7,25 @@ import pytest
 
 from openwrangler_runtime import SessionManager, __version__
 from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
-from openwrangler_runtime.protocol import MAX_PAGE_LIMIT, ProtocolError, decode_envelope, decode_request_payload
+from openwrangler_runtime.protocol import (
+    MAX_PAGE_LIMIT,
+    PROTOCOL_VERSION,
+    ProtocolError,
+    decode_envelope,
+    decode_request_payload,
+)
 
 
 def test_initialize_advertises_the_canonical_runtime_version() -> None:
     initialized = SessionManager().initialize()
     assert initialized["runtimeVersion"] == __version__
-    assert initialized["protocolVersion"] == 3
+    assert initialized["protocolVersion"] == 4
 
 
-def test_protocol_v3_decodes_correlated_request() -> None:
-    request_id, priority, request = decode_envelope(
+def test_protocol_v4_decodes_correlated_request() -> None:
+    request_id, priority, request, confirmed_view = decode_envelope(
         {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "request-1",
             "priority": "interactive",
             "request": {"kind": "initialize"},
@@ -29,6 +35,7 @@ def test_protocol_v3_decodes_correlated_request() -> None:
     assert request_id == "request-1"
     assert priority == "interactive"
     assert request == {"kind": "initialize"}
+    assert confirmed_view is None
 
 
 @pytest.mark.parametrize(
@@ -43,7 +50,7 @@ def test_cancel_request_rejects_malformed_target_request_ids(target_request_id: 
     ):
         decode_envelope(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "cancel-malformed",
                 "priority": "interactive",
                 "request": {"kind": "cancelRequest", "targetRequestId": target_request_id},
@@ -55,7 +62,7 @@ def test_cancel_request_rejects_malformed_target_request_ids(target_request_id: 
 def test_cancel_request_accepts_exactly_256_utf8_bytes(target_request_id: str) -> None:
     decoded = decode_envelope(
         {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "cancel-boundary",
             "priority": "interactive",
             "request": {"kind": "cancelRequest", "targetRequestId": target_request_id},
@@ -67,7 +74,7 @@ def test_cancel_request_accepts_exactly_256_utf8_bytes(target_request_id: str) -
 
 def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "open-1",
         "priority": "interactive",
         "request": {
@@ -97,7 +104,7 @@ def test_open_session_clone_source_is_exact_and_requires_a_host_session_identity
         "columnLimit": 64,
     }
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "open-clone",
         "priority": "interactive",
         "request": request,
@@ -115,7 +122,7 @@ def test_open_session_clone_source_is_exact_and_requires_a_host_session_identity
 
 def test_open_session_accepts_supported_backends_and_scopes_pyspark_to_live_notebooks() -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "open-duckdb",
         "priority": "interactive",
         "request": {
@@ -180,7 +187,7 @@ def test_request_session_options_reject_containers_and_explicit_null(field: str,
         "columnLimit": 2,
     }
     envelope: dict[str, Any] = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "invalid-session-option",
         "priority": "interactive",
         "request": request,
@@ -214,12 +221,12 @@ def test_request_session_options_preserve_omission_and_supported_values(backend:
         request["backend"] = backend
     if mode is not None:
         request["mode"] = mode
-    envelope = {"protocolVersion": 3, "requestId": "valid-options", "priority": "background", "request": request}
+    envelope = {"protocolVersion": 4, "requestId": "valid-options", "priority": "background", "request": request}
     if backend == "pyspark" and mode == "editing":
         with pytest.raises(ProtocolError, match="only viewing mode"):
             decode_envelope(envelope)
     else:
-        assert decode_envelope(envelope) == ("valid-options", "background", request)
+        assert decode_envelope(envelope) == ("valid-options", "background", request, None)
 
 
 def _open_session_envelope_with_import_options(
@@ -238,7 +245,7 @@ def _open_session_envelope_with_import_options(
     else:
         source.update(source_location)
     return {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "open-import-options",
         "priority": "interactive",
         "request": {
@@ -476,7 +483,7 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         request.update(column="city", limit=100)
 
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "transport-1",
         "priority": "background" if kind != "getPage" else "interactive",
         "request": request,
@@ -515,7 +522,7 @@ def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
     with pytest.raises(ProtocolError, match=r"filterModel\.sort contains duplicate columns"):
         decode_envelope(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "transport-1",
                 "priority": "background" if kind != "getPage" else "interactive",
                 "request": request,
@@ -584,7 +591,7 @@ def test_view_queries_reject_malformed_structure(path, replacement, remove: bool
     with pytest.raises(ProtocolError, match="filterModel"):
         decode_envelope(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "invalid-view",
                 "priority": "interactive",
                 "request": {
@@ -649,7 +656,7 @@ def test_view_queries_preserve_valid_structure_and_opaque_values(kind: str) -> N
         request.update(column=" repeated ", limit=3, search="")
     before = deepcopy(request)
     decoded = decode_envelope(
-        {"protocolVersion": 3, "requestId": "valid-view", "priority": "interactive", "request": request}
+        {"protocolVersion": 4, "requestId": "valid-view", "priority": "interactive", "request": request}
     )[2]
     assert decoded == before
     assert decoded["filterModel"] is model
@@ -669,7 +676,7 @@ def test_column_values_rejects_nontext_query_fields(field: str, value: object) -
         field: value,
     }
     with pytest.raises(ProtocolError, match=field):
-        decode_envelope({"protocolVersion": 3, "requestId": "picker", "priority": "interactive", "request": request})
+        decode_envelope({"protocolVersion": 4, "requestId": "picker", "priority": "interactive", "request": request})
 
 
 def _opaque_view_envelope(value: object, placement: str = "value") -> dict:
@@ -685,7 +692,7 @@ def _opaque_view_envelope(value: object, placement: str = "value") -> dict:
     else:
         predicate[placement] = value
     return {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "opaque-operand",
         "priority": "interactive",
         "request": {
@@ -832,7 +839,7 @@ def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() ->
 
     def page_envelope(value: str, second_value: str, selected_value: str) -> dict[str, object]:
         return {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "bounded-page",
             "priority": "interactive",
             "request": {
@@ -850,7 +857,7 @@ def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() ->
 
     def preview_envelope(value: str, second_value: str, selected_value: str) -> dict[str, object]:
         return {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "bounded-preview",
             "priority": "interactive",
             "request": {
@@ -923,7 +930,7 @@ def test_page_column_windows_are_bounded_and_reject_booleans(field: str, value: 
     with pytest.raises(ProtocolError, match=message):
         decode_envelope(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "transport-1",
                 "priority": "interactive",
                 "request": request,
@@ -994,7 +1001,7 @@ def test_protocol_result_windows_accept_10000_and_reject_10001(kind: str) -> Non
             request["stepId"] = "rename-1"
 
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": f"bounded-{kind}",
         "priority": "interactive",
         "request": request,
@@ -1011,10 +1018,10 @@ def test_protocol_result_windows_accept_10000_and_reject_10001(kind: str) -> Non
         decode_envelope(envelope)
 
 
-def test_protocol_v3_validates_transformation_steps() -> None:
-    _, _, request = decode_envelope(
+def test_protocol_v4_validates_transformation_steps() -> None:
+    _, _, request, _ = decode_envelope(
         {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "preview-1",
             "priority": "interactive",
             "request": {
@@ -1093,9 +1100,9 @@ def test_protocol_v3_validates_transformation_steps() -> None:
     ],
     ids=lambda step: str(step["id"]),
 )
-def test_protocol_v3_accepts_canonical_column_references(step: dict) -> None:
+def test_protocol_v4_accepts_canonical_column_references(step: dict) -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": f"preview-{step['id']}",
         "priority": "interactive",
         "request": {
@@ -1198,9 +1205,9 @@ def test_protocol_v3_accepts_canonical_column_references(step: dict) -> None:
         ),
     ],
 )
-def test_protocol_v3_rejects_legacy_or_malformed_column_references(step: dict, message: str) -> None:
+def test_protocol_v4_rejects_legacy_or_malformed_column_references(step: dict, message: str) -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": f"preview-{step['id']}",
         "priority": "interactive",
         "request": {
@@ -1219,9 +1226,9 @@ def test_protocol_v3_rejects_legacy_or_malformed_column_references(step: dict, m
         decode_envelope(envelope)
 
 
-def test_protocol_v3_validates_applied_step_inspection() -> None:
+def test_protocol_v4_validates_applied_step_inspection() -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "inspect-1",
         "priority": "interactive",
         "request": {
@@ -1255,11 +1262,11 @@ def test_protocol_v3_validates_applied_step_inspection() -> None:
         decode_envelope(envelope)
 
 
-def test_protocol_v3_rejects_malformed_transformation_steps() -> None:
+def test_protocol_v4_rejects_malformed_transformation_steps() -> None:
     with pytest.raises(ProtocolError, match="missing required"):
         decode_envelope(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": "preview-bad",
                 "priority": "interactive",
                 "request": {
@@ -1280,9 +1287,9 @@ def test_protocol_v3_rejects_malformed_transformation_steps() -> None:
         )
 
 
-def test_protocol_v3_validates_export_format() -> None:
+def test_protocol_v4_validates_export_format() -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "export-1",
         "priority": "interactive",
         "request": {
@@ -1352,9 +1359,9 @@ def test_protocol_v3_validates_export_format() -> None:
         ),
     ],
 )
-def test_protocol_v3_rejects_incomplete_or_cross_format_export_options(options, message) -> None:
+def test_protocol_v4_rejects_incomplete_or_cross_format_export_options(options, message) -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "export-options-invalid",
         "priority": "interactive",
         "request": {
@@ -1383,9 +1390,9 @@ def test_protocol_v3_rejects_incomplete_or_cross_format_export_options(options, 
         {"device": str(1 << 128), "inode": "11"},
     ],
 )
-def test_protocol_v3_requires_the_host_owned_export_target_identity(identity) -> None:
+def test_protocol_v4_requires_the_host_owned_export_target_identity(identity) -> None:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "export-target-1",
         "priority": "interactive",
         "request": {
@@ -1411,12 +1418,13 @@ def test_protocol_v3_requires_the_host_owned_export_target_identity(identity) ->
     "envelope",
     [
         {"protocolVersion": 2, "requestId": "x", "priority": "interactive", "request": {"kind": "initialize"}},
-        {"protocolVersion": 3, "requestId": "", "priority": "interactive", "request": {"kind": "initialize"}},
-        {"protocolVersion": 3, "requestId": "x", "priority": "fast", "request": {"kind": "initialize"}},
-        {"protocolVersion": 3, "requestId": "x", "priority": "interactive", "request": {"kind": "getPage"}},
+        {"protocolVersion": 3, "requestId": "x", "priority": "interactive", "request": {"kind": "initialize"}},
+        {"protocolVersion": 4, "requestId": "", "priority": "interactive", "request": {"kind": "initialize"}},
+        {"protocolVersion": 4, "requestId": "x", "priority": "fast", "request": {"kind": "initialize"}},
+        {"protocolVersion": 4, "requestId": "x", "priority": "interactive", "request": {"kind": "getPage"}},
     ],
 )
-def test_protocol_v3_rejects_malformed_envelopes(envelope: object) -> None:
+def test_protocol_v4_rejects_malformed_envelopes(envelope: object) -> None:
     with pytest.raises(ProtocolError):
         decode_envelope(envelope)
 
@@ -1433,7 +1441,7 @@ def test_redo_requires_a_bounded_attempt_identity(token: object) -> None:
         "columnOffset": 0,
         "columnLimit": 2,
     }
-    envelope = {"protocolVersion": 3, "requestId": "redo", "priority": "interactive", "request": request}
+    envelope = {"protocolVersion": 4, "requestId": "redo", "priority": "interactive", "request": request}
     with pytest.raises(ProtocolError, match="viewRequestId"):
         decode_envelope(envelope)
     del request["viewRequestId"]
@@ -1441,3 +1449,88 @@ def test_redo_requires_a_bounded_attempt_identity(token: object) -> None:
         decode_envelope(envelope)
     request["viewRequestId"] = "é" * 128
     assert decode_envelope(envelope)[2] == request
+
+
+@pytest.mark.parametrize("kind", ["getPage", "previewStep", "applyDraft", "discardDraft", "undoStep", "redoStep"])
+def test_confirmed_view_is_an_optional_page_or_edit_envelope_field(kind: str) -> None:
+    request: dict[str, Any] = {
+        "kind": kind,
+        "sessionId": "session-1",
+        "revision": 0,
+        "offset": 0,
+        "limit": 1,
+        "columnOffset": 0,
+        "columnLimit": 1,
+    }
+    if kind == "previewStep":
+        request["step"] = {
+            "id": "drop",
+            "kind": "dropColumns",
+            "params": {"columns": [{"id": "column:0", "name": "value"}]},
+        }
+    if kind == "redoStep":
+        request["viewRequestId"] = "redo-current"
+    if kind == "getPage":
+        request["viewRequestId"] = "page-current"
+        request["filterModel"] = {"filters": [], "sort": []}
+    envelope = {"protocolVersion": PROTOCOL_VERSION, "requestId": "edit", "priority": "interactive", "request": request}
+    for epoch in [0, 9007199254740991]:
+        confirmed_view = {
+            "filterModel": {"filters": [], "sort": [{"column": "value", "direction": "desc", "nulls": "last"}]},
+            "viewChangeEpoch": epoch,
+        }
+        assert decode_envelope({**envelope, "confirmedView": confirmed_view})[3] == confirmed_view
+    assert decode_envelope(envelope)[3] is None
+    with pytest.raises(ProtocolError, match="unknown fields"):
+        decode_envelope({**envelope, "request": {**request, "confirmedView": confirmed_view}})
+
+
+@pytest.mark.parametrize(
+    "confirmed_view",
+    [
+        None,
+        {},
+        {"filterModel": {"filters": [], "sort": []}},
+        *[
+            {"filterModel": {"filters": [], "sort": []}, "viewChangeEpoch": value}
+            for value in [None, True, -1, 0.5, 9007199254740992, "1"]
+        ],
+        {"filterModel": {"filters": [], "sort": []}, "viewChangeEpoch": 0, "extra": True},
+        {
+            "filterModel": {"filters": [], "sort": [{"column": "value", "direction": "sideways", "nulls": "last"}]},
+            "viewChangeEpoch": 0,
+        },
+    ],
+)
+def test_confirmed_view_rejects_malformed_or_incomplete_intent(confirmed_view: object) -> None:
+    with pytest.raises(ProtocolError):
+        decode_envelope(
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "requestId": "invalid-view",
+                "priority": "interactive",
+                "request": {
+                    "kind": "undoStep",
+                    "sessionId": "session-1",
+                    "revision": 0,
+                    "offset": 0,
+                    "limit": 1,
+                    "columnOffset": 0,
+                    "columnLimit": 1,
+                },
+                "confirmedView": confirmed_view,
+            }
+        )
+
+
+def test_confirmed_view_is_refused_on_an_unrelated_request() -> None:
+    with pytest.raises(ProtocolError):
+        decode_envelope(
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "requestId": "not-edit",
+                "priority": "interactive",
+                "request": {"kind": "initialize"},
+                "confirmedView": {"filterModel": {"filters": [], "sort": []}, "viewChangeEpoch": 0},
+            }
+        )

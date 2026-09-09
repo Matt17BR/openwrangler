@@ -18,7 +18,7 @@ const metadata = Object.freeze({
   platform: "linux",
   remote: false,
   workspaceTrusted: true,
-  protocolVersion: 3
+  protocolVersion: 4
 });
 
 function nextRandom(state: number): number {
@@ -90,7 +90,7 @@ describe("offline diagnostic contract", () => {
     const parsed = JSON.parse(first.json) as Record<string, unknown>;
     expect(Object.keys(parsed)).toEqual(["schema", "metadata", "capture"]);
     expect(parsed.schema).toBe(OFFLINE_DIAGNOSTIC_SCHEMA);
-    expect(parsed.metadata).toMatchObject({ protocolVersion: 3 });
+    expect(parsed.metadata).toMatchObject({ protocolVersion: 4 });
     const serializedKeys = new Set<string>();
     JSON.parse(first.json, (key, value: unknown) => {
       if (key) serializedKeys.add(key);
@@ -106,9 +106,11 @@ describe("offline diagnostic contract", () => {
     ledger.record({ category: "kernel", code: "unavailable", recoverable: true });
     const capture = ledger.snapshot();
 
-    expect(() => createOfflineDiagnosticBundle({ ...metadata, protocolVersion: 2 }, capture)).toThrow(
-      "protocol version 3 only"
-    );
+    for (const protocolVersion of [2, 3]) {
+      expect(() => createOfflineDiagnosticBundle({ ...metadata, protocolVersion }, capture)).toThrow(
+        "protocol version 4 only"
+      );
+    }
 
     expect(() =>
       createOfflineDiagnosticBundle(metadata, {

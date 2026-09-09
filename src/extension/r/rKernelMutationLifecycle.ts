@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { operationKinds } from "../../shared/operationCatalog.generated";
 import {
   type ColumnSchema,
+  type ConfirmedView,
   type FilterModel,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
@@ -10,6 +11,7 @@ import {
   type TransformStep,
   type RetainedTransformStep
 } from "../../shared/protocol";
+import { isConfirmedView } from "../../shared/protocolValidation";
 import type { BridgeRequestOptions } from "../dataBridge";
 import { RKernelDiagnosticError } from "./rKernelTransport";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
@@ -102,6 +104,18 @@ export class RKernelMutationLifecycle {
     const invalid = validateMutationRequest(session, request.revision, request);
     if (invalid) return invalid;
     const confirmed = session as RBridgeSession;
+    let currentView: ConfirmedView;
+    try {
+      currentView = confirmedMutationView(confirmed, options);
+    } catch (error) {
+      return errorResponse(
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId
+      );
+    }
+
     if (confirmed.draftStep) {
       return errorResponse(
         "invalid_request",
@@ -186,8 +200,8 @@ export class RKernelMutationLifecycle {
       targetRowNames = rowNamesAfterRStep(inputRowNames, step);
       nextFilterModel =
         step.kind === "customCode"
-          ? copyFilterModel(confirmed.filterModel)
-          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+          ? copyFilterModel(currentView.filterModel)
+          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
       view = resolveViewQuery(nextFilterModel, step.kind === "customCode" ? confirmed.schema : targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
     } catch (error) {
@@ -199,6 +213,8 @@ export class RKernelMutationLifecycle {
       );
     }
 
+    confirmed.filterModel = currentView.filterModel;
+    confirmed.viewChangeEpoch = currentView.viewChangeEpoch;
     const expectedRevision = confirmed.revision;
     const expectedSchema = confirmed.schema;
     const draftBaseFilterModel = copyFilterModel(confirmed.filterModel);
@@ -418,6 +434,17 @@ export class RKernelMutationLifecycle {
     const invalid = validateMutationRequest(session, request.revision, request);
     if (invalid) return invalid;
     const confirmed = session as RBridgeSession;
+    let currentView: ConfirmedView;
+    try {
+      currentView = confirmedMutationView(confirmed, options);
+    } catch (error) {
+      return errorResponse(
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId
+      );
+    }
 
     let targetSchema: readonly ColumnSchema[];
     let targetRSchema: readonly RColumnSchema[];
@@ -454,7 +481,7 @@ export class RKernelMutationLifecycle {
       targetKeyColumnIds = confirmed.keyColumnIds;
       targetRowNames = confirmed.rowNames;
       targetCustomRowIdentities = confirmed.customRowIdentities;
-      nextFilterModel = copyFilterModel(confirmed.filterModel);
+      nextFilterModel = copyFilterModel(currentView.filterModel);
     } else if (request.kind === "discardDraft") {
       if (
         !confirmed.draftStep ||
@@ -475,9 +502,9 @@ export class RKernelMutationLifecycle {
       targetRowNames = confirmed.committedRowNames;
       targetCustomRowIdentities = confirmed.committedCustomRowIdentities;
       nextFilterModel =
-        confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel
+        confirmed.draftBaseViewChangeEpoch === currentView.viewChangeEpoch && confirmed.draftBaseFilterModel
           ? copyFilterModel(confirmed.draftBaseFilterModel)
-          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
     } else {
       if (confirmed.draftStep) {
         return errorResponse(
@@ -501,10 +528,10 @@ export class RKernelMutationLifecycle {
       const restore = confirmed.lastAppliedViewRestore;
       nextFilterModel =
         restore?.stepId === latest.id &&
-        restore.viewChangeEpoch === confirmed.viewChangeEpoch &&
-        isDeepStrictEqual(restore.after, confirmed.filterModel)
+        restore.viewChangeEpoch === currentView.viewChangeEpoch &&
+        isDeepStrictEqual(restore.after, currentView.filterModel)
           ? copyFilterModel(restore.before)
-          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
     }
 
     let view: RKernelViewQuery;
@@ -520,6 +547,8 @@ export class RKernelMutationLifecycle {
       );
     }
 
+    confirmed.filterModel = currentView.filterModel;
+    confirmed.viewChangeEpoch = currentView.viewChangeEpoch;
     const expectedRevision = confirmed.revision;
     const page = pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view);
     try {
@@ -675,4 +704,16 @@ export class RKernelMutationLifecycle {
       throw error;
     }
   }
+}
+
+function confirmedMutationView(session: RBridgeSession, options: BridgeRequestOptions): ConfirmedView {
+  const view = options.confirmedView;
+  if (view !== undefined) {
+    if (!isConfirmedView(view)) throw new Error("The confirmed R view is malformed.");
+    resolveViewQuery(view.filterModel, session.schema);
+  }
+  return {
+    filterModel: copyFilterModel(view?.filterModel ?? session.filterModel),
+    viewChangeEpoch: view?.viewChangeEpoch ?? session.viewChangeEpoch
+  };
 }

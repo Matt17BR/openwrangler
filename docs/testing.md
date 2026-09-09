@@ -414,11 +414,18 @@ Rejected numeric previews must preserve the complete confirmed response. Direct 
 replacement controls retain their separate boundaries.
 
 Python protocol tests own the request-enum and present-null option matrix, including valid omission and clone controls.
-Live protocol owners reject v2 traffic and retain correlated recovery with v3. Shared schema and response validators
+Live protocol owners reject v2 and v3 traffic and retain correlated recovery with v4. Saved notebook captures retain
+their bounded v2/v3 normalization. Envelope tests admit the host's accepted view on the five editing requests and
+`getPage`, with exact fields, the existing filter validation and a nonnegative safe-integer epoch. Coordinator tests
+attach it only to edits and Spark pages, at actual dispatch and after recovery. Shared schema and response validators
 check explicit unavailable duplicate counts and reject a sample size with that state; R host guards retain numeric
 counts. Pandas statistics owners cover native composite-container refusals, including sets, exact missing counts,
 filtered views, source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable
 from pending data.
+Session and coordinator owners cover successful superseded pages followed by a failed newer query, then Discard,
+Undo and Redo. They retain dropped-column restoration and genuinely newer viewing changes. Recovery and replacement
+owners check the epoch used by replayed edits; native query counters distinguish reused accepted views from an
+exceptional refilter. These checks belong in the existing source owners, without another installed-editor journey.
 The existing Polars statistics owners cover partial counts for lazy Object columns under default and streaming
 affinity, retaining exact missing metrics, empty results, source/view ownership and scalar collection bounds. They
 verify that this path avoids unique grouping while ordinary and eager statistics retain their behavior.
@@ -438,7 +445,10 @@ exact native integer/Decimal results, Arrow validity, scalar coercion and nested
 Python page-publication tests cover native materialization refusal, metadata and correlated-envelope failure,
 source invalidation, request-scope exit, profile leases and exact row-count discovery. Spark continuation controls
 retain the old view's anchors through a rejected replacement page, including a cached first block followed by a
-native continuation. Accepted pages retain the existing page and complete-frame allowances.
+native continuation. Native Classic and Connect cases also cover successful superseded queries, restored row-zero
+reads, different terminal totals and accepted-query promotion. Initial opening and fresh recovery bind the host epoch
+to the exact current query; source loss, failed response validation and disposal preserve their existing boundaries.
+Accepted pages retain the existing page and complete-frame allowances.
 Late background invalidation is serialized with page publication, including reentrant cleanup with a queued writer.
 The session-cache and step-inspection owners cover known-total page boundaries across Pandas, Polars and DuckDB,
 including empty results, projection, cache reuse and differently sized inspection sides. Host response-validation

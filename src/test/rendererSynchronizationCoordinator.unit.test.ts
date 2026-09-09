@@ -11,7 +11,7 @@ import type { GridViewState } from "../shared/viewState";
 const snapshot: SessionOpenedResponse = {
   kind: "sessionOpened",
   metadata: {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: "session",
     revision: 3,
     backend: "polars",

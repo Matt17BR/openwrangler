@@ -163,6 +163,8 @@ export class SessionRuntimeRecovery {
       metadata: session.metadata,
       code: session.code,
       draftBaseFilterModel: session.draftBaseFilterModel,
+      viewChangeEpoch: session.viewChangeEpoch,
+      draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
       viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
@@ -196,6 +198,8 @@ export class SessionRuntimeRecovery {
         delegate: candidateDelegate,
         metadata: response.metadata,
         code: "",
+        viewChangeEpoch: session.viewChangeEpoch ?? 0,
+        draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
         viewState: initialViewingState(response.metadata)
       };
       assertCurrent();
@@ -247,6 +251,8 @@ export class SessionRuntimeRecovery {
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
     session.draftBaseFilterModel = candidate.draftBaseFilterModel;
+    session.viewChangeEpoch = candidate.viewChangeEpoch;
+    session.draftBaseViewChangeEpoch = candidate.draftBaseViewChangeEpoch;
     session.viewState = reconcileViewingState(
       {
         ...latestGridPresentation,

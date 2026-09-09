@@ -12,7 +12,7 @@ import type {
   TypedCellKind
 } from "./protocol.generated";
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 
 export type SessionSourceKind = SessionSource["kind"];
 export type NumericVisualization = Extract<ColumnVisualization, { kind: "numeric" }>;

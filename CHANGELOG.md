@@ -31,6 +31,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Editing preserves the accepted viewing filter after overlapping page requests fail or become superseded, including
+  dropped-column restoration through Discard and Undo. Restart an older live Python kernel after updating to load
+  the new runtime protocol; saved notebook previews remain readable.
+- Spark paging preserves the accepted query's continuation after overlapping viewing requests fail or become superseded.
 - Native R cleanup no longer rejects an unchanged directory after moving a response file into it.
 - Native R Formula checks large integer literals exactly on Windows, preventing silent rounding of admitted input.
 - Native R numeric, datetime and duration filters preserve selected values when platform decimal parsers differ.

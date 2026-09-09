@@ -737,7 +737,7 @@ def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
     monkeypatch.setattr(kernel_agent, "_manager", manager)
     envelope = json.dumps(
         {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": "unsupported-variant-open",
             "priority": "interactive",
             "request": {
@@ -758,7 +758,7 @@ def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
     )
     response = json.loads(kernel_agent.dispatch_json(envelope))
     assert response == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "unsupported-variant-open",
         "response": {
             "kind": "error",

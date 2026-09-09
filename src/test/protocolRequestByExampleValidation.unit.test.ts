@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isOpenWranglerRequest, isRuntimeRequestEnvelope, isTransformStep } from "../shared/protocolValidation";
 import { metadata, requests, valueReference } from "./protocolValidation.fixtures";
 
-describe("protocol-v3 bounded by-example request validation", () => {
+describe("protocol-v4 bounded by-example request validation", () => {
   it("bounds by-example sources, examples, concat programs, depth, and scalar values", () => {
     const sources = Array.from({ length: 17 }, (_, index) => ({ id: `column:${index}`, name: `value_${index}` }));
     const example = (width: number) => ({ inputs: Array.from({ length: width }, () => "x"), output: "x" });
@@ -515,7 +515,7 @@ describe("protocol-v3 bounded by-example request validation", () => {
     expect(isOpenWranglerRequest({ kind: "futureRequest" })).toBe(false);
     expect(
       isRuntimeRequestEnvelope({
-        protocolVersion: 3,
+        protocolVersion: 4,
         requestId: "request-1",
         priority: "urgent",
         request: requests[0]
@@ -523,7 +523,7 @@ describe("protocol-v3 bounded by-example request validation", () => {
     ).toBe(false);
     expect(
       isRuntimeRequestEnvelope({
-        protocolVersion: 3,
+        protocolVersion: 4,
         requestId: "request-1",
         priority: "interactive",
         request: requests[0],

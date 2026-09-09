@@ -14,7 +14,7 @@ import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
 const initializeRequest: OpenWranglerRequest = { kind: "initialize" };
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
-  protocolVersion: 3,
+  protocolVersion: 4,
   runtimeVersion: "test-runtime",
   capabilities: {
     editable: true,
@@ -100,7 +100,7 @@ function createHarness(stdin?: Writable): TransportHarness {
     diagnostics,
     writes: () => rawWrites.map((line) => JSON.parse(line) as RuntimeRequestEnvelope),
     respond: (requestId, response) =>
-      respondRaw({ protocolVersion: 3, requestId, response } satisfies RuntimeResponseEnvelope),
+      respondRaw({ protocolVersion: 4, requestId, response } satisfies RuntimeResponseEnvelope),
     respondRaw
   };
 }
@@ -317,14 +317,14 @@ describe("PythonRuntimeTransport", () => {
 
     harness.transport.handleLine(harness.runtime, harness.runtime.process!, `{"credential":"${secret}`);
     harness.respondRaw({
-      protocolVersion: 3,
+      protocolVersion: 4,
       requestId,
       response: { kind: "initialized", runtimeVersion: secret }
     });
     expect(harness.runtime.pendingIds.size).toBe(1);
     expect(harness.diagnostics).toEqual([
       "Invalid runtime response: non-JSON payload omitted.",
-      "Invalid runtime response: non-protocol-v3 payload omitted."
+      "Invalid runtime response: non-protocol-v4 payload omitted."
     ]);
     expect(harness.diagnostics.join("\n")).not.toContain("OW_SECRET_DO_NOT_REPORT");
     expect(harness.diagnostics.every((diagnostic) => Buffer.byteLength(diagnostic, "utf8") < 128)).toBe(true);
@@ -357,3 +357,49 @@ describe("PythonRuntimeTransport", () => {
     }
   });
 });
+
+it.each(["undoStep", "getPage"] as const)(
+  "forwards confirmed %s intent in standalone envelopes while preserving direct requests",
+  async (kind) => {
+    const confirmedView = { filterModel: { filters: [], sort: [] }, viewChangeEpoch: 7 };
+    const request: OpenWranglerRequest = {
+      ...(kind === "getPage"
+        ? { kind, viewRequestId: "page-current", filterModel: { filters: [], sort: [] } }
+        : { kind }),
+      sessionId: "session",
+      revision: 0,
+      offset: 0,
+      limit: 1,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    for (const options of [{}, { confirmedView }]) {
+      const harness = createHarness();
+      const pending = harness.transport.dispatch(harness.runtime, harness.runtime.process!, request, options, vi.fn());
+      try {
+        const envelope = harness.writes()[0]!;
+        expect(envelope.request).toEqual(request);
+        expect(envelope).toEqual({
+          protocolVersion: 4,
+          requestId: envelope.requestId,
+          priority: "interactive",
+          request,
+          ...options
+        });
+        const response: OpenWranglerResponse = {
+          kind: "error",
+          code: "invalid_request",
+          message: "Fixed request refusal",
+          recoverable: true,
+          sessionId: "session",
+          ...(kind === "getPage" ? { viewRequestId: "page-current" } : {})
+        };
+        harness.respond(envelope.requestId, response);
+        await expect(pending).resolves.toEqual(response);
+        expect(harness.runtime.pendingIds.size).toBe(0);
+      } finally {
+        harness.transport.rejectRuntime(harness.runtime, new Error("test cleanup"));
+      }
+    }
+  }
+);

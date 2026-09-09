@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
@@ -39,6 +39,9 @@ from .session_source import (
     resolve_notebook_variable,
 )
 from .version import __version__
+
+if TYPE_CHECKING:
+    from .engines.pyspark_engine import PySparkEngine, PySparkPageCheckpoint
 
 PAGE_CACHE_LIMIT = 8
 PAGE_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
@@ -100,6 +103,16 @@ class _AppliedViewRestore:
     view_change_epoch: int
 
 
+@dataclass(frozen=True, slots=True)
+class _SparkConfirmedView:
+    paging: PySparkPageCheckpoint
+    filter_model: dict[str, Any]
+    filtered_shape: SessionDataShape
+    view_change_epoch: int
+    source: SessionSource
+    revision: int
+
+
 @dataclass
 class Session:
     session_id: str
@@ -140,6 +153,7 @@ class Session:
     mode: str
     access: SessionRequestAdmission
     disposed: bool = False
+    spark_confirmed_view: _SparkConfirmedView | None = None
 
     @property
     def display_frame(self) -> Any:
@@ -165,6 +179,7 @@ class Session:
         if self.disposed:
             return
         self.disposed = True
+        self.spark_confirmed_view = None
         self.view_generation += 1
         self.clear_page_cache()
         self.source.release()
@@ -178,6 +193,11 @@ class Session:
         with self.access.invalidation():
             self.page_cache.clear()
             self.page_cache_bytes = 0
+
+    def invalidate_source_view(self) -> None:
+        with self.access.invalidation():
+            self.spark_confirmed_view = None
+            self.clear_page_cache()
 
 
 @dataclass(slots=True)
@@ -360,7 +380,7 @@ class SessionManager:
                     "Spark Connect endpoint to recover, then retry.",
                 ) from error
             if failure == "state_lost":
-                session.clear_page_cache()
+                session.invalidate_source_view()
                 raise PySparkConnectStateLostError(
                     session.session_id,
                     f"The Spark Connect session or dataframe for {label!r} no longer exists on the server. "
@@ -536,11 +556,17 @@ class SessionManager:
         *,
         response_preflight: MutationResponsePreflight | None = None,
         request_id: str | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with session.access.shared():
             with session.engine.page_read_scope(), self._validated_source_read(session):
                 self._assert_revision(session, revision)
+                confirmed = (
+                    self._confirm_spark_page(session, confirmed_view)
+                    if session.backend == "pyspark" and confirmed_view is not None
+                    else None
+                )
                 # This unregistered candidate shares the exact source, engine and
                 # immutable frame/history objects. Only its bounded cache index
                 # and the view fields below can change during a page read.
@@ -551,7 +577,22 @@ class SessionManager:
                     else nullcontext()
                 )
                 with request_context:
+                    if (
+                        confirmed is not None
+                        and self._normalize_filter_model(filter_model) == confirmed.filter_model
+                        and candidate.filtered is not confirmed.paging.frame
+                    ):
+                        candidate.filtered = cast("PySparkEngine", candidate.engine).restore_page_checkpoint(
+                            confirmed.paging
+                        )
+                        candidate.filter_model = deepcopy(confirmed.filter_model)
+                        candidate.filtered_shape = confirmed.filtered_shape.copy()
+                        self._invalidate_page_cache(candidate)
                     self._filtered(candidate, filter_model)
+                    if confirmed is not None:
+                        candidate.view_change_epoch = confirmed.view_change_epoch + int(
+                            candidate.filter_model != confirmed.filter_model
+                        )
                     response = {
                         "kind": "page",
                         "revision": candidate.revision,
@@ -580,6 +621,10 @@ class SessionManager:
             session.page_cache_bytes = candidate.page_cache_bytes
             session.committed_shape = candidate.committed_shape
             session.source_shape = candidate.source_shape
+            if confirmed_view is None:
+                # Contextless callers keep their authoritative page semantics;
+                # their next explicit host pair must bind the resulting frame.
+                session.spark_confirmed_view = None
             return response
 
     def get_summary(
@@ -668,6 +713,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
         *,
         response_preflight: MutationResponsePreflight | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_access(session), self._validated_source_read(session):
@@ -701,6 +747,7 @@ class SessionManager:
             if any(applied["id"] == normalized["id"] for applied in retained_steps):
                 raise EngineError(f"Applied step IDs must be unique: {normalized['id']}")
 
+            self._synchronize_confirmed_view(session, confirmed_view)
             diff_base = session.committed
             diff_base_lineage = session.committed_lineage
             diff_base_shape = session.committed_shape
@@ -940,6 +987,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
         *,
         response_preflight: MutationResponsePreflight | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -959,6 +1007,7 @@ class SessionManager:
                 or session.draft_schema is None
             ):
                 raise EngineError("There is no draft step to apply.")
+            self._synchronize_confirmed_view(session, confirmed_view)
             draft_step_id = session.draft_step["id"]
             filter_model_before_draft = deepcopy(session.draft_base_filter_model)
             view_change_epoch_before_draft = session.draft_base_view_change_epoch
@@ -1035,6 +1084,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
         *,
         response_preflight: MutationResponsePreflight | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -1046,6 +1096,7 @@ class SessionManager:
                 or session.draft_schema is None
             ):
                 raise EngineError("There is no draft step to discard.")
+            self._synchronize_confirmed_view(session, confirmed_view)
             view_changed_during_draft = session.view_change_epoch != session.draft_base_view_change_epoch
             preflight_retained_plan(session.plan)
             generated_code = compile_plan_with_limits(session.engine, session.bound_plan)
@@ -1077,6 +1128,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
         *,
         response_preflight: MutationResponsePreflight | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -1087,6 +1139,7 @@ class SessionManager:
                 raise EngineError("Discard the draft step before undoing an applied step.")
             if not session.plan:
                 raise EngineError("There is no applied step to undo.")
+            self._synchronize_confirmed_view(session, confirmed_view)
             undone_step_id = session.plan[-1]["id"]
             restore = session.last_applied_view_restore
             restore_filter_model = (
@@ -1134,6 +1187,7 @@ class SessionManager:
         column_limit: int = MAX_COLUMN_LIMIT,
         *,
         response_preflight: MutationResponsePreflight | None = None,
+        confirmed_view: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._atomic_session_read(session):
@@ -1144,6 +1198,7 @@ class SessionManager:
                 raise EngineError("Discard the draft step before redoing a removed step.")
             if not session.undone_steps:
                 raise RedoUnavailableError(session_id)
+            self._synchronize_confirmed_view(session, confirmed_view)
             step = session.undone_steps[-1]
             if any(applied["id"] == step["id"] for applied in session.plan):
                 raise EngineError("The removed cleaning-step history contains an applied step identity.")
@@ -1305,6 +1360,51 @@ class SessionManager:
     def _raise_shutdown_error(self) -> None:
         if self._shutdown_error_message is not None:
             raise EngineError(self._shutdown_error_message)
+
+    def _synchronize_confirmed_view(self, session: Session, confirmed_view: Mapping[str, Any] | None) -> None:
+        if confirmed_view is None:
+            return
+        model = self._normalize_filter_model(confirmed_view["filterModel"])
+        if model != session.filter_model:
+            self._refresh_filtered(session, model)
+        # The host advances this epoch only for accepted viewing changes. A
+        # successful page that was never published must not invalidate an
+        # earlier draft or Undo receipt. Run inside the edit's rollback owner.
+        session.view_change_epoch = confirmed_view["viewChangeEpoch"]
+
+    def _confirm_spark_page(self, session: Session, confirmed_view: Mapping[str, Any]) -> _SparkConfirmedView:
+        model = self._normalize_filter_model(confirmed_view["filterModel"])
+        epoch = confirmed_view["viewChangeEpoch"]
+        checkpoint = session.spark_confirmed_view
+        if checkpoint is not None and (
+            checkpoint.source is not session.source or checkpoint.revision != session.revision
+        ):
+            session.spark_confirmed_view = None
+            raise EngineError("The confirmed PySpark page no longer belongs to this source revision.")
+        if checkpoint is None:
+            # Open and contextless recovery pages already own an exact frame.
+            # Bind its host namespace directly; never reconstruct an old view.
+            if model != session.filter_model:
+                raise EngineError("The confirmed PySpark view does not match the current page. Restore it first.")
+        elif model != checkpoint.filter_model or epoch != checkpoint.view_change_epoch:
+            if model != session.filter_model or epoch != session.view_change_epoch:
+                raise EngineError("The confirmed PySpark view has no retained exact continuation.")
+        elif session.filtered is not checkpoint.paging.frame:
+            return checkpoint
+        # Acceptance precedes the next query, so this checkpoint survives that
+        # query's refusal. Same-frame reads may extend its anchors/known total.
+        checkpoint = _SparkConfirmedView(
+            cast("PySparkEngine", session.engine).capture_page_checkpoint(session.filtered),
+            deepcopy(model),
+            session.filtered_shape.copy(),
+            epoch,
+            session.source,
+            session.revision,
+        )
+        if session.spark_confirmed_view is None:
+            session.view_change_epoch = epoch
+        session.spark_confirmed_view = checkpoint
+        return checkpoint
 
     def _filtered(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
         model = self._normalize_filter_model(filter_model)
@@ -1809,7 +1909,7 @@ class SessionManager:
                 # Roll back the edit state, but never resurrect blocks read from a
                 # source version that the operation proved is no longer current.
                 if isinstance(error, SourceChangedError):
-                    session.clear_page_cache()
+                    session.invalidate_source_view()
                 raise
 
     @contextmanager
@@ -1830,7 +1930,7 @@ class SessionManager:
             with session.source.validated_read(session.engine):
                 yield
         except SourceChangedError:
-            session.clear_page_cache()
+            session.invalidate_source_view()
             raise
 
     @staticmethod
@@ -1838,7 +1938,7 @@ class SessionManager:
         try:
             session.source.validate(session.engine)
         except SourceChangedError:
-            session.clear_page_cache()
+            session.invalidate_source_view()
             raise
 
     @staticmethod
@@ -1846,7 +1946,7 @@ class SessionManager:
         try:
             session.source.validate_live(session.engine)
         except SourceChangedError:
-            session.clear_page_cache()
+            session.invalidate_source_view()
             raise
 
     def _engine_for_source(self, source: Mapping[str, Any], backend: str | None) -> DataFrameEngine:

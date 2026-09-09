@@ -1,5 +1,5 @@
 import Ajv from "ajv";
-import transportSchema from "../../protocol/openwrangler.v3.schema.json";
+import transportSchema from "../../protocol/openwrangler.v4.schema.json";
 import type { GridPage, OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../shared/protocol";
 import { hasAtMostStrictUtf8Bytes } from "../shared/protocolValidation";
 
@@ -39,7 +39,7 @@ const page: GridPage = {
 };
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session-1",
   revision: 3,
   backend: "polars",
@@ -110,7 +110,7 @@ const summaries = [
 ];
 
 const responses: OpenWranglerResponse[] = [
-  { kind: "initialized", protocolVersion: 3, runtimeVersion: "0.3.0", capabilities },
+  { kind: "initialized", protocolVersion: 4, runtimeVersion: "0.3.0", capabilities },
   { kind: "sessionOpened", metadata, page, summaries },
   { kind: "page", revision: 3, viewRequestId: "view-1", page, metadata },
   { kind: "summary", revision: 3, viewRequestId: "view-1", summaries },

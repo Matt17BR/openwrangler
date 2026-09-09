@@ -19,7 +19,7 @@ vi.mock("../webviews/vscodeApi", () => ({
 let App: (typeof import("../webviews/App"))["App"];
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session",
   revision: 0,
   backend: "polars",

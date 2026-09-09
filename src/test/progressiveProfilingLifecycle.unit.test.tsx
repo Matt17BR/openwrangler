@@ -14,7 +14,7 @@ import {
 } from "../webviews/progressiveProfilingLifecycle";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session",
   revision: 7,
   backend: "polars",

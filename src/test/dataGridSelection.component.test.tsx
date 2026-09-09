@@ -7,7 +7,7 @@ import { DataGrid } from "../webviews/grid/DataGrid";
 import { gridRowHeight } from "../webviews/grid/rowScrollModel";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "selection-session",
   revision: 3,
   backend: "pandas",

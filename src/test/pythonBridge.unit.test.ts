@@ -3553,7 +3553,7 @@ describe("PythonBridge environment resource selection", () => {
       firstRuntime!,
       firstProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
-        protocolVersion: 3,
+        protocolVersion: 4,
         requestId: (JSON.parse(firstWrites[0]) as RuntimeRequestEnvelope).requestId,
         response: openedFor(firstRequest, "first-live-session")
       } satisfies RuntimeResponseEnvelope)
@@ -3562,7 +3562,7 @@ describe("PythonBridge environment resource selection", () => {
       secondRuntime!,
       secondProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
-        protocolVersion: 3,
+        protocolVersion: 4,
         requestId: (JSON.parse(secondWrites[0]) as RuntimeRequestEnvelope).requestId,
         response: openedFor(secondRequest, "second-live-session")
       } satisfies RuntimeResponseEnvelope)
@@ -3591,7 +3591,7 @@ describe("PythonBridge environment resource selection", () => {
       secondRuntime!,
       secondProcess as unknown as ChildProcessWithoutNullStreams,
       JSON.stringify({
-        protocolVersion: 3,
+        protocolVersion: 4,
         requestId: (JSON.parse(secondWrites[1]) as RuntimeRequestEnvelope).requestId,
         response: { kind: "sessionClosed", sessionId: "second-live-session" }
       } satisfies RuntimeResponseEnvelope)
@@ -4929,7 +4929,7 @@ function openedFor(
   sessionId: string
 ): SessionOpenedResponse {
   const metadata: SessionMetadata = {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId,
     revision: 0,
     backend: request.backend ?? "polars",
@@ -5108,7 +5108,7 @@ function createMultiScopeHarness(): {
       await vi.waitFor(() => expect(writesByScope[scope]).toHaveLength(count));
     },
     respond: (scope, requestId, response) => {
-      const envelope: RuntimeResponseEnvelope = { protocolVersion: 3, requestId, response };
+      const envelope: RuntimeResponseEnvelope = { protocolVersion: 4, requestId, response };
       raw.runtimeTransport.handleLine(runtimes[scope], processes[scope], JSON.stringify(envelope));
     }
   };
@@ -5201,7 +5201,7 @@ function createHarness(
       await vi.waitFor(() => expect(rawWrites).toHaveLength(count));
     },
     respond: (requestId, response) => {
-      const envelope: RuntimeResponseEnvelope = { protocolVersion: 3, requestId, response };
+      const envelope: RuntimeResponseEnvelope = { protocolVersion: 4, requestId, response };
       internals.runtimeTransport.handleLine(runtime, process, JSON.stringify(envelope));
     },
     advanceSelectionEpoch: () => {

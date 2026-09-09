@@ -2361,7 +2361,7 @@ def test_polars_uint128_column_formula_has_correlated_preview_and_safe_later_pag
             kernel_agent.dispatch_json(
                 json.dumps(
                     {
-                        "protocolVersion": 3,
+                        "protocolVersion": 4,
                         "requestId": request_id,
                         "priority": "interactive",
                         "request": {

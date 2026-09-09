@@ -41,6 +41,51 @@ const step: TransformStep = {
 };
 
 describe("SessionResponseCommitter", () => {
+  it("retains the confirmed filter and epoch when a page becomes stale during persistence", async () => {
+    let stored: Record<string, unknown> = {};
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      stored = value;
+      if (update.mock.calls.length === 1) await held;
+    });
+    const persistence = new SessionPersistenceStore(memento(() => stored, update));
+    const committer = new SessionResponseCommitter(persistence);
+    const session = responseState({
+      viewChangeEpoch: 7,
+      activeViewContextId: "A",
+      latestRequestedViewContextId: "B",
+      latestRequestedPageRequestId: "page-B"
+    });
+    const request = pageRequest(session, "page-B", nonemptyFilter, 0);
+    const response = pageResponse(request, metadata({ filterModel: nonemptyFilter }), 0);
+    const callbacks = callbackSpies();
+    const pending = committer.commit(session, request, response, 0, emptyFilter, { viewContextId: "B" }, callbacks);
+    try {
+      await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+      expect(session.metadata.filterModel).toEqual(emptyFilter);
+      session.latestRequestedViewContextId = "C";
+      session.latestRequestedPageRequestId = "page-C";
+      release();
+      await expect(pending).resolves.toMatchObject({
+        kind: "error",
+        code: "stale_response",
+        viewRequestId: "page-B",
+        message: "Ignored a page superseded while its viewing state was being saved."
+      });
+      expect(session.metadata.filterModel).toEqual(emptyFilter);
+      expect(session.viewChangeEpoch).toBe(7);
+      expect(session.activeViewContextId).toBe("A");
+      expect(callbacks.activate).not.toHaveBeenCalled();
+      expect(stored[persistenceKey(session.openRequest.source, "polars")]).toBeUndefined();
+    } finally {
+      release();
+      await pending;
+    }
+  });
+
   it.each(["current", "runtime", "delegate", "open request", "source", "backend"] as const)(
     "rejects a queued presentation when its original %s owner changes",
     async (changedOwner) => {
@@ -850,7 +895,7 @@ function responseState(overrides: Partial<SessionResponseState> = {}): SessionRe
 
 function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     sessionId: "runtime-session",
     revision: 0,
     backend: "polars",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,13 +17,14 @@ spark_session = _shared_spark_session
 
 @pytest.fixture
 def sample_frame(spark_session: Any) -> Any:
+    # Match the UTC filter literals independently of the process timezone.
     return spark_session.createDataFrame(
         [
-            ("Beta", 2.0, "x", True, datetime(2026, 1, 1, 12, 0)),
-            ("alpha", None, "y", False, datetime(2026, 1, 2, 12, 0)),
+            ("Beta", 2.0, "x", True, datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            ("alpha", None, "y", False, datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)),
             ("ALPHA", float("nan"), "y", None, None),
-            ("ÄLPHA", -1.0, "x", True, datetime(2026, 1, 3, 12, 0)),
-            ("Beta", 2.0, "x", True, datetime(2026, 1, 1, 12, 0)),
+            ("ÄLPHA", -1.0, "x", True, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)),
+            ("Beta", 2.0, "x", True, datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)),
         ],
         "name string, amount double, group_name string, flag boolean, happened timestamp",
     ).repartition(2)

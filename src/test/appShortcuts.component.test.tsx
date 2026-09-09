@@ -17,7 +17,7 @@ const step: TransformStep = {
 };
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "session",
   revision: 1,
   backend: "polars",

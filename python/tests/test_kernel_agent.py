@@ -186,15 +186,135 @@ def _envelope(
     *,
     request_id: str = "kernel-request",
     priority: str = "interactive",
+    confirmed_view: dict[str, Any] | None = None,
 ) -> str:
     return json.dumps(
         {
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "requestId": request_id,
             "priority": priority,
             "request": request,
+            **({"confirmedView": confirmed_view} if confirmed_view is not None else {}),
         }
     )
+
+
+def test_kernel_confirmed_view_reaches_all_five_native_mutation_owners(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "confirmed-kernel-view.csv"
+    source = "name,value\na,1\nb,2\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    forwarded_pages = []
+    native_get_page = manager.get_page
+
+    def observed_get_page(*args, **kwargs):
+        forwarded_pages.append(kwargs.get("confirmed_view"))
+        return native_get_page(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "get_page", observed_get_page)
+    empty = {"logic": "and", "filters": [], "sort": []}
+    descending = {**empty, "sort": [{"column": "name", "direction": "desc", "nulls": "last"}]}
+    filtered = {
+        **empty,
+        "filters": [
+            {"column": "value", "type": "integer", "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}]}
+        ],
+    }
+    window = {"offset": 0, "limit": 10, "columnOffset": 0, "columnLimit": 2}
+
+    def send(request, request_id, confirmed=None):
+        result = json.loads(
+            kernel_agent.dispatch_json(_envelope(request, request_id=request_id, confirmed_view=confirmed))
+        )
+        assert result["requestId"] == request_id
+        response = result["response"]
+        assert response["kind"] not in {"error", "cancelled"}, response
+        return response
+
+    try:
+        opened = send(
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "path": str(path), "label": path.name},
+                "backend": "pandas",
+                "mode": "editing",
+                "pageSize": 10,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+            "confirmed-open",
+        )
+        assert opened["kind"] == "sessionOpened", opened
+        sid = opened["metadata"]["sessionId"]
+        base = {"sessionId": sid, **window}
+        send(
+            {**base, "kind": "getPage", "revision": 0, "viewRequestId": "stale-sort", "filterModel": descending},
+            "stale-sort",
+            {"filterModel": empty, "viewChangeEpoch": 0},
+        )
+        assert forwarded_pages == [{"filterModel": empty, "viewChangeEpoch": 0}]
+        rename = {
+            "id": "rename",
+            "kind": "renameColumn",
+            "params": {"column": {"id": "c:source:0", "name": "name"}, "newName": "label"},
+        }
+        preview = send(
+            {**base, "kind": "previewStep", "revision": 0, "step": rename},
+            "confirmed-preview",
+            {"filterModel": empty, "viewChangeEpoch": 7},
+        )
+        assert preview["kind"] == "stepPreview"
+        assert [row["values"] for row in preview["page"]["rows"]] == [row["values"] for row in opened["page"]["rows"]]
+        assert manager.sessions[sid].draft_base_view_change_epoch == 7
+        discarded = send(
+            {**base, "kind": "discardDraft", "revision": 1},
+            "confirmed-discard",
+            {"filterModel": empty, "viewChangeEpoch": 7},
+        )
+        assert discarded["page"] == opened["page"]
+        target = send(
+            {**base, "kind": "getPage", "revision": 2, "viewRequestId": "filtered-target", "filterModel": filtered},
+            "filtered-target",
+        )
+        assert forwarded_pages[-1] is None
+        drop = {"id": "drop", "kind": "dropColumns", "params": {"columns": [{"id": "c:source:1", "name": "value"}]}}
+        send(
+            {**base, "kind": "previewStep", "revision": 2, "step": drop},
+            "drop-preview",
+            {"filterModel": filtered, "viewChangeEpoch": 8},
+        )
+        applied = send(
+            {**base, "kind": "applyDraft", "revision": 3}, "drop-apply", {"filterModel": empty, "viewChangeEpoch": 8}
+        )
+        assert applied["kind"] == "planUpdated"
+        send(
+            {
+                **base,
+                "kind": "getPage",
+                "revision": 4,
+                "viewRequestId": "unaccepted-after-apply",
+                "filterModel": descending,
+            },
+            "unaccepted-after-apply",
+        )
+        undone = send(
+            {**base, "kind": "undoStep", "revision": 4}, "confirmed-undo", {"filterModel": empty, "viewChangeEpoch": 8}
+        )
+        assert undone["page"] == target["page"]
+        assert undone["metadata"]["canRedo"] is True
+        redone = send(
+            {**base, "kind": "redoStep", "revision": 5, "viewRequestId": "confirmed-redo"},
+            "confirmed-redo",
+            {"filterModel": filtered, "viewChangeEpoch": 8},
+        )
+        assert redone["kind"] == "planUpdated" and redone["viewRequestId"] == "confirmed-redo"
+        assert redone["metadata"]["filterModel"] == empty
+        restore = manager.sessions[sid].last_applied_view_restore
+        assert restore is not None and restore.view_change_epoch == 8
+        assert path.read_text() == source
+    finally:
+        manager.close_all()
 
 
 def _view_request(kind: str, session_id: str, view_request_id: str) -> dict[str, Any]:
@@ -290,6 +410,7 @@ def test_standalone_and_notebook_transports_share_protocol_conformance_corpus(
         _manager: CorpusManager,
         _request: dict[str, Any],
         correlated_request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         dispatches.append(correlated_request_id)
         if case == "success":
@@ -334,7 +455,7 @@ def test_standalone_and_notebook_transports_share_protocol_conformance_corpus(
     notebook = run_transport("notebook")
     assert standalone == f"{notebook}\n"
     decoded = json.loads(notebook)
-    assert decoded["protocolVersion"] == 3
+    assert decoded["protocolVersion"] == 4
     assert decoded["requestId"] == request_id
     if case == "success":
         assert decoded["response"] == {"kind": "initialized", "message": "café"}
@@ -432,7 +553,7 @@ def test_unknown_session_error_is_a_correlated_protocol_response(monkeypatch) ->
         )
     )
 
-    assert result["protocolVersion"] == 3
+    assert result["protocolVersion"] == 4
     assert result["requestId"] == "unknown-session-request"
     assert result["response"] == {
         "kind": "error",
@@ -461,7 +582,7 @@ def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatc
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "missing-close-request",
         "response": {
             "kind": "error",
@@ -474,7 +595,12 @@ def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatc
 
 
 def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         assert request_id == "live-source-request"
         raise LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced.")
 
@@ -499,7 +625,7 @@ def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypat
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "live-source-request",
         "response": {
             "kind": "error",
@@ -531,7 +657,12 @@ def test_spark_connect_failure_is_a_correlated_recoverable_response(
     error: Exception,
     code: str,
 ) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         assert request_id == "spark-connect-request"
         raise error
 
@@ -566,7 +697,12 @@ def test_spark_connect_failure_is_a_correlated_recoverable_response(
 
 
 def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise SessionCleanupError("cleanup-session", "Could not release the Spark cache.")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -580,7 +716,7 @@ def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeyp
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "cleanup-request",
         "response": {
             "kind": "error",
@@ -741,6 +877,7 @@ def test_kernel_response_encoding_failure_is_correlated_bounded_and_not_coerced(
         _manager: SessionManager,
         _request: dict[str, Any],
         _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {"kind": "page", "private": value}
 
@@ -763,7 +900,7 @@ def test_kernel_response_encoding_failure_is_correlated_bounded_and_not_coerced(
     )
 
     assert json.loads(encoded) == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "invalid-response-request",
         "response": {
             "kind": "error",
@@ -795,6 +932,7 @@ def test_kernel_does_not_synthesize_an_error_after_a_mutation_encoding_failure(
         _manager: SessionManager,
         _request: dict[str, Any],
         _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {"kind": "planUpdated", "private": value}
 
@@ -840,6 +978,7 @@ def test_kernel_oversized_string_response_preserves_publication_semantics(
         _manager: SessionManager,
         _request: dict[str, Any],
         _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "kind": "planUpdated" if mutation else "page",
@@ -1029,7 +1168,7 @@ def test_decoder_error_preserves_available_request_and_view_correlation() -> Non
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "malformed-request",
         "response": {
             "kind": "error",
@@ -1261,7 +1400,7 @@ def test_request_session_options_preserve_pending_draft_and_fail_before_dispatch
 def test_malformed_json_still_returns_a_canonical_envelope() -> None:
     result = json.loads(kernel_agent.dispatch_json("not-json"))
 
-    assert result["protocolVersion"] == 3
+    assert result["protocolVersion"] == 4
     assert result["requestId"] == "unknown"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "invalid_request"
@@ -1286,7 +1425,7 @@ def test_oversized_notebook_input_is_rejected_before_json_decoding(
     result = original_loads(encoded)
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "unknown",
         "response": {
             "kind": "error",
@@ -1304,7 +1443,7 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
         kernel_agent.dispatch_json(
             json.dumps(
                 {
-                    "protocolVersion": 3,
+                    "protocolVersion": 4,
                     "requestId": "malformed-envelope",
                     "request": {"kind": "initialize"},
                 }
@@ -1313,7 +1452,7 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "malformed-envelope",
         "response": {
             "kind": "error",
@@ -1338,7 +1477,7 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
     encoded = kernel_agent.dispatch_json(
         json.dumps(
             {
-                "protocolVersion": 3,
+                "protocolVersion": 4,
                 "requestId": request_id,
                 "priority": "interactive",
                 "request": {"kind": "initialize"},
@@ -1347,7 +1486,7 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
     )
     result = json.loads(encoded)
 
-    assert result["protocolVersion"] == 3
+    assert result["protocolVersion"] == 4
     assert result["requestId"] == "unknown"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "invalid_request"
@@ -1357,7 +1496,12 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
 
 @pytest.mark.parametrize("kind", ["getPage", "redoStep"])
 def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch, kind: str) -> None:
-    def cancel(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+    def cancel(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise CancelledError
 
     monkeypatch.setattr(kernel_agent, "dispatch", cancel)
@@ -1381,7 +1525,7 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch, ki
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "cancelled-request",
         "response": {
             "kind": "cancelled",
@@ -1392,7 +1536,12 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch, ki
 
 
 def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise RuntimeError("unexpected failure")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -1415,7 +1564,7 @@ def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypa
         )
     )
 
-    assert result["protocolVersion"] == 3
+    assert result["protocolVersion"] == 4
     assert result["requestId"] == "error-request"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "runtime_error"
@@ -1424,7 +1573,12 @@ def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypa
 
 
 def test_ambiguous_view_column_is_returned_as_a_correlated_structured_diagnostic(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -1448,7 +1602,7 @@ def test_ambiguous_view_column_is_returned_as_a_correlated_structured_diagnostic
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "ambiguous-request",
         "response": {
             "kind": "error",
@@ -1471,7 +1625,7 @@ def test_cancel_request_rejects_an_unknown_target() -> None:
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "cancel-command",
         "response": {
             "kind": "error",
@@ -1510,7 +1664,7 @@ def test_cancel_request_rejects_malformed_targets_without_registry_access(
     )
 
     assert result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "cancel-malformed",
         "response": {
             "kind": "error",
@@ -1614,6 +1768,7 @@ def test_active_request_id_reuse_cannot_publish_or_suppress_the_original_respons
         _manager: SessionManager,
         _request: dict[str, Any],
         _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started.set()
         assert release.wait(2)
@@ -1650,7 +1805,7 @@ def test_active_request_id_reuse_cannot_publish_or_suppress_the_original_respons
 
     assert thread.is_alive() is False
     assert original_result == {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": "active-id",
         "response": {"kind": "initialized", "runtimeVersion": "authoritative-original"},
     }
@@ -1677,6 +1832,7 @@ def test_cancel_request_prevents_queued_work_and_original_response_confirms_canc
         _manager: SessionManager,
         _request: dict[str, Any],
         request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if request_id == "queued-request":
             queued_dispatched.set()
@@ -1748,6 +1904,7 @@ def test_cancel_request_does_not_claim_to_interrupt_running_work_or_hide_late_co
         _manager: SessionManager,
         _request: dict[str, Any],
         _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started.set()
         assert release.wait(2)
@@ -1854,6 +2011,7 @@ def test_notebook_registry_does_not_serialize_existing_dispatch_admission(
         _manager: SessionManager,
         _request: dict[str, Any],
         request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if request_id == "first-request":
             first_started.set()
@@ -2071,7 +2229,12 @@ def test_kernel_native_panic_identity_preserves_lifecycle_exceptions(
     elif public_binding != "unchanged":
         monkeypatch.setattr(pl.exceptions, "PanicException", classes[public_binding])
 
-    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
+    def fail(
+        _manager: SessionManager,
+        _request: dict[str, Any],
+        _request_id: str,
+        _confirmed_view: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise error
 
     registry = kernel_agent._NotebookRequestRegistry()

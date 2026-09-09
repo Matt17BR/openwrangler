@@ -1,10 +1,10 @@
-/* Generated from protocol/openwrangler.v3.schema.json. Do not edit. */
+/* Generated from protocol/openwrangler.v4.schema.json. Do not edit. */
 
 /**
- * Runtime transport contract for Open Wrangler protocol v3.
+ * Runtime transport contract for Open Wrangler protocol v4.
  */
 export type OpenWranglerTransportMessage = RuntimeRequestEnvelope | RuntimeResponseEnvelope;
-export type ProtocolVersion = 3;
+export type ProtocolVersion = 4;
 export type RequestPriority = "interactive" | "background";
 export type OpenWranglerRequest =
   | InitializeRequest
@@ -509,6 +509,7 @@ export interface RuntimeRequestEnvelope {
   requestId: string;
   priority: RequestPriority;
   request: OpenWranglerRequest;
+  confirmedView?: ConfirmedView;
 }
 export interface InitializeRequest {
   kind: "initialize";
@@ -1238,6 +1239,10 @@ export interface CloseSessionRequest {
 export interface CancelRequest {
   kind: "cancelRequest";
   targetRequestId: string;
+}
+export interface ConfirmedView {
+  filterModel: FilterModel;
+  viewChangeEpoch: number;
 }
 export interface RuntimeResponseEnvelope {
   protocolVersion: ProtocolVersion;

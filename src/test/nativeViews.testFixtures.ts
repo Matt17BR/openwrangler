@@ -405,7 +405,7 @@ function exportableSnapshot(sessionId: string, label: string, revision: number):
     sessionId,
     code: "def clean_data(df):\n    return df\n",
     metadata: {
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision,
       backend: "polars",
@@ -541,7 +541,7 @@ function snapshot(
     sessionId: "session",
     code: "def clean_data(df):\n    return df\n",
     metadata: {
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId: "session",
       revision: 0,
       backend: "pandas",

@@ -5,6 +5,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import * as vscode from "vscode";
 import type { NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
+import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { FilterModel } from "../shared/filterModel";
 import type {
@@ -33,6 +34,116 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("SessionCoordinator", () => {
+  it.each(["B accepted", "C succeeds", "C fails"] as const)(
+    "retains the last confirmed normal R view through Undo: %s",
+    async (outcome) => {
+      const original = rKernelFrameContract();
+      const renamed = rKernelRenameContract(original, "r:c:0", "amount");
+      const transport = fakeRKernelTransport(original);
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge(createRKernelBridge(transport));
+      const releaseB = deferred<typeof renamed>();
+
+      try {
+        const opened = await bridge.request(rKernelOpenRequest("editing"));
+        if (opened.kind !== "sessionOpened") throw new Error("Expected the R session to open.");
+        const sessionId = opened.metadata.sessionId;
+        transport.queuePreview({
+          sessionId: rKernelBridgeSessionId,
+          revision: 1,
+          page: renamed,
+          diff: rKernelRenameDiff(),
+          code: "owned rename code"
+        });
+        await expect(bridge.request({ ...rKernelRenamePreviewRequest(0), sessionId })).resolves.toMatchObject({
+          kind: "stepPreview"
+        });
+        const window = { offset: 0, limit: 20, columnOffset: 0, columnLimit: 8 };
+        transport.applyDraft.mockResolvedValueOnce({
+          sessionId: rKernelBridgeSessionId,
+          action: "apply",
+          revision: 2,
+          page: renamed,
+          code: "owned rename code"
+        });
+        await expect(bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window })).resolves.toMatchObject({
+          kind: "planUpdated"
+        });
+        bridge.setViewContext?.(sessionId, "view-A");
+        const filterA = { filters: [], sort: [] };
+        const filterB: FilterModel = { filters: [], sort: [{ column: "count", direction: "desc", nulls: "last" }] };
+        const filterC: FilterModel = { filters: [], sort: [{ column: "count", direction: "asc", nulls: "last" }] };
+        transport.getPage.mockImplementation(async (_sessionId, page) => {
+          if (page.view.sorts[0]?.direction === "desc") return releaseB.promise;
+          if (outcome === "C fails")
+            throw new RKernelDiagnosticError({
+              transportVersion: 14,
+              requestId: rKernelBridgeSessionId,
+              kind: "error",
+              code: "runtime_error",
+              message: "The R kernel response is too large",
+              recoverable: false
+            });
+          return renamed;
+        });
+        const pendingB = bridge.request(
+          { kind: "getPage", sessionId, revision: 2, viewRequestId: "page-B", ...window, filterModel: filterB },
+          { viewContextId: "view-B" }
+        );
+        await vi.waitFor(() => expect(transport.getPage).toHaveBeenCalledTimes(1));
+        const pendingC =
+          outcome === "B accepted"
+            ? undefined
+            : bridge.request(
+                { kind: "getPage", sessionId, revision: 2, viewRequestId: "page-C", ...window, filterModel: filterC },
+                { viewContextId: "view-C" }
+              );
+        if (pendingC)
+          expect(coordinator.testingRequestExecutionCheckpoint(sessionId, "getPage", "page-C")).toMatchObject({
+            state: "queued",
+            lane: "foreground"
+          });
+        releaseB.resolve(renamed);
+        await expect(pendingB).resolves.toMatchObject(
+          pendingC
+            ? { kind: "error", code: "stale_response", sessionId, viewRequestId: "page-B" }
+            : { kind: "page", metadata: { filterModel: filterB } }
+        );
+        if (pendingC)
+          await expect(pendingC).resolves.toMatchObject(
+            outcome === "C fails"
+              ? { kind: "error", code: "runtime_error", recoverable: false, sessionId, viewRequestId: "page-C" }
+              : { kind: "page", metadata: { filterModel: filterC } }
+          );
+        const expectedFilter = outcome === "B accepted" ? filterB : outcome === "C succeeds" ? filterC : filterA;
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(expectedFilter);
+        expect(coordinator.activeSession()?.metadata.source).toEqual(opened.metadata.source);
+        transport.undoStep.mockResolvedValueOnce({
+          sessionId: rKernelBridgeSessionId,
+          action: "undo",
+          revision: 3,
+          page: original,
+          code: ""
+        });
+        const undone = await bridge.request({ kind: "undoStep", sessionId, revision: 2, ...window });
+        expect(undone).toMatchObject({ kind: "planUpdated", metadata: { filterModel: expectedFilter, steps: [] } });
+        expect(transport.undoStep.mock.calls[0]?.[2].view.sorts).toEqual(
+          expectedFilter.sort.map((sort) => ({
+            column: { id: "r:c:1", name: "count" },
+            direction: sort.direction,
+            nulls: sort.nulls
+          }))
+        );
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(expectedFilter);
+        expect(coordinator.activeSession()?.metadata.source).toEqual(opened.metadata.source);
+        expect(transport.getPage).toHaveBeenCalledTimes(outcome === "B accepted" ? 1 : 2);
+      } finally {
+        releaseB.resolve(renamed);
+        await coordinator.shutdown();
+      }
+    }
+  );
+
   it.each([false, true])(
     "retains the confirmed R view through Undo with a queued clipboard read: %s",
     async (includeClipboard) => {

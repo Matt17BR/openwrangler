@@ -10,6 +10,7 @@ import {
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import type {
+  FilterModel,
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionMetadata,
@@ -976,210 +977,275 @@ describe("SessionCoordinator", () => {
     expect(coordinator.activeSession()?.metadata.revision).toBe(1);
   });
 
-  it("replays a confirmed Native-R plan, draft, view, and code after the exact kernel changes", async () => {
-    const appliedStep: TransformStep = {
-      id: "r-applied",
-      kind: "cloneColumn",
-      params: { column: { id: "c:source:0", name: "sales" }, newName: "sales_copy" }
-    };
-    const draftStep: TransformStep = {
-      id: "r-draft",
-      kind: "renameColumn",
-      params: { column: { id: "c:source:0", name: "sales" }, newName: "amount" }
-    };
-    const rOpenRequest = { ...openRequest, backend: "r" as const };
-    const metadataFor = (
-      sessionId: string,
-      revision = 0,
-      steps: TransformStep[] = [],
-      draftStepValue?: TransformStep
-    ) => ({
-      ...openedResponse(sessionId, "r").metadata,
-      rDataframeFlavor: "r.data.frame" as const,
-      shape: { rows: 100, columns: 0 },
-      filteredShape: { rows: 100, columns: 0 },
-      revision,
-      steps,
-      ...(draftStepValue ? { draftStep: draftStepValue } : {})
-    });
-    let openCount = 0;
-    const executionOrder: string[] = [];
-    const handleRequest = async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") {
-        openCount += 1;
-        const sessionId = `runtime-${openCount}`;
-        executionOrder.push(`open-${sessionId}`);
-        const opened = openedResponse(sessionId, "r");
-        return { ...opened, metadata: metadataFor(sessionId), page: { ...opened.page, totalRows: 100 } };
-      }
-      if (request.kind === "previewStep") {
-        executionOrder.push(`preview-${request.sessionId}-${request.step.id}`);
-        const steps = request.step.id === draftStep.id ? [appliedStep] : [];
-        const preview = stepPreviewResponse(
-          request.revision + 1,
-          request.step,
-          request.sessionId,
-          request.step.id === draftStep.id ? "# draft" : "# applied preview"
-        );
-        return {
-          ...preview,
-          page: { ...preview.page, offset: request.offset, limit: request.limit, totalRows: 100 },
-          metadata: metadataFor(request.sessionId, request.revision + 1, steps, request.step)
-        };
-      }
-      if (request.kind === "applyDraft") {
-        executionOrder.push(`apply-${request.sessionId}`);
-        const updated = planUpdatedResponse(request.revision + 1, [appliedStep], request.sessionId, "# applied");
-        return {
-          ...updated,
-          page: { ...updated.page, offset: request.offset, limit: request.limit, totalRows: 100 },
-          metadata: metadataFor(request.sessionId, request.revision + 1, [appliedStep])
-        };
-      }
-      if (request.kind === "getPage") {
-        executionOrder.push(`page-${request.sessionId}-${request.viewRequestId}`);
-        if (request.sessionId === "runtime-1") {
-          return nativeRKernelChangedResponse(request);
+  it.each([false, true])(
+    "replays a confirmed Native-R plan, draft and exact view epochs after kernel change: %s",
+    async (laterView) => {
+      const appliedStep: TransformStep = {
+        id: "r-applied",
+        kind: "cloneColumn",
+        params: { column: { id: "c:source:0", name: "sales" }, newName: "sales_copy" }
+      };
+      const draftStep: TransformStep = {
+        id: "r-draft",
+        kind: "renameColumn",
+        params: { column: { id: "c:source:0", name: "sales" }, newName: "amount" }
+      };
+      const rOpenRequest = { ...openRequest, backend: "r" as const };
+      const metadataFor = (
+        sessionId: string,
+        revision = 0,
+        steps: TransformStep[] = [],
+        draftStepValue?: TransformStep
+      ) => ({
+        ...openedResponse(sessionId, "r").metadata,
+        rDataframeFlavor: "r.data.frame" as const,
+        shape: { rows: 100, columns: 0 },
+        filteredShape: { rows: 100, columns: 0 },
+        revision,
+        steps,
+        ...(draftStepValue ? { draftStep: draftStepValue } : {})
+      });
+      let openCount = 0;
+      const executionOrder: string[] = [];
+      const handleRequest = async (
+        request: OpenWranglerRequest,
+        _options?: BridgeRequestOptions
+      ): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          openCount += 1;
+          const sessionId = `runtime-${openCount}`;
+          executionOrder.push(`open-${sessionId}`);
+          const opened = openedResponse(sessionId, "r");
+          return { ...opened, metadata: metadataFor(sessionId), page: { ...opened.page, totalRows: 100 } };
         }
-        return pageResponseForMetadata(
-          request,
-          metadataFor(request.sessionId, request.revision, [appliedStep], draftStep)
-        );
-      }
-      if (request.kind === "closeSession") {
-        executionOrder.push(`close-${request.sessionId}`);
-        return { kind: "sessionClosed", sessionId: request.sessionId };
-      }
-      throw new Error(`Unexpected Native-R recovery request: ${request.kind}`);
-    };
-    const oldDelegate: OpenWranglerBridge = {
-      request: vi.fn(handleRequest),
-      onIdle: vi.fn()
-    };
-    const candidateDispose = vi.fn(async () => undefined);
-    const candidateDelegate: OpenWranglerBridge = {
-      request: vi.fn(handleRequest),
-      onIdle: vi.fn()
-    };
-    Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
-    (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
-      delegate: candidateDelegate,
-      dispose: candidateDispose
-    }));
-    const coordinator = new SessionCoordinator();
-    const bridge = coordinator.createBridge(oldDelegate);
-    const opened = await bridge.request(rOpenRequest);
-    if (opened.kind !== "sessionOpened") throw new Error("Expected the Native-R session to open.");
-    const sessionId = opened.metadata.sessionId;
-    const previewApplied = await bridge.request({
-      kind: "previewStep",
-      sessionId,
-      revision: 0,
-      step: appliedStep,
-      offset: 0,
-      limit: 1,
-      ...columnWindow
-    });
-    if (previewApplied.kind === "error") throw new Error(previewApplied.message);
-    expect(previewApplied).toMatchObject({ kind: "stepPreview", revision: 1 });
-    const applied = await bridge.request({
-      kind: "applyDraft",
-      sessionId,
-      revision: 1,
-      offset: 0,
-      limit: 1,
-      ...columnWindow
-    });
-    expect(applied).toMatchObject({ kind: "planUpdated", revision: 2 });
-    const previewDraft = await bridge.request({
-      kind: "previewStep",
-      sessionId,
-      revision: 2,
-      step: draftStep,
-      offset: 0,
-      limit: 1,
-      ...columnWindow
-    });
-    expect(previewDraft).toMatchObject({ kind: "stepPreview", revision: 3, code: "# draft" });
-    await bridge.updateViewState?.(sessionId, {
-      columnWidths: new Map(),
-      viewport: { firstVisibleRow: 17, scrollLeft: 23 }
-    });
-    const confirmedBefore = coordinator.activeSession();
-
-    const loss = await bridge.request({
-      kind: "getPage",
-      sessionId,
-      revision: 3,
-      viewRequestId: "r-kernel-lost",
-      offset: 0,
-      limit: 10,
-      ...columnWindow,
-      filterModel: opened.metadata.filterModel
-    });
-
-    expect(loss).toEqual({
-      kind: "error",
-      code: "r_kernel_changed",
-      message: "The selected R notebook kernel changed.",
-      recoverable: true,
-      sessionId,
-      viewRequestId: "r-kernel-lost"
-    });
-    expect(coordinator.activeSession()).toMatchObject({
-      sessionId,
-      metadata: { revision: 3, steps: [appliedStep], draftStep },
-      code: "# draft",
-      viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
-    });
-    expect(coordinator.activeSession()?.metadata.source).toEqual(confirmedBefore?.metadata.source);
-    expect(openCount).toBe(2);
-    await vi.waitFor(() => expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1));
-    expect(executionOrder.filter((entry) => entry.startsWith("page-runtime-1-"))).toHaveLength(1);
-
-    const recovered = await bridge.request({
-      kind: "getPage",
-      sessionId,
-      revision: 3,
-      viewRequestId: "r-kernel-recovered",
-      offset: 0,
-      limit: 10,
-      ...columnWindow,
-      filterModel: opened.metadata.filterModel
-    });
-    expect(recovered).toMatchObject({
-      kind: "page",
-      revision: 3,
-      viewRequestId: "r-kernel-recovered",
-      metadata: { sessionId }
-    });
-    expect(coordinator.activeSession()).toMatchObject({
-      sessionId,
-      metadata: { revision: 3, steps: [appliedStep], draftStep },
-      code: "# draft",
-      viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
-    });
-    expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1);
-    expect(openCount).toBe(2);
-    const replacementPages = executionOrder.filter((entry) => entry.startsWith("page-runtime-2-"));
-    expect(replacementPages).toHaveLength(3);
-    expect(replacementPages.filter((entry) => entry.endsWith(":draft-base"))).toHaveLength(1);
-    expect(replacementPages.filter((entry) => entry.includes(":saved"))).toHaveLength(1);
-    expect(replacementPages.filter((entry) => entry.endsWith("-r-kernel-recovered"))).toHaveLength(1);
-    expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-applied")).toHaveLength(1);
-    expect(executionOrder.filter((entry) => entry === "apply-runtime-2")).toHaveLength(1);
-    expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-draft")).toHaveLength(1);
-    expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
-    expect(candidateDispose).not.toHaveBeenCalled();
-    await expect(
-      bridge.rewriteCleaningPlan?.(sessionId, 3, appliedStep.id, "deleteStep", {
+        if (request.kind === "previewStep") {
+          executionOrder.push(`preview-${request.sessionId}-${request.step.id}`);
+          const steps = request.step.id === draftStep.id ? [appliedStep] : [];
+          const preview = stepPreviewResponse(
+            request.revision + 1,
+            request.step,
+            request.sessionId,
+            request.step.id === draftStep.id ? "# draft" : "# applied preview"
+          );
+          return {
+            ...preview,
+            page: { ...preview.page, offset: request.offset, limit: request.limit, totalRows: 100 },
+            metadata: metadataFor(request.sessionId, request.revision + 1, steps, request.step)
+          };
+        }
+        if (request.kind === "applyDraft") {
+          executionOrder.push(`apply-${request.sessionId}`);
+          const updated = planUpdatedResponse(request.revision + 1, [appliedStep], request.sessionId, "# applied");
+          return {
+            ...updated,
+            page: { ...updated.page, offset: request.offset, limit: request.limit, totalRows: 100 },
+            metadata: metadataFor(request.sessionId, request.revision + 1, [appliedStep])
+          };
+        }
+        if (request.kind === "discardDraft") {
+          const updated = planUpdatedResponse(request.revision + 1, [appliedStep], request.sessionId, "# applied");
+          return {
+            ...updated,
+            action: "discard",
+            page: { ...updated.page, offset: request.offset, limit: request.limit, totalRows: 100 },
+            metadata: metadataFor(request.sessionId, request.revision + 1, [appliedStep])
+          };
+        }
+        if (request.kind === "getPage") {
+          if (request.viewRequestId.startsWith("epoch:")) {
+            return pageResponseForMetadata(request, {
+              ...metadataFor(
+                request.sessionId,
+                request.revision,
+                [appliedStep],
+                request.revision === 3 ? draftStep : undefined
+              ),
+              filterModel: request.filterModel
+            });
+          }
+          executionOrder.push(`page-${request.sessionId}-${request.viewRequestId}`);
+          if (request.sessionId === "runtime-1") {
+            return nativeRKernelChangedResponse(request);
+          }
+          return pageResponseForMetadata(
+            request,
+            metadataFor(request.sessionId, request.revision, [appliedStep], draftStep)
+          );
+        }
+        if (request.kind === "closeSession") {
+          executionOrder.push(`close-${request.sessionId}`);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected Native-R recovery request: ${request.kind}`);
+      };
+      const oldDelegate: OpenWranglerBridge = {
+        request: vi.fn(handleRequest),
+        onIdle: vi.fn()
+      };
+      const candidateDispose = vi.fn(async () => undefined);
+      const candidateDelegate: OpenWranglerBridge = {
+        request: vi.fn(handleRequest),
+        onIdle: vi.fn()
+      };
+      Object.assign(oldDelegate, { supportsVerifiedRuntimeRecoveryDelegate: true });
+      (oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate = vi.fn(async () => ({
+        delegate: candidateDelegate,
+        dispose: candidateDispose
+      }));
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge(oldDelegate);
+      const opened = await bridge.request(rOpenRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the Native-R session to open.");
+      const sessionId = opened.metadata.sessionId;
+      const previewApplied = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: appliedStep,
         offset: 0,
         limit: 1,
-        columnOffset: 0,
-        columnLimit: 1
-      })
-    ).resolves.toMatchObject({ kind: "error", code: "draft_active", sessionId });
-  });
+        ...columnWindow
+      });
+      if (previewApplied.kind === "error") throw new Error(previewApplied.message);
+      expect(previewApplied).toMatchObject({ kind: "stepPreview", revision: 1 });
+      const applied = await bridge.request({
+        kind: "applyDraft",
+        sessionId,
+        revision: 1,
+        offset: 0,
+        limit: 1,
+        ...columnWindow
+      });
+      expect(applied).toMatchObject({ kind: "planUpdated", revision: 2 });
+      const visitAndReturn = async (revision: number): Promise<void> => {
+        for (const [name, filterModel] of [
+          ["B", { logic: "or" as const, filters: [], sort: [] }],
+          ["A", opened.metadata.filterModel]
+        ] as [string, FilterModel][]) {
+          await expect(
+            bridge.request({
+              kind: "getPage",
+              sessionId,
+              revision,
+              viewRequestId: `epoch:${revision}:${name}`,
+              offset: 0,
+              limit: 10,
+              ...columnWindow,
+              filterModel
+            })
+          ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+        }
+      };
+      await visitAndReturn(2);
+      const previewDraft = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        step: draftStep,
+        offset: 0,
+        limit: 1,
+        ...columnWindow
+      });
+      expect(previewDraft).toMatchObject({ kind: "stepPreview", revision: 3, code: "# draft" });
+      if (laterView) await visitAndReturn(3);
+      await bridge.updateViewState?.(sessionId, {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 17, scrollLeft: 23 }
+      });
+      const confirmedBefore = coordinator.activeSession();
+
+      const loss = await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 3,
+        viewRequestId: "r-kernel-lost",
+        offset: 0,
+        limit: 10,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+
+      expect(loss).toEqual({
+        kind: "error",
+        code: "r_kernel_changed",
+        message: "The selected R notebook kernel changed.",
+        recoverable: true,
+        sessionId,
+        viewRequestId: "r-kernel-lost"
+      });
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId,
+        metadata: { revision: 3, steps: [appliedStep], draftStep },
+        code: "# draft",
+        viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
+      });
+      expect(coordinator.activeSession()?.metadata.source).toEqual(confirmedBefore?.metadata.source);
+      expect(openCount).toBe(2);
+      await vi.waitFor(() => expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1));
+      expect(executionOrder.filter((entry) => entry.startsWith("page-runtime-1-"))).toHaveLength(1);
+
+      const recovered = await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 3,
+        viewRequestId: "r-kernel-recovered",
+        offset: 0,
+        limit: 10,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+      expect(recovered).toMatchObject({
+        kind: "page",
+        revision: 3,
+        viewRequestId: "r-kernel-recovered",
+        metadata: { sessionId }
+      });
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId,
+        metadata: { revision: 3, steps: [appliedStep], draftStep },
+        code: "# draft",
+        viewState: { viewport: { firstVisibleRow: 17, scrollLeft: 23 } }
+      });
+      expect(executionOrder.filter((entry) => entry === "close-runtime-1")).toHaveLength(1);
+      expect(openCount).toBe(2);
+      const replacementPages = executionOrder.filter((entry) => entry.startsWith("page-runtime-2-"));
+      expect(replacementPages).toHaveLength(3);
+      expect(replacementPages.filter((entry) => entry.endsWith(":draft-base"))).toHaveLength(1);
+      expect(replacementPages.filter((entry) => entry.includes(":saved"))).toHaveLength(1);
+      expect(replacementPages.filter((entry) => entry.endsWith("-r-kernel-recovered"))).toHaveLength(1);
+      expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-applied")).toHaveLength(1);
+      expect(executionOrder.filter((entry) => entry === "apply-runtime-2")).toHaveLength(1);
+      expect(executionOrder.filter((entry) => entry === "preview-runtime-2-r-draft")).toHaveLength(1);
+      expect((oldDelegate as RecoveryBridge).createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+      expect(candidateDispose).not.toHaveBeenCalled();
+      await expect(
+        bridge.rewriteCleaningPlan?.(sessionId, 3, appliedStep.id, "deleteStep", {
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "draft_active", sessionId });
+      const replayedDraft = vi
+        .mocked(candidateDelegate.request)
+        .mock.calls.find(([request]) => request.kind === "previewStep" && request.step.id === draftStep.id);
+      expect(replayedDraft?.[1]?.confirmedView).toEqual({
+        filterModel: opened.metadata.filterModel,
+        viewChangeEpoch: 2
+      });
+      await expect(
+        bridge.request({ kind: "discardDraft", sessionId, revision: 3, offset: 0, limit: 1, ...columnWindow })
+      ).resolves.toMatchObject({ kind: "planUpdated", action: "discard" });
+      const discarded = vi
+        .mocked(candidateDelegate.request)
+        .mock.calls.find(([request]) => request.kind === "discardDraft");
+      expect(discarded?.[1]?.confirmedView).toEqual({
+        filterModel: opened.metadata.filterModel,
+        viewChangeEpoch: laterView ? 4 : 2
+      });
+      await coordinator.shutdown();
+    }
+  );
 
   it("returns the first R loss and prevents a second recovery from overtaking a detached candidate open", async () => {
     const candidateSettlement = deferred<void>();

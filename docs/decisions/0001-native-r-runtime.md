@@ -74,11 +74,15 @@ generated execution, including duration columns. Convert Type to text retains ch
 column, so the generated result keeps the requested schema.
 
 The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
-metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v3 and the
+metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v4 and the
 shared session coordinator. The notebook command and Operations view discover supported R variables and open the
 same grid, Activity Bar views, and profile drawer used by Python-backed sessions. Cached Operations rows retain the
 original discovery receipt, so opening one rechecks that the same notebook, kernel, variable, and R dataframe type
 are still present. The Python runtime does not decode or execute the private R transport.
+
+Before editing, the bridge uses the coordinator's accepted filter and view-change epoch, including during replay.
+This prevents a superseded page from changing the view restored by Discard or Undo. Native R transport v14 and frame
+contract v5 are unchanged; the bridge supplies the resolved view through their existing mutation commands.
 
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the

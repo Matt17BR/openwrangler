@@ -30,6 +30,20 @@ export interface RuntimeSessionState {
   viewState: PersistedViewingState;
 }
 
+/** Capture the candidate's accepted view at runtime dispatch. */
+export function confirmedViewOptions(
+  session: Pick<RuntimeSessionState, "metadata" | "viewChangeEpoch">,
+  options?: BridgeRequestOptions
+): BridgeRequestOptions {
+  return {
+    ...options,
+    confirmedView: {
+      filterModel: session.metadata.filterModel,
+      viewChangeEpoch: session.viewChangeEpoch ?? 0
+    }
+  };
+}
+
 export class SessionRuntimeStateRestorer {
   async restoreRuntimeState(
     session: RuntimeSessionState,
@@ -66,6 +80,8 @@ export class SessionRuntimeStateRestorer {
     options?: BridgeRequestOptions,
     assertCurrent?: () => void
   ): Promise<void> {
+    const currentViewChangeEpoch = session.viewChangeEpoch ?? 0;
+    const draftBaseViewChangeEpoch = session.draftBaseViewChangeEpoch ?? currentViewChangeEpoch;
     session.draftPresentation = undefined;
     session.draftBaseFilterModel = undefined;
     session.draftBaseViewChangeEpoch = undefined;
@@ -81,7 +97,7 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit
       };
-      const preview = await session.delegate.request(previewRequest, options);
+      const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
       if (
         preview.kind !== "stepPreview" ||
@@ -101,7 +117,7 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit
       };
-      const applied = await session.delegate.request(applyRequest, options);
+      const applied = await session.delegate.request(applyRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
       if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
         throw new RuntimeStateRestoreError("Open Wrangler could not apply a replayed cleaning step.");
@@ -123,6 +139,7 @@ export class SessionRuntimeStateRestorer {
         );
       }
       assertCurrent?.();
+      session.viewChangeEpoch = draftBaseViewChangeEpoch;
       const committedSchema = session.metadata.schema;
       const confirmedDraftBaseFilterModel = session.metadata.filterModel;
       const previewRequest: SessionBoundRequest = {
@@ -136,7 +153,7 @@ export class SessionRuntimeStateRestorer {
         columnOffset,
         columnLimit
       };
-      const preview = await session.delegate.request(previewRequest, options);
+      const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
       if (
         preview.kind !== "stepPreview" ||
@@ -148,7 +165,8 @@ export class SessionRuntimeStateRestorer {
       session.metadata = preview.metadata;
       session.code = preview.code;
       session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
-      session.draftBaseViewChangeEpoch = session.viewChangeEpoch ?? 0;
+      session.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
+      session.viewChangeEpoch = currentViewChangeEpoch;
       session.draftPresentation = {
         diff: preview.diff,
         ...(preview.remainingMissingCells === undefined
@@ -280,9 +298,14 @@ export class SessionRuntimeStateRestorer {
         viewport: { ...restoredView.viewport, firstVisibleRow: page.page.offset }
       };
     }
+    const previousFilterModel = session.metadata.filterModel;
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
-    if (session.draftBaseFilterModel && !isDeepStrictEqual(session.draftBaseFilterModel, page.metadata.filterModel)) {
+    if (
+      session.draftBaseFilterModel &&
+      session.draftBaseViewChangeEpoch === (session.viewChangeEpoch ?? 0) &&
+      !isDeepStrictEqual(previousFilterModel, page.metadata.filterModel)
+    ) {
       session.viewChangeEpoch = (session.viewChangeEpoch ?? 0) + 1;
     }
     session.viewState = reconcileViewingState(

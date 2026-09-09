@@ -1217,3 +1217,140 @@ def test_redo_undo_restores_current_view_without_replacing_a_newer_filter(tmp_pa
         assert path.read_text() == source
     finally:
         manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("ending", ["discard", "undo"])
+def test_confirmed_view_preserves_dropped_filter_history_after_rejected_pages(tmp_path, backend, ending) -> None:
+    path = tmp_path / "confirmed-view.csv"
+    source = "name,value\na,1\nb,2\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    empty = {"logic": "and", "filters": [], "sort": []}
+    original_view = {
+        "logic": "and",
+        "filters": [
+            {"column": "value", "type": "integer", "predicates": [{"kind": "predicate", "operator": "gte", "value": 2}]}
+        ],
+        "sort": [{"column": "value", "direction": "desc"}],
+    }
+    stale_view = {**empty, "sort": [{"column": "name", "direction": "desc"}]}
+    invalid_view = {
+        **empty,
+        "filters": [
+            {
+                "column": "name",
+                "type": "integer",
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": "bad"}],
+            }
+        ],
+    }
+    newer_view = {
+        **empty,
+        "filters": [
+            {
+                "column": "name",
+                "type": "string",
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": "a"}],
+            }
+        ],
+    }
+    drop = transform("drop", "dropColumns", columns=[source_ref(1, "value")])
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend, page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        original = manager.get_page(sid, 0, 0, 10, original_view)["page"]
+        manager.preview_step(sid, 0, drop, 0, 10, confirmed_view={"filterModel": original_view, "viewChangeEpoch": 7})
+        assert session.draft_base_view_change_epoch == 7
+        revision = 1
+        if ending == "undo":
+            manager.apply_draft(sid, revision, 0, 10, confirmed_view={"filterModel": empty, "viewChangeEpoch": 7})
+            revision += 1
+        assert session.filter_model == empty
+        stale = manager.get_page(sid, revision, 0, 10, stale_view)
+        assert [row["values"][0]["raw"] for row in stale["page"]["rows"]] == ["c", "b", "a"]
+        with pytest.raises(EngineError, match="declares 'integer'"):
+            manager.get_page(sid, revision, 0, 10, invalid_view)
+        assert session.filter_model == stale_view
+        assert session.view_change_epoch > 7
+        finish = manager.discard_draft if ending == "discard" else manager.undo_step
+        restored = finish(sid, revision, 0, 10, confirmed_view={"filterModel": empty, "viewChangeEpoch": 7})
+        assert restored["page"] == original
+        assert restored["metadata"]["schema"] == opened["metadata"]["schema"]
+        assert session.filter_model == original_view and session.view_change_epoch == 7
+        revision += 1
+        if ending == "undo":
+            assert restored["metadata"]["canRedo"] is True
+            manager.redo_step(sid, revision, 0, 10, confirmed_view={"filterModel": original_view, "viewChangeEpoch": 7})
+        else:
+            manager.preview_step(
+                sid, revision, drop, 0, 10, confirmed_view={"filterModel": original_view, "viewChangeEpoch": 7}
+            )
+        revision += 1
+        # Two accepted changes return to the same model, but the newer epoch
+        # must prevent Discard/Undo from restoring the older dropped filter.
+        manager.get_page(sid, revision, 0, 10, newer_view)
+        manager.get_page(sid, revision, 0, 10, empty)
+        newer = finish(sid, revision, 0, 10, confirmed_view={"filterModel": empty, "viewChangeEpoch": 9})
+        assert [[cell["raw"] for cell in row["values"]] for row in newer["page"]["rows"]] == [
+            ["a", 1],
+            ["b", 2],
+            ["c", 3],
+        ]
+        assert session.filter_model == empty and session.view_change_epoch == 9
+        assert path.read_text() == source
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("failure", ["filter", "response"])
+def test_confirmed_view_synchronization_rolls_back_with_failed_preview(tmp_path, backend, failure) -> None:
+    path = tmp_path / "failed-confirmed-view.csv"
+    source = "name,value\na,1\nb,2\nc,3\n"
+    path.write_text(source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend, page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        prior = {"logic": "and", "filters": [], "sort": [{"column": "value", "direction": "desc"}]}
+        manager.get_page(sid, 0, 0, 10, prior)
+        frame, cache = session.filtered, session.page_cache
+        entries, cache_bytes = list(cache.items()), session.page_cache_bytes
+        epoch, generation = session.view_change_epoch, session.view_generation
+        confirmed = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "predicates": [
+                        {"kind": "predicate", "operator": "gte", "value": "bad" if failure == "filter" else 2}
+                    ],
+                }
+            ],
+            "sort": [],
+        }
+
+        def refuse(_response):
+            raise EngineError("Synthetic confirmed response refusal")
+
+        with pytest.raises(EngineError, match="integer|Synthetic confirmed response refusal"):
+            manager.preview_step(
+                sid,
+                0,
+                transform("rename", "renameColumn", column=source_ref(0, "name"), newName="label"),
+                0,
+                10,
+                confirmed_view={"filterModel": confirmed, "viewChangeEpoch": 7},
+                response_preflight=refuse if failure == "response" else None,
+            )
+        assert session.filter_model == prior and session.filtered is frame
+        assert list(session.page_cache.items()) == entries and session.page_cache_bytes == cache_bytes
+        assert session.view_change_epoch == epoch and session.view_generation == generation
+        assert session.revision == 0 and session.draft_step is None and session.plan == []
+        assert path.read_text() == source
+    finally:
+        manager.close_all()

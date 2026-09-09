@@ -820,6 +820,8 @@ function runtimeCandidate(
     delegate: session.delegate,
     metadata,
     code: "",
+    viewChangeEpoch: session.viewChangeEpoch ?? 0,
+    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
     viewState: initialViewingState(metadata)
   };
 }
@@ -839,7 +841,8 @@ function publishCandidate(
   session.code = candidate.code;
   session.draftPresentation = candidate.draftPresentation;
   session.draftBaseFilterModel = candidate.draftBaseFilterModel;
-  session.draftBaseViewChangeEpoch = undefined;
+  session.viewChangeEpoch = candidate.viewChangeEpoch;
+  session.draftBaseViewChangeEpoch = candidate.draftBaseViewChangeEpoch;
   session.viewState = candidate.viewState;
   session.recoveryRequired = false;
   session.activeViewContextId = undefined;

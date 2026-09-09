@@ -179,7 +179,7 @@ describe("notebook renderer messaging", () => {
     const saved = validPayload();
     const original = structuredClone(saved);
     const rendererPayload = normalizeNotebookOutputPayload(saved);
-    expect(rendererPayload?.metadata.protocolVersion).toBe(3);
+    expect(rendererPayload?.metadata.protocolVersion).toBe(4);
     dispatch(editorA, rendererPayload);
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
@@ -431,7 +431,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"1".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source: {
@@ -517,7 +517,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"3".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1207,7 +1207,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"9".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1634,7 +1634,7 @@ describe("notebook renderer messaging", () => {
     await settleMessages();
     const upgrade = rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown };
     const rendererPayload = normalizeNotebookOutputPayload(upgrade.payload);
-    expect(rendererPayload?.metadata.protocolVersion).toBe(3);
+    expect(rendererPayload?.metadata.protocolVersion).toBe(4);
     expect(rendererPayload).toEqual(upgrade.payload);
     rendererMocks.inlineListener?.({
       editor: exactEditor,
@@ -1792,7 +1792,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.request
       .mockResolvedValueOnce({
         kind: "sessionOpened",
-        metadata: { ...saved.metadata, protocolVersion: 3, backend: "duckdb", sessionId: "mismatch", revision: 1 }
+        metadata: { ...saved.metadata, protocolVersion: 4, backend: "duckdb", sessionId: "mismatch", revision: 1 }
       })
       .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "mismatch" });
 
@@ -1820,7 +1820,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"7".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -1864,7 +1864,7 @@ describe("notebook renderer messaging", () => {
     const sessionId = `inline-session-${"8".repeat(32)}`;
     const liveMetadata = {
       ...saved.metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
@@ -2112,7 +2112,7 @@ function installCanonicalRuntimeResponses(
         : { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() };
     const metadata = {
       ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       ...(mismatch === "mode" ? { mode: "cleaning" } : {}),
@@ -2198,7 +2198,7 @@ function installNearLimitRuntimeResponses(): void {
     if (!source) throw new Error("The near-limit fixture lost its exact source.");
     const metadata = {
       ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
-      protocolVersion: 3,
+      protocolVersion: 4,
       sessionId,
       revision: 3,
       source,

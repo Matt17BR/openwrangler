@@ -740,6 +740,38 @@ def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tm
     assert [row["values"][1]["display"] for row in preview["page"]["rows"]] == ["3", "4"]
 
 
+@pytest.mark.parametrize("rejected_page", [False, True])
+def test_confirmed_apply_reuses_accepted_view_or_refilters_once(tmp_path, rejected_page) -> None:
+    manager, created = counting_manager()
+    try:
+        opened = manager.open_session(source(write_values(tmp_path, 5)), backend="pandas", page_size=10)
+        sid = opened["metadata"]["sessionId"]
+        engine = created[0]
+        confirmed = greater_than(1)
+        manager.get_page(sid, 0, 0, 10, confirmed)
+        preview = manager.preview_step(
+            sid,
+            0,
+            formula_step("double"),
+            0,
+            10,
+            confirmed_view={"filterModel": confirmed, "viewChangeEpoch": 7},
+        )
+        if rejected_page:
+            manager.get_page(sid, 1, 0, 10, {"filters": [], "sort": [{"column": "value", "direction": "desc"}]})
+        counts = (engine.filter_calls, engine.shape_calls, len(engine.page_calls))
+        applied = manager.apply_draft(sid, 1, 0, 10, confirmed_view={"filterModel": confirmed, "viewChangeEpoch": 7})
+        assert engine.filter_calls - counts[0] == int(rejected_page)
+        # A real filter needs its native shape query too; sorting alone does not.
+        assert engine.shape_calls - counts[1] == int(rejected_page)
+        assert len(engine.page_calls) - counts[2] == 1  # The ordinary Apply page only.
+        assert applied["page"] == preview["page"]
+        assert applied["metadata"]["filterModel"] == confirmed
+        assert manager.sessions[sid].view_change_epoch == 7
+    finally:
+        manager.close_all()
+
+
 def test_draft_plan_and_close_invalidate_cache_without_rebuilding_an_unchanged_draft_view(tmp_path) -> None:
     manager, created = counting_manager()
     opened = manager.open_session(source(write_values(tmp_path, 4)), backend="pandas", page_size=2)

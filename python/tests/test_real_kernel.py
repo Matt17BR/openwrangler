@@ -36,7 +36,7 @@ __ow_notebook.register_formatters()
 
     initialized = _dispatch(client, "initialize", {"kind": "initialize"})
     assert initialized["response"]["kind"] == "initialized"
-    assert initialized["response"]["protocolVersion"] == 3
+    assert initialized["response"]["protocolVersion"] == 4
 
     missing = _dispatch(
         client,
@@ -53,7 +53,7 @@ __ow_notebook.register_formatters()
             "filterModel": {"filters": [], "sort": []},
         },
     )
-    assert missing["protocolVersion"] == 3
+    assert missing["protocolVersion"] == 4
     assert missing["requestId"] == "missing-session"
     assert missing["response"]["kind"] == "error"
     assert missing["response"]["code"] == "unknown_session"
@@ -91,7 +91,7 @@ __ow_notebook.register_formatters()
             "filterModel": {"filters": [], "sort": []},
         },
     )
-    assert malformed["protocolVersion"] == 3
+    assert malformed["protocolVersion"] == 4
     assert malformed["requestId"] == "malformed-page"
     assert malformed["response"]["kind"] == "error"
     assert malformed["response"]["code"] == "invalid_request"
@@ -165,7 +165,7 @@ def test_execute_helper_drains_shell_reply_after_kernel_error(live_kernel) -> No
 
 def _dispatch(client: Any, request_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
     envelope = {
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "requestId": request_id,
         "priority": "interactive",
         "request": request,

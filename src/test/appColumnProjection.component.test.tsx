@@ -36,7 +36,7 @@ const schema = Array.from({ length: 40 }, (_, position) => ({
 }));
 
 const metadata: SessionMetadata = {
-  protocolVersion: 3,
+  protocolVersion: 4,
   sessionId: "wide-session",
   revision: 0,
   backend: "polars",
