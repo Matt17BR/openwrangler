@@ -1,4 +1,86 @@
 # Native-R Group By engine-family, precision, overflow, and generated-code contract cases.
+# Group sums share the live arithmetic once across a complete mixed plan.
+local({
+  helper_names <- c("compare_unsigned_decimal", "add_unsigned_decimal", "subtract_unsigned_decimal",
+    "add_signed_decimal", "exact_integer_sum_text")
+  assert_sum_helpers <- function(code, needed) {
+    lines <- strsplit(code, "\n", fixed = TRUE)[[1L]]
+    for (name in helper_names) {
+      header <- sprintf("  %s <-", name)
+      assert_identical(sum(lines == header), as.integer(needed), paste("wrong exact-sum dependency count for", name))
+      if (needed) {
+        helper <- get(name, environment(openwrangler_r_frame_contract$group_by_at), inherits = FALSE)
+        emitted <- paste(c(header, paste0("  ", deparse(helper, width.cutoff = 500L))), collapse = "\n")
+        assert_identical(grepl(emitted, code, fixed = TRUE), TRUE, paste("generated Group By changed the live", name))
+      }
+    }
+  }
+  sources <- new.env(parent = baseenv())
+  sources$sum_frame <- data.frame(group = c("b", "a", "b"), value = c(2147483647L, 3L, -2147483647L),
+    coarse = c(1.5e30, 2.5e30, 3.5e30))
+  before <- serialize(sources$sum_frame, NULL, version = 3L)
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(local_agent$dispose(), add = TRUE)
+  session <- "74747474-7474-4474-8474-747474747474"
+  opened <- dispatch_with(local_agent, "openSession", list(sessionId = session, variableName = "sum_frame", page = page_window()))
+  assert_identical(opened$kind, "page", "the exact-sum session did not open")
+  group_step <- function(id, column_id, column_name, operation = "sum") list(id = id, kind = "groupBy", params = list(
+    keys = list(list(id = "r:c:0", name = "group")),
+    aggregations = list(list(column = list(id = column_id, name = column_name), operation = operation, alias = "total"),
+      list(column = list(id = if (identical(column_name, "value")) "r:c:2" else "c:step:sum-first:1", name = "coarse"),
+        operation = "sum", alias = "coarse"))))
+  counted <- dispatch_with(local_agent, "previewStep", list(sessionId = session, revision = 0L,
+    step = group_step("count-only", "r:c:1", "value", "count"), page = page_window()))
+  assert_identical(counted$kind, "stepPreview", "the count-only plan did not preview")
+  assert_sum_helpers(counted$code, FALSE)
+  discarded <- dispatch_with(local_agent, "discardDraft", list(sessionId = session, revision = counted$revision, page = page_window()))
+  assert_identical(discarded$code, "", "discarding count-only did not restore the empty plan")
+  steps <- list(group_step("sum-first", "r:c:1", "value"),
+    list(id = "round-between", kind = "roundNumber", params = list(
+      column = list(id = "c:step:sum-first:1", name = "coarse"), decimals = -23L)),
+    group_step("sum-again", "c:step:sum-first:0", "total"))
+  live <- unserialize(before)
+  revision <- discarded$revision
+  first_code <- NULL
+  for (step in steps) {
+    preview <- dispatch_with(local_agent, "previewStep", list(sessionId = session, revision = revision, step = step, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", paste(step$id, "did not preview"))
+    applied <- dispatch_with(local_agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
+    assert_identical(applied$action, "apply", paste(step$id, "did not apply"))
+    assert_identical(applied$code, preview$code, "Apply changed exact-sum code")
+    assert_identical(applied$page, preview$page, "Apply changed exact-sum results")
+    assert_sum_helpers(applied$code, TRUE)
+    if (identical(step$kind, "groupBy")) {
+      live <- openwrangler_r_frame_contract$group_by_at(live, 1L, "group", c(2L, 3L), names(live)[2:3],
+        c("sum", "sum"), c("total", "coarse"))
+    } else {
+      live <- openwrangler_r_frame_contract$round_number_column_at(live, 3L, "coarse", -23L)
+    }
+    standalone <- new.env(parent = baseenv())
+    standalone$sum_frame <- unserialize(before)
+    for (name in c(helper_names, "sum", "sprintf", "as.double", "abort")) {
+      standalone[[name]] <- function(...) stop("caller intercepted Group By arithmetic", call. = FALSE)
+    }
+    assert_no_warning(eval(parse(text = applied$code), envir = standalone), paste("generated", step$id))
+    assert_identical(standalone$open_wrangler_result, live, paste(step$id, "changed exact values or types"))
+    assert_identical(serialize(standalone$sum_frame, NULL, version = 3L), before, "generated Group By changed the source")
+    if (is.null(first_code)) first_code <- applied$code
+    revision <- applied$revision
+  }
+  assert_identical(live$total, c(0L, 3L), "repeated Group By lost integer cancellation or first-seen order")
+  assert_identical(serialize(sources$sum_frame, NULL, version = 3L), before, "live Group By changed the source")
+  invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+
+  # Three native batches carry opposite large totals before a small residual.
+  values <- c(rep.int(2147483647L, 1000000L), rep.int(-2147483647L, 1000000L), 7L)
+  standalone$sum_frame <- data.frame(group = rep.int("g", length(values)), value = values, coarse = 0)
+  batch_before <- serialize(standalone$sum_frame, NULL, version = 3L)
+  assert_no_warning(eval(parse(text = first_code), envir = standalone), "generated multi-batch sum")
+  assert_identical(standalone$open_wrangler_result, data.frame(group = "g", total = 7L, coarse = 0),
+    "generated Group By lost the residual between integer batches")
+  assert_identical(serialize(standalone$sum_frame, NULL, version = 3L), batch_before, "multi-batch sum changed the source")
+})
+
 assert_group_by_flavor_case <- function(
   case_session_id,
   variable_name,

@@ -954,6 +954,17 @@ for (case in named_column_cases) {
 
 }))
 run_frame_contract_case("group-by", local({
+# Exact integer sums retain cancellation across all native batch boundaries.
+batch_values <- c(rep.int(2147483647L, 1000000L), rep.int(-2147483647L, 1000000L), 7L)
+batch_source <- data.frame(group = rep.int("g", length(batch_values)), positive = batch_values, negative = -batch_values)
+batch_before <- serialize(batch_source, NULL, version = 3L)
+batch_result <- openwrangler_r_frame_contract$group_by_at(batch_source, 1L, "group", c(2L, 3L),
+  c("positive", "negative"), c("sum", "sum"), c("positive_sum", "negative_sum"))
+assert_identical(batch_result, data.frame(group = "g", positive_sum = 7L, negative_sum = -7L),
+  "native integer Group By lost signed residuals across batches")
+assert_identical(serialize(batch_source, NULL, version = 3L), batch_before, "batched Group By mutated its source")
+rm(batch_values, batch_source, batch_before, batch_result)
+
 
 group_identity_source <- data.frame(
   group = c("b", "a", "b"),
