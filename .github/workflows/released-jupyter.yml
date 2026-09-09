@@ -302,6 +302,26 @@ jobs:
               throw new Error("R source qualification did not resolve its reviewed private package versions.");
             }
             console.log(`R source packages:\n${prepared.packageRecord}`);
+            // Temporary parser evidence; remove this diagnostic before merging.
+            if (process.platform === "darwin") {
+              const diagnostic = await runBoundedEditorCommand({
+                executable: prepared.dependencyProbe.input.executable,
+                args: ["--vanilla", "-e", String.raw`local({
+                  json <- c("1e308", "1e-100", "0.5")
+                  literals <- c("1e+308", "1e-100", "5e-01")
+                  bits <- function(value) paste(format(writeBin(value, raw(), size = 8L, endian = "little")), collapse = "")
+                  for (index in seq_along(json)) {
+                    original <- jsonlite::fromJSON(json[[index]], simplifyVector = FALSE)
+                    generated <- as.double(literals[[index]])
+                    cat(sprintf("R numeric parser case=%d json=%s generated=%s identical=%s\n",
+                      index, bits(original), bits(generated), identical(original, generated)))
+                  }
+                })`],
+                environment,
+                label: "Temporary R numeric parser observation"
+              }, { timeoutMs: 30_000, maxOutputBytes: 4_096 });
+              console.log(diagnostic.stdout);
+            }
             const phases = createRContractPhases({
               environment, r: prepared.rExecutable, rscript: prepared.dependencyProbe.input.executable
             });
