@@ -608,9 +608,12 @@ After editor and display ownership and private-root identity are verified, a fai
 - Structured failure metadata.
 
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
-separately. Failure metadata reports the last stage reached when progress is read after shutdown; it does not identify
-the await active at the exact deadline or measure its duration. These completed stages use the existing inactivity
-watchdog; the absolute phase deadline is unchanged.
+separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
+phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
+launch. Text Length records the start and completion of its individual awaits. Polling may miss quick transitions;
+these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
+progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
+cleanup cost from editor execution. These diagnostics preserve the existing inactivity and absolute phase deadlines.
 
 Jupyter output logs may be inspected only to derive a fixed failure category and are never copied. Raw profiles,
 settings, workspace storage, databases, arbitrary extension logs, credentials, private keys, and user data are never

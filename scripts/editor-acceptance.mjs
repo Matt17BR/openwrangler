@@ -87,6 +87,79 @@ export const EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL = "openwrangler-editor-
 export const EDITOR_DOWNLOAD_ATTEMPT_TIMEOUT_MS = 300_000;
 export const EDITOR_DOWNLOAD_RESULT_MAX_BYTES = 32 * 1024;
 const EDITOR_ACCEPTANCE_POLL_INTERVAL_MS = 100;
+// Live timing output uses only these fixed fixture labels from correlated progress.
+const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
+  ...["notebook", "grid", "document", "restart"].flatMap((section) =>
+    ["start", "complete"].map((boundary) => `jupyter-r:coverage:comprehensive:${section}:${boundary}`)
+  ),
+  ...[
+    "switch",
+    "return",
+    "fill-missing-preview-apply-undo",
+    "mark-duplicates-preview-apply-undo",
+    "dense-rank-preview-apply-undo",
+    "preview-discard",
+    "preview-apply",
+    "export-cleaned-csv",
+    "inspect",
+    "edit-latest",
+    "copy-export",
+    "undo",
+    "redo",
+    "drop-preview-discard",
+    "drop-preview-apply-inspect-undo",
+    "select-preview-discard",
+    "select-preview-apply-inspect-undo",
+    "clone-preview-discard",
+    "clone-preview-apply-inspect-edit-undo",
+    "text-length-preview-discard",
+    "text-length-preview-apply-inspect-undo"
+  ].map((stage) => `jupyter-r:editing:${stage}`),
+  ...[
+    "picker-open",
+    "operation-click",
+    "dialog-visible",
+    "source-visible",
+    "source-select",
+    "target-fill",
+    "preview-click",
+    "draft-confirmed",
+    "dialog-hidden",
+    "code-preview-visible",
+    "generated-code-reveal",
+    "panel-hydration",
+    "session-app"
+  ].flatMap((action) =>
+    ["start", "complete"].map((boundary) => `released-r:text-length-preview:${action}:${boundary}`)
+  ),
+  ...[
+    "restored-session-app",
+    "preview",
+    "apply-click",
+    "apply-confirmed",
+    "applied-session-app",
+    "column-search-fill",
+    "column-option-visible",
+    "column-search-enter",
+    "column-selected",
+    "selected-session-app",
+    "header-visible",
+    "header-position",
+    "cell-visible",
+    "cell-text",
+    "add-step-ready",
+    "inspection-command",
+    "inspection-confirmed",
+    "inspection-session-app",
+    "confirmed-data-click",
+    "confirmed-data-restored",
+    "undo-session-app",
+    "undo-lane-idle",
+    "undo-click",
+    "undo-dispatched",
+    "undo-confirmed"
+  ].flatMap((action) => ["start", "complete"].map((boundary) => `jupyter-r:editing:text-length:${action}:${boundary}`))
+]);
 const EDITOR_COMMAND_TERMINATION_GRACE_MS = 2_000;
 const EDITOR_COMMAND_KILL_GRACE_MS = 5_000;
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
@@ -4587,7 +4660,8 @@ export async function runEditorAcceptancePhase(
       phase,
       progressReader,
       initialProgressCheckpoint,
-      progressStartedAt: initialProgressAt
+      progressStartedAt: initialProgressAt,
+      phaseStartedAt: startedAt
     });
     const context = {
       editor,
@@ -4807,7 +4881,8 @@ export async function waitForEditorAcceptanceObservation({
   phase,
   progressReader = acceptanceProgressCheckpoint,
   initialProgressCheckpoint,
-  progressStartedAt
+  progressStartedAt,
+  phaseStartedAt
 }) {
   const progressReadOptions = {
     ...(runId === undefined ? {} : { expectedRunId: runId }),
@@ -4825,6 +4900,11 @@ export async function waitForEditorAcceptanceObservation({
     } else if (nextCheckpoint !== undefined && nextCheckpoint !== checkpoint) {
       checkpoint = nextCheckpoint;
       lastProgressAt = now();
+      if (phase === "jupyter-r" && R_ACCEPTANCE_TIMED_CHECKPOINTS.has(checkpoint)) {
+        console.log(
+          `R editor checkpoint observed at ${Math.max(0, Math.round(lastProgressAt - (phaseStartedAt ?? startedAt)))} ms: ${checkpoint}`
+        );
+      }
     }
   };
   const authoritativeDeadline = () => {

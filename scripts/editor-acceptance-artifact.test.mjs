@@ -9,9 +9,62 @@ import {
   createEditorAcceptanceArtifactParent,
   sealEditorAcceptanceEvidence
 } from "./editor-acceptance-artifact.mjs";
-import { downloadEditorWithRetry, resolvePackagedVscodeAcquisitionPlan } from "./editor-acceptance.mjs";
+import {
+  downloadEditorWithRetry,
+  resolvePackagedVscodeAcquisitionPlan,
+  waitForEditorAcceptanceObservation
+} from "./editor-acceptance.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
+
+test("R checkpoint timing logs only changed fixed labels without changing phase or inactivity deadlines", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-timing-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const lines = [];
+  context.mock.method(console, "log", (line) => lines.push(line));
+  for (const scenario of [
+    { phase: "jupyter-r", phaseTimeoutMs: 80, timeout: "phase", elapsedMs: 80 },
+    { phase: "jupyter-r", phaseTimeoutMs: 200, timeout: "inactivity", elapsedMs: 90 },
+    { phase: "jupyter-allow", phaseTimeoutMs: 80, timeout: "phase", elapsedMs: 80 }
+  ]) {
+    lines.length = 0;
+    let clock = 1_000;
+    const initial = "jupyter-r:editing:text-length-preview-discard";
+    const observed = await waitForEditorAcceptanceObservation({
+      resultPath: join(directory, "absent-result.json"),
+      progressPath: join(directory, "unused-progress.json"),
+      exit: new Promise(() => {}),
+      isRunning: () => true,
+      now: () => clock,
+      wait: async (interval) => {
+        clock += interval;
+      },
+      phase: scenario.phase,
+      phaseStartedAt: 900,
+      phaseTimeoutMs: scenario.phaseTimeoutMs,
+      inactivityTimeoutMs: 35,
+      pollIntervalMs: 10,
+      initialProgressCheckpoint: initial,
+      progressReader: () => {
+        if (clock >= 1_050) return "released-r:text-length-preview:preview-click:start";
+        if (clock >= 1_040) return "1:2:0:1740000000000:1740000000000";
+        if (clock >= 1_030) return "jupyter-r:editing:private-value-must-not-be-logged";
+        if (clock >= 1_010) return "jupyter-r:editing:text-length-preview-apply-inspect-undo";
+        return initial;
+      }
+    });
+    assert.deepEqual(observed, { kind: "timeout", timeout: scenario.timeout, elapsedMs: scenario.elapsedMs });
+    assert.deepEqual(
+      lines,
+      scenario.phase === "jupyter-r"
+        ? [
+            "R editor checkpoint observed at 110 ms: jupyter-r:editing:text-length-preview-apply-inspect-undo",
+            "R editor checkpoint observed at 150 ms: released-r:text-length-preview:preview-click:start"
+          ]
+        : []
+    );
+  }
+});
 
 test("sealed failure evidence is re-redacted and identity-pinned through handoff", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-sealed-evidence-"));

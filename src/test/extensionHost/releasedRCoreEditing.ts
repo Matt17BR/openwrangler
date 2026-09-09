@@ -1268,13 +1268,20 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:restored-session-app:start`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Text Length");
+  recordAcceptanceProgress(`${phase}:editing:text-length:restored-session-app:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:preview:start`);
   const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
+  recordAcceptanceProgress(`${phase}:editing:text-length:preview:complete`);
   app = measured.app;
+  recordAcceptanceProgress(`${phase}:editing:text-length:apply-click:start`);
   await app
     .getByRole("region", { name: "Draft review" })
     .getByRole("button", { name: "Apply step", exact: true })
     .click();
+  recordAcceptanceProgress(`${phase}:editing:text-length:apply-click:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:apply-confirmed:start`);
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -1296,38 +1303,65 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R Text Length step"
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:apply-confirmed:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:applied-session-app:start`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step before inspection");
+  recordAcceptanceProgress(`${phase}:editing:text-length:applied-session-app:complete`);
   const appliedLength = testing.activeSession();
   assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
   assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
   const derivedColumnId = `c:step:${measured.stepId}:0`;
   const lengthColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-search-fill:start`);
   await lengthColumnSearch.fill("label_length");
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-search-fill:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-option-visible:start`);
   await app
     .getByRole("option", { name: /^label_length,/u })
     .first()
     .waitFor({ state: "visible", timeout: 10_000 });
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-option-visible:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-search-enter:start`);
   await lengthColumnSearch.press("Enter");
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-search-enter:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-selected:start`);
   await waitFor(
     () => testing.activeSession()?.viewState.selectedColumnId === derivedColumnId,
     10_000,
     "selecting the applied native R Text Length output through column search"
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:column-selected:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:selected-session-app:start`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Text Length output column");
+  recordAcceptanceProgress(`${phase}:editing:text-length:selected-session-app:complete`);
   const lengthHeader = app.locator('th[data-column="label_length"]').first();
+  recordAcceptanceProgress(`${phase}:editing:text-length:header-visible:start`);
   await lengthHeader.waitFor({ state: "visible", timeout: 10_000 });
+  recordAcceptanceProgress(`${phase}:editing:text-length:header-visible:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:header-position:start`);
   const lengthColumnPosition = await lengthHeader.getAttribute("data-grid-column");
+  recordAcceptanceProgress(`${phase}:editing:text-length:header-position:complete`);
   assert.notEqual(lengthColumnPosition, null, "The R Text Length output must expose its full-schema grid position.");
   const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
+  recordAcceptanceProgress(`${phase}:editing:text-length:cell-visible:start`);
   await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  recordAcceptanceProgress(`${phase}:editing:text-length:cell-visible:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:cell-text:start`);
   assert.equal((await firstLengthCell.textContent())?.trim(), "8");
+  recordAcceptanceProgress(`${phase}:editing:text-length:cell-text:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:add-step-ready:start`);
   await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
+  recordAcceptanceProgress(`${phase}:editing:text-length:add-step-ready:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-command:start`);
   await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-command:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-confirmed:start`);
   await waitFor(
     () => testing.activeSession()?.stepInspection?.stepId === measured.stepId,
     30_000,
     "the applied native R Text Length inspection"
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-confirmed:complete`);
   const lengthInspection = testing.activeSession()?.stepInspection;
   assert.ok(lengthInspection, "Selecting the applied R Text Length step must publish its inspection.");
   assert.deepEqual(lengthInspection.diff, {
@@ -1349,17 +1383,25 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "The R Text Length inspection must retain the derived column identity and type."
   );
   assertReleasedRTextLengthGeneratedCode(lengthInspection.code, "label", "label_length");
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-session-app:start`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Text Length session");
+  recordAcceptanceProgress(`${phase}:editing:text-length:inspection-session-app:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:confirmed-data-click:start`);
   await app
     .getByRole("region", { name: "Selected applied-step inspection" })
     .getByRole("button", { name: "Show confirmed data", exact: true })
     .click();
+  recordAcceptanceProgress(`${phase}:editing:text-length:confirmed-data-click:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:confirmed-data-restored:start`);
   await waitFor(
     () => testing.activeSession()?.stepInspection === undefined,
     10_000,
     "returning from the native R Text Length inspection"
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:confirmed-data-restored:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-session-app:start`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-session-app:complete`);
   const lengthUndoState = (): Record<string, unknown> => {
     const active = testing.activeSession();
     return {
@@ -1378,6 +1420,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
       }
     };
   };
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-lane-idle:start`);
   await waitFor(
     () => {
       const scheduler = testing.sessionSchedulerState(sessionId);
@@ -1391,7 +1434,11 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "the native R foreground lane to settle before Undo",
     () => JSON.stringify(lengthUndoState())
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-lane-idle:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-click:start`);
   await app.getByRole("button", { name: "Undo", exact: true }).click();
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-click:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-dispatched:start`);
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -1407,6 +1454,8 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "the native R Text Length Undo click to dispatch once",
     () => JSON.stringify(lengthUndoState())
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-dispatched:complete`);
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-confirmed:start`);
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -1426,6 +1475,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "undoing the native R Text Length step",
     () => JSON.stringify(lengthUndoState())
   );
+  recordAcceptanceProgress(`${phase}:editing:text-length:undo-confirmed:complete`);
   assert.ok(coreScreenshot, "The core R editing catalog must retain its notebook insertion receipt.");
   return { app, coreScreenshot };
 }
