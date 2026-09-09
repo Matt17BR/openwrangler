@@ -452,6 +452,7 @@ def test_manager_preserves_connect_session_and_reports_structured_failure(
     manager = SessionManager()
     manager.sessions[session_id] = session  # type: ignore[assignment]
     source_before = dict(session.source.metadata)
+    checkpoint_before = session.spark_confirmed_view
 
     with (
         pytest.raises(expected_error, match="current Open Wrangler view is unchanged") as classified,
@@ -468,6 +469,7 @@ def test_manager_preserves_connect_session_and_reports_structured_failure(
     assert session.disposed is False
     assert (session.page_cache == {}) is cache_cleared
     assert session.page_cache_bytes == (0 if cache_cleared else 128)
+    assert session.spark_confirmed_view is (None if cache_cleared else checkpoint_before)
 
 
 def test_rebound_classic_source_is_checked_before_request_ownership(
@@ -505,6 +507,7 @@ def test_rebound_classic_source_is_checked_before_request_ownership(
     assert spark_context.ownership_calls == 0
     assert session.page_cache == {}
     assert session.page_cache_bytes == 0
+    assert session.spark_confirmed_view is None
 
 
 def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_operation(
