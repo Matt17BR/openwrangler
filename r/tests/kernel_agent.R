@@ -2947,6 +2947,54 @@ assert_identical(clone_table_closed$kind, "closed", "the R data.table clone sess
 
 if (identical(selected_kernel_agent_case, "text-fill-and-cast")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+
+# Scalar and grouped Mean Fill share exact cancellation and one helper set across repeated steps.
+local({
+  sources <- new.env(parent = baseenv())
+  sources$exact_fill <- data.frame(group = rep.int("g", 5L), value = c(-1e308, 1e308, 3, NA, NaN),
+    row.names = paste0("exact-", 1:5))
+  before <- serialize(sources$exact_fill, NULL, version = 3L)
+  expected <- sources$exact_fill
+  expected$value[4:5] <- 1
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(agent$dispose(), add = TRUE)
+  session <- "77777777-7676-4676-8676-777777777777"
+  for (grouped in c(FALSE, TRUE)) {
+    opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = "exact_fill", page = page_window()))
+    revision <- 0L
+    for (iteration in 1:2) {
+      replacement <- if (grouped) list(kind = "groupedStatistic", statistic = "mean",
+        keys = list(list(id = "r:c:0", name = "group"))) else list(kind = "mean")
+      preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = revision, page = page_window(),
+        step = fill_step(paste0("exact-fill-", iteration), "r:c:1", "value", replacement)))
+      assert_identical(preview$kind, "stepPreview", "exact Mean Fill did not preview")
+      assert_identical(vapply(preview$page$page$rows[4:5], function(row) row$values[[2L]]$raw, character(1L)),
+        c("1", "1"), "public Mean Fill lost finite cancellation")
+      assert_identical(preview$diff$changedCells, if (iteration == 1L) 2L else 0L, "exact Mean Fill changed its diff")
+      applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
+      assert_identical(applied$page, preview$page, "exact Mean Fill changed on Apply")
+      lines <- strsplit(applied$code, "\n", fixed = TRUE)[[1L]]
+      for (name in names(openwrangler_r_frame_contract$exact_mean_helpers)) {
+        assert_identical(sum(lines == paste0("  ", name, " <-")), 1L, paste("repeated Fill duplicated", name))
+      }
+      copied <- new.env(parent = baseenv())
+      copied$exact_fill <- unserialize(before)
+      copied$exact_binary64_mean <- function(...) stop("caller mean ran")
+      eval(parse(text = applied$code), envir = copied)
+      assert_identical(copied$open_wrangler_result, expected, "copied Mean Fill changed exact values, class or row names")
+      assert_identical(serialize(copied$exact_fill, NULL, version = 3L), before, "copied Mean Fill changed source")
+      revision <- applied$revision
+    }
+    for (iteration in 1:2) {
+      undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
+      revision <- undone$revision
+    }
+    assert_identical(undone$page, opened$page, "Mean Fill Undo did not restore source metadata and rows")
+    assert_identical(serialize(sources$exact_fill, NULL, version = 3L), before, "Mean Fill changed source")
+    invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
+  }
+})
+
 source("r/tests/kernel_agent_text.R", local = FALSE)
 assert_fill_helpers <- function(code, expected) {
   lines <- strsplit(code, "\n", fixed = TRUE)[[1L]]
@@ -3022,6 +3070,8 @@ fill_label_apply <- dispatch(
 )
 assert_identical(fill_label_apply$action, "apply", "R factor Fill Missing Values did not apply")
 assert_fill_helpers(fill_label_apply$code, c(".ow_fill_datetime", ".ow_fill_values"))
+assert_identical(grepl("\n  exact_mean_new <-", fill_label_apply$code, fixed = TRUE), FALSE,
+  "an unrelated median/literal plan emitted exact-mean helpers")
 assign("fill_frame", source_environment$fill_frame, envir = .GlobalEnv)
 eval(parse(text = fill_label_apply$code), envir = .GlobalEnv)
 fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -3165,8 +3215,10 @@ mean_fill_apply <- dispatch(
   list(sessionId = mean_fill_session_id, revision = 1L, page = page_window())
 )
 assert_identical(mean_fill_apply$action, "apply", "R mean fill did not apply")
-if (!grepl("base::mean.default(.ow_present / .ow_scale)", mean_fill_apply$code, fixed = TRUE)) {
-  stop("generated R mean fill lost its native calculation", call. = FALSE)
+for (name in names(openwrangler_r_frame_contract$exact_mean_helpers)) {
+  helper <- openwrangler_r_frame_contract$exact_mean_helpers[[name]]
+  emitted <- paste(c(paste0("  ", name, " <-"), paste0("  ", deparse(helper, width.cutoff = 500L))), collapse = "\n")
+  assert_identical(grepl(emitted, mean_fill_apply$code, fixed = TRUE), TRUE, paste("Mean Fill did not emit the live", name))
 }
 assign("mean_fill_frame", source_environment$mean_fill_frame, envir = .GlobalEnv)
 eval(parse(text = mean_fill_apply$code), envir = .GlobalEnv)

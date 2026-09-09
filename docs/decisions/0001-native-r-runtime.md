@@ -145,13 +145,14 @@ size. A non-empty value search scans the column exactly in bounded chunks, with 
 limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching key text and asks for a narrower
 term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
 
-Mean Fill, ordinary numeric Group By means, and numeric/text profile means use `base::mean.default`
-on validated primitive values.
-Profile medians select their middle value or pair with partial sorting; the pair uses the same default reduction.
-This preserves native profile arithmetic, including signed zero, without dispatching to registered mean methods.
-Custom Code retains normal R method dispatch. Floating-point cancellation and chunk-merge overflow remain tracked in
-[#1070](https://github.com/Matt17BR/openwrangler/issues/1070) and
-[#1074](https://github.com/Matt17BR/openwrangler/issues/1074); method isolation does not correct those limits.
+Finite Mean Fill, ordinary integer/double Group By and numeric profiles use the shared
+[exact mean calculation](../architecture.md#native-r). Duration profiles first use their existing declared-unit
+conversion. Small and chunked profiles apply the same arithmetic. An exact zero total returns positive zero; a
+negative result that rounds to zero keeps its sign. Missing, empty and non-finite handling remains with each caller.
+Integer64 profiles retain their existing conversion; text-length means and variance are unchanged.
+Profile medians select their middle value or pair with partial sorting; the pair retains the primitive midpoint
+owner and its signed-zero behavior. These built-in calculations bypass registered S3 mean methods, while Custom Code
+retains normal R dispatch. Other interpolation weights and unrelated statistics have separate precision limits.
 
 Editing supports the Native R operations published in the
 [generated transformation reference](../reference.md#transformation-operations), which is authoritative for the
@@ -204,7 +205,7 @@ aggregations; it preserves exact keys and classed outputs without relying on met
 An unselected integer64 column does not trigger that dependency.
 Generated integer sums and integer64 sum, mean and median use the same exact-sum functions as live execution.
 Ordinary integer sums accumulate native batches before combining their exact totals. Integer64 accumulation retains
-its existing decimal-text arithmetic and output limits; this does not change floating-point mean precision.
+its existing decimal-text arithmetic and output limits, separate from the finite binary64 mean owner.
 
 Mark Duplicates uses the same comparison owner to flag every member of each repeated selected-key group. It requires
 at least one key and appends a fresh logical column with no missing flags. It preserves all input rows, values,
