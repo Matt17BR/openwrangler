@@ -75,6 +75,17 @@ stable tag reachable from that protected `main` commit. It creates a determinist
 stable tag and changes only `package.json`, `package-lock.json`, and
 `python/openwrangler_runtime/version.py`.
 
+Daily release notes list linked commit subjects since the previous published canonical preview, followed by a source
+comparison link. The first-attempt package job selects that preview by publication time and records its verified tag
+and source commit in job outputs. Unpublished attempts, skipped schedules, drafts and stable releases do not advance
+this notes baseline. If no preview has been published, the notes identify the first preview and compare with its bound
+stable tag. An empty range is stated explicitly.
+
+Comparison endpoints replace generated daily commits with their protected-main parents. The notes retain merge
+commits and mixed changes, including dependency, configuration, changelog and curated-note edits. Only changes confined
+to version/channel fields in the three version files are omitted. History and note-size bounds fail instead of silently
+truncating the list. Stable and manual-preview releases keep their checked-in curated notes.
+
 The workflow packages one VSIX with its checksum and provenance receipt, then installs those bytes in stable VS Code
 with the `daily-core` selector. After that check passes, the protected job creates the lightweight tag and GitHub
 prerelease, sends the same public files to Open VSX, and lets the tag start the Azure Marketplace pipeline. A failed
@@ -89,7 +100,10 @@ creating a release. Set `publish: true` only when that run should publish the ch
 Preview packaging runs only on the first attempt of a workflow run. If packaging fails, start a new run; rerunning
 the package job is refused before checkout or setup. If the GitHub **Publish preview** job fails, rerun only that job
 in the same workflow run while its stable-tag binding is still current. It reconstructs the same source and reuses
-the same artifact. If a newer stable tag is now reachable, discard the old candidate and run the workflow again.
+the same artifact and frozen notes baseline. Publication revalidates that baseline's tag and provenance and requires the
+existing draft or public release body to match exactly; it never selects a newer preview during recovery. Missing
+baseline outputs, moved tags, conflicting provenance or a nonancestor source stop publication. If a newer stable tag is
+now reachable, discard the old candidate and run the workflow again.
 To recover an Azure Marketplace failure, run its pipeline from current protected `main` with `existingReleaseTag`
 set to the same tag. Recovery verifies the existing tag and GitHub files and never rebuilds or replaces them.
 

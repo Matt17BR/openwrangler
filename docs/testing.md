@@ -35,7 +35,11 @@ The CI scope proof tests use real Git merges to cover exact commit binding, chan
 and bounded output. They distinguish documentation-only omissions from native R's additional Python-source scope,
 and execute the required-result guards with failed proofs, malformed outputs, and skipped or canceled runtime execution.
 The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
-and changed commits, missing history, manual dispatches, and lookup failures.
+and changed commits, missing history, manual dispatches, and lookup failures. Real Git fixtures own daily change-note
+ranges, sibling preview source parents, first-preview and empty output, conservative version-only filtering, merge
+commits, Markdown escaping and complete-output limits. Publisher tests own published-baseline selection, private draft
+exclusion, source/provenance agreement, frozen retry inputs and exact body/asset refusal. Workflow assertions retain
+the first-attempt package output handoff; a publication retry must not discover a new notes baseline.
 
 Use these checks for changed static boundaries:
 

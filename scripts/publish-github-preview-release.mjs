@@ -1,10 +1,14 @@
-import { realpathSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
 import { dailyPreviewReleaseNotes, inspectDailyPreviewSourceCommit } from "./daily-preview-artifact.mjs";
-import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
-import { isDailyPreviewVersion } from "./release-metadata.mjs";
+import {
+  parseGitHubImmutableReleaseExpectation,
+  publishGitHubRelease,
+  readPublishedPreviewRelease
+} from "./github-release-publisher.mjs";
+import { classifyNumericReleaseVersion, isDailyPreviewVersion } from "./release-metadata.mjs";
 import { readReleaseNotesFromCommit } from "./release-notes.mjs";
 import { verifyPinnedPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 
@@ -12,10 +16,27 @@ export async function publishGitHubPreviewRelease(options) {
   return publishGitHubRelease({ ...options, channel: "preview" });
 }
 
-export function readPreviewReleaseNotesFromCommit({ commit, releaseTag, root, version }) {
+export function readPreviewReleaseNotesFromCommit({ baseSha, baseTag, commit, releaseTag, root, version }) {
   if (!isDailyPreviewVersion(version)) return readReleaseNotesFromCommit({ commit, root, version });
   const source = inspectDailyPreviewSourceCommit({ commit, releaseTag, root });
-  return dailyPreviewReleaseNotes({ sourceSha: source.parentCommit, version });
+  if (
+    classifyNumericReleaseVersion(baseTag?.slice(1))?.channel === "stable" &&
+    (baseTag !== source.stableTag || baseSha !== source.stableCommit)
+  ) {
+    throw new Error("The first preview's notes must use its bound stable tag and commit.");
+  }
+  return dailyPreviewReleaseNotes({ baseSha, baseTag, root, sourceSha: source.parentCommit, version: source.version });
+}
+
+export async function prepareDailyPreviewNotesBaseline({ commit, fetchImpl, releaseTag, repository, root, token }) {
+  const source = inspectDailyPreviewSourceCommit({ commit, releaseTag, root });
+  const previous = await readPublishedPreviewRelease({ fetchImpl, repository, token });
+  if (previous?.releaseTag === releaseTag)
+    throw new Error("The daily preview is already published; its notes baseline cannot be replaced.");
+  const baseTag = previous?.releaseTag ?? source.stableTag;
+  const baseSha = previous?.sourceCommit ?? source.stableCommit;
+  readPreviewReleaseNotesFromCommit({ baseTag, baseSha, commit, releaseTag, root, version: source.version });
+  return Object.freeze({ baseTag, baseSha });
 }
 
 export async function publishVerifiedGitHubPreviewRelease({
@@ -23,6 +44,8 @@ export async function publishVerifiedGitHubPreviewRelease({
   expectImmutable,
   expectedCommit,
   fetchImpl,
+  notesBaseSha,
+  notesBaseTag,
   releaseTag,
   releaseNotes,
   repository,
@@ -37,6 +60,23 @@ export async function publishVerifiedGitHubPreviewRelease({
       releaseTag,
       root
     });
+    if (isDailyPreviewVersion(receipt.version)) {
+      if (releaseNotes !== undefined)
+        throw new Error("Daily preview notes must come from the frozen package-job baseline.");
+      releaseNotes = readPreviewReleaseNotesFromCommit({
+        baseSha: notesBaseSha,
+        baseTag: notesBaseTag,
+        commit: receipt.sourceCommit,
+        releaseTag: receipt.releaseTag,
+        root,
+        version: receipt.version
+      });
+      if (classifyNumericReleaseVersion(notesBaseTag.slice(1))?.channel === "preview") {
+        const previous = await readPublishedPreviewRelease({ fetchImpl, releaseTag: notesBaseTag, repository, token });
+        if (previous.sourceCommit !== notesBaseSha)
+          throw new Error("The published preview baseline moved from its frozen package-job source.");
+      }
+    }
     const assets = pinned.assets.map(({ bytes, contentType, name }) => ({ bytes, contentType, name }));
     const result = await publishGitHubPreviewRelease({
       assets,
@@ -60,18 +100,37 @@ async function runCli() {
     throw new Error("Pass exactly one downloaded canonical preview artifact directory.");
   }
   const root = realpathSync.native(resolve(import.meta.dirname, ".."));
+  if (process.argv[2] === "--notes-baseline") {
+    const baseline = await prepareDailyPreviewNotesBaseline({
+      commit: process.env.EXPECTED_SHA,
+      releaseTag: process.env.RELEASE_TAG,
+      repository: process.env.GITHUB_REPOSITORY,
+      root,
+      token: process.env.GITHUB_TOKEN
+    });
+    if (!process.env.GITHUB_OUTPUT) throw new Error("Daily preview notes require the package job's output file.");
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `notes_base_tag=${baseline.baseTag}\nnotes_base_sha=${baseline.baseSha}\n`
+    );
+    return;
+  }
   const directory = resolve(process.argv[2]);
   const result = await publishVerifiedGitHubPreviewRelease({
     directory,
     expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
     releaseTag: process.env.RELEASE_TAG,
-    releaseNotes: readPreviewReleaseNotesFromCommit({
-      commit: process.env.EXPECTED_SHA,
-      releaseTag: process.env.RELEASE_TAG,
-      root,
-      version: process.env.RELEASE_TAG?.slice(1)
-    }),
+    notesBaseSha: process.env.NOTES_BASE_SHA,
+    notesBaseTag: process.env.NOTES_BASE_TAG,
+    releaseNotes: isDailyPreviewVersion(process.env.RELEASE_TAG?.slice(1))
+      ? undefined
+      : readPreviewReleaseNotesFromCommit({
+          commit: process.env.EXPECTED_SHA,
+          releaseTag: process.env.RELEASE_TAG,
+          root,
+          version: process.env.RELEASE_TAG?.slice(1)
+        }),
     repository: process.env.GITHUB_REPOSITORY,
     root,
     token: process.env.GITHUB_TOKEN

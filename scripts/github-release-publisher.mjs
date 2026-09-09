@@ -3,6 +3,7 @@ import { CANONICAL_RELEASE_ASSET_SPECS } from "./canonical-release-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { validateReleaseNotes } from "./release-notes.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
+import { validatePreviewReleaseProvenance } from "./run-installed-performance.mjs";
 
 const EXPECTED_REPOSITORY = "Matt17BR/openwrangler";
 const GITHUB_API_BASE = "https://api.github.com";
@@ -206,8 +207,10 @@ async function fetchPublishedRelease({ apiRoot, fetchImpl, headers, releaseTag }
   );
 }
 
-async function listMatchingReleases({ apiRoot, fetchImpl, headers, releaseTag }) {
+async function listReleases({ apiRoot, fetchImpl, headers, releaseTag }) {
   const matching = [];
+  let latestPreview;
+  let latestIsAmbiguous = false;
   for (let page = 1; page <= MAX_RELEASE_PAGES; page += 1) {
     const response = await fetchImpl(`${apiRoot}/releases?per_page=${RELEASES_PER_PAGE}&page=${page}`, {
       headers,
@@ -223,11 +226,128 @@ async function listMatchingReleases({ apiRoot, fetchImpl, headers, releaseTag })
     }
     for (const release of releases) {
       requirePlainObject(release, "GitHub release inventory entry");
-      if (release.tag_name === releaseTag) matching.push(release);
+      if (releaseTag !== undefined) {
+        if (release.tag_name === releaseTag) matching.push(release);
+        continue;
+      }
+      if (
+        release.draft !== false ||
+        release.prerelease !== true ||
+        typeof release.tag_name !== "string" ||
+        !release.tag_name.startsWith("v") ||
+        classifyNumericReleaseVersion(release.tag_name.slice(1))?.channel !== "preview"
+      )
+        continue;
+      validatePublicationTime(release.published_at);
+      if (latestPreview === undefined || release.published_at > latestPreview.published_at) {
+        latestPreview = release;
+        latestIsAmbiguous = false;
+      } else if (release.published_at === latestPreview.published_at) {
+        latestIsAmbiguous = true;
+      }
     }
-    if (releases.length < RELEASES_PER_PAGE) return matching;
+    if (releases.length < RELEASES_PER_PAGE) {
+      if (releaseTag !== undefined) return matching;
+      if (latestIsAmbiguous) throw new Error("Published preview history has an ambiguous latest publication.");
+      return latestPreview === undefined ? [] : [latestPreview];
+    }
   }
   throw new Error("GitHub release inventory exceeds the bounded pagination window.");
+}
+
+export async function readPublishedPreviewRelease({ fetchImpl = fetch, releaseTag, repository, token }) {
+  if (
+    repository !== EXPECTED_REPOSITORY ||
+    typeof token !== "string" ||
+    token.length === 0 ||
+    /[\0\r\n]/u.test(token)
+  ) {
+    throw new Error("Published preview discovery requires the canonical repository and a single-line token.");
+  }
+  const apiRoot = `${GITHUB_API_BASE}/repos/${repository}`;
+  const uploadRoot = `${GITHUB_UPLOAD_BASE}/repos/${repository}`;
+  const headers = githubHeaders(token);
+  let release;
+  if (releaseTag === undefined) {
+    [release] = await listReleases({ apiRoot, fetchImpl, headers });
+    if (release === undefined) return undefined;
+    releaseTag = release.tag_name;
+  } else {
+    if (
+      typeof releaseTag !== "string" ||
+      !releaseTag.startsWith("v") ||
+      classifyNumericReleaseVersion(releaseTag.slice(1))?.channel !== "preview"
+    )
+      throw new Error("The frozen preview baseline requires a canonical preview tag.");
+    release = await fetchPublishedRelease({ apiRoot, fetchImpl, headers, releaseTag });
+    if (release === undefined) throw new Error("The frozen preview baseline is no longer published.");
+  }
+  validatePublicationTime(release.published_at);
+  const sourceCommit = await resolveTagCommit({ apiRoot, fetchImpl, headers, releaseTag });
+  if (sourceCommit === undefined) throw new Error("The published preview baseline has no source tag.");
+  const discovered = validateReleaseMetadata(release, {
+    apiRoot,
+    uploadRoot,
+    expectImmutable: false,
+    expectedBody: release.body,
+    expectedCommit: sourceCommit,
+    expectedName: `Open Wrangler ${releaseTag}`,
+    phase: "public",
+    prerelease: true,
+    releaseTag
+  });
+  if (discovered.size !== CANONICAL_GITHUB_RELEASE_ASSETS.length)
+    throw new Error("The published preview baseline is missing canonical assets.");
+  for (const asset of discovered.values()) {
+    if (
+      !Number.isSafeInteger(asset.size) ||
+      asset.size <= 0 ||
+      asset.size > RELEASE_ASSET_MAXIMUM_BYTES.get(asset.name)
+    )
+      throw new Error("The published preview baseline has an invalid asset size.");
+  }
+  const asset = discovered.get("openwrangler.vsix.provenance.json");
+  const response = await fetchImpl(asset.url, {
+    headers: { ...headers, accept: "application/octet-stream" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS)
+  });
+  if (response.status !== 200) {
+    await readBoundedResponse(response, RELEASE_JSON_MAX_BYTES, "Published preview provenance error");
+    throw new Error(`Published preview provenance failed with HTTP ${response.status}.`);
+  }
+  const bytes = await readBoundedResponse(
+    response,
+    RELEASE_ASSET_MAXIMUM_BYTES.get(asset.name),
+    "Published preview provenance"
+  );
+  if (bytes.length !== asset.size || (asset.digest !== undefined && asset.digest !== `sha256:${sha256(bytes)}`))
+    throw new Error("Published preview provenance conflicts with its asset metadata.");
+  const provenance = validatePreviewReleaseProvenance(
+    parseStrictJson(bytes.toString("utf8"), { maxBytes: RELEASE_ASSET_MAXIMUM_BYTES.get(asset.name) })
+  );
+  const vsix = discovered.get("openwrangler.vsix");
+  if (
+    provenance.releaseTag !== releaseTag ||
+    provenance.sourceCommit !== sourceCommit ||
+    provenance.vsixBytes !== vsix.size ||
+    (vsix.digest !== undefined && vsix.digest !== `sha256:${provenance.vsixSha256}`)
+  )
+    throw new Error("Published preview metadata and provenance identify different source artifacts.");
+  if ((await resolveTagCommit({ apiRoot, fetchImpl, headers, releaseTag })) !== sourceCommit)
+    throw new Error("The published preview baseline tag moved during verification.");
+  return Object.freeze({ releaseTag, sourceCommit });
+}
+
+function validatePublicationTime(value) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value.replace("Z", ".000Z")
+  ) {
+    throw new Error("Published preview history contains an invalid publication time.");
+  }
 }
 
 function validateReleaseMetadata(
@@ -298,7 +418,7 @@ function validateReleaseMetadata(
 async function discoverRelease({ apiRoot, fetchImpl, headers, releaseTag, retryAbsent = false }) {
   for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt += 1) {
     const published = await fetchPublishedRelease({ apiRoot, fetchImpl, headers, releaseTag });
-    const matching = await listMatchingReleases({ apiRoot, fetchImpl, headers, releaseTag });
+    const matching = await listReleases({ apiRoot, fetchImpl, headers, releaseTag });
     if (matching.length > 1) {
       throw new Error("GitHub contains multiple releases for the accepted tag.");
     }
