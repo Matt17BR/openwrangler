@@ -109,6 +109,12 @@ retires without requiring its former command or environment marker. A listed zom
 reappearance of a retired identity; a later live identity with that same coarse key remains refused. Live descendants
 and the child observer must still settle before the phase completes.
 
+The `ps` process metadata and argument/environment reads are separate. If only the original root's command changes
+and its previously present marker disappears while its second-resolution PID/start, parent and group stay unchanged,
+the tracker makes one bounded identity reread. It retires that root only when the reread confirms absence, a zombie
+or a different start identity. Any same-identity live result, including a restored marker, or an unreadable reread
+retains the original failure. Other ownership disagreements fail without that extra read.
+
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
 closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
 verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;
