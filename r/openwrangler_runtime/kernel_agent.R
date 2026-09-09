@@ -9587,22 +9587,18 @@ openwrangler_r_kernel_agent <- local({
       2L,
       ifelse(codepoints >= 32L & codepoints <= 126L, 1L, ifelse(codepoints <= 65535L, 6L, 12L))
     )))
-    escaped <- vapply(codepoints, function(codepoint) {
-      if (codepoint == 34L) return("\\\"")
-      if (codepoint == 92L) return("\\\\")
-      if (codepoint == 8L) return("\\b")
-      if (codepoint == 9L) return("\\t")
-      if (codepoint == 10L) return("\\n")
-      if (codepoint == 12L) return("\\f")
-      if (codepoint == 13L) return("\\r")
-      if (codepoint >= 32L && codepoint <= 126L) return(intToUtf8(codepoint))
-      if (codepoint <= 65535L) return(sprintf("\\u%04X", codepoint))
-      scalar <- codepoint - 65536L
-      paste0(
-        sprintf("\\u%04X", 55296L + scalar %/% 1024L),
-        sprintf("\\u%04X", 56320L + scalar %% 1024L)
-      )
-    }, character(1L), USE.NAMES = FALSE)
+    escaped <- intToUtf8(codepoints, multiple = TRUE)
+    short_index <- match(codepoints, c(34L, 92L, 8L, 9L, 10L, 12L, 13L))
+    short <- !is.na(short_index)
+    escaped[short] <- c("\\\"", "\\\\", "\\b", "\\t", "\\n", "\\f", "\\r")[short_index[short]]
+    bmp <- !short & (codepoints < 32L | codepoints > 126L) & codepoints <= 65535L
+    escaped[bmp] <- sprintf("\\u%04X", codepoints[bmp])
+    astral <- codepoints > 65535L
+    scalar <- codepoints[astral] - 65536L
+    escaped[astral] <- paste0(
+      sprintf("\\u%04X", 55296L + scalar %/% 1024L),
+      sprintf("\\u%04X", 56320L + scalar %% 1024L)
+    )
     paste0("\"", paste0(escaped, collapse = ""), "\"")
   }
 

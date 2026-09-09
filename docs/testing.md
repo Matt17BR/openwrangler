@@ -169,7 +169,8 @@ App shortcut and grid clipboard cases cover column-menu Escape precedence, summa
 finishes after Escape and reopening the menu.
 
 Native R response tests cover aggregate ASCII string expansion, exact scalar and explicit-array output, and Unicode
-under normal and C locales. The real process owner verifies an oversized valid page returns a correlated error and
+under normal and C locales. Literal wire expectations cover short escapes, control characters, BMP and surrogate-pair
+boundaries, mixed strings and Latin-1 input. The real process owner verifies an oversized valid page returns a correlated error and
 accepts a smaller page in the same process. Existing opening and mutation preflights retain their state assertions.
 
 Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,

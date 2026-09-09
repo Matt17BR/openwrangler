@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Native R encodes responses containing quoted or multiline text faster, including generated cleaning programs.
 - Pandas Formula accepts more exact Arrow integer differences, including negative results from unsigned operands.
 - Pandas Formula accepts more exact scalar powers of signed Arrow integers, including odd powers of nonnegative values,
   when results fit UInt64.
