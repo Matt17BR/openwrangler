@@ -67,6 +67,7 @@ export function GridColumnHeader({
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
+  const menuContentRef = useRef<HTMLDivElement>(null);
   const logicalViewOwnerRef = useRef(logicalViewOwner);
   useLayoutEffect(() => {
     logicalViewOwnerRef.current = logicalViewOwner;
@@ -115,9 +116,15 @@ export function GridColumnHeader({
     else return;
     event.preventDefault();
   };
-  const closeMenu = () => {
-    if (menuRef.current) menuRef.current.open = false;
+  const setMenuOpen = (open: boolean) => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    if (menu.open !== open) menuGenerationRef.current += 1;
+    menu.open = open;
+    if (open) menuContentRef.current?.showPopover({ source: menu.querySelector("summary")! });
+    else menuContentRef.current?.hidePopover();
   };
+  const closeMenu = () => setMenuOpen(false);
   const runMenuAction = (action: () => void) => {
     closeMenu();
     action();
@@ -253,12 +260,17 @@ export function GridColumnHeader({
                 closeMenu();
                 event.currentTarget.querySelector("summary")?.focus();
               }}
-              onToggle={() => {
-                menuGenerationRef.current += 1;
-              }}
             >
-              <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
-              <div className="columnMenuContent">
+              <summary
+                aria-label={`Column actions for ${column.name}`}
+                className="codicon codicon-ellipsis"
+                onClick={(event) => {
+                  // The native toggle event is queued; expose actions before a following Tab.
+                  event.preventDefault();
+                  setMenuOpen(!menuRef.current?.open);
+                }}
+              />
+              <div ref={menuContentRef} className="columnMenuContent" popover="manual">
                 {columnNameUnavailableReason && (
                   <span id={nameDisabledDescriptionId} className="columnMenuNotice">
                     {columnNameUnavailableReason}

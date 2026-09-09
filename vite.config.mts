@@ -42,6 +42,7 @@ export default defineConfig(({ mode }) => {
         { find: "vscode", replacement: resolve(import.meta.dirname, "src/test/vscode.mock.ts") }
       ],
       environment: "jsdom",
+      setupFiles: ["src/test/popoverTestSetup.ts"],
       globals: true,
       // Vitest otherwise derives its fork count from the host CPU count. Keep
       // ordinary suites bounded on high-core developer and CI hosts.

@@ -179,7 +179,10 @@ The same owner checks Tab entry and exit, navigation to the end of a long read-o
 The filter keyboard owner checks that a long profiles panel scrolls internally while the wide grid footer remains
 visible, including compact resizing and focus restoration on Close.
 App shortcut and grid clipboard cases cover column-menu Escape precedence, summary focus, and a pending copy that
-finishes after Escape and reopening the menu.
+finishes after Escape and reopening the menu. The existing column-header Chromium owner also checks visible keyboard
+focus, pointer sorting and close restoration in a 274×348 pane, alongside its 80px columns and zoom controls.
+Component tests stub jsdom's missing popover methods and retain details-owned visibility; native popup placement
+is verified in Chromium.
 
 Native R response tests cover aggregate ASCII string expansion, exact scalar and explicit-array output, and Unicode
 under normal and C locales. Literal wire expectations cover short escapes, control characters, BMP and surrogate-pair
