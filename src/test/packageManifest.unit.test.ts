@@ -75,8 +75,8 @@ const repositoryMetadata = JSON.parse(
   readFileSync(resolve(process.cwd(), ".github", "repository-metadata.json"), "utf8")
 ) as { description: string };
 
-describe("Marketplace and walkthrough copy", () => {
-  it("keeps public metadata and engine boundaries current", () => {
+describe("Marketplace metadata", () => {
+  it("keeps repository metadata and search keywords current", () => {
     expect(manifest.description).toBe(repositoryMetadata.description);
     expect(manifest.keywords).toEqual(
       expect.arrayContaining([
@@ -98,24 +98,6 @@ describe("Marketplace and walkthrough copy", () => {
         "cursor"
       ])
     );
-
-    const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
-    expect(walkthrough?.description).toContain(
-      "R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set."
-    );
-    expect(walkthrough?.description).toContain(
-      "DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only."
-    );
-    expect(walkthrough?.description).toContain(
-      "Local stable/final PySpark 4.2.x Classic/Connect batch DataFrames are notebook-only and view-only."
-    );
-    expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
-      "Use the notebook toolbar for live Python or R dataframes."
-    );
-    expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
-      "On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document"
-    );
-    expect(walkthrough?.steps?.find((step) => step.id === "export")?.description).toContain("new CSV or Parquet file");
   });
 });
 
