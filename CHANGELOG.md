@@ -24,6 +24,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- DuckDB Multi-label Encoding accepts an input named `label` or an unrelated column with that name.
 - DuckDB Pivot Longer and Pivot Wider preserve requested output columns named like internal ordering helpers.
   Saved Pivot Wider programs reject missing value columns instead of using an internal helper as input.
 - Generated DuckDB Sort Rows preserves user columns named like internal sort helpers and keeps tied rows in input order.

@@ -221,6 +221,8 @@ The Pivot Longer and Pivot Wider owners check requested outputs named like tempo
 occupied-suffix collisions, native types, nulls and row order. Their public CSV cases compare visible metadata and
 page cells through Preview, Apply, returned-code execution and Undo. Reused Pivot Wider programs must reject missing
 value columns across each helper-name family while preserving valid private-connection results and caller catalogs.
+Multi-label engine controls cover inputs named `label`, case variants and an unrelated same-named column in live and
+generated code, retaining null/empty-label handling, output types, row order and private-connection ownership.
 The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.

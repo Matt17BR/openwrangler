@@ -354,6 +354,8 @@ Rename or when a saved program runs on new input. Ties keep their input order, a
 Pivot Longer and Pivot Wider preserve requested output names that coincide with temporary columns, including case
 and suffix variants, in live execution and generated code. Saved Pivot Wider programs reject missing value columns
 even when their names coincide with those helpers.
+Multi-label Encoding accepts a source column named `label`, including case variants, or an unrelated column with that
+name. Live execution and generated code retain the same null and empty-label behavior.
 
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
 generated code. Saved Drop Duplicates and Mark Duplicates programs reject missing duplicate keys, including names
