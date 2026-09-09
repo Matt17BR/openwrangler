@@ -416,7 +416,7 @@ function bridge(request: OpenWranglerBridge["request"]): OpenWranglerBridge {
 function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   const backend: DataBackend = overrides.backend ?? "polars";
   return {
-    protocolVersion: 2,
+    protocolVersion: 3,
     sessionId: "runtime-session",
     revision: 0,
     backend,

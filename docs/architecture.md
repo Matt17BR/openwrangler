@@ -21,11 +21,11 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
   generated Python code, and file-data export.
 - `r/openwrangler_runtime/` owns the native R frame contract used in IRkernel, an exact official R terminal, or an
   Open Wrangler-owned `Rscript` process. R frames never cross through Python.
-- `protocol/openwrangler.v2.schema.json` is the canonical coordinator-facing request and response schema. Its
+- `protocol/openwrangler.v3.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
   has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
-  protocol v2.
+  protocol v3.
 
 Native tree views and Code Preview keep their original lazy provider registrations until shutdown. Loading the
 view owner attaches delegates and tree-change forwarding without unregistering a view while VS Code resolves it.
@@ -86,11 +86,19 @@ identity remains stable while the runtime identity may change.
 
 ## Protocol and publication
 
-Every coordinator-facing request and response uses protocol v2, passes strict decoding, and carries the identifiers
+Every coordinator-facing request and response uses protocol v3, passes strict decoding, and carries the identifiers
 needed to correlate it to a request and session. Python bridges implement that boundary directly; `RKernelBridge`
 validates and translates between it and native R's private transport and frame contracts. Public transform parameters
 never contain private bound positions. Unknown fields, malformed unions, invalid limits, stale identities, and schema
 inconsistencies fail before adapter dispatch or UI publication.
+Older live protocols are rejected. An already-running Python notebook kernel may retain an imported v2 runtime after
+an extension update; restart that kernel and rerun its cells before reopening the dataframe. Open Wrangler does not
+replace imported modules or restart a user-owned kernel to change its protocol.
+
+Dataset statistics require exact missing-cell, missing-row and per-column missing counts. The duplicate-row count
+is either a nonnegative integer or explicit null when unavailable; null cannot carry a duplicate sample size. Both
+the workbench and native Dataset view display that state as unavailable. Native R retains numeric duplicate counts.
+
 Python request enums require string values before membership checks. Present `backend`, `mode` and `cloneFrom`
 options must satisfy their existing schemas; explicit null is not an omitted option. Malformed values return the
 existing `invalid_request` classification. Omitted options retain their defaults. Failures raised after decoding
@@ -342,6 +350,10 @@ A changed source is refused; this guard does not persist beyond the read.
 Profiles and duplicate comparisons use temporary exact Python values for these Arrow containers because native
 Arrow lacks their count and duplicate kernels. Live and generated comparisons share that conversion policy;
 stored arrays and export types remain unchanged. No comparison keys persist between requests.
+For Dataset statistics, native multi-column duplicate counting can refuse unhashable list, dict or NumPy-array
+values. Those specific native TypeErrors leave the duplicate count unavailable while returning exact missing counts.
+Other failures propagate. The calculation tries the native path first and adds no scan of healthy object columns;
+this policy does not change cleaning operations or their generated code.
 Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. A local schema copy
 repairs only their canonical unsupported Pandas dtype metadata; unrelated invalid metadata retains native refusal.
 The same descriptor and fingerprint guard covers their schema, data and any supplemental index reads.
@@ -723,6 +735,12 @@ Saved notebook MIME v2 is one bounded static inline capture. Its caps are 10,000
 `columnIds`. The inline renderer pages only captured rows and never treats them as a live session, cleaning source,
 export source, or fallback. An Open action is offered only for a validated live link and opens the current live value
 through its exact notebook and kernel.
+
+Saved MIME-v2 producers retain metadata version 2. The saved-output normalizer accepts that version or its own
+already-normalized current metadata, validates the original payload bounds and full saved-only contract, then returns
+current display metadata. Legacy saved statistics still require numeric duplicate counts before being discarded.
+Repeated normalization preserves the same display payload and receipt hash. This local adaptation does not admit
+old live messages or turn a capture into a runtime session.
 
 ## Notebook, kernel, terminal, and document provenance
 

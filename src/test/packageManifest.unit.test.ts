@@ -796,7 +796,7 @@ function createStaleReferenceFixture(): string {
     "scripts/generate-reference-core.mjs",
     "scripts/operation-catalog.mjs",
     "package.json",
-    "protocol/openwrangler.v2.schema.json"
+    "protocol/openwrangler.v3.schema.json"
   ]) {
     copyFileSync(resolve(process.cwd(), path), join(fixtureRoot, path));
   }

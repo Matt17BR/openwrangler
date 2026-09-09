@@ -656,7 +656,11 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
                 ? "Duplicate rows"
                 : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`}
             </dt>
-            <dd>{stats.duplicateRows.toLocaleString()}</dd>
+            <dd>
+              {stats.duplicateRows === null
+                ? "Unavailable for these column values"
+                : stats.duplicateRows.toLocaleString()}
+            </dd>
           </dl>
 
           <details className="summaryGroup" open={missingByColumn.length > 0}>

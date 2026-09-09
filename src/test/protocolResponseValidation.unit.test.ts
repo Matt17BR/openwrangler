@@ -6,6 +6,7 @@ import {
   isColumnSchemaArray,
   isOpenWranglerResponse,
   isRetainedTransformStep,
+  isRuntimeRequestEnvelope,
   isRuntimeResponseEnvelope,
   isTransformStep
 } from "../shared/protocolValidation";
@@ -20,13 +21,39 @@ import {
   valueReference
 } from "./protocolValidation.fixtures";
 
-describe("protocol-v2 response validation", () => {
+describe("protocol-v3 response validation", () => {
+  it("requires live v3 envelopes and metadata while accepting a valid follow-up after old v2", () => {
+    const request = { kind: "initialize" };
+    const oldRequest = { protocolVersion: 2, requestId: "old", priority: "interactive", request };
+    expect(isRuntimeRequestEnvelope(oldRequest)).toBe(false);
+    expect(validateTransportSchema(oldRequest)).toBe(false);
+    const currentRequest = { ...oldRequest, protocolVersion: 3, requestId: "current" };
+    expect(isRuntimeRequestEnvelope(currentRequest)).toBe(true);
+    expect(validateTransportSchema(currentRequest)).toBe(true);
+
+    const opened = { kind: "sessionOpened", metadata: { ...metadata, protocolVersion: 3 }, page, summaries };
+    const current = { protocolVersion: 3, requestId: "current", response: opened };
+    for (const invalid of [
+      { ...current, protocolVersion: 2 },
+      { ...current, response: { ...opened, metadata: { ...opened.metadata, protocolVersion: 2 } } }
+    ]) {
+      expect(isRuntimeResponseEnvelope(invalid)).toBe(false);
+      expect(validateTransportSchema(invalid)).toBe(false);
+    }
+    expect(isRuntimeResponseEnvelope(current)).toBe(true);
+    expect(validateTransportSchema(current)).toBe(true);
+
+    const initialized = responses.find((response) => response.kind === "initialized");
+    expect(isOpenWranglerResponse({ ...initialized, protocolVersion: 2 })).toBe(false);
+    expect(isOpenWranglerResponse({ ...initialized, protocolVersion: 3 })).toBe(true);
+  });
+
   it("admits optional Redo availability and requires success correlation only for Redo", () => {
     const applied = responses.find((response) => response.kind === "planUpdated");
     if (!applied) throw new Error("Expected the canonical plan response.");
     const check = (response: unknown, valid: boolean): void => {
       expect(isOpenWranglerResponse(response)).toBe(valid);
-      expect(validateTransportSchema({ protocolVersion: 2, requestId: "wire-redo", response })).toBe(valid);
+      expect(validateTransportSchema({ protocolVersion: 3, requestId: "wire-redo", response })).toBe(valid);
     };
     check(applied, true);
     for (const canRedo of [true, false]) check({ ...applied, metadata: { ...metadata, canRedo } }, true);
@@ -41,7 +68,7 @@ describe("protocol-v2 response validation", () => {
     "accepts a structurally complete %s response",
     (_kind, response) => {
       expect(isOpenWranglerResponse(response)).toBe(true);
-      expect(isRuntimeResponseEnvelope({ protocolVersion: 2, requestId: `request-${response.kind}`, response })).toBe(
+      expect(isRuntimeResponseEnvelope({ protocolVersion: 3, requestId: `request-${response.kind}`, response })).toBe(
         true
       );
     }
@@ -87,11 +114,11 @@ describe("protocol-v2 response validation", () => {
 
   it.each([
     {},
-    { protocolVersion: 2, requestId: "request-1", response: {} },
-    { protocolVersion: 2, requestId: "request-1", response: { kind: "futureResponse" } },
-    { protocolVersion: 2, requestId: "", response: responses[0] },
+    { protocolVersion: 3, requestId: "request-1", response: {} },
+    { protocolVersion: 3, requestId: "request-1", response: { kind: "futureResponse" } },
+    { protocolVersion: 3, requestId: "", response: responses[0] },
     { protocolVersion: 1, requestId: "request-1", response: responses[0] },
-    { protocolVersion: 2, requestId: "request-1", response: responses[0], unexpected: true }
+    { protocolVersion: 3, requestId: "request-1", response: responses[0], unexpected: true }
   ])("rejects a malformed envelope: %j", (candidate) => {
     expect(isRuntimeResponseEnvelope(candidate)).toBe(false);
   });
@@ -221,13 +248,13 @@ describe("protocol-v2 response validation", () => {
     const opened = { kind: "sessionOpened", metadata: pandasMetadata, page: indexedPage, summaries };
 
     expect(isOpenWranglerResponse(opened)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "pandas-index", response: opened })).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "pandas-index", response: opened })).toBe(true);
 
     const { rowAxis: _rowAxis, ...pandasWithoutAxis } = pandasMetadata;
     expect(isOpenWranglerResponse({ ...opened, metadata: pandasWithoutAxis })).toBe(false);
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "pandas-missing-index",
         response: { ...opened, metadata: pandasWithoutAxis }
       })
@@ -237,7 +264,7 @@ describe("protocol-v2 response validation", () => {
     );
     expect(
       validateTransportSchema({
-        protocolVersion: 2,
+        protocolVersion: 3,
         requestId: "non-pandas-index",
         response: { ...opened, metadata: { ...metadata, rowAxis: pandasMetadata.rowAxis } }
       })
@@ -286,7 +313,7 @@ describe("protocol-v2 response validation", () => {
     };
 
     expect(isOpenWranglerResponse(partial)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "partial-capabilities", response: partial })).toBe(
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "partial-capabilities", response: partial })).toBe(
       true
     );
     expect(isOpenWranglerResponse(opened)).toBe(true);
@@ -310,7 +337,7 @@ describe("protocol-v2 response validation", () => {
     };
 
     expect(isOpenWranglerResponse(limited)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "limited-operations", response: limited })).toBe(
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "limited-operations", response: limited })).toBe(
       true
     );
     for (const supportedOperations of [["renameColumn", "renameColumn"], ["futureOperation"], "renameColumn"]) {
@@ -323,7 +350,7 @@ describe("protocol-v2 response validation", () => {
       };
       expect(isOpenWranglerResponse(malformed)).toBe(false);
       expect(
-        validateTransportSchema({ protocolVersion: 2, requestId: "malformed-operations", response: malformed })
+        validateTransportSchema({ protocolVersion: 3, requestId: "malformed-operations", response: malformed })
       ).toBe(false);
     }
   });
@@ -496,7 +523,7 @@ describe("protocol-v2 response validation", () => {
     const opened = { kind: "sessionOpened", metadata: sparkMetadata, page: progressivePage, summaries: [] };
 
     expect(isOpenWranglerResponse(opened)).toBe(true);
-    expect(validateTransportSchema({ protocolVersion: 2, requestId: "spark-open", response: opened })).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 3, requestId: "spark-open", response: opened })).toBe(true);
     expect(isOpenWranglerResponse({ ...opened, metadata: { ...sparkMetadata, backend: "polars" } })).toBe(false);
     expect(isOpenWranglerResponse({ ...opened, page: { ...progressivePage, hasMore: false } })).toBe(false);
     expect(isOpenWranglerResponse({ ...opened, page: { ...progressivePage, rows: [] } })).toBe(false);
@@ -900,6 +927,22 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("accepts unavailable duplicate counts only with complete exact missing statistics and no sample marker", () => {
+    const response = responses.find((candidate) => candidate.kind === "datasetStats");
+    if (response?.kind !== "datasetStats") throw new Error("Expected the canonical dataset statistics response.");
+    const partial = { ...response, stats: { ...response.stats, duplicateRows: null } };
+    const check = (candidate: unknown, valid: boolean): void => {
+      expect(isOpenWranglerResponse(candidate)).toBe(valid);
+      expect(validateTransportSchema({ protocolVersion: 3, requestId: "partial", response: candidate })).toBe(valid);
+    };
+    check(partial, true);
+    check({ ...partial, stats: { ...partial.stats, duplicateRowsSampleSize: 100 } }, false);
+    const { duplicateRows: _duplicates, ...withoutDuplicateCount } = partial.stats;
+    check({ ...partial, stats: withoutDuplicateCount }, false);
+    check({ ...partial, stats: { ...partial.stats, missingRows: null } }, false);
+    check({ ...partial, stats: { ...partial.stats, duplicateRows: "unavailable" } }, false);
+  });
+
   it("rejects incomplete and cross-variant response payloads", () => {
     expect(isOpenWranglerResponse({ kind: "summary", revision: 1, viewRequestId: "view-1" })).toBe(false);
     expect(isOpenWranglerResponse({ kind: "datasetStats", revision: 1, viewRequestId: "view-1", stats: {} })).toBe(
@@ -1118,7 +1161,7 @@ describe("protocol-v2 response validation", () => {
 
   it("does not accept a response as an envelope", () => {
     const responseEnvelope: RuntimeResponseEnvelope = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "request-1",
       response: responses[0]
     };

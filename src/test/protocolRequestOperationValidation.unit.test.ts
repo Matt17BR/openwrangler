@@ -10,7 +10,7 @@ import {
 } from "../shared/viewValueLimits";
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
-describe("protocol-v2 operation request validation", () => {
+describe("protocol-v3 operation request validation", () => {
   it("admits only the closed Mark Duplicates column-list and output contract", () => {
     const valid = { columns: [valueReference, otherReference], newColumn: "is_duplicate" };
     const admission = (params: unknown) => {
@@ -25,7 +25,7 @@ describe("protocol-v2 operation request validation", () => {
         columnLimit: 8,
         step
       };
-      const envelope = { protocolVersion: 2, requestId: "mark-preview", priority: "interactive", request };
+      const envelope = { protocolVersion: 3, requestId: "mark-preview", priority: "interactive", request };
       return [
         isTransformStep(step),
         isOpenWranglerRequest(request),
@@ -78,7 +78,7 @@ describe("protocol-v2 operation request validation", () => {
         columnLimit: 8,
         step
       };
-      const envelope = { protocolVersion: 2, requestId: "rank-preview", priority: "interactive", request };
+      const envelope = { protocolVersion: 3, requestId: "rank-preview", priority: "interactive", request };
       return [
         isTransformStep(step),
         isOpenWranglerRequest(request),
@@ -124,7 +124,7 @@ describe("protocol-v2 operation request validation", () => {
       params: { leftColumn: valueReference, operator: "add", newColumn: "result", value }
     });
     const envelope = (value: unknown) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "formula-literal",
       priority: "interactive",
       request: {
@@ -178,7 +178,7 @@ describe("protocol-v2 operation request validation", () => {
     expect(preview?.kind).toBe("previewStep");
     if (preview?.kind !== "previewStep") return;
     const envelope = (code: string) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "custom-code-byte-limit",
       priority: "interactive",
       request: {
@@ -237,7 +237,7 @@ describe("protocol-v2 operation request validation", () => {
       params: { column: valueReference, pattern: "([A-Za-z]+)", group: 1, newColumn: "word" }
     };
     const envelope = (candidateStep: typeof step) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "regex-schema-single-line",
       priority: "interactive",
       request: { ...preview, step: candidateStep }
@@ -292,7 +292,7 @@ describe("protocol-v2 operation request validation", () => {
       params: { column: valueReference, replacement }
     });
     const previewEnvelope = (replacement: unknown) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "preview-fill",
       priority: "interactive",
       request: {
@@ -513,7 +513,7 @@ describe("protocol-v2 operation request validation", () => {
       }
     });
     const transportEnvelope = (requestValue: unknown) => ({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId: "bounded-filter",
       priority: "interactive",
       request: requestValue

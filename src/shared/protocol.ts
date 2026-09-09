@@ -12,7 +12,7 @@ import type {
   TypedCellKind
 } from "./protocol.generated";
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 export type SessionSourceKind = SessionSource["kind"];
 export type NumericVisualization = Extract<ColumnVisualization, { kind: "numeric" }>;
@@ -23,7 +23,7 @@ export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number]
 export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
 export type OptionalViewingCapability = "filter" | "sort" | "profile" | "columnValues";
 
-/** Optional viewing capabilities default to supported for protocol-v2 compatibility. */
+/** Omitted viewing capabilities retain the original supported default. */
 export function supportsViewingCapability(
   capabilities: SourceCapabilities | undefined,
   capability: OptionalViewingCapability

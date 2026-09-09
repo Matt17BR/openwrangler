@@ -969,7 +969,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
           requestedCandidateId = request.requestedSessionId ?? "";
           return {
             kind: "initialized",
-            protocolVersion: 2,
+            protocolVersion: 3,
             runtimeVersion: "0.3.0",
             capabilities: capabilities()
           };

@@ -971,7 +971,7 @@ describe("native state and presentation commands", () => {
     });
     savedOutput.code = "";
     savedOutput.metadata = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId: "saved-snapshot",
       revision: 0,
       backend: "polars",
@@ -1254,7 +1254,7 @@ describe("native state and presentation commands", () => {
   it("disambiguates a selected duplicate label by its human column position", () => {
     const duplicate = snapshot({ mode: "viewing", steps: [] });
     duplicate.metadata = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId: "duplicate-summary",
       revision: 0,
       backend: "pandas",
@@ -1301,6 +1301,21 @@ describe("native state and presentation commands", () => {
       "Duplicate rows (sample of 50,000)",
       "4"
     ]);
+  });
+
+  it("shows unavailable duplicate counts alongside exact missing statistics in the native Summary view", () => {
+    const partial = exportableSnapshot("partial-summary", "partial.parquet", 0);
+    partial.metadata.stats = {
+      missingCells: 1,
+      missingRows: 1,
+      duplicateRows: null,
+      missingValuesByColumn: [{ column: "value", count: 1 }]
+    };
+    register(partial);
+
+    const rows = treeChildren("openWrangler.summary").map(nodePresentation);
+    expect(rows).toContainEqual(["Duplicate rows", "Unavailable for these column values"]);
+    expect(rows).toContainEqual(["Missing cells", "1"]);
   });
 });
 

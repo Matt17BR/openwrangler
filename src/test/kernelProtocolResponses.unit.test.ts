@@ -33,7 +33,7 @@ describe("kernel protocol responses", () => {
     };
 
     const retained = await kernelOutputsToFramedText(
-      textOutputs("synthetic warning", marked({ protocolVersion: 2, requestId, response })),
+      textOutputs("synthetic warning", marked({ protocolVersion: 3, requestId, response })),
       marker
     );
     expect(parseKernelResponse(retained, marker, requestId)).toEqual(response);
@@ -45,11 +45,34 @@ describe("kernel protocol responses", () => {
     ).toThrow("invalid or stale protocol response");
     expect(() =>
       parseKernelResponse(
-        marked({ protocolVersion: 2, requestId: "other-request", response: { kind: "initialized" } }),
+        marked({ protocolVersion: 3, requestId: "other-request", response: { kind: "initialized" } }),
         marker,
         requestId
       )
     ).toThrow("invalid or stale protocol response");
+  });
+
+  it("rejects a correlated old kernel protocol with restart guidance without admitting its body", () => {
+    for (const response of [
+      { ...initializedResponse, protocolVersion: 2 },
+      { kind: "error", code: "invalid_request", message: "Unsupported protocol version 3", recoverable: true },
+      {}
+    ]) {
+      expect(() => parseKernelResponse(marked({ protocolVersion: 2, requestId, response }), marker, requestId)).toThrow(
+        "Restart the kernel and rerun the cells that create your dataframe"
+      );
+    }
+    for (const envelope of [
+      { protocolVersion: 2, requestId: "other-request", response: initializedResponse },
+      { protocolVersion: 4, requestId, response: initializedResponse }
+    ]) {
+      expect(() => parseKernelResponse(marked(envelope), marker, requestId)).toThrow(
+        "invalid or stale protocol response"
+      );
+    }
+    expect(
+      parseKernelResponse(marked({ protocolVersion: 3, requestId, response: initializedResponse }), marker, requestId)
+    ).toEqual(initializedResponse);
   });
 
   it("does not copy unframed output into a missing-marker diagnostic", () => {
@@ -78,7 +101,7 @@ describe("kernel protocol responses", () => {
           {
             mime: "application/x.notebook.stream.stdout",
             data: encoder.encode(
-              `${JSON.stringify({ protocolVersion: 2, requestId, response: initializedResponse })}\n`
+              `${JSON.stringify({ protocolVersion: 3, requestId, response: initializedResponse })}\n`
             )
           }
         ]
@@ -100,7 +123,7 @@ describe("kernel protocol responses", () => {
   });
 
   it("discards large preamble and trailing output while retaining the exact correlated response", async () => {
-    const frame = marked({ protocolVersion: 2, requestId, response: initializedResponse });
+    const frame = marked({ protocolVersion: 3, requestId, response: initializedResponse });
     const noise = Buffer.from("N".repeat(64 * 1_024));
     let discardedChunks = 0;
     async function* outputs() {
@@ -120,7 +143,7 @@ describe("kernel protocol responses", () => {
 
   it("recognizes every marker split and preserves split supplementary Unicode", async () => {
     const response = { kind: "error", code: "engine_error", message: "é😀__OPEN_WRANGLER_", recoverable: true };
-    const frame = marked({ protocolVersion: 2, requestId, response });
+    const frame = marked({ protocolVersion: 3, requestId, response });
     for (let split = 0; split <= frame.length; split += 1) {
       const retained = await kernelOutputsToFramedText(textOutputs(frame.slice(0, split), frame.slice(split)), marker);
       expect(parseKernelResponse(retained, marker, requestId)).toEqual(response);
@@ -164,7 +187,7 @@ describe("kernel protocol responses", () => {
         } else if (failure === "misplaced") {
           yield { items: [], text: `__OPEN_WRANGLER_END_${marker}__` };
         } else if (failure === "duplicate") {
-          yield { items: [], text: marked({ protocolVersion: 2, requestId, response: initializedResponse }).repeat(2) };
+          yield { items: [], text: marked({ protocolVersion: 3, requestId, response: initializedResponse }).repeat(2) };
         } else yield { items: [], text: "synthetic unframed output" };
         draining.resolve();
         await release.promise;
@@ -221,7 +244,7 @@ describe("kernel protocol responses", () => {
       throw new Error("synthetic transport failure");
     }
     await expect(kernelOutputsToFramedText(failed(), marker)).rejects.toThrow("synthetic transport failure");
-    for (const response of [{ protocolVersion: 2, requestId: "stale", response: initializedResponse }, {}]) {
+    for (const response of [{ protocolVersion: 3, requestId: "stale", response: initializedResponse }, {}]) {
       const frame = await kernelOutputsToFramedText(textOutputs(marked(response)), marker);
       expect(() => parseKernelResponse(frame, marker, requestId)).toThrow("invalid or stale protocol response");
     }
@@ -232,7 +255,7 @@ describe("kernel protocol responses", () => {
     expect(() => parseKernelResponse(malformed, marker, requestId)).toThrow(
       /^Open Wrangler kernel agent returned an invalid or stale protocol response\.$/u
     );
-    const valid = marked({ protocolVersion: 2, requestId, response: initializedResponse });
+    const valid = marked({ protocolVersion: 3, requestId, response: initializedResponse });
     const retained = await kernelOutputsToFramedText(
       textOutputs(valid.replaceAll(marker, "previousmarker"), valid),
       marker

@@ -70,7 +70,9 @@ export function createPackagedLinkedRendererLiveOpen(
       { id: "c:score", name: "score", position: 1, rawType: "Int64", type: "integer", nullable: true },
       { id: "c:group", name: "group", position: 2, rawType: "String", type: "string", nullable: false }
     ];
-    const payload: NotebookOutputPayload = {
+    const payload: Omit<NotebookOutputPayload, "metadata"> & {
+      metadata: Omit<NotebookOutputPayload["metadata"], "protocolVersion"> & { protocolVersion: 2 };
+    } = {
       mimeVersion: 2,
       metadata: {
         protocolVersion: 2,

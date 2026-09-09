@@ -200,7 +200,7 @@ function WholeColumnClipboardListener() {
 }
 
 const clipboardMetadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "clipboard-session",
   revision: 0,
   backend: "pandas",

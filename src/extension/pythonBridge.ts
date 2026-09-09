@@ -8,7 +8,7 @@ import type {
   ErrorResponse,
   SessionSource
 } from "../shared/protocol";
-import { isSessionBoundRequest } from "../shared/protocol";
+import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import { DependencyGuardCommandError } from "./dependencyGuardProtocol";
@@ -1895,7 +1895,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     proc.stdin.on("error", () => undefined);
     this.generation += 1;
     this.output.appendLine(
-      `Starting protocol v2 runtime with ${pythonPath} (Python ${environment.version}, ${environment.source}, generation ${this.generation}, scope ${runtime.key}).`
+      `Starting protocol v${PROTOCOL_VERSION} runtime with ${pythonPath} (Python ${environment.version}, ${environment.source}, generation ${this.generation}, scope ${runtime.key}).`
     );
 
     const stdout = new BoundedPythonStdoutLineFramer({

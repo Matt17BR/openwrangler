@@ -14,7 +14,7 @@ import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
 const initializeRequest: OpenWranglerRequest = { kind: "initialize" };
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
-  protocolVersion: 2,
+  protocolVersion: 3,
   runtimeVersion: "test-runtime",
   capabilities: {
     editable: true,
@@ -100,7 +100,7 @@ function createHarness(stdin?: Writable): TransportHarness {
     diagnostics,
     writes: () => rawWrites.map((line) => JSON.parse(line) as RuntimeRequestEnvelope),
     respond: (requestId, response) =>
-      respondRaw({ protocolVersion: 2, requestId, response } satisfies RuntimeResponseEnvelope),
+      respondRaw({ protocolVersion: 3, requestId, response } satisfies RuntimeResponseEnvelope),
     respondRaw
   };
 }
@@ -317,14 +317,14 @@ describe("PythonRuntimeTransport", () => {
 
     harness.transport.handleLine(harness.runtime, harness.runtime.process!, `{"credential":"${secret}`);
     harness.respondRaw({
-      protocolVersion: 2,
+      protocolVersion: 3,
       requestId,
       response: { kind: "initialized", runtimeVersion: secret }
     });
     expect(harness.runtime.pendingIds.size).toBe(1);
     expect(harness.diagnostics).toEqual([
       "Invalid runtime response: non-JSON payload omitted.",
-      "Invalid runtime response: non-protocol-v2 payload omitted."
+      "Invalid runtime response: non-protocol-v3 payload omitted."
     ]);
     expect(harness.diagnostics.join("\n")).not.toContain("OW_SECRET_DO_NOT_REPORT");
     expect(harness.diagnostics.every((diagnostic) => Buffer.byteLength(diagnostic, "utf8") < 128)).toBe(true);

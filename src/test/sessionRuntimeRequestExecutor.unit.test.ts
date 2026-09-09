@@ -1062,7 +1062,7 @@ function replaceRuntime(session: RuntimeRequestSession): void {
 
 function metadata(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   return {
-    protocolVersion: 2,
+    protocolVersion: 3,
     sessionId: "runtime-session",
     revision: 0,
     backend: "polars",

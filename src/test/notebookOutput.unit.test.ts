@@ -57,6 +57,31 @@ describe("notebook output", () => {
     expect(normalized?.mimeVersion).toBe(2);
   });
 
+  it("normalizes saved v2 metadata once without changing the saved payload or later handoffs", () => {
+    const saved = { mimeVersion: 2, metadata, page, summaries: [] };
+    const original = structuredClone(saved);
+    const normalized = normalizeNotebookOutputPayload(saved);
+
+    expect(normalized?.metadata.protocolVersion).toBe(3);
+    expect(normalizeNotebookOutputPayload(normalized)).toEqual(normalized);
+    expect(saved).toEqual(original);
+    expect(normalized?.page).toBe(page);
+
+    for (const protocolVersion of [undefined, 1, 4, "2"]) {
+      expect(normalizeNotebookOutputPayload({ ...saved, metadata: { ...metadata, protocolVersion } })).toBeUndefined();
+    }
+    const { protocolVersion: _version, ...withoutVersion } = metadata;
+    expect(
+      normalizeNotebookOutputPayload({
+        ...saved,
+        metadata: Object.assign(Object.create({ protocolVersion: 2 }), withoutVersion)
+      })
+    ).toBeUndefined();
+    expect(
+      normalizeNotebookOutputPayload({ ...saved, metadata: { ...metadata, unknownMetadata: true } })
+    ).toBeUndefined();
+  });
+
   it("strips additive top-level fields while keeping private identity out of canonical MIME", () => {
     const runtimeIdentity = runtimeIdentityForDataBackend("polars");
 
@@ -69,7 +94,7 @@ describe("notebook output", () => {
       futureAdditiveField: "ignored"
     });
 
-    expect(normalized).toEqual({ mimeVersion: 2, metadata, page, summaries: [] });
+    expect(normalized).toEqual({ mimeVersion: 2, metadata: { ...metadata, protocolVersion: 3 }, page, summaries: [] });
     expect(normalized).not.toHaveProperty("runtimeIdentity");
     expect(normalized).not.toHaveProperty("futureAdditiveField");
   });
@@ -254,6 +279,20 @@ describe("notebook output", () => {
 
     expect(normalized?.summaries).toEqual([]);
     expect(normalized?.metadata.stats).toBeUndefined();
+
+    for (const duplicateRows of [null, "999", -1]) {
+      expect(
+        normalizeNotebookOutputPayload({
+          mimeVersion: 2,
+          metadata: {
+            ...metadata,
+            stats: { missingCells: 999, missingRows: 999, duplicateRows, missingValuesByColumn: [] }
+          },
+          page,
+          summaries: []
+        })
+      ).toBeUndefined();
+    }
   });
 
   it("accepts only canonical ASCII Python identifiers as optional live links", () => {

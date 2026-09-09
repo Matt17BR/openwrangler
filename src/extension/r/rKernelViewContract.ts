@@ -285,6 +285,7 @@ export function assertRDatasetStatsContract(
   const columns = session.schema.length;
   const duplicateRowsDomain = result.stats.duplicateRowsSampleSize ?? rows;
   if (
+    result.stats.duplicateRows === null ||
     rows > session.rows ||
     (view.filters.length === 0 && rows !== session.rows) ||
     result.stats.missingRows > rows ||

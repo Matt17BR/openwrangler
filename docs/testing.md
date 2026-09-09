@@ -347,6 +347,10 @@ Rejected numeric previews must preserve the complete confirmed response. Direct 
 replacement controls retain their separate boundaries.
 
 Python protocol tests own the request-enum and present-null option matrix, including valid omission and clone controls.
+Live protocol owners reject v2 traffic and retain correlated recovery with v3. Shared schema and response validators
+check explicit unavailable duplicate counts and reject a sample size with that state; R host guards retain numeric
+counts. Pandas statistics owners cover native composite-container refusals, exact missing counts, filtered views,
+source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable from pending data.
 Kernel and standalone owners check representative `invalid_request` refusals before native dispatch and a valid
 follow-up in the same process. Python protocol and kernel tests also check malformed viewing structures before native
 query work, including correlated errors and retained session state. The native R viewing owner sends raw JSON to distinguish
@@ -493,6 +497,9 @@ explode behavior on both dependency endpoints, including empty and repeated labe
 Kernel response tests cover split markers and Unicode, exact byte limits, output outside the frame, malformed
 responses and execution settlement after decoding fails. Bridge tests verify that cleanup waits for the original
 execution and that valid noisy responses still publish their correlated state.
+The existing decoder also checks fixed restart guidance for a correlated old-protocol envelope without admitting its
+response. Saved-output and renderer-message owners retain metadata-v2 fixtures, immutable normalization to current
+display metadata, repeated Open/inline receipt handoffs, original bounds and legacy-statistics validation.
 
 Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
 before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel

@@ -701,7 +701,7 @@ function savedInlineMetadata(
   token: string
 ) {
   return {
-    protocolVersion: metadata.protocolVersion,
+    protocolVersion: 2,
     sessionId: `inline-${token}`,
     revision: 0,
     backend: metadata.backend,

@@ -17,7 +17,7 @@ import type {
 } from "../shared/protocol";
 
 const metadata: SessionMetadata = {
-  protocolVersion: 2,
+  protocolVersion: 3,
   sessionId: "session",
   revision: 0,
   backend: "polars",

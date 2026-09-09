@@ -94,6 +94,8 @@ Python live entry points include the notebook toolbar, Jupyter Variables, linked
 execution through Python Interactive. MIME v2 is a static capture, not session or export data: it is capped at 10,000
 rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph nodes, and pages at 10, 20, 50, or
 100 rows. Its full-view action opens only the exact current live value in the originating notebook and kernel.
+Existing saved MIME-v2 outputs remain readable. A Python kernel retaining an older live runtime after an extension
+update requires a kernel restart and rerunning its cells before a live dataframe can reopen.
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
 Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
@@ -196,8 +198,9 @@ follow filtered and sorted rows; the index-fidelity owner checks these through a
 Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
 editing and export. Repaired columns use native Arrow storage; unrelated columns keep ordinary Pandas decoding.
 Profiles, value choices and single-column duplicate comparisons preserve exact nested integer values and missingness.
-Dataset statistics for frames combining nested and other columns retain an existing Pandas limitation
-([#1137](https://github.com/Matt17BR/openwrangler/issues/1137)).
+Pandas can refuse to count duplicates across columns containing lists, dictionaries or NumPy arrays. Dataset
+statistics retain exact missing-value counts for those native unhashable-key failures, and show the duplicate count
+as **Unavailable for these column values**. Other native failures retain their errors; cleaning operations are unchanged.
 
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.

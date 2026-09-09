@@ -834,6 +834,21 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Missing cells").nextElementSibling).toHaveTextContent("1");
   });
 
+  it("keeps exact missing statistics visible when the duplicate count is unavailable", () => {
+    renderSummary({
+      activeView: "dataset",
+      metadataValue: { ...metadata, stats: { ...metadata.stats!, duplicateRows: null } }
+    });
+
+    expect(screen.getByText("Duplicate rows").nextElementSibling).toHaveTextContent(
+      "Unavailable for these column values"
+    );
+    expect(screen.getByText("Missing cells").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("Rows with missing values").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("sales")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+  });
+
   it("renders bounded loading and empty states without implying missing profile data is exact", () => {
     const { rerender } = render(
       <SummaryPanel

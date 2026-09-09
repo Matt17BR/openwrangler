@@ -14224,7 +14224,9 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   const schema: SessionMetadata["schema"] = [
     { id: "c:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }
   ];
-  const currentPayload: NotebookOutputPayload = {
+  const currentPayload: Omit<NotebookOutputPayload, "metadata"> & {
+    metadata: Omit<NotebookOutputPayload["metadata"], "protocolVersion"> & { protocolVersion: 2 };
+  } = {
     mimeVersion: 2,
     metadata: {
       protocolVersion: 2,

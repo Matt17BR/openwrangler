@@ -189,7 +189,7 @@ def _envelope(
 ) -> str:
     return json.dumps(
         {
-            "protocolVersion": 2,
+            "protocolVersion": 3,
             "requestId": request_id,
             "priority": priority,
             "request": request,
@@ -334,7 +334,7 @@ def test_standalone_and_notebook_transports_share_protocol_conformance_corpus(
     notebook = run_transport("notebook")
     assert standalone == f"{notebook}\n"
     decoded = json.loads(notebook)
-    assert decoded["protocolVersion"] == 2
+    assert decoded["protocolVersion"] == 3
     assert decoded["requestId"] == request_id
     if case == "success":
         assert decoded["response"] == {"kind": "initialized", "message": "café"}
@@ -432,7 +432,7 @@ def test_unknown_session_error_is_a_correlated_protocol_response(monkeypatch) ->
         )
     )
 
-    assert result["protocolVersion"] == 2
+    assert result["protocolVersion"] == 3
     assert result["requestId"] == "unknown-session-request"
     assert result["response"] == {
         "kind": "error",
@@ -461,7 +461,7 @@ def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatc
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "missing-close-request",
         "response": {
             "kind": "error",
@@ -499,7 +499,7 @@ def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypat
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "live-source-request",
         "response": {
             "kind": "error",
@@ -580,7 +580,7 @@ def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeyp
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cleanup-request",
         "response": {
             "kind": "error",
@@ -763,7 +763,7 @@ def test_kernel_response_encoding_failure_is_correlated_bounded_and_not_coerced(
     )
 
     assert json.loads(encoded) == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "invalid-response-request",
         "response": {
             "kind": "error",
@@ -1029,7 +1029,7 @@ def test_decoder_error_preserves_available_request_and_view_correlation() -> Non
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "malformed-request",
         "response": {
             "kind": "error",
@@ -1261,7 +1261,7 @@ def test_request_session_options_preserve_pending_draft_and_fail_before_dispatch
 def test_malformed_json_still_returns_a_canonical_envelope() -> None:
     result = json.loads(kernel_agent.dispatch_json("not-json"))
 
-    assert result["protocolVersion"] == 2
+    assert result["protocolVersion"] == 3
     assert result["requestId"] == "unknown"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "invalid_request"
@@ -1286,7 +1286,7 @@ def test_oversized_notebook_input_is_rejected_before_json_decoding(
     result = original_loads(encoded)
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "unknown",
         "response": {
             "kind": "error",
@@ -1304,7 +1304,7 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
         kernel_agent.dispatch_json(
             json.dumps(
                 {
-                    "protocolVersion": 2,
+                    "protocolVersion": 3,
                     "requestId": "malformed-envelope",
                     "request": {"kind": "initialize"},
                 }
@@ -1313,7 +1313,7 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "malformed-envelope",
         "response": {
             "kind": "error",
@@ -1338,7 +1338,7 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
     encoded = kernel_agent.dispatch_json(
         json.dumps(
             {
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "requestId": request_id,
                 "priority": "interactive",
                 "request": {"kind": "initialize"},
@@ -1347,7 +1347,7 @@ def test_malformed_or_unbounded_request_id_uses_fixed_unknown_correlation(reques
     )
     result = json.loads(encoded)
 
-    assert result["protocolVersion"] == 2
+    assert result["protocolVersion"] == 3
     assert result["requestId"] == "unknown"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "invalid_request"
@@ -1381,7 +1381,7 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch, ki
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cancelled-request",
         "response": {
             "kind": "cancelled",
@@ -1415,7 +1415,7 @@ def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypa
         )
     )
 
-    assert result["protocolVersion"] == 2
+    assert result["protocolVersion"] == 3
     assert result["requestId"] == "error-request"
     assert result["response"]["kind"] == "error"
     assert result["response"]["code"] == "runtime_error"
@@ -1448,7 +1448,7 @@ def test_ambiguous_view_column_is_returned_as_a_correlated_structured_diagnostic
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "ambiguous-request",
         "response": {
             "kind": "error",
@@ -1471,7 +1471,7 @@ def test_cancel_request_rejects_an_unknown_target() -> None:
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cancel-command",
         "response": {
             "kind": "error",
@@ -1510,7 +1510,7 @@ def test_cancel_request_rejects_malformed_targets_without_registry_access(
     )
 
     assert result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "cancel-malformed",
         "response": {
             "kind": "error",
@@ -1650,7 +1650,7 @@ def test_active_request_id_reuse_cannot_publish_or_suppress_the_original_respons
 
     assert thread.is_alive() is False
     assert original_result == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "active-id",
         "response": {"kind": "initialized", "runtimeVersion": "authoritative-original"},
     }

@@ -2584,6 +2584,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
 function validateRDatasetStats(stats: DatasetStats, totalRows: number): void {
   const duplicateRowsDomain = stats.duplicateRowsSampleSize ?? totalRows;
   if (
+    stats.duplicateRows === null ||
     stats.missingRows > totalRows ||
     duplicateRowsDomain > totalRows ||
     stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||

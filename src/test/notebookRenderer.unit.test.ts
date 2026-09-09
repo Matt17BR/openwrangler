@@ -268,6 +268,7 @@ describe("notebook renderer", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(10, "frame");
+    const original = structuredClone(payload);
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
@@ -275,7 +276,11 @@ describe("notebook renderer", () => {
     const button = element.querySelector("button");
     expect(button?.textContent).toBe("Open in Open Wrangler");
     button?.click();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "openInOpenWrangler",
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+    });
+    expect(payload).toEqual(original);
   });
 
   it("keeps one clear action and opens the complete linked live variable", () => {
@@ -297,7 +302,10 @@ describe("notebook renderer", () => {
 
     actions[0]?.click();
     expect(postMessage).toHaveBeenCalledOnce();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "openInOpenWrangler",
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+    });
   });
 
   it("opens a current temporary result without exposing its opaque handle", () => {
@@ -314,7 +322,10 @@ describe("notebook renderer", () => {
     expect(action?.title).toBe("Open the complete current notebook result");
     expect(element.textContent).not.toContain(handle);
     action?.click();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "openInOpenWrangler",
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+    });
   });
 
   it("keeps an unlinked legacy preview inline without a false rerun instruction", () => {
@@ -436,7 +447,10 @@ describe("notebook renderer", () => {
     expect(element.querySelectorAll("tbody tr")).toHaveLength(5);
     expect(element.querySelector('[data-testid="inline-preview-page"]')?.textContent).toBe("21-25 of 25");
     element.querySelector("button")?.click();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "openInOpenWrangler",
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+    });
   });
 
   it("rejects an over-limit capture before creating notebook DOM or an action", () => {
@@ -486,7 +500,10 @@ describe("notebook renderer", () => {
     expect(Array.from(cell?.getAttribute("title") ?? "").length).toBeLessThan(650);
     expect(Array.from(cell?.getAttribute("aria-label") ?? "").length).toBeLessThan(650);
     element.querySelector("button")?.click();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "openInOpenWrangler",
+      payload: { ...payload, metadata: { ...payload.metadata, protocolVersion: 3 } }
+    });
   });
 });
 

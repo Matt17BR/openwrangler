@@ -317,7 +317,7 @@ def test_response_payload_error_maps_to_a_correlated_recoverable_response(
             return result
 
     envelope = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "bounded-response-payload",
         "priority": "interactive",
         "request": {
@@ -344,7 +344,7 @@ def test_response_payload_error_maps_to_a_correlated_recoverable_response(
 
     assert server.main() == 0
     assert json.loads(output.getvalue()) == {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "bounded-response-payload",
         "response": {
             "kind": "error",
@@ -483,7 +483,7 @@ def test_async_oversized_mutation_publication_failure_returns_nonzero_without_co
 
     manager = OversizedMutationManager()
     request = {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "requestId": "oversized-running-mutation",
         "priority": "interactive",
         "request": {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import CancelledError
 from datetime import date, timedelta
 from decimal import MAX_EMAX, Decimal, localcontext
 from pathlib import Path
@@ -176,6 +177,198 @@ def test_pandas_sparse_missing_cell_total_reuses_exact_column_counts(layout: str
         + ([{"column": "other", "count": 2}] if layout in {"multiple", "mixed"} else []),
     }
     pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("container", ["list", "dict", "numpy.ndarray"])
+def test_pandas_container_stats_preserve_missing_counts_when_composite_duplicates_are_unavailable(
+    container: str,
+) -> None:
+    value = {"list": [1, None], "dict": {"n": 1}, "numpy.ndarray": np.array([1, 2])}[container]
+    source = pd.DataFrame({"key": pd.Series([value, value, None], dtype=object), "other": [1.0, np.nan, np.nan]})
+    source.index = pd.Index([4, 1, 4], name="source rows")
+    before = source.copy(deep=True)
+    with pytest.raises(TypeError) as failed:
+        source.duplicated()
+    assert type(failed.value) is TypeError
+    assert failed.value.args == (f"unhashable type: '{container}'",)
+    engine = PandasEngine()
+    assert engine.header_stats(source) == {
+        "duplicateRows": None,
+        "missingCells": 3,
+        "missingRows": 2,
+        "missingValuesByColumn": [{"column": "key", "count": 1}, {"column": "other", "count": 2}],
+    }
+    single = source[["key"]]
+    assert engine.header_stats(single)["duplicateRows"] == int(single.duplicated().sum())
+    assert engine.header_stats(source.iloc[:0])["duplicateRows"] == 0
+    all_missing = source.iloc[[2, 2]]
+    assert engine.header_stats(all_missing) == {
+        "duplicateRows": 1,
+        "missingCells": 4,
+        "missingRows": 2,
+        "missingValuesByColumn": [{"column": "key", "count": 2}, {"column": "other", "count": 2}],
+    }
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TypeError("unrelated failure"),
+        TypeError("unhashable type: 'set'"),
+        TypeError(),
+        TypeError("unhashable type: 'list'", "extra"),
+        TypeError(7),
+        CancelledError(),
+    ],
+)
+def test_pandas_duplicate_stats_propagate_unclassified_native_failures(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    def fail_duplicates(_frame: pd.DataFrame) -> Any:
+        raise failure
+
+    monkeypatch.setattr(pd.DataFrame, "duplicated", fail_duplicates)
+    with pytest.raises(type(failure)) as caught:
+        PandasEngine().header_stats(pd.DataFrame({"a": [1], "b": [2]}))
+    assert caught.value is failure
+
+
+def test_pandas_duplicate_stats_preserve_error_subclasses_single_column_and_reduction_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pyarrow as pa
+
+    class CustomTypeError(TypeError):
+        def __str__(self) -> str:
+            raise AssertionError("The native diagnostic must not invoke caller string conversion.")
+
+    source = pd.DataFrame({"a": [1], "b": [2]})
+
+    def fail_duplicates(_frame: pd.DataFrame) -> Any:
+        raise failure
+
+    for failure in (CustomTypeError("unhashable type: 'list'"), pa.ArrowNotImplementedError("native failure")):
+        with monkeypatch.context() as patch:
+            patch.setattr(pd.DataFrame, "duplicated", fail_duplicates)
+            with pytest.raises(type(failure)) as caught:
+                PandasEngine().header_stats(source)
+            assert caught.value is failure
+
+    failure = TypeError("unhashable type: 'list'")
+    with monkeypatch.context() as patch:
+        patch.setattr(pd.DataFrame, "duplicated", fail_duplicates)
+        with pytest.raises(TypeError) as caught:
+            PandasEngine().header_stats(source[["a"]])
+        assert caught.value is failure
+
+    def fail_reduction() -> Any:
+        raise failure
+
+    mask = pd.Series([False])
+    monkeypatch.setattr(mask, "sum", fail_reduction)
+    monkeypatch.setattr(pd.DataFrame, "duplicated", lambda _frame: mask)
+    with pytest.raises(TypeError) as caught:
+        PandasEngine().header_stats(source)
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize("family", ["list", "struct"])
+def test_pandas_partial_dataset_stats_preserve_public_filters_revision_and_parquet_source(
+    tmp_path: Path, family: str
+) -> None:
+    import pyarrow as pa
+
+    value = [2**63 - 1] if family == "list" else {"n": 2**63 - 1}
+    inner_missing = [None] if family == "list" else {"n": None}
+    source = pd.DataFrame(
+        {
+            "key": pd.Series([value, value, None, inner_missing, value], dtype=object),
+            "group": ["keep", "keep", "keep", "other", None],
+            "value": [1.0, np.nan, np.nan, 3.0, 4.0],
+        }
+    )
+    source.index = pd.Index([7, 2, 7, 4, 1], name="source rows")
+    path = tmp_path / "nested.parquet"
+    source.to_parquet(path)
+    original_bytes = path.read_bytes()
+    original_frame = PandasEngine().read_file(str(path), {})
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend="pandas")
+        sid = opened["metadata"]["sessionId"]
+        expected: dict[str, Any] = {
+            "duplicateRows": None,
+            "missingCells": 4,
+            "missingRows": 3,
+            "missingValuesByColumn": [
+                {"column": "key", "count": 1},
+                {"column": "group", "count": 1},
+                {"column": "value", "count": 2},
+            ],
+        }
+        stats = manager.get_dataset_stats(sid, 0, view)
+        assert stats == {"kind": "datasetStats", "revision": 0, "stats": expected}
+        assert json.loads(json.dumps(stats, allow_nan=False)) == stats
+        filtered: dict[str, Any] = {
+            "filters": [
+                {
+                    "column": "group",
+                    "type": "string",
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": ["keep"],
+                        "includeNulls": False,
+                        "includeNaN": False,
+                    },
+                    "predicates": [],
+                }
+            ],
+            "sort": [],
+        }
+        assert manager.get_dataset_stats(sid, 0, filtered)["stats"] == {
+            "duplicateRows": None,
+            "missingCells": 3,
+            "missingRows": 2,
+            "missingValuesByColumn": [
+                {"column": "key", "count": 1},
+                {"column": "group", "count": 0},
+                {"column": "value", "count": 2},
+            ],
+        }
+        filtered["filters"][0]["valueFilter"]["selectedValues"] = ["absent"]
+        assert manager.get_dataset_stats(sid, 0, filtered)["stats"] == {
+            "duplicateRows": 0,
+            "missingCells": 0,
+            "missingRows": 0,
+            "missingValuesByColumn": [{"column": name, "count": 0} for name in source.columns],
+        }
+        assert manager.get_page(sid, 0, 0, 50, view)["page"]["rows"] == opened["page"]["rows"]
+        reference = {key: opened["metadata"]["schema"][2][key] for key in ("id", "name")}
+        preview = manager.preview_step(
+            sid,
+            0,
+            {"id": "rename", "kind": "renameColumn", "params": {"column": reference, "newName": "amount"}},
+            0,
+            50,
+        )
+        applied = manager.apply_draft(sid, preview["revision"], 0, 50)
+        expected["missingValuesByColumn"][2]["column"] = "amount"
+        assert manager.get_dataset_stats(sid, applied["revision"], view) == {
+            "kind": "datasetStats",
+            "revision": applied["revision"],
+            "stats": expected,
+        }
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        with pytest.raises(EngineError, match="revision"):
+            manager.get_dataset_stats(sid, 0, view)
+        assert path.read_bytes() == original_bytes
+        pd.testing.assert_frame_equal(PandasEngine().read_file(str(path), {}), original_frame, check_exact=True)
+        assert pa.array(original_frame["key"]).equals(pa.array(source["key"]))
+        pd.testing.assert_index_equal(original_frame.index, source.index)
+    finally:
+        manager.close_all()
 
 
 def test_pandas_excel_file_session(tmp_path):

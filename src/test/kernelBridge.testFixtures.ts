@@ -9,7 +9,7 @@ type TestBackend = NonNullable<OpenSessionRequest["backend"]>;
 
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
-  protocolVersion: 2,
+  protocolVersion: 3,
   runtimeVersion: "test-runtime",
   capabilities: {
     editable: true,
@@ -206,7 +206,7 @@ async function* kernelExecution(
   const payloadMatch = code.match(/__ow_payload = __ow_base64\.b64decode\("([A-Za-z0-9+/=]+)"\)/);
   if (!payloadMatch) throw new Error("Kernel test request did not contain an encoded protocol payload.");
   const envelope = JSON.parse(Buffer.from(payloadMatch[1], "base64").toString("utf8")) as {
-    protocolVersion: 2;
+    protocolVersion: 3;
     requestId: string;
     request: OpenWranglerRequest;
   };
@@ -217,7 +217,7 @@ async function* kernelExecution(
   yield {
     text: [
       `__OPEN_WRANGLER_START_${markerMatch[1]}__`,
-      JSON.stringify({ protocolVersion: 2, requestId: envelope.requestId, response }),
+      JSON.stringify({ protocolVersion: 3, requestId: envelope.requestId, response }),
       `__OPEN_WRANGLER_END_${markerMatch[1]}__`
     ].join("\n")
   };
@@ -338,7 +338,7 @@ function openedResponse(sessionId: string, backend: TestBackend = "polars"): Ope
   return {
     kind: "sessionOpened",
     metadata: {
-      protocolVersion: 2,
+      protocolVersion: 3,
       sessionId,
       revision: 0,
       backend,

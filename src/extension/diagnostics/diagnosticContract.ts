@@ -1,3 +1,5 @@
+import { PROTOCOL_VERSION } from "../../shared/protocol";
+
 export const OFFLINE_DIAGNOSTIC_SCHEMA = "openwrangler-offline-diagnostics-v1" as const;
 export const OFFLINE_DIAGNOSTIC_EVENT_CAPACITY = 128;
 export const OFFLINE_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
@@ -50,7 +52,7 @@ export interface OfflineDiagnosticMetadata {
   readonly platform: DiagnosticPlatform;
   readonly remote: boolean;
   readonly workspaceTrusted: boolean;
-  readonly protocolVersion: 2;
+  readonly protocolVersion: typeof PROTOCOL_VERSION;
 }
 
 export interface OfflineDiagnosticBundle {
@@ -141,8 +143,8 @@ function validatedMetadata(value: unknown): OfflineDiagnosticMetadata {
   if (typeof candidate.remote !== "boolean" || typeof candidate.workspaceTrusted !== "boolean") {
     throw new DiagnosticContractError("Diagnostic environment flags must be boolean.");
   }
-  if (candidate.protocolVersion !== 2) {
-    throw new DiagnosticContractError("Offline diagnostics support protocol version 2 only.");
+  if (candidate.protocolVersion !== PROTOCOL_VERSION) {
+    throw new DiagnosticContractError(`Offline diagnostics support protocol version ${PROTOCOL_VERSION} only.`);
   }
   return Object.freeze({
     extensionVersion: candidate.extensionVersion,
@@ -151,7 +153,7 @@ function validatedMetadata(value: unknown): OfflineDiagnosticMetadata {
     platform: candidate.platform,
     remote: candidate.remote,
     workspaceTrusted: candidate.workspaceTrusted,
-    protocolVersion: 2
+    protocolVersion: PROTOCOL_VERSION
   });
 }
 

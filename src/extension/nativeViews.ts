@@ -1497,7 +1497,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       stats?.duplicateRowsSampleSize === undefined
         ? "Duplicate rows"
         : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`,
-      stats ? stats.duplicateRows.toLocaleString() : "Profiling…",
+      stats
+        ? stats.duplicateRows === null
+          ? "Unavailable for these column values"
+          : stats.duplicateRows.toLocaleString()
+        : "Profiling…",
       "copy"
     )
   );
