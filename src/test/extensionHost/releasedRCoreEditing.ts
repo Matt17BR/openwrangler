@@ -346,7 +346,10 @@ export async function exerciseReleasedRCoreEditingCatalog(
         duplicateCellBounds.y >= duplicateViewport.y - 1 &&
         duplicateCellBounds.x + duplicateCellBounds.width <= duplicateViewport.x + duplicateViewport.width + 1 &&
         duplicateCellBounds.y + duplicateCellBounds.height <= duplicateViewport.y + duplicateViewport.height + 1,
-      "The native R duplicate flag cell must be inside the visible grid viewport."
+      `The native R duplicate flag cell must be inside the visible grid viewport. ${JSON.stringify({
+        cell: duplicateCellBounds,
+        viewport: duplicateViewport
+      })}`
     );
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
