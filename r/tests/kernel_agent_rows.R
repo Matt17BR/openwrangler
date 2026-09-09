@@ -185,6 +185,75 @@ row_reduction_step <- function(kind, id, columns, mode = NULL) {
   list(id = id, kind = kind, params = params)
 }
 
+# Public numeric tokens, live comparisons and complete programs share native values.
+numeric_filter_environment <- new.env(parent = baseenv())
+numeric_filter_environment$frame <- data.frame(value = c(0.5, 0x1.1ccf385ebc89cp+1023,
+  0x1.1ccf385ebc89dp+1023, 0x1.1ccf385ebc8a0p+1023, -abs(0), 0,
+  -0x0.0000000000001p-1022, NA_real_, NaN, Inf, -Inf), ordinal = 1L:11L)
+numeric_filter_before <- serialize(numeric_filter_environment$frame, NULL, version = 3L)
+numeric_filter_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, numeric_filter_environment)
+numeric_filter_session <- "83838383-8383-4383-8383-838383838383"
+numeric_filter_window <- page_window(row_limit = 11L)
+numeric_filter_open <- dispatch_with(numeric_filter_agent, "openSession", list(
+  sessionId = numeric_filter_session, variableName = "frame", page = numeric_filter_window))
+numeric_filter_values <- dispatch_with(numeric_filter_agent, "getColumnValues", list(
+  sessionId = numeric_filter_session, column = list(id = "r:c:0", name = "value"),
+  view = numeric_filter_window$view, search = NULL, limit = 100L))
+numeric_filter_tokens <- lapply(numeric_filter_values$values, `[[`, "selectionValue")
+numeric_filter_token_values <- vapply(numeric_filter_tokens, function(token) {
+  if (identical(token$cell$kind, "infinity")) token$cell$sign * Inf else token$cell$raw
+}, double(1L))
+assert_identical(sort(numeric_filter_token_values), sort(unique(numeric_filter_environment$frame$value[!is.na(numeric_filter_environment$frame$value)])),
+  "public floating picker tokens changed a native source value")
+numeric_filter_cases <- list(
+  list(operator = "equals", value = numeric_filter_environment$frame$value[[2L]], rows = 2L),
+  list(operator = "lt", value = numeric_filter_environment$frame$value[[3L]], rows = c(1L, 2L, 5L, 6L, 7L, 11L)),
+  list(operator = "gt", value = numeric_filter_environment$frame$value[[2L]], rows = c(3L, 4L, 10L)),
+  list(operator = "between", value = numeric_filter_environment$frame$value[[2L]], secondValue = numeric_filter_environment$frame$value[[3L]], rows = 2L:3L),
+  list(operator = "equals", value = numeric_filter_tokens[[which(numeric_filter_token_values == Inf)]], rows = 10L),
+  list(operator = "values", rows = c(2L, 5L, 6L, 7L, 8L, 9L, 10L, 11L))
+)
+numeric_filter_revision <- 0L
+for (numeric_filter_case in numeric_filter_cases) {
+  numeric_filter_model <- list(column = list(id = "r:c:0", name = "value"), type = "float", predicates = I(list()))
+  if (identical(numeric_filter_case$operator, "values")) {
+    numeric_filter_model$valueFilter <- list(kind = "values", selectedValues = I(numeric_filter_tokens[
+      numeric_filter_token_values %in% c(numeric_filter_environment$frame$value[[2L]], 0, -0x0.0000000000001p-1022, Inf, -Inf)]),
+      includeNulls = TRUE, includeNaN = TRUE)
+  } else {
+    numeric_filter_predicate <- numeric_filter_case[names(numeric_filter_case) != "rows"]
+    numeric_filter_predicate$kind <- "predicate"
+    numeric_filter_model$predicates <- I(list(numeric_filter_predicate))
+  }
+  numeric_filter_step <- list(id = "numeric-filter", kind = "filterRows", params = list(filterModel = list(
+    logic = "and", filters = I(list(numeric_filter_model)), sort = I(list()))))
+  latest_full_capture <<- NULL
+  numeric_filter_preview <- dispatch_with(numeric_filter_agent, "previewStep", list(sessionId = numeric_filter_session,
+    revision = numeric_filter_revision, step = numeric_filter_step, page = numeric_filter_window))
+  assert_identical(numeric_filter_preview$kind, "stepPreview", "an exact numeric filter did not preview")
+  numeric_filter_expected <- numeric_filter_environment$frame[numeric_filter_case$rows, , drop = FALSE]
+  assert_identical(get("snapshot", envir = latest_full_capture, inherits = FALSE), numeric_filter_expected,
+    "live numeric filtering changed exact values, missing kinds or row order")
+  assert_identical(numeric_filter_preview$page$schema, numeric_filter_open$page$schema, "numeric filtering changed source schema")
+  assert_identical(vapply(numeric_filter_preview$page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", numeric_filter_case$rows - 1L),
+    "numeric filtering changed retained source identities")
+  numeric_filter_generated <- new.env(parent = baseenv()); numeric_filter_generated$frame <- unserialize(numeric_filter_before)
+  eval(parse(text = numeric_filter_preview$code), envir = numeric_filter_generated)
+  assert_identical(serialize(numeric_filter_generated$open_wrangler_result, NULL, version = 3L), serialize(numeric_filter_expected, NULL, version = 3L),
+    "complete generated filtering disagreed with exact native values")
+  assert_identical(serialize(numeric_filter_generated$frame, NULL, version = 3L), numeric_filter_before, "generated numeric filtering mutated its source")
+  numeric_filter_generated$frame <- numeric_filter_environment$frame[integer(), , drop = FALSE]
+  eval(parse(text = numeric_filter_preview$code), envir = numeric_filter_generated)
+  assert_identical(numeric_filter_generated$open_wrangler_result, numeric_filter_generated$frame, "generated numeric filtering changed an empty rebound source")
+  numeric_filter_discard <- dispatch_with(numeric_filter_agent, "discardDraft", list(sessionId = numeric_filter_session,
+    revision = numeric_filter_preview$revision, page = numeric_filter_window))
+  assert_identical(numeric_filter_discard$page, numeric_filter_open$page, "discarding a numeric filter did not restore its source view")
+  numeric_filter_revision <- numeric_filter_discard$revision
+}
+assert_identical(serialize(numeric_filter_environment$frame, NULL, version = 3L), numeric_filter_before, "native numeric filtering mutated its source")
+invisible(dispatch_with(numeric_filter_agent, "closeSession", list(sessionId = numeric_filter_session)))
+numeric_filter_agent$dispose()
+
 # Exact integer64 duplicate survivors must agree through JSON, capture and replay.
 for (duplicate_flavor in c("base", "tibble", "data.table")) {
   for (duplicate_positions in list(1L, 1:3)) {

@@ -306,7 +306,7 @@ jobs:
               environment, r: prepared.rExecutable, rscript: prepared.dependencyProbe.input.executable
             });
             const selected = [
-              "frame:group-by", "frame:fill-missing", "frame:profiling", "frame:cast-and-structure",
+              "frame:interactive", "frame:group-by", "frame:fill-missing", "frame:profiling", "frame:cast-and-structure",
               "kernel:text-fill-and-cast", "kernel:group-pivot-and-export", "kernel:rows-numeric-datetime-and-by-example"
             ].flatMap((id) => selectRContractPhases(phases, { kind: "phase", id }));
             await runRContractPhasesWithSignalForwarding(selected);

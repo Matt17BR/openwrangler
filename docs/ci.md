@@ -74,8 +74,9 @@ resolved by their existing journey. Private package-version and kernel-readiness
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane. This tooling selection does not change the terminal lane's R package or IRkernel checks.
 
-The manual `macos-r` and `windows-r` released-Jupyter jobs also run the existing native Fill, Group By, profiling
-and Cast phases, including their generated-code kernel owners. The existing rows/numeric/datetime/By Example phase
+The manual `macos-r` and `windows-r` released-Jupyter jobs also run the existing native interactive, Fill, Group By,
+profiling and Cast phases, including their generated-code kernel owners. Interactive checks cover typed and text
+numeric filters. The existing rows/numeric/datetime/By Example phase
 also checks finite literals in complete generated and compiled programs. These source checks use a separate private library;
 the subsequent installed-editor journey keeps its own preparation and lifetime. See
 [Testing](testing.md#native-r-editor-dependencies) for package and cleanup ownership.

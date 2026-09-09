@@ -6794,6 +6794,8 @@ assert_identical(
 precise_query_frames <- list(
   float = data.frame(value = c(
     1, 1 + .Machine$double.eps, 1.2345678901234567, 2^53, 2^53 + 2, 2^100,
+    0x1.1ccf385ebc89cp+1023, 0x1.1ccf385ebc89dp+1023, 0x1.1ccf385ebc8a0p+1023,
+    -0x0.0000000000001p-1022,
     .Machine$double.xmin, .Machine$double.xmax, 0, -0, NA_real_, NaN, Inf, -Inf
   )),
   datetime = data.frame(value = as.POSIXct(c(2^30, 2^30 + 2^-20, NA_real_), origin = "1970-01-01", tz = "UTC")),
@@ -6824,16 +6826,49 @@ for (type in names(precise_query_frames)) {
     ))))
     assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), expected, "an own numeric token changed its value")
     if (identical(type, "float") && is.finite(selected)) {
-      page <- openwrangler_r_frame_contract$materialize_view_page(captured, view_query(filters = list(column_filter(
-        "r:c:0", "value", type, predicates = list(predicate("equals", selected))
-      ))))
-      assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), expected, "a native numeric predicate lost precision")
+      for (operand in list(selected, sprintf("%.17g", selected))) {
+        page <- openwrangler_r_frame_contract$materialize_view_page(captured, view_query(filters = list(column_filter(
+          "r:c:0", "value", type, predicates = list(predicate("equals", operand))
+        ))))
+        assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), expected, "a native or text numeric predicate lost precision")
+      }
     }
   }
   assert_identical(source, before, "precise numeric queries changed their source")
 }
 
+# Distinct native doubles must remain ordered without reparsing their decimal keys.
+adjacent_source <- data.frame(value = c(0x1.1ccf385ebc89dp+1023, 0.5, 0x1.1ccf385ebc8a0p+1023,
+  0x1.1ccf385ebc89cp+1023, NA_real_, NaN))
+adjacent_before <- serialize(adjacent_source, NULL, version = 3L)
+adjacent_capture <- openwrangler_r_frame_contract$capture_frame(adjacent_source)
+for (comparison in list(
+  list(operator = "lt", value = adjacent_source$value[[1L]], expected = c(2L, 4L)),
+  list(operator = "gt", value = adjacent_source$value[[4L]], expected = c(1L, 3L)),
+  list(operator = "between", value = adjacent_source$value[[4L]], second = adjacent_source$value[[1L]], expected = c(1L, 4L))
+)) {
+  adjacent_page <- openwrangler_r_frame_contract$materialize_view_page(adjacent_capture, view_query(filters = list(column_filter(
+    "r:c:0", "value", "float", list(predicate(comparison$operator, comparison$value, comparison$second))
+  ))))
+  assert_identical(vapply(adjacent_page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", comparison$expected - 1L),
+    "a native floating comparison collapsed adjacent source values")
+}
+assert_identical(serialize(adjacent_source, NULL, version = 3L), adjacent_before, "adjacent predicates changed their source")
+
 parse_number <- get("parse_finite_number", contract_environment, inherits = FALSE)
+for (case in list(
+  c("+0", "0000000000000000"), c("-0", "0000000000000080"), c("+1", "000000000000f03f"),
+  c(".5", "000000000000e03f"), c("1.", "000000000000f03f"), c("0001.250", "000000000000f43f"),
+  c("-000.5", "000000000000e0bf"), c("+0001.250e+2", "0000000000405f40"),
+  c("4.9406564584124654e-324", "0100000000000000"), c("-4.9406564584124654e-324", "0100000000000080"),
+  c("1.7976931348623157e308", "ffffffffffffef7f"), c("1e308", "a0c8eb85f3cce17f"),
+  c("9223372036854775807", "000000000000e043"), c("-1e-9999", "0000000000000080"),
+  c(".000", "0000000000000000"), c("01.e+03", "0000000000408f40")
+)) {
+  parsed <- parse_number(case[[1L]], "decimal control")
+  assert_identical(paste(format(writeBin(parsed, raw(), size = 8L, endian = "little")), collapse = ""), case[[2L]],
+    paste("decimal parsing changed the exact double for", case[[1L]]))
+}
 for (invalid_number in list(TRUE, 1 + 0i, numeric(), c(1, 2), NA_real_, NaN, Inf, -Inf)) {
   assert_error(parse_number(invalid_number, "number"), "invalid-view-value")
 }

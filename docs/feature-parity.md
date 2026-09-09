@@ -307,7 +307,10 @@ supports inspection, Undo and Redo, and generated R accepts the same source. Dro
 preserve the empty schema; Custom Code results still require at least one column.
 
 Value selections and numeric predicates retain adjacent R doubles and finite extrema in live and generated filtering.
-Typed temporal selections use the same exact numeric payloads. Invalid previews preserve the confirmed result.
+Picker selections retain the native source value, including where platform decimal parsers disagree. Numeric text
+inputs accept finite extrema without changing the supported decimal grammar. Scalar numeric Fill uses the same
+bound value in live, generated and compiled execution. Typed temporal payloads retain their native value while
+binding; invalid previews preserve the confirmed result.
 
 Native R Group By medians, median Fill and midpoint interpolation use R's native mean for unequal finite pairs
 in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.

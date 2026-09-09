@@ -648,10 +648,13 @@ process.
 
 ### Native R
 
-Numeric filter operands and typed temporal payloads retain their finite native R value without a text round trip.
-The same parser preserves numeric replacements at the frame boundary; public Fill requests still require replacement
-text. Explicit Infinity tokens and text retain their separate rules, and native floating columns refuse integer-cell
-selection tokens. Generated Filter Rows uses the validated keys from this owner.
+Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating
+columns compare native values directly, and picker selections use the source value instead of reparsing display text.
+The shared finite-number parser normalizes accepted decimal spellings for the existing jsonlite decoder; it keeps
+native numeric inputs, signed zero and the existing grammar and range checks. Public scalar Fill still accepts
+replacement text, binds double replacements once and emits that bound value through the existing numeric-literal
+owner. Generated floating Filter Rows uses that owner too. Explicit Infinity tokens retain their separate rules,
+and native floating columns refuse integer-cell selection tokens.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,

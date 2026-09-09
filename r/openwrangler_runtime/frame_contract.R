@@ -1177,7 +1177,21 @@ openwrangler_r_frame_contract <- local({
     if (!grepl("^[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?$", text, perl = TRUE)) {
       abort("invalid-view-value", sprintf("%s must be a decimal number", label))
     }
-    number <- suppressWarnings(as.double(text))
+    if (!requireNamespace("jsonlite", quietly = TRUE)) {
+      abort("missing-package", "jsonlite is required to parse an R numeric value")
+    }
+    parts <- strsplit(text, "[eE]", perl = TRUE)[[1L]]
+    mantissa <- sub("^\\+", "", parts[[1L]])
+    mantissa <- sub("^(-?)0+(?=[0-9])", "\\1", mantissa, perl = TRUE)
+    mantissa <- sub("^\\.", "0.", mantissa)
+    mantissa <- sub("^-\\.", "-0.", mantissa)
+    if (!grepl(".", mantissa, fixed = TRUE)) {
+      mantissa <- paste0(mantissa, ".0")
+    } else if (endsWith(mantissa, ".")) {
+      mantissa <- paste0(mantissa, "0")
+    }
+    normalized <- paste0(mantissa, if (length(parts) == 2L) paste0("e", parts[[2L]]) else "")
+    number <- jsonlite::parse_json(normalized)
     if (!is.finite(number)) abort("invalid-view-value", sprintf("%s is outside the finite numeric range", label))
     number
   }
@@ -1336,7 +1350,7 @@ openwrangler_r_frame_contract <- local({
       }
       return(as.character(as.integer(number)))
     }
-    if (type == "float") return(canonical_double_key(parse_finite_number(value, label, allow_infinity = TRUE)))
+    if (type == "float") return(parse_finite_number(value, label, allow_infinity = TRUE))
     if (type == "boolean") return(if (parse_boolean(value, label)) "TRUE" else "FALSE")
     if (type == "date") return(parse_date_key(value, label))
     if (type == "datetime") return(parse_datetime_key(value, semantics, label))
@@ -1381,7 +1395,7 @@ openwrangler_r_frame_contract <- local({
       if (!is.null(cell$raw) || !cell$sign %in% c(-1L, 1L)) {
         abort("invalid-view-value", sprintf("%s has invalid infinity data", label))
       }
-      return(if (cell$sign < 0L) "-Inf" else "Inf")
+      return(if (cell$sign < 0L) -Inf else Inf)
     }
     if (descriptor$semantics$kind == "datetime") {
       return(exact_double(parse_finite_number(cell$raw, label)))
@@ -1491,7 +1505,7 @@ openwrangler_r_frame_contract <- local({
             column_descriptor,
             sprintf("%s$valueFilter$selectedValues[[%d]]", label, value_index)
           ),
-          character(1L),
+          if (identical(column_descriptor$semantics$kind, "double")) double(1L) else character(1L),
           USE.NAMES = FALSE
         )
       }
@@ -1533,9 +1547,9 @@ openwrangler_r_frame_contract <- local({
     if (identical(operator, "isNotNaN")) return(!missing$nan)
 
     present <- !missing$null & !missing$nan
-    keys <- rep("", storage_length(column))
     present_indices <- which(present)
-    keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
+    keys <- if (identical(semantics$kind, "double")) NULL else rep("", storage_length(column))
+    if (!is.null(keys)) keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
@@ -1554,8 +1568,8 @@ openwrangler_r_frame_contract <- local({
       if (semantics$kind == "integer64") {
         compare_integer_keys(keys[present_indices], target, comparison_operator)
       } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
-        left <- suppressWarnings(as.double(keys[present_indices]))
-        right <- suppressWarnings(as.double(target))
+        left <- if (identical(semantics$kind, "double")) column[present_indices] else suppressWarnings(as.double(keys[present_indices]))
+        right <- if (identical(semantics$kind, "double")) target else suppressWarnings(as.double(target))
         switch(
           comparison_operator,
           equals = left == right,
@@ -1600,7 +1614,7 @@ openwrangler_r_frame_contract <- local({
         current <- rep(FALSE, row_count)
         present_indices <- which(!missing$null & !missing$nan)
         if (length(value_filter$selectedKeys) > 0L && length(present_indices) > 0L) {
-          keys <- profile_value_keys(column, semantics, present_indices)
+          keys <- if (identical(semantics$kind, "double")) column[present_indices] else profile_value_keys(column, semantics, present_indices)
           current[present_indices] <- keys %in% value_filter$selectedKeys
         }
         if (isTRUE(value_filter$includeNulls)) current <- current | missing$null
@@ -9733,7 +9747,8 @@ openwrangler_r_frame_contract <- local({
       }
       selection_cell <- encoded
       if (identical(semantics$kind, "double") && identical(encoded$kind, "number")) {
-        selection_cell$raw <- as.double(encoded$raw)
+        selection_cell$raw <- value_column[[source_index]]
+        if (selection_cell$raw == 0) selection_cell$raw <- 0
       }
       list(
         value = encoded$display,
@@ -9888,6 +9903,7 @@ openwrangler_r_frame_contract <- local({
     floor_number_column_at = floor_number_column_at,
     ceil_number_column_at = ceil_number_column_at,
     format_datetime_column_at = format_datetime_column_at,
+    parse_finite_number = parse_finite_number,
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,

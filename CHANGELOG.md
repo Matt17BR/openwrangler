@@ -30,6 +30,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R numeric filters, value selections and scalar Fill preserve finite values when platform decimal parsers differ.
 - Generated native R Formula and By Example preserve finite numeric literals when platform decimal parsers differ.
 - Native R Mean Fill, Group By and numeric profiles retain finite means across cancellation and chunk boundaries.
 - Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.

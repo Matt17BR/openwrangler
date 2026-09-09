@@ -222,6 +222,10 @@ before continuing its existing preview, apply and undo assertions.
 
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
+Its mixed scalar Fill case compares raw native doubles with complete generated and compiled results. The frame
+interactive and Fill owners cover accepted decimal spellings, signed zero, subnormals, finite extrema and invalid
+input. The existing rows/numeric kernel owner checks native floating picker selections and predicates through
+Preview, generated execution and draft discard, preserving source values and row identities.
 Mixed literal and regex Find and Replace steps check independent replacement state, one shared generated regex
 function, complete live/generated results and source isolation despite conflicting caller functions.
 Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
@@ -696,8 +700,8 @@ roots and IRkernel readiness checks.
 
 The manual macOS and Windows R jobs also prepare a separate library for source contracts through the same package
 owner. This selection includes bit64 and the native-frame prerequisites, without IRkernel or editor tooling.
-Installation, version checks and namespace loading must succeed in that private library before the seven existing
-phases run: `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `frame:cast-and-structure`,
+Installation, version checks and namespace loading must succeed in that private library before the eight existing
+phases run: `frame:interactive`, `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `frame:cast-and-structure`,
 `kernel:text-fill-and-cast`, `kernel:group-pivot-and-export` and
 `kernel:rows-numeric-datetime-and-by-example`. The last phase includes finite numeric-literal equality through
 complete generated and compiled programs. The caller removes its root only after all preparation and phases succeed;

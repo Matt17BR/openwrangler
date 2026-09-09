@@ -3016,6 +3016,58 @@ local({
   }
 })
 
+local({
+  sources <- new.env(parent = baseenv())
+  sources$literal_fill <- data.frame(large = c(0.5, NA, NaN), maximum = c(0.5, NA, NaN),
+    tiny = c(0.5, NA, NaN), zero = c(0.5, NA, NaN), integer_text = c(0.5, NA, NaN),
+    label = c("keep", NA, "word"), row.names = c("present", "null", "nan"))
+  before <- serialize(sources$literal_fill, NULL, version = 3L)
+  expected <- sources$literal_fill
+  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, sources)
+  on.exit(agent$dispose(), add = TRUE)
+  session <- "86868686-8686-4686-8686-868686868686"
+  opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = "literal_fill", page = page_window()))
+  revision <- 0L
+  cases <- list(
+    list(kind = "float", value = "1e308", expected = 0x1.1ccf385ebc8a0p+1023),
+    list(kind = "float", value = "1.7976931348623157e308", expected = 0x1.fffffffffffffp+1023),
+    list(kind = "float", value = "-4.9406564584124654e-324", expected = -0x0.0000000000001p-1022),
+    list(kind = "float", value = "-0", expected = -abs(0)),
+    list(kind = "integer", value = "9223372036854775807", expected = 0x1p+63),
+    list(kind = "string", value = "1e308", expected = "1e308")
+  )
+  for (index in seq_along(cases)) {
+    case <- cases[[index]]
+    replacement <- case[c("kind", "value")]
+    expected[[index]][is.na(expected[[index]])] <- case$expected
+    latest_full_capture <<- NULL
+    preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = revision, page = page_window(),
+      step = fill_step(paste0("literal-", index), paste0("r:c:", index - 1L), names(expected)[[index]], replacement)))
+    assert_identical(preview$kind, "stepPreview", "an exact decimal Fill did not preview")
+    assert_identical(serialize(get("snapshot", envir = latest_full_capture, inherits = FALSE), NULL, version = 3L),
+      serialize(expected, NULL, version = 3L), "live decimal Fill changed bits, missing replacement or text")
+    applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
+    assert_identical(applied$page, preview$page, "applying decimal Fill changed its confirmed page")
+    copied <- new.env(parent = baseenv()); copied$literal_fill <- unserialize(before)
+    eval(parse(text = applied$code), envir = copied)
+    assert_identical(serialize(copied$open_wrangler_result, NULL, version = 3L), serialize(expected, NULL, version = 3L),
+      "complete generated decimal/text Fill changed native bits or types")
+    compiled <- compiler::cmpfun(eval(parse(text = paste("function(literal_fill) {", applied$code,
+      "open_wrangler_result\n}", sep = "\n")), envir = new.env(parent = baseenv())))
+    assert_identical(serialize(compiled(unserialize(before)), NULL, version = 3L), serialize(expected, NULL, version = 3L),
+      "compiled decimal/text Fill changed native bits or types")
+    assert_identical(serialize(copied$literal_fill, NULL, version = 3L), before, "generated decimal Fill mutated its source")
+    revision <- applied$revision
+  }
+  for (index in seq_along(cases)) {
+    undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
+    revision <- undone$revision
+  }
+  assert_identical(undone$page, opened$page, "decimal/text Fill Undo did not restore the original source view")
+  assert_identical(serialize(sources$literal_fill, NULL, version = 3L), before, "decimal/text Fill mutated its source")
+  invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
+})
+
 source("r/tests/kernel_agent_text.R", local = FALSE)
 assert_fill_helpers <- function(code, expected) {
   lines <- strsplit(code, "\n", fixed = TRUE)[[1L]]
