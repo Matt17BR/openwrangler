@@ -101,11 +101,6 @@ th small {
   position: static;
 }
 
-th:has(.columnMenu[open]) {
-  overflow: visible;
-  z-index: 4;
-}
-
 .columnMenu summary {
   align-items: center;
   color: var(--vscode-descriptionForeground);
@@ -174,20 +169,32 @@ th:hover .columnResizeHandle,
 }
 
 .columnMenuContent {
+  position: fixed;
+  position-area: bottom span-right;
+  position-try-fallbacks:
+    flip-inline,
+    flip-block,
+    flip-inline flip-block;
+  position-visibility: anchors-visible;
+  inset: auto;
+  margin: 0;
+  width: max-content;
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - 8px);
+  overflow: auto;
   background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
   border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
   box-sizing: border-box;
   box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
-  display: grid;
-  left: 0;
+  display: none;
   min-width: 0;
   overflow-wrap: anywhere;
   padding: 4px;
-  position: absolute;
-  right: 0;
-  top: 100%;
   white-space: normal;
-  z-index: 10;
+}
+
+.columnMenuContent:popover-open {
+  display: grid;
 }
 
 .columnMenuNotice {

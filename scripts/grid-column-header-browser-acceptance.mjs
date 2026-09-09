@@ -8,15 +8,22 @@ export async function verifyGridColumnHeaderBrowserAcceptance(browser, harnessDi
     { harness: "grid-zoom-1-5.html", label: "150% zoom", width: 1280 },
     { harness: "grid-zoom-2.html", label: "200% zoom", width: 1280 },
     { harness: "wide-view.html", label: "435px narrow", width: 435 },
+    { harness: "applied-plan.html", label: "274px short", width: 274, height: 348 },
     { forcedColors: true, harness: "grid-view.html", label: "forced colors", width: 1280 }
   ];
 
-  for (const { forcedColors = false, harness, label, width } of states) {
+  for (const { forcedColors = false, harness, label, width, height = 760 } of states) {
     const page = await browser.newPage();
-    await page.setViewportSize({ width, height: 760 });
+    await page.setViewportSize({ width, height });
     if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
     await page.goto(pathToFileURL(resolve(harnessDirectory, harness)).href, { waitUntil: "load" });
     await page.locator(".columnResizeHandle").first().waitFor();
+
+    if (label === "274px short") {
+      await verifyCompactColumnMenu(page);
+      await page.close();
+      continue;
+    }
 
     const layout = await page.locator("table").evaluate(async (table) => {
       const epsilon = 0.6;
@@ -363,6 +370,40 @@ export async function verifyGridColumnHeaderBrowserAcceptance(browser, harnessDi
       await verifyColumnHeaderMenuLayout(page, firstHeader, `${harness} first header after Home`);
 
       const scroller = page.getByTestId("data-grid-scroller");
+      const firstMenu = firstHeader.locator(".columnMenuContent");
+      await firstHeader.locator("summary").click();
+      await firstMenu.waitFor({ state: "visible" });
+      await scroller.evaluate((element) => {
+        element.scrollLeft = 250;
+      });
+      await page.waitForFunction(() => {
+        const header = document.querySelector('th[data-grid-column="0"]');
+        const anchor = header?.querySelector("summary")?.getBoundingClientRect();
+        const menu = header?.querySelector(".columnMenuContent");
+        if (!anchor || !menu || anchor.right >= 0) return false;
+        const bounds = menu.getBoundingClientRect();
+        const left = Math.max(0, bounds.left),
+          right = Math.min(innerWidth, bounds.right);
+        const top = Math.max(0, bounds.top),
+          bottom = Math.min(innerHeight, bounds.bottom);
+        if (right <= left || bottom <= top) return true;
+        return [0.1, 0.5, 0.9].every((fraction) => {
+          const hit = document.elementFromPoint(left + (right - left) * fraction, top + (bottom - top) / 2);
+          return hit !== menu && !menu.contains(hit);
+        });
+      });
+      await scroller.evaluate((element) => {
+        element.scrollLeft = 0;
+      });
+      await page.waitForFunction(() => {
+        const menu = document.querySelector('th[data-grid-column="0"] .columnMenuContent');
+        if (!menu) return false;
+        const bounds = menu.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return hit === menu || menu.contains(hit);
+      });
+      await firstHeader.locator("summary").click();
+      await firstMenu.waitFor({ state: "hidden" });
       await scroller.evaluate((element) => {
         element.scrollLeft = element.scrollWidth;
       });
@@ -405,6 +446,74 @@ export async function verifyGridColumnHeaderBrowserAcceptance(browser, harnessDi
   }
   console.log(
     "Computed column-header target size, separation, focus, resize, menu, zoom, narrow and forced colors verified."
+  );
+}
+
+async function verifyCompactColumnMenu(page) {
+  const header = page.locator('th[data-grid-column="0"]');
+  const toggle = header.locator(".columnMenu > summary");
+  const menu = header.locator(".columnMenuContent");
+  const scroller = page.getByTestId("data-grid-scroller");
+  await page.locator(".columnInsight.compact .exactSummaryStats").first().waitFor();
+  const beforeOpen = await scroller.evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    scrollLeft: element.scrollLeft,
+    headerHeight: element.querySelector("thead").getBoundingClientRect().height,
+    height: element.clientHeight,
+    renderedRows: element.querySelectorAll("tbody tr").length
+  }));
+  await toggle.click();
+  // A quick Tab after opening must enter the menu, without waiting for a toggle event.
+  for (const name of ["Copy column", "Filter…", "Sort ascending", "Sort descending"]) {
+    await page.keyboard.press("Tab");
+    await page.waitForFunction((label) => {
+      const action = document.activeElement;
+      if (!(action instanceof HTMLButtonElement) || action.textContent?.trim() !== label) return false;
+      const bounds = action.getBoundingClientRect();
+      const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      return (
+        bounds.top >= 0 &&
+        bounds.bottom <= document.documentElement.clientHeight &&
+        (hit === action || action.contains(hit))
+      );
+    }, name);
+  }
+  await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
+  await page.waitForFunction((position) => {
+    const header = document.querySelector(`th[data-grid-column="${position}"]`);
+    return document.activeElement === header?.querySelector(".columnMenu > summary");
+  }, 0);
+  await page.waitForFunction((before) => {
+    const element = document.querySelector('[data-testid="data-grid-scroller"]');
+    return (
+      element.scrollTop === before.scrollTop &&
+      element.scrollLeft === before.scrollLeft &&
+      element.querySelector("thead").getBoundingClientRect().height === before.headerHeight &&
+      element.clientHeight === before.height &&
+      element.querySelectorAll("tbody tr").length === before.renderedRows
+    );
+  }, beforeOpen);
+  // The existing details toggle must still close the native popup with a click.
+  await toggle.click();
+  await menu.waitFor({ state: "visible" });
+  await toggle.click();
+  await menu.waitFor({ state: "hidden" });
+  await toggle.click();
+  const before = await page.evaluate(() => globalThis.openWranglerMessages.length);
+  await menu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await menu.waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    (start) =>
+      globalThis.openWranglerMessages
+        .slice(start)
+        .some(
+          (message) =>
+            message.kind === "runtimeRequest" &&
+            message.request?.kind === "getPage" &&
+            message.request.filterModel.sort.some((sort) => sort.column === "city" && sort.direction === "asc")
+        ),
+    before
   );
 }
 

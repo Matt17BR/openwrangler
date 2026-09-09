@@ -1421,8 +1421,6 @@ describe("DataGrid clipboard interactions", () => {
     expect(details).not.toBeNull();
     expect(summary).not.toBeNull();
     fireEvent.click(summary!);
-    details!.open = true;
-    fireEvent(details!, new Event("toggle", { bubbles: true }));
     const copyAction = within(details!).getByRole("button", { name: "Copy column city" });
     fireEvent.click(copyAction);
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("city\nMilan\nParis"));
@@ -1431,10 +1429,8 @@ describe("DataGrid clipboard interactions", () => {
     fireEvent.keyDown(copyAction, { key: "Escape", bubbles: true });
     expect(details).not.toHaveAttribute("open");
     expect(summary).toHaveFocus();
-    fireEvent(details!, new Event("toggle", { bubbles: true }));
     fireEvent.click(summary!);
     expect(details).toHaveAttribute("open");
-    fireEvent(details!, new Event("toggle", { bubbles: true }));
 
     delayedWrite.resolve();
     await waitFor(() => expect(screen.getByText("Copied column city with 2 values and its header.")).toBeTruthy());
