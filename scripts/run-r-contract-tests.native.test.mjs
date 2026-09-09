@@ -5,7 +5,12 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createLinuxProcessSignaler, createPosixProcessTracker, runRContractPhase } from "./run-r-contract-tests.mjs";
+import {
+  createLinuxProcessSignaler,
+  createPosixProcessTracker,
+  readPsProcessIdentity,
+  runRContractPhase
+} from "./run-r-contract-tests.mjs";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const runner = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
@@ -14,6 +19,42 @@ function identityOf(child) {
   const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
   return { pid: child.pid, startIdentity: stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/u)[19] };
 }
+
+test("POSIX ps observations retain primary state and bounded identity fields", () => {
+  const ownerToken = "synthetic-owner";
+  const start = "Wed Sep  9 10:05:19 2026";
+  for (const state of ["S", "R+", "Z", "Zs+"]) {
+    const zombie = state.startsWith("Z");
+    const command = zombie ? "<defunct>" : `R --vanilla OPEN_WRANGLER_R_CONTRACT_OWNER=${ownerToken}`;
+    const identity = readPsProcessIdentity(101, {
+      ownerToken,
+      execute: (file, args, options) => {
+        assert.equal(file, "ps");
+        assert.deepEqual(args, ["eww", "-p", "101", "-o", "pid=,ppid=,pgid=,state=,lstart=,command="]);
+        assert.equal(options.timeout, 250);
+        assert.equal(options.maxBuffer, 64 * 1024);
+        assert.equal(options.killSignal, "SIGKILL");
+        assert.deepEqual(options.stdio, ["ignore", "pipe", "ignore"]);
+        return `  101 100 101 ${state} ${start} ${command}\n`;
+      }
+    });
+    assert.deepEqual(identity, {
+      pid: 101,
+      parentPid: 100,
+      groupId: 101,
+      state: state[0],
+      startIdentity: start,
+      command,
+      ownerMarked: !zombie,
+      identityResolution: "second"
+    });
+    assert.ok(Object.isFrozen(identity));
+  }
+  assert.throws(
+    () => readPsProcessIdentity(101, { execute: () => `101 100 101 ${start} <defunct>\n` }),
+    /process identity for PID 101 was malformed/u
+  );
+});
 
 test("POSIX ownership diagnostics distinguish bounded evidence without exposing process data", async (context) => {
   const identity = (pid, parentPid) => ({
@@ -143,6 +184,35 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
       tracker.stop();
     }
   });
+
+  await context.test(
+    "listed zombies retire without accepting a later live identity or premature settlement",
+    async () => {
+      const original = { ...identity(101, 100), state: "S" };
+      const identities = new Map([
+        [101, original],
+        [102, identity(102, 101)]
+      ]);
+      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+        readProcessIdentity: (pid) => identities.get(pid),
+        listProcessIdentities: () => [...identities.values()]
+      });
+      try {
+        identities.set(101, { ...original, state: "Z", command: "<defunct>", ownerMarked: false });
+        assert.equal(tracker.observe(), 1, "the listed zombie must retire before coarse identity checks");
+        assert.equal(tracker.observe(), 1, "a still-listed zombie must not reappear as a live retired key");
+        assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the marked child must still settle");
+        identities.delete(102);
+        assert.equal(tracker.isSettled({ isSettled: () => false }), false, "the child observer must still settle");
+        assert.equal(tracker.isSettled({ isSettled: () => true }), true);
+        identities.set(101, original);
+        assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
+        assert.equal((await tracker.failure).processTreeUnsettled, true);
+      } finally {
+        tracker.stop();
+      }
+    }
+  );
 
   await context.test("a retired original root key remains refused despite its marker", async () => {
     const original = identity(101, 100);
