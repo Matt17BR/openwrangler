@@ -3158,7 +3158,10 @@ if (
   is.null(generated_dst_error) ||
     !grepl("invalid local datetime in Europe/Berlin", conditionMessage(generated_dst_error), fixed = TRUE)
 ) {
-  stop("generated R Fill Missing Values reused a stale timezone or normalized a DST gap", call. = FALSE)
+  stop(sprintf(
+    "generated R Fill Missing Values reused a stale timezone or normalized a DST gap; actual: %s",
+    if (is.null(generated_dst_error)) "<no error>" else substr(conditionMessage(generated_dst_error), 1L, 256L)
+  ), call. = FALSE)
 }
 assert_identical(
   get("fill_frame", envir = .GlobalEnv, inherits = FALSE),

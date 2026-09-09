@@ -4454,15 +4454,24 @@ assert_error(
 dst_frame <- data.frame(
   instant = as.POSIXct(c("2026-03-28 12:00:00", NA), tz = "Europe/Berlin")
 )
-assert_error(
-  openwrangler_r_frame_contract$fill_missing_column_at(
-    dst_frame,
-    1L,
-    "instant",
-    list(kind = "datetime", value = "2026-03-29T02:30:00")
-  ),
-  "not a valid local datetime"
+dst_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$fill_missing_column_at(
+      dst_frame,
+      1L,
+      "instant",
+      list(kind = "datetime", value = "2026-03-29T02:30:00")
+    )
+    NULL
+  },
+  error = identity
 )
+if (is.null(dst_error) || !grepl("not a valid local datetime", conditionMessage(dst_error), fixed = TRUE)) {
+  stop(sprintf(
+    "Expected an error containing not a valid local datetime; actual: %s",
+    if (is.null(dst_error)) "<no error>" else substr(conditionMessage(dst_error), 1L, 256L)
+  ), call. = FALSE)
+}
 
 fill_tibble <- tibble::tibble(value = c(NA_character_, "ready"))
 fill_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
