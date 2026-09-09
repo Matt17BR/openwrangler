@@ -1,7 +1,11 @@
 // jsdom has popover hiding styles but no native show/hide methods. Keep its
 // existing details-owned visibility for component action/focus tests; the
 // Chromium header owner verifies native popover visibility and placement.
-if (typeof HTMLElement.prototype.showPopover !== "function") {
+if (
+  typeof document !== "undefined" &&
+  typeof HTMLElement !== "undefined" &&
+  typeof HTMLElement.prototype.showPopover !== "function"
+) {
   for (const method of ["showPopover", "hidePopover"] as const) {
     Object.defineProperty(HTMLElement.prototype, method, {
       configurable: true,
