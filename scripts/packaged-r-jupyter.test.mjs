@@ -17,6 +17,7 @@ import {
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceRKernel,
   R_ACCEPTANCE_PACKAGE_VERSIONS,
+  rAcceptancePackageRecordMatches,
   rAcceptanceRepositories
 } from "./jupyter-acceptance-environment.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
@@ -121,6 +122,36 @@ for (const nativeEditorTooling of [undefined, true, false]) {
     assert.equal(prepared.packages.includes("bit64"), false);
   });
 }
+
+test("R package records accept console line endings while preserving exact package contents", async (t) => {
+  for (const selection of [
+    { nativeEditorTooling: false },
+    { nativeEditorTooling: true },
+    { nativeEditorTooling: false, sourceContracts: true }
+  ]) {
+    const fixture = provisioning(t);
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      ...selection
+    });
+    const record = prepared.packageRecord;
+    const lines = record.split("\n");
+    assert.equal(rAcceptancePackageRecordMatches(record, record), true);
+    assert.equal(rAcceptancePackageRecordMatches(record.replaceAll("\n", "\r\n"), record), true);
+    for (const [description, output] of [
+      ["bare carriage returns", record.replaceAll("\n", "\r")],
+      ["leading output", `unexpected\n${record}`],
+      ["trailing output", `${record}\nunexpected`],
+      ["trailing LF", `${record}\n`],
+      ["trailing CRLF", `${record.replaceAll("\n", "\r\n")}\r\n`],
+      ["wrong version", `${lines[0]}0\n${lines.slice(1).join("\n")}`],
+      ["omitted package", lines.slice(1).join("\n")],
+      ["reordered packages", [...lines].reverse().join("\n")]
+    ]) {
+      assert.equal(rAcceptancePackageRecordMatches(output, record), false, description);
+    }
+  }
+});
 
 test("invalid R tooling decisions fail before commands or private directories", async (t) => {
   const fixture = provisioning(t);
