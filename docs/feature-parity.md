@@ -83,7 +83,8 @@ keyboard shortcut overrides text-field editing.
 File inputs include `.xls` and `.xlsx` workbooks plus `.jsonl` and `.ndjson` aliases. Pandas supports duplicate and
 non-string labels and exposes named index or MultiIndex row labels independently of ordinary columns. Column
 operations bind those inputs by stable identity and position, but name-addressed viewing filters and sorts fail closed
-when duplicate or display-colliding labels are ambiguous. Generated Python checks destination names before appending
+when duplicate or display-colliding labels are ambiguous. Filter and sort selectors preserve unique source names and
+distinguish them from position labels for duplicate or unnamed columns. Generated Python checks destination names before appending
 or renaming a column. Harmless extra columns and valid in-place replacements remain supported, including after earlier steps.
 Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
 results, before later expressions can read the wrong column. Case-only Rename remains supported.

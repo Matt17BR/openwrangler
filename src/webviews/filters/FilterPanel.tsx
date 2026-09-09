@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionMetadata, ValuesResponse } from "../../shared/protocol";
+import { columnOptionLabels } from "../columnOptionLabels";
 import type {
   ColumnFilter,
   ColumnType,
@@ -81,6 +82,7 @@ export function FilterPanel({
   const [sortEditor, setSortEditor] = useState<{ modelKey: string; draft?: SortDraft }>({ modelKey: modelSortKey });
   const [sortOpen, setSortOpen] = useState(model.sort.length > 0);
   const [advanced, setAdvanced] = useState(defaultAdvanced);
+  const optionLabels = useMemo(() => columnOptionLabels(metadata?.schema ?? []), [metadata?.schema]);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
   const reconciledSortDraft = useMemo(() => {
     const draft = sortEditor.draft;
@@ -434,7 +436,7 @@ export function FilterPanel({
             )}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
-                {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}
+                {optionLabels.get(item.id)}
               </option>
             ))}
           </select>
@@ -608,7 +610,7 @@ export function FilterPanel({
             )}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
-                {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}
+                {optionLabels.get(item.id)}
               </option>
             ))}
           </select>
@@ -919,13 +921,6 @@ function FilterRuleButton({
     </button>
   );
 }
-
-const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyMap<string, number>): string =>
-  name === ""
-    ? `(empty name) (column ${position + 1})`
-    : (nameCounts.get(name) ?? 0) > 1
-      ? `${name} (column ${position + 1})`
-      : name;
 
 const coercePredicateValue = (value: string, columnType: ColumnType): string | boolean => {
   if (columnType === "boolean") {
