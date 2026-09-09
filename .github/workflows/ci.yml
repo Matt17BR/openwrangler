@@ -53,9 +53,7 @@ jobs:
           npm run format:check
           npm run lint
       - name: TypeScript types
-        run: |
-          npm run typecheck
-          npm run typecheck:dependencies
+        run: npm run typecheck
       - name: Generated protocols and documentation
         run: |
           npm run protocol:check

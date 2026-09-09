@@ -4,9 +4,9 @@
 
 Every pull request reports the same five required product checks:
 
-- **Source contracts (Node 24)** runs formatting, lint, TypeScript types, generated protocol/reference checks,
-  documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest. It then builds the same
-  checkout with Node 22.17.0 against the already-installed locked dependencies.
+- **Source contracts (Node 24)** runs formatting, lint, TypeScript source and dependency declaration checks, generated
+  protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest.
+  It then builds the same checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
   catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
