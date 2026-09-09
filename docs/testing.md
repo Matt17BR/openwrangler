@@ -183,6 +183,8 @@ before continuing its existing preview, apply and undo assertions.
 
 The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
 that generated code includes each required helper family once and omits unused families.
+Mixed literal and regex Find and Replace steps check independent replacement state, one shared generated regex
+function, complete live/generated results and source isolation despite conflicting caller functions.
 Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
 apply, and inspection code must preserve complete live results and source frames despite conflicting caller names.
 

@@ -225,6 +225,8 @@ whose stable ID can be used by later steps. It counts Unicode characters rather 
 keep compatible data-table keys. The text operations accept character and factor columns, convert factors to
 character, and keep `NA`. Lowercase, Uppercase, Capitalize, Strip text, and Find and replace either update the column
 or append a character column with a stable derived ID. Find and replace can use literal text or a regular expression.
+Live and generated regex replacement share one calculation, including capture expansion and output bounds. Generated
+plans include that function once when needed, while each step prepares its own replacement state.
 Strip text removes the default whitespace or a literal character set from both ends. Split text uses a literal
 delimiter, appends a new character column, and returns `NA` when the requested part does not exist. An in-place change
 to a data-table key column is rejected; choosing a new output column keeps the key and row order. Generated R repeats

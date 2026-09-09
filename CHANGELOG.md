@@ -17,6 +17,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   or committing a new plan branch, clears this history.
 
 - Generated Polars and native R Fill Missing Values scripts omit unused helpers while retaining dependencies for mixed plans.
+- Native R Find and Replace shares its regex calculation with generated code, reducing repeated code in multi-step plans.
 - Multi-column cleaning forms support column search while retaining selections hidden by the search.
 - Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
   Failed runs remain eligible for the next schedule; manual previews still run on request.

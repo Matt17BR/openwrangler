@@ -600,6 +600,11 @@ Directional Fill uses the same native missing-run and donor-selection function i
 generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
 existing owners.
 
+Find and Replace shares its prepared regex calculation between live R and generated code. Each step prepares its
+own replacement state once; a generated plan includes the function once when a regex step needs it. Literal steps
+omit that function and unused regex branches. Input validation, frame isolation and publication remain with their
+existing owners; the shared calculation checks projected UTF-8 output size before replacement.
+
 Generated R Group By retains zero groups for empty inputs and preserves the live result's column types.
 It loads bit64 before grouping when a selected key or aggregation uses integer64, so missing detection,
 key comparison and subsetting retain native values even in a fresh R session.

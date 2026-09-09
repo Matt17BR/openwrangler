@@ -5752,20 +5752,11 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  find_replace_column_at <- function(
-    value,
-    position,
-    old_name,
-    find,
-    replacement,
-    regex = FALSE,
-    new_name = NULL
-  ) {
-    find <- bounded_utf8(find, "find")
-    replacement <- bounded_utf8(replacement, "replacement")
-    if (!is.logical(regex) || length(regex) != 1L || is.na(regex)) {
-      abort("invalid-view-query", "findReplace.regex must be TRUE or FALSE")
-    }
+  prepare_find_replace_regex <- function(find, replacement, maximum_text_bytes, abort) {
+    force(find)
+    force(replacement)
+    force(maximum_text_bytes)
+    force(abort)
     operation_name <- "Find and Replace"
     reject_oversized_output <- function() {
       abort(
@@ -5868,48 +5859,78 @@ openwrangler_r_frame_contract <- local({
         byte_prefix[[end]] - byte_prefix[[start]]
       }, numeric(1L), USE.NAMES = FALSE))
     }
-    parsed_regex_replacement <- if (isTRUE(regex)) parse_regex_replacement(replacement) else NULL
-    replace_value <- function(value) {
+    parsed_regex_replacement <- parse_regex_replacement(replacement)
+    function(value) {
       input_bytes <- as.double(nchar(value, type = "bytes"))
-      replacement_bytes <- as.double(nchar(replacement, type = "bytes"))
-      if (isTRUE(regex)) {
-        matches <- checked_regex(gregexpr(find, value, perl = TRUE))
-        positions <- matches[[1L]]
-        if (length(positions) == 1L && identical(as.integer(positions[[1L]]), -1L)) return(value)
-        matched_values <- regmatches(value, matches)[[1L]]
-        matched_bytes <- sum(as.double(nchar(matched_values, type = "bytes")))
-        capture_byte_prefix <- if (isTRUE(attr(positions, "useBytes", exact = TRUE))) {
-          NULL
-        } else {
-          c(0, cumsum(as.double(nchar(strsplit(value, "", fixed = TRUE)[[1L]], type = "bytes"))))
-        }
-        replacement_bound <- length(matched_values) * (
-          parsed_regex_replacement$plainLiteralBytes +
-            parsed_regex_replacement$caseLiteralBytes * 16
-        )
-        for (capture_index in seq_len(9L)) {
-          capture_size <- capture_bytes(positions, capture_index, capture_byte_prefix)
-          replacement_bound <- replacement_bound +
-            parsed_regex_replacement$plainReferences[[capture_index]] * capture_size +
-            parsed_regex_replacement$caseReferences[[capture_index]] * capture_size * 16
-        }
-        require_bounded_size(input_bytes - matched_bytes + replacement_bound)
-        return(checked_regex(gsub(find, replacement, value, perl = TRUE)))
+      matches <- checked_regex(gregexpr(find, value, perl = TRUE))
+      positions <- matches[[1L]]
+      if (length(positions) == 1L && identical(as.integer(positions[[1L]]), -1L)) return(value)
+      matched_values <- regmatches(value, matches)[[1L]]
+      matched_bytes <- sum(as.double(nchar(matched_values, type = "bytes")))
+      capture_byte_prefix <- if (isTRUE(attr(positions, "useBytes", exact = TRUE))) {
+        NULL
+      } else {
+        c(0, cumsum(as.double(nchar(strsplit(value, "", fixed = TRUE)[[1L]], type = "bytes"))))
       }
-      if (identical(find, "")) {
-        require_bounded_size(input_bytes + (nchar(value, type = "chars") + 1) * replacement_bytes)
-        literal_replacement <- gsub("\\", "\\\\", replacement, fixed = TRUE)
-        return(gsub("", literal_replacement, value, perl = TRUE))
-      }
-      matches <- gregexpr(find, value, fixed = TRUE)[[1L]]
-      match_count <- if (
-        length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)
-      ) 0 else length(matches)
-      require_bounded_size(
-        input_bytes + match_count * (replacement_bytes - nchar(find, type = "bytes"))
+      replacement_bound <- length(matched_values) * (
+        parsed_regex_replacement$plainLiteralBytes +
+          parsed_regex_replacement$caseLiteralBytes * 16
       )
-      if (match_count == 0L) return(value)
-      gsub(find, replacement, value, fixed = TRUE)
+      for (capture_index in seq_len(9L)) {
+        capture_size <- capture_bytes(positions, capture_index, capture_byte_prefix)
+        replacement_bound <- replacement_bound +
+          parsed_regex_replacement$plainReferences[[capture_index]] * capture_size +
+          parsed_regex_replacement$caseReferences[[capture_index]] * capture_size * 16
+      }
+      require_bounded_size(input_bytes - matched_bytes + replacement_bound)
+      return(checked_regex(gsub(find, replacement, value, perl = TRUE)))
+    }
+  }
+
+  find_replace_column_at <- function(
+    value,
+    position,
+    old_name,
+    find,
+    replacement,
+    regex = FALSE,
+    new_name = NULL
+  ) {
+    find <- bounded_utf8(find, "find")
+    replacement <- bounded_utf8(replacement, "replacement")
+    if (!is.logical(regex) || length(regex) != 1L || is.na(regex)) {
+      abort("invalid-view-query", "findReplace.regex must be TRUE or FALSE")
+    }
+    replace_value <- if (isTRUE(regex)) {
+      prepare_find_replace_regex(find, replacement, maximum_text_bytes, abort)
+    } else {
+      reject_oversized_output <- function() {
+        abort(
+          "operation-output-too-large",
+          sprintf("Find and Replace would produce text longer than %d UTF-8 bytes", maximum_text_bytes)
+        )
+      }
+      require_bounded_size <- function(bytes) {
+        if (!is.finite(bytes) || bytes > maximum_text_bytes) reject_oversized_output()
+      }
+      function(value) {
+        input_bytes <- as.double(nchar(value, type = "bytes"))
+        replacement_bytes <- as.double(nchar(replacement, type = "bytes"))
+        if (identical(find, "")) {
+          require_bounded_size(input_bytes + (nchar(value, type = "chars") + 1) * replacement_bytes)
+          literal_replacement <- gsub("\\", "\\\\", replacement, fixed = TRUE)
+          return(gsub("", literal_replacement, value, perl = TRUE))
+        }
+        matches <- gregexpr(find, value, fixed = TRUE)[[1L]]
+        match_count <- if (
+          length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)
+        ) 0 else length(matches)
+        require_bounded_size(
+          input_bytes + match_count * (replacement_bytes - nchar(find, type = "bytes"))
+        )
+        if (match_count == 0L) return(value)
+        gsub(find, replacement, value, fixed = TRUE)
+      }
     }
     transform_text_column_at(
       value,
@@ -9669,6 +9690,7 @@ openwrangler_r_frame_contract <- local({
     capture_pivot_longer_at = capture_pivot_longer_at,
     capture_pivot_wider_at = capture_pivot_wider_at,
     extract_regex_group_at = extract_regex_group_at,
+    prepare_find_replace_regex = prepare_find_replace_regex,
     find_replace_column_at = find_replace_column_at,
     min_max_scale_column_at = min_max_scale_column_at,
     round_number_column_at = round_number_column_at,

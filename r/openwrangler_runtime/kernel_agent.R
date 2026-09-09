@@ -7669,7 +7669,8 @@ openwrangler_r_kernel_agent <- local({
     round_coarse_helpers,
     fill_directional_values,
     dense_rank_values,
-    duplicate_row_mask
+    duplicate_row_mask,
+    prepare_find_replace_regex
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7911,6 +7912,16 @@ openwrangler_r_kernel_agent <- local({
         "    .ow_data_table_alloccol_fields <- if (base::is.null(.ow_data_table_alloccol)) NULL else base::unclass(.ow_data_table_alloccol)",
         "    if (!base::inherits(.ow_data_table_dll, \"DLLInfo\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"name\"), \"data_table\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"dynamicLookup\"), FALSE) || !base::is.character(.ow_data_table_routine_map) || !base::identical(base::.subset2(.ow_data_table_routine_map, \"Calloccolwrapper\"), \"Calloccolwrapper\") || !base::identical(base::class(.ow_data_table_binding), c(\"CallRoutine\", \"NativeSymbolInfo\")) || !base::identical(base::attr(.ow_data_table_binding, \"names\", exact = TRUE), c(\"name\", \"address\", \"dll\", \"numParameters\")) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_binding_fields, \"address\"), \"RegisteredNativeSymbol\") || base::is.null(.ow_data_table_alloccol) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_alloccol_fields, \"address\"), \"NativeSymbol\")) base::stop(\"data.table has invalid append primitives\", call. = FALSE)",
         "  }"
+      )
+    }
+    if (any(vapply(bound_plan, function(step) {
+      identical(step$kind, "findReplace") && isTRUE(step$regex)
+    }, logical(1L)))) {
+      lines <- c(
+        lines,
+        "  .ow_prepare_find_replace_regex <-",
+        paste0("  ", deparse(prepare_find_replace_regex, width.cutoff = 500L)),
+        '  .ow_find_replace_abort <- function(code, message) stop(paste0("Open Wrangler ", message), call. = FALSE)'
       )
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
@@ -8771,66 +8782,12 @@ openwrangler_r_kernel_agent <- local({
           lines <- c(
             lines,
             sprintf("  .ow_text_find <- %s", r_string(step$find)),
-            sprintf("  .ow_text_replacement <- %s", r_string(step$replacement)),
-            sprintf("  .ow_text_regex <- %s", if (isTRUE(step$regex)) "TRUE" else "FALSE")
+            sprintf("  .ow_text_replacement <- %s", r_string(step$replacement))
           )
           if (isTRUE(step$regex)) {
             lines <- c(
               lines,
-              "  .ow_replacement_characters <- strsplit(.ow_text_replacement, \"\", fixed = TRUE)[[1L]]",
-              "  .ow_plain_literal_bytes <- 0",
-              "  .ow_case_literal_bytes <- 0",
-              "  .ow_plain_references <- integer(9L)",
-              "  .ow_case_references <- integer(9L)",
-              "  .ow_case_conversion <- FALSE",
-              "  .ow_add_literal <- function(.ow_character) {",
-              "    .ow_bytes <- as.double(nchar(.ow_character, type = \"bytes\"))",
-              "    if (.ow_case_conversion) .ow_case_literal_bytes <<- .ow_case_literal_bytes + .ow_bytes else .ow_plain_literal_bytes <<- .ow_plain_literal_bytes + .ow_bytes",
-              "  }",
-              "  .ow_replacement_index <- 1L",
-              "  while (.ow_replacement_index <= length(.ow_replacement_characters)) {",
-              "    .ow_character <- .ow_replacement_characters[[.ow_replacement_index]]",
-              "    if (!identical(.ow_character, \"\\\\\")) {",
-              "      .ow_add_literal(.ow_character)",
-              "      .ow_replacement_index <- .ow_replacement_index + 1L",
-              "      next",
-              "    }",
-              "    if (.ow_replacement_index == length(.ow_replacement_characters)) {",
-              "      .ow_add_literal(\"\\\\\")",
-              "      break",
-              "    }",
-              "    .ow_escaped <- .ow_replacement_characters[[.ow_replacement_index + 1L]]",
-              "    if (identical(.ow_escaped, \"\\\\\")) {",
-              "      .ow_add_literal(\"\\\\\")",
-              "    } else if (.ow_escaped %in% as.character(seq_len(9L))) {",
-              "      .ow_reference <- as.integer(.ow_escaped)",
-              "      if (.ow_case_conversion) .ow_case_references[[.ow_reference]] <- .ow_case_references[[.ow_reference]] + 1L else .ow_plain_references[[.ow_reference]] <- .ow_plain_references[[.ow_reference]] + 1L",
-              "    } else if (.ow_escaped %in% c(\"U\", \"L\")) {",
-              "      .ow_case_conversion <- TRUE",
-              "    } else if (identical(.ow_escaped, \"E\")) {",
-              "      .ow_case_conversion <- FALSE",
-              "    } else {",
-              "      .ow_add_literal(\"\\\\\")",
-              "      .ow_add_literal(.ow_escaped)",
-              "    }",
-              "    .ow_replacement_index <- .ow_replacement_index + 2L",
-              "  }",
-              "  .ow_capture_bytes <- function(.ow_match_vector, .ow_capture_index, .ow_byte_prefix) {",
-              "    .ow_capture_starts <- attr(.ow_match_vector, \"capture.start\", exact = TRUE)",
-              "    .ow_capture_lengths <- attr(.ow_match_vector, \"capture.length\", exact = TRUE)",
-              "    if (is.null(.ow_capture_starts) || is.null(.ow_capture_lengths) || !is.matrix(.ow_capture_starts) || !is.matrix(.ow_capture_lengths) || ncol(.ow_capture_starts) < .ow_capture_index || ncol(.ow_capture_lengths) < .ow_capture_index) return(0)",
-              "    .ow_starts <- .ow_capture_starts[, .ow_capture_index]",
-              "    .ow_lengths <- .ow_capture_lengths[, .ow_capture_index]",
-              "    if (isTRUE(attr(.ow_match_vector, \"useBytes\", exact = TRUE))) return(sum(as.double(.ow_lengths[.ow_starts >= 0L & .ow_lengths > 0L])))",
-              "    sum(vapply(seq_along(.ow_starts), function(.ow_capture_ordinal) {",
-              "      .ow_start <- .ow_starts[[.ow_capture_ordinal]]",
-              "      .ow_length <- .ow_lengths[[.ow_capture_ordinal]]",
-              "      if (.ow_start < 0L || .ow_length <= 0L) return(0)",
-              "      .ow_end <- .ow_start + .ow_length",
-              "      if (.ow_start < 1L || .ow_end > length(.ow_byte_prefix)) return(8192)",
-              "      .ow_byte_prefix[[.ow_end]] - .ow_byte_prefix[[.ow_start]]",
-              "    }, numeric(1L), USE.NAMES = FALSE))",
-              "  }"
+              "  .ow_replace_regex <- .ow_prepare_find_replace_regex(.ow_text_find, .ow_text_replacement, 8192L, .ow_find_replace_abort)"
             )
           }
         } else if (identical(step$kind, "stripText")) {
@@ -8900,42 +8857,17 @@ openwrangler_r_kernel_agent <- local({
             "      .ow_output <- if (.ow_start > .ow_end) \"\" else substr(.ow_utf8, .ow_start, .ow_end)",
             "    }"
           )
+        } else if (isTRUE(step$regex)) {
+          lines <- c(
+            lines,
+            "    .ow_output <- .ow_replace_regex(.ow_utf8)"
+          )
         } else {
           lines <- c(
             lines,
             "    .ow_input_bytes <- as.double(nchar(.ow_utf8, type = \"bytes\"))",
             "    .ow_replacement_bytes <- as.double(nchar(.ow_text_replacement, type = \"bytes\"))",
-            "    if (.ow_text_regex) {",
-            "      .ow_matches <- tryCatch(",
-            "        withCallingHandlers(",
-            "          gregexpr(.ow_text_find, .ow_utf8, perl = TRUE),",
-            "          warning = function(.ow_warning) stop(\"regex evaluation failed\", call. = FALSE)",
-            "        ),",
-            "        error = function(.ow_error) stop(\"Open Wrangler Find and Replace could not apply the requested regular expression\", call. = FALSE)",
-            "      )",
-            "      .ow_positions <- .ow_matches[[1L]]",
-            "      if (length(.ow_positions) == 1L && identical(as.integer(.ow_positions[[1L]]), -1L)) {",
-            "        .ow_output <- .ow_utf8",
-            "      } else {",
-            "        .ow_matched_values <- regmatches(.ow_utf8, .ow_matches)[[1L]]",
-            "        .ow_matched_bytes <- sum(as.double(nchar(.ow_matched_values, type = \"bytes\")))",
-            "        .ow_capture_byte_prefix <- if (isTRUE(attr(.ow_positions, \"useBytes\", exact = TRUE))) NULL else c(0, cumsum(as.double(nchar(strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]], type = \"bytes\"))))",
-            "        .ow_replacement_bound <- length(.ow_matched_values) * (.ow_plain_literal_bytes + .ow_case_literal_bytes * 16)",
-            "        for (.ow_capture_index in seq_len(9L)) {",
-            "          .ow_capture_size <- .ow_capture_bytes(.ow_positions, .ow_capture_index, .ow_capture_byte_prefix)",
-            "          .ow_replacement_bound <- .ow_replacement_bound + .ow_plain_references[[.ow_capture_index]] * .ow_capture_size + .ow_case_references[[.ow_capture_index]] * .ow_capture_size * 16",
-            "        }",
-            "        .ow_projected_bytes <- .ow_input_bytes - .ow_matched_bytes + .ow_replacement_bound",
-            "        if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
-            "        .ow_output <- tryCatch(",
-            "          withCallingHandlers(",
-            "            gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, perl = TRUE),",
-            "            warning = function(.ow_warning) stop(\"regex evaluation failed\", call. = FALSE)",
-            "          ),",
-            "          error = function(.ow_error) stop(\"Open Wrangler Find and Replace could not apply the requested regular expression\", call. = FALSE)",
-            "        )",
-            "      }",
-            "    } else if (identical(.ow_text_find, \"\")) {",
+            "    if (identical(.ow_text_find, \"\")) {",
             "      .ow_projected_bytes <- .ow_input_bytes + (nchar(.ow_utf8, type = \"chars\") + 1) * .ow_replacement_bytes",
             "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
             "      .ow_text_literal_replacement <- gsub(\"\\\\\", \"\\\\\\\\\", .ow_text_replacement, fixed = TRUE)",
@@ -9833,7 +9765,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$round_coarse_helpers,
         frame_contract$fill_directional_values,
         frame_contract$dense_rank_values,
-        frame_contract$duplicate_row_mask
+        frame_contract$duplicate_row_mask,
+        frame_contract$prepare_find_replace_regex
       )
     )
   }
@@ -10171,7 +10104,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
             frame_contract$dense_rank_values,
-            frame_contract$duplicate_row_mask
+            frame_contract$duplicate_row_mask,
+            frame_contract$prepare_find_replace_regex
           )
         } else {
           NULL
@@ -10227,7 +10161,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
             frame_contract$dense_rank_values,
-            frame_contract$duplicate_row_mask
+            frame_contract$duplicate_row_mask,
+            frame_contract$prepare_find_replace_regex
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10304,7 +10239,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$round_coarse_helpers,
               frame_contract$fill_directional_values,
               frame_contract$dense_rank_values,
-              frame_contract$duplicate_row_mask
+              frame_contract$duplicate_row_mask,
+              frame_contract$prepare_find_replace_regex
             )
           ))
         }
