@@ -87,6 +87,7 @@ The exact-artifact installed smoke and its environment are documented once in [T
 
 Released-Jupyter R editor runs use the [notebook/tooling package selection](testing.md#native-r-editor-dependencies)
 resolved by their existing journey. Private package-version and kernel-readiness checks precede editor launch.
+The macOS job supplies system ZeroMQ through Homebrew as described in that dependency section.
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane. This tooling selection does not change the terminal lane's R package or IRkernel checks.
 
