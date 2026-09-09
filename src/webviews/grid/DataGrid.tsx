@@ -427,6 +427,37 @@ export function DataGrid({
     [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
   );
   const loadedColumnSignature = page.columnIds.join("\u0000");
+  const viewScope = `${metadata.sessionId}:${metadata.revision}:${JSON.stringify({
+    logic: metadata.filterModel.logic ?? "and",
+    filters: metadata.filterModel.filters,
+    sort: metadata.filterModel.sort
+  })}`;
+  const applyHeaderProfileFilter = useCallback(
+    (column: ColumnSchema, filter: ColumnFilter): void => {
+      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+      onApplyProfileFilter?.(filter);
+    },
+    [onApplyProfileFilter, reportViewState]
+  );
+  const {
+    controls: headerProfileControls,
+    headerRef: headerProfilesRef,
+    renderColumnProfile
+  } = useGridHeaderProfiles({
+    backend: metadata.backend,
+    sessionId: metadata.sessionId,
+    scrollerRef,
+    visibleColumns,
+    summaries,
+    visibleSummaryOwner: viewScope,
+    insightsOnOpen,
+    disabled: profilesDisabled,
+    disabledReason: profilesDisabledReason,
+    valueMode: profileValueMode,
+    onValueModeChange: onProfileValueModeChange,
+    onApplyFilter: onApplyProfileFilter ? applyHeaderProfileFilter : undefined,
+    onVisibleSummaryColumnsChange
+  });
   const commitColumnReveal = useCallback(
     ({
       columnId,
@@ -465,6 +496,47 @@ export function DataGrid({
     },
     [reportViewState]
   );
+  const handleColumnReveal = useCallback(
+    (requestId: number, outcome: "revealed" | "interrupted"): void => {
+      if (outcome === "revealed" && document.hasFocus()) {
+        const scroller = scrollerRef.current;
+        const app = scroller?.closest<HTMLElement>(".app");
+        const column = metadata.schema.findIndex((candidate) => candidate.id === goToColumnId);
+        const header = scroller?.querySelector<HTMLElement>(`th[data-grid-column="${column}"]`);
+        const cell = scroller?.querySelector<HTMLElement>(
+          `td[data-grid-row="${focusedCell.row}"][data-grid-column="${column}"]`
+        );
+        if (app && scroller && header && (focusRequested.current || (cell && document.activeElement === cell))) {
+          const appBounds = app.getBoundingClientRect();
+          const scale = app.offsetHeight > 0 ? appBounds.height / app.offsetHeight : 0;
+          if (scale > 0) {
+            const scrollerBounds = scroller.getBoundingClientRect();
+            const headerBounds = header.getBoundingClientRect();
+            const innerTop = scrollerBounds.top + scroller.clientTop * scale;
+            const innerBottom = innerTop + scroller.clientHeight * scale;
+            const top = Math.max(innerTop, headerBounds.top);
+            const bottom = Math.min(
+              innerBottom,
+              Math.max(headerBounds.bottom, cell?.getBoundingClientRect().bottom ?? 0)
+            );
+            const appTop = appBounds.top + app.clientTop * scale;
+            const outerTop = Math.max(0, appTop);
+            const outerBottom = Math.min(document.documentElement.clientHeight, appTop + app.clientHeight * scale);
+            const delta =
+              top < outerTop
+                ? top - outerTop
+                : bottom > outerBottom
+                  ? Math.min(top - outerTop, bottom - outerBottom)
+                  : 0;
+            // Keep the grid's row/column placement and reveal only its scrollable app ancestor.
+            if (bottom > top && delta !== 0) app.scrollTop += delta / scale;
+          }
+        }
+      }
+      onGoToColumnHandled(requestId, outcome);
+    },
+    [focusedCell.row, goToColumnId, metadata.schema, onGoToColumnHandled]
+  );
   const { interrupt: interruptPendingColumnReveal, isPending: columnRevealIsPending } = useGridColumnRevealLifecycle({
     busy,
     columnId: goToColumnId,
@@ -473,7 +545,7 @@ export function DataGrid({
     loadedColumnSignature,
     logicalViewContext,
     onCommit: commitColumnReveal,
-    onHandled: onGoToColumnHandled,
+    onHandled: handleColumnReveal,
     pageOffset: page.offset,
     projecting,
     requestId: goToColumnRequestId,
@@ -749,37 +821,6 @@ export function DataGrid({
     updateViewportFromScroller();
   }, [busy, logicalRowExtent, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
 
-  const viewScope = `${metadata.sessionId}:${metadata.revision}:${JSON.stringify({
-    logic: metadata.filterModel.logic ?? "and",
-    filters: metadata.filterModel.filters,
-    sort: metadata.filterModel.sort
-  })}`;
-  const applyHeaderProfileFilter = useCallback(
-    (column: ColumnSchema, filter: ColumnFilter): void => {
-      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
-      onApplyProfileFilter?.(filter);
-    },
-    [onApplyProfileFilter, reportViewState]
-  );
-  const {
-    controls: headerProfileControls,
-    headerRef: headerProfilesRef,
-    renderColumnProfile
-  } = useGridHeaderProfiles({
-    backend: metadata.backend,
-    sessionId: metadata.sessionId,
-    scrollerRef,
-    visibleColumns,
-    summaries,
-    visibleSummaryOwner: viewScope,
-    insightsOnOpen,
-    disabled: profilesDisabled,
-    disabledReason: profilesDisabledReason,
-    valueMode: profileValueMode,
-    onValueModeChange: onProfileValueModeChange,
-    onApplyFilter: onApplyProfileFilter ? applyHeaderProfileFilter : undefined,
-    onVisibleSummaryColumnsChange
-  });
   const rovingRow = visibleRows.some((row) => row.rowNumber === focusedCell.row)
     ? focusedCell.row
     : visibleRows[0]?.rowNumber;

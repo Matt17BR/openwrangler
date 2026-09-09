@@ -961,6 +961,13 @@ Pending grid navigation yields to a later focus choice, including headers and re
 original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the
 logical view changes, or its controls become disabled; its own width updates and viewport resizing retain the drag.
 
+The grid's existing header measurement reserves space for its compact header, one row and the native scrollbar.
+The profiles panel scrolls within the workspace's height; its contents do not determine that height.
+The workbench can scroll vertically when wrapped controls need more space than a small editor provides. An owned
+column reveal also exposes its header and current row in that outer viewport, preserving the grid's inner scroll
+position. Later focus choices and window blur retain precedence. Wide columns expose the available lane beside
+the sticky row labels; the grid does not require the whole column to fit in a narrower pane.
+
 ## Package and release identity
 
 The extension identity is `Matt17BR.openwrangler`; its commands and settings use `openWrangler.*`, the custom editor is

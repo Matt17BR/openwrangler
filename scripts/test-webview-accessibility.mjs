@@ -1571,7 +1571,133 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     await page.close();
   }
 
+  await verifyCompactGridWorkspace(browser);
   console.log("Applied cleaning-plan command row, responsive layout, forced colors, and tab order verified.");
+}
+
+async function verifyCompactGridWorkspace(browser) {
+  for (const scenario of [
+    { width: 274, height: 348, kind: "applied" },
+    { width: 320, height: 300, kind: "draft" },
+    { width: 435, height: 300, kind: "filter" }
+  ]) {
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1280, height: 760 });
+    try {
+      await page.goto(pathToFileURL(resolve(harnessDir, "applied-plan.html")).href, { waitUntil: "load" });
+      await page.getByRole("group", { name: "Cleaning plan" }).waitFor();
+      const target = await page.evaluate(({ kind }) => {
+        const payload = window.openWranglerSessionPayload;
+        const metadata = payload.metadata;
+        metadata.backend = "r";
+        metadata.rDataframeFlavor = "r.data.frame";
+        if (kind === "draft") {
+          metadata.draftStep = metadata.steps[0];
+          metadata.steps = [];
+        }
+        if (kind === "filter") {
+          metadata.filterModel = {
+            filters: [
+              {
+                column: "city",
+                type: "string",
+                logic: "and",
+                predicates: [{ kind: "predicate", operator: "equals", value: "London" }]
+              }
+            ],
+            sort: []
+          };
+        }
+        payload.page.rows.forEach((row, index) => {
+          row.rowLabel = `case-${String(index + 1).padStart(4, "0")}`;
+        });
+        window.dispatchEvent(
+          new MessageEvent("message", { data: { ...payload, kind: "sessionOpened" }, origin: location.origin })
+        );
+        const column = metadata.schema.at(-1);
+        return {
+          name: column.name,
+          position: column.position,
+          row: payload.page.rows[0].rowNumber
+        };
+      }, scenario);
+      const targetCell = page.locator(
+        `td[data-grid-column="${target.position}"][data-grid-row="${target.row}"] .gridCellText`
+      );
+      await targetCell.waitFor();
+      const expectedText = await targetCell.textContent();
+      await page.setViewportSize({ width: scenario.width, height: scenario.height });
+      const search = page.getByRole("combobox", { name: "Column", exact: true });
+      await search.fill(target.name);
+      const option = page.getByRole("option").filter({ hasText: target.name }).first();
+      await option.waitFor();
+      const optionVisible = await option.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return (
+          bounds.left >= 0 &&
+          bounds.right <= document.documentElement.clientWidth &&
+          bounds.top >= 0 &&
+          bounds.bottom <= document.documentElement.clientHeight &&
+          element.contains(hit)
+        );
+      });
+      if (!optionVisible) throw new Error(`Compact ${scenario.kind} column suggestion was clipped.`);
+      await search.press("Escape");
+      if (await page.getByRole("listbox").count()) throw new Error("Column-search Escape left its list open.");
+      await search.fill("");
+      await search.fill(target.name);
+      await page.getByRole("option").filter({ hasText: target.name }).first().waitFor();
+      await search.press("Enter");
+      await page.waitForFunction(
+        ({ position, row }) =>
+          document.activeElement?.matches(`td[data-grid-column="${position}"][data-grid-row="${row}"]`),
+        target
+      );
+      const exposure = await page.evaluate(({ position, row }) => {
+        const scroller = document.querySelector(".tableScroller");
+        const cell = scroller.querySelector(`td[data-grid-column="${position}"][data-grid-row="${row}"]`);
+        const header = scroller.querySelector(`th[data-grid-column="${position}"]`);
+        const gutter = scroller.querySelector("th.rowHeader");
+        const bounds = cell.getBoundingClientRect(),
+          viewport = scroller.getBoundingClientRect();
+        const scale = viewport.height / scroller.offsetHeight;
+        const left = Math.max(0, viewport.left + scroller.clientLeft * scale, gutter.getBoundingClientRect().right);
+        const right = Math.min(
+          document.documentElement.clientWidth,
+          viewport.left + (scroller.clientLeft + scroller.clientWidth) * scale
+        );
+        const top = Math.max(0, viewport.top, header.getBoundingClientRect().bottom);
+        const bottom = Math.min(document.documentElement.clientHeight, viewport.top + scroller.clientHeight * scale);
+        const visibleWidth = Math.min(bounds.right, right) - Math.max(bounds.left, left);
+        const hit = document.elementFromPoint(
+          (Math.max(bounds.left, left) + Math.min(bounds.right, right)) / 2,
+          bounds.top + bounds.height / 2
+        );
+        return {
+          visibleWidth,
+          requiredWidth: Math.min(bounds.width, right - left),
+          rowVisible: bounds.top >= top - 1 && bounds.bottom <= bottom + 1,
+          hit: cell.contains(hit),
+          text: cell.querySelector(".gridCellText").textContent,
+          viewportBounded: viewport.height <= document.documentElement.clientHeight
+        };
+      }, target);
+      if (
+        exposure.requiredWidth <= 0 ||
+        exposure.visibleWidth + 1 < exposure.requiredWidth ||
+        !exposure.rowVisible ||
+        !exposure.hit ||
+        exposure.text !== expectedText ||
+        !exposure.viewportBounded
+      ) {
+        throw new Error(`Compact ${scenario.kind} reveal was not usable: ${JSON.stringify(exposure)}.`);
+      }
+    } finally {
+      await page.close();
+    }
+  }
+  console.log("Compact applied, draft, and filtered grids preserve a visible row and usable column reveal.");
 }
 
 async function verifyStepInspectionWorkflow(browser) {
@@ -1645,6 +1771,24 @@ async function verifyFilterKeyboardWorkflow(browser) {
   await page.getByRole("complementary", { name: "Column profiles and filters" }).waitFor();
   await waitForRuntimeRequestCount(page, "getColumnValues", 1);
   await page.getByRole("checkbox").first().waitFor();
+  const wideLayout = await page.evaluate(() => {
+    const sidebar = document.querySelector(".sidebar");
+    const status = document.querySelector(".gridStatusBar");
+    return {
+      statusBottom: status.getBoundingClientRect().bottom,
+      viewportHeight: document.documentElement.clientHeight,
+      sidebarHeight: sidebar.clientHeight,
+      sidebarContentHeight: sidebar.scrollHeight
+    };
+  });
+  if (
+    wideLayout.statusBottom > wideLayout.viewportHeight + 1 ||
+    wideLayout.sidebarContentHeight <= wideLayout.sidebarHeight
+  ) {
+    throw new Error(
+      `The long filter drawer enlarged the grid instead of scrolling internally: ${JSON.stringify(wideLayout)}.`
+    );
+  }
 
   const columnAction = page.locator('th[data-column="year"] details.columnMenu summary');
   await columnAction.focus();
@@ -1702,6 +1846,28 @@ async function verifyFilterKeyboardWorkflow(browser) {
   await applySort.focus();
   await page.keyboard.press("Enter");
   await waitForRuntimeRequestCount(page, "getPage", 2);
+  const drawerAction = page.getByRole("button", { name: /^Remove sort/ }).last();
+  for (const viewport of [
+    { width: 1280, height: 760 },
+    { width: 320, height: 300 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await search.focus();
+    await drawerAction.focus();
+    const action = await drawerAction.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        active: document.activeElement === element,
+        hit: element.contains(
+          document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+        ),
+        sidebarScrollTop: document.querySelector(".sidebar").scrollTop
+      };
+    });
+    if (!action.active || !action.hit || action.sidebarScrollTop <= 0) {
+      throw new Error(`The filter drawer action was not reachable at ${viewport.width}px: ${JSON.stringify(action)}.`);
+    }
+  }
 
   await page.bringToFront();
   await page.waitForFunction(() => document.hasFocus());
@@ -1734,8 +1900,16 @@ async function verifyFilterKeyboardWorkflow(browser) {
     });
     throw new Error(`Closing the filter drawer did not restore a valid opener: ${JSON.stringify(focus)}.`);
   }
+  const openerVisible = await page.evaluate(() => {
+    const active = document.activeElement;
+    const bounds = active.getBoundingClientRect();
+    return active.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
+  });
+  if (!openerVisible) throw new Error("Closing the compact filter drawer restored an obscured opener.");
   await page.close();
-  console.log("Filter, sort, and drawer-focus keyboard workflow verified.");
+  console.log(
+    "Filter, sort, independent drawer scrolling, compact actions, and drawer-focus keyboard workflow verified."
+  );
 }
 
 async function verifyGridKeyboardWorkflow(browser) {

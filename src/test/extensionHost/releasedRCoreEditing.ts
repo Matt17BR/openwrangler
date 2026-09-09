@@ -338,18 +338,73 @@ export async function exerciseReleasedRCoreEditingCatalog(
     const duplicateCell = app.locator(`td[data-grid-row="0"][data-grid-column="${duplicateOutput.position}"]`).first();
     await duplicateCell.getByText("TRUE", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await duplicateCell.innerText()).trim(), "TRUE");
-    const duplicateCellBounds = await duplicateCell.boundingBox();
-    const duplicateViewport = await app.getByTestId("data-grid-scroller").boundingBox();
-    assert.ok(duplicateCellBounds && duplicateViewport);
+    const duplicateExposure = await duplicateCell.evaluate((element, column) => {
+      type Rect = { left: number; right: number; top: number; bottom: number; width: number; height: number };
+      type GridElement = {
+        clientWidth: number;
+        clientHeight: number;
+        clientLeft: number;
+        clientTop: number;
+        offsetWidth: number;
+        getBoundingClientRect(): Rect;
+        closest(selector: string): GridElement | null;
+        querySelector(selector: string): GridElement | null;
+        contains(target: unknown): boolean;
+        ownerDocument: {
+          activeElement: unknown;
+          documentElement: { clientWidth: number; clientHeight: number };
+          elementFromPoint(x: number, y: number): unknown;
+        };
+      };
+      const cell = element as unknown as GridElement;
+      const scroller = cell.closest(".tableScroller");
+      const workspace = cell.closest(".app");
+      const rowHeader = cell.closest("tr")?.querySelector('[role="rowheader"]');
+      const header = scroller?.querySelector(`th[data-grid-column="${column}"]`);
+      if (!scroller || !workspace || !rowHeader || !header)
+        throw new Error("The revealed R cell requires its grid, column header and row label.");
+      const clientBounds = (target: GridElement) => {
+        const rect = target.getBoundingClientRect();
+        const scale = rect.width / target.offsetWidth;
+        const left = rect.left + target.clientLeft * scale;
+        const top = rect.top + target.clientTop * scale;
+        return { left, top, right: left + target.clientWidth * scale, bottom: top + target.clientHeight * scale };
+      };
+      const viewport = clientBounds(scroller);
+      const workspaceBounds = clientBounds(workspace);
+      const documentViewport = cell.ownerDocument.documentElement;
+      const outer = {
+        left: Math.max(0, workspaceBounds.left),
+        top: Math.max(0, workspaceBounds.top),
+        right: Math.min(documentViewport.clientWidth, workspaceBounds.right),
+        bottom: Math.min(documentViewport.clientHeight, workspaceBounds.bottom)
+      };
+      const bounds = cell.getBoundingClientRect();
+      const contentLeft = Math.max(viewport.left, rowHeader.getBoundingClientRect().right);
+      const left = Math.max(bounds.left, contentLeft, outer.left);
+      const right = Math.min(bounds.right, viewport.right, outer.right);
+      const top = Math.max(viewport.top, outer.top, header.getBoundingClientRect().bottom);
+      const bottom = Math.min(viewport.bottom, outer.bottom);
+      const requiredWidth = Math.min(bounds.width, Math.max(0, viewport.right - contentLeft));
+      const hit = cell.ownerDocument.elementFromPoint((left + right) / 2, (bounds.top + bounds.bottom) / 2);
+      return {
+        requiredWidth,
+        visibleWidth: Math.max(0, right - left),
+        fullHeight: bounds.top >= top - 1 && bounds.bottom <= bottom + 1,
+        hit: hit === cell || cell.contains(hit),
+        focused: cell.ownerDocument.activeElement === cell,
+        cell: { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height },
+        viewport,
+        outer
+      };
+    }, duplicateOutput.position);
     assert.ok(
-      duplicateCellBounds.x >= duplicateViewport.x - 1 &&
-        duplicateCellBounds.y >= duplicateViewport.y - 1 &&
-        duplicateCellBounds.x + duplicateCellBounds.width <= duplicateViewport.x + duplicateViewport.width + 1 &&
-        duplicateCellBounds.y + duplicateCellBounds.height <= duplicateViewport.y + duplicateViewport.height + 1,
-      `The native R duplicate flag cell must be inside the visible grid viewport. ${JSON.stringify({
-        cell: duplicateCellBounds,
-        viewport: duplicateViewport
-      })}`
+      duplicateExposure.requiredWidth > 0 &&
+        duplicateExposure.visibleWidth + 1 >= duplicateExposure.requiredWidth &&
+        duplicateExposure.fullHeight &&
+        duplicateExposure.hit &&
+        duplicateExposure.focused,
+      `The native R duplicate flag must expose its available width and full row inside the workbench. ${JSON.stringify(duplicateExposure)}`
     );
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
