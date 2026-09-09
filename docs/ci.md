@@ -75,6 +75,9 @@ literate-documents lane. This tooling selection does not change the terminal lan
 
 ## Scheduled and release workflows
 
+The weekly Polars runtime benchmark installs the core Python runtime dependencies and runs the full CSV/Parquet
+measurement with strict thresholds.
+
 The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:
 
 - A small check compares protected `main` with the last successful scheduled run before any checkout, dependency
