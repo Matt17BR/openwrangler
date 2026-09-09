@@ -1645,15 +1645,17 @@ async function verifyCompactGridWorkspace(browser) {
       if (!optionVisible) throw new Error(`Compact ${scenario.kind} column suggestion was clipped.`);
       await search.press("Escape");
       if (await page.getByRole("listbox").count()) throw new Error("Column-search Escape left its list open.");
-      await search.fill("");
-      await search.fill(target.name);
-      await page.getByRole("option").filter({ hasText: target.name }).first().waitFor();
-      await search.press("Enter");
-      await page.waitForFunction(
-        ({ position, row }) =>
-          document.activeElement?.matches(`td[data-grid-column="${position}"][data-grid-row="${row}"]`),
-        target
-      );
+      for (let selection = 0; selection < 2; selection += 1) {
+        await search.fill("");
+        await search.fill(target.name);
+        await page.getByRole("option").filter({ hasText: target.name }).first().waitFor();
+        await search.press("Enter");
+        await page.waitForFunction(
+          ({ position, row }) =>
+            document.activeElement?.matches(`td[data-grid-column="${position}"][data-grid-row="${row}"]`),
+          target
+        );
+      }
       const exposure = await page.evaluate(({ position, row }) => {
         const scroller = document.querySelector(".tableScroller");
         const cell = scroller.querySelector(`td[data-grid-column="${position}"][data-grid-row="${row}"]`);

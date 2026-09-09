@@ -297,6 +297,38 @@ describe("App column projection", () => {
     }
   });
 
+  it("returns focus to the same cell when column search repeats an already completed reveal", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
+      const cell = await screen.findByRole("cell", { name: "value-1-row-0" });
+      const scroller = screen.getByTestId("data-grid-scroller");
+      Object.defineProperties(scroller, {
+        clientWidth: { configurable: true, value: 760 },
+        clientHeight: { configurable: true, value: 400 }
+      });
+      const search = screen.getByRole("combobox", { name: "Column" });
+      let firstScrollLeft: number | undefined;
+      postMessage.mockClear();
+      for (let selection = 0; selection < 2; selection += 1) {
+        act(() => search.focus());
+        fireEvent.change(search, { target: { value: "column-1" } });
+        fireEvent.keyDown(search, { key: "Enter" });
+        await waitFor(() => expect(cell).toHaveFocus());
+        expect(cell).toHaveAttribute("data-grid-row", "0");
+        expect(cell).toHaveAttribute("data-grid-column", "1");
+        expect(cell).toHaveTextContent("value-1-row-0");
+        firstScrollLeft ??= scroller.scrollLeft;
+        expect(scroller.scrollLeft).toBe(firstScrollLeft);
+        expect(scroller.scrollTop).toBe(0);
+      }
+      expect(runtimeRequests("getPage")).toHaveLength(0);
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
   it("reconciles the current page after a pending mutation fails during horizontal scrolling", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });

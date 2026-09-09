@@ -486,7 +486,7 @@ export function DataGrid({
           : next;
       });
       if (!targetIsVisible) return;
-      setFocusedCell((current) => (current.column === columnIndex ? current : { ...current, column: columnIndex }));
+      setFocusedCell((current) => ({ ...current, column: columnIndex }));
       const currentViewState = viewStateRef.current;
       reportViewState({
         ...currentViewState,
