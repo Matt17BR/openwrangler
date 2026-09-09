@@ -200,6 +200,10 @@ function, complete live/generated results and source isolation despite conflicti
 Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
 apply, and inspection code must preserve complete live results and source frames despite conflicting caller names.
 
+Native R frame export controls check exact C-locale CSV bytes across frame families, including Unicode headers,
+factor labels, quoting, missing values and text beyond the page cell limit. Invalid off-page text and writer failures
+must leave no artifact. The existing kernel export owner verifies the returned UTF-8 chunks and unchanged source.
+
 The native R catalog also compares complete live and generated frames with named column elements across supported
 frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
 

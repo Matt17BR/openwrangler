@@ -13451,6 +13451,35 @@ export_closed_again <- dispatch(
 )
 assert_identical(export_closed_again$kind, "dataExportClosed", "closing an R export was not idempotent")
 
+
+local({
+  original_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original_locale))
+  csv_session <- "91919191-9191-4191-8191-919191919191"
+  csv_export <- "92929292-9292-4292-8292-929292929292"
+  utf8 <- rawToChar(as.raw(c(0xc3, 0xa9)))
+  Encoding(utf8) <- "UTF-8"
+  source_environment$csv_unicode <- data.frame(text = c(utf8, NA_character_))
+  assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "public CSV test could not select the C locale")
+  source_before <- serialize(source_environment$csv_unicode, NULL, version = 3L)
+  opened <- dispatch("openSession", list(sessionId = csv_session, variableName = "csv_unicode", page = page_window()))
+  assert_identical(opened$kind, "page", "Unicode CSV session did not open")
+  on.exit({
+    dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))
+    dispatch("closeSession", list(sessionId = csv_session))
+    rm("csv_unicode", envir = source_environment)
+  }, add = TRUE)
+  exported <- dispatch("exportData", list(sessionId = csv_session, revision = 0L, exportId = csv_export, options = csv_export_options))
+  assert_identical(exported$kind, "dataExported", "Unicode CSV export did not complete")
+  chunk <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1024L))
+  expected <- c(charToRaw("\"text\"\n\""), as.raw(c(0xc3, 0xa9)), charToRaw("\"\n\n"))
+  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text under the C locale")
+  assert_identical(exported$bytes, length(expected), "public CSV export reported the wrong UTF-8 byte count")
+  assert_identical(serialize(source_environment$csv_unicode, NULL, version = 3L), source_before, "public CSV export mutated source text")
+  current <- dispatch("getPage", list(sessionId = csv_session, page = page_window()))
+  assert_identical(current$page$page, opened$page$page, "CSV export changed the confirmed page")
+})
+
 parquet_ready <- dispatch(
   "exportData",
   list(
