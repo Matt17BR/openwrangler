@@ -193,6 +193,9 @@ Requests and cancellations route through the exact owner. Restart invalidates th
 last session stops its process after bounded stdin/EOF shutdown. A forced kill is reserved for recovery or an expired
 shutdown bound.
 
+Python process and kernel requests accept configured timeouts only within the settings' declared finite numeric
+range. Invalid values use the corresponding default. Explicit per-call deadlines remain authoritative.
+
 The bounded Python stderr buffer belongs to the current process. A retired process's late stderr remains in the
 output channel history but cannot enter a replacement process's error details.
 

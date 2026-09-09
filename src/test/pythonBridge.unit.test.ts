@@ -429,22 +429,31 @@ describe("PythonBridge cancellation", () => {
 
 describe("PythonBridge transport validation and timeout isolation", () => {
   it("uses the dedicated configured deadline for a cold session open", async () => {
+    vi.useFakeTimers();
     const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
       get: <T>(key: string, fallback: T): T =>
-        (key === "sessionOpenTimeoutMs" ? 25 : key === "requestTimeoutMs" ? 5_000 : fallback) as T
+        (key === "sessionOpenTimeoutMs" ? 1_000 : key === "requestTimeoutMs" ? 5_000 : fallback) as T
     } as vscode.WorkspaceConfiguration);
     try {
       const harness = createHarness();
       const response = harness.bridge.request(openSessionRequest(remoteFileSource()));
+      const settled = vi.fn();
+      void response.then(settled, settled);
       const outcome = response.catch((error: unknown) => error);
-      await vi.waitFor(() => expect(harness.writes()[0]?.request.kind).toBe("openSession"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.writes()[0]?.request.kind).toBe("openSession");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).not.toHaveBeenCalled();
+      expect(harness.restart).not.toHaveBeenCalled();
 
+      await vi.advanceTimersByTimeAsync(1);
       const error = await outcome;
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("openSession timed out after 25 ms");
+      expect((error as Error).message).toContain("openSession timed out after 1000 ms");
       expect(harness.restart).toHaveBeenCalledOnce();
     } finally {
       configuration.mockRestore();
+      vi.useRealTimers();
     }
   });
 });
