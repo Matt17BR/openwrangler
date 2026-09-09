@@ -8,8 +8,8 @@ Every pull request reports the same five required product checks:
   documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest. It then builds the same
   checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
-- **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
-  plus the native kernel-agent shard on three separate Linux workers. It also requires the existing macOS and Windows
+- **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
+  catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
   installed R notebook journeys unless the change is proved independent of R.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
@@ -20,7 +20,7 @@ The Python runtime job reports the 20 slowest test phases, including fixture set
 investigation.
 
 Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. Native cancellation
-contracts run once, with the frame/interactive-transport shard; scheduled R 4.4 qualification includes them through the
+contracts run once, with the frame/catalog/transport shard; scheduled R 4.4 qualification includes them through the
 full R command. Each shard retains serial execution within its own worker. Source keeps its existing Node-only test owner.
 These Linux workers move the hosted image's unused `google-chrome.sources` file outside APT's source directory before
 R installation. This keeps a Chrome repository outage from blocking R setup or its system dependencies. Required

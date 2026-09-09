@@ -445,15 +445,11 @@ test("required R result checks installed caller and selected platform outcomes i
   }
 });
 
-test("CI schedules every existing native R phase exactly once and cancellation on one shard", () => {
+test("CI schedules every existing native R phase on two workers and cancellation once", () => {
   const runtime = workflow.jobs["r-runtime"];
   assert.equal(runtime.strategy?.["fail-fast"], false);
   const entries = runtime.strategy.matrix.include;
-  assert.deepEqual(entries.map((entry) => entry.shard).sort(), [
-    "catalog-and-process-transport",
-    "frame-and-interactive-transport",
-    "kernel-agent"
-  ]);
+  assert.equal(entries.length, 2);
   const commands = runtime.steps.filter(
     (step) => step.run?.includes("scripts/run-r-contract-tests.mjs") || step.run === "npm run test:scripts:native"
   );
@@ -471,10 +467,7 @@ test("CI schedules every existing native R phase exactly once and cancellation o
     assert.equal(typeof entry.native_cancellation, "boolean");
     scheduled.push(...selectRContractPhases(phases, { kind: "shard", id: entry.shard }).map((phase) => phase.id));
   }
-  assert.deepEqual(
-    entries.filter((entry) => entry.native_cancellation).map((entry) => entry.shard),
-    ["frame-and-interactive-transport"]
-  );
+  assert.equal(entries.filter((entry) => entry.native_cancellation).length, 1);
   assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
 });
 

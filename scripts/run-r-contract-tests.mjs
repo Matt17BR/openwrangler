@@ -134,12 +134,15 @@ export const R_CONTRACT_SHARDS = Object.freeze([
 
 export const R_CONTRACT_SHARD_ALIASES = Object.freeze([
   Object.freeze({
-    id: "frame-and-interactive-transport",
-    phaseIds: Object.freeze([...R_FRAME_CONTRACT_CASES.map(framePhaseId), "kernel-transport", "interactive-transport"])
-  }),
-  Object.freeze({
-    id: "catalog-and-process-transport",
-    phaseIds: Object.freeze(["catalog", "typescript-frame", "process-transport"])
+    id: "frame-catalog-and-transport",
+    phaseIds: Object.freeze([
+      ...R_FRAME_CONTRACT_CASES.map(framePhaseId),
+      "kernel-transport",
+      "interactive-transport",
+      "catalog",
+      "typescript-frame",
+      "process-transport"
+    ])
   })
 ]);
 

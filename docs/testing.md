@@ -94,14 +94,13 @@ For Native R changes, run the full contract suite or the relevant group:
 
 ```bash
 npm run test:r-contract
-npm run test:r-contract:frame-and-interactive-transport
-npm run test:r-contract:catalog-and-process-transport
+npm run test:r-contract:frame-catalog-and-transport
 node scripts/run-r-contract-tests.mjs --shard kernel-agent
 npm run test:scripts:native
 ```
 
-The grouped commands keep real-R process tests serial while separating frame and interactive-transport, catalog and
-process-transport, and kernel-agent failures.
+The grouped commands separate frame/catalog/transport checks from kernel-agent checks. Each group runs its phases
+serially, with a fresh child process for each phase.
 Nested Rscript contract programs use the existing warning assertion inside the child process, so an unexpected
 warning fails even when the child handles a later error. Their fresh-process isolation and original assertions remain.
 
@@ -625,23 +624,9 @@ native R catalog tests execute the historical infinity selections through live a
 
 ## Pull-request CI
 
-The pull-request workflow requires five jobs:
-
-- Source contracts: formatting, lint, types, generated protocol/reference output, documentation, dependency locks,
-  licenses, the retained script contracts, and Vitest.
-- Python runtime contracts: Ruff, Pyright, and Pytest.
-- Native R frame, kernel, and transport contracts: the three R 4.5 selections above on separate Linux workers, plus
-  installed R notebook acceptance in macOS and Windows VS Code.
-- Packaged VS Code smoke: one production VSIX opened in the declared minimum VS Code 1.106.0 and current stable VS
-  Code.
-- Windows filesystem and process contracts: Windows-only export, dependency, and shutdown behavior.
-
-Branch protection requires all five jobs and the separate CodeQL gate to pass. A proved edit of existing Markdown
-documentation lets the Python, native R, installed R, and Windows jobs report an explicit omission. Native R source has
-a separate proof for existing Python source and documentation edits; installed R, Python and Windows retain their
-documentation-only scope.
-Source and packaged smoke still run. See [CI](ci.md) for the exact paths, commit binding, failure behavior and reduced
-fresh R environment coverage.
+See [CI](ci.md#pull-requests) for required jobs, platform coverage and the proof that permits runtime checks to be
+omitted for independent changes. The local source equivalent is `npm run check:pr`; installed-editor checks use the
+commands below.
 
 ## Failure-artifact allowlist
 
