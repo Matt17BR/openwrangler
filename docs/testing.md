@@ -115,6 +115,11 @@ the tracker makes one bounded identity reread. It retires that root only when th
 or a different start identity. Any same-identity live result, including a restored marker, or an unreadable reread
 retains the original failure. Other ownership disagreements fail without that extra read.
 
+The periodic POSIX watcher schedules its next observation after the previous one finishes, leaving a 10 ms delay
+between periodic reads. Initial, explicit, final and pre-signal observations keep their existing timing and may run
+sooner. Each native `ps` call retains its 250 ms limit; observation errors still fail the phase. The delay reduces
+continuous synchronous polling, but does not guarantee timely callbacks or resolve macOS cancellation.
+
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
 closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
 verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;

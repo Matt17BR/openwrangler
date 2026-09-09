@@ -709,14 +709,15 @@ export function createPosixProcessTracker(
     latch(error);
     // The latched failure is surfaced through the phase and settlement paths.
   }
-  const interval = setInterval(() => {
+  const observationTimer = setTimeout(() => {
     try {
       observe();
+      observationTimer.refresh();
     } catch {
-      clearInterval(interval);
+      clearTimeout(observationTimer);
     }
   }, observationIntervalMs);
-  interval.unref?.();
+  observationTimer.unref?.();
   return Object.freeze({
     failure: failurePromise,
     observe,
@@ -745,7 +746,7 @@ export function createPosixProcessTracker(
       if (failure) throw failure;
     },
     stop: () => {
-      clearInterval(interval);
+      clearTimeout(observationTimer);
       observed.clear();
     }
   });
