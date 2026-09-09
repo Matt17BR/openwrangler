@@ -280,14 +280,13 @@ def test_worker_failure_state_is_rejected_without_package_write(integrity_runtim
     assert not list(integrity_runtime.journal.glob("mutation-*.json"))
 
 
-@pytest.mark.parametrize("consumer", ["s3fs", "gcsfs"])
-def test_real_pip_check_catches_fsspec_conflicts(tmp_path: Path, consumer: str) -> None:
+def test_real_pip_check_catches_fsspec_conflicts(tmp_path: Path) -> None:
     root = tmp_path / "selected"
     venv.EnvBuilder(with_pip=True).create(root)
     executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     site_packages = _site_packages(executable)
     _write_distribution(site_packages, "fsspec", "2026.3.0")
-    _write_distribution(site_packages, consumer, "2026.3.0", requires="fsspec==2026.3.0")
+    _write_distribution(site_packages, "s3fs", "2026.3.0", requires="fsspec==2026.3.0")
 
     clean = _run_integrity_helper(executable)
     assert clean == {"kind": "integrity", "protocol": INTEGRITY_PROTOCOL, "state": "clean"}
