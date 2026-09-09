@@ -676,10 +676,18 @@ native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acc
 extension records drive installation and expected versions. Both tooling scopes keep the same private R package
 roots and IRkernel readiness checks.
 
+The manual macOS and Windows R jobs also prepare a separate library for source contracts through the same package
+owner. This selection includes bit64 and the native-frame prerequisites, without IRkernel or editor tooling.
+Installation, version checks and namespace loading must succeed in that private library before the five existing
+phases run: `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `kernel:text-fill-and-cast` and
+`kernel:group-pivot-and-export`. The caller removes its root only after all preparation and phases succeed; any
+failure retains the root. These checks repeat dependency installation, including macOS collapse compilation. They
+do not replace the subsequent installed-editor journey or the separate R 4.4 qualification.
+
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
-ownership and rejected inputs through the command seam without starting R. Changes to this selection also require a
-fresh notebook core run and a full tooling/literate run against the same supplied VSIX; graph size alone does not
-establish setup-time savings.
+ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package
+selection also require a fresh notebook core run and a full tooling/literate run against the same supplied VSIX;
+graph size alone does not establish setup-time savings.
 
 `src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
 missing or mismatched extensions, commands and CLI configuration. Changes to terminal tooling selection also require
