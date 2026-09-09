@@ -964,8 +964,9 @@ class DuckDBEngine(DataFrameEngine):
                 raise EngineError(str(error)) from error
             visible = self._visible_columns(frame)
             unselected = [name for name in visible if name not in set(selected)]
-            source_order = _unique_internal(columns, "__ow_pivot_source_order")
-            pivot_order = _unique_internal([*columns, source_order], "__ow_pivot_selected_order")
+            reserved = [*columns, *outputs]
+            source_order = _unique_internal(reserved, "__ow_pivot_source_order")
+            pivot_order = _unique_internal([*reserved, source_order], "__ow_pivot_selected_order")
             # The private row identity belongs to the source capture, so it may
             # no longer describe the current relation order after an earlier
             # committed sort. Pivoting creates fresh row identities anyway;
@@ -1001,8 +1002,9 @@ class DuckDBEngine(DataFrameEngine):
             values_from = bound_column_name(params["valuesFrom"], kind)
             columns = self._columns(frame)
             types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
-            source_order = _unique_internal(columns, "__ow_pivot_wider_source_order")
-            reserved = [*columns, source_order]
+            reserved = [*columns, *output_names]
+            source_order = _unique_internal(reserved, "__ow_pivot_wider_source_order")
+            reserved.append(source_order)
             group_marker = _unique_internal(reserved, "__ow_pivot_wider_group")
             reserved.append(group_marker)
             identifier_keys = []
@@ -4921,8 +4923,9 @@ def _ow_pivot_longer(df, params):
     if row_count and row_count > 2147483647 // len(selected):
         raise ValueError("Pivot longer would exceed the portable 2,147,483,647-row limit.")
     unselected = [name for name in columns if name not in set(selected)]
-    source_order = _ow_unique(columns, "__ow_pivot_source_order")
-    pivot_order = _ow_unique(columns + [source_order], "__ow_pivot_selected_order")
+    reserved = [*columns, *outputs]
+    source_order = _ow_unique(reserved, "__ow_pivot_source_order")
+    pivot_order = _ow_unique([*reserved, source_order], "__ow_pivot_selected_order")
     branches = []
     for ordinal, selected_name in enumerate(selected):
         projections = [_ow_ident(name) for name in unselected]
@@ -5041,8 +5044,9 @@ def _ow_pivot_wider(df, params):
     ).fetchone()
     if duplicate is not None:
         raise ValueError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
-    source_order = _ow_unique(columns, "__ow_pivot_wider_source_order")
-    reserved = [*columns, source_order]
+    reserved = [*columns, *output_names, values_from]
+    source_order = _ow_unique(reserved, "__ow_pivot_wider_source_order")
+    reserved.append(source_order)
     group_marker = _ow_unique(reserved, "__ow_pivot_wider_group")
     reserved.append(group_marker)
     identifier_keys = []

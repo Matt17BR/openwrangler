@@ -351,6 +351,10 @@ choices and this check; their programmatic/generated multiplication and modulo p
 Generated Sort Rows preserves columns whose names coincide with internal sort helpers, including after an earlier
 Rename or when a saved program runs on new input. Ties keep their input order, and missing sort keys are rejected.
 
+Pivot Longer and Pivot Wider preserve requested output names that coincide with temporary columns, including case
+and suffix variants, in live execution and generated code. Saved Pivot Wider programs reject missing value columns
+even when their names coincide with those helpers.
+
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
 generated code. Saved Drop Duplicates and Mark Duplicates programs reject missing duplicate keys, including names
 that coincide with internal row ordinals.

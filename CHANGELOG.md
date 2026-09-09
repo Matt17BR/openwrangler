@@ -24,6 +24,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- DuckDB Pivot Longer and Pivot Wider preserve requested output columns named like internal ordering helpers.
+  Saved Pivot Wider programs reject missing value columns instead of using an internal helper as input.
 - Generated DuckDB Sort Rows preserves user columns named like internal sort helpers and keeps tied rows in input order.
 - Generated DuckDB Drop Duplicates and Mark Duplicates reject missing input keys named like internal row ordinals.
 - Selecting a different applied step clears the pending deletion confirmation.

@@ -498,6 +498,10 @@ Generated Sort Rows, Drop Duplicates and Mark Duplicates reserve current input n
 temporary row ordinals. Missing requested keys are rejected; an internal ordinal cannot supply them. Native
 case-insensitive key binding remains valid. Sort Rows preserves every user column and input order within ties.
 
+Pivot Longer and Pivot Wider reserve requested output names alongside input names when allocating temporary columns,
+in live and generated execution. Generated Pivot Wider also reserves its requested value-column name so a missing
+input cannot bind to a synthesized helper. These reservations use schema metadata without evaluating source rows.
+
 Generated queries execute their composed SQL on the input relation's connection, so a same-named table or function
 on the module's default connection cannot substitute different data. Each call removes its unused query view before
 returning the native lazy result; earlier returned results remain independent of subsequent helper calls.
