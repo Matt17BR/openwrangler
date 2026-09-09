@@ -210,6 +210,9 @@ Rename, Select Columns and Drop Columns controls require no added result hash wh
 source identities and connection ownership. Their session cases cover Preview, Apply, generated output and Undo;
 computed Formula and Custom errors must still refuse before a later Drop. Grouped Fill controls distinguish lazy plan
 construction from refusal during live result validation or generated execution.
+Generated Sort Rows controls compare all columns, native types and stable ties with nulls, including helper-name
+collisions, case-insensitive keys, extra input columns and a preceding Rename. Missing ordinary or helper-named keys
+must fail. A public CSV case compares Preview, Apply and the returned program while preserving the source bytes.
 The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
 and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
 while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.

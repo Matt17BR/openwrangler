@@ -1311,7 +1311,7 @@ class DuckDBEngine(DataFrameEngine):
         prefix = "    "
         if kind == "sortRows":
             rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
-            return [f"{prefix}df = _ow_query(df, {_filter_query([], {'filters': [], 'sort': rules})!r})"]
+            return [f"{prefix}df = _ow_sort(df, {rules!r})"]
         if kind == "filterRows":
             # The runtime helper receives the current columns so unknown saved
             # filters remain ignorable after an earlier drop/rename step.
@@ -3959,6 +3959,22 @@ def _ow_valid(identifier, raw_type):
     if _ow_is_float(raw_type):
         return "(" + identifier + " IS NOT NULL AND NOT isnan(" + identifier + "))"
     return identifier + " IS NOT NULL"
+
+
+def _ow_sort(df, rules):
+    # Reserve requested keys too, so the temporary ordinal cannot hide a missing key.
+    names = [*_ow_columns(df), *(rule["column"] for rule in rules)]
+    order_name = _ow_ident(_ow_unique(names, "__ow_sort_order"))
+    order = ", ".join(
+        _ow_ident(rule["column"]) + " " + rule.get("direction", "asc").upper()
+        + " NULLS " + rule.get("nulls", "last").upper()
+        for rule in rules
+    )
+    return _ow_query(
+        df,
+        "SELECT * EXCLUDE (" + order_name + ") FROM (SELECT *, row_number() OVER () AS "
+        + order_name + " FROM ow) AS sorted ORDER BY " + order + ", " + order_name,
+    )
 
 
 def _ow_filter(df, model):

@@ -348,6 +348,9 @@ floating and Decimal inputs, division and power retain native behavior. BIGNUM o
 choices and this check; their programmatic/generated multiplication and modulo precision gap remains in
 [#1094](https://github.com/Matt17BR/openwrangler/issues/1094).
 
+Generated Sort Rows preserves columns whose names coincide with internal sort helpers, including after an earlier
+Rename or when a saved program runs on new input. Ties keep their input order, and missing sort keys are rejected.
+
 Drop Duplicates retains original floating values, including negative zero in LIST and STRUCT keys, in live and
 generated code.
 

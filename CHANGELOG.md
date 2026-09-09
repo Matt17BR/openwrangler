@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated DuckDB Sort Rows preserves user columns named like internal sort helpers and keeps tied rows in input order.
 - Selecting a different applied step clears the pending deletion confirmation.
 - Polars Floor, Ceiling and Round preserve valid Decimal results without overflowing an intermediate value,
   including in file previews and generated code.
