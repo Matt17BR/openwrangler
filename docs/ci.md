@@ -9,15 +9,16 @@ Every pull request reports the same five required product checks:
   checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock and runs the two frame/transport shards
-  plus the native kernel-agent shard.
+  plus the native kernel-agent shard on three separate Linux workers. It also requires the existing macOS and Windows
+  installed R notebook journeys for changes beyond proved documentation edits.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, plus the
   DuckDB owner's selected-file import cases against actual local-drive paths.
 
-Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. The required
-R job runs native cancellation contracts before its runtime shards; scheduled R 4.4 qualification includes them
-through the full R command. Source keeps its existing Node-only test owner.
+Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. Native cancellation
+contracts run once, with the frame/interactive-transport shard; scheduled R 4.4 qualification includes them through the
+full R command. Each shard retains serial execution within its own worker. Source keeps its existing Node-only test owner.
 
 Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python and Windows
 run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing regular,
@@ -32,11 +33,19 @@ this proof and its tests in the same change.
 
 This policy reduces fresh R 4.5 environment checks during sequences of isolated Python changes. An omission is not
 a newly executed or transferred R success; it can delay discovery of unrelated hosted-environment regressions.
-Scheduled R 4.4 qualification does not replace R 4.5 coverage. Installed-editor and release qualification remain
-separate from these pull-request decisions.
+Scheduled R 4.4 qualification does not replace R 4.5 coverage. The additional Python-source omission applies only to
+the native source suite. Installed R retains the narrower documentation-only omission because its preparation also
+packages the extension and sets up Jupyter. Release qualification remains separate.
 
-Each runtime has a cancellable execution job and a short required-result job. The latter reports success only for
-completed execution or a proved omission with actually skipped execution.
+Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
+execution or a proved omission with actually skipped execution. The R result also checks both installed workflow calls
+and their selected platform job results. Missing, canceled or skipped selected jobs cannot satisfy it, even if a
+misconfigured workflow call otherwise reports success.
+
+The installed jobs reuse `released-jupyter.yml` at the same commit as the caller. Manual dispatch remains available for
+diagnosis; there is no second pull-request trigger. Their preparation, dependencies and artifact safeguards have one
+owner. Parallel Linux shards repeat environment setup on separate workers, and installed qualification adds two
+platform workers. Assess total wall time and runner cost together when changing this composition.
 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
 NUL-delimited Git diff; additions, deletions, renames, mode changes, changes outside the allowed paths, empty diffs,
@@ -74,10 +83,12 @@ resolved by their existing journey. Private package-version and kernel-readiness
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane. This tooling selection does not change the terminal lane's R package or IRkernel checks.
 
-The manual `macos-r` and `windows-r` released-Jupyter jobs run the canonical `kernel:numeric-portability` source case
+The `macos-r` and `windows-r` released-Jupyter jobs run the canonical `kernel:numeric-portability` source case
 before opening the editor. It checks the platform-sensitive arithmetic, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS keeps comprehensive installed coverage; Windows keeps
 its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for dependencies and execution bounds.
+These local R jobs install only Jupyter's Python client and its dependencies for the kernel-readiness probe. Python
+dataframe engines and development tools remain with the jobs that execute them.
 
 ## Scheduled and release workflows
 
