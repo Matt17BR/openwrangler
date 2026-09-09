@@ -185,21 +185,22 @@ def _write_json_string(value: str, writer: _StrictJsonWriter) -> None:
         writer.write(value)
         writer.write('"')
         return
-    run_start = 0
-    for index, character in enumerate(value):
-        codepoint = ord(character)
-        escaped = _escaped_json_character(character, codepoint)
-        if escaped is None and index - run_start < _JSON_STRING_CHUNK_CHARACTERS:
+    for offset in range(0, len(value), _JSON_STRING_CHUNK_CHARACTERS):
+        chunk = value[offset : offset + _JSON_STRING_CHUNK_CHARACTERS]
+        if chunk.isascii() and _JSON_STRING_ESCAPE.search(chunk) is None:
+            writer.write(chunk)
             continue
-        if run_start < index:
-            writer.write(value[run_start:index])
-        if escaped is not None:
+        run_start = 0
+        for index, character in enumerate(chunk):
+            escaped = _escaped_json_character(character, ord(character))
+            if escaped is None:
+                continue
+            if run_start < index:
+                writer.write(chunk[run_start:index])
             writer.write(escaped)
             run_start = index + 1
-        else:
-            run_start = index
-    if run_start < len(value):
-        writer.write(value[run_start:])
+        if run_start < len(chunk):
+            writer.write(chunk[run_start:])
     writer.write('"')
 
 
