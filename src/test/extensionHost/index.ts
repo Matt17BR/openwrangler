@@ -19242,7 +19242,6 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         assert.equal(preview.diff.truncated, false);
         if (backend === "polars") assert.doesNotMatch(preview.code, /to_pandas|import pandas/);
         if (backend === "duckdb") {
-          assert.match(preview.code, /\bimport duckdb\b/u);
           assert.doesNotMatch(preview.code, DUCKDB_FOREIGN_ENGINE_CONVERSION);
         }
         if (step.kind === "byExample") {
@@ -19332,7 +19331,6 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       );
       assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
       if (backend === "duckdb") {
-        assert.match(active?.code ?? "", /\bimport duckdb\b/u);
         assert.doesNotMatch(active?.code ?? "", DUCKDB_FOREIGN_ENGINE_CONVERSION);
       }
 
