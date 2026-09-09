@@ -57,6 +57,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - DuckDB notebook queries and captures release their temporary views without closing the user's connection.
 - DuckDB Formula rejects lossy results when mixing signed and unsigned integer types in addition, subtraction,
   multiplication and modulo. Correct native results retain their types, with matching generated code.
+- DuckDB Formula checks BIGNUM multiplication and modulo in programmatic and generated plans. Selected BIGNUM
+  operands outside the signed 128-bit range can cause refusal even when the native result is exact; zero identities
+  remain supported.
 - Pandas Formula rejects integer wraparound and lossy promotion in addition, subtraction, multiplication and
   nonnegative integer powers. Correct native results retain their types, with matching generated code.
 - Changing operations clears validation errors from the previous form.

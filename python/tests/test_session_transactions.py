@@ -657,9 +657,20 @@ def test_duckdb_structural_public_steps_preserve_data_without_result_scans(
         manager.close_all()
 
 
-@pytest.mark.parametrize(("operator", "right"), [("add", 1), ("subtract", 2**100), ("multiply", 1), ("modulo", 2)])
+@pytest.mark.parametrize(
+    ("operator", "right", "left_type", "left", "message"),
+    [
+        ("add", 1, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
+        ("subtract", 2**100, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
+        ("multiply", 1, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
+        ("modulo", 2, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
+        ("multiply", 1, "BIGNUM", 2**100 + 1, "integer Formula result is not exact"),
+        ("modulo", 2, "BIGNUM", 2**100 + 1, "integer Formula result is not exact"),
+        ("multiply", 1, "BIGNUM", 2**200, "outside the signed 128-bit"),
+    ],
+)
 def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_correction(
-    tmp_path: Path, operator: str, right: int
+    tmp_path: Path, operator: str, right: int, left_type: str, left: int, message: str
 ) -> None:
     import duckdb
 
@@ -677,8 +688,8 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
         prepare = custom_step(
             "native-integers",
             "result = df.project(\"*, CASE WHEN ow=201 THEN '"
-            + str(2**100 + 1)
-            + "'::HUGEINT ELSE 0::HUGEINT END AS lhs, '"
+            + str(left)
+            + f"'::{left_type} ELSE 0::{left_type} END AS lhs, '"
             + str(right)
             + "'::UHUGEINT AS rhs\")",
         )
@@ -698,7 +709,7 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
             "params": {"leftColumn": columns[1], "rightColumn": columns[2], "operator": operator, "newColumn": "bad"},
         }
         # Both the offending row and the output column are outside the requested page.
-        with pytest.raises(EngineError, match="integer Formula result is not exact"):
+        with pytest.raises(EngineError, match=message):
             manager.preview_step(sid, session.revision, invalid, 0, 200, column_limit=3)
         assert session_state(session) == before
         assert session.draft_frame is None
@@ -706,6 +717,23 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
         assert session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs FROM ow") == committed_rows
         assert session.engine._terminal_rows(session.original, "SELECT * FROM ow") == original_rows
         assert path.read_bytes() == source_bytes
+
+        if left_type == "BIGNUM":
+            bound_invalid = deepcopy(invalid)
+            bound_invalid["params"]["leftColumn"] = {**columns[1], "position": 1}
+            bound_invalid["params"]["rightColumn"] = {**columns[2], "position": 2}
+            drop = {
+                "id": "drop-hidden-result",
+                "kind": "dropColumns",
+                "params": {"columns": [{"id": "c:bad", "name": "bad", "position": 3}]},
+            }
+            namespace: dict[str, Any] = {}
+            exec(session.engine.compile_plan([*session.bound_plan, bound_invalid, drop]), namespace)
+            with duckdb.connect() as connection:
+                source = connection.read_csv(str(path))
+                with pytest.raises(duckdb.Error, match=message):
+                    namespace["clean_data"](source)
+                assert source.fetchall() == [(index,) for index in range(202)]
 
         corrected = {
             "id": "corrected",
@@ -721,7 +749,12 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
         namespace: dict[str, Any] = {}
         exec(applied["code"], namespace)
         generated = namespace["clean_data"](duckdb.read_csv(str(path)))
-        assert list(map(str, generated.types)) == ["BIGINT", "HUGEINT", "UHUGEINT", "HUGEINT"]
+        assert list(map(str, generated.types)) == [
+            "BIGINT",
+            left_type,
+            "UHUGEINT",
+            "DOUBLE" if left_type == "BIGNUM" else "HUGEINT",
+        ]
         assert generated.fetchall() == expected
         manager.undo_step(sid, session.revision, 0, 200)
         redone = manager.redo_step(sid, session.revision, 0, 200)

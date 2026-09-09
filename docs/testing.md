@@ -399,7 +399,10 @@ isolation without changing the other operations' behavior.
 `python/tests/test_duckdb_engine.py` owns fixed-width integer promotion checks in both signed/unsigned operand orders
 and protection from caller-defined macros. Its cases with volatile inputs distinguish metadata inspection from
 readiness and later retrieval, checking the operand pair used by each evaluation. Complete generated programs must
-refuse before a later projection can discard an erroneous Formula result. These cases do not establish BIGNUM support.
+refuse before a later projection can discard an erroneous Formula result. BIGNUM multiplication and modulo cases
+cover both operand positions, the signed 128-bit bounds, unsigned counterparts, native identities, missing values
+and the distinction between precision loss and an unavailable exactness check. They retain native result types and
+compare complete generated programs under the same finite policy; they do not establish general BIGNUM editing.
 
 `python/tests/test_session_transactions.py` owns Pandas and DuckDB refusal for rows beyond the previewed page,
 preservation of confirmed state and Redo history, successful correction and replay. Its Arrow cases also verify

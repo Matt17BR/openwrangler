@@ -574,10 +574,17 @@ resolves from the built-in catalog, so caller macros cannot replace the guard's 
 not evaluate source values. The embedded check adds native work and may allocate hash state for distinct operand
 pairs; it does not retain a frame or introduce a Python row loop. Generated code applies the same check and includes
 its helpers once under the existing code-size limit.
+Multiplication and modulo also check integer operand pairs containing BIGNUM. Each selected BIGNUM operand must fit
+the signed 128-bit range before conversion to bounded decimal text and exact integer arithmetic. Fixed-width unsigned
+counterparts retain their full range. Outside that bound, only a zero-product or unit-divisor identity that agrees
+with the native zero result is accepted; null operands and modulo by zero retain native behavior. Other out-of-range
+pairs refuse because exactness is unavailable, even when their native result happens to be exact. In-range precision
+loss keeps the existing inexact-result error. This guard adds native evaluation and distinct-pair hash state; it does
+not add a second full-result scan. BIGNUM remains unavailable in numeric form choices, but programmatic and generated
+plans receive the same guard.
+
 Other native result types, explicit floating or Decimal operands, division, power and By Example retain their existing
-paths. BIGNUM source operands are outside this check and remain unavailable in numeric form choices. Programmatic or
-generated BIGNUM multiplication and modulo can still lose precision; that separate gap is tracked in
-[#1094](https://github.com/Matt17BR/openwrangler/issues/1094).
+paths. BIGNUM addition and subtraction also retain native behavior.
 
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
