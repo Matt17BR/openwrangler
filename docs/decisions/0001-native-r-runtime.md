@@ -67,7 +67,8 @@ same rule at each step, including when a later Custom Code step inspects the res
 stable column identity are separate from these element names.
 Transform by Example validates names on its derived values before the final capture removes that metadata.
 One-hot encoding preserves the [category and empty-input rules](../architecture.md#native-r) in both live and
-generated execution, including duration columns.
+generated execution, including duration columns. Convert Type to text retains character storage for an empty duration
+column, so the generated result keeps the requested schema.
 
 The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
 metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the

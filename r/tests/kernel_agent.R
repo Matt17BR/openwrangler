@@ -4444,6 +4444,7 @@ source_environment$cast_frame <- data.frame(
   date_text = c("2024-02-29", "2024-2-29", NA_character_),
   datetime_text = c("2024-02-29T12:34:56.123456Z", "2024-02-29", "bad"),
   number = c(pi, NaN, Inf),
+  duration = as.difftime(c(-1.5, NA_real_, 2), units = "mins"),
   row.names = c("cast-a", "cast-b", "cast-c")
 )
 cast_source_before <- unserialize(serialize(source_environment$cast_frame, NULL, version = 3L))
@@ -4477,6 +4478,7 @@ cast_cases <- list(
   list(id = "cast-boolean", position = 3L, name = "boolean_text", dtype = "boolean"),
   list(id = "cast-date", position = 4L, name = "date_text", dtype = "date"),
   list(id = "cast-datetime", position = 5L, name = "datetime_text", dtype = "datetime"),
+  list(id = "cast-duration", position = 7L, name = "duration", dtype = "string"),
   list(id = "cast-string", position = 6L, name = "number", dtype = "string")
 )
 cast_revision <- 0L
@@ -4546,6 +4548,7 @@ assert_identical(
   c("3.1415926535897931", "NaN", "Inf"),
   "generated R string Cast changed exact numeric formatting"
 )
+assert_identical(cast_generated$duration, c("-1.5 mins", NA_character_, "2 mins"), "generated duration Cast changed signs, units or missing values")
 assert_identical(row.names(cast_generated), row.names(cast_source_before), "generated R Cast changed row names")
 assert_identical(
   get("cast_frame", envir = .GlobalEnv, inherits = FALSE),
@@ -4553,6 +4556,22 @@ assert_identical(
   "generated R Cast mutated its source dataframe"
 )
 rm("cast_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+for (empty in c(TRUE, FALSE)) {
+  changed <- if (empty) cast_source_before[FALSE, , drop = FALSE] else cast_source_before
+  expected <- if (empty) cast_generated[FALSE, , drop = FALSE] else cast_generated
+  if (!empty) {
+    changed$duration <- as.difftime(rep(NA_real_, nrow(changed)), units = "mins")
+    expected$duration <- rep(NA_character_, nrow(expected))
+  }
+  source_bytes <- serialize(changed, NULL, version = 3L)
+  evaluation_environment <- new.env(parent = baseenv())
+  evaluation_environment$cast_frame <- changed
+  eval(parse(text = cast_apply$code), envir = evaluation_environment)
+  assert_identical(typeof(evaluation_environment$open_wrangler_result$duration), "character", "generated empty or missing duration Cast lost its string type")
+  assert_identical(evaluation_environment$open_wrangler_result, expected, "generated duration Cast changed the complete typed frame")
+  assert_identical(serialize(evaluation_environment$cast_frame, NULL, version = 3L), source_bytes, "generated duration Cast changed source storage or metadata")
+}
 
 cast_inspection <- inspect_step(
   cast_session_id,

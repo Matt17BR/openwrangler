@@ -209,6 +209,9 @@ duration/text case checks Preview, Apply, generated values and Undo against the 
 C-locale controls verify equivalent text encodings, first-seen signed-zero duration labels, and mixed One-hot and
 Multi-label plans with character or factor input. They restore the locale and preserve exact source storage.
 
+The existing Cast plan checks duration units, signs and missing values, then executes its complete generated program
+on typed-empty and all-missing-duration inputs. Full-frame comparison includes output types, row names and source storage.
+
 The existing scalar-categorical kernel case verifies that integer64 One-hot Encode omits unused arithmetic code,
 retains primitive validation, and includes the arithmetic dependencies needed by a later Formula's right operand.
 

@@ -338,6 +338,8 @@ One-hot encoding creates no indicators for empty or all-missing duration columns
 no indicators; other selected columns can still contribute valid categories. Equivalent text encodings produce the
 same categories in live and generated code, including under the C locale. Retained source columns keep their storage.
 
+Convert Type to text produces an empty character column when a duration input has no rows, including in generated code.
+
 The complete current operation set has direct native live, generated-code, and replay contracts. The exact names and
 parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with
 double-quote syntax. Parquet export additionally requires `nanoparquet` 0.5.1 or newer in the selected R environment,
