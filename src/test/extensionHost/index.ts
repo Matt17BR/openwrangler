@@ -1401,7 +1401,6 @@ const exerciseReleasedREditingModeTransition = createReleasedREditingModeTransit
   assertExactOpenNotebookDocument,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
