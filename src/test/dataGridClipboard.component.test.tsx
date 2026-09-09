@@ -1408,7 +1408,7 @@ describe("DataGrid clipboard interactions", () => {
     expect(writeText).toHaveBeenCalledExactlyOnceWith("city\nMilan\nParis");
   });
 
-  it("does not let an old menu copy completion close a reopened header menu", async () => {
+  it("does not let an old menu copy completion close a header menu reopened after Escape", async () => {
     const delayedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => delayedWrite.promise);
     renderGrid();
@@ -1423,14 +1423,18 @@ describe("DataGrid clipboard interactions", () => {
     fireEvent.click(summary!);
     details!.open = true;
     fireEvent(details!, new Event("toggle", { bubbles: true }));
-    fireEvent.click(within(details!).getByRole("button", { name: "Copy column city" }));
+    const copyAction = within(details!).getByRole("button", { name: "Copy column city" });
+    fireEvent.click(copyAction);
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("city\nMilan\nParis"));
 
-    details!.open = false;
+    act(() => copyAction.focus());
+    fireEvent.keyDown(copyAction, { key: "Escape", bubbles: true });
+    expect(details).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
     fireEvent(details!, new Event("toggle", { bubbles: true }));
-    details!.open = true;
+    fireEvent.click(summary!);
+    expect(details).toHaveAttribute("open");
     fireEvent(details!, new Event("toggle", { bubbles: true }));
-    act(() => summary!.focus());
 
     delayedWrite.resolve();
     await waitFor(() => expect(screen.getByText("Copied column city with 2 values and its header.")).toBeTruthy());
