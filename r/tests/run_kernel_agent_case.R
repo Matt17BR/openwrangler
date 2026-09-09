@@ -13,6 +13,7 @@ case_files <- c(
 )
 case_name <- arguments[[1L]]
 kernel_agent_cases <- c(
+  "numeric-portability",
   "lifecycle-and-structure",
   "text-fill-and-cast",
   "rows-numeric-datetime-and-by-example",

@@ -197,7 +197,7 @@ for (const platform of ["darwin", "win32"]) {
       sourceContracts: true,
       platform
     });
-    const packages = ["jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet", "bit64"];
+    const packages = ["jsonlite", "nanoparquet", "bit64"];
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(prepared.packages, packages);
     assert.equal(versions.bit64, "4.6.0.1");
@@ -225,13 +225,15 @@ for (const platform of ["darwin", "win32"]) {
     assert.equal(prepared.repository, repositories.repository);
     assert.equal(prepared.supplementalRepository, repositories.supplementalRepository);
     const install = commandCode(prepared.dependencyInstall);
-    assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet"\)/u);
-    assert.equal(install.includes('type = "source"'), platform === "darwin");
+    assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
+    assert.equal(install.includes('"collapse"'), false);
+    assert.equal(install.includes('type = "source"'), false);
     assert.match(install, /dependencies = NA/u);
     const probe = commandCode(prepared.dependencyProbe);
     assert.match(probe, /find\.package\(\.ow_package, lib.loc = \.ow_library, quiet = TRUE\)/u);
     assert.match(probe, /loadNamespace\(\.ow_package, lib.loc = \.ow_library\)/u);
-    for (const status of [10, 11, 12, 13, 14, 15, 16, 17]) assert.ok(probe.includes(`status = ${status}L`));
+    for (const status of [10, 11, 12]) assert.ok(probe.includes(`status = ${status}L`));
+    assert.equal(probe.includes("collapse::"), false);
     await assert.rejects(
       probeJupyterAcceptanceRKernel(fixture.rscript, prepared, { runCommand: fixture.options.runCommand }),
       /exact prepared private environment/u

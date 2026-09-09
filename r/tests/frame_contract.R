@@ -1071,76 +1071,6 @@ for (case in named_column_cases) {
 }))
 run_frame_contract_case("group-by", local({
 
-# Hexadecimal inputs bind the Fraction oracles to the same binary64 values on every platform.
-# These controls protect cancellation and final rounding, including signed zero.
-local({
-  raw_double <- function(value) writeBin(value, raw(), size = 8L, endian = "little")
-  cases <- list(
-    singleton_named_integer = list(values = c(donor = 17L), expected = "0x1.1000000000000p+4"),
-    singleton_named_negative = list(values = c(donor = -7.5), expected = "-0x1.e000000000000p+2"),
-    singleton_positive_zero = list(values = 0, expected = "0x0.0p+0"),
-    singleton_negative_zero = list(values = -abs(0), expected = "0x0.0p+0"),
-    singleton_negative_subnormal = list(values = -0x0.0000000000001p-1022, expected = "-0x0.0000000000001p-1022"),
-    cancel_order_0 = list(values = c(-0x1.1ccf385ebc8a0p+1023, 0x1.1ccf385ebc8a0p+1023, 0x1.8000000000000p+1), expected = "0x1.0000000000000p+0"),
-    ordinary_cancellation = list(values = c(0x1.1c37937e08000p+53, 0x1.0000000000000p+0, -0x1.1c37937e08000p+53), expected = "0x1.5555555555555p-2"),
-    near_one_rounding_1 = list(values = c(0x1.ffffffffffff0p-1, 0x1.ffffffffffff0p-1, 0x1.ffffffffffff2p-1), expected = "0x1.ffffffffffff1p-1"),
-    minimum_equal = list(values = c(0x0.0000000000001p-1022, 0x0.0000000000001p-1022, 0x0.0000000000001p-1022), expected = "0x0.0000000000001p-1022"),
-    max_finite = list(values = c(0x1.fffffffffffffp+1023, 0x1.fffffffffffffp+1023, 0x1.fffffffffffffp+1023), expected = "0x1.fffffffffffffp+1023"),
-    signed_zero = list(values = c(-0x0.0p+0, -0x0.0p+0, -0x0.0p+0), expected = "0x0.0p+0"),
-    paired_zero = list(values = c(0x1.0000000000000p+1000, 0x0.0p+0, -0x1.0000000000000p+1000, 0x1.0000000000000p+2), expected = "0x1.0000000000000p+0"),
-    paired_three = list(values = c(0x1.0000000000000p+1000, 0x1.8000000000000p+1, -0x1.0000000000000p+1000, 0x1.0000000000000p+2), expected = "0x1.c000000000000p+0"),
-    paired_one = list(values = c(0x1.0000000000000p+1000, 0x1.0000000000000p+0, -0x1.0000000000000p+1000, 0x1.0000000000000p+2), expected = "0x1.4000000000000p+0"),
-    scale_underflow = list(values = c(0x1.0000000000000p+1, -0x1.0000000000000p+1, 0x0.0000000000003p-1022), expected = "0x0.0000000000001p-1022"),
-    small_compensation_lost = list(values = c(0x1.0000000000000p+1000, 0x1.0000000000000p+0, 0x1.0000000000000p-60, -0x1.0000000000000p+1000, -0x1.0000000000000p+0), expected = "0x1.999999999999ap-63"),
-    positive_accumulation = list(values = c(1, rep.int(2^-64, 512L)), expected = "0x1.ff007fc01ff01p-10"),
-    large53_small58 = list(values = c(0x1.0000000000000p+53, 0x1.0000000000000p+0, -0x1.0000000000000p+53, 0x1.0000000000000p-58, -0x1.0000000000000p+0), expected = "0x1.999999999999ap-61"),
-    half_q = list(values = c(0x0.0000000000001p-1022, 0x0.0p+0), expected = "0x0.0p+0"),
-    negative_half_q = list(values = c(-0x0.0000000000001p-1022, 0x0.0p+0), expected = "-0x0.0p+0"),
-    three_half_q = list(values = c(0x0.0000000000001p-1022, 0x0.0000000000002p-1022), expected = "0x0.0000000000002p-1022"),
-    below_half_q = list(values = c(0x0.0000000000001p-1022, 0x0.0p+0, 0x0.0p+0), expected = "0x0.0p+0"),
-    above_half_q = list(values = c(0x0.0000000000001p-1022, 0x0.0000000000001p-1022, 0x0.0p+0), expected = "0x0.0000000000001p-1022"),
-    subnormal_normal_carry = list(values = c(0x0.fffffffffffffp-1022, 0x1.0000000000000p-1022), expected = "0x1.0000000000000p-1022"),
-    significand_carry = list(values = c(0x1.fffffffffffffp+0, 0x1.0000000000000p+1), expected = "0x1.0000000000000p+1"),
-    normal_tie_even = list(values = c(0x1.0000000000000p+0, 0x1.0000000000001p+0), expected = "0x1.0000000000000p+0"),
-    ordinary_rational_232_over_100 = list(values = rep(c(1, 2, 4), length.out = 100L), expected = "0x1.28f5c28f5c28fp+1"),
-    prefix_one_decrement = list(values = c(0x1.0000000000000p+0, 0x0.0p+0, 0x0.0p+0), expected = "0x1.5555555555555p-2"),
-    odd_divisor_tail_below_half = list(values = c(0x1.8000000000000p+1, 0x1.7ffffffffffffp-52, 0x0.0p+0), expected = "0x1.0000000000000p+0"),
-    odd_divisor_tail_half_even = list(values = c(0x1.8000000000000p+1, 0x1.8000000000000p-52, 0x0.0p+0), expected = "0x1.0000000000000p+0"),
-    odd_divisor_tail_above_half = list(values = c(0x1.8000000000000p+1, 0x1.8000000000001p-52, 0x0.0p+0), expected = "0x1.0000000000001p+0"),
-    odd_divisor_tail_half_odd = list(values = c(0x1.8000000000000p+1, 0x1.2000000000000p-50, 0x0.0p+0), expected = "0x1.0000000000002p+0"),
-    even_divisor_tail_positive = list(values = c(0x1.0000000000000p+0, 0x1.0000000000001p-53), expected = "0x1.0000000000001p-1"),
-    normal_word_aligned = list(values = c(0x1.0000000000000p+2), expected = "0x1.0000000000000p+2"),
-    difference = list(values = c(rep.int(-0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(0x1.1ccf385ebc8a0p+1023, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
-    product = list(values = c(rep.int(0, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
-    maximum = list(values = rep.int(.Machine$double.xmax, 100001L), expected = "0x1.fffffffffffffp+1023"),
-    cancellation_sign = list(values = c(rep.int(0x1.c7b1f3cac7433p+1019, 131072L), rep.int(-0x1.c7b3bb7e82c1bp+1020, 65535L)), expected = "0x1.d675f22750b7cp+963"),
-    cancellation_zero = list(values = c(rep.int(0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966")
-  )
-  for (name in names(cases)) {
-    case <- cases[[name]]
-    frame <- data.frame(group = rep.int("g", length(case$values)), value = case$values)
-    before <- serialize(frame, NULL, version = 3L)
-    result <- openwrangler_r_frame_contract$group_by_at(frame, 1L, "group", 2L, "value", "mean", "average")
-    expected <- raw_double(as.double(case$expected))
-    assert_identical(raw_double(result$average), expected, paste(name, "Group By lost exact mean bits"))
-    assert_identical(serialize(frame, NULL, version = 3L), before, paste(name, "Group By changed its source"))
-    helpers <- openwrangler_r_frame_contract$exact_mean_helpers
-    reversed_mean <- helpers$exact_binary64_mean(rev(case$values))
-    assert_identical(typeof(reversed_mean), "double", paste(name, "mean changed its numeric type"))
-    assert_identical(attributes(reversed_mean), NULL, paste(name, "mean retained source attributes"))
-    assert_identical(raw_double(reversed_mean), expected,
-      paste(name, "mean changed under permutation"))
-    state <- helpers$exact_mean_new()
-    size <- if (length(case$values) > 65536L) 32767L else 2L
-    for (start in seq.int(1L, length(case$values), by = size)) {
-      end <- min(length(case$values), start + size - 1L)
-      state <- helpers$exact_mean_add(case$values[seq.int(start, end)], state)
-    }
-    assert_identical(raw_double(helpers$exact_mean_finish(state)), expected,
-      paste(name, "mean changed across native update boundaries"))
-  }
-})
-
 # Exact integer sums retain cancellation across all native batch boundaries.
 batch_values <- c(rep.int(2147483647L, 1000000L), rep.int(-2147483647L, 1000000L), 7L)
 batch_source <- data.frame(group = rep.int("g", length(batch_values)), positive = batch_values, negative = -batch_values)
@@ -4459,36 +4389,6 @@ assert_error(
   "incompatible"
 )
 
-dst_frame <- data.frame(
-  instant = as.POSIXct(c("2026-03-28 12:00:00", NA), tz = "Europe/Berlin")
-)
-dst_error <- tryCatch(
-  {
-    openwrangler_r_frame_contract$fill_missing_column_at(
-      dst_frame,
-      1L,
-      "instant",
-      list(kind = "datetime", value = "2026-03-29T02:30:00")
-    )
-    NULL
-  },
-  error = identity
-)
-# Native parsers may reject the gap directly or normalize it before the wall-time check.
-if (
-  !inherits(dst_error, "openwrangler_r_frame_error") ||
-    !identical(dst_error$code, "invalid-view-value") ||
-    !conditionMessage(dst_error) %in% c(
-      "replacement$value is not a valid datetime",
-      "replacement$value is not a valid local datetime in Europe/Berlin"
-    )
-) {
-  stop(sprintf(
-    "Expected an invalid-view-value DST datetime refusal; actual: %s",
-    if (is.null(dst_error)) "<no error>" else substr(conditionMessage(dst_error), 1L, 256L)
-  ), call. = FALSE)
-}
-
 fill_tibble <- tibble::tibble(value = c(NA_character_, "ready"))
 fill_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
   fill_tibble,
@@ -5904,28 +5804,6 @@ assert_identical(collision_frame, data.frame(first = 1L, second = 2L), "a failed
 }))
 run_frame_contract_case("profiling", local({
 
-# Exact means use the full profile population, retaining native class and missing policies.
-local({
-  cases <- list(
-    difference = list(values = c(rep.int(-0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(0x1.1ccf385ebc8a0p+1023, 34465L)), expected = "-0x1.61f81322a05d2p+1021"),
-    product = list(values = c(rep.int(0, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), expected = "0x1.f6926f94af3a2p+1014"),
-    maximum = list(values = rep.int(.Machine$double.xmax, 100001L), expected = "0x1.fffffffffffffp+1023"),
-    cancellation_sign = list(values = c(rep.int(0x1.c7b1f3cac7433p+1019, 131072L), rep.int(-0x1.c7b3bb7e82c1bp+1020, 65535L)), expected = "0x1.d675f22750b7cp+963"),
-    cancellation_zero = list(values = c(rep.int(0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966"),
-    small = list(values = c(2^1000, 0, -2^1000, 4), expected = "0x1p+0"),
-    duration = list(values = as.difftime(c(rep.int(-0x1.6c8e5ca239029p+1016, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), units = "hours"),
-      expected = "-0x1.c514935f8595fp+1014")
-  )
-  for (name in names(cases)) {
-    case <- cases[[name]]
-    frame <- data.frame(value = case$values)
-    before <- serialize(frame, NULL, version = 3L)
-    capture <- openwrangler_r_frame_contract$capture_frame(frame)
-    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(list(id = "r:c:0", name = "value")))[[1L]]
-    assert_identical(summary$numeric$mean, as.double(case$expected), paste(name, "profile lost the exact finite mean"))
-    assert_identical(serialize(frame, NULL, version = 3L), before, paste(name, "profile changed source storage or attributes"))
-  }
-})
 
 
 base_frame <- frame_contract_base_frame()
@@ -6874,19 +6752,6 @@ for (adjacent_case in list(
 }
 
 parse_number <- get("parse_finite_number", contract_environment, inherits = FALSE)
-for (case in list(
-  c("+0", "0000000000000000"), c("-0", "0000000000000080"), c("+1", "000000000000f03f"),
-  c(".5", "000000000000e03f"), c("1.", "000000000000f03f"), c("0001.250", "000000000000f43f"),
-  c("-000.5", "000000000000e0bf"), c("+0001.250e+2", "0000000000405f40"),
-  c("4.9406564584124654e-324", "0100000000000000"), c("-4.9406564584124654e-324", "0100000000000080"),
-  c("1.7976931348623157e308", "ffffffffffffef7f"), c("1e308", "a0c8eb85f3cce17f"),
-  c("9223372036854775807", "000000000000e043"), c("-1e-9999", "0000000000000080"),
-  c(".000", "0000000000000000"), c("01.e+03", "0000000000408f40")
-)) {
-  parsed <- parse_number(case[[1L]], "decimal control")
-  assert_identical(paste(format(writeBin(parsed, raw(), size = 8L, endian = "little")), collapse = ""), case[[2L]],
-    paste("decimal parsing changed the exact double for", case[[1L]]))
-}
 for (invalid_number in list(TRUE, 1 + 0i, numeric(), c(1, 2), NA_real_, NaN, Inf, -Inf)) {
   assert_error(parse_number(invalid_number, "number"), "invalid-view-value")
 }

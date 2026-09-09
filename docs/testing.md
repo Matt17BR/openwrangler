@@ -99,25 +99,6 @@ Linux R phase supervision uses the selected repository Python's standard library
 Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The runner checks this capability before starting
 a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
 
-For second-resolution POSIX identities, the exact spawned child's exit event confirms the original root's departure.
-Its close event still gates output settlement, and independently tracked descendants must also settle. The initial
-root identity is retained for retirement and cleanup; a pending exit callback does not authenticate a sampled PID.
-Later root command or marker loss is not a separate lifetime failure. When an unmarked descendant depends on root
-lineage, however, that observation requires fresh matching PID/start, parent, process group and retained-marker
-evidence. Ambiguous lineage still fails, including for an already tracked child.
-
-Descendants retain their command and ownership checks. Explicitly reported zombies retire, while a later live
-identity with the same retired coarse key remains refused. A later marked process using the root PID receives
-ordinary descendant checks. Coarse marker and lineage evidence can remain ambiguous with copied markers and
-same-second PID reuse; these tests do not establish a kernel-held identity or native macOS cancellation support.
-The existing tracker and phase owners cover delayed exit/close, initial zombies, lost root credentials, replacement
-PIDs, surviving descendants and cleanup targets. Linux's precise identity and pidfd path remains unchanged.
-
-The periodic POSIX watcher schedules its next observation after the previous one finishes, leaving a 10 ms delay
-between periodic reads. Initial, explicit, final and pre-signal observations keep their existing timing and may run
-sooner. Each native `ps` call retains its 250 ms limit; observation errors still fail the phase. The delay reduces
-continuous synchronous polling, but does not guarantee timely callbacks or resolve macOS cancellation.
-
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
 closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
 verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;
@@ -149,10 +130,11 @@ generated execution isolated from caller arithmetic. Existing frame and kernel o
 across multiple integer batches; the profile owner covers the unchanged live consumer of those functions.
 The existing R Fill, Group By, profiling and Custom Code owners register and restore numeric mean methods to check
 built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
-The existing Group By, Fill and profile owners check exact finite means against binary64 reference values, including
-cancellation, midpoint parity, subnormal boundaries, finite maxima, chunk thresholds and multiple chunks. Kernel
-owners execute complete generated programs, preserve source and frame types through Undo, and check once-only helper
-emission for repeated plans and omission from unrelated plans. Integer64 and non-mean profile controls remain.
+The `kernel:numeric-portability` owner checks exact finite Group By, Fill and profile means against binary64 reference
+values, including cancellation, midpoint parity, subnormal boundaries, finite maxima, chunk thresholds and multiple
+chunks. It executes complete generated programs, preserves source and frame types through Undo, and checks once-only
+helper emission for repeated plans. The existing Fill owner checks omission from unrelated plans. Integer64 and
+non-mean profile controls remain in their existing owners.
 Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain
 signed-zero and nonfinite median behavior that JSON cannot distinguish.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
@@ -235,11 +217,11 @@ public aliases, and retain optional-import, cancellation and request-registry cl
 The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
 before continuing its existing preview, apply and undo assertions.
 
-The native R `text-fill-and-cast` kernel contract also executes mixed Fill plans and datetime replacements, checking
-that generated code includes each required helper family once and omits unused families.
-Its mixed scalar Fill case compares raw native doubles with complete generated and compiled results. The frame
+The native R `text-fill-and-cast` kernel contract executes mixed Fill plans, checking that generated code includes each
+required helper family once and omits unused families. The `kernel:numeric-portability` case owns scalar and datetime
+Fill precision, comparing raw native doubles with complete generated and compiled results. The frame
 interactive and Fill owners cover accepted decimal spellings, signed zero, subnormals, finite extrema and invalid
-input. The existing rows/numeric kernel owner checks native floating, datetime and duration picker selections and
+input. The portability owner also checks native floating, datetime and duration picker selections and
 predicates through Preview, generated execution and draft discard, preserving source values and row identities.
 Temporal cases include compiled programs, adjacent values, timezone metadata, missing values, manual inputs,
 empty rebound frames and refusal of stale duration units. The existing datetime Fill case also executes compiled code.
@@ -473,7 +455,7 @@ owner above.
 
 Native R's `r/tests/kernel_agent.R` and `src/test/rKernelTransport.cross.test.ts` own literal precision and complete
 generated execution, including the finite 309-digit endpoint. The existing
-`kernel:rows-numeric-datetime-and-by-example` phase checks fixed binary64 literal bits, integer capacity, and public
+`kernel:numeric-portability` phase checks fixed binary64 literal bits, integer capacity, and public
 Formula and By Example results through complete interpreted and compiled programs, retaining nulls, types and source
 values. Formula integer-text cases also compare finite native result bits, accept exact extrema and neighboring
 representable integers, and refuse the inexact spellings admitted by Windows decimal formatting. Failed previews
@@ -718,15 +700,18 @@ native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acc
 extension records drive installation and expected versions. Both tooling scopes keep the same private R package
 roots and IRkernel readiness checks.
 
-The manual macOS and Windows R jobs also prepare a separate library for source contracts through the same package
-owner. This selection includes bit64 and the native-frame prerequisites, without IRkernel or editor tooling.
-Installation, version checks and namespace loading must succeed in that private library before the eight existing
-phases run: `frame:interactive`, `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `frame:cast-and-structure`,
-`kernel:text-fill-and-cast`, `kernel:group-pivot-and-export` and
-`kernel:rows-numeric-datetime-and-by-example`. The last phase includes finite numeric-literal equality through
-complete generated and compiled programs. The caller removes its root only after all preparation and phases succeed;
-any failure retains the root. These checks repeat dependency installation, including macOS collapse compilation. They
-do not replace the subsequent installed-editor journey or the separate R 4.4 qualification.
+The manual macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
+Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
+in `r/tests/kernel_agent_numeric_portability.R`. Broad operation, export, cold-process and dataframe-class matrices
+remain in their existing source cases.
+
+This focused case runs in one R process through the warning-strict wrapper, with a two-minute limit and bounded
+output. Its synthetic fixtures and operations do not launch subprocesses; ordinary direct-child execution is sufficient
+and does not qualify general process-tree cleanup. Preparation uses the existing private-library owner with pinned
+jsonlite, bit64 and nanoparquet roots, including version and namespace checks. Any preparation or test failure retains
+the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
+keeps its separate environment and lifetime. macOS retains comprehensive installed coverage, including the compact
+column reveal, and Windows retains its representative journey. The separate R 4.4 qualification remains unchanged.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package
