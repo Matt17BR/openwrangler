@@ -59,7 +59,7 @@ export interface BridgeRequestOptions {
    * dispatch only on the kernel that owns this still-mapped runtime session.
    */
   requiredKernelSessionId?: string;
-  /** Opaque identifier for the logical view that owns a profiling request. */
+  /** Opaque identifier for the logical view that owns this request. */
   viewContextId?: string;
   /**
    * Host-only page classification for bounded renderer reads that must not

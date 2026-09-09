@@ -21,8 +21,109 @@ import {
   setOpenNotebookDocuments,
   deferred
 } from "./sessionCoordinatorTestFixtures";
+import {
+  createRKernelBridge,
+  fakeRKernelTransport,
+  rKernelBridgeSessionId,
+  rKernelFrameContract,
+  rKernelOpenRequest,
+  rKernelRenameContract,
+  rKernelRenameDiff,
+  rKernelRenamePreviewRequest
+} from "./rKernelBridgeTestFixtures";
 
 describe("SessionCoordinator", () => {
+  it.each([false, true])(
+    "retains the confirmed R view through Undo with a queued clipboard read: %s",
+    async (includeClipboard) => {
+      const original = rKernelFrameContract();
+      const renamed = rKernelRenameContract(original, "r:c:0", "amount");
+      const transport = fakeRKernelTransport(original);
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge(createRKernelBridge(transport));
+      const releaseB = deferred<typeof renamed>();
+      const releaseA = deferred<typeof renamed>();
+      try {
+        const opened = await bridge.request(rKernelOpenRequest("editing"));
+        if (opened.kind !== "sessionOpened") throw new Error("Expected the R session to open.");
+        const sessionId = opened.metadata.sessionId;
+        transport.queuePreview({
+          sessionId: rKernelBridgeSessionId,
+          revision: 1,
+          page: renamed,
+          diff: rKernelRenameDiff(),
+          code: "owned rename code"
+        });
+        await expect(bridge.request({ ...rKernelRenamePreviewRequest(0), sessionId })).resolves.toMatchObject({
+          kind: "stepPreview"
+        });
+        const window = { offset: 0, limit: 20, columnOffset: 0, columnLimit: 8 };
+        transport.applyDraft.mockResolvedValueOnce({
+          sessionId: rKernelBridgeSessionId,
+          action: "apply",
+          revision: 2,
+          page: renamed,
+          code: "owned rename code"
+        });
+        await expect(bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window })).resolves.toMatchObject({
+          kind: "planUpdated"
+        });
+        bridge.setViewContext?.(sessionId, "view-A");
+        const filterA = { filters: [], sort: [] };
+        const filterB: FilterModel = { filters: [], sort: [{ column: "count", direction: "desc", nulls: "last" }] };
+        transport.getPage.mockImplementation(async (_sessionId, page) => {
+          if (page.view.sorts.length) return releaseB.promise;
+          return releaseA.promise;
+        });
+        const pendingB = bridge.request(
+          { kind: "getPage", sessionId, revision: 2, viewRequestId: "page-B", ...window, filterModel: filterB },
+          { viewContextId: "view-B" }
+        );
+        await vi.waitFor(() => expect(transport.getPage).toHaveBeenCalledTimes(1));
+        const staleClipboard = includeClipboard
+          ? bridge.request(
+              {
+                kind: "getPage",
+                sessionId,
+                revision: 2,
+                viewRequestId: "clipboard-A",
+                ...window,
+                filterModel: filterA
+              },
+              { viewContextId: "view-A", ephemeralPage: true }
+            )
+          : undefined;
+        releaseB.resolve(renamed);
+        await expect(pendingB).resolves.toMatchObject({ kind: "page", metadata: { filterModel: filterB } });
+        releaseA.resolve(renamed);
+        if (staleClipboard)
+          await expect(staleClipboard).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(filterB);
+        transport.undoStep.mockResolvedValueOnce({
+          sessionId: rKernelBridgeSessionId,
+          action: "undo",
+          revision: 3,
+          page: original,
+          code: ""
+        });
+        await expect(bridge.request({ kind: "undoStep", sessionId, revision: 2, ...window })).resolves.toMatchObject({
+          kind: "planUpdated",
+          metadata: { filterModel: filterB, steps: [] }
+        });
+        expect(transport.undoStep.mock.calls[0]?.[2].view.sorts).toEqual([
+          { column: { id: "r:c:1", name: "count" }, direction: "desc", nulls: "last" }
+        ]);
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(filterB);
+        expect(coordinator.activeSession()?.metadata.source).toEqual(opened.metadata.source);
+        expect(transport.getPage).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseB.resolve(renamed);
+        releaseA.resolve(renamed);
+        await coordinator.shutdown();
+      }
+    }
+  );
+
   it("observes asynchronous shutdown rejection from its synchronous disposable fallback", async () => {
     const coordinator = new SessionCoordinator();
     const rejectedShutdown = Promise.reject<void>(new Error("synthetic shutdown rejection"));

@@ -121,6 +121,11 @@ equality is not enough to establish freshness. Pages, summaries, statistics, val
 UI or retained panel state only while their request belongs to the active confirmed view. Cancellation is
 authoritative only when the original correlated request returns. A cancellation acknowledgement may remove queued
 work, but it cannot invent completion for running work or conceal a mutation that may have committed.
+Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
+after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
+those whose logical context is no longer current. This prevents a queued read for an older view from changing
+runtime viewing state after a newer view has been confirmed. Contextless internal reads retain their existing
+behavior; running reads still require correlated response validation and freshness checks.
 
 Python and R kernel execution is not treated as safely interruptible. Timeout or cancellation stops publication and
 triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and

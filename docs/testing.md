@@ -159,6 +159,11 @@ The editor environment allowlist and native cleanup owners remain unchanged.
 Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
 column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
 publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
+
+Coordinator tests preserve the confirmed R view through Undo after a stale clipboard read, and reject stale requests
+queued across runtime recovery and detached execution. The executor owner separately checks cancellation
+after dispatch; current and contextless reads retain their existing behavior.
+
 Column-search controls check repeated selection of the current column, outer scrolling at ordinary and doubled zoom,
 empty results, window blur and newer focus.
 The existing webview header-profile owner checks the compact minimum, native scrollbar, expanded-profile fit,

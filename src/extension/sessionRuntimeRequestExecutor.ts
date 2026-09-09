@@ -47,6 +47,27 @@ export class SessionRuntimeRequestExecutor {
     // A notebook deadline stops only the host wait. Later work stays behind
     // the exact detached request so it cannot overtake an ambiguous mutation.
     await hooks.waitForRuntimeSettlement();
+    const requestWasCancelled = (): boolean =>
+      options?.cancellation?.isCancellationRequested === true ||
+      session.scheduler.isCancelled(requestViewId(publicRequest));
+    const liveSourceRecoveryIsCurrent = (): boolean => {
+      if (requestWasCancelled()) return false;
+      if (publicRequest.kind === "getPage") {
+        return options?.ephemeralPage === true
+          ? isCurrentLogicalView(session, options)
+          : isCurrentPageRequest(session, publicRequest, options);
+      }
+      return isCurrentLogicalView(session, options);
+    };
+    const staleReadResponse = (): OpenWranglerResponse =>
+      protocolError(
+        "stale_response",
+        "Ignored a cancelled or superseded read before runtime dispatch or recovery.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    const ephemeralPage = publicRequest.kind === "getPage" && options?.ephemeralPage === true;
     const hasExecutionTrust = (): boolean => publicRequest.kind !== "redoStep" || vscode.workspace.isTrusted;
     const untrustedResponse = (): ErrorResponse =>
       protocolError(
@@ -75,6 +96,7 @@ export class SessionRuntimeRequestExecutor {
       );
     }
     if (!hasExecutionTrust()) return untrustedResponse();
+    if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
     if (publicRequest.kind !== "closeSession" && session.recoveryRequired) {
       const recovered =
         hooks.isCoordinatorAvailable() &&
@@ -100,9 +122,6 @@ export class SessionRuntimeRequestExecutor {
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
     const rendererBackgroundRead =
       isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
-    const requestWasCancelled = (): boolean =>
-      options?.cancellation?.isCancellationRequested === true ||
-      session.scheduler.isCancelled(requestViewId(publicRequest));
     const rendererBackgroundReadIsCurrent = (): boolean =>
       rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const canRecoverUnknownSession = (): boolean =>
@@ -111,15 +130,6 @@ export class SessionRuntimeRequestExecutor {
       !session.closing &&
       (!isBackground || rendererBackgroundReadIsCurrent());
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
-    const liveSourceRecoveryIsCurrent = (): boolean => {
-      if (requestWasCancelled()) return false;
-      if (publicRequest.kind === "getPage") {
-        return options?.ephemeralPage === true
-          ? isCurrentLogicalView(session, options)
-          : isCurrentPageRequest(session, publicRequest, options);
-      }
-      return isCurrentLogicalView(session, options);
-    };
     const stepInspectionIsCurrent = (): boolean =>
       publicRequest.kind !== "inspectStep" || session.latestStepInspectionKey === stepInspectionKey(publicRequest);
     const rKernelChangeResponseIsCurrent = (): boolean =>
@@ -140,14 +150,6 @@ export class SessionRuntimeRequestExecutor {
         session.publicId,
         requestViewId(publicRequest)
       );
-    const staleLiveSourceResponse = (): OpenWranglerResponse =>
-      protocolError(
-        "stale_response",
-        "Ignored a cancelled or superseded read before live runtime recovery.",
-        true,
-        session.publicId,
-        requestViewId(publicRequest)
-      );
     const runtimeRequest = (): SessionBoundRequest =>
       ({
         ...publicRequest,
@@ -157,6 +159,8 @@ export class SessionRuntimeRequestExecutor {
 
     if (publicRequest.kind === "closeSession") return hooks.close(options);
     if (!hasExecutionTrust()) return untrustedResponse();
+
+    if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
 
     let response: OpenWranglerResponse;
     try {
@@ -171,6 +175,7 @@ export class SessionRuntimeRequestExecutor {
       if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
         return staleBackgroundResponse();
       }
+      if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverTransport() &&
         (await hooks.replayAfterRuntimeLoss(requestRuntimeId, automaticRecoveryOptions(options)));
@@ -179,6 +184,7 @@ export class SessionRuntimeRequestExecutor {
         if (requestWasCancelled()) throw error;
         return staleBackgroundResponse();
       }
+      if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       requestRuntimeId = session.runtimeId;
       requestRuntimeRevision = session.runtimeRevision;
       response = await session.delegate.request(runtimeRequest(), options);
@@ -201,6 +207,7 @@ export class SessionRuntimeRequestExecutor {
       if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
         return staleBackgroundResponse();
       }
+      if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverUnknownSession() &&
         (await (publicRequest.kind === "redoStep"
@@ -217,6 +224,7 @@ export class SessionRuntimeRequestExecutor {
           if (requestWasCancelled()) return { ...confirmedUnknownResponse, sessionId: session.publicId };
           return staleBackgroundResponse();
         }
+        if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
@@ -239,7 +247,7 @@ export class SessionRuntimeRequestExecutor {
         session.metadata.schema
       );
       if (changedMismatch) return invalidRuntimeResponse(publicRequest, session.publicId, changedMismatch);
-      if (!rKernelChangeResponseIsCurrent()) return staleLiveSourceResponse();
+      if (!rKernelChangeResponseIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverRKernelChange() &&
         (await hooks.replayAfterRuntimeLoss(
@@ -248,7 +256,7 @@ export class SessionRuntimeRequestExecutor {
           session.metadata.schema,
           rKernelRecoveryCanPublish
         ));
-      if (!rKernelChangeResponseIsCurrent()) return staleLiveSourceResponse();
+      if (!rKernelChangeResponseIsCurrent()) return staleReadResponse();
       if (recovered) {
         session.recoveryRequired = false;
       }
@@ -268,7 +276,7 @@ export class SessionRuntimeRequestExecutor {
         session.metadata.schema
       );
       if (invalidatedMismatch) return invalidRuntimeResponse(publicRequest, session.publicId, invalidatedMismatch);
-      if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+      if (!liveSourceRecoveryIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverTransport() &&
         liveSourceRecoveryIsCurrent() &&
@@ -279,7 +287,7 @@ export class SessionRuntimeRequestExecutor {
           liveSourceRecoveryIsCurrent
         ));
       if (recovered) {
-        if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+        if (!liveSourceRecoveryIsCurrent()) return staleReadResponse();
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
