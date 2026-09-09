@@ -621,6 +621,9 @@ launch. These include editing, native-frame opening, document execution and rest
 these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
 progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
 cleanup cost from editor execution. These diagnostics preserve the existing inactivity and absolute phase deadlines.
+If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
+notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
+unavailable collection yields an empty list; the failure-artifact redaction rules still apply.
 
 Jupyter output logs may be inspected only to derive a fixed failure category and are never copied. Raw profiles,
 settings, workspace storage, databases, arbitrary extension logs, credentials, private keys, and user data are never

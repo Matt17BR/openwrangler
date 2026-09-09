@@ -1637,6 +1637,7 @@ const exerciseReleasedRInteractiveTerminalJourney = createReleasedRInteractiveTe
 });
 
 const invokeReleasedRDocumentVariable = createReleasedRDocumentVariableInvoker({
+  boundedImportPromptDiagnostics,
   releasedJupyterQuickPickRow,
   runReleasedRDocument: (source) => vscode.commands.executeCommand<boolean>("openWrangler.runRDocument", source),
   withBoundedAcceptancePromise: (promise, timeoutMs, description) =>
