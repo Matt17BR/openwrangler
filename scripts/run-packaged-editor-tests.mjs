@@ -182,6 +182,9 @@ try {
   orchestrationProgressPath = editorAcceptanceProgressPath(orchestrationResultPath, orchestrationRunId, "setup");
   orchestrationProgressPaths = { setup: orchestrationProgressPath };
   orchestrationStartedAt = Date.now();
+  if (process.env.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter") {
+    console.log("R acceptance preparation started at 0 ms orchestration elapsed.");
+  }
   await runPackagedEditorOrchestration(
     {
       evidenceRoot,
@@ -1553,6 +1556,12 @@ try {
                 if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter") {
                   if (localRJupyterEnabled) {
                     activePhase = "jupyter-r";
+                    console.log(
+                      `R acceptance preparation completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                    );
+                    console.log(
+                      `R acceptance editor phase started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                    );
                     try {
                       await runEditorAcceptancePhase({
                         editor: identifiedEditor,
@@ -1572,7 +1581,13 @@ try {
                         requiresWorkbenchCdp: true,
                         jupyterEnvironment: jupyterREnvironment
                       });
+                      console.log(
+                        `R acceptance editor phase completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                      );
                     } catch (error) {
+                      console.log(
+                        `R acceptance editor phase failed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                      );
                       if (editorProcessTreeMayBeLive(error)) throw error;
                       let bootstrapStage;
                       try {
@@ -1786,11 +1801,21 @@ try {
                 });
               },
               cleanup: () => {
+                if (acceptanceMode === "r-jupyter") {
+                  console.log(
+                    `R acceptance profile cleanup started at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                  );
+                }
                 try {
                   removeEditorAcceptancePrivateRoot(profileReceipt, {
                     processTreeVerifiedStopped: !profileTreeMayBeLive,
                     privatePathsVerified: privatePathsVerified()
                   });
+                  if (acceptanceMode === "r-jupyter") {
+                    console.log(
+                      `R acceptance profile cleanup completed at ${Date.now() - orchestrationStartedAt} ms orchestration elapsed.`
+                    );
+                  }
                 } catch (error) {
                   latchPrivateRootIdentityLoss(error, {
                     scope: "editor-profile",
