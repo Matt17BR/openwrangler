@@ -532,6 +532,102 @@ def test_duckdb_cast_targets_match_live_and_generated_code(
             duckdb.execute("DROP TYPE IF EXISTS ow_cast_source")
 
 
+@pytest.mark.parametrize("layout", ["ordinary", "collision", "case_suffix", "rebound_extra", "prior_rename"])
+def test_duckdb_generated_sort_preserves_current_columns_and_stable_ties(layout: str) -> None:
+    engine = DuckDBEngine()
+    payload = (
+        "__ow_sort_order" if layout == "collision" else "__OW_SORT_ORDER" if layout == "case_suffix" else "payload"
+    )
+    key = "KEY" if layout == "rebound_extra" else "key"
+    extra = (
+        ', 999::BIGINT AS "__ow_sort_order_1"'
+        if layout == "case_suffix"
+        else ", 777::BIGINT AS \"__ow_sort_order\", 'keep' AS spare"
+        if layout == "rebound_extra"
+        else ""
+    )
+    plan = []
+    if layout == "prior_rename":
+        plan.append(bound_step("renameColumn", column=bound_ref("c:source:0", "payload", 0), newName="__ow_sort_order"))
+    plan.append(
+        bound_step(
+            "sortRows",
+            rules=[
+                {"column": bound_ref("c:source:1", "key", 1), "direction": "asc", "nulls": "last"},
+                {"column": bound_ref("c:source:2", "secondary", 2), "direction": "desc", "nulls": "first"},
+            ],
+        )
+    )
+    try:
+        with duckdb.connect(config={"python_enable_replacements": False}) as connection:
+            frame = connection.sql(
+                f"SELECT *{extra} FROM (VALUES (99::BIGINT, 2, 2, 'r0'), (88, 1, NULL, 'r1'), "
+                f"(77, 1, NULL, 'r2'), (66, NULL, 5, 'r3'), (55, 1, 3, 'r4')) "
+                f'input("{payload}", "{key}", secondary, tag)'
+            )
+            before = frame.fetchall()
+            columns = list(frame.columns)
+            if layout == "prior_rename":
+                columns[0] = "__ow_sort_order"
+            result = execute_generated(engine, frame, plan)
+            assert result.columns == columns
+            assert result.types == frame.types
+            assert result.fetchall() == [before[index] for index in [1, 2, 4, 0, 3]]
+            assert frame.fetchall() == before
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("missing", ["key", "__ow_sort_order"])
+def test_duckdb_generated_sort_does_not_invent_or_ignore_missing_keys(missing: str) -> None:
+    engine = DuckDBEngine()
+    operation = bound_step(
+        "sortRows",
+        rules=[{"column": bound_ref("c:source:0", missing, 0), "direction": "asc", "nulls": "last"}],
+    )
+    try:
+        with duckdb.connect() as connection:
+            frame = connection.sql("SELECT * FROM (VALUES (2), (1)) input(other)")
+            with pytest.raises(duckdb.BinderException, match="Referenced column"):
+                execute_generated(engine, frame, [operation])
+            assert frame.fetchall() == [(2,), (1,)]
+    finally:
+        engine.close()
+
+
+def test_duckdb_public_sort_generated_code_retains_a_sort_helper_named_column(tmp_path: Path) -> None:
+    source = tmp_path / "sort-owner.csv"
+    original = b"__ow_sort_order,key,tag\n99,2,r0\n88,1,r1\n77,1,r2\n"
+    source.write_bytes(original)
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session({"kind": "file", "label": source.name, "path": str(source)}, backend="duckdb")
+        session_id = opened["metadata"]["sessionId"]
+        key = opened["metadata"]["schema"][1]
+        operation = step(
+            "sortRows",
+            rules=[{"column": {"id": key["id"], "name": key["name"]}, "direction": "asc", "nulls": "last"}],
+        )
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 10)
+        expected = [(88, 1, "r1"), (77, 1, "r2"), (99, 2, "r0")]
+        for response in (preview, applied):
+            assert [column["name"] for column in response["metadata"]["schema"]] == ["__ow_sort_order", "key", "tag"]
+            assert [tuple(cell["raw"] for cell in row["values"]) for row in response["page"]["rows"]] == expected
+        namespace: dict[str, Any] = {}
+        exec(compile(applied["code"], "<public-generated-sort>", "exec"), namespace)
+        with duckdb.connect(config={"python_enable_replacements": False}) as connection:
+            frame = connection.read_csv(str(source), header=True)
+            generated = namespace["clean_data"](frame)
+            assert generated.columns == frame.columns
+            assert generated.types == frame.types
+            assert generated.fetchall() == expected
+            assert frame.fetchall() == [(99, 2, "r0"), (88, 1, "r1"), (77, 1, "r2")]
+        assert source.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
 def test_duckdb_rename_only_generated_code_matches_live_with_quoted_names() -> None:
     engine = DuckDBEngine()
     frame = duckdb.sql('SELECT 1 AS "source""one", 2 AS "source""two"')
