@@ -27,6 +27,12 @@ npm run test:ts
 npm run test:python
 ```
 
+Vitest runs `.test.tsx` component files in jsdom. The same DOM project includes the plain TypeScript clipboard,
+notebook-renderer and Code Preview synchronization owners, which use browser APIs. Other TypeScript owners run in
+Node. The projects share aliases and test options in `vite.config.mts`; only the DOM project loads the popover shim.
+The global four-worker limit remains overridable with `--maxWorkers`. Keep new DOM-dependent tests in the DOM
+project rather than adding browser setup to every suite.
+
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
 The package owner checks in-place corruption and truncation after staging-name retirement, requiring byte mismatch
