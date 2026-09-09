@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   createLinuxProcessSignaler,
@@ -129,149 +130,259 @@ test("POSIX ps observations retain primary state and bounded identity fields", (
   );
 });
 
-test("POSIX ownership diagnostics distinguish bounded evidence without exposing process data", async (context) => {
-  const identity = (pid, parentPid) => ({
+function coarseIdentity(pid, parentPid) {
+  return {
     pid,
     parentPid,
     groupId: 101,
-    state: "?",
+    state: "S",
     startIdentity: "synthetic-secret-start",
     command: "synthetic-secret-command".repeat(1000),
     ownerMarked: true,
     identityResolution: "second"
-  });
-  const cases = [
-    {
-      name: "command changes despite retained marker and lineage",
-      failingPid: 102,
-      change: (identities) => {
-        identities.set(102, { ...identities.get(102), command: "changed-synthetic-secret" });
-      },
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=true, root=false"
-    },
-    {
-      name: "root parent changes despite retained marker",
-      failingPid: 101,
-      change: (identities) => {
-        identities.set(101, { ...identities.get(101), parentPid: 900, command: "changed-synthetic-secret" });
-      },
-      flags:
-        "secondResolution=true, parentMatches=false, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=true"
-    },
-    {
-      name: "root group changes despite retained marker",
-      failingPid: 101,
-      change: (identities) => {
-        identities.set(101, { ...identities.get(101), groupId: 900, command: "changed-synthetic-secret" });
-      },
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=false, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=true"
-    },
-    {
-      name: "root command changes without retained marker",
-      failingPid: 101,
-      confirmDeparture: true,
-      change: (identities) => {
-        identities.set(101, { ...identities.get(101), command: "changed-synthetic-secret", ownerMarked: false });
-      },
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true"
-    },
-    ...[
-      ["parent", { parentPid: 900 }, "secondResolution=true, parentMatches=false, groupMatches=true"],
-      ["group", { groupId: 900 }, "secondResolution=true, parentMatches=true, groupMatches=false"],
-      [
-        "resolution",
-        { identityResolution: "kernel-start-tick" },
-        "secondResolution=false, parentMatches=true, groupMatches=true"
-      ]
-    ].map(([field, change, flags]) => ({
-      name: `root ${field} disagreement does not confirm departure after marker loss`,
-      failingPid: 101,
-      change: (identities) =>
-        identities.set(101, {
-          ...identities.get(101),
-          ...change,
-          command: "changed-synthetic-secret",
-          ownerMarked: false
-        }),
-      flags: `${flags}, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true`
-    })),
-    {
-      name: "a descendant's changed command and lost marker fail without confirming departure",
-      failingPid: 102,
-      change: (identities) =>
-        identities.set(102, {
-          ...identities.get(102),
-          command: "changed-synthetic-secret",
-          ownerMarked: false
-        }),
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=true, root=false"
-    },
-    {
-      name: "root marker loss with unchanged command fails without confirming departure",
-      failingPid: 101,
-      change: (identities) => identities.set(101, { ...identities.get(101), ownerMarked: false }),
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=true, markerBefore=true, markerNow=false, lineageOwned=false, root=true"
-    },
-    {
-      name: "a newly admitted start identity does not inherit the original root allowance",
-      failingPid: 101,
-      change: (identities, tracker) => {
-        identities.set(101, { ...identities.get(101), startIdentity: "later-synthetic-secret-start" });
-        assert.equal(tracker.observe(), 2, "the existing marker rule can admit the new start identity");
-        identities.set(101, { ...identities.get(101), command: "changed-synthetic-secret" });
-      },
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=false, root=false"
-    },
-    {
-      name: "unmarked child loses its tracked parent",
-      failingPid: 102,
-      unmarkedChild: true,
-      change: (identities) => identities.delete(101),
-      flags:
-        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=true, markerBefore=false, markerNow=false, lineageOwned=false, root=false"
-    }
-  ];
-  for (const scenario of cases) {
-    await context.test(scenario.name, async () => {
-      const identities = new Map([
-        [101, identity(101, 100)],
-        [102, { ...identity(102, 101), ownerMarked: !scenario.unmarkedChild }]
-      ]);
-      const reads = new Map();
-      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+  };
+}
+
+test("POSIX coarse root lifetime requires exact exit and close while descendants remain independently owned", async (context) => {
+  for (const initialZombie of [false, true]) {
+    await context.test(initialZombie ? "initial zombie" : "late root metadata loss", () => {
+      const original = coarseIdentity(101, 100);
+      const identities = new Map([[101, initialZombie ? { ...original, state: "Z", ownerMarked: false } : original]]);
+      let exited = false;
+      let rootReads = 0;
+      const tracker = createPosixProcessTracker(101, "owned", {
+        rootHasExited: () => exited,
         readProcessIdentity: (pid) => {
-          reads.set(pid, (reads.get(pid) ?? 0) + 1);
+          if (pid === 101) rootReads += 1;
           return identities.get(pid);
         },
         listProcessIdentities: () => [...identities.values()]
       });
       try {
-        assert.equal(tracker.observe(), 2, "the initial marked or lineage-owned tree remains accepted");
-        scenario.change(identities, tracker);
-        reads.clear();
-        let failure;
-        assert.throws(
-          () => tracker.observe(),
-          (error) => {
-            failure = error;
-            return error instanceof Error;
-          }
-        );
-        assert.match(failure.message, new RegExp(`process ${scenario.failingPid} `));
-        assert.equal(reads.get(scenario.failingPid), scenario.confirmDeparture ? 2 : 1);
-        assert.ok(failure.message.endsWith(`(${scenario.flags})`), failure.message);
+        identities.set(101, { ...original, command: "(R)", ownerMarked: false });
+        assert.equal(tracker.observe(), 0, "sampled root metadata is not a second lifetime owner");
+        assert.equal(rootReads, 1, "ordinary root completion needs only its initial identity binding");
+        assert.equal(tracker.isSettled({ isSettled: () => true }), false, "close alone is not positive exit");
+        identities.set(102, coarseIdentity(102, 101));
+        assert.equal(tracker.observe(), 1, "a marked child is independently admitted despite root metadata loss");
+        exited = true;
+        identities.set(101, { ...original, state: "Z", command: "<defunct>", ownerMarked: false });
+        assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the surviving child blocks settlement");
+        identities.delete(102);
+        assert.equal(tracker.isSettled({ isSettled: () => false }), false, "exit does not settle stdio close");
+        assert.equal(tracker.isSettled({ isSettled: () => true }), true);
+        identities.set(101, original);
+        assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
+      } finally {
+        tracker.stop();
+      }
+    });
+  }
+
+  for (const initial of [undefined, new Error("initial read failed"), coarseIdentity(101, 100)]) {
+    await context.test(
+      `initial binding ${initial instanceof Error ? "unreadable" : initial ? "missing witness" : "absent"}`,
+      async () => {
+        const tracker = createPosixProcessTracker(101, "owned", {
+          readProcessIdentity: () => {
+            if (initial instanceof Error) throw initial;
+            return initial;
+          },
+          listProcessIdentities: () => []
+        });
+        try {
+          assert.throws(() => tracker.observe(), /initial read failed|no stable identity|exact child exit witness/u);
+          assert.equal((await tracker.failure).processTreeUnsettled, true);
+        } finally {
+          tracker.stop();
+        }
+      }
+    );
+  }
+
+  await context.test("cleanup retains only the pending original root and live descendants", () => {
+    const original = coarseIdentity(101, 100);
+    const child = coarseIdentity(102, 101);
+    const identities = new Map([
+      [101, original],
+      [102, child]
+    ]);
+    let exited = false;
+    const signals = [];
+    const tracker = createPosixProcessTracker(101, "owned", {
+      rootHasExited: () => exited,
+      readProcessIdentity: (pid) => identities.get(pid),
+      listProcessIdentities: () => [...identities.values()],
+      signalVerifiedProcesses: (targets, owner, signal) => signals.push({ targets, owner, signal })
+    });
+    try {
+      identities.set(101, { ...original, command: "(R)", ownerMarked: false });
+      tracker.signal("SIGTERM");
+      assert.deepEqual(signals[0], { targets: [original, child], owner: "owned", signal: "SIGTERM" });
+      exited = true;
+      identities.delete(101);
+      tracker.signal("SIGKILL");
+      assert.deepEqual(signals[1], { targets: [child], owner: "owned", signal: "SIGKILL" });
+    } finally {
+      tracker.stop();
+    }
+    const unsupported = createPosixProcessTracker(101, "owned", {
+      rootHasExited: () => false,
+      readProcessIdentity: () => original,
+      listProcessIdentities: () => []
+    });
+    try {
+      assert.throws(() => unsupported.signal("SIGTERM"), /refusing numeric PID signaling/u);
+    } finally {
+      unsupported.stop();
+    }
+  });
+});
+
+test("POSIX phase completion uses the exact spawned child's exit, not error, killed or close alone", async (context) => {
+  for (const outcome of ["success", "error", "signal"]) {
+    await context.test(outcome, async () => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 101,
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        killed: false
+      });
+      let current = coarseIdentity(101, 100);
+      let tracker;
+      let hasExited;
+      let resolveReady;
+      const ready = new Promise((resolveValue) => {
+        resolveReady = resolveValue;
+      });
+      const phase = runRContractPhase(
+        { id: "owned-child", label: "owned-child", command: "synthetic", args: [], environment: {}, timeoutMs: 1000 },
+        {
+          platform: "darwin",
+          spawnProcess: () => child,
+          readProcessIdentity: () => current,
+          listProcessIdentities: () => (current ? [current] : []),
+          createProcessTracker: (...args) => {
+            hasExited = args[2].rootHasExited;
+            tracker = createPosixProcessTracker(...args);
+            resolveReady();
+            return tracker;
+          },
+          writeLine: () => {},
+          writeOutput: () => {},
+          writeError: () => {}
+        }
+      ).then(
+        () => undefined,
+        (error) => error
+      );
+      await ready;
+      try {
+        assert.equal(hasExited(), false);
+        child.killed = true;
+        if (outcome === "error") child.emit("error", new Error("controlled child error"));
+        assert.equal(hasExited(), false, "kill requests and errors are not positive exit receipts");
+        current = { ...current, command: "(R)", ownerMarked: false };
+        assert.equal(tracker.observe(), 0);
+        assert.equal(tracker.isSettled({ isSettled: () => true }), false);
+        current = undefined;
+        const code = outcome === "signal" ? null : 0;
+        const signal = outcome === "signal" ? "SIGTERM" : null;
+        child.emit("exit", code, signal);
+        assert.equal(hasExited(), true);
+        assert.equal(tracker.isSettled({ isSettled: () => false }), false, "exit leaves close pending");
+        child.stdout.end();
+        child.stderr.end();
+        child.emit("close", code, signal);
+        const error = await phase;
+        if (outcome === "success") assert.equal(error, undefined);
+        else assert.match(error.message, outcome === "error" ? /controlled child error/u : /signal SIGTERM/u);
+      } finally {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        tracker.stop();
+      }
+    });
+  }
+});
+
+test("POSIX unmarked lineage requires fresh original root credentials, never a pending callback or cached PID", async (context) => {
+  for (const admitted of [false, true]) {
+    for (const change of ["marker", "parent", "group", "start", "zombie", "exit", "unreadable"]) {
+      await context.test(`${admitted ? "existing" : "new"} child after root ${change}`, async () => {
+        const original = coarseIdentity(101, 100);
+        const child = { ...coarseIdentity(102, 101), ownerMarked: false };
+        const identities = new Map([[101, original], ...(admitted ? [[102, child]] : [])]);
+        let exited = false;
+        let unreadable = false;
+        const tracker = createPosixProcessTracker(101, "owned", {
+          rootHasExited: () => exited,
+          readProcessIdentity: (pid) => {
+            if (pid === 101 && unreadable) throw new Error("owned root read failed");
+            return identities.get(pid);
+          },
+          listProcessIdentities: () => [...identities.values()]
+        });
+        try {
+          assert.equal(tracker.observe(), admitted ? 1 : 0);
+          // An exec-like change with a retained marker still proves the original root's lineage.
+          identities.set(101, { ...original, command: "changed command" });
+          assert.equal(tracker.observe(), admitted ? 1 : 0);
+          const updates = {
+            marker: { ownerMarked: false },
+            parent: { parentPid: 900 },
+            group: { groupId: 900 },
+            start: { startIdentity: "new-start" },
+            zombie: { state: "Z" }
+          };
+          identities.set(101, { ...original, ...updates[change] });
+          exited = change === "exit";
+          unreadable = change === "unreadable";
+          if (exited) identities.delete(101);
+          identities.set(102, child);
+          assert.throws(() => tracker.observe(), /cannot authenticate unmarked descendants|owned root read failed/u);
+          const failure = await tracker.failure;
+          assert.equal(failure.processTreeUnsettled, true);
+          assert.throws(
+            () => tracker.isSettled({ isSettled: () => true }),
+            (error) => error === failure
+          );
+        } finally {
+          tracker.stop();
+        }
+      });
+    }
+  }
+});
+
+test("POSIX descendant diagnostics and retired identities stay strict without exposing process data", async (context) => {
+  for (const [field, update, flag] of [
+    ["command", { command: "changed-synthetic-secret" }, "commandMatches=false"],
+    ["parent", { parentPid: 900 }, "parentMatches=false"],
+    ["group", { groupId: 900 }, "groupMatches=false"],
+    ["resolution", { identityResolution: "kernel-start-tick" }, "secondResolution=false"]
+  ]) {
+    await context.test(field, async () => {
+      const identities = new Map([
+        [101, coarseIdentity(101, 100)],
+        [102, coarseIdentity(102, 101)]
+      ]);
+      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+        rootHasExited: () => false,
+        readProcessIdentity: (pid) => identities.get(pid),
+        listProcessIdentities: () => [...identities.values()]
+      });
+      try {
+        identities.set(102, { ...identities.get(102), ...update });
+        assert.throws(() => tracker.observe(), /process 102 /u);
+        const failure = await tracker.failure;
+        assert.ok(failure.message.includes(flag));
+        assert.ok(failure.message.endsWith("root=false)"));
         assert.ok(Buffer.byteLength(failure.message, "utf8") < 512);
         assert.doesNotMatch(`${failure.message}\n${failure.cause}`, /synthetic-secret/u);
         assert.equal(failure.processTreeUnsettled, true);
-        assert.equal(await tracker.failure, failure);
         assert.throws(
-          () => tracker.isSettled({ isSettled: () => true }),
+          () => tracker.observe(),
           (error) => error === failure
         );
       } finally {
@@ -279,166 +390,68 @@ test("POSIX ownership diagnostics distinguish bounded evidence without exposing 
       }
     });
   }
-
-  for (const outcome of ["absent", "zombie", "different-start", "restored-marker", "exiting-live", "read-error"]) {
-    await context.test(`original root departure confirmation: ${outcome}`, async () => {
-      const original = { ...identity(101, 100), state: "S" };
-      const torn = { ...original, command: "(R)", ownerMarked: false };
-      const identities = new Map([
-        [101, original],
-        [102, identity(102, 101)]
-      ]);
-      let confirm = false;
-      let confirmationReads = 0;
-      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
-        readProcessIdentity: (pid, token) => {
-          assert.equal(token, "synthetic-secret-owner");
-          if (pid === 101 && confirm && confirmationReads < 2) {
-            confirmationReads += 1;
-            if (confirmationReads === 1) return torn;
-            if (outcome === "read-error") throw new Error("synthetic-secret-read-error");
-            const current =
-              outcome === "absent"
-                ? undefined
-                : outcome === "zombie"
-                  ? { ...torn, state: "Z", command: "<defunct>" }
-                  : outcome === "different-start"
-                    ? { ...torn, startIdentity: "later-synthetic-secret-start" }
-                    : outcome === "restored-marker"
-                      ? original
-                      : { ...torn, command: "<exiting>" };
-            if (current) identities.set(101, current);
-            else identities.delete(101);
-            return current;
-          }
-          return identities.get(pid);
-        },
-        listProcessIdentities: () => [...identities.values()]
-      });
-      try {
-        assert.equal(tracker.observe(), 2);
-        confirm = true;
-        if (["absent", "zombie", "different-start"].includes(outcome)) {
-          assert.equal(tracker.observe(), 1, "only the departed original root should retire");
-          assert.equal(confirmationReads, 2);
-          assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the marked descendant remains owned");
-          identities.delete(102);
-          assert.equal(tracker.isSettled({ isSettled: () => false }), false, "the child observer must settle");
-          assert.equal(tracker.isSettled({ isSettled: () => true }), true);
-          identities.set(101, original);
-          assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
-          assert.equal((await tracker.failure).processTreeUnsettled, true);
-        } else {
-          let failure;
-          assert.throws(
-            () => tracker.observe(),
-            (error) => {
-              failure = error;
-              return error instanceof Error;
-            }
-          );
-          assert.equal(confirmationReads, 2, "the failed observation allows one departure check, not retries");
-          assert.ok(
-            failure.message.endsWith(
-              "(secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true)"
-            )
-          );
-          assert.doesNotMatch(`${failure.message}\n${failure.cause}`, /synthetic-secret/u);
-          assert.equal(await tracker.failure, failure);
-          assert.throws(
-            () => tracker.isSettled({ isSettled: () => true }),
-            (error) => error === failure
-          );
-          assert.equal(confirmationReads, 2);
-        }
-      } finally {
-        tracker.stop();
-      }
+  await context.test("a later root PID identity never inherits root privileges", () => {
+    const original = coarseIdentity(101, 100);
+    let current = original;
+    let exited = false;
+    const tracker = createPosixProcessTracker(101, "owned", {
+      rootHasExited: () => exited,
+      readProcessIdentity: () => current,
+      listProcessIdentities: () => [current]
     });
-  }
-
-  await context.test("original marked root command changes retain child and exit settlement", () => {
+    try {
+      current = { ...original, startIdentity: "later-start" };
+      assert.equal(tracker.observe(), 0, "pending callback does not authenticate a reused root PID");
+      exited = true;
+      assert.equal(tracker.observe(), 1, "after exit a new marked identity follows ordinary admission");
+      current = { ...current, command: "changed command" };
+      assert.throws(() => tracker.observe(), /commandMatches=false.*root=false/u);
+    } finally {
+      tracker.stop();
+    }
+  });
+  await context.test("listed descendant zombies stay retired while another child and close remain pending", () => {
+    const child = coarseIdentity(102, 101);
     const identities = new Map([
-      [101, identity(101, 100)],
-      [102, identity(102, 101)]
+      [101, coarseIdentity(101, 100)],
+      [102, child],
+      [103, coarseIdentity(103, 101)]
     ]);
-    const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+    let exited = false;
+    const tracker = createPosixProcessTracker(101, "owned", {
+      rootHasExited: () => exited,
       readProcessIdentity: (pid) => identities.get(pid),
       listProcessIdentities: () => [...identities.values()]
     });
     try {
-      for (const command of ["exec-synthetic-secret", "exec-synthetic-secret ENV=changed-synthetic-secret"]) {
-        identities.set(101, { ...identities.get(101), command });
-        assert.equal(tracker.observe(), 2);
-      }
+      exited = true;
       identities.delete(101);
-      assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the marked child still belongs to the phase");
-      identities.clear();
-      assert.equal(tracker.isSettled({ isSettled: () => false }), false, "the child observer must also settle");
+      identities.set(102, { ...child, state: "Z", command: "<defunct>", ownerMarked: false });
+      assert.equal(tracker.observe(), 1);
+      assert.equal(tracker.observe(), 1, "a listed zombie is not a live retired reappearance");
+      assert.equal(tracker.isSettled({ isSettled: () => true }), false);
+      identities.delete(103);
+      assert.equal(tracker.isSettled({ isSettled: () => false }), false);
       assert.equal(tracker.isSettled({ isSettled: () => true }), true);
+      identities.set(102, child);
+      assert.throws(() => tracker.observe(), /retired coarse process 102 reappeared/u);
     } finally {
       tracker.stop();
     }
   });
-
-  await context.test(
-    "listed zombies retire without accepting a later live identity or premature settlement",
-    async () => {
-      const original = { ...identity(101, 100), state: "S" };
-      const identities = new Map([
-        [101, original],
-        [102, identity(102, 101)]
-      ]);
-      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
-        readProcessIdentity: (pid) => identities.get(pid),
-        listProcessIdentities: () => [...identities.values()]
-      });
-      try {
-        identities.set(101, { ...original, state: "Z", command: "<defunct>", ownerMarked: false });
-        assert.equal(tracker.observe(), 1, "the listed zombie must retire before coarse identity checks");
-        assert.equal(tracker.observe(), 1, "a still-listed zombie must not reappear as a live retired key");
-        assert.equal(tracker.isSettled({ isSettled: () => true }), false, "the marked child must still settle");
-        identities.delete(102);
-        assert.equal(tracker.isSettled({ isSettled: () => false }), false, "the child observer must still settle");
-        assert.equal(tracker.isSettled({ isSettled: () => true }), true);
-        identities.set(101, original);
-        assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
-        assert.equal((await tracker.failure).processTreeUnsettled, true);
-      } finally {
-        tracker.stop();
-      }
-    }
-  );
-
-  await context.test("a retired original root key remains refused despite its marker", async () => {
-    const original = identity(101, 100);
-    let current = original;
-    const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+  await context.test("precise identity checks do not require the coarse child witness", () => {
+    let current = { pid: 101, startIdentity: "tick", identityResolution: "kernel-start-tick" };
+    const tracker = createPosixProcessTracker(101, "owned", {
       readProcessIdentity: () => current,
-      listProcessIdentities: () => (current ? [current] : [])
+      listProcessIdentities: () => [current]
     });
     try {
-      current = undefined;
-      assert.equal(tracker.observe(), 0);
-      current = { ...original, command: "changed-synthetic-secret" };
-      assert.throws(() => tracker.observe(), /retired coarse process 101 reappeared/u);
-      assert.equal((await tracker.failure).processTreeUnsettled, true);
+      current = { ...current, parentPid: 999, groupId: 999, command: "changed", ownerMarked: false };
+      assert.equal(tracker.observe(), 1);
     } finally {
       tracker.stop();
     }
   });
-
-  let current = { pid: 101, startIdentity: "tick", identityResolution: "kernel-start-tick" };
-  const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
-    readProcessIdentity: () => current,
-    listProcessIdentities: () => [current]
-  });
-  try {
-    current = { ...current, parentPid: 999, groupId: 999, command: "changed-synthetic-secret", ownerMarked: false };
-    assert.equal(tracker.observe(), 1, "precise identities retain the existing non-coarse bypass");
-  } finally {
-    tracker.stop();
-  }
 });
 
 function cancellationProbe(kind) {
