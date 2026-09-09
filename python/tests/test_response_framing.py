@@ -149,13 +149,17 @@ def test_response_frame_rejects_non_finite_numbers(value: float) -> None:
         encode_response_frame({"value": value})
 
 
-def test_response_frame_rejects_invalid_unicode_in_keys_and_values() -> None:
-    for payload in ({"value": "\ud800"}, {"\udfff": "value"}):
+@pytest.mark.parametrize("prefix_length", (0, 16 * 1024 - 1, 16 * 1024, 16 * 1024 + 1))
+def test_response_frame_rejects_invalid_unicode_in_keys_and_values(prefix_length: int) -> None:
+    prefix = "x" * prefix_length
+    for payload in ({"value": prefix + "\ud800"}, {prefix + "\udfff": "value"}):
         with pytest.raises(
             ResponseEncodingError,
             match=r"^Response contains text that is not valid UTF-8\.$",
         ):
             encode_response_frame(payload)
+        with pytest.raises(ResponseEncodingError):
+            strict_json_byte_length(payload, 100_000)
 
 
 def test_response_frame_rejects_cycles_without_partial_output() -> None:
@@ -255,6 +259,9 @@ def test_oversized_single_string_is_rejected_without_json_dumps(
         pytest.param("x" * (16 * 1024 - 1), id="ascii-before-chunk"),
         pytest.param("x" * (16 * 1024), id="ascii-at-chunk"),
         pytest.param("x" * (16 * 1024 + 1), id="ascii-after-chunk"),
+        pytest.param("x" * (16 * 1024 - 1) + "é🙂", id="unicode-before-chunk"),
+        pytest.param("x" * (16 * 1024) + "é🙂", id="unicode-at-chunk"),
+        pytest.param("x" * (16 * 1024 + 1) + "é🙂", id="unicode-after-chunk"),
         pytest.param(
             ("x" * (16 * 1024 - 1)) + '\n"\\\t\x01é' + ("z" * (16 * 1024 + 1)),
             id="escaped-and-multibyte",
@@ -309,6 +316,14 @@ def test_strict_json_byte_length_does_not_traverse_after_crossing_the_bound() ->
     )
 
     assert measured == 129
+
+
+def test_oversized_string_prefix_stops_before_invalid_unicode_in_a_later_chunk() -> None:
+    payload = {"value": "x" * (16 * 1024) + "\ud800"}
+
+    assert strict_json_byte_length(payload, 128) == 129
+    with pytest.raises(ResponseFrameTooLargeError):
+        encode_response_frame(payload, 128)
 
 
 def test_response_payload_error_maps_to_a_correlated_recoverable_response(
