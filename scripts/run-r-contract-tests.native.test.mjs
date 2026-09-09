@@ -20,6 +20,79 @@ function identityOf(child) {
   return { pid: child.pid, startIdentity: stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/u)[19] };
 }
 
+test("POSIX periodic observation waits after completion and stops on failure or disposal", async (context) => {
+  for (const ending of ["failure", "stop"]) {
+    await context.test(ending, async () => {
+      const identity = { pid: 101, startIdentity: "tick", identityResolution: "kernel-start-tick" };
+      const observationError = new Error("owned observation failed");
+      let failObservation = false;
+      let scans = 0;
+      let reads = 0;
+      let checkpointTimer;
+      let resolveCheckpoint;
+      const checkpoint = new Promise((resolveValue) => {
+        resolveCheckpoint = resolveValue;
+      });
+      let deadlineTimer;
+      const deadline = new Promise((_, reject) => {
+        deadlineTimer = setTimeout(() => reject(new Error("observation checkpoint did not settle")), 1000);
+      });
+      let signaled;
+      const tracker = createPosixProcessTracker(101, "owned-phase", {
+        readProcessIdentity: () => {
+          reads += 1;
+          return identity;
+        },
+        listProcessIdentities: () => {
+          scans += 1;
+          if (scans === 2) {
+            // Make the periodic pass exceed its interval without running a native process.
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+            checkpointTimer = setTimeout(() => resolveCheckpoint(scans), 1);
+          }
+          if (failObservation) throw observationError;
+          return [identity];
+        },
+        signalVerifiedProcesses: (targets, owner, signal) => {
+          signaled = { targets, owner, signal };
+        }
+      });
+      try {
+        assert.equal(scans, 1, "initial observation is immediate");
+        assert.equal(
+          await Promise.race([checkpoint, deadline]),
+          2,
+          "the completed pass leaves a gap for another timer"
+        );
+        assert.equal(tracker.observe(), 1);
+        assert.equal(tracker.isSettled({ isSettled: () => true }), false);
+        tracker.signal("SIGTERM");
+        assert.equal(scans, 5, "manual, final and signaling observations do not wait for the periodic gap");
+        assert.deepEqual(signaled, { targets: [identity], owner: "owned-phase", signal: "SIGTERM" });
+        if (ending === "failure") {
+          failObservation = true;
+          const failure = await Promise.race([tracker.failure, deadline]);
+          assert.equal(failure.cause, observationError);
+          assert.equal(failure.processTreeUnsettled, true);
+          assert.throws(
+            () => tracker.observe(),
+            (error) => error === failure
+          );
+        } else {
+          tracker.stop();
+        }
+        const finished = { reads, scans };
+        await new Promise((resolveValue) => setTimeout(resolveValue, 30));
+        assert.deepEqual({ reads, scans }, finished, "no process reads follow failure or stop");
+      } finally {
+        tracker.stop();
+        clearTimeout(checkpointTimer);
+        clearTimeout(deadlineTimer);
+      }
+    });
+  }
+});
+
 test("POSIX ps observations retain primary state and bounded identity fields", () => {
   const ownerToken = "synthetic-owner";
   const start = "Wed Sep  9 10:05:19 2026";
