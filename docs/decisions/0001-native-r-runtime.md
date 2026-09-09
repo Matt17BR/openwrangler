@@ -257,6 +257,8 @@ must fit the shared finite, 309-digit limit and round-trip exactly through an or
 R's non-missing integer range use integer storage; other exactly representable values use double storage. A literal
 such as `9007199254740993` is refused before mutation. This does not add integer64 scalar arithmetic: existing
 integer64-column and double-scalar promotion remains unchanged. Live and generated Formula use the same bound value.
+Generated Formula and By Example retain finite double literals exactly, including in compiled programs, using the
+[shared literal-encoding policy](../architecture.md#native-r). This does not expand their accepted public values.
 
 Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
 range becomes zero. Missing and non-finite input values become missing output. The `integer64` calculation keeps its
