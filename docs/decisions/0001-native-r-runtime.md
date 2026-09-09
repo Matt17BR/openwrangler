@@ -116,6 +116,8 @@ and swaps delegates without changing the public session ID. The operation that o
 own failure and is never retried. Cancellation, stale ownership, or a superseded view suppresses recovery, and
 concurrent losses share the same replacement. An operation that never settles may detach from the UI, but its
 ownership record remains until the original kernel ends or the continuation can perform its close.
+The replacement follows the shared [recovered-view publication contract](../architecture.md#persistence-and-recovery),
+including fresh profiles and the originating operation's failure.
 
 All native R transports share the same ASCII response encoder. Its existing traversal charges the aggregate cost of
 escaped string fragments before building them, including values repeated in cell display and raw representations.

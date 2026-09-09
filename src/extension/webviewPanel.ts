@@ -2,6 +2,8 @@ import * as path from "path";
 import * as vscode from "vscode";
 import type {
   DataBackend,
+  CancelledResponse,
+  ErrorResponse,
   OpenWranglerRequest,
   OpenWranglerResponse,
   OperationKind,
@@ -10,10 +12,16 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+import {
+  isRecoveryViewContextId,
+  RECOVERY_VIEW_CONTEXT_PREFIX,
+  type SessionRecoveryContext,
+  type SessionRecoveryMessage
+} from "../shared/sessionRecovery";
 import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionMode";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "./dataBridge";
 import { getSetting, readWebviewBootstrapSettings, type WebviewBootstrapSettings } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
@@ -32,6 +40,16 @@ const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 const RETIRED_RENDERER_TEST_HTML =
   '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\';"></head><body></body></html>';
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
+
+interface PendingRuntimeReplacement {
+  replacement: SessionRuntimeReplacement;
+  rendererGeneration: number;
+  context: SessionRecoveryContext;
+  error?: ErrorResponse | CancelledResponse;
+  refresh?: Promise<void>;
+  attemptedContext?: SessionRecoveryContext;
+  offer?: { message: SessionRecoveryMessage; snapshot: SessionOpenedResponse; isCurrent(): boolean };
+}
 
 export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
   try {
@@ -60,7 +78,8 @@ export class OpenWranglerPanel {
   private reconnectingLiveSource = false;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
-  private readonly forwardedRequests = new Set<Promise<void>>();
+  private readonly forwardedRequests = new Map<Promise<void>, number | undefined>();
+  private pendingRuntimeReplacement: PendingRuntimeReplacement | undefined;
   private changingImportOptions = false;
   private readonly rendererSync: RendererSynchronizationCoordinator;
   private codePreviewReveal: { sessionId: string; pending: boolean } | undefined;
@@ -103,6 +122,7 @@ export class OpenWranglerPanel {
       isVisible: () => this.panel.visible,
       getSnapshot: () => this.snapshot,
       getOpenResponse: () => this.openResponse,
+      isSnapshotPending: () => this.currentRuntimeReplacement() !== undefined,
       getSessionPresentation: () => {
         if (!this.sessionId) return undefined;
         const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
@@ -120,9 +140,30 @@ export class OpenWranglerPanel {
       didSynchronize: (synchronization) => this.revealCodePreviewAfterRendererSynchronization(synchronization),
       didPublishAuthoritativeSnapshot: () => {
         this.unpublishedAuthoritativeSnapshot = false;
+        this.latestPageViewRequestId = undefined;
+        const pending = this.currentRuntimeReplacement();
+        if (pending) {
+          pending.context = this.recoveryContext(null);
+          pending.error = undefined;
+          pending.offer = undefined;
+          this.scheduleRecoveryRefresh();
+        }
       },
       reportDiagnostic: (message) => this.bridge.reportDiagnostic?.(message)
     });
+    const replacementSubscription = this.bridge.onDidReplaceRuntime?.((replacement) => {
+      if (this.disposed || this.sessionId !== replacement.sessionId || !replacement.isCurrent()) return;
+      this.pendingRuntimeReplacement = {
+        replacement,
+        rendererGeneration: this.rendererSync.rendererGeneration,
+        context: this.recoveryContext(null)
+      };
+      this.rendererSync.invalidate();
+      this.rendererSync.clearStartupRecoveryTimer();
+      // Let the reporting request enrol before deciding whether an idle read is needed.
+      void Promise.resolve().then(() => this.scheduleRecoveryRefresh());
+    });
+    if (replacementSubscription) this.disposables.push(replacementSubscription);
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),
       undefined,
@@ -392,6 +433,7 @@ export class OpenWranglerPanel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.pendingRuntimeReplacement = undefined;
     this.openAttemptGeneration += 1;
     this.activeSessionOpenProgressGeneration = undefined;
     this.sessionOpenProgress = undefined;
@@ -432,11 +474,20 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "ready") {
-      this.rendererSync.rendererStarted();
+      this.rendererSync.rendererStarted(true);
+      const recovery = this.currentRuntimeReplacement();
+      if (recovery) {
+        this.latestPageViewRequestId = undefined;
+        this.snapshotViewContextId = undefined;
+        recovery.context = this.recoveryContext(null);
+        recovery.error = undefined;
+        recovery.offer = undefined;
+      }
       await this.publishSessionOpenProgress();
       if (!this.rendererSync.rendererReady) return;
       await this.enqueueRendererSynchronization(true);
       this.rendererSync.scheduleStartupRecovery();
+      this.publishPendingRecoveryOffer();
       return;
     }
 
@@ -455,6 +506,7 @@ export class OpenWranglerPanel {
       if (!this.rendererSync.rendererReady) return;
       await this.enqueueRendererSynchronization(false);
       this.rendererSync.scheduleStartupRecovery();
+      this.publishPendingRecoveryOffer();
       return;
     }
 
@@ -469,8 +521,44 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "setViewContext") {
+      if (isRecoveryViewContextId(decoded.viewContextId) && decoded.viewContextId !== this.snapshotViewContextId) {
+        const pending = this.currentRuntimeReplacement();
+        const offer = pending?.offer;
+        if (
+          this.sessionModeChangeTask ||
+          !offer ||
+          offer.message.offeredViewContextId !== decoded.viewContextId ||
+          !offer.isCurrent()
+        )
+          return;
+        this.pendingRuntimeReplacement = undefined;
+        this.snapshot = offer.snapshot;
+        this.sessionRevision = offer.snapshot.metadata.revision;
+        if (offer.message.result?.kind === "stepPreview" || offer.message.result?.kind === "planUpdated") {
+          this.latestPageViewRequestId = undefined;
+        }
+        this.snapshotViewContextId = decoded.viewContextId;
+        this.bridge.setViewContext?.(pending.replacement.sessionId, decoded.viewContextId);
+        const persistence = decoded.state
+          ? this.bridge.updateViewState?.(pending.replacement.sessionId, decoded.state)
+          : undefined;
+        void this.rendererSync.synchronizeAcceptedSnapshot();
+        await persistence;
+        return;
+      }
+      if (decoded.state) return;
+      const pending = this.currentRuntimeReplacement();
+      const currentForeground = [...this.forwardedRequests.values()].some(
+        (generation) => generation === this.rendererSync.rendererGeneration
+      );
+      if (pending && pending.rendererGeneration !== this.rendererSync.rendererGeneration && currentForeground) return;
       this.snapshotViewContextId = decoded.viewContextId;
       if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, decoded.viewContextId);
+      if (pending?.context.request === null && !currentForeground) {
+        pending.context = this.recoveryContext(null);
+        pending.offer = undefined;
+        this.scheduleRecoveryRefresh();
+      }
       return;
     }
 
@@ -487,6 +575,7 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "updateViewState") {
+      if (this.currentRuntimeReplacement()) return;
       if (this.changingImportOptions || this.rendererSync.rendererViewStateLocked) {
         await this.postViewState();
       } else if (this.sessionId) {
@@ -625,82 +714,85 @@ export class OpenWranglerPanel {
   private switchSessionMode(mode: SessionMode, viewState: GridViewState): Promise<void> {
     if (this.sessionModeChangeTask) return this.sessionModeChangeTask;
     const task = (async () => {
-      const sessionId = this.sessionId;
-      const revision = this.sessionRevision;
-      const metadata = this.snapshot?.metadata;
-      if (!sessionId || !metadata || this.disposed) return;
-      if (!canRequestLiveSessionMode(metadata, mode)) {
-        const action = sessionModeAction(metadata);
-        await this.post({
-          kind: "error",
-          code: `${mode}_mode_unavailable`,
-          message:
-            action?.target === mode && action.disabledReason
-              ? action.disabledReason
-              : `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
-          recoverable: true,
-          sessionId
-        });
-        return;
-      }
-      if (!this.bridge.reconfigureLiveSessionMode) {
-        await this.post({
-          kind: "error",
-          code: `${mode}_mode_unavailable`,
-          message: `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
-          recoverable: true,
-          sessionId
-        });
-        return;
-      }
-
-      await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true, mode });
       try {
-        const response = await this.bridge.reconfigureLiveSessionMode(sessionId, revision, mode, viewState, {
-          priority: "interactive",
-          backendPreference: this.backendPreference
-        });
-        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
-        if (response.kind === "sessionOpened") {
-          if (
-            response.metadata.sessionId !== sessionId ||
-            response.metadata.revision <= revision ||
-            response.metadata.mode !== mode ||
-            response.metadata.source.kind !== metadata.source.kind
-          ) {
-            await this.post({
-              kind: "error",
-              code: "invalid_runtime_response",
-              message: `Open Wrangler rejected an invalid ${modeName(mode)}-mode response.`,
-              recoverable: true,
-              sessionId
-            });
-            return;
-          }
-          this.invalidateRendererSynchronization();
-          this.source = response.metadata.source;
-          this.openResponse = response;
-          this.sessionId = response.metadata.sessionId;
-          this.sessionRevision = response.metadata.revision;
-          this.snapshot = response;
-          this.snapshotViewContextId = undefined;
-          this.latestPageViewRequestId = undefined;
-          await this.post(response);
-          await this.postSessionPresentation();
-          await this.postViewState();
-          if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+        const sessionId = this.sessionId;
+        const revision = this.sessionRevision;
+        const metadata = this.snapshot?.metadata;
+        if (!sessionId || !metadata || this.disposed) return;
+        if (!canRequestLiveSessionMode(metadata, mode)) {
+          const action = sessionModeAction(metadata);
+          await this.post({
+            kind: "error",
+            code: `${mode}_mode_unavailable`,
+            message:
+              action?.target === mode && action.disabledReason
+                ? action.disabledReason
+                : `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
+            recoverable: true,
+            sessionId
+          });
           return;
         }
-        await this.post(response);
-      } catch (error) {
-        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
-        await this.post({
-          kind: "error",
-          code: `${mode}_mode_open_failed`,
-          message: error instanceof Error ? error.message : String(error),
-          recoverable: true,
-          sessionId
-        });
+        if (!this.bridge.reconfigureLiveSessionMode) {
+          await this.post({
+            kind: "error",
+            code: `${mode}_mode_unavailable`,
+            message: `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
+            recoverable: true,
+            sessionId
+          });
+          return;
+        }
+
+        await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true, mode });
+        try {
+          const response = await this.bridge.reconfigureLiveSessionMode(sessionId, revision, mode, viewState, {
+            priority: "interactive",
+            backendPreference: this.backendPreference
+          });
+          if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+          if (response.kind === "sessionOpened") {
+            if (
+              response.metadata.sessionId !== sessionId ||
+              response.metadata.revision <= revision ||
+              response.metadata.mode !== mode ||
+              response.metadata.source.kind !== metadata.source.kind
+            ) {
+              await this.post({
+                kind: "error",
+                code: "invalid_runtime_response",
+                message: `Open Wrangler rejected an invalid ${modeName(mode)}-mode response.`,
+                recoverable: true,
+                sessionId
+              });
+              return;
+            }
+            this.pendingRuntimeReplacement = undefined;
+            this.invalidateRendererSynchronization();
+            this.source = response.metadata.source;
+            this.openResponse = response;
+            this.sessionId = response.metadata.sessionId;
+            this.sessionRevision = response.metadata.revision;
+            this.snapshot = response;
+            this.snapshotViewContextId = undefined;
+            this.latestPageViewRequestId = undefined;
+            await this.post(response);
+            await this.postSessionPresentation();
+            await this.postViewState();
+            if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+            return;
+          }
+          await this.post(response);
+        } catch (error) {
+          if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+          await this.post({
+            kind: "error",
+            code: `${mode}_mode_open_failed`,
+            message: error instanceof Error ? error.message : String(error),
+            recoverable: true,
+            sessionId
+          });
+        }
       } finally {
         if (!this.disposed) {
           await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false, mode });
@@ -708,14 +800,18 @@ export class OpenWranglerPanel {
       }
     })();
     this.sessionModeChangeTask = task;
-    void task.then(
-      () => {
-        if (this.sessionModeChangeTask === task) this.sessionModeChangeTask = undefined;
-      },
-      () => {
-        if (this.sessionModeChangeTask === task) this.sessionModeChangeTask = undefined;
+    const settled = (): void => {
+      if (this.sessionModeChangeTask !== task) return;
+      this.sessionModeChangeTask = undefined;
+      const pending = this.currentRuntimeReplacement();
+      if (!pending) return;
+      if (!pending.offer?.isCurrent()) {
+        pending.offer = undefined;
+        pending.context = { ...pending.context };
       }
-    );
+      this.publishPendingRecoveryOffer();
+    };
+    void task.then(settled, settled);
     return task;
   }
 
@@ -1195,18 +1291,20 @@ export class OpenWranglerPanel {
     requestOptions?: BridgeRequestOptions,
     openAttemptGeneration?: number
   ): Promise<void> {
+    const generation = this.rendererSync.rendererGeneration;
     const task = this.forwardRequest(request, viewContextId, requestOptions, openAttemptGeneration);
-    this.forwardedRequests.add(task);
-    void task.then(
-      () => this.forwardedRequests.delete(task),
-      () => this.forwardedRequests.delete(task)
-    );
+    this.forwardedRequests.set(task, isRecoveryForegroundRequest(request, requestOptions) ? generation : undefined);
+    const settled = (): void => {
+      this.forwardedRequests.delete(task);
+      this.scheduleRecoveryRefresh();
+    };
+    void task.then(settled, settled);
     return task;
   }
 
   private async drainForwardedRequests(): Promise<void> {
     while (this.forwardedRequests.size > 0) {
-      await Promise.allSettled([...this.forwardedRequests]);
+      await Promise.allSettled(this.forwardedRequests.keys());
     }
   }
 
@@ -1237,7 +1335,13 @@ export class OpenWranglerPanel {
       return;
     }
     const ephemeralPage = request.kind === "getPage" && requestOptions?.ephemeralPage === true;
-    if (request.kind === "getPage" && !ephemeralPage) this.latestPageViewRequestId = request.viewRequestId;
+    if (request.kind === "getPage" && !ephemeralPage) {
+      this.latestPageViewRequestId = request.viewRequestId;
+    }
+    const recoveryContext = this.recoveryContext(isRecoveryForegroundRequest(request, requestOptions) ? request : null);
+    const rendererGeneration = this.rendererSync.rendererGeneration;
+    const pendingAtStart = this.currentRuntimeReplacement();
+    if (pendingAtStart && isRecoveryForegroundRequest(request, requestOptions)) pendingAtStart.offer = undefined;
     try {
       const bridgeOptions: BridgeRequestOptions | undefined = viewContextId
         ? { ...requestOptions, viewContextId }
@@ -1273,6 +1377,35 @@ export class OpenWranglerPanel {
         }
         return;
       }
+      const recovery = this.currentRuntimeReplacement();
+      if (recovery && request.kind !== "openSession") {
+        if (isRecoveryForegroundRequest(request, requestOptions)) {
+          const retiredPublication = rendererGeneration !== this.rendererSync.rendererGeneration;
+          if (retiredPublication && this.latestPageViewRequestId !== undefined) return;
+          const currentPage =
+            request.kind !== "getPage" ||
+            this.latestPageViewRequestId === request.viewRequestId ||
+            (retiredPublication && this.latestPageViewRequestId === undefined);
+          if (currentPage) {
+            recovery.context = retiredPublication ? this.recoveryContext(null) : recoveryContext;
+            recovery.error = undefined;
+            if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
+              const current = recovery.replacement.captureView(
+                response.kind === "page" ? response.viewRequestId : null
+              );
+              if (current) {
+                await this.publishRecovery(recovery, response, current);
+                return;
+              }
+            } else if (response.kind === "error" || response.kind === "cancelled") {
+              if (!retiredPublication) recovery.error = response;
+              return;
+            }
+          }
+        }
+        // Old profile owners will be retired by the accepted atomic view.
+        if (response.kind === "summary" || response.kind === "datasetStats" || response.kind === "columnValues") return;
+      }
       if (
         request.kind === "redoStep" &&
         response.kind === "error" &&
@@ -1290,6 +1423,7 @@ export class OpenWranglerPanel {
         this.scheduleRendererStartupRecovery();
       }
       if (response.kind === "sessionOpened") {
+        this.pendingRuntimeReplacement = undefined;
         this.invalidateRendererSynchronization();
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.metadata.revision;
@@ -1387,6 +1521,20 @@ export class OpenWranglerPanel {
         recoverable: true,
         ...viewRequestIdProperty(request)
       };
+      const recovery = this.currentRuntimeReplacement();
+      if (recovery && isRecoveryForegroundRequest(request, requestOptions)) {
+        const retiredPublication = rendererGeneration !== this.rendererSync.rendererGeneration;
+        if (retiredPublication && this.latestPageViewRequestId !== undefined) return;
+        if (
+          request.kind !== "getPage" ||
+          this.latestPageViewRequestId === request.viewRequestId ||
+          (retiredPublication && this.latestPageViewRequestId === undefined)
+        ) {
+          recovery.context = retiredPublication ? this.recoveryContext(null) : recoveryContext;
+          recovery.error = retiredPublication ? undefined : response;
+        }
+        return;
+      }
       if (request.kind === "openSession") {
         this.openResponse = response;
         this.scheduleRendererStartupRecovery();
@@ -1398,7 +1546,168 @@ export class OpenWranglerPanel {
     }
   }
 
+  private recoveryContext(request: OpenWranglerRequest | null): SessionRecoveryContext {
+    return {
+      sessionId: this.sessionId ?? "",
+      revision: request && "revision" in request ? request.revision : this.sessionRevision,
+      viewContextId: this.snapshotViewContextId ?? null,
+      lastPageRequestId: this.latestPageViewRequestId ?? null,
+      request:
+        request && isRecoveryForegroundRequest(request)
+          ? { kind: request.kind, ...viewRequestIdProperty(request) }
+          : null
+    };
+  }
+
+  private currentRuntimeReplacement(): PendingRuntimeReplacement | undefined {
+    const pending = this.pendingRuntimeReplacement;
+    if (
+      pending &&
+      (this.disposed || this.sessionId !== pending.replacement.sessionId || !pending.replacement.isCurrent())
+    ) {
+      this.pendingRuntimeReplacement = undefined;
+      return undefined;
+    }
+    return pending;
+  }
+
+  private publishPendingRecoveryOffer(): void {
+    const pending = this.currentRuntimeReplacement();
+    if (!pending || !this.rendererSync.rendererReady || this.sessionModeChangeTask) return;
+    if (pending.offer?.isCurrent()) {
+      void this.postRendererMessage(pending.offer.message);
+    } else {
+      pending.offer = undefined;
+      this.scheduleRecoveryRefresh();
+    }
+  }
+
+  private scheduleRecoveryRefresh(): void {
+    const pending = this.currentRuntimeReplacement();
+    if (
+      !pending ||
+      pending.refresh ||
+      pending.attemptedContext === pending.context ||
+      pending.offer ||
+      this.sessionModeChangeTask ||
+      !this.rendererSync.rendererReady ||
+      [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+    )
+      return;
+    const context = pending.context;
+    pending.attemptedContext = context;
+    const { pageSize: limit, columnLimit } = fetchGridBlockSize(this.backend);
+    const window = {
+      limit,
+      columnOffset: Math.max(
+        0,
+        this.snapshot?.metadata.schema.findIndex((column) => column.id === this.snapshot?.page.columnIds[0]) ?? 0
+      ),
+      columnLimit: this.snapshot?.page.columnIds.length || columnLimit
+    };
+    pending.refresh = (async () => {
+      try {
+        const read = await pending.replacement.readPage(window);
+        if (
+          this.currentRuntimeReplacement() !== pending ||
+          pending.context !== context ||
+          this.sessionModeChangeTask ||
+          [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+        )
+          return;
+        if (!read || !read.isCurrent()) return;
+        if (read.response.kind === "page") {
+          await this.publishRecovery(
+            pending,
+            { kind: "sessionOpened", metadata: read.response.metadata, page: read.response.page, summaries: [] },
+            read.isCurrent
+          );
+        } else if (pending.error) {
+          // A failed refresh cannot invent a complete replacement. Preserve
+          // the originating terminal failure and let later user work refresh.
+          const error = pending.error;
+          pending.error = undefined;
+          await this.post(error);
+        } else {
+          this.warnRecoveryReadFailure();
+        }
+      } catch {
+        if (
+          this.currentRuntimeReplacement() !== pending ||
+          pending.context !== context ||
+          this.sessionModeChangeTask ||
+          [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+        )
+          return;
+        if (pending.error) {
+          const error = pending.error;
+          pending.error = undefined;
+          await this.post(error);
+        } else this.warnRecoveryReadFailure();
+      }
+    })().finally(() => {
+      if (this.currentRuntimeReplacement() === pending) {
+        pending.refresh = undefined;
+        // A newer completed request can supersede this read. This is not a
+        // retry of a failed read: only that newly owned outcome is scheduled.
+        if (pending.context !== context) this.scheduleRecoveryRefresh();
+      }
+    });
+  }
+
+  private warnRecoveryReadFailure(): void {
+    void vscode.window.showWarningMessage(
+      "Open Wrangler recovered the runtime but could not refresh the grid. Try another page or reopen the dataset."
+    );
+  }
+
+  private async publishRecovery(
+    pending: PendingRuntimeReplacement,
+    response: Extract<OpenWranglerResponse, { kind: "sessionOpened" | "page" | "stepPreview" | "planUpdated" }>,
+    viewIsCurrent: () => boolean
+  ): Promise<void> {
+    const presentation = this.bridge.getSessionPresentation?.(pending.replacement.sessionId);
+    const state = this.bridge.getViewState?.(pending.replacement.sessionId);
+    const viewState = state && encodeGridViewState(state);
+    if (
+      !presentation ||
+      !viewState ||
+      presentation.sessionId !== response.metadata.sessionId ||
+      presentation.revision !== response.metadata.revision ||
+      this.currentRuntimeReplacement() !== pending ||
+      this.sessionModeChangeTask ||
+      !viewIsCurrent()
+    )
+      return;
+    const context = pending.context;
+    const metadata = withoutDatasetStats(response.metadata);
+    const snapshot: SessionOpenedResponse = { kind: "sessionOpened", metadata, page: response.page, summaries: [] };
+    const { code: _code, ...rendererPresentation } = presentation;
+    const message: SessionRecoveryMessage = {
+      kind: "sessionRecovered",
+      offeredViewContextId: `${RECOVERY_VIEW_CONTEXT_PREFIX}${createSecureNonce()}`,
+      context,
+      presentation: rendererPresentation,
+      viewState,
+      ...(response.kind === "sessionOpened" || context.request === null
+        ? { snapshot, ...(pending.error ? { result: pending.error } : {}) }
+        : { result: { ...response, metadata } })
+    };
+    pending.offer = {
+      message,
+      snapshot,
+      isCurrent: () =>
+        this.currentRuntimeReplacement() === pending &&
+        pending.context === context &&
+        (this.latestPageViewRequestId ?? null) === context.lastPageRequestId &&
+        viewIsCurrent()
+    };
+    if (this.rendererSync.rendererReady) await this.postRendererMessage(message);
+    // The exact offered context, not completion of this await, owns retirement.
+  }
+
   private post(response: OpenWranglerResponse): Promise<boolean> {
+    if (response.kind === "sessionOpened") this.latestPageViewRequestId = undefined;
     return this.postRendererMessage(response);
   }
 
@@ -1448,6 +1757,7 @@ export class OpenWranglerPanel {
   }
 
   private async postImportResponse(response: OpenWranglerResponse): Promise<void> {
+    if (response.kind === "sessionOpened") this.latestPageViewRequestId = undefined;
     await this.rendererSync.postImportResponse(response);
   }
 
@@ -1721,6 +2031,20 @@ function viewRequestIdProperty(request: { kind: string; viewRequestId?: unknown 
   return typeof request.viewRequestId === "string" && request.viewRequestId
     ? { viewRequestId: request.viewRequestId }
     : {};
+}
+
+function isRecoveryForegroundRequest(
+  request: OpenWranglerRequest,
+  options?: BridgeRequestOptions
+): request is Extract<OpenWranglerRequest, { kind: NonNullable<SessionRecoveryContext["request"]>["kind"] }> {
+  return (
+    (request.kind === "getPage" && options?.ephemeralPage !== true) ||
+    request.kind === "previewStep" ||
+    request.kind === "applyDraft" ||
+    request.kind === "discardDraft" ||
+    request.kind === "undoStep" ||
+    request.kind === "redoStep"
+  );
 }
 
 function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {

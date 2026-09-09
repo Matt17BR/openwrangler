@@ -324,6 +324,12 @@ Coordinator tests cover source identity across initial open, runtime replacement
 including Python Interactive's originating document. Recovery and state-restorer owners check Close during replay,
 stale viewing fallback, and detached execution settling before candidate cleanup in recovery and initial saved-view
 restoration. Ordinary replay remains covered.
+Coordinator recovery tests own replacement notifications, bounded viewport reads and retirement on Close. The panel
+and renderer synchronization owners check atomic publication, stale offers, failed or late reads and remounts. App
+progressive profiling, projection and draft-state tests check fresh summaries and statistics, retained failure/Retry
+state, and scroll and page intent; decoder tests reject mismatched identities, result actions and oversized view IDs. The existing R kernel-restart
+journey covers real delegate replacement while retaining the originating kernel-change error.
+Mode-change owners cover recovery suspended from local intent through reopening, then resumed after failure.
 The existing atomic-file tests retain destination and temporary
 identity checks; runtime writers retain their separate output-handle contracts.
 The export-target owner also reserves a file through Node and passes its actual identity receipt to the Python pinned

@@ -196,6 +196,7 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
     clearSynchronization,
     flushGridViewState,
     gridViewState,
+    gridViewStateRef,
     publishGridViewState,
     resetGridViewState,
     restoreGridViewport,

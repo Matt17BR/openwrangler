@@ -4,7 +4,8 @@ import type { Memento, NotebookDocument } from "vscode";
 import {
   DetachedBridgeRequestError,
   type BridgeRequestOptions,
-  type OpenWranglerBridge
+  type OpenWranglerBridge,
+  type SessionRuntimeReplacement
 } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
@@ -33,6 +34,259 @@ import { nativeRKernelChangedResponse, type NativeRRecoveryBridge } from "./nati
 type RecoveryBridge = NativeRRecoveryBridge;
 
 describe("SessionCoordinator", () => {
+  it("suspends captured recovery views and reads until a failed mode reopen settles", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/recovery-mode.ipynb"),
+      isClosed: false
+    } as vscode.NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "orders_frame",
+      variableName: "orders_frame",
+      uri: notebook.uri.toString()
+    };
+    const states = new Map<string, SessionMetadata>();
+    const pageGate = deferred<void>();
+    const candidateGate = deferred<OpenWranglerResponse>();
+    const closed: string[] = [];
+    let opens = 0,
+      lost = false,
+      holdPage = false,
+      pageStarted = false;
+    let candidateId: string | undefined;
+    const delegate: OpenWranglerBridge = {
+      request: async (request, options) => {
+        if (request.kind === "openSession") {
+          opens += 1;
+          if (request.mode === "editing") {
+            candidateId = request.requestedSessionId;
+            return candidateGate.promise;
+          }
+          const id = request.requestedSessionId ?? `recovery-${opens}`;
+          const opened = openedResponse(id);
+          opened.metadata = {
+            ...opened.metadata,
+            source,
+            mode: "viewing",
+            capabilities: { ...opened.metadata.capabilities, notebookInsert: true }
+          };
+          states.set(id, opened.metadata);
+          return opened;
+        }
+        if (request.kind === "closeSession") {
+          closed.push(request.sessionId);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        if (request.kind === "getPage") {
+          if (lost && request.sessionId === "recovery-1")
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Lost runtime",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          if (holdPage && options?.ephemeralPage) {
+            pageStarted = true;
+            await pageGate.promise;
+          }
+          return pageResponseForMetadata(request, states.get(request.sessionId)!);
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      }
+    };
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(delegate, notebook);
+    const notices: SessionRuntimeReplacement[] = [];
+    const subscription = bridge.onDidReplaceRuntime?.((notice) => notices.push(notice));
+    setOpenNotebookDocuments(notebook);
+    try {
+      const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected session open");
+      const sessionId = opened.metadata.sessionId;
+      bridge.setViewContext?.(sessionId, "confirmed");
+      lost = true;
+      const recovered = await bridge.request(
+        {
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: "recover-next",
+          offset: 0,
+          limit: 25,
+          ...columnWindow,
+          filterModel: opened.metadata.filterModel
+        },
+        { viewContextId: "confirmed" }
+      );
+      expect(recovered.kind).toBe("page");
+      expect(notices).toHaveLength(1);
+      const notice = notices[0];
+      const offeredCurrent = notice.captureView("recover-next")!;
+      expect(offeredCurrent()).toBe(true);
+      holdPage = true;
+      const fallback = notice.readPage({ limit: 25, ...columnWindow });
+      await vi.waitFor(() => expect(pageStarted).toBe(true));
+      const mode = bridge.reconfigureLiveSessionMode!(sessionId, 0, "editing", {
+        columnWidths: new Map(),
+        viewport: { firstVisibleRow: 0, scrollLeft: 44 }
+      });
+      // Reconfiguration has latched but cannot open its candidate before the active page settles.
+      expect(notice.isCurrent()).toBe(true);
+      expect(notice.captureView()).toBeUndefined();
+      expect(candidateId).toBeUndefined();
+      expect(offeredCurrent()).toBe(false);
+      pageGate.resolve();
+      const read = await fallback;
+      await vi.waitFor(() => expect(candidateId).toBeTruthy());
+      expect(read).toBeUndefined();
+      expect(offeredCurrent()).toBe(false);
+      // Model the panel's accepted offer receipt: the coordinator ignores this while reconfiguring.
+      bridge.setViewContext?.(sessionId, "recovery:offered");
+      expect(offeredCurrent()).toBe(false);
+      candidateGate.resolve({
+        kind: "error",
+        code: "editing_mode_open_failed",
+        message: "Held mode failed",
+        recoverable: true,
+        sessionId: candidateId
+      });
+      await expect(mode).resolves.toMatchObject({ kind: "error", code: "editing_mode_open_failed", sessionId });
+      expect(notice.isCurrent()).toBe(true);
+      expect(offeredCurrent()).toBe(true);
+      expect(notice.captureView("recover-next")?.()).toBe(true);
+      expect(notices).toHaveLength(1);
+      expect(coordinator.sessionSnapshot(sessionId)?.metadata).toMatchObject({ revision: 0, mode: "viewing", source });
+      holdPage = false;
+      const resumed = await notice.readPage({ limit: 25, ...columnWindow });
+      expect(resumed?.response.kind).toBe("page");
+      expect(resumed?.isCurrent()).toBe(true);
+      expect(closed).toContain(candidateId);
+      await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+      expect(notice.isCurrent()).toBe(false);
+    } finally {
+      pageGate.resolve();
+      candidateGate.resolve({ kind: "cancelled", targetRequestId: "settle-owned-candidate" });
+      subscription?.dispose();
+      setOpenNotebookDocuments();
+      await coordinator.shutdown();
+    }
+  });
+
+  it("binds a recovery notice and its bounded page to the original owner and current foreground view", async () => {
+    let opens = 0;
+    let lost = false;
+    let refuseViewport = false;
+    const requests: Array<{ request: OpenWranglerRequest; options?: BridgeRequestOptions }> = [];
+    const delegate: OpenWranglerBridge = {
+      request: async (request, options) => {
+        requests.push({ request, options });
+        if (request.kind === "openSession") return openedResponse(`recovery-${++opens}`);
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        if (request.kind === "getPage") {
+          if (refuseViewport) {
+            return {
+              kind: "error",
+              code: "page_too_large",
+              message: "Bounded page refused",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          if (lost && request.sessionId === "recovery-1") {
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Lost runtime",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          return pageResponse(request, request.sessionId);
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      }
+    };
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(delegate);
+    const notices: SessionRuntimeReplacement[] = [];
+    const subscription = bridge.onDidReplaceRuntime?.((notice) => notices.push(notice));
+    const otherListener = vi.fn();
+    const otherSubscription = coordinator
+      .createBridge({ request: delegate.request })
+      .onDidReplaceRuntime?.(otherListener);
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the session to open.");
+      const sessionId = opened.metadata.sessionId;
+      bridge.setViewContext?.(sessionId, "confirmed");
+      lost = true;
+      await expect(
+        bridge.request(
+          {
+            kind: "getPage",
+            sessionId,
+            revision: 0,
+            viewRequestId: "recover-next",
+            offset: 0,
+            limit: 25,
+            ...columnWindow,
+            filterModel: opened.metadata.filterModel
+          },
+          { viewContextId: "confirmed" }
+        )
+      ).resolves.toMatchObject({ kind: "page", metadata: { sessionId }, viewRequestId: "recover-next" });
+      expect(notices).toHaveLength(1);
+      expect(otherListener).not.toHaveBeenCalled();
+      const notice = notices[0];
+      const current = notice.captureView("recover-next");
+      expect(current?.()).toBe(true);
+      const beforeRead = requests.length;
+      const read = await notice.readPage({ limit: 25, ...columnWindow });
+      expect(read?.response).toMatchObject({ kind: "page", metadata: { sessionId, revision: 0 } });
+      expect(requests.slice(beforeRead)).toEqual([
+        expect.objectContaining({
+          request: expect.objectContaining({ kind: "getPage", sessionId: "recovery-2", limit: 25 }),
+          options: expect.objectContaining({ ephemeralPage: true, viewContextId: "confirmed" })
+        })
+      ]);
+      expect(current?.()).toBe(true);
+      expect(read?.isCurrent()).toBe(true);
+      refuseViewport = true;
+      const refused = await notice.readPage({ limit: 25, ...columnWindow });
+      expect(refused?.response).toMatchObject({ kind: "error", code: "page_too_large", sessionId });
+      expect(refused?.isCurrent()).toBe(true);
+      refuseViewport = false;
+      await bridge.request(
+        {
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: "newer-next",
+          offset: 0,
+          limit: 25,
+          ...columnWindow,
+          filterModel: opened.metadata.filterModel
+        },
+        { viewContextId: "confirmed" }
+      );
+      expect(current?.()).toBe(false);
+      expect(read?.isCurrent()).toBe(false);
+      await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+      expect(notice.isCurrent()).toBe(false);
+      const afterClose = requests.length;
+      await expect(notice.readPage({ limit: 25, ...columnWindow })).resolves.toBeUndefined();
+      expect(requests).toHaveLength(afterClose);
+    } finally {
+      subscription?.dispose();
+      otherSubscription?.dispose();
+      await coordinator.shutdown();
+    }
+  });
+
   it.each(["unknown session", "ambiguous prior mutation"] as const)(
     "stops Redo recovery after trust changes during a replayed preview: %s",
     async (loss) => {

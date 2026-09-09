@@ -17,7 +17,13 @@ import type {
 import { isSessionBoundRequest } from "../shared/protocol";
 import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState } from "../shared/viewState";
-import { type BridgeRequestOptions, type OpenWranglerBridge, type SessionPresentation } from "./dataBridge";
+import {
+  type BridgeRequestOptions,
+  type OpenWranglerBridge,
+  type SessionPresentation,
+  type SessionRuntimeReplacement
+} from "./dataBridge";
+import { createSecureNonce } from "./secureNonce";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import {
   canReopenLiveSessionInMode,
@@ -89,6 +95,10 @@ export class SessionCoordinator implements vscode.Disposable {
   private readonly pendingOpens = new Map<OpenWranglerBridge, number>();
   private readonly pendingOpenWaiters = new Set<() => void>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
+  private readonly runtimeReplacementEmitter = new vscode.EventEmitter<{
+    owner: OpenWranglerBridge;
+    replacement: SessionRuntimeReplacement;
+  }>();
   private activeSessionId: string | undefined;
   private disposed = false;
   private persistenceOwnerOrdinal = 0;
@@ -139,6 +149,10 @@ export class SessionCoordinator implements vscode.Disposable {
     sourceProtection ??= confirmedOrigin?.kind === "textDocument" ? confirmedOrigin.sourceProtection : undefined;
     return {
       request: (request, options) => this.request(delegate, request, options, confirmedOrigin, sourceProtection),
+      onDidReplaceRuntime: (listener) =>
+        this.runtimeReplacementEmitter.event(({ owner, replacement }) => {
+          if (owner === delegate) listener(replacement);
+        }),
       listExcelSheets: (sessionId, source, backend, options) =>
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
@@ -1185,6 +1199,7 @@ export class SessionCoordinator implements vscode.Disposable {
     for (const { session } of sessions) this.releaseSession(session);
     if (this.activeSessionId) this.setActive(undefined);
     this.activeSessionEmitter.dispose();
+    this.runtimeReplacementEmitter.dispose();
   }
 
   private waitForPendingOpens(): Promise<void> {
@@ -1268,6 +1283,7 @@ export class SessionCoordinator implements vscode.Disposable {
       originMismatch: (request) => sessionOriginMismatch(request, session.origin),
       installRuntimeSettlement: (settlement) => this.installRuntimeSettlementBarrier(session, settlement),
       clearPublishedStepInspection: () => this.clearPublishedStepInspection(session),
+      didReplaceRuntime: () => this.publishRuntimeReplacement(session),
       publishActive: () => {
         if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSessionSnapshot(session));
       },
@@ -1278,5 +1294,71 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private isLiveSession(session: CoordinatedSession): boolean {
     return !this.disposed && this.sessions.get(session.publicId) === session;
+  }
+
+  private publishRuntimeReplacement(session: CoordinatedSession): void {
+    const runtimeId = session.runtimeId;
+    const delegate = session.delegate;
+    const owner = this.sessionOwnerDelegates.get(session) ?? delegate;
+    const isCurrent = (): boolean =>
+      this.isLiveSession(session) &&
+      !session.closing &&
+      session.runtimeId === runtimeId &&
+      session.delegate === delegate;
+    const captureView = (expectedPageRequestId?: string | null): (() => boolean) | undefined => {
+      if (
+        !isCurrent() ||
+        session.reconfiguring ||
+        session.reconnecting ||
+        (expectedPageRequestId !== undefined &&
+          (session.latestRequestedPageRequestId ?? null) !== expectedPageRequestId)
+      )
+        return undefined;
+      const revision = session.publicRevision;
+      const pageRequestId = session.latestRequestedPageRequestId;
+      const viewContextId = session.activeViewContextId;
+      const requestedViewContextId = session.latestRequestedViewContextId;
+      return () =>
+        isCurrent() &&
+        !session.reconfiguring &&
+        !session.reconnecting &&
+        session.publicRevision === revision &&
+        session.latestRequestedPageRequestId === pageRequestId &&
+        session.activeViewContextId === viewContextId &&
+        session.latestRequestedViewContextId === requestedViewContextId;
+    };
+    this.runtimeReplacementEmitter.fire({
+      owner,
+      replacement: {
+        sessionId: session.publicId,
+        isCurrent,
+        captureView,
+        readPage: async (window) => {
+          // The panel calls this outside the originating execution. Waiting
+          // here cannot join the request that owns the scheduler's active slot.
+          await session.scheduler.waitForIdle();
+          const viewIsCurrent = captureView();
+          if (!viewIsCurrent) return undefined;
+          const response = await this.request(
+            owner,
+            {
+              kind: "getPage",
+              sessionId: session.publicId,
+              revision: session.publicRevision,
+              viewRequestId: `recovery-page:${createSecureNonce()}`,
+              offset: session.viewState.viewport.firstVisibleRow,
+              ...window,
+              filterModel: session.metadata.filterModel
+            },
+            { ephemeralPage: true, viewContextId: session.activeViewContextId }
+          );
+          if (!viewIsCurrent()) return undefined;
+          if (response.kind !== "page" && response.kind !== "error" && response.kind !== "cancelled") {
+            throw new Error("The recovered viewport request did not return a page.");
+          }
+          return { response, isCurrent: viewIsCurrent };
+        }
+      }
+    });
   }
 }

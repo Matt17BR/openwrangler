@@ -1,8 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SerializedGridViewState } from "../shared/viewState";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { SessionRecoveryContext, SessionRecoveryMessage } from "../shared/sessionRecovery";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -122,6 +124,380 @@ describe("App progressive profiling and view correlation", () => {
     expect(nextPage).toMatchObject({ offset: 200, limit: 200, filterModel: metadata.filterModel });
     expect(nextPage.viewRequestId).toMatch(/^view-.+-\d+$/);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+  });
+
+  it.each(["page", "native"] as const)("replaces retired profiles and values after %s recovery", async (origin) => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: { ...metadata, stats: emptyStats() }, page, summaries: [citySummary] });
+    await screen.findByText("Distinct 500");
+    const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+    openCityFilter();
+    const values = onlyRequest("getColumnValues");
+    dispatch({
+      kind: "columnValues",
+      revision: 0,
+      viewRequestId: viewId(values),
+      column: "city",
+      values: [{ value: "Retired candidate", count: 1 }],
+      hasMore: false
+    });
+    expect(await screen.findByText("Retired candidate")).toBeInTheDocument();
+    const oldSummary = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:1")!;
+    let next: RuntimeRequest | undefined;
+    if (origin === "page") {
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      next = onlyRequest("getPage");
+    }
+    const recoveredPage = {
+      ...pageWithCity("Tokyo"),
+      offset: next ? 200 : 0,
+      rows: Array.from({ length: next ? 16 : 1 }, (_, index) => ({
+        ...pageWithCity(index === 0 ? "Tokyo" : `Replacement ${index}`).rows[0],
+        id: `r:${(next ? 200 : 0) + index}`,
+        rowNumber: (next ? 200 : 0) + index
+      }))
+    };
+    const scroller = screen.getByTestId("data-grid-scroller");
+    const requestedScrollTop = scroller.scrollTop;
+    expect(requestedScrollTop).toBe(next ? 200 * 29 : 0);
+    postMessage.mockClear();
+    const packet = recoveryPacket(
+      next
+        ? {
+            kind: "page",
+            revision: 0,
+            viewRequestId: viewId(next),
+            metadata,
+            page: recoveredPage
+          }
+        : undefined,
+      {
+        sessionId: metadata.sessionId,
+        revision: 0,
+        viewContextId: originalContext,
+        lastPageRequestId: next ? viewId(next) : null,
+        request: next ? { kind: "getPage", viewRequestId: viewId(next) } : null
+      },
+      recoveredPage
+    );
+    packet.viewState.viewport.firstVisibleRow = 0;
+    dispatch(packet);
+
+    expect(scroller.scrollTop).toBe(requestedScrollTop);
+    expect(scroller.querySelector('[data-grid-row][tabindex="0"]')).toHaveAttribute(
+      "data-grid-row",
+      String(recoveredPage.offset)
+    );
+    expect(requestsOfKind("getPage")).toHaveLength(0);
+    expect(setViewContextMessages().at(-1)).toEqual({
+      kind: "setViewContext",
+      viewContextId: "recovery:test",
+      ...(next ? { state: { columnWidths: [], viewport: { firstVisibleRow: 200, scrollLeft: 0 } } } : {})
+    });
+    expect(await screen.findByText("Tokyo")).toBeInTheDocument();
+    expect(screen.queryByText("Retired candidate")).toBeNull();
+    expect(screen.queryByText("Distinct 500")).toBeNull();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+    expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(viewId(oldSummary));
+    await waitFor(() => expect(runtimeEnvelopes("getSummary")).toHaveLength(2));
+    expect(runtimeEnvelopes("getSummary").every((envelope) => envelope.viewContextId === "recovery:test")).toBe(true);
+    dispatch({
+      kind: "summary",
+      revision: 0,
+      viewRequestId: viewId(oldSummary),
+      summaries: [{ ...citySummary, columnId: "c:1", column: "sales" }]
+    });
+    expect(screen.queryByText("Distinct 500")).toBeNull();
+    selectInsightsView("Dataset");
+    expect(screen.queryByText("No missing values.")).toBeNull();
+    await waitFor(() => expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(1));
+    expect(onlyRuntimeEnvelope("getDatasetStats").viewContextId).toBe("recovery:test");
+    if (next) {
+      vi.useFakeTimers();
+      try {
+        fireEvent.wheel(scroller);
+        scroller.scrollTop = 210 * 29;
+        fireEvent.scroll(scroller);
+        act(() => vi.advanceTimersByTime(100));
+        expect(
+          postMessage.mock.calls
+            .map(([message]) => message)
+            .filter((message) => message.kind === "updateViewState")
+            .at(-1)
+        ).toMatchObject({
+          kind: "updateViewState",
+          state: { viewport: { firstVisibleRow: 210, scrollLeft: 0 } }
+        });
+        expect(scroller.scrollTop).toBe(210 * 29);
+        expect(requestsOfKind("getPage")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("bootstraps a remounted renderer from the complete recovery snapshot without a historical error", async () => {
+    render(<App />);
+    expect(screen.getByText("Loading dataframe...")).toBeVisible();
+    dispatch(
+      recoveryPacket(undefined, {
+        sessionId: metadata.sessionId,
+        revision: metadata.revision,
+        viewContextId: null,
+        lastPageRequestId: null,
+        request: null
+      })
+    );
+    expect(await screen.findByText("Tokyo")).toBeVisible();
+    expect(screen.queryByText("Loading dataframe...")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+  });
+
+  it("rejects an idle recovery offer after a newer same-context page has already settled", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+    const oldOffer = recoveryPacket(undefined, {
+      sessionId: metadata.sessionId,
+      revision: 0,
+      viewContextId: originalContext,
+      lastPageRequestId: null,
+      request: null
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    const next = onlyRequest("getPage");
+    dispatch({
+      kind: "page",
+      revision: 0,
+      viewRequestId: viewId(next),
+      metadata,
+      page: { ...page, offset: 200, rows: page.rows.map((row) => ({ ...row, rowNumber: 200 })) }
+    });
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe(originalContext);
+    postMessage.mockClear();
+    dispatch(oldOffer);
+    expect(screen.queryByText("Tokyo")).toBeNull();
+    expect(setViewContextMessages()).toHaveLength(0);
+  });
+
+  it.each([
+    { kind: "error", reason: "filter" },
+    { kind: "cancelled", reason: "filter" },
+    { kind: "error", reason: "row" },
+    { kind: "cancelled", reason: "row" }
+  ] as const)(
+    "keeps the recovered $kind after $reason paging and retries from fresh confirmed data",
+    async ({ kind, reason }) => {
+      render(<App />);
+      dispatch({
+        kind: "sessionOpened",
+        metadata: { ...metadata, stats: emptyStats() },
+        page,
+        summaries: [citySummary]
+      });
+      await screen.findByText("Distinct 500");
+      const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+      if (reason === "filter") sortCityAscending();
+      else fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const failed = onlyRequest("getPage");
+      const result =
+        kind === "error"
+          ? {
+              kind: "error" as const,
+              code: "page_failed",
+              message: "Recovered filter failed",
+              recoverable: true,
+              viewRequestId: viewId(failed)
+            }
+          : { kind: "cancelled" as const, targetRequestId: "page", viewRequestId: viewId(failed) };
+      postMessage.mockClear();
+      dispatch(
+        recoveryPacket(result, {
+          sessionId: metadata.sessionId,
+          revision: 0,
+          viewContextId: originalContext,
+          lastPageRequestId: viewId(failed),
+          request: { kind: "getPage", viewRequestId: viewId(failed) }
+        })
+      );
+      expect(await screen.findByText("Tokyo")).toBeInTheDocument();
+      expect(
+        screen.getByText(kind === "error" ? "Recovered filter failed" : "Page request was cancelled.")
+      ).toBeVisible();
+      expect(screen.queryByText("Distinct 500")).toBeNull();
+      expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+      await waitFor(() => expect(runtimeEnvelopes("getSummary")).toHaveLength(2));
+      expect(runtimeEnvelopes("getSummary").every((envelope) => envelope.viewContextId === "recovery:test")).toBe(true);
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Retry page" }));
+      const retry = onlyRuntimeEnvelope("getPage");
+      expect(retry.request.filterModel).toEqual(failed.filterModel);
+      expect(retry.viewContextId).toBe("recovery:test");
+      expect(viewId(retry.request)).not.toBe(viewId(failed));
+      dispatch({
+        kind: "error",
+        code: "page_failed",
+        message: "Retry failed",
+        recoverable: true,
+        viewRequestId: viewId(retry.request)
+      });
+      expect(screen.getByText("Tokyo")).toBeInTheDocument();
+      expect(screen.queryByText("Distinct 500")).toBeNull();
+      if (reason === "filter") expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+      else expect(setViewContextMessages()).toHaveLength(0);
+    }
+  );
+
+  it("defers a recovery offer behind a newer view request and rejects its later stale replay", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+    openCityFilter();
+    sortCityAscending();
+    const first = onlyRequest("getPage");
+    const oldOffer = recoveryPacket(
+      {
+        kind: "page",
+        revision: 0,
+        viewRequestId: viewId(first),
+        metadata: { ...metadata, filterModel: filterModelOf(first) },
+        page: pageWithCity("Obsolete")
+      },
+      {
+        sessionId: metadata.sessionId,
+        revision: 0,
+        viewContextId: originalContext,
+        lastPageRequestId: viewId(first),
+        request: { kind: "getPage", viewRequestId: viewId(first) }
+      }
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    const winner = requestsOfKind("getPage")[1];
+    postMessage.mockClear();
+    dispatch(oldOffer);
+    expect(screen.queryByText("Obsolete")).toBeNull();
+    expect(setViewContextMessages()).toHaveLength(0);
+    dispatch(
+      recoveryPacket(
+        { kind: "page", revision: 0, viewRequestId: viewId(winner), metadata, page: pageWithCity("Winner") },
+        {
+          ...oldOffer.context,
+          lastPageRequestId: viewId(winner),
+          request: { kind: "getPage", viewRequestId: viewId(winner) }
+        }
+      )
+    );
+    expect(await screen.findByText("Winner")).toBeInTheDocument();
+    postMessage.mockClear();
+    dispatch(oldOffer);
+    expect(screen.getByText("Winner")).toBeInTheDocument();
+    expect(setViewContextMessages()).toHaveLength(0);
+  });
+
+  it("commits recovered Preview and Apply with their authoritative draft and plan", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("button", { name: "Add step" });
+    const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    const previousPage = onlyRequest("getPage");
+    dispatch({
+      kind: "page",
+      revision: 0,
+      viewRequestId: viewId(previousPage),
+      metadata,
+      page: { ...page, offset: 200, rows: page.rows.map((row) => ({ ...row, rowNumber: 200 })) }
+    });
+    dispatch({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
+    fireEvent.change(await screen.findByLabelText(/Engine-native Python/), { target: { value: "result = df" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    const step = onlyRequest("previewStep").step as TransformStep;
+    const diff = {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    };
+    const draftMetadata = { ...metadata, revision: 1, draftStep: step };
+    const preview = recoveryPacket(
+      {
+        kind: "stepPreview",
+        revision: 1,
+        metadata: draftMetadata,
+        page: pageWithCity("Previewed"),
+        diff,
+        code: "result = df"
+      },
+      {
+        sessionId: metadata.sessionId,
+        revision: 0,
+        viewContextId: originalContext,
+        lastPageRequestId: viewId(previousPage),
+        request: { kind: "previewStep" }
+      }
+    );
+    preview.presentation.draft = { diff, warnings: ["Replacement preview warning"], beforeSchema: metadata.schema };
+    dispatch(preview);
+    expect(await screen.findByText("Previewed")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const review = screen.getByRole("region", { name: "Draft review" });
+    expect(within(review).getByText("Replacement preview warning")).toBeVisible();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+    postMessage.mockClear();
+    fireEvent.click(within(review).getByRole("button", { name: "Apply step" }));
+    expect(onlyRequest("applyDraft").kind).toBe("applyDraft");
+    const applied = recoveryPacket(
+      {
+        kind: "planUpdated",
+        action: "apply",
+        revision: 2,
+        metadata: { ...metadata, revision: 2, steps: [step], latestStepInputSchema: metadata.schema },
+        page: pageWithCity("Applied"),
+        code: "result = df"
+      },
+      {
+        sessionId: metadata.sessionId,
+        revision: 1,
+        viewContextId: "recovery:test",
+        lastPageRequestId: null,
+        request: { kind: "applyDraft" }
+      }
+    );
+    applied.offeredViewContextId = "recovery:applied";
+    dispatch(applied);
+    expect(await screen.findByText("Applied")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Draft review" })).toBeNull();
+    expect(screen.getByText("1 applied step")).toBeVisible();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:applied");
+    const { result: _result, ...refreshed } = recoveryPacket(undefined, {
+      sessionId: metadata.sessionId,
+      revision: 2,
+      viewContextId: "recovery:applied",
+      lastPageRequestId: null,
+      request: null
+    });
+    dispatch({
+      ...refreshed,
+      offeredViewContextId: "recovery:after-mutation",
+      snapshot: {
+        kind: "sessionOpened",
+        metadata: { ...metadata, revision: 2, steps: [step], latestStepInputSchema: metadata.schema },
+        page: pageWithCity("Refreshed"),
+        summaries: []
+      },
+      presentation: { sessionId: metadata.sessionId, revision: 2 }
+    });
+    expect(await screen.findByText("Refreshed")).toBeInTheDocument();
+    expect(screen.getByText("1 applied step")).toBeVisible();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:after-mutation");
   });
 
   it("renders sampled string and numeric headers without inventing a zero distinct count", () => {
@@ -563,6 +939,17 @@ describe("App progressive profiling and view correlation", () => {
 
     expect(await screen.findAllByText("Distinct 500")).toHaveLength(2);
     expect(screen.queryByText("Profiling…")).not.toBeInTheDocument();
+    expect(messagesOfKind("ready")).toHaveLength(1);
+    dispatch(
+      recoveryPacket(undefined, {
+        sessionId: metadata.sessionId,
+        revision: 0,
+        viewContextId: setViewContextMessages().at(-1)!.viewContextId,
+        lastPageRequestId: null,
+        request: null
+      })
+    );
+    expect(await screen.findByText("Tokyo")).toBeInTheDocument();
     expect(messagesOfKind("ready")).toHaveLength(1);
   });
 
@@ -1605,49 +1992,72 @@ describe("App progressive profiling and view correlation", () => {
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(originalContext);
   });
 
-  it("keeps authored operation input mounted when preview fails", async () => {
-    render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
-    await screen.findByRole("button", { name: "Add step" });
-    openCityFilter();
-    const clearAll = screen.getByRole("button", { name: "Clear all" });
-    const values = screen.getByRole("button", { name: /Search values/iu });
-    dispatch({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
-    await screen.findByRole("dialog", { name: "Add cleaning step" });
-    const code = await screen.findByLabelText(/Engine-native Python/);
-    fireEvent.change(code, { target: { value: "result = df.filter(pl.col('sales') > 10)" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onlyRequest("previewStep")).toMatchObject({
-      step: { kind: "customCode", params: { code: "result = df.filter(pl.col('sales') > 10)" } }
-    });
+  it.each(["ordinary", "recovered"] as const)(
+    "keeps authored operation input mounted when %s preview fails",
+    async (origin) => {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      await screen.findByRole("button", { name: "Add step" });
+      const originalContext = setViewContextMessages().at(-1)!.viewContextId;
+      openCityFilter();
+      const clearAll = screen.getByRole("button", { name: "Clear all" });
+      const values = screen.getByRole("button", { name: /Search values/iu });
+      dispatch({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
+      await screen.findByRole("dialog", { name: "Add cleaning step" });
+      const code = await screen.findByLabelText(/Engine-native Python/);
+      fireEvent.change(code, { target: { value: "result = df.filter(pl.col('sales') > 10)" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(onlyRequest("previewStep")).toMatchObject({
+        step: { kind: "customCode", params: { code: "result = df.filter(pl.col('sales') > 10)" } }
+      });
 
-    const dialog = screen.getByRole("dialog", { name: "Add cleaning step" });
-    expect(dialog).toHaveAttribute("aria-busy", "true");
-    expect(code).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
-    expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
-    expect(screen.getByTestId("app-workspace")).toHaveAttribute("aria-hidden", "true");
-    expect(clearAll).toBeDisabled();
-    expect(values).toBeDisabled();
+      const dialog = screen.getByRole("dialog", { name: "Add cleaning step" });
+      expect(dialog).toHaveAttribute("aria-busy", "true");
+      expect(code).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
+      expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
+      expect(screen.getByTestId("app-workspace")).toHaveAttribute("aria-hidden", "true");
+      expect(clearAll).toBeDisabled();
+      expect(values).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
-    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
-    dispatch({
-      kind: "error",
-      code: "custom_code_failed",
-      message: "Custom code failed",
-      recoverable: true,
-      sessionId: metadata.sessionId
-    });
+      fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
+      expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+      const refusal = {
+        kind: "error",
+        code: "custom_code_failed",
+        message: "Custom code failed",
+        recoverable: true,
+        sessionId: metadata.sessionId
+      } as const;
+      if (origin === "recovered") {
+        const context: SessionRecoveryContext = {
+          sessionId: metadata.sessionId,
+          revision: 0,
+          viewContextId: originalContext,
+          lastPageRequestId: null,
+          request: null
+        };
+        dispatch(recoveryPacket(undefined, context));
+        expect(dialog).toHaveAttribute("aria-busy", "true");
+        expect(screen.queryByText("Tokyo")).toBeNull();
+        expect(setViewContextMessages().at(-1)?.viewContextId).toBe(originalContext);
+        dispatch(recoveryPacket(refusal, { ...context, request: { kind: "previewStep" } }));
+      } else dispatch(refusal);
 
-    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/Engine-native Python/)).toHaveValue("result = df.filter(pl.col('sales') > 10)");
-    expect(clearAll).toBeEnabled();
-    expect(values).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());
-  });
+      expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+      expect(screen.getByLabelText(/Engine-native Python/)).toHaveValue("result = df.filter(pl.col('sales') > 10)");
+      expect(within(dialog).getByRole("alert")).toHaveTextContent("Custom code failed");
+      if (origin === "recovered") {
+        expect(screen.getByText("Tokyo")).toBeInTheDocument();
+        expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+      }
+      expect(clearAll).toBeEnabled();
+      expect(values).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());
+    }
+  );
 });
 
 function sortCityAscending(): void {
@@ -1669,9 +2079,36 @@ function selectInsightsView(view: "Column" | "Dataset" | "Filters / Sorts"): voi
 }
 
 function dispatch(
-  data: OpenWranglerResponse | EditorActionMessage | ViewStateMessage | StepInspectionClearedMessage
+  data:
+    | OpenWranglerResponse
+    | EditorActionMessage
+    | ViewStateMessage
+    | StepInspectionClearedMessage
+    | SessionRecoveryMessage
 ): void {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+}
+
+function recoveryPacket(
+  result: SessionRecoveryMessage["result"],
+  context: SessionRecoveryContext,
+  recoveredPage = pageWithCity("Tokyo")
+): SessionRecoveryMessage {
+  const nextMetadata = result && "metadata" in result ? result.metadata : metadata;
+  const common = {
+    kind: "sessionRecovered" as const,
+    offeredViewContextId: "recovery:test",
+    context,
+    presentation: { sessionId: nextMetadata.sessionId, revision: nextMetadata.revision },
+    viewState: { columnWidths: [], viewport: { firstVisibleRow: recoveredPage.offset, scrollLeft: 0 } }
+  };
+  return result && (result.kind === "page" || result.kind === "stepPreview" || result.kind === "planUpdated")
+    ? { ...common, result }
+    : {
+        ...common,
+        snapshot: { kind: "sessionOpened", metadata, page: recoveredPage, summaries: [] },
+        ...(result ? { result } : {})
+      };
 }
 
 interface EditorActionMessage {
@@ -1719,6 +2156,7 @@ interface PrioritizationMessage {
 interface SetViewContextMessage {
   kind: "setViewContext";
   viewContextId: string;
+  state?: SerializedGridViewState;
 }
 
 function runtimeEnvelopes(kind?: string): RuntimeEnvelope[] {

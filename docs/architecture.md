@@ -848,6 +848,24 @@ on the same source and backend, replays the confirmed cleaning and viewing secti
 and draft metadata, and publishes only the complete correlated result. The source remains the authority; captured
 pages are never replay input.
 
+Accepting a recovered view starts a fresh profiling context, even when the source identity, public session ID,
+revision and query are unchanged. The host offers the recovered page, metadata, presentation and settled request
+outcome together; the renderer accepts them only while their captured session and foreground request remain current.
+Accepted replacement clears retired profiles and refreshes rollback state without discarding the originating form or
+its error. Native-command errors remain with their caller. A newer local request wins. The host retires its pending
+replacement only when the renderer returns the exact offered view context through the existing acknowledgement
+path; sending a message alone is insufficient. That receipt also saves the accepted grid placement. Once the complete
+view is accepted, ordinary grid presentation updates can proceed while the separate hydration marker is pending.
+Full-snapshot synchronization and import transitions retain their presentation lock.
+Mode changes suspend recovery acceptance from the local request through host settlement. A failed mode change can
+resume the pending replacement; a successful reopen supplies the new authoritative session.
+A current page-bearing response supplies the snapshot directly. Recovery through a page-less request uses one bounded
+read of the confirmed viewport after active work settles. Renderer synchronization waits for that publication instead
+of replaying the retired snapshot or treating the pending replacement as a missing session.
+Successful foreground paging keeps its current scroll intent; a changed query starts at the returned page.
+A failed recovery read keeps any existing complete view and reports the originating failure or a host warning.
+Automatic snapshot pulls do not repeat that read; a new user outcome can make another bounded attempt.
+
 ## Trust, source integrity, and export
 
 Python and R execution, dependency installation, custom code, generated-code insertion, and data or script export

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 import { DataGrid } from "../webviews/grid/DataGrid";
 import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
@@ -3082,6 +3083,42 @@ describe("App file import options", () => {
 
       const action = await screen.findByRole("button", { name: "Switch to Editing" });
       expect(action).toHaveAttribute("title", "Reopen this live dataframe in Editing mode");
+      const originalContext = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .find((message) => message.kind === "setViewContext") as { viewContextId: string };
+      const recovery: SessionRecoveryMessage = {
+        kind: "sessionRecovered",
+        offeredViewContextId: "recovery:mode-held",
+        context: {
+          sessionId: viewingMetadata.sessionId,
+          revision: 0,
+          viewContextId: originalContext.viewContextId,
+          lastPageRequestId: null,
+          request: null
+        },
+        presentation: { sessionId: viewingMetadata.sessionId, revision: 0 },
+        viewState: { columnWidths: [["c:0", 200]], viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
+        snapshot: {
+          kind: "sessionOpened",
+          metadata: viewingMetadata,
+          summaries: [],
+          page: {
+            ...page,
+            rows: page.rows.map((row, index) =>
+              index === 0
+                ? {
+                    ...row,
+                    values: row.values.map((cell, column) =>
+                      column === 0 ? { ...cell, raw: "Recovered Milan", display: "Recovered Milan" } : cell
+                    )
+                  }
+                : row
+            )
+          }
+        }
+      };
+      const search = screen.getByPlaceholderText("Search columns");
+      fireEvent.change(search, { target: { value: "sales" } });
       webviewPostMessage.mockClear();
       fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
       action.focus();
@@ -3100,10 +3137,19 @@ describe("App file import options", () => {
         }
       ]);
 
+      dispatchAppMessage(recovery);
+      expect(screen.queryByText("Recovered Milan")).toBeNull();
+      expect(
+        webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "setViewContext")
+      ).toHaveLength(0);
+      expect(search).toHaveValue("sales");
+
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "editing" });
       expect(action).toBeDisabled();
       expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
       expect(screen.getByText("Opening Editing mode…")).toHaveAttribute("role", "status");
+      dispatchAppMessage(recovery);
+      expect(screen.queryByText("Recovered Milan")).toBeNull();
 
       dispatchAppMessage({
         kind: "error",
@@ -3112,10 +3158,25 @@ describe("App file import options", () => {
         recoverable: true,
         sessionId: viewingMetadata.sessionId
       });
+      dispatchAppMessage(recovery);
+      expect(screen.getByText("The selected kernel changed.")).toBeVisible();
+      expect(search).toHaveValue("sales");
+      expect(screen.queryByText("Recovered Milan")).toBeNull();
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
       expect(frames).toHaveLength(1);
       act(() => frames.shift()!(performance.now()));
       expect(action).toHaveFocus();
+      dispatchAppMessage(recovery);
+      expect(screen.getByText("Recovered Milan")).toBeVisible();
+      expect(screen.getByText("The selected kernel changed.")).toBeVisible();
+      expect(search).toHaveValue("sales");
+      dispatchAppMessage(recovery);
+      expect(
+        webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "setViewContext")
+      ).toEqual([{ kind: "setViewContext", viewContextId: "recovery:mode-held" }]);
+      expect(
+        webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "ready")
+      ).toHaveLength(0);
 
       fireEvent.click(action);
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "editing" });

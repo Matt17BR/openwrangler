@@ -91,6 +91,34 @@ describe("webview message decoding", () => {
     expect(decodeWebviewMessage(message, context())).toBeUndefined();
   });
 
+  it("accepts validated grid state only on a recovery context receipt", () => {
+    const state = { columnWidths: [["c:0", 190]], viewport: { firstVisibleRow: 200, scrollLeft: 90 } };
+    const message = { kind: "setViewContext", viewContextId: "recovery:offered", state };
+    const decoded = decodeWebviewMessage(message, context());
+    expect(decoded).toEqual({ ...message, state: { ...state, columnWidths: new Map([["c:0", 190]]) } });
+    if (decoded?.kind !== "setViewContext") throw new Error("Expected a context receipt.");
+    expect(decoded.state?.viewport).not.toBe(state.viewport);
+    expect(state.viewport).toEqual({ firstVisibleRow: 200, scrollLeft: 90 });
+    for (const invalid of [
+      { ...message, viewContextId: "ordinary-view" },
+      { ...message, state: undefined },
+      { ...message, state: null },
+      { ...message, state: { ...state, viewport: { firstVisibleRow: -1, scrollLeft: 90 } } },
+      {
+        ...message,
+        state: {
+          ...state,
+          columnWidths: [
+            ["c:0", 190],
+            ["c:0", 200]
+          ]
+        }
+      },
+      { ...message, extra: true }
+    ])
+      expect(decodeWebviewMessage(invalid, context())).toBeUndefined();
+  });
+
   it("copies valid cancellation identities only after validation", () => {
     const viewRequestIds = ["summary-a", "stats-a"];
     const decoded = decodeWebviewMessage({ kind: "cancelViewRequests", viewRequestIds }, context());

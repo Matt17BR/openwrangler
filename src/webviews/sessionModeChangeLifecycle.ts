@@ -18,6 +18,8 @@ export function useSessionModeChangeLifecycle({
 }: SessionModeChangeLifecycleOptions) {
   const [pending, setPending] = useState(false);
   const [target, setTarget] = useState<SessionMode | undefined>();
+  const targetRef = useRef<SessionMode | undefined>(undefined);
+  const isModeChangePending = useCallback(() => targetRef.current !== undefined, []);
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const focusFrame = useRef<number | undefined>(undefined);
 
@@ -34,6 +36,7 @@ export function useSessionModeChangeLifecycle({
       const state = takeGridViewState();
       if (!state) return;
       returnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
+      targetRef.current = targetMode;
       setTarget(targetMode);
       vscode.postMessage({ kind: "switchSessionMode", mode: targetMode, state });
     },
@@ -42,6 +45,7 @@ export function useSessionModeChangeLifecycle({
 
   const settleModeChange = useCallback(
     (busy: boolean, targetMode: SessionMode) => {
+      targetRef.current = busy ? targetMode : undefined;
       setPending(busy);
       if (busy) {
         setTarget(targetMode);
@@ -69,5 +73,5 @@ export function useSessionModeChangeLifecycle({
     [canRestoreFocus, readCurrentMode, scheduleFocusRestoration]
   );
 
-  return { pending, target, requestModeChange, settleModeChange };
+  return { pending, target, isModeChangePending, requestModeChange, settleModeChange };
 }

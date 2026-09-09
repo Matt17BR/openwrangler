@@ -64,6 +64,103 @@ describe("App view-state model", () => {
     ).toBeUndefined();
   });
 
+  it("decodes one authoritative recovery payload and rejects mixed ownership or duplicate pages", () => {
+    const packet = {
+      kind: "sessionRecovered",
+      offeredViewContextId: "recovery:accepted",
+      context: {
+        sessionId: metadata.sessionId,
+        revision: metadata.revision,
+        viewContextId: "previous",
+        lastPageRequestId: null,
+        request: null
+      },
+      snapshot: { kind: "sessionOpened", metadata, page, summaries: [] },
+      presentation: { sessionId: metadata.sessionId, revision: metadata.revision },
+      viewState: { columnWidths: [["c:0", 100]], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    };
+    const original = JSON.stringify(packet);
+    expect(decodeAppHostMessage(packet)).toEqual({
+      ...packet,
+      viewState: { ...packet.viewState, columnWidths: new Map([["c:0", 100]]) }
+    });
+    expect(JSON.stringify(packet)).toBe(original);
+    expect(decodeAppHostMessage({ ...packet, offeredViewContextId: "recovery:".padEnd(256, "x") })?.kind).toBe(
+      "sessionRecovered"
+    );
+    for (const invalid of [
+      { ...packet, offeredViewContextId: "ordinary-view" },
+      { ...packet, offeredViewContextId: "recovery:" },
+      { ...packet, offeredViewContextId: "recovery: " },
+      { ...packet, offeredViewContextId: "recovery:".padEnd(257, "x") },
+      { ...packet, context: { ...packet.context, viewContextId: "v".repeat(257) } },
+      { ...packet, context: { ...packet.context, lastPageRequestId: "v".repeat(257) } },
+      { ...packet, result: undefined },
+      { ...packet, snapshot: undefined },
+      { ...packet, context: { ...packet.context, sessionId: "other" } },
+      { ...packet, context: { ...packet.context, lastPageRequestId: 12 } },
+      { ...packet, presentation: { ...packet.presentation, revision: metadata.revision + 1 } },
+      { ...packet, viewState: { ...packet.viewState, columnWidths: [["c:0", -1]] } },
+      { ...packet, snapshot: { ...packet.snapshot, metadata: { ...metadata, backend: "pyspark" } } },
+      { ...packet, result: { kind: "error", code: "native", message: "A native caller's error", recoverable: true } },
+      { ...packet, result: { kind: "page", revision: metadata.revision, viewRequestId: "page-1", metadata, page } }
+    ])
+      expect(decodeAppHostMessage(invalid)).toBeUndefined();
+
+    const failed = {
+      ...packet,
+      context: {
+        ...packet.context,
+        lastPageRequestId: "page-1",
+        request: { kind: "getPage", viewRequestId: "page-1" }
+      },
+      result: {
+        kind: "error",
+        code: "page_failed",
+        message: "The request failed",
+        recoverable: true,
+        viewRequestId: "page-1"
+      }
+    };
+    expect(decodeAppHostMessage(failed)?.kind).toBe("sessionRecovered");
+    const oversizedId = "v".repeat(257);
+    expect(
+      decodeAppHostMessage({
+        ...failed,
+        context: {
+          ...failed.context,
+          lastPageRequestId: oversizedId,
+          request: { kind: "getPage", viewRequestId: oversizedId }
+        },
+        result: { ...failed.result, viewRequestId: oversizedId }
+      })
+    ).toBeUndefined();
+    expect(decodeAppHostMessage({ ...failed, result: { ...failed.result, viewRequestId: "older" } })).toBeUndefined();
+    expect(decodeAppHostMessage({ ...failed, result: { ...failed.result, sessionId: "other" } })).toBeUndefined();
+    expect(decodeAppHostMessage({ ...failed, result: { ...failed.result, revision: -1 } })).toBeUndefined();
+    expect(
+      decodeAppHostMessage({
+        ...failed,
+        result: { kind: "error", code: "page_failed", message: "Missing correlation", recoverable: true }
+      })
+    ).toBeUndefined();
+    expect(
+      decodeAppHostMessage({ ...failed, context: { ...failed.context, request: { kind: "generateCode" } } })
+    ).toBeUndefined();
+    const { snapshot: _snapshot, ...withoutSnapshot } = failed;
+    const succeeded = {
+      ...withoutSnapshot,
+      result: { kind: "page", revision: metadata.revision, metadata, page, viewRequestId: "page-1" }
+    };
+    expect(decodeAppHostMessage(succeeded)?.kind).toBe("sessionRecovered");
+    expect(
+      decodeAppHostMessage({ ...succeeded, result: { ...succeeded.result, revision: metadata.revision + 1 } })
+    ).toBeUndefined();
+    expect(
+      decodeAppHostMessage({ ...succeeded, context: { ...succeeded.context, request: { kind: "previewStep" } } })
+    ).toBeUndefined();
+  });
+
   it("clones background diagnostics without sharing mutable summary owners", () => {
     const summary: BackgroundDiagnostic = {
       message: "summary failed",
